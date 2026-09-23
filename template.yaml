@@ -249,12 +249,23 @@ Resources:
         - LambdaInvokePolicy: { FunctionName: !Ref SyncFunction }
         - LambdaInvokePolicy: { FunctionName: !Ref WeeklyFunction }
       Events:
-        Api:
+        # One route per method (not ANY) so browser CORS preflight (OPTIONS) is answered by
+        # API Gateway itself instead of hitting the JWT authorizer and failing with 401.
+        Get:
           Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /{proxy+}
-            Method: ANY
+          Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: GET }
+        Post:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: POST }
+        Put:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: PUT }
+        Patch:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: PATCH }
+        Delete:
+          Type: HttpApi
+          Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: DELETE }
 
   # ---------------- workers ----------------
   ImporterFunction:
