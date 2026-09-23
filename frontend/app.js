@@ -284,7 +284,7 @@ function drawChart() {
   const idx = ts => { let i = 0; for (let j = 0; j < n; j++) if (bars[j].t.slice(0, cmp) <= ts.slice(0, cmp)) i = j; return i; };
   const ei = idx(t.openTs), xi = t.closeTs ? idx(t.closeTs) : null; const p = onUnderlying ? {} : (t.plan || {});
   const lv = onUnderlying ? [] : [p.stop, p.target, p.entry, t.entry, t.exit].filter(v => v != null);
-  const W = 720, H = 320, pl = 6, pr = 82, pt = 12, pb = 16;
+  const W = 720, H = 340, pl = 6, pr = 82, pt = 12, pb = 34;
   const lo = Math.min(...bars.map(b => b.l), ...lv), hi = Math.max(...bars.map(b => b.h), ...lv), pad = (hi - lo) * .06 || 1;
   const Y = v => pt + (hi + pad - v) / ((hi - lo) + 2 * pad) * (H - pt - pb), bw = (W - pl - pr) / n, X = i => pl + i * bw + bw / 2;
   const line = (v, col, lab, dash) => v == null ? '' : `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="${col}" stroke-dasharray="${dash}" stroke-width="1.2"/><text x="${W - pr + 6}" y="${Y(v) + 4}" font-size="11" fill="${col}">${lab} ${px(v)}</text>`;
@@ -292,16 +292,33 @@ function drawChart() {
   const candles = vis.map((b, i) => { const up = b.c >= b.o, col = up ? 'var(--candle-up)' : 'var(--candle-dn)'; const y1 = Y(Math.max(b.o, b.c)), y2 = Y(Math.min(b.o, b.c));
     return `<line x1="${X(i)}" x2="${X(i)}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${col}"/><rect x="${X(i) - bw * .34}" y="${y1}" width="${Math.max(1, bw * .68)}" height="${Math.max(1, y2 - y1)}" fill="${col}"/>`; }).join('');
   const zoneEnd = xi == null ? k - 1 : Math.min(k - 1, xi);
-  const zone = k > ei ? `<rect x="${X(ei) - bw / 2}" y="${pt}" width="${(zoneEnd - ei + 1) * bw}" height="${H - pt - pb}" fill="var(--sunk)"/>` : '';
+  const zone = k > ei ? `<rect x="${X(ei) - bw / 2}" y="${pt}" width="${(zoneEnd - ei + 1) * bw}" height="${H - pt - pb}" fill="var(--sunk)" fill-opacity=".75"/>` : '';
   const long = t.dir === 'Long';
   // For options, entry/exit prices are premiums, so markers sit on the stock bar instead.
   const ePrice = onUnderlying ? (long ? bars[ei].l : bars[ei].h) : t.entry;
   const xPrice = xi == null ? null : onUnderlying ? (long ? bars[xi].h : bars[xi].l) : t.exit;
   const eLab = onUnderlying ? `Buy ${px(t.entry)}` : 'Entry', xLab = onUnderlying ? `Sell ${px(t.exit)}` : 'Exit';
-  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(data.symbol)} ${S.tf} chart for this trade">${zone}
+  // Axes: price gridlines on the right, time labels along the bottom.
+  const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dayLab = t => `${MONS[+t.slice(5, 7) - 1]} ${+t.slice(8, 10)}`;
+  const yTicks = [0, .25, .5, .75, 1].map(f => lo + (hi - lo) * f);
+  let axes = yTicks.map(v => `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" stroke-width=".6"/><text x="${W - pr + 6}" y="${Y(v) + 4}" font-size="10.5" fill="var(--muted)">${px(v)}</text>`).join('');
+  const step = Math.max(1, Math.ceil(n / 7));
+  let prevDay = '';
+  for (let i = 0; i < n; i += step) {
+    const t0 = bars[i].t, day = t0.slice(0, 10);
+    let lab;
+    if (S.tf === '1d') lab = dayLab(t0) + (prevDay && prevDay.slice(0, 4) !== day.slice(0, 4) ? ` '${day.slice(2, 4)}` : '');
+    else if (S.tf === '4h') lab = dayLab(t0);
+    else lab = day !== prevDay ? `${dayLab(t0)} ${t0.slice(11, 16)}` : t0.slice(11, 16);
+    prevDay = day;
+    axes += `<line x1="${X(i)}" x2="${X(i)}" y1="${pt}" y2="${H - pb}" stroke="var(--line)" stroke-width=".4"/><line x1="${X(i)}" x2="${X(i)}" y1="${H - pb}" y2="${H - pb + 4}" stroke="var(--muted)"/><text x="${X(i)}" y="${H - pb + 16}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${lab}</text>`;
+  }
+  axes += `<line x1="${pl}" x2="${W - pr}" y1="${H - pb}" y2="${H - pb}" stroke="var(--line)"/>`;
+  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(data.symbol)} ${S.tf} chart for this trade">${axes}${zone}
     ${line(p.stop, 'var(--loss)', 'Stop', '5 4')}${line(p.target, 'var(--gain)', 'Target', '5 4')}${line(p.entry, 'var(--muted)', 'Plan', '2 4')}
     ${candles}${k > ei ? mk(ei, ePrice, 'var(--coach)', eLab, long) : ''}${xi != null && k > xi ? mk(xi, xPrice, 'var(--ink)', xLab, !long) : ''}
-    <text x="${W - pr + 6}" y="${pt + 10}" font-size="11" fill="var(--muted)">${px(hi)}</text><text x="${W - pr + 6}" y="${H - pb}" font-size="11" fill="var(--muted)">${px(lo)}</text></svg>`;
+</svg>`;
   const rp = $('#rp'); if (rp) { rp.max = n; rp.value = k; }
 }
 function stopReplay() { clearInterval(replay.timer); replay.timer = null; const b = $('#rp-play'); if (b) b.textContent = 'Replay'; }
