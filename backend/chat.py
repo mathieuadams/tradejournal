@@ -7,7 +7,10 @@ from util import BadRequest, now_ny
 from views import load_views
 
 FILTERS = {
-    "symbol": {"type": "string", "description": "Exact symbol, e.g. TSLA or MNQ"},
+    "symbol": {"type": "string", "description": "Ticker or underlying, e.g. TSLA, NVDA or MNQ. Matches the stock and all its options."},
+    "asset_type": {"type": "string", "enum": ["stock", "option", "future"]},
+    "option_type": {"type": "string", "enum": ["call", "put"]},
+    "max_days_to_expiry": {"type": "integer", "description": "Options with at most this many days to expiry at entry"},
     "setup": {"type": "string", "description": "Setup name, case-insensitive substring"},
     "tag": {"type": "string", "description": "Mistake tag, e.g. Revenge, Moved stop"},
     "direction": {"type": "string", "enum": ["Long", "Short"]},
@@ -25,7 +28,7 @@ TOOLS = [
         "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}},
     {"name": "get_stats", "description": "Win rate, profit factor, expectancy, net P&L, drawdown for trades matching filters, optionally grouped.",
      "input_schema": {"type": "object", "properties": {**FILTERS,
-        "group_by": {"type": "string", "enum": ["none", "setup", "symbol", "hour", "weekday", "tag", "emotion", "account", "direction"]}}}},
+        "group_by": {"type": "string", "enum": ["none", "setup", "symbol", "underlying", "asset_type", "option_type", "days_to_expiry", "hour", "weekday", "tag", "emotion", "account", "direction"]}}}},
 ]
 SYSTEM = """You are a trading coach answering questions about the user's own trade journal.
 Get every number from the tools; never estimate or invent. Times are exchange local (US/Eastern for stocks).
@@ -39,7 +42,13 @@ def _filter(views, a):
     for t in views:
         if t["status"] != "closed":
             continue
-        if a.get("symbol") and t["sym"].upper() != a["symbol"].upper():
+        if a.get("symbol") and a["symbol"].upper() not in (t["sym"].upper(), (t.get("underlying") or "").upper()):
+            continue
+        if a.get("asset_type") and t.get("assetType") != a["asset_type"]:
+            continue
+        if a.get("option_type") and t.get("optType") != a["option_type"]:
+            continue
+        if a.get("max_days_to_expiry") is not None and (t.get("dte") is None or t["dte"] > a["max_days_to_expiry"]):
             continue
         if a.get("setup") and a["setup"].lower() not in t["setup"].lower():
             continue
@@ -75,7 +84,7 @@ def _run_tool(name, args, views, state):
         rows = sorted(rows, key=key.get(s, key["date_desc"]), reverse=(s == "date_desc"))
         rows = rows[: min(int(args.get("limit") or 10), 25)]
         state["trade_ids"] = [t["id"] for t in rows]
-        return {"count": len(rows), "trades": [{k: t[k] for k in ("date", "time", "sym", "dir", "setup", "tags", "net", "r", "hold")} for t in rows]}
+        return {"count": len(rows), "trades": [{k: t[k] for k in ("date", "time", "sym", "underlying", "assetType", "optType", "expiry", "strike", "dir", "setup", "tags", "net", "r", "hold")} for t in rows]}
     if name == "get_stats":
         by = args.get("group_by", "none")
         return analytics.breakdown(rows, by) if by != "none" else analytics.stats(rows)

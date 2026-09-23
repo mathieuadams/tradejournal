@@ -101,10 +101,28 @@ def patterns(ts):
     return out
 
 
+def _dte_bucket(d):
+    if d is None:
+        return "not an option"
+    if d <= 1:
+        return "0-1 days"
+    if d <= 7:
+        return "2-7 days"
+    if d <= 30:
+        return "8-30 days"
+    if d <= 60:
+        return "31-60 days"
+    return "over 60 days"
+
+
 def breakdown(ts, by):
     keyf = {
         "setup": lambda t: t["setup"] or "No setup",
         "symbol": lambda t: t["sym"],
+        "underlying": lambda t: t.get("underlying") or t["sym"],
+        "asset_type": lambda t: t.get("assetType") or "stock",
+        "option_type": lambda t: t.get("optType") or "not an option",
+        "days_to_expiry": lambda t: _dte_bucket(t.get("dte")),
         "hour": lambda t: f"{t['time'][:2]}:00",
         "weekday": lambda t: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][
             __import__("datetime").date.fromisoformat(t["date"]).weekday()],

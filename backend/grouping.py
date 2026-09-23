@@ -36,6 +36,23 @@ def is_future(sym):
     return root(sym) in MULT
 
 
+OCC_PARTS = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
+
+
+def describe(sym):
+    """Split a symbol into underlying, asset type and option details."""
+    s = sym.upper().replace(" ", "")
+    m = OCC_PARTS.match(s)
+    if m:
+        return {"underlying": m.group(1), "assetType": "option",
+                "optType": "call" if m.group(5) == "C" else "put",
+                "expiry": f"20{m.group(2)}-{m.group(3)}-{m.group(4)}",
+                "strike": int(m.group(6)) / 1000}
+    if is_future(sym):
+        return {"underlying": root(sym), "assetType": "future", "optType": None, "expiry": None, "strike": None}
+    return {"underlying": s, "assetType": "stock", "optType": None, "expiry": None, "strike": None}
+
+
 def multiplier(sym, given=None):
     if given:
         return float(given)

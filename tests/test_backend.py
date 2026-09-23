@@ -135,6 +135,10 @@ def test_schwab_statement():
     assert not any(t["sym"] == "PLTR" for t in trades)
     nv = next(t for t in trades if t["sym"].startswith("NVDA"))
     assert nv["gross"] == round((7.25 - 5.00) * 2 * 100, 2) and nv["dir"] == "Long"
+    from grouping import describe
+    d = describe("NVDA261016C00180000")
+    assert d == {"underlying": "NVDA", "assetType": "option", "optType": "call", "expiry": "2026-10-16", "strike": 180.0}
+    assert describe("MNQZ26")["assetType"] == "future" and describe("AMD")["assetType"] == "stock"
     fills_et, _ = parse_csv(text, "Schwab", "ET")
     assert next(f for f in fills_et if f["sym"] == "AMD")["ts"] == "2026-09-01T06:35:10"
 

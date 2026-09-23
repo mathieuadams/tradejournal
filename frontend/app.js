@@ -12,6 +12,7 @@ const weekday = d => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(
 const chron = (a, b) => a.openTs.localeCompare(b.openTs);
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const symFmt = s => { const m = /^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(s || ''); return m ? `${m[1]} ${MON[+m[3] - 1]} ${+m[4]} '${m[2]} ${+m[6] / 1000} ${m[5] === 'C' ? 'call' : 'put'}` : s; };
+const fmtExp = d => d ? `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+d.slice(5, 7) - 1]} ${+d.slice(8, 10)} '${d.slice(2, 4)}` : '';
 const px = v => v == null ? '—' : (Math.abs(v) >= 1000 ? v.toFixed(2) : v.toFixed(Math.abs(v) < 10 ? 4 : 2));
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2200); }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -165,7 +166,7 @@ function prop() {
 }
 
 /* ---------- trades ---------- */
-const tf = { q: '', setup: '', tag: '', res: '', acct: '' };
+const tf = { q: '', setup: '', tag: '', res: '', acct: '', asset: '' };
 function vTrades() {
   const ts = scoped();
   if (!S.trades.length) return head('Trades', '', '') + emptyState();
@@ -173,20 +174,21 @@ function vTrades() {
   return head('Trades', periodText(ts)) + `<div class="filters">
     <input id="f-q" type="search" placeholder="Symbol" value="${esc(tf.q)}" aria-label="Filter by symbol" size="10">
     ${accts.length > 1 ? `<select id="f-acct" aria-label="Account"><option value="">All accounts</option>${accts.map(s => `<option ${tf.acct === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>` : ''}
+    <select id="f-asset" aria-label="Stock or option"><option value="">Stocks and options</option>${['stock', 'option', 'future'].filter(a => S.trades.some(t => t.assetType === a)).map(a => `<option value="${a}" ${tf.asset === a ? 'selected' : ''}>${a[0].toUpperCase() + a.slice(1)}s</option>`).join('')}</select>
     <select id="f-setup" aria-label="Setup"><option value="">All setups</option>${setups.map(s => `<option ${tf.setup === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>
     <select id="f-tag" aria-label="Mistake"><option value="">Any tags</option><option value="__none" ${tf.tag === '__none' ? 'selected' : ''}>No tags</option>${S.me.mistakes.map(s => `<option ${tf.tag === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
     <select id="f-res" aria-label="Result"><option value="">Winners and losers</option><option value="w" ${tf.res === 'w' ? 'selected' : ''}>Winners</option><option value="l" ${tf.res === 'l' ? 'selected' : ''}>Losers</option><option value="o" ${tf.res === 'o' ? 'selected' : ''}>Open</option></select>
   </div><div id="trade-table">${tradeTable(filtered())}</div>`;
 }
 function filtered() {
-  return scoped().filter(t => (!tf.q || t.sym.toLowerCase().includes(tf.q.toLowerCase())) && (!tf.acct || t.acct === tf.acct) && (!tf.setup || t.setup === tf.setup)
+  return scoped().filter(t => (!tf.q || t.sym.toLowerCase().includes(tf.q.toLowerCase()) || (t.underlying || '').toLowerCase() === tf.q.toLowerCase()) && (!tf.asset || t.assetType === tf.asset) && (!tf.acct || t.acct === tf.acct) && (!tf.setup || t.setup === tf.setup)
     && (!tf.tag || (tf.tag === '__none' ? !t.tags.length : t.tags.includes(tf.tag)))
     && (!tf.res || (tf.res === 'o' ? t.status === 'open' : t.status === 'closed' && (tf.res === 'w' ? t.net > 0 : t.net <= 0)))).slice().reverse();
 }
 function tradeTable(ts, compact) {
   if (!ts.length) return `<div class="tablewrap"><p class="empty">No trades match these filters.</p></div>`;
-  return `<div class="tablewrap"><table><thead><tr><th>Date</th><th>Time</th><th>Symbol</th><th>Side</th>${compact ? '' : '<th>Setup</th><th>Tags</th>'}<th class="r">R</th><th class="r">Net P&L</th></tr></thead><tbody>
-  ${ts.map(t => `<tr data-open="${t.id}" tabindex="0"><td>${fmtDate(t.date)}</td><td>${t.time}</td><td><b>${esc(symFmt(t.sym))}</b></td><td>${t.dir}${t.status === 'open' ? ' <span class="chip">Open</span>' : ''}</td>${compact ? '' : `<td>${esc(t.setup) || '<span class="muted">—</span>'}</td><td>${t.tags.map(x => `<span class="chip ${x === 'Early exit' ? '' : 'bad'}">${esc(x)}</span>`).join('')}</td>`}<td class="r ${cls(t.r)}">${fr(t.r)}</td><td class="r ${cls(t.net)}"><b>${t.status === 'open' ? '<span class="muted">open</span>' : money(t.net)}</b></td></tr>`).join('')}
+  return `<div class="tablewrap"><table><thead><tr><th>Date</th><th>Time</th><th>Ticker / contract</th><th>Side</th>${compact ? '' : '<th>Setup</th><th>Tags</th>'}<th class="r">R</th><th class="r">Net P&L</th></tr></thead><tbody>
+  ${ts.map(t => `<tr data-open="${t.id}" tabindex="0"><td>${fmtDate(t.date)}</td><td>${t.time}</td><td><b>${esc(t.underlying || t.sym)}</b>${t.assetType === 'option' ? ` <span class="muted">${esc(fmtExp(t.expiry))} ${t.strike} ${t.optType}</span>` : ''}</td><td>${t.dir}${t.status === 'open' ? ' <span class="chip">Open</span>' : ''}</td>${compact ? '' : `<td>${esc(t.setup) || '<span class="muted">—</span>'}</td><td>${t.tags.map(x => `<span class="chip ${x === 'Early exit' ? '' : 'bad'}">${esc(x)}</span>`).join('')}</td>`}<td class="r ${cls(t.r)}">${fr(t.r)}</td><td class="r ${cls(t.net)}"><b>${t.status === 'open' ? '<span class="muted">open</span>' : money(t.net)}</b></td></tr>`).join('')}
   </tbody></table></div>`;
 }
 
@@ -210,7 +212,7 @@ function renderDrawer() {
       <button class="btn" id="rp-play">Replay</button><input type="range" id="rp" min="1" aria-label="Replay position"></div></div>
     <div class="coach review" id="review"><p class="loading" style="padding:0">Loading coach review…</p></div>
     <div class="panel"><h2>Fills</h2><div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
-      <tr><td>Quantity</td><td class="r">${t.qty}</td></tr><tr><td>Average entry</td><td class="r">${px(t.entry)}</td></tr><tr><td>Average exit</td><td class="r">${px(t.exit)}</td></tr>
+      ${t.assetType === 'option' ? `<tr><td>Contract</td><td class="r">${esc(t.underlying)} ${t.optType} ${t.strike} exp ${esc(fmtExp(t.expiry))} (${t.dte} days at entry)</td></tr>` : ''}<tr><td>Quantity</td><td class="r">${t.qty}${t.assetType === 'option' ? ' contracts' : ''}</td></tr><tr><td>Average entry</td><td class="r">${px(t.entry)}</td></tr><tr><td>Average exit</td><td class="r">${px(t.exit)}</td></tr>
       <tr><td>Gross / fees</td><td class="r">${money(t.gross)} / ${money(-t.fees)}</td></tr>
       ${t.riskD != null ? `<tr><td>Risk at plan stop</td><td class="r ${t.riskD > S.me.settings.riskPerTrade * 1.25 ? 'dev' : ''}">${money(t.riskD, false)} (plan ${money(S.me.settings.riskPerTrade, false)})</td></tr>` : ''}
       ${t.mae != null ? `<tr><td>Went against / for you</td><td class="r">−${t.mae.toFixed(2)}R / +${t.mfe.toFixed(2)}R</td></tr>` : ''}
@@ -314,7 +316,11 @@ const BD = {
   time: ['Time of day', t => t.min < 600 ? 'Before 10:00' : t.min < 660 ? '10:00–11:00' : t.min < 720 ? '11:00–12:00' : t.min < 840 ? '12:00–14:00' : '14:00 and later'],
   weekday: ['Weekday', t => weekday(t.date)],
   hold: ['Hold time', t => t.hold == null ? 'Unknown' : t.hold < 10 ? 'Under 10 min' : t.hold < 30 ? '10–30 min' : t.hold < 60 ? '30–60 min' : t.hold < 1440 ? '1 hour to 1 day' : 'Over a day'],
-  symbol: ['Symbol', t => t.sym], account: ['Account', t => t.acct], tag: ['Mistake tag', null], emotion: ['Emotion', t => t.emotion || 'Not set']
+  underlying: ['Ticker', t => t.underlying || t.sym],
+  asset: ['Stock / option', t => ({ stock: 'Stock', option: 'Option', future: 'Future' })[t.assetType] || 'Stock'],
+  optType: ['Call / put', t => t.optType ? (t.optType === 'call' ? 'Calls' : 'Puts') : 'Not an option'],
+  dte: ['Days to expiry', t => t.dte == null ? 'Not an option' : t.dte <= 1 ? '0–1 days' : t.dte <= 7 ? '2–7 days' : t.dte <= 30 ? '8–30 days' : t.dte <= 60 ? '31–60 days' : 'Over 60 days'],
+  symbol: ['Contract', t => symFmt(t.sym)], account: ['Account', t => t.acct], tag: ['Mistake tag', null], emotion: ['Emotion', t => t.emotion || 'Not set']
 };
 function vAnalytics() {
   const ts = closed(scoped());
@@ -347,7 +353,7 @@ function breakdown(ts) {
   else { const f = BD[S.bd][1]; for (const t of ts) (g[f(t)] = g[f(t)] || []).push(t); }
   const order = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const ent = Object.entries(g).map(([k, a]) => [k, stats(a)]);
-  if (S.bd === 'weekday') ent.sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])); else if (S.bd === 'time' || S.bd === 'hold') ent.sort((a, b) => a[0].localeCompare(b[0])); else ent.sort((a, b) => b[1].net - a[1].net);
+  if (S.bd === 'weekday') ent.sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])); else if (S.bd === 'dte') { const o = ['0–1 days', '2–7 days', '8–30 days', '31–60 days', 'Over 60 days', 'Not an option']; ent.sort((a, b) => o.indexOf(a[0]) - o.indexOf(b[0])); } else if (S.bd === 'time' || S.bd === 'hold') ent.sort((a, b) => a[0].localeCompare(b[0])); else ent.sort((a, b) => b[1].net - a[1].net);
   const mx = Math.max(1, ...ent.map(e => Math.abs(e[1].net)));
   return `<div class="tablewrap" style="border:0"><table><thead><tr><th>${BD[S.bd][0]}</th><th class="r">Trades</th><th class="r">Win rate</th><th class="r">Expectancy</th><th class="r">Net P&L</th><th style="width:28%"></th></tr></thead><tbody>
   ${ent.map(([k, s]) => `<tr><td><b>${esc(k)}</b></td><td class="r">${s.n}</td><td class="r">${(s.wr * 100).toFixed(0)}%</td><td class="r ${cls(s.exp)}">${fr(s.exp)}</td><td class="r ${cls(s.net)}"><b>${money(s.net)}</b></td><td><div class="bar ${s.net < 0 ? 'neg' : ''}" style="width:${Math.abs(s.net) / mx * 100}%"></div></td></tr>`).join('')}</tbody></table></div>`;
@@ -551,7 +557,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const id = e.target.id;
-  if (['f-setup', 'f-tag', 'f-res', 'f-acct'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
+  if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (id === 'jday') { S.jDay = e.target.value; render(); }
   if (id === 'file' && e.target.files[0]) upload(e.target.files[0]);
 });

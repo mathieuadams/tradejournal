@@ -4,6 +4,8 @@ R multiple, targetR and MAE/MFE (in R) need the planned stop, so they are only
 filled in when the user logged a plan with a stop.
 """
 import db
+from datetime import date
+from grouping import describe
 
 DEFAULT_SETUPS = ["Opening range breakout", "VWAP reclaim", "Pullback", "Breakout", "Episodic pivot",
                   "Failed breakdown", "Parabolic short"]
@@ -31,6 +33,9 @@ def merge(t, j=None, reviewed=False):
         "notes": j.get("notes") or "", "plan": plan, "reviewed": reviewed,
         "r": None, "riskD": None, "targetR": None, "mae": None, "mfe": None,
     }
+    d = describe(t["sym"])
+    v.update(d)
+    v["dte"] = (date.fromisoformat(d["expiry"]) - date.fromisoformat(v["date"])).days if d["expiry"] else None
     stop = plan.get("stop")
     if stop is not None and t["status"] == "closed":
         rpu = abs(t["entry"] - stop)
