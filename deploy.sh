@@ -9,7 +9,12 @@ REGION="${REGION:-us-west-2}"
 command -v sam >/dev/null || { echo "Install the AWS SAM CLI first: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html"; exit 1; }
 command -v aws >/dev/null || { echo "Install the AWS CLI v2 first."; exit 1; }
 
-if [ ! -f samconfig.toml ]; then
+if [ -n "${COGNITO_DOMAIN_PREFIX:-}" ]; then
+  # Non-interactive (CI or scripted): everything comes from environment variables.
+  sam deploy --stack-name "$STACK" --region "$REGION" --resolve-s3 --capabilities CAPABILITY_IAM \
+    --no-confirm-changeset --no-fail-on-empty-changeset \
+    --parameter-overrides "CognitoDomainPrefix=$COGNITO_DOMAIN_PREFIX"
+elif [ ! -f samconfig.toml ]; then
   echo "First deploy: SAM will ask for a Cognito domain prefix (must be globally unique, lowercase)."
   sam deploy --guided --stack-name "$STACK" --region "$REGION" --capabilities CAPABILITY_IAM
 else

@@ -25,7 +25,31 @@ It covers:
 
 The backend is plain Python 3.12 with no third-party packages, so there is no build step.
 
-## Deploy
+## Deploy with GitHub Actions (nothing to install locally)
+Every push to `main` runs the tests and then deploys the whole stack. You can also start a run from the Actions tab (**deploy** → **Run workflow**).
+
+1. **Create the deploy role (once).**
+   Open AWS CloudShell (the `>_` icon in the AWS console, in the region you want) and run:
+   ```bash
+   git clone https://github.com/mathieuadams/tradejournal.git && cd tradejournal
+   aws cloudformation deploy --template-file infra/github-oidc.yaml --stack-name tradejournal-github --capabilities CAPABILITY_NAMED_IAM
+   aws cloudformation describe-stacks --stack-name tradejournal-github --query "Stacks[0].Outputs[0].OutputValue" --output text
+   ```
+   If it fails because the GitHub OIDC provider already exists in your account, add `--parameter-overrides CreateOidcProvider=false`.
+
+   This lets only this repo's `main` branch deploy, with no stored AWS keys.
+2. **Add repository variables.**
+   In the GitHub repo, go to **Settings → Secrets and variables → Actions → Variables** and add:
+   - `AWS_ROLE_ARN`: the ARN printed in step 1
+   - `AWS_REGION`: e.g. `us-west-2` (same region as step 1)
+   - `COGNITO_DOMAIN_PREFIX`: globally unique and lowercase, e.g. `tradejournal-mathieu`
+   - `STACK_NAME`: optional, defaults to `trade-journal`
+3. **Optional: add the Anthropic key.**
+   Add the secret `ANTHROPIC_API_KEY` to turn on the AI coach.
+4. **Deploy.**
+   Push to `main`, or re-run the workflow. The run summary shows the app URL.
+
+## Deploy from your own machine
 
 ### What you need
 - An AWS account and the AWS CLI v2, configured with `aws configure`
