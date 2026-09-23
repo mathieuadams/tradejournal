@@ -21,7 +21,8 @@ def save_fills(sub, fills):
 def regroup(sub):
     pk = db.upk(sub)
     fills = [{k: v for k, v in i.items() if k not in ("PK", "SK")} for i in db.q_prefix(pk, "FILL#")]
-    trades = group_fills(fills)
+    gstats = {}
+    trades = group_fills(fills, gstats)
     old = {i["id"]: i for i in db.q_prefix(pk, "TRADE#")}
     puts, keep = [], set()
     for t in trades:
@@ -37,4 +38,5 @@ def regroup(sub):
         puts.append({"PK": pk, "SK": sk, **t})
     deletes = [(pk, o["SK"]) for o in old.values() if o["SK"] not in keep]
     db.batch_write(puts=puts, deletes=deletes)
-    return {"trades": len(trades), "changed": len(puts), "removed": len(deletes)}
+    return {"trades": len(trades), "changed": len(puts), "removed": len(deletes),
+            "unmatchedCloses": gstats.get("unmatchedCloses", 0)}

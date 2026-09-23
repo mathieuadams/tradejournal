@@ -87,13 +87,24 @@ def _finalize(t):
     }
 
 
-def group_fills(fills):
+def group_fills(fills, stats=None):
+    """stats (optional dict) receives "unmatchedCloses": closing fills whose opening fill isn't in the data,
+    e.g. a position opened before the first imported statement. Those fills are left out of trades."""
     fills = sorted(fills, key=lambda f: (f["ts"], f["id"]))
     pos, cur, out = {}, {}, []
+    unmatched = 0
     for f in fills:
         k = (f["acct"], f["sym"])
         q = f["qty"] if f["side"] == "buy" else -f["qty"]
         p = pos.get(k, 0.0)
+        if f.get("effect") == "close":
+            if abs(p) < EPS or (q > 0) == (p > 0):
+                unmatched += 1
+                continue
+            if abs(q) > abs(p) + EPS:  # closing more than is open: close what is open, ignore the rest
+                unmatched += 1
+                f = {**f, "qty": abs(p), "fees": (f.get("fees") or 0) * abs(p) / f["qty"]}
+                q = f["qty"] if f["side"] == "buy" else -f["qty"]
         if abs(p) < EPS:
             p = 0.0
             cur[k] = _new(f)
@@ -117,4 +128,6 @@ def group_fills(fills):
     for k, p in pos.items():
         if abs(p) > EPS:
             out.append(cur[k])
+    if stats is not None:
+        stats["unmatchedCloses"] = unmatched
     return [_finalize(t) for t in out]

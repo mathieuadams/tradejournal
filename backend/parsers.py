@@ -99,8 +99,20 @@ def _side(raw, qty):
     return None
 
 
-def parse_csv(text, default_account):
+TZ_SHIFT = {"ET": 0, "CT": 1, "MT": 2, "PT": 3}  # hours to add to get US/Eastern
+
+
+def _shift(ts, hours):
+    if not hours:
+        return ts
+    from datetime import timedelta
+    return iso(parse_iso(ts) + timedelta(hours=hours))
+
+
+def parse_csv(text, default_account, tz="auto"):
     text = text.lstrip("\ufeff")
+    if text.startswith("Account Statement for") or "\nAccount Trade History" in text:
+        return parse_tos_statement(text, default_account, tz)
     rows = list(csv.reader(io.StringIO(text)))
     rows = [r for r in rows if any(c.strip() for c in r)]
     if len(rows) < 2:
@@ -154,6 +166,130 @@ def parse_csv(text, default_account):
         })
     if not fills:
         raise ParseError("No fills could be read from the file.")
+    shift = TZ_SHIFT.get(tz, 0)
+    for f in fills:
+        f["ts"] = _shift(f["ts"], shift)
     fills.sort(key=lambda f: (f["ts"], f["id"]))
-    parse_iso(fills[0]["ts"])
+    return fills, skipped
+
+
+# ---------- Schwab / thinkorswim "Account Statement" export ----------
+
+MONTHS = {m: i for i, m in enumerate(["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1)}
+
+
+def _section(lines, title):
+    """Rows of a titled section: the line after the title is the header, rows run until a blank line."""
+    for i, line in enumerate(lines):
+        if line.strip().strip('"') == title:
+            out = []
+            for row in lines[i + 1:]:
+                if not row.strip():
+                    break
+                out.append(row)
+            if out:
+                return list(csv.reader(io.StringIO("\n".join(out))))
+    return None
+
+
+def _occ(root, exp, strike, kind):
+    d, mon, yy = exp.split()
+    strike_i = round(float(strike) * 1000)
+    return f"{root}{int(yy):02d}{MONTHS[mon[:3].upper()]:02d}{int(d):02d}{kind[0].upper()}{strike_i:08d}"
+
+
+def detect_shift(times):
+    """Pick the US time zone that puts the most executions inside 9:30-16:00 Eastern."""
+    best, best_n = 0, -1
+    for hours in (0, 1, 2, 3):
+        n = 0
+        for t in times:
+            m = (t.hour + hours) * 60 + t.minute
+            n += 570 <= m <= 960
+        if n > best_n:
+            best, best_n = hours, n
+    return best
+
+
+def parse_tos_statement(text, default_account, tz="auto"):
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    trades = _section(lines, "Account Trade History")
+    if not trades:
+        raise ParseError("This Schwab / thinkorswim statement has no Account Trade History section. "
+                         "Export it with trade history included.")
+    header = [h.strip().lower() for h in trades[0]]
+    col = {name: header.index(name) if name in header else -1
+           for name in ("exec time", "spread", "side", "qty", "pos effect", "symbol", "exp", "strike", "type", "price")}
+    if min(col[k] for k in ("exec time", "side", "qty", "symbol", "price")) < 0:
+        raise ParseError("The Account Trade History section is missing expected columns.")
+
+    # Fees live in the Cash Balance section (TRD rows), keyed by execution time.
+    fees_at = {}
+    cash = _section(lines, "Cash Balance") or []
+    if cash:
+        ch = [h.strip().lower() for h in cash[0]]
+        ci = {k: ch.index(k) if k in ch else -1 for k in ("date", "time", "type", "misc fees", "commissions & fees")}
+        for r in cash[1:]:
+            r = r + [""] * (len(ch) - len(r))
+            if ci["type"] < 0 or r[ci["type"]].strip() != "TRD":
+                continue
+            try:
+                key = iso(_parse_plain(r[ci["date"]].strip() + " " + r[ci["time"]].strip()))
+            except ValueError:
+                continue
+            fee = sum(abs(_num(r[ci[k]]) or 0) for k in ("misc fees", "commissions & fees") if ci[k] >= 0)
+            fees_at[key] = fees_at.get(key, 0.0) + fee
+
+    rows, skipped, last_time = [], 0, ""
+    for n, r in enumerate(trades[1:], start=2):
+        r = r + [""] * (len(header) - len(r))
+        t = r[col["exec time"]].strip() or last_time   # later legs of a spread leave the time blank
+        last_time = t
+        try:
+            qty = _num(r[col["qty"]])
+            price = _num(r[col["price"]])
+            ts = iso(_parse_plain(t))
+        except ValueError:
+            skipped += 1
+            continue
+        sym = r[col["symbol"]].strip().upper()
+        if not sym or not qty or price is None:
+            skipped += 1
+            continue
+        kind = r[col["type"]].strip().upper() if col["type"] >= 0 else ""
+        mult = None
+        if kind in ("CALL", "PUT") and col["exp"] >= 0 and r[col["exp"]].strip():
+            try:
+                sym = _occ(sym, r[col["exp"]].strip(), r[col["strike"]], kind)
+                mult = 100.0
+            except (ValueError, KeyError):
+                skipped += 1
+                continue
+        side = "buy" if r[col["side"]].strip().upper().startswith("B") else "sell"
+        eff = r[col["pos effect"]].strip().upper() if col["pos effect"] >= 0 else ""
+        rows.append({"ts": ts, "sym": sym, "side": side, "qty": abs(qty), "price": price, "mult": mult,
+                     "effect": "close" if "CLOSE" in eff else "open" if "OPEN" in eff else ""})
+    if not rows:
+        raise ParseError("No trades could be read from the Account Trade History section.")
+
+    # Split each timestamp's fees across its fills by quantity.
+    qty_at = {}
+    for f in rows:
+        qty_at[f["ts"]] = qty_at.get(f["ts"], 0) + f["qty"]
+    if tz == "auto":
+        shift = detect_shift([parse_iso(f["ts"]) for f in rows])
+    else:
+        shift = TZ_SHIFT.get(tz, 0)
+
+    fills, seen = [], {}
+    for f in rows:
+        fee = fees_at.get(f["ts"], 0.0) * f["qty"] / qty_at[f["ts"]]
+        base = f"{default_account}|{f['ts']}|{f['sym']}|{f['side']}|{f['qty']}|{f['price']}"
+        seen[base] = seen.get(base, 0) + 1
+        fills.append({
+            "id": sha(f"{base}#{seen[base]}"), "acct": default_account[:60], "ts": _shift(f["ts"], shift),
+            "sym": f["sym"], "side": f["side"], "qty": f["qty"], "price": f["price"], "fees": round(fee, 4),
+            "mult": multiplier(f["sym"], f["mult"]), "effect": f["effect"],
+        })
+    fills.sort(key=lambda f: (f["ts"], f["id"]))
     return fills, skipped

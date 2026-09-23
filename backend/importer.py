@@ -19,16 +19,18 @@ def _s3():
 def process(sub, import_id, account, text):
     pk = db.upk(sub)
     sk = f"IMPORT#{import_id}"
+    rec = db.get(pk, sk) or {}
     db.update(pk, sk, {"status": "processing"})
     try:
-        fills, skipped = parse_csv(text, account)
+        fills, skipped = parse_csv(text, account, rec.get("tz") or "auto")
     except ParseError as e:
         db.update(pk, sk, {"status": "error", "error": str(e), "finishedAt": iso(now_ny())})
         return {"status": "error", "error": str(e)}
     new, dupes = ingest.save_fills(sub, fills)
     g = ingest.regroup(sub)
     result = {"status": "done", "fills": len(fills), "newFills": new, "duplicates": dupes,
-              "skippedRows": skipped, "trades": g["trades"], "finishedAt": iso(now_ny())}
+              "skippedRows": skipped, "trades": g["trades"], "unmatchedCloses": g["unmatchedCloses"],
+              "finishedAt": iso(now_ny())}
     db.update(pk, sk, result)
     return result
 

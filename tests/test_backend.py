@@ -121,6 +121,24 @@ def test_parse_generic_and_ibkr():
         assert "Missing column" in str(e)
 
 
+def test_schwab_statement():
+    text = open(os.path.join(HERE, "..", "samples", "schwab-statement-sample.csv"), encoding="utf-8").read()
+    fills, skipped = parse_csv(text, "Schwab")
+    assert len(fills) == 5 and skipped == 0
+    amd_buy = next(f for f in fills if f["sym"] == "AMD" and f["side"] == "buy")
+    assert amd_buy["ts"] == "2026-09-01T09:35:10"          # Pacific file times detected, shifted to Eastern
+    opt = [f for f in fills if f["sym"].startswith("NVDA")]
+    assert opt[0]["sym"] == "NVDA261016C00180000" and opt[0]["mult"] == 100 and abs(opt[0]["fees"] - 1.32) < 1e-9
+    stats = {}
+    trades = group_fills(fills, stats)
+    assert stats["unmatchedCloses"] == 1                    # PLTR sold to close, opened before the statement
+    assert not any(t["sym"] == "PLTR" for t in trades)
+    nv = next(t for t in trades if t["sym"].startswith("NVDA"))
+    assert nv["gross"] == round((7.25 - 5.00) * 2 * 100, 2) and nv["dir"] == "Long"
+    fills_et, _ = parse_csv(text, "Schwab", "ET")
+    assert next(f for f in fills_et if f["sym"] == "AMD")["ts"] == "2026-09-01T06:35:10"
+
+
 def test_utc_timestamps_convert_to_eastern():
     f, _ = parse_csv("time,symbol,side,qty,price\n2026-09-21T13:34:10Z,AMD,buy,1,10\n2026-01-05T14:31:00Z,AMD,sell,1,11\n", "x")
     assert sorted(x["ts"] for x in f) == ["2026-01-05T09:31:00", "2026-09-21T09:34:10"]

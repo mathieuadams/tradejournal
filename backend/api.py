@@ -202,12 +202,13 @@ def put_daily(sub, claims, body, q, day):
 def create_import(sub, claims, body, q):
     name = _str(body.get("fileName"), "File name", 120) or "trades.csv"
     account = _str(body.get("account"), "Account", 60) or "Default"
+    tz = body.get("tz") if body.get("tz") in ("auto", "ET", "CT", "MT", "PT") else "auto"
     iid = now_ny().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6]
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     acct = base64.urlsafe_b64encode(account.encode()).decode().rstrip("=")
     key = f"imports/{sub}/{iid}/{acct}/{safe}"
     db.put({"PK": db.upk(sub), "SK": f"IMPORT#{iid}", "fileName": name, "account": account,
-            "status": "waiting", "createdAt": iso(now_ny())})
+            "status": "waiting", "tz": tz, "createdAt": iso(now_ny())})
     url = _s3().generate_presigned_url("put_object", ExpiresIn=300, HttpMethod="PUT",
                                        Params={"Bucket": os.environ["UPLOAD_BUCKET"], "Key": key, "ContentType": "text/csv"})
     return {"importId": iid, "uploadUrl": url}

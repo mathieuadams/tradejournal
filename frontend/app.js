@@ -10,6 +10,8 @@ const cls = v => v > 0 ? 'gain' : v < 0 ? 'loss' : '';
 const fmtDate = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 const weekday = d => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(d + 'T12:00:00Z').getUTCDay()];
 const chron = (a, b) => a.openTs.localeCompare(b.openTs);
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const symFmt = s => { const m = /^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(s || ''); return m ? `${m[1]} ${MON[+m[3] - 1]} ${+m[4]} '${m[2]} ${+m[6] / 1000} ${m[5] === 'C' ? 'call' : 'put'}` : s; };
 const px = v => v == null ? '—' : (Math.abs(v) >= 1000 ? v.toFixed(2) : v.toFixed(Math.abs(v) < 10 ? 4 : 2));
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2200); }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -184,7 +186,7 @@ function filtered() {
 function tradeTable(ts, compact) {
   if (!ts.length) return `<div class="tablewrap"><p class="empty">No trades match these filters.</p></div>`;
   return `<div class="tablewrap"><table><thead><tr><th>Date</th><th>Time</th><th>Symbol</th><th>Side</th>${compact ? '' : '<th>Setup</th><th>Tags</th>'}<th class="r">R</th><th class="r">Net P&L</th></tr></thead><tbody>
-  ${ts.map(t => `<tr data-open="${t.id}" tabindex="0"><td>${fmtDate(t.date)}</td><td>${t.time}</td><td><b>${esc(t.sym)}</b></td><td>${t.dir}${t.status === 'open' ? ' <span class="chip">Open</span>' : ''}</td>${compact ? '' : `<td>${esc(t.setup) || '<span class="muted">—</span>'}</td><td>${t.tags.map(x => `<span class="chip ${x === 'Early exit' ? '' : 'bad'}">${esc(x)}</span>`).join('')}</td>`}<td class="r ${cls(t.r)}">${fr(t.r)}</td><td class="r ${cls(t.net)}"><b>${t.status === 'open' ? '<span class="muted">open</span>' : money(t.net)}</b></td></tr>`).join('')}
+  ${ts.map(t => `<tr data-open="${t.id}" tabindex="0"><td>${fmtDate(t.date)}</td><td>${t.time}</td><td><b>${esc(symFmt(t.sym))}</b></td><td>${t.dir}${t.status === 'open' ? ' <span class="chip">Open</span>' : ''}</td>${compact ? '' : `<td>${esc(t.setup) || '<span class="muted">—</span>'}</td><td>${t.tags.map(x => `<span class="chip ${x === 'Early exit' ? '' : 'bad'}">${esc(x)}</span>`).join('')}</td>`}<td class="r ${cls(t.r)}">${fr(t.r)}</td><td class="r ${cls(t.net)}"><b>${t.status === 'open' ? '<span class="muted">open</span>' : money(t.net)}</b></td></tr>`).join('')}
   </tbody></table></div>`;
 }
 
@@ -199,7 +201,7 @@ function openTrade(id) {
 function closeTrade() { stopReplay(); $('#drawer').classList.remove('open'); $('#scrim').hidden = true; document.body.style.overflow = ''; cur = null; render(); }
 function renderDrawer() {
   const t = cur, p = t.plan || {}; const setups = S.me.settings.setups || [];
-  $('#drawer').innerHTML = `<div class="dr-head"><div><h2>${esc(t.sym)} ${t.dir.toLowerCase()} ${t.status === 'open' ? '<span class="chip">Open</span>' : `<span class="${cls(t.net)}">${money(t.net)}</span>`}</h2>
+  $('#drawer').innerHTML = `<div class="dr-head"><div><h2>${esc(symFmt(t.sym))} ${t.dir.toLowerCase()} ${t.status === 'open' ? '<span class="chip">Open</span>' : `<span class="${cls(t.net)}">${money(t.net)}</span>`}</h2>
     <div class="muted">${weekday(t.date)} ${fmtDate(t.date)} at ${t.time}${t.hold != null ? `, held ${t.hold} min` : ''}, ${esc(t.acct)} ${t.r != null ? `<span class="${cls(t.r)}">(${fr(t.r)})</span>` : ''}</div></div>
     <button class="btn" id="dr-close" aria-label="Close trade detail">Close</button></div>
   <div class="dr-body">
@@ -286,7 +288,7 @@ function drawChart() {
   const zoneEnd = xi == null ? k - 1 : Math.min(k - 1, xi);
   const zone = k > ei ? `<rect x="${X(ei) - bw / 2}" y="${pt}" width="${(zoneEnd - ei + 1) * bw}" height="${H - pt - pb}" fill="var(--sunk)"/>` : '';
   const long = t.dir === 'Long';
-  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t.sym)} ${S.tf}-minute chart with entry ${px(t.entry)}${t.exit != null ? ' and exit ' + px(t.exit) : ''}">${zone}
+  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(symFmt(t.sym))} ${S.tf}-minute chart with entry ${px(t.entry)}${t.exit != null ? ' and exit ' + px(t.exit) : ''}">${zone}
     ${line(p.stop, 'var(--loss)', 'Stop', '5 4')}${line(p.target, 'var(--gain)', 'Target', '5 4')}${line(p.entry, 'var(--muted)', 'Plan', '2 4')}
     ${candles}${k > ei ? mk(ei, t.entry, 'var(--coach)', 'Entry', long) : ''}${xi != null && k > xi ? mk(xi, t.exit, 'var(--ink)', 'Exit', !long) : ''}</svg>`;
   const rp = $('#rp'); if (rp) { rp.max = n; rp.value = k; }
@@ -357,7 +359,7 @@ function scatter(ts) {
   const grid = [-2, 0, 2, 4].map(v => `<line x1="${p}" x2="${W - 10}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${p - 6}" y="${Y(v) + 4}" font-size="10" text-anchor="end" fill="var(--muted)">${v}R</text>`).join('') + [0, 1, 2, 3, 4].map(v => `<text x="${X(v)}" y="${H - p + 16}" font-size="10" text-anchor="middle" fill="var(--muted)">${v}R</text>`).join('');
   return `<p class="muted" style="margin:-4px 0 10px;font-size:.9rem">How far each trade ran in your favor (across) against what you closed it at (up). Dots far below the diagonal are profit left on the table.</p>
   <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Best move in your favor versus realized R" style="width:100%;height:auto">${grid}<line x1="${X(0)}" y1="${Y(0)}" x2="${X(4)}" y2="${Y(4)}" stroke="var(--muted)" stroke-dasharray="4 4"/>
-  ${pts.map(t => `<circle data-open="${t.id}" cx="${X(Math.min(xm, t.mfe))}" cy="${Y(Math.max(y0, Math.min(y1, t.r)))}" r="4" fill="${t.r > 0 ? 'var(--gain)' : 'var(--loss)'}" fill-opacity=".65" style="cursor:pointer"><title>${esc(t.sym)} ${fmtDate(t.date)}: ran +${t.mfe.toFixed(1)}R, closed ${fr(t.r)}</title></circle>`).join('')}</svg>`;
+  ${pts.map(t => `<circle data-open="${t.id}" cx="${X(Math.min(xm, t.mfe))}" cy="${Y(Math.max(y0, Math.min(y1, t.r)))}" r="4" fill="${t.r > 0 ? 'var(--gain)' : 'var(--loss)'}" fill-opacity=".65" style="cursor:pointer"><title>${esc(symFmt(t.sym))} ${fmtDate(t.date)}: ran +${t.mfe.toFixed(1)}R, closed ${fr(t.r)}</title></circle>`).join('')}</svg>`;
 }
 
 /* ---------- coach ---------- */
@@ -426,9 +428,10 @@ function readDaily() { const d = S.daily[S.jDay] = S.daily[S.jDay] || {}; if ($(
 function vImport() {
   const accts = S.me.accounts;
   return head('Import trades', 'Upload fills from any broker as CSV. They are grouped into trades automatically, and re-uploading the same file never creates duplicates.', '') + `
-  <section class="panel"><div class="form-grid"><div class="field"><label for="imp-acct">Account name</label><input id="imp-acct" type="text" list="acct-list" value="${esc(accts[0] || 'Main')}" placeholder="e.g. Topstep 50K, IBKR cash"><datalist id="acct-list">${accts.map(a => `<option value="${esc(a)}">`).join('')}</datalist></div></div>
+  <section class="panel"><div class="form-grid"><div class="field"><label for="imp-acct">Account name</label><input id="imp-acct" type="text" list="acct-list" value="${esc(accts[0] || 'Main')}" placeholder="e.g. Topstep 50K, IBKR cash"><datalist id="acct-list">${accts.map(a => `<option value="${esc(a)}">`).join('')}</datalist></div>
+    <div class="field"><label for="imp-tz">Times in the file are</label><select id="imp-tz"><option value="auto">Detect automatically</option><option value="ET">Eastern</option><option value="CT">Central</option><option value="MT">Mountain</option><option value="PT">Pacific</option></select></div></div>
     <div class="drop" id="drop"><p style="margin:0 0 10px;font-weight:600">Drop a CSV file here</p>
-      <p class="muted" style="margin:0 0 14px">Needs columns for time, symbol, side, quantity and price. Fees, multiplier and account are used when present. IBKR Flex trade exports work as-is.</p>
+      <p class="muted" style="margin:0 0 14px">Schwab / thinkorswim account statements and IBKR Flex trade exports work as-is. Any other CSV needs columns for time, symbol, side, quantity and price.</p>
       <label class="btn primary" style="display:inline-block">Choose file<input type="file" id="file" accept=".csv,text/csv" hidden></label></div>
     <p id="imp-status" class="status" style="margin:12px 0 0"></p></section>
   <section><h2>Recent imports</h2><div id="imports">${importsTable()}</div></section>`;
@@ -436,8 +439,8 @@ function vImport() {
 function importsTable() {
   if (!S.imports) return '<p class="loading">Loading…</p>';
   if (!S.imports.length) return '<div class="tablewrap"><p class="empty">No imports yet.</p></div>';
-  return `<div class="tablewrap"><table><thead><tr><th>File</th><th>Account</th><th>Status</th><th class="r">Fills</th><th class="r">New</th><th class="r">Duplicates</th><th class="r">Skipped rows</th><th>When</th></tr></thead><tbody>
-  ${S.imports.map(i => `<tr><td>${esc(i.fileName)}</td><td>${esc(i.account)}</td><td><span class="status ${esc(i.status)}">${esc(i.status)}</span>${i.error ? `<div class="loss" style="white-space:normal;max-width:360px">${esc(i.error)}</div>` : ''}</td><td class="r">${i.fills ?? ''}</td><td class="r">${i.newFills ?? ''}</td><td class="r">${i.duplicates ?? ''}</td><td class="r">${i.skippedRows ?? ''}</td><td>${esc((i.createdAt || '').replace('T', ' ').slice(0, 16))}</td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="tablewrap"><table><thead><tr><th>File</th><th>Account</th><th>Status</th><th class="r">Fills</th><th class="r">New</th><th class="r">Duplicates</th><th class="r">Skipped rows</th><th class="r">Unmatched closes</th><th>When</th></tr></thead><tbody>
+  ${S.imports.map(i => `<tr><td>${esc(i.fileName)}</td><td>${esc(i.account)}</td><td><span class="status ${esc(i.status)}">${esc(i.status)}</span>${i.error ? `<div class="loss" style="white-space:normal;max-width:360px">${esc(i.error)}</div>` : ''}</td><td class="r">${i.fills ?? ''}</td><td class="r">${i.newFills ?? ''}</td><td class="r">${i.duplicates ?? ''}</td><td class="r">${i.skippedRows ?? ''}</td><td class="r">${i.unmatchedCloses ?? ''}</td><td>${esc((i.createdAt || '').replace('T', ' ').slice(0, 16))}</td></tr>`).join('')}</tbody></table></div>`;
 }
 async function afterImport() { try { S.imports = (await api('/imports')).imports; } catch (e) { S.imports = []; toast(e.message); } if (route() === 'import') $('#imports').innerHTML = importsTable(); }
 async function upload(file) {
@@ -446,7 +449,7 @@ async function upload(file) {
   if (file.size > 20 * 1024 * 1024) { st.className = 'status error'; st.textContent = 'The file is larger than 20 MB. Split it and upload the parts.'; return; }
   st.className = 'status processing'; st.textContent = `Uploading ${file.name}…`;
   try {
-    const { importId, uploadUrl } = await api('/imports', { method: 'POST', body: { fileName: file.name, account } });
+    const { importId, uploadUrl } = await api('/imports', { method: 'POST', body: { fileName: file.name, account, tz: $('#imp-tz').value } });
     const r = await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'text/csv' }, body: file });
     if (!r.ok) throw new Error(`Upload failed (${r.status}).`);
     st.textContent = 'Processing fills…';
@@ -454,7 +457,7 @@ async function upload(file) {
       await sleep(2000);
       const list = (await api('/imports')).imports; S.imports = list; if (route() === 'import') $('#imports').innerHTML = importsTable();
       const it = list.find(x => x.id === importId);
-      if (it && it.status === 'done') { st.className = 'status done'; st.textContent = `Imported ${it.newFills} new fills (${it.duplicates} already in your journal). You now have ${it.trades} trades.`; await reload(); return; }
+      if (it && it.status === 'done') { st.className = 'status done'; st.textContent = `Imported ${it.newFills} new fills (${it.duplicates} already in your journal). You now have ${it.trades} trades.` + (it.unmatchedCloses ? ` ${it.unmatchedCloses} closing fills were left out because their opening fill is older than your imported history. Import an earlier statement to include them.` : ''); await reload(); return; }
       if (it && it.status === 'error') { st.className = 'status error'; st.textContent = it.error; return; }
     }
     st.textContent = 'Still processing. Check the list below in a minute.';
