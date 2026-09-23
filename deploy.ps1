@@ -1,6 +1,6 @@
 # Deploy or update the whole stack, then publish the front end (Windows PowerShell).
-# Usage: $env:ANTHROPIC_API_KEY="sk-ant-..."; .\deploy.ps1 -Stack trade-journal -Region us-west-2
-param([string]$Stack = "trade-journal", [string]$Region = "us-west-2")
+# Usage: $env:ANTHROPIC_API_KEY="sk-ant-..."; .\deploy.ps1 -Stack trade-journal -Region us-east-1
+param([string]$Stack = "trade-journal", [string]$Region = "us-east-1")
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 

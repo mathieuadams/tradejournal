@@ -41,7 +41,7 @@ Every push to `main` runs the tests and then deploys the whole stack. You can al
 2. **Add repository variables.**
    In the GitHub repo, go to **Settings → Secrets and variables → Actions → Variables** and add:
    - `AWS_ROLE_ARN`: the ARN printed in step 1
-   - `AWS_REGION`: e.g. `us-west-2` (same region as step 1)
+   - `AWS_REGION`: `us-east-1`
    - `COGNITO_DOMAIN_PREFIX`: globally unique and lowercase, e.g. `tradejournal-mathieu`
    - `STACK_NAME`: optional, defaults to `trade-journal`
 3. **Optional: add the Anthropic key.**
@@ -59,14 +59,14 @@ Every push to `main` runs the tests and then deploys the whole stack. You can al
 ### Mac / Linux / Git Bash
 ```bash
 cd tradejournal
-REGION=us-west-2 ANTHROPIC_API_KEY=sk-ant-... ./deploy.sh
+REGION=us-east-1 ANTHROPIC_API_KEY=sk-ant-... ./deploy.sh
 ```
 
 ### Windows PowerShell
 ```powershell
 cd tradejournal
 $env:ANTHROPIC_API_KEY="sk-ant-..."
-.\deploy.ps1 -Region us-west-2
+.\deploy.ps1 -Region us-east-1
 ```
 
 ### First deploy prompts
@@ -180,6 +180,6 @@ tests/                 in-memory tests for the whole API flow
 
 ## Removing the stack
 ```bash
-sam delete --stack-name trade-journal --region us-west-2
+sam delete --stack-name trade-journal --region us-east-1
 ```
 The DynamoDB table and uploads bucket are retained on purpose so journal data isn't lost by accident. Delete them in the console if you really want them gone.

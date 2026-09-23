@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       STACK: ${{ vars.STACK_NAME || 'trade-journal' }}
-      REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
+      REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       COGNITO_DOMAIN_PREFIX: ${{ vars.COGNITO_DOMAIN_PREFIX }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:

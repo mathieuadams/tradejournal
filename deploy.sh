@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Deploy or update the whole stack, then publish the front end.
-# Usage: STACK=trade-journal REGION=us-west-2 ANTHROPIC_API_KEY=sk-ant-... ./deploy.sh
+# Usage: STACK=trade-journal REGION=us-east-1 ANTHROPIC_API_KEY=sk-ant-... ./deploy.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 STACK="${STACK:-trade-journal}"
-REGION="${REGION:-us-west-2}"
+REGION="${REGION:-us-east-1}"
 
 command -v sam >/dev/null || { echo "Install the AWS SAM CLI first: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html"; exit 1; }
 command -v aws >/dev/null || { echo "Install the AWS CLI v2 first."; exit 1; }
