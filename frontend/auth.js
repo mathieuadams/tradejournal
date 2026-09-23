@@ -23,6 +23,11 @@
     write({ id: t.id_token, refresh: t.refresh_token || refresh, exp, email: claims.email });
   }
 
+  if (C && C.local) {  // local dev server: no sign-in
+    window.Auth = { login() {}, async handleCallback() { return false; }, async token() { return 'local'; }, email() { return 'local@dev'; }, logout() { location.reload(); } };
+    return;
+  }
+
   window.Auth = {
     async login() {
       const verifier = rand(48);

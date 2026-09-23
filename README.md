@@ -30,7 +30,7 @@ The backend is plain Python 3.12 with no third-party packages, so there is no bu
 ### What you need
 - An AWS account and the AWS CLI v2, configured with `aws configure`
 - The AWS SAM CLI
-- An Anthropic API key (for the AI coach)
+- Optional: an Anthropic API key. It is only used by the AI coach (reviews, weekly report, chat). Without it, everything else works and the coach says it isn't configured.
 
 ### Mac / Linux / Git Bash
 ```bash
@@ -118,12 +118,17 @@ Go to **Settings → Alpaca** and paste read-only keys (paper or live). This giv
 ### Prop challenge
 Go to **Settings → Prop challenge** and pick the account, start date, balance, trailing drawdown, target and daily loss limit.
 
-## Local development
+## Run it on your machine (no AWS, no API key)
+Needs Node 18+ and Python 3.
 ```bash
-python tests/test_backend.py          # backend tests, no AWS needed
-cd frontend && python -m http.server 5173
+npm test        # backend tests + front-end syntax check
+npm run build   # tests, then copies the web app to dist/
+npm start       # app + API at http://localhost:5173
 ```
-http://localhost:5173 is an allowed sign-in callback, so the local web app works against your deployed API once `config.js` has been generated.
+`npm start` needs no AWS account and no sign-in:
+- **Data:** saved to `dev/.localdb.json`. Delete that file to start fresh.
+- **Import:** try it with the files in `samples/`.
+- **AI coach:** reviews, the weekly report and chat stay off until you set an `ANTHROPIC_API_KEY` environment variable. Everything else works without one.
 
 ## Project layout
 ```
