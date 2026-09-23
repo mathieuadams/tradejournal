@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trade Journal</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><rect x='1' y='1' width='24' height='24' rx='6' fill='%23172231'/><path d='M7 17l4-5 3 3 5-7' stroke='white' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <div class="panel">
+    <svg width="34" height="34" viewBox="0 0 26 26" aria-hidden="true"><rect x="1" y="1" width="24" height="24" rx="6" fill="var(--ink)"/><path d="M7 17l4-5 3 3 5-7" stroke="var(--surface)" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <h1>Your AI coach finds your leaks in dollars</h1>
+    <p>Import your trades, journal the plan, and see exactly which habits cost you money.</p>
+    <button class="btn primary" id="signin" style="width:100%;padding:11px">Sign in or create an account</button>
+    <p id="login-err" class="loss" style="margin:14px 0 0" hidden></p>
+  </div>
+</div>
+<div class="app" id="app" hidden>
+  <aside class="side">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><rect x="1" y="1" width="24" height="24" rx="6" fill="var(--ink)"/><path d="M7 17l4-5 3 3 5-7" stroke="var(--surface)" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Trade Journal
+    </div>
+    <nav class="nav" aria-label="Main">
+      <a href="#dashboard" data-r="dashboard"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 10.5 10 4l7 6.5M5 9v7h10V9"/></svg>Home</a>
+      <a href="#trades" data-r="trades"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h12M4 10h12M4 15h12"/></svg>Trades</a>
+      <a href="#analytics" data-r="analytics"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 16V9M10 16V4M16 16v-5"/></svg>Stats</a>
+      <a href="#coach" data-r="coach"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 3l1.8 4.2L16 9l-4.2 1.8L10 15l-1.8-4.2L4 9l4.2-1.8z"/></svg>Coach</a>
+      <a href="#journal" data-r="journal"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 3h10v14H5zM8 7h4M8 10h4"/></svg>Journal</a>
+      <a href="#import" data-r="import"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 3v9m-4-4 4 4 4-4M4 16h12"/></svg>Import</a>
+      <a href="#settings" data-r="settings"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/></svg>Settings</a>
+    </nav>
+    <div class="side-foot" id="who"></div>
+  </aside>
+  <main id="view"><p class="loading">Loading your journal…</p></main>
+</div>
+<div id="scrim" hidden></div>
+<aside id="drawer" role="dialog" aria-modal="true" aria-label="Trade detail"></aside>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="config.js"></script>
+<script src="auth.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
