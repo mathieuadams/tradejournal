@@ -133,6 +133,13 @@ New trades that closed in the last 3 days are reviewed automatically. For any ot
 
 The **Coach** page shows the weekly report (or **Write report now**) and a chat that answers only from your data.
 
+### Charts
+Each trade has 5m, 15m, 1h, 4h and daily candles:
+- **Options:** charted on the underlying stock, with markers where the option was bought and sold.
+- **Futures:** charted on the continuous front-month contract.
+
+Bars come from Alpaca when it's connected. Otherwise they come from Yahoo Finance's public chart data, which needs no key. With Yahoo, 5m and 15m bars only go back about 60 days, and 1h bars about 2 years.
+
 ### Alpaca
 Go to **Settings → Alpaca** and paste read-only keys (paper or live). This gives you:
 - Fill sync.

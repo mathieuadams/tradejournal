@@ -16,7 +16,8 @@ from util import BadRequest, Unavailable, iso, ny_to_utc, parse_iso, utc_to_ny
 
 TRADING = {"paper": "https://paper-api.alpaca.markets", "live": "https://api.alpaca.markets"}
 DATA = "https://data.alpaca.markets"
-TF = {1: "1Min", 5: "5Min", 15: "15Min"}
+TF = {1: "1Min", 5: "5Min", 15: "15Min", "1m": "1Min", "5m": "5Min", "15m": "15Min",
+      "1h": "1Hour", "4h": "4Hour", "1d": "1Day"}
 
 
 def _kms():
@@ -90,7 +91,7 @@ def fills(c, after=None):
 def bars(c, sym, start_local, end_local, tf_min):
     """Bars between two US/Eastern local timestamps. Returns [{t,o,h,l,c}] with t in local time."""
     if tf_min not in TF:
-        raise BadRequest("Timeframe must be 1, 5 or 15 minutes.")
+        raise BadRequest("Unsupported timeframe.")
     start = ny_to_utc(parse_iso(start_local)).strftime("%Y-%m-%dT%H:%M:%SZ")
     end = ny_to_utc(parse_iso(end_local)).strftime("%Y-%m-%dT%H:%M:%SZ")
     out, token = [], None

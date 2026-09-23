@@ -143,6 +143,14 @@ def test_schwab_statement():
     assert next(f for f in fills_et if f["sym"] == "AMD")["ts"] == "2026-09-01T06:35:10"
 
 
+def test_option_charts_use_underlying():
+    import charts
+    t = {"sym": "NVDA261016C00180000", "openTs": "2026-09-21T10:00:00", "closeTs": "2026-09-22T11:00:00"}
+    assert charts.chart_symbol(t) == ("NVDA", "option")
+    s, e = charts.window(t, "1d")
+    assert s < charts.parse_iso(t["openTs"]) and e > charts.parse_iso(t["closeTs"])
+
+
 def test_utc_timestamps_convert_to_eastern():
     f, _ = parse_csv("time,symbol,side,qty,price\n2026-09-21T13:34:10Z,AMD,buy,1,10\n2026-01-05T14:31:00Z,AMD,sell,1,11\n", "x")
     assert sorted(x["ts"] for x in f) == ["2026-01-05T09:31:00", "2026-09-21T09:34:10"]
@@ -184,8 +192,18 @@ def test_full_flow():
     code, r2 = call("GET", f"/trades/{mnq['id']}/review")
     assert code == 200 and r2["lesson"] == "l"
 
-    code, bars = call("GET", f"/trades/{mnq['id']}/bars", q={"tf": "5"})
-    assert code == 400 and "futures" in bars["error"]
+    import charts
+    seen = {}
+    def fake_yahoo(symbol, tf, start, end):
+        seen["args"] = (symbol, tf)
+        return [{"t": "2026-09-21T09:30:00", "o": 1, "h": 2, "l": 0.5, "c": 1.5},
+                {"t": "2026-09-21T10:30:00", "o": 1.5, "h": 3, "l": 1, "c": 2},
+                {"t": "2026-09-21T14:30:00", "o": 2, "h": 2.5, "l": 1.8, "c": 2.2}]
+    charts._yahoo = fake_yahoo
+    code, bars = call("GET", f"/trades/{mnq['id']}/bars", q={"tf": "4h"})
+    assert code == 200 and seen["args"] == ("MNQ=F", "4h") and len(bars["bars"]) == 2 and bars["bars"][0]["h"] == 3
+    code, bars = call("GET", f"/trades/{mnq['id']}/bars", q={"tf": "2m"})
+    assert code == 400
 
     code, d = call("PUT", "/daily/2026-09-21", {"pre": "plan", "rec": "recap", "mood": 4})
     assert code == 200 and d["mood"] == 4

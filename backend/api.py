@@ -9,11 +9,11 @@ import re
 import uuid
 
 import alpaca
+import charts
 import chat
 import db
 import review
 import views
-from grouping import is_future, is_option
 from util import BadRequest, NotFound, Unavailable, iso, now_ny, read_body, resp
 
 ROUTES = []
@@ -164,14 +164,7 @@ def post_review(sub, claims, body, q, tid):
 @route("GET", r"/trades/(?P<tid>[a-f0-9]{16})/bars")
 def trade_bars(sub, claims, body, q, tid):
     t = _trade_or_404(sub, tid)
-    if is_future(t["sym"]) or is_option(t["sym"]):
-        raise BadRequest("Charts for futures and options need a futures or options data feed, which isn't connected yet.")
-    c = alpaca.creds(sub)
-    if not c:
-        raise BadRequest("Connect Alpaca in Settings to load charts. Free Alpaca keys work.")
-    tf = int(q.get("tf") or 5)
-    start, end = alpaca.window(t, tf)
-    return {"tf": tf, "bars": alpaca.bars(c, t["sym"], start, end, tf)}
+    return charts.get_bars(sub, t, q.get("tf") or "5m")
 
 
 # ---------- daily journal ----------

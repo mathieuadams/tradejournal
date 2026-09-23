@@ -32,7 +32,7 @@ async function api(path, { method = 'GET', body } = {}) {
 }
 
 /* ---------- state ---------- */
-const S = { me: null, trades: [], range: 'all', chat: [], tf: 5, wi: { late: false, revenge: false, fixed2: false, worst: false }, bd: 'setup',
+const S = { me: null, trades: [], range: 'all', chat: [], tf: null, wi: { late: false, revenge: false, fixed2: false, worst: false }, bd: 'setup',
   report: undefined, imports: null, broker: undefined, jDay: null, daily: {}, bars: {}, reviews: {} };
 const MISTAKE_LEAKS = [['Revenge', 'Revenge trades'], ['Moved stop', 'Moved stops'], ['Oversized', 'Oversized trades'], ['Chased', 'Chased entries']];
 const RULES = {
@@ -196,6 +196,7 @@ function tradeTable(ts, compact) {
 let cur = null; const replay = { k: Infinity, timer: null };
 function openTrade(id) {
   cur = byId(id); if (!cur) return;
+  S.tf = cur.hold == null || cur.hold > 2 * 1440 ? '1d' : cur.hold > 360 ? '1h' : '5m';
   replay.k = Infinity; stopReplay(); renderDrawer();
   $('#scrim').hidden = false; $('#drawer').classList.add('open'); document.body.style.overflow = 'hidden';
   setTimeout(() => $('#dr-close')?.focus(), 50);
@@ -207,8 +208,8 @@ function renderDrawer() {
     <div class="muted">${weekday(t.date)} ${fmtDate(t.date)} at ${t.time}${t.hold != null ? `, held ${t.hold} min` : ''}, ${esc(t.acct)} ${t.r != null ? `<span class="${cls(t.r)}">(${fr(t.r)})</span>` : ''}</div></div>
     <button class="btn" id="dr-close" aria-label="Close trade detail">Close</button></div>
   <div class="dr-body">
-    <div class="chartbox"><div id="chart"><p class="loading">Loading chart…</p></div>
-      <div class="chart-ctl"><div class="seg" role="group" aria-label="Timeframe">${[1, 5, 15].map(m => `<button data-tf="${m}" aria-pressed="${S.tf === m}">${m}m</button>`).join('')}</div>
+    <div class="chartbox"><div id="chart-note" class="muted" style="font-size:.85rem;margin:0 4px 6px"></div><div id="chart"><p class="loading">Loading chart…</p></div>
+      <div class="chart-ctl"><div class="seg" role="group" aria-label="Timeframe">${[['5m', '5m'], ['15m', '15m'], ['1h', '1h'], ['4h', '4h'], ['1d', 'Daily']].map(([k, l]) => `<button data-tf="${k}" aria-pressed="${S.tf === k}">${l}</button>`).join('')}</div>
       <button class="btn" id="rp-play">Replay</button><input type="range" id="rp" min="1" aria-label="Replay position"></div></div>
     <div class="coach review" id="review"><p class="loading" style="padding:0">Loading coach review…</p></div>
     <div class="panel"><h2>Fills</h2><div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
@@ -274,12 +275,15 @@ async function loadBars() {
 function drawChart() {
   const t = cur, data = S.bars[t.id + ':' + S.tf];
   if (!data) return;
-  if (data.error || !data.bars?.length) { $('#chart').innerHTML = `<p class="empty">${esc(data.error || 'No bars returned for this trade window.')}</p>`; $('.chart-ctl').hidden = true; return; }
-  $('.chart-ctl').hidden = false;
+  if (data.error || !data.bars?.length) { $('#chart').innerHTML = `<p class="empty">${esc(data.error || 'No bars returned for this trade window.')}</p>`; $('.chart-ctl .btn').hidden = true; $('#rp').hidden = true; $('#chart-note').textContent = ''; return; }
+  $('.chart-ctl .btn').hidden = false; $('#rp').hidden = false;
+  const onUnderlying = t.assetType === 'option';
+  $('#chart-note').textContent = `${data.symbol} ${data.kind === 'future' ? 'continuous futures' : 'stock'} chart, ${S.tf === '1d' ? 'daily' : S.tf} bars from ${data.source}${onUnderlying ? `. Markers show when the ${t.optType} was bought and sold; prices on the chart are the stock's.` : ''}`;
   const bars = data.bars, n = bars.length, k = Math.min(replay.k, n), vis = bars.slice(0, k);
-  const idx = ts => { let i = 0; for (let j = 0; j < n; j++) if (bars[j].t.slice(0, 16) <= ts.slice(0, 16)) i = j; return i; };
-  const ei = idx(t.openTs), xi = t.closeTs ? idx(t.closeTs) : null; const p = t.plan || {};
-  const lv = [p.stop, p.target, p.entry, t.entry, t.exit].filter(v => v != null);
+  const cmp = S.tf === '1d' ? 10 : 16;
+  const idx = ts => { let i = 0; for (let j = 0; j < n; j++) if (bars[j].t.slice(0, cmp) <= ts.slice(0, cmp)) i = j; return i; };
+  const ei = idx(t.openTs), xi = t.closeTs ? idx(t.closeTs) : null; const p = onUnderlying ? {} : (t.plan || {});
+  const lv = onUnderlying ? [] : [p.stop, p.target, p.entry, t.entry, t.exit].filter(v => v != null);
   const W = 720, H = 320, pl = 6, pr = 82, pt = 12, pb = 16;
   const lo = Math.min(...bars.map(b => b.l), ...lv), hi = Math.max(...bars.map(b => b.h), ...lv), pad = (hi - lo) * .06 || 1;
   const Y = v => pt + (hi + pad - v) / ((hi - lo) + 2 * pad) * (H - pt - pb), bw = (W - pl - pr) / n, X = i => pl + i * bw + bw / 2;
@@ -290,9 +294,14 @@ function drawChart() {
   const zoneEnd = xi == null ? k - 1 : Math.min(k - 1, xi);
   const zone = k > ei ? `<rect x="${X(ei) - bw / 2}" y="${pt}" width="${(zoneEnd - ei + 1) * bw}" height="${H - pt - pb}" fill="var(--sunk)"/>` : '';
   const long = t.dir === 'Long';
-  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(symFmt(t.sym))} ${S.tf}-minute chart with entry ${px(t.entry)}${t.exit != null ? ' and exit ' + px(t.exit) : ''}">${zone}
+  // For options, entry/exit prices are premiums, so markers sit on the stock bar instead.
+  const ePrice = onUnderlying ? (long ? bars[ei].l : bars[ei].h) : t.entry;
+  const xPrice = xi == null ? null : onUnderlying ? (long ? bars[xi].h : bars[xi].l) : t.exit;
+  const eLab = onUnderlying ? `Buy ${px(t.entry)}` : 'Entry', xLab = onUnderlying ? `Sell ${px(t.exit)}` : 'Exit';
+  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(data.symbol)} ${S.tf} chart for this trade">${zone}
     ${line(p.stop, 'var(--loss)', 'Stop', '5 4')}${line(p.target, 'var(--gain)', 'Target', '5 4')}${line(p.entry, 'var(--muted)', 'Plan', '2 4')}
-    ${candles}${k > ei ? mk(ei, t.entry, 'var(--coach)', 'Entry', long) : ''}${xi != null && k > xi ? mk(xi, t.exit, 'var(--ink)', 'Exit', !long) : ''}</svg>`;
+    ${candles}${k > ei ? mk(ei, ePrice, 'var(--coach)', eLab, long) : ''}${xi != null && k > xi ? mk(xi, xPrice, 'var(--ink)', xLab, !long) : ''}
+    <text x="${W - pr + 6}" y="${pt + 10}" font-size="11" fill="var(--muted)">${px(hi)}</text><text x="${W - pr + 6}" y="${H - pb}" font-size="11" fill="var(--muted)">${px(lo)}</text></svg>`;
   const rp = $('#rp'); if (rp) { rp.max = n; rp.value = k; }
 }
 function stopReplay() { clearInterval(replay.timer); replay.timer = null; const b = $('#rp-play'); if (b) b.textContent = 'Replay'; }
@@ -529,7 +538,7 @@ document.addEventListener('click', e => {
   if (!el) return;
   if (el.dataset.range) { S.range = el.dataset.range; render(); return; }
   if (el.dataset.open && !el.closest('#drawer')) { openTrade(el.dataset.open); return; }
-  if (el.dataset.tf) { S.tf = +el.dataset.tf; replay.k = Infinity; stopReplay(); document.querySelectorAll('[data-tf]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tf == S.tf)); $('#chart').innerHTML = '<p class="loading">Loading chart…</p>'; loadBars(); return; }
+  if (el.dataset.tf) { S.tf = el.dataset.tf; replay.k = Infinity; stopReplay(); document.querySelectorAll('[data-tf]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tf === S.tf)); $('#chart').innerHTML = '<p class="loading">Loading chart…</p>'; loadBars(); return; }
   if (el.dataset.tag) { const m = el.dataset.tag; patch({ tags: cur.tags.includes(m) ? cur.tags.filter(x => x !== m) : [...cur.tags, m] }, 'Tags saved'); return; }
   if (el.dataset.emo) { patch({ emotion: cur.emotion === el.dataset.emo ? '' : el.dataset.emo }, 'Emotion saved'); return; }
   if (el.dataset.wi) { S.wi[el.dataset.wi] = !S.wi[el.dataset.wi]; render(); return; }
