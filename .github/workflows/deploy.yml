@@ -44,7 +44,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.REGION }}
-      - run: ./deploy.sh
+      - run: bash deploy.sh
       - name: Summary
         run: |
           URL=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" --query "Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue" --output text)
