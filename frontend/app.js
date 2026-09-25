@@ -106,21 +106,97 @@ function emptyState() {
   return `<div class="panel cta-empty"><h2>No trades yet</h2><p>Import a statement from your broker, or connect Schwab or Alpaca in Settings to sync fills automatically.</p>
     <a class="btn primary" href="#import" style="text-decoration:none">Import trades</a> <a class="btn" href="#settings" style="text-decoration:none">Connect a broker</a></div>`;
 }
+const nyToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+const addDays = (d, n) => new Date(Date.parse(d + 'T12:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+const monday = d => { const w = new Date(d + 'T12:00:00Z').getUTCDay(); return addDays(d, -((w + 6) % 7)); };
+const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function acctClosed() { return closed(S.acct ? S.trades.filter(t => t.acct === S.acct) : S.trades); }
+function dayMap(ts) { const m = {}; for (const t of ts) { const d = cdate(t); (m[d] = m[d] || []).push(t); } return m; }
+function periodCard(title, ts, sub) {
+  if (!ts.length) return `<div class="period"><h3>${title}</h3><div class="big muted">$0</div><p>${sub}<br>No closed trades</p></div>`;
+  const St = stats(ts), best = Math.max(...ts.map(t => t.net)), worst = Math.min(...ts.map(t => t.net));
+  return `<div class="period"><h3>${title}</h3><div class="big ${cls(St.net)}">${money(St.net)}</div>
+    <p>${sub}<br>${St.n} trade${St.n === 1 ? '' : 's'}, ${(St.wr * 100).toFixed(0)}% winners<br>Best ${money(best)}, worst ${money(worst)}</p></div>`;
+}
+function periods() {
+  const all = acctClosed(), today = nyToday(), wk = monday(today), mo = today.slice(0, 7), yr = today.slice(0, 4);
+  const lastDay = all.length ? all.map(cdate).sort().pop() : null;
+  const dayLabel = lastDay && lastDay !== today ? `Last trading day` : 'Today';
+  const dayDate = lastDay && lastDay !== today ? lastDay : today;
+  return `<div class="periods">
+    ${periodCard(dayLabel, all.filter(t => cdate(t) === dayDate), fmtDate(dayDate))}
+    ${periodCard('This week', all.filter(t => cdate(t) >= wk), `Since Mon ${fmtDate(wk).replace(/, \d{4}$/, '')}`)}
+    ${periodCard('This month', all.filter(t => cdate(t).slice(0, 7) === mo), MONTHS_LONG[+mo.slice(5) - 1] + ' ' + mo.slice(0, 4))}
+    ${periodCard('This year', all.filter(t => cdate(t).slice(0, 4) === yr), yr)}</div>`;
+}
+function calendar() {
+  const all = acctClosed(), dm = dayMap(all), today = nyToday();
+  if (!S.calMonth) S.calMonth = (all.length ? all.map(cdate).sort().pop() : today).slice(0, 7);
+  const [y, m] = S.calMonth.split('-').map(Number), first = `${S.calMonth}-01`;
+  const last = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+  const monthTs = all.filter(t => cdate(t).slice(0, 7) === S.calMonth), mSt = stats(monthTs);
+  const maxAbs = Math.max(1, ...Object.entries(dm).filter(([d]) => d.slice(0, 7) === S.calMonth).map(([, a]) => Math.abs(sum(a.map(t => t.net)))));
+  let html = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Week'].map(d => `<div class="dow">${d}</div>`).join('');
+  for (let wkStart = monday(first); wkStart <= last; wkStart = addDays(wkStart, 7)) {
+    let wkNet = 0, wkN = 0;
+    for (let i = 0; i < 7; i++) { const d = addDays(wkStart, i); if (d.slice(0, 7) === S.calMonth && dm[d]) { wkNet += sum(dm[d].map(t => t.net)); wkN += dm[d].length; } }
+    for (let i = 0; i < 5; i++) {
+      const d = addDays(wkStart, i), inMonth = d.slice(0, 7) === S.calMonth, ts = inMonth ? (dm[d] || []) : [];
+      // weekend trades are folded into Friday's cell so nothing is hidden
+      if (inMonth && i === 4) for (const x of [addDays(d, 1), addDays(d, 2)]) if (x.slice(0, 7) === S.calMonth && dm[x]) ts.push(...dm[x]);
+      const net = sum(ts.map(t => t.net)), a = Math.min(1, Math.abs(net) / maxAbs);
+      const bg = !ts.length ? '' : `background:color-mix(in srgb, ${net >= 0 ? 'var(--gain)' : 'var(--loss)'} ${Math.round(8 + a * 30)}%, var(--surface))`;
+      html += inMonth ? `<button class="day${d === today ? ' today' : ''}" data-day="${d}" style="${bg}" aria-label="${fmtDate(d)}${ts.length ? ': ' + money(net) + ', ' + ts.length + ' trades' : ''}">
+          <span class="d">${+d.slice(8)}</span>${ts.length ? `<span class="v ${cls(net)}">${money(net)}</span><span class="n">${ts.length} trade${ts.length === 1 ? '' : 's'}</span>` : ''}</button>`
+        : `<div class="day out"><span class="d">${+d.slice(8)}</span></div>`;
+    }
+    html += `<div class="wk"><span class="d">Week</span>${wkN ? `<span class="v ${cls(wkNet)}">${money(wkNet)}</span><span class="n">${wkN} trade${wkN === 1 ? '' : 's'}</span>` : '<span class="n">—</span>'}</div>`;
+  }
+  return `<div class="cal-head"><div><h2>${MONTHS_LONG[m - 1]} ${y}</h2><span class="muted" style="font-size:.9rem">${monthTs.length ? `${money(mSt.net)} from ${mSt.n} trades, ${(mSt.wr * 100).toFixed(0)}% winners` : 'No closed trades this month'}</span></div>
+    <div class="cal-nav"><button data-cal="-1" aria-label="Previous month">‹</button><button data-cal="0" style="width:auto;padding:0 10px;font-size:.85rem">Today</button><button data-cal="1" aria-label="Next month">›</button></div></div>
+    <div class="cal">${html}</div><p class="muted" style="font-size:.82rem;margin:10px 0 0">P&L is counted on the day each trade closed. Click a day to open its journal.</p>`;
+}
+function pnlBars() {
+  const all = acctClosed(), mode = S.barMode || 'day', today = nyToday();
+  let keys = [], label;
+  if (mode === 'day') { const ds = [...new Set(all.map(cdate))].sort(); keys = ds.slice(-30); label = k => fmtDate(k).replace(/, \d{4}$/, ''); }
+  if (mode === 'week') { let w = monday(today); for (let i = 0; i < 12; i++) { keys.unshift(w); w = addDays(w, -7); } label = k => 'Wk of ' + fmtDate(k).replace(/, \d{4}$/, ''); }
+  if (mode === 'month') { let [y, m] = today.split('-').map(Number); for (let i = 0; i < 12; i++) { keys.unshift(`${y}-${String(m).padStart(2, '0')}`); if (--m === 0) { m = 12; y--; } } label = k => MONTHS_LONG[+k.slice(5) - 1].slice(0, 3) + " '" + k.slice(2, 4); }
+  const keyOf = t => mode === 'day' ? cdate(t) : mode === 'week' ? monday(cdate(t)) : cdate(t).slice(0, 7);
+  const agg = {}; for (const t of all) { const k = keyOf(t); if (!agg[k]) agg[k] = { net: 0, n: 0, w: 0 }; agg[k].net += t.net; agg[k].n++; if (t.net > 0) agg[k].w++; }
+  const vals = keys.map(k => (agg[k] || { net: 0, n: 0, w: 0 }));
+  const seg = `<div class="seg" role="group" aria-label="Group P&L by">${[['day', 'Daily'], ['week', 'Weekly'], ['month', 'Monthly']].map(([k, l]) => `<button data-bars="${k}" aria-pressed="${mode === k}">${l}</button>`).join('')}</div>`;
+  if (!keys.length) return `<div class="cal-head"><h2>P&L by period</h2>${seg}</div><p class="empty">No closed trades yet.</p>`;
+  const W = 720, H = 220, pl = 8, pr = 8, pt = 14, pb = 30, mx = Math.max(1, ...vals.map(v => Math.abs(v.net)));
+  const hasNeg = vals.some(v => v.net < 0), hasPos = vals.some(v => v.net > 0);
+  const zeroY = hasNeg && hasPos ? pt + (H - pt - pb) / 2 : hasNeg ? pt : H - pb;
+  const scale = (hasNeg && hasPos ? (H - pt - pb) / 2 : (H - pt - pb)) / mx;
+  const bw = (W - pl - pr) / keys.length, step = Math.max(1, Math.ceil(keys.length / 8));
+  const bars = vals.map((v, i) => { const h = Math.abs(v.net) * scale, x = pl + i * bw + bw * .15, y = v.net >= 0 ? zeroY - h : zeroY;
+    return `<rect x="${x}" y="${y}" width="${bw * .7}" height="${Math.max(v.n ? 1.5 : 0, h)}" rx="2" fill="${v.net >= 0 ? 'var(--gain)' : 'var(--loss)'}"><title>${label(keys[i])}: ${money(v.net)}, ${v.n} trades${v.n ? `, ${Math.round(v.w / v.n * 100)}% winners` : ''}</title></rect>`
+      + (i % step === 0 ? `<text x="${pl + i * bw + bw / 2}" y="${H - 10}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${label(keys[i])}</text>` : ''); }).join('');
+  const tot = sum(vals.map(v => v.net)), pos = vals.filter(v => v.n && v.net > 0).length, act = vals.filter(v => v.n).length;
+  return `<div class="cal-head"><div><h2>P&L by period</h2><span class="muted" style="font-size:.9rem">${money(tot)} total, ${pos} of ${act} ${mode === 'day' ? 'trading days' : mode === 'week' ? 'weeks' : 'months'} green</span></div>${seg}</div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Net P&L per ${mode}" style="width:100%;height:auto"><line x1="${pl}" x2="${W - pr}" y1="${zeroY}" y2="${zeroY}" stroke="var(--line)"/>${bars}</svg>`;
+}
 function vDashboard() {
   const ts = closed(scoped());
   if (!S.trades.length) return head('Overview', '', '') + emptyState();
   const St = stats(ts);
   const W = worstLeak(ts);
   return head('Overview', periodText(ts)) + `
+  <section>${periods()}</section>
+  <section class="grid2"><div class="panel">${calendar()}</div><div class="panel"><h2>Equity curve</h2>${equity(ts)}</div></section>
+  <section class="panel">${pnlBars()}</section>
   <section>${strip(St)}</section>
-  <section class="grid2"><div class="panel"><h2>Equity curve</h2>${equity(ts)}</div><div class="panel">${prop()}</div></section>
-  <section class="coach" aria-label="AI coach"><div class="coach-who">${spark()} Coach: rule for next week</div>
+  <section class="grid2"><div class="panel">${prop()}</div>
+  <div class="coach" aria-label="AI coach"><div class="coach-who">${spark()} Coach: rule for next week</div>
     ${W ? `<p class="rule">${RULES[W.k]}</p><p class="muted" style="margin:0">Your biggest leak is ${W.label.toLowerCase()}: ${money(W.val)} across ${W.n} trades.</p>` : `<p class="rule">No leak stands out in this period. Tag your mistakes so the coach can find them.</p>`}
-    <ul class="patterns">${patterns(ts).slice(0, 3).map(p => `<li>${p.text}<small>Based on ${p.n} trades</small></li>`).join('')}</ul></section>`;
+    <ul class="patterns">${patterns(ts).slice(0, 3).map(p => `<li>${p.text}<small>Based on ${p.n} trades</small></li>`).join('')}</ul></div></section>`;
 }
 function strip(St) {
   const it = [['Net P&L', `<span class="${cls(St.net)}">${money(St.net)}</span>`], ['Win rate', (St.wr * 100).toFixed(0) + '%'], ['Profit factor', St.pf === Infinity ? '∞' : St.pf.toFixed(2)],
-    ['Expectancy', `<span class="${cls(St.exp)}">${fr(St.exp)}</span>`], ['Max drawdown', `<span class="loss">${money(St.dd)}</span>`], ['Sharpe', St.sharpe.toFixed(2)]];
+    ['Expectancy', St.exp != null ? `<span class="${cls(St.exp)}">${fr(St.exp)}</span>` : `<span class="${cls(St.net)}">${money(St.n ? St.net / St.n : 0)}</span><small class="muted" style="font-size:.72rem;font-weight:400"> per trade</small>`], ['Max drawdown', `<span class="loss">${money(St.dd)}</span>`], ['Sharpe', St.sharpe.toFixed(2)]];
   return `<div class="strip">${it.map(([k, v]) => `<div class="stat"><span>${k}</span><b>${v}</b></div>`).join('')}</div>`;
 }
 function equity(ts) {
@@ -603,8 +679,11 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#signout');
+  const el = e.target.closest('[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#signout');
   if (!el) return;
+  if (el.dataset.cal !== undefined) { const d = +el.dataset.cal; if (!d) S.calMonth = nyToday().slice(0, 7); else { let [y, m] = S.calMonth.split('-').map(Number); m += d; if (m === 0) { m = 12; y--; } if (m === 13) { m = 1; y++; } S.calMonth = `${y}-${String(m).padStart(2, '0')}`; } render(); return; }
+  if (el.dataset.bars) { S.barMode = el.dataset.bars; render(); return; }
+  if (el.dataset.day) { S.jDay = el.dataset.day; location.hash = '#journal'; return; }
   if (el.dataset.range) { S.range = el.dataset.range; render(); return; }
   if (el.dataset.open && !el.closest('#drawer')) { openTrade(el.dataset.open); return; }
   if (el.dataset.tf) { S.tf = el.dataset.tf; replay.k = Infinity; stopReplay(); document.querySelectorAll('[data-tf]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tf === S.tf)); $('#chart').innerHTML = '<p class="loading">Loading chart…</p>'; loadBars(); return; }
