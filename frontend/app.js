@@ -273,7 +273,7 @@ function filtered() {
 }
 const SORTS = {
   date: t => t.openTs, time: t => t.time, ticker: t => (t.underlying || t.sym) + ' ' + (t.expiry || '') + ' ' + String(t.strike ?? '').padStart(10, '0'),
-  side: t => t.dir, setup: t => t.setup || null, tags: t => t.tags.length || null, hold: t => t.hold, r: t => t.r, net: t => t.status === 'open' ? null : t.net
+  side: t => t.dir, setup: t => t.setup || null, tags: t => (t.tags.length + (t.emotion ? 1 : 0)) || null, hold: t => t.hold, r: t => t.r, net: t => t.status === 'open' ? null : t.net
 };
 const SORT_FIRST_DESC = new Set(['date', 'time', 'net', 'r', 'hold', 'tags']);
 function sortTrades(ts) {
@@ -295,7 +295,7 @@ function tradeTable(ts, compact) {
     : `<th class="sortable${right ? ' r' : ''}" aria-sort="${cur_.key === key ? (cur_.dir === 'asc' ? 'ascending' : 'descending') : 'none'}"><button data-sort="${key}">${label}<span class="arrow">${cur_.key === key ? (cur_.dir === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>`;
   if (!compact) ts = sortTrades(ts);
   return `<div class="tablewrap"><table><thead><tr>${th('date', 'Date')}${th('time', 'Time')}${th('ticker', 'Ticker / contract')}${th('side', 'Side')}${compact ? '' : th('setup', 'Setup') + th('tags', 'Tags') + th('hold', 'Held', true)}${th('r', 'R', true)}${th('net', 'Net P&L', true)}</tr></thead><tbody>
-  ${ts.map(t => `<tr data-open="${t.id}" tabindex="0"><td>${fmtDate(t.date)}</td><td>${t.time}</td><td><b>${esc(t.underlying || t.sym)}</b>${t.assetType === 'option' ? ` <span class="muted">${esc(fmtExp(t.expiry))} ${t.strike} ${t.optType}</span>` : ''}</td><td>${t.dir}${t.status === 'open' ? ' <span class="chip">Open</span>' : ''}</td>${compact ? '' : `<td>${esc(t.setup) || '<span class="muted">—</span>'}</td><td>${t.tags.map(x => `<span class="chip ${x === 'Early exit' ? '' : 'bad'}">${esc(x)}</span>`).join('')}</td><td class="r">${fmtHold(t.hold)}</td>`}<td class="r ${cls(t.r)}">${fr(t.r)}</td><td class="r ${cls(t.net)}"><b>${t.status === 'open' ? '<span class="muted">open</span>' : money(t.net)}</b></td></tr>`).join('')}
+  ${ts.map(t => `<tr data-open="${t.id}" tabindex="0"><td>${fmtDate(t.date)}</td><td>${t.time}</td><td><b>${esc(t.underlying || t.sym)}</b>${t.assetType === 'option' ? ` <span class="muted">${esc(fmtExp(t.expiry))} ${t.strike} ${t.optType}</span>` : ''}</td><td>${t.dir}${t.status === 'open' ? ' <span class="chip">Open</span>' : ''}</td>${compact ? '' : `<td>${esc(t.setup) || '<span class="muted">—</span>'}</td><td>${t.tags.map(x => `<span class="chip ${x === 'Early exit' ? '' : 'bad'}">${esc(x)}</span>`).join('')}${t.emotion ? `<span class="chip emo">${esc(t.emotion)}</span>` : ''}</td><td class="r">${fmtHold(t.hold)}</td>`}<td class="r ${cls(t.r)}">${fr(t.r)}</td><td class="r ${cls(t.net)}"><b>${t.status === 'open' ? '<span class="muted">open</span>' : money(t.net)}</b></td></tr>`).join('')}
   </tbody></table></div>`;
 }
 
@@ -319,8 +319,10 @@ function renderDrawer() {
       <div class="chart-ctl"><div class="seg" role="group" aria-label="Timeframe">${[['5m', '5m'], ['15m', '15m'], ['1h', '1h'], ['4h', '4h'], ['1d', 'Daily']].map(([k, l]) => `<button data-tf="${k}" aria-pressed="${S.tf === k}">${l}</button>`).join('')}</div>
       <button class="btn" id="rp-play">Replay</button><input type="range" id="rp" min="1" aria-label="Replay position"></div></div>
     <div class="coach review" id="review"><p class="loading" style="padding:0">Loading coach review…</p></div>
+    <div class="panel" id="ctx-panel">${ctxPanel(t)}</div>
     <div class="panel"><h2>Fills</h2><div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
       ${t.assetType === 'option' ? `<tr><td>Contract</td><td class="r">${esc(t.underlying)} ${t.optType} ${t.strike} exp ${esc(fmtExp(t.expiry))} (${t.dte} days at entry)</td></tr>` : ''}<tr><td>Quantity</td><td class="r">${t.qty}${t.assetType === 'option' ? ' contracts' : ''}</td></tr><tr><td>Average entry</td><td class="r">${px(t.entry)}</td></tr><tr><td>Average exit</td><td class="r">${px(t.exit)}</td></tr>
+      ${t.cost ? `<tr><td>Position size</td><td class="r">${money(t.cost, false)}${t.retPct != null ? ` <span class="${cls(t.retPct)}">(${t.retPct > 0 ? '+' : ''}${t.retPct.toFixed(1)}%)</span>` : ''}</td></tr>` : ''}
       <tr><td>Gross / fees</td><td class="r">${money(t.gross)} / ${money(-t.fees)}</td></tr>
       ${t.riskD != null ? `<tr><td>Risk at plan stop</td><td class="r ${t.riskD > S.me.settings.riskPerTrade * 1.25 ? 'dev' : ''}">${money(t.riskD, false)} (plan ${money(S.me.settings.riskPerTrade, false)})</td></tr>` : ''}
       ${t.mae != null ? `<tr><td>Went against / for you</td><td class="r">−${t.mae.toFixed(2)}R / +${t.mfe.toFixed(2)}R</td></tr>` : ''}
@@ -328,9 +330,9 @@ function renderDrawer() {
     <div class="panel"><h2>Plan</h2>
       <div class="form-grid">
         <div class="field"><label for="p-setup">Setup</label><input id="p-setup" type="text" list="setup-list" value="${esc(t.setup)}"><datalist id="setup-list">${setups.map(s => `<option value="${esc(s)}">`).join('')}</datalist></div>
-        <div class="field"><label for="p-entry">Planned entry</label><input id="p-entry" type="number" step="any" value="${p.entry ?? ''}"></div>
-        <div class="field"><label for="p-stop">Stop</label><input id="p-stop" type="number" step="any" value="${p.stop ?? ''}"></div>
-        <div class="field"><label for="p-target">Target</label><input id="p-target" type="number" step="any" value="${p.target ?? ''}"></div>
+        <div class="field"><label for="p-entry">Planned entry${t.assetType === 'option' ? ' (option price)' : ''}</label><input id="p-entry" type="number" step="any" value="${p.entry ?? ''}"></div>
+        <div class="field"><label for="p-stop">Stop${t.assetType === 'option' ? ' (option price)' : ''}</label><input id="p-stop" type="number" step="any" value="${p.stop ?? ''}"></div>
+        <div class="field"><label for="p-target">Target${t.assetType === 'option' ? ' (option price)' : ''}</label><input id="p-target" type="number" step="any" value="${p.target ?? ''}"></div>
       </div>
       <div class="field"><label for="p-thesis">Thesis</label><textarea id="p-thesis" placeholder="Why this trade, where it's wrong">${esc(p.thesis || '')}</textarea></div>
       <div class="field"><label for="note">Notes</label><textarea id="note" placeholder="What did you see? What would you do differently?">${esc(t.notes)}</textarea></div>
@@ -347,6 +349,41 @@ async function patch(body, msg) {
   const id = cur.id;
   try { const v = replaceTrade(await api(`/trades/${id}`, { method: 'PATCH', body })); if (cur && cur.id === id) { cur = v; renderDrawer(); } toast(msg); }
   catch (e) { toast(e.message); }
+}
+const pct = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`;
+function ctxPanel(t) {
+  const c = t.ctx, who = t.assetType === 'option' ? `${esc(t.underlying)} (the stock)` : esc(t.underlying || t.sym);
+  if (!c) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0 0 10px">Trend, moving averages, extension, volume and gap for ${who} when you entered.</p><button class="btn" id="ctx-run">Analyze chart</button>`;
+  if (c.missing) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0">No daily price history was found for ${who}.</p>`;
+  const row = (k, v, note) => `<tr><td>${k}</td><td class="r">${v}${note ? ` <span class="muted">${note}</span>` : ''}</td></tr>`;
+  const ma = (m) => c[m] == null ? '—' : `${px(c[m])} <span class="${c.prevClose >= c[m] ? 'gain' : 'loss'}">${c.prevClose >= c[m] ? 'above' : 'below'}</span>`;
+  return `<h2>Chart context at entry</h2><p class="muted" style="margin:-4px 0 8px;font-size:.88rem">${who} as of the close before your entry${c.gapPct != null ? ', plus the entry day’s gap and volume' : ''}.</p>
+  <div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
+    ${row('Trend (price vs 50 and 200-day MA)', `<b>${esc(c.trend || '—')}</b>`)}
+    ${row('10 / 20 / 50-day MA', `${ma('ma10')} · ${ma('ma20')} · ${ma('ma50')}`)}
+    ${row('Extension from 20-day MA', c.ext20Adr == null ? '—' : `${c.ext20Adr.toFixed(1)} ADR`, c.ext20Adr >= 3 ? '(very extended)' : c.ext20Adr < 0 ? '(below the MA)' : '')}
+    ${row('Average daily range (20 days)', `${c.adrPct.toFixed(1)}%`)}
+    ${row('From 20-day high / 52-week high', `${pct(c.fromHigh20Pct)} / ${pct(c.fromHigh52Pct)}`)}
+    ${row('Move over last 5 / 20 days', `${pct(c.chg5Pct)} / ${pct(c.chg20Pct)}`)}
+    ${row('RSI (14)', c.rsi14 == null ? '—' : c.rsi14.toFixed(0), c.rsi14 >= 70 ? '(overbought)' : c.rsi14 <= 30 ? '(oversold)' : '')}
+    ${c.gapPct != null ? row('Gap at the open', pct(c.gapPct)) : ''}
+    ${c.rvol != null ? row('Volume that day vs 20-day average', `${c.rvol.toFixed(1)}x`) : ''}
+    ${c.brokeHigh20 != null ? row('Took out the 20-day high that day', c.brokeHigh20 ? 'Yes' : 'No') : ''}
+    ${c.dayChgPct != null ? row('Stock’s move that day', pct(c.dayChgPct)) : ''}
+  </tbody></table></div>`;
+}
+async function runContext(all) {
+  const btn = $(all ? '#ctx-all' : '#ctx-run'); if (btn) { btn.disabled = true; btn.textContent = 'Analyzing…'; }
+  try {
+    for (let i = 0; i < 40; i++) {
+      const r = await api('/analysis/context', { method: 'POST' });
+      if (btn) btn.textContent = `Analyzing… ${r.remaining} trades left`;
+      if (!r.remaining || !all) break;
+    }
+    const id = cur && cur.id; await reload();
+    if (id) { cur = byId(id); if (cur) renderDrawer(); }
+    toast('Chart analysis done');
+  } catch (e) { toast(e.message); if (btn) { btn.disabled = false; btn.textContent = 'Try again'; } }
 }
 function reviewHtml(r) {
   const v = { followed_plan: ['ok', 'Followed the plan'], partial: ['mid', 'Partly followed the plan'], broke_plan: ['bad', 'Broke the plan'], no_plan: ['mid', 'No plan logged'] }[r.verdict] || ['mid', 'Reviewed'];
@@ -398,6 +435,15 @@ function drawChart() {
   const mk = (i, price, col, lab, below) => { const x = X(i), y = Y(price); const s = below ? `${x},${y + 5} ${x - 6},${y + 15} ${x + 6},${y + 15}` : `${x},${y - 5} ${x - 6},${y - 15} ${x + 6},${y - 15}`; return `<polygon points="${s}" fill="${col}"/><text x="${x}" y="${below ? y + 28 : y - 20}" font-size="11" text-anchor="middle" fill="${col}" font-weight="600">${lab}</text>`; };
   const candles = vis.map((b, i) => { const up = b.c >= b.o, col = up ? 'var(--candle-up)' : 'var(--candle-dn)'; const y1 = Y(Math.max(b.o, b.c)), y2 = Y(Math.min(b.o, b.c));
     return `<line x1="${X(i)}" x2="${X(i)}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${col}"/><rect x="${X(i) - bw * .34}" y="${y1}" width="${Math.max(1, bw * .68)}" height="${Math.max(1, y2 - y1)}" fill="${col}"/>`; }).join('');
+  let maLines = '';
+  if (S.tf === '1d') {
+    const cl = bars.map(b => b.c);
+    for (const [n, col] of [[10, '#5b8def'], [20, '#e0a544'], [50, '#a15cf0']]) {
+      const pts = []; for (let i = n - 1; i < k; i++) { const v = cl.slice(i - n + 1, i + 1).reduce((a, b) => a + b, 0) / n; if (v >= lo - pad && v <= hi + pad) pts.push(`${X(i).toFixed(1)},${Y(v).toFixed(1)}`); }
+      if (pts.length > 1) maLines += `<polyline points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="1.3" opacity=".9"/>`;
+    }
+    maLines += `<text x="${pl + 4}" y="${pt + 10}" font-size="10" fill="#5b8def">MA10</text><text x="${pl + 40}" y="${pt + 10}" font-size="10" fill="#e0a544">MA20</text><text x="${pl + 76}" y="${pt + 10}" font-size="10" fill="#a15cf0">MA50</text>`;
+  }
   const zoneEnd = xi == null ? k - 1 : Math.min(k - 1, xi);
   const zone = k > ei ? `<rect x="${X(ei) - bw / 2}" y="${pt}" width="${(zoneEnd - ei + 1) * bw}" height="${H - pt - pb}" fill="var(--sunk)" fill-opacity=".75"/>` : '';
   const long = t.dir === 'Long';
@@ -424,7 +470,7 @@ function drawChart() {
   axes += `<line x1="${pl}" x2="${W - pr}" y1="${H - pb}" y2="${H - pb}" stroke="var(--line)"/>`;
   $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(data.symbol)} ${S.tf} chart for this trade">${axes}${zone}
     ${line(p.stop, 'var(--loss)', 'Stop', '5 4')}${line(p.target, 'var(--gain)', 'Target', '5 4')}${line(p.entry, 'var(--muted)', 'Plan', '2 4')}
-    ${candles}${k > ei ? mk(ei, ePrice, 'var(--coach)', eLab, long) : ''}${xi != null && k > xi ? mk(xi, xPrice, 'var(--ink)', xLab, !long) : ''}
+    ${candles}${maLines}${k > ei ? mk(ei, ePrice, 'var(--coach)', eLab, long) : ''}${xi != null && k > xi ? mk(xi, xPrice, 'var(--ink)', xLab, !long) : ''}
 </svg>`;
   const rp = $('#rp'); if (rp) { rp.max = n; rp.value = k; }
 }
@@ -453,7 +499,26 @@ const BD = {
   asset: ['Stock / option', t => ({ stock: 'Stock', option: 'Option', future: 'Future' })[t.assetType] || 'Stock'],
   optType: ['Call / put', t => t.optType ? (t.optType === 'call' ? 'Calls' : 'Puts') : 'Not an option'],
   dte: ['Days to expiry', t => t.dte == null ? 'Not an option' : t.dte <= 1 ? '0–1 days' : t.dte <= 7 ? '2–7 days' : t.dte <= 30 ? '8–30 days' : t.dte <= 60 ? '31–60 days' : 'Over 60 days'],
-  symbol: ['Contract', t => symFmt(t.sym)], account: ['Account', t => t.acct], tag: ['Mistake tag', null], emotion: ['Emotion', t => t.emotion || 'Not set']
+  symbol: ['Contract', t => symFmt(t.sym)], account: ['Account', t => t.acct], tag: ['Mistake tag', null], emotion: ['Emotion', t => t.emotion || 'Not set'],
+  size: ['Position size', t => t.cost == null ? 'Unknown' : t.cost < 250 ? 'Under $250' : t.cost < 500 ? '$250–500' : t.cost < 1000 ? '$500–1,000' : t.cost < 2500 ? '$1,000–2,500' : t.cost < 5000 ? '$2,500–5,000' : '$5,000 and up'],
+  perDay: ['Trades that day', t => { const n = S.trades.filter(x => x.date === t.date).length; return n === 1 ? '1 trade' : n <= 3 ? '2–3 trades' : n <= 5 ? '4–5 trades' : '6 or more'; }],
+  after: ['After previous trade', t => { const prev = closed(S.trades).filter(x => (x.closeTs || '') < t.openTs).sort((a, b) => a.closeTs.localeCompare(b.closeTs)).slice(-2); if (!prev.length) return 'First trade'; const l = prev.filter(x => x.net < 0).length; return prev.length === 2 && l === 2 ? 'After 2 losses in a row' : prev[prev.length - 1].net < 0 ? 'After a loss' : 'After a win'; }],
+  trend: ['Trend at entry', t => t.ctx && !t.ctx.missing ? (t.ctx.trend || 'Not enough history') : 'Not analyzed'],
+  ma50: ['Vs 50-day MA', t => !t.ctx || t.ctx.missing || t.ctx.above50 == null ? 'Not analyzed' : t.ctx.above50 ? 'Above 50-day MA' : 'Below 50-day MA'],
+  ext: ['Extension from 20-day MA', t => { const x = t.ctx && t.ctx.ext20Adr; return x == null ? 'Not analyzed' : x < 0 ? 'Below 20-day MA' : x < 1 ? '0–1 ADR above' : x < 2 ? '1–2 ADR above' : x < 3 ? '2–3 ADR above' : '3+ ADR above'; }],
+  rvol: ['Volume vs average', t => { const x = t.ctx && t.ctx.rvol; return x == null ? 'Not analyzed' : x < 1 ? 'Under 1x' : x < 2 ? '1–2x' : x < 3 ? '2–3x' : '3x or more'; }],
+  gap: ['Gap at open', t => { const x = t.ctx && t.ctx.gapPct; return x == null ? 'Not analyzed' : x <= -2 ? 'Gap down 2%+' : x < -0.5 ? 'Small gap down' : x <= 0.5 ? 'Flat open' : x < 2 ? 'Small gap up' : 'Gap up 2%+'; }],
+  high20: ['Near 20-day high', t => { const c = t.ctx; if (!c || c.missing) return 'Not analyzed'; if (c.brokeHigh20) return 'Broke the 20-day high'; const x = c.fromHigh20Pct; return x >= -3 ? 'Within 3% of high' : x >= -10 ? '3–10% below high' : 'More than 10% below high'; }],
+  rsi: ['RSI at entry', t => { const x = t.ctx && t.ctx.rsi14; return x == null ? 'Not analyzed' : x < 30 ? 'Under 30' : x < 50 ? '30–50' : x < 70 ? '50–70' : '70 and up'; }]
+};
+const BD_ORDER = {
+  size: ['Under $250', '$250–500', '$500–1,000', '$1,000–2,500', '$2,500–5,000', '$5,000 and up', 'Unknown'],
+  perDay: ['1 trade', '2–3 trades', '4–5 trades', '6 or more'],
+  ext: ['Below 20-day MA', '0–1 ADR above', '1–2 ADR above', '2–3 ADR above', '3+ ADR above', 'Not analyzed'],
+  rvol: ['Under 1x', '1–2x', '2–3x', '3x or more', 'Not analyzed'],
+  gap: ['Gap down 2%+', 'Small gap down', 'Flat open', 'Small gap up', 'Gap up 2%+', 'Not analyzed'],
+  high20: ['Broke the 20-day high', 'Within 3% of high', '3–10% below high', 'More than 10% below high', 'Not analyzed'],
+  rsi: ['Under 30', '30–50', '50–70', '70 and up', 'Not analyzed']
 };
 function vAnalytics() {
   const ts = closed(scoped());
@@ -470,15 +535,34 @@ function vAnalytics() {
     <div class="tablewrap" style="border:0"><table><thead><tr><th></th><th class="r">Actual</th><th class="r">What if</th><th class="r">Difference</th></tr></thead><tbody>
     ${rows.map(([k, f]) => `<tr><td>${k}</td><td class="r">${f(A)}</td><td class="r">${on ? f(B) : '—'}</td><td class="r">${on && k === 'Net P&L' ? `<b class="${cls(B.net - A.net)}">${money(B.net - A.net)}</b>` : ''}</td></tr>`).join('')}
     </tbody></table></div></section>
+  ${chartAnalysisPanel(ts)}
   <section class="panel"><h2>Breakdown</h2><div class="filters" role="group" aria-label="Group by">${Object.entries(BD).map(([k, [l]]) => `<button class="toggle emo" data-bd="${k}" aria-pressed="${S.bd === k}">${l}</button>`).join('')}</div>${breakdown(ts)}</section>
   <section class="grid2">
     <div class="panel"><h2>How much of each move you kept</h2>${scatter(ts)}</div>
     <div class="panel"><h2>Streaks and averages</h2>
       <div class="kv"><span>Average winner</span><b class="gain">${money(A.avgW)}</b></div><div class="kv"><span>Average loser</span><b class="loss">${money(A.avgL)}</b></div>
+      ${(() => { const w = ts.filter(t => t.net > 0 && t.retPct != null), l = ts.filter(t => t.net <= 0 && t.retPct != null); return w.length || l.length ? `<div class="kv"><span>Average % gain on winners</span><b class="gain">${pct(avg(w.map(t => t.retPct)))}</b></div><div class="kv"><span>Average % loss on losers</span><b class="loss">${pct(avg(l.map(t => t.retPct)))}</b></div><div class="kv"><span>Biggest % loss</span><b class="loss">${pct(Math.min(...l.map(t => t.retPct), 0))}</b></div>` : ''; })()}
       <div class="kv"><span>Longest winning streak</span><b>${A.streakW} trades</b></div><div class="kv"><span>Longest losing streak</span><b>${A.streakL} trades</b></div>
       <div class="kv"><span>Winners that went over 0.7R against you first</span><b>${ts.filter(t => t.r > 0 && t.mae > .7).length}</b></div>
       <div class="kv"><span>Losses bigger than 1.1R</span><b class="loss">${ts.filter(t => t.r != null && t.r < -1.1).length}</b></div></div>
   </section>`;
+}
+function chartAnalysisPanel(ts) {
+  const todo = S.trades.filter(t => !t.ctx).length, have = ts.filter(t => t.ctx && !t.ctx.missing);
+  const feats = [['trend', 'Trend at entry'], ['ma50', 'Vs 50-day MA'], ['ext', 'Extension from 20-day MA'], ['rvol', 'Volume vs average'], ['gap', 'Gap at open'], ['high20', 'Near 20-day high'], ['rsi', 'RSI at entry']];
+  const findings = [];
+  if (have.length >= 8) for (const [k, label] of feats) {
+    const g = {}; for (const t of have) { const b = BD[k][1](t); if (b !== 'Not analyzed' && b !== 'Not enough history') (g[b] = g[b] || []).push(t); }
+    const ent = Object.entries(g).filter(([, a]) => a.length >= 3).map(([b, a]) => [b, stats(a)]);
+    if (ent.length < 2) continue;
+    ent.sort((a, b) => b[1].net / b[1].n - a[1].net / a[1].n);
+    const [bb, bs] = ent[0], [wb, ws] = ent[ent.length - 1];
+    findings.push(`<li><b>${label}:</b> ${esc(bb)} is your best group, ${money(bs.net)} over ${bs.n} trades (${(bs.wr * 100).toFixed(0)}% winners). ${esc(wb)} is your weakest, ${money(ws.net)} over ${ws.n} trades (${(ws.wr * 100).toFixed(0)}% winners).<small><button class="linkbtn" data-bd="${k}">See the full breakdown</button></small></li>`);
+  }
+  return `<section class="coach"><div class="coach-who">${spark()} Chart analysis</div>
+    <p style="margin:0 0 6px">For every trade, the app looks at the stock's daily chart before you entered: trend, moving averages, how extended it was, volume, gap and RSI. Then it compares your results in each situation.</p>
+    ${todo ? `<p style="margin:10px 0"><button class="btn coachbtn" id="ctx-all">Analyze charts for ${todo} trade${todo === 1 ? '' : 's'}</button></p>` : ''}
+    ${findings.length ? `<ul class="patterns">${findings.join('')}</ul>` : have.length ? '<p class="muted" style="margin:0">Not enough analyzed trades in this period for comparisons yet.</p>' : ''}</section>`;
 }
 function breakdown(ts) {
   const g = {};
@@ -486,7 +570,7 @@ function breakdown(ts) {
   else { const f = BD[S.bd][1]; for (const t of ts) (g[f(t)] = g[f(t)] || []).push(t); }
   const order = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const ent = Object.entries(g).map(([k, a]) => [k, stats(a)]);
-  if (S.bd === 'weekday') ent.sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])); else if (S.bd === 'dte') { const o = ['0–1 days', '2–7 days', '8–30 days', '31–60 days', 'Over 60 days', 'Not an option']; ent.sort((a, b) => o.indexOf(a[0]) - o.indexOf(b[0])); } else if (S.bd === 'time' || S.bd === 'hold') ent.sort((a, b) => a[0].localeCompare(b[0])); else ent.sort((a, b) => b[1].net - a[1].net);
+  if (BD_ORDER[S.bd]) ent.sort((a, b) => BD_ORDER[S.bd].indexOf(a[0]) - BD_ORDER[S.bd].indexOf(b[0])); else if (S.bd === 'weekday') ent.sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])); else if (S.bd === 'dte') { const o = ['0–1 days', '2–7 days', '8–30 days', '31–60 days', 'Over 60 days', 'Not an option']; ent.sort((a, b) => o.indexOf(a[0]) - o.indexOf(b[0])); } else if (S.bd === 'time' || S.bd === 'hold') ent.sort((a, b) => a[0].localeCompare(b[0])); else ent.sort((a, b) => b[1].net - a[1].net);
   const mx = Math.max(1, ...ent.map(e => Math.abs(e[1].net)));
   return `<div class="tablewrap" style="border:0"><table><thead><tr><th>${BD[S.bd][0]}</th><th class="r">Trades</th><th class="r">Win rate</th><th class="r">Expectancy</th><th class="r">Net P&L</th><th style="width:28%"></th></tr></thead><tbody>
   ${ent.map(([k, s]) => `<tr><td><b>${esc(k)}</b></td><td class="r">${s.n}</td><td class="r">${(s.wr * 100).toFixed(0)}%</td><td class="r ${cls(s.exp)}">${fr(s.exp)}</td><td class="r ${cls(s.net)}"><b>${money(s.net)}</b></td><td><div class="bar ${s.net < 0 ? 'neg' : ''}" style="width:${Math.abs(s.net) / mx * 100}%"></div></td></tr>`).join('')}</tbody></table></div>`;
@@ -514,7 +598,7 @@ function vCoach() {
   <section><h2>Ask about your trades</h2>
     <div class="chat" id="chat">${S.chat.length ? S.chat.map(m => `<div class="msg ${m.role === 'assistant' ? 'ai' : 'me'}">${m.role === 'assistant' ? esc(m.content).replace(/\n/g, '<br>') + (m.tradeIds?.length ? tradeTable(m.tradeIds.map(byId).filter(Boolean), true) : '') : esc(m.content)}</div>`).join('')
       : `<div class="msg ai">Ask about your trades in plain words. Answers come only from your journal data.</div>`}${S.chatBusy ? '<div class="msg ai loading">Looking through your trades…</div>' : ''}</div>
-    <div class="sugg">${['Show my best trades on TSLA in the first hour', 'How much did revenge trades cost me?', 'What is my win rate after 11:00?', 'Which setup has the best expectancy?'].map(s => `<button data-ask="${s}">${s}</button>`).join('')}</div>
+    <div class="sugg">${['Show my best trades on TSLA in the first hour', 'How much did revenge trades cost me?', 'What is my win rate after 11:00?', 'Which setup has the best expectancy?', 'How do I do when the stock is extended from the 20-day MA?'].map(s => `<button data-ask="${s}">${s}</button>`).join('')}</div>
     <form class="composer" id="ask"><input id="askq" placeholder="Ask a question about your trades" aria-label="Question" autocomplete="off"><button class="btn coachbtn" type="submit" ${S.chatBusy ? 'disabled' : ''}>Ask</button></form>
   </section>`;
 }
@@ -701,7 +785,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#signout');
+  const el = e.target.closest('[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#signout');
   if (!el) return;
   if (el.dataset.sort) { const k = el.dataset.sort, c = S.sort || { key: 'date', dir: 'desc' };
     S.sort = c.key === k ? { key: k, dir: c.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: SORT_FIRST_DESC.has(k) ? 'desc' : 'asc' };
@@ -734,6 +818,8 @@ document.addEventListener('click', e => {
     case 'sch-sync': api('/broker/schwab/sync', { method: 'POST' }).then(() => { S.schwab.status = 'syncing'; render(); pollSchwab(); }).catch(err => toast(err.message)); return;
     case 'sch-del': if (confirm('Disconnect Schwab? Trades already synced stay in the journal.')) api('/broker/schwab', { method: 'DELETE' }).then(b => { S.schwab = b; render(); }).catch(err => toast(err.message)); return;
     case 'al-show': S.showAlpaca = true; render(); return;
+    case 'ctx-run': runContext(false); return;
+    case 'ctx-all': runContext(true); return;
     case 'signout': Auth.logout(); return;
   }
 });

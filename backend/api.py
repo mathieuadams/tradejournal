@@ -11,6 +11,7 @@ import uuid
 import alpaca
 import charts
 import chat
+import context
 import db
 import review
 import schwab
@@ -166,6 +167,11 @@ def post_review(sub, claims, body, q, tid):
 def trade_bars(sub, claims, body, q, tid):
     t = _trade_or_404(sub, tid)
     return charts.get_bars(sub, t, q.get("tf") or "5m")
+
+
+@route("POST", "/analysis/context")
+def analysis_context(sub, claims, body, q):
+    return context.analyze(sub)
 
 
 # ---------- daily journal ----------

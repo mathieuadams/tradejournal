@@ -28,7 +28,7 @@ TOOLS = [
         "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}},
     {"name": "get_stats", "description": "Win rate, profit factor, expectancy, net P&L, drawdown for trades matching filters, optionally grouped.",
      "input_schema": {"type": "object", "properties": {**FILTERS,
-        "group_by": {"type": "string", "enum": ["none", "setup", "symbol", "underlying", "asset_type", "option_type", "days_to_expiry", "hour", "weekday", "tag", "emotion", "account", "direction"]}}}},
+        "group_by": {"type": "string", "enum": ["none", "setup", "symbol", "underlying", "asset_type", "option_type", "days_to_expiry", "trend", "vs_50day_ma", "extension_from_20ma", "relative_volume", "hour", "weekday", "tag", "emotion", "account", "direction"]}}}},
 ]
 SYSTEM = """You are a trading coach answering questions about the user's own trade journal.
 Get every number from the tools; never estimate or invent. Times are exchange local (US/Eastern for stocks).

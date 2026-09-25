@@ -74,8 +74,9 @@ def _yahoo(symbol, tf, start, end):
         o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
         if None in (o, h, l, c):
             continue
+        v = (q.get("volume") or [None] * (i + 1))[i] or 0
         t = utc_to_ny(datetime.utcfromtimestamp(ts))
-        out.append({"t": iso(t), "o": round(o, 4), "h": round(h, 4), "l": round(l, 4), "c": round(c, 4)})
+        out.append({"t": iso(t), "o": round(o, 4), "h": round(h, 4), "l": round(l, 4), "c": round(c, 4), "v": v})
     return out
 
 
@@ -97,6 +98,7 @@ def _to_4h(bars):
         else:
             a = out[-1]
             a["h"], a["l"], a["c"] = max(a["h"], b["h"]), min(a["l"], b["l"]), b["c"]
+            a["v"] = a.get("v", 0) + b.get("v", 0)
     return out
 
 

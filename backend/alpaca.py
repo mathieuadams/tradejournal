@@ -102,7 +102,7 @@ def bars(c, sym, start_local, end_local, tf_min):
             q["page_token"] = token
         page = _get(f"{DATA}/v2/stocks/{urllib.parse.quote(sym)}/bars?" + urllib.parse.urlencode(q), c)
         for b in page.get("bars") or []:
-            out.append({"t": _utc_to_local_iso(b["t"]), "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"]})
+            out.append({"t": _utc_to_local_iso(b["t"]), "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v", 0)})
         token = page.get("next_page_token")
         if not token:
             break

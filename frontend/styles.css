@@ -228,3 +228,4 @@ th.sortable.r button{justify-content:flex-end}
 th.sortable button:hover,th.sortable[aria-sort="ascending"] button,th.sortable[aria-sort="descending"] button{color:var(--ink)}
 th.sortable button:focus-visible{outline:2px solid var(--coach);outline-offset:-2px}
 th.sortable .arrow{font-size:.7rem;opacity:.7}
+.chip.emo{background:var(--coach-soft);border-color:transparent;color:var(--coach)}

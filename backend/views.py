@@ -35,6 +35,9 @@ def merge(t, j=None, reviewed=False):
     }
     d = describe(t["sym"])
     v.update(d)
+    v["ctx"] = t.get("ctx")
+    v["cost"] = round(t["entry"] * t["qty"] * (t.get("mult") or 1), 2)          # capital put into the position
+    v["retPct"] = round(t["net"] / v["cost"] * 100, 2) if v["cost"] and t["status"] == "closed" else None
     v["dte"] = (date.fromisoformat(d["expiry"]) - date.fromisoformat(v["date"])).days if d["expiry"] else None
     stop = plan.get("stop")
     if stop is not None and t["status"] == "closed":

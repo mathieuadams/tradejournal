@@ -18,6 +18,7 @@ def api_key():
         v = boto3.client("secretsmanager").get_secret_value(SecretId=os.environ["ANTHROPIC_SECRET_ARN"])
         _key = v["SecretString"].strip()
     if not _key or _key.startswith("REPLACE"):
+        _key = None  # re-read next time, so a key added later works without a redeploy
         raise Unavailable("The AI coach isn't configured yet. Add your Anthropic API key (see README).")
     return _key
 

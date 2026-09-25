@@ -3,7 +3,7 @@ import db
 from grouping import group_fills
 
 ENRICH = ("maePx", "mfePx")
-COMPARE = ("status", "closeTs", "qty", "closedQty", "entry", "exit", "net", "fees", "fillIds")
+COMPARE = ("ctx", "status", "closeTs", "qty", "closedQty", "entry", "exit", "net", "fees", "fillIds")
 
 
 def fill_sk(f):
@@ -33,6 +33,8 @@ def regroup(sub):
             for f in ENRICH:
                 if f in o and o.get("closeTs") == t.get("closeTs"):
                     t[f] = o[f]
+            if "ctx" in o:  # chart context depends only on symbol and entry time
+                t["ctx"] = o["ctx"]
             if o["SK"] == sk and all(o.get(k) == t.get(k) for k in COMPARE):
                 continue
         puts.append({"PK": pk, "SK": sk, **t})

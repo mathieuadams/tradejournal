@@ -294,6 +294,33 @@ def test_schwab_connect_and_sync():
     assert st["status"] == "connected" and "enc" not in st
 
 
+def test_chart_context():
+    import context, charts
+    bars, price = [], 100.0
+    d0 = __import__("datetime").date(2025, 6, 2)
+    for i in range(300):
+        day = (d0 + __import__("datetime").timedelta(days=i)).isoformat()
+        price *= 1.002
+        bars.append({"t": day + "T09:30:00", "o": price * 0.995, "h": price * 1.02, "l": price * 0.98, "c": price, "v": 1_000_000})
+    entry = bars[260]["t"][:10]
+    bars[260]["v"] = 3_000_000
+    ctx = context.compute(bars, entry)
+    assert ctx["trend"] == "Uptrend" and ctx["above50"] and ctx["rvol"] == 3.0 and 3.9 < ctx["adrPct"] < 4.2
+    assert ctx["ext20Adr"] is not None and ctx["rsi14"] == 100.0
+    STORE.clear()
+    importer.process(SUB, "i1", "Main", open(os.path.join(HERE, "..", "samples", "sample-fills.csv")).read())
+    context._yahoo = lambda sym, tf, s, e: [dict(b, t=b["t"].replace(b["t"][:10], (__import__("datetime").date(2025, 12, 1) + __import__("datetime").timedelta(days=i)).isoformat())) for i, b in enumerate(bars)]
+    r = context.analyze(SUB)
+    assert r["remaining"] == 0 and r["analyzed"] == 6
+    code, d = call("GET", "/trades")
+    assert all(t["ctx"] and "v" in t["ctx"] for t in d["trades"])
+    nv = next(t for t in d["trades"] if t["sym"] == "NVDA")
+    assert nv["cost"] == round(178.42 * 150, 2) and nv["retPct"] is not None
+    importer.process(SUB, "i2", "Main", open(os.path.join(HERE, "..", "samples", "sample-fills.csv")).read())
+    code, d2 = call("GET", "/trades")
+    assert all(t["ctx"] for t in d2["trades"])            # context survives a re-import
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

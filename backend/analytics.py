@@ -102,6 +102,18 @@ def patterns(ts):
     return out
 
 
+def _ext_bucket(x):
+    if x is None:
+        return "unknown"
+    return "below 20-day MA" if x < 0 else "0-1 ADR above" if x < 1 else "1-2 ADR above" if x < 2 else "2-3 ADR above" if x < 3 else "3+ ADR above"
+
+
+def _rvol_bucket(x):
+    if x is None:
+        return "unknown"
+    return "under 1x" if x < 1 else "1-2x" if x < 2 else "2-3x" if x < 3 else "3x or more"
+
+
 def _dte_bucket(d):
     if d is None:
         return "not an option"
@@ -124,6 +136,10 @@ def breakdown(ts, by):
         "asset_type": lambda t: t.get("assetType") or "stock",
         "option_type": lambda t: t.get("optType") or "not an option",
         "days_to_expiry": lambda t: _dte_bucket(t.get("dte")),
+        "trend": lambda t: (t.get("ctx") or {}).get("trend") or "unknown",
+        "vs_50day_ma": lambda t: {True: "above 50-day MA", False: "below 50-day MA"}.get((t.get("ctx") or {}).get("above50"), "unknown"),
+        "extension_from_20ma": lambda t: _ext_bucket((t.get("ctx") or {}).get("ext20Adr")),
+        "relative_volume": lambda t: _rvol_bucket((t.get("ctx") or {}).get("rvol")),
         "hour": lambda t: f"{t['time'][:2]}:00",
         "weekday": lambda t: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][
             __import__("datetime").date.fromisoformat(t["date"]).weekday()],
