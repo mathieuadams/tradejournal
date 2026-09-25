@@ -251,7 +251,7 @@ function prop() {
 }
 
 /* ---------- trades ---------- */
-const tf = { q: '', setup: '', tag: '', res: '', acct: '', asset: '' };
+const tf = { q: '', setup: '', tag: '', res: '', acct: '', asset: '', dir: '' };
 function vTrades() {
   const ts = scoped();
   if (!S.trades.length) return head('Trades', '', '') + emptyState();
@@ -260,20 +260,42 @@ function vTrades() {
     <input id="f-q" type="search" placeholder="Symbol" value="${esc(tf.q)}" aria-label="Filter by symbol" size="10">
     ${accts.length > 1 ? `<select id="f-acct" aria-label="Account"><option value="">All accounts</option>${accts.map(s => `<option ${tf.acct === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>` : ''}
     <select id="f-asset" aria-label="Stock or option"><option value="">Stocks and options</option>${['stock', 'option', 'future'].filter(a => S.trades.some(t => t.assetType === a)).map(a => `<option value="${a}" ${tf.asset === a ? 'selected' : ''}>${a[0].toUpperCase() + a.slice(1)}s</option>`).join('')}</select>
+    <select id="f-dir" aria-label="Long or short"><option value="">Long and short</option><option value="Long" ${tf.dir === 'Long' ? 'selected' : ''}>Long</option><option value="Short" ${tf.dir === 'Short' ? 'selected' : ''}>Short</option></select>
     <select id="f-setup" aria-label="Setup"><option value="">All setups</option>${setups.map(s => `<option ${tf.setup === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>
     <select id="f-tag" aria-label="Mistake"><option value="">Any tags</option><option value="__none" ${tf.tag === '__none' ? 'selected' : ''}>No tags</option>${S.me.mistakes.map(s => `<option ${tf.tag === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
     <select id="f-res" aria-label="Result"><option value="">Winners and losers</option><option value="w" ${tf.res === 'w' ? 'selected' : ''}>Winners</option><option value="l" ${tf.res === 'l' ? 'selected' : ''}>Losers</option><option value="o" ${tf.res === 'o' ? 'selected' : ''}>Open</option></select>
   </div><div id="trade-table">${tradeTable(filtered())}</div>`;
 }
 function filtered() {
-  return scoped().filter(t => (!tf.q || t.sym.toLowerCase().includes(tf.q.toLowerCase()) || (t.underlying || '').toLowerCase() === tf.q.toLowerCase()) && (!tf.asset || t.assetType === tf.asset) && (!tf.acct || t.acct === tf.acct) && (!tf.setup || t.setup === tf.setup)
+  return scoped().filter(t => (!tf.q || t.sym.toLowerCase().includes(tf.q.toLowerCase()) || (t.underlying || '').toLowerCase() === tf.q.toLowerCase()) && (!tf.asset || t.assetType === tf.asset) && (!tf.dir || t.dir === tf.dir) && (!tf.acct || t.acct === tf.acct) && (!tf.setup || t.setup === tf.setup)
     && (!tf.tag || (tf.tag === '__none' ? !t.tags.length : t.tags.includes(tf.tag)))
-    && (!tf.res || (tf.res === 'o' ? t.status === 'open' : t.status === 'closed' && (tf.res === 'w' ? t.net > 0 : t.net <= 0)))).slice().reverse();
+    && (!tf.res || (tf.res === 'o' ? t.status === 'open' : t.status === 'closed' && (tf.res === 'w' ? t.net > 0 : t.net <= 0)))).slice();
 }
+const SORTS = {
+  date: t => t.openTs, time: t => t.time, ticker: t => (t.underlying || t.sym) + ' ' + (t.expiry || '') + ' ' + String(t.strike ?? '').padStart(10, '0'),
+  side: t => t.dir, setup: t => t.setup || null, tags: t => t.tags.length || null, hold: t => t.hold, r: t => t.r, net: t => t.status === 'open' ? null : t.net
+};
+const SORT_FIRST_DESC = new Set(['date', 'time', 'net', 'r', 'hold', 'tags']);
+function sortTrades(ts) {
+  const { key, dir } = S.sort || { key: 'date', dir: 'desc' }, f = SORTS[key] || SORTS.date, m = dir === 'asc' ? 1 : -1;
+  return ts.slice().sort((a, b) => {
+    const x = f(a), y = f(b);
+    if (x == null && y == null) return b.openTs.localeCompare(a.openTs);
+    if (x == null) return 1;          // empty values always go last
+    if (y == null) return -1;
+    const c = typeof x === 'number' ? x - y : String(x).localeCompare(String(y));
+    return c ? c * m : b.openTs.localeCompare(a.openTs);
+  });
+}
+const fmtHold = m => m == null ? '—' : m < 60 ? `${m} min` : m < 1440 ? `${Math.floor(m / 60)} h ${m % 60 ? (m % 60) + ' min' : ''}`.trim() : `${Math.round(m / 1440)} d`;
 function tradeTable(ts, compact) {
   if (!ts.length) return `<div class="tablewrap"><p class="empty">No trades match these filters.</p></div>`;
-  return `<div class="tablewrap"><table><thead><tr><th>Date</th><th>Time</th><th>Ticker / contract</th><th>Side</th>${compact ? '' : '<th>Setup</th><th>Tags</th>'}<th class="r">R</th><th class="r">Net P&L</th></tr></thead><tbody>
-  ${ts.map(t => `<tr data-open="${t.id}" tabindex="0"><td>${fmtDate(t.date)}</td><td>${t.time}</td><td><b>${esc(t.underlying || t.sym)}</b>${t.assetType === 'option' ? ` <span class="muted">${esc(fmtExp(t.expiry))} ${t.strike} ${t.optType}</span>` : ''}</td><td>${t.dir}${t.status === 'open' ? ' <span class="chip">Open</span>' : ''}</td>${compact ? '' : `<td>${esc(t.setup) || '<span class="muted">—</span>'}</td><td>${t.tags.map(x => `<span class="chip ${x === 'Early exit' ? '' : 'bad'}">${esc(x)}</span>`).join('')}</td>`}<td class="r ${cls(t.r)}">${fr(t.r)}</td><td class="r ${cls(t.net)}"><b>${t.status === 'open' ? '<span class="muted">open</span>' : money(t.net)}</b></td></tr>`).join('')}
+  const cur_ = S.sort || { key: 'date', dir: 'desc' };
+  const th = (key, label, right) => compact ? `<th${right ? ' class="r"' : ''}>${label}</th>`
+    : `<th class="sortable${right ? ' r' : ''}" aria-sort="${cur_.key === key ? (cur_.dir === 'asc' ? 'ascending' : 'descending') : 'none'}"><button data-sort="${key}">${label}<span class="arrow">${cur_.key === key ? (cur_.dir === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>`;
+  if (!compact) ts = sortTrades(ts);
+  return `<div class="tablewrap"><table><thead><tr>${th('date', 'Date')}${th('time', 'Time')}${th('ticker', 'Ticker / contract')}${th('side', 'Side')}${compact ? '' : th('setup', 'Setup') + th('tags', 'Tags') + th('hold', 'Held', true)}${th('r', 'R', true)}${th('net', 'Net P&L', true)}</tr></thead><tbody>
+  ${ts.map(t => `<tr data-open="${t.id}" tabindex="0"><td>${fmtDate(t.date)}</td><td>${t.time}</td><td><b>${esc(t.underlying || t.sym)}</b>${t.assetType === 'option' ? ` <span class="muted">${esc(fmtExp(t.expiry))} ${t.strike} ${t.optType}</span>` : ''}</td><td>${t.dir}${t.status === 'open' ? ' <span class="chip">Open</span>' : ''}</td>${compact ? '' : `<td>${esc(t.setup) || '<span class="muted">—</span>'}</td><td>${t.tags.map(x => `<span class="chip ${x === 'Early exit' ? '' : 'bad'}">${esc(x)}</span>`).join('')}</td><td class="r">${fmtHold(t.hold)}</td>`}<td class="r ${cls(t.r)}">${fr(t.r)}</td><td class="r ${cls(t.net)}"><b>${t.status === 'open' ? '<span class="muted">open</span>' : money(t.net)}</b></td></tr>`).join('')}
   </tbody></table></div>`;
 }
 
@@ -679,8 +701,11 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#signout');
+  const el = e.target.closest('[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#signout');
   if (!el) return;
+  if (el.dataset.sort) { const k = el.dataset.sort, c = S.sort || { key: 'date', dir: 'desc' };
+    S.sort = c.key === k ? { key: k, dir: c.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: SORT_FIRST_DESC.has(k) ? 'desc' : 'asc' };
+    if ($('#trade-table')) $('#trade-table').innerHTML = tradeTable(filtered()); else render(); return; }
   if (el.dataset.cal !== undefined) { const d = +el.dataset.cal; if (!d) S.calMonth = nyToday().slice(0, 7); else { let [y, m] = S.calMonth.split('-').map(Number); m += d; if (m === 0) { m = 12; y--; } if (m === 13) { m = 1; y++; } S.calMonth = `${y}-${String(m).padStart(2, '0')}`; } render(); return; }
   if (el.dataset.bars) { S.barMode = el.dataset.bars; render(); return; }
   if (el.dataset.day) { S.jDay = el.dataset.day; location.hash = '#journal'; return; }
@@ -718,7 +743,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const id = e.target.id;
-  if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
+  if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (id === 'jday') { S.jDay = e.target.value; render(); }
   if (id === 'g-acct') { S.acct = e.target.value; render(); }
   if (id === 'file' && e.target.files[0]) upload(e.target.files[0]);

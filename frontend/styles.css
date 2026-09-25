@@ -222,3 +222,9 @@ td.r,th.r{text-align:right}
 .cal .wk{min-height:74px;border-radius:9px;background:var(--sunk);padding:6px 8px;display:flex;flex-direction:column;gap:2px}
 @media (max-width:900px){.periods{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:560px){.cal .day,.cal .wk{min-height:58px;padding:4px 5px}.cal .v{font-size:.78rem}.cal .n{display:none}}
+th.sortable{padding:0}
+th.sortable button{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:5px;width:100%;padding:10px 12px;cursor:pointer;font-weight:500;color:var(--muted)}
+th.sortable.r button{justify-content:flex-end}
+th.sortable button:hover,th.sortable[aria-sort="ascending"] button,th.sortable[aria-sort="descending"] button{color:var(--ink)}
+th.sortable button:focus-visible{outline:2px solid var(--coach);outline-offset:-2px}
+th.sortable .arrow{font-size:.7rem;opacity:.7}
