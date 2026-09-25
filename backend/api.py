@@ -169,6 +169,15 @@ def trade_bars(sub, claims, body, q, tid):
     return charts.get_bars(sub, t, q.get("tf") or "5m")
 
 
+@route("POST", r"/trades/(?P<tid>[a-f0-9]{16})/context")
+def trade_context(sub, claims, body, q, tid):
+    t = _trade_or_404(sub, tid)
+    t.pop("ctx", None) if body.get("force") else None
+    context.for_trade(sub, t)
+    j = db.get(db.upk(sub), f"JRNL#{tid}")
+    return views.merge(t, j, db.get(db.upk(sub), f"REVIEW#{tid}") is not None)
+
+
 @route("POST", "/analysis/context")
 def analysis_context(sub, claims, body, q):
     return context.analyze(sub)

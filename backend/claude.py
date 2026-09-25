@@ -23,10 +23,12 @@ def api_key():
     return _key
 
 
-def messages(model, system, msgs, max_tokens=1500, tools=None):
+def messages(model, system, msgs, max_tokens=1500, tools=None, extra=None):
     body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": msgs}
     if tools:
         body["tools"] = tools
+    if extra:
+        body.update(extra)
     data = json.dumps(body).encode()
     for attempt in range(3):
         req = urllib.request.Request(URL, data=data, method="POST", headers={
@@ -51,13 +53,24 @@ def text_of(resp):
     return "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text")
 
 
-def json_call(model, system, payload, max_tokens=1200):
-    r = messages(model, system, [{"role": "user", "content": json.dumps(payload, default=str)}], max_tokens)
+def json_call(model, system, payload, max_tokens=1200, schema=None):
+    """Structured output. With a schema, Claude must answer by calling a tool whose input is the JSON object,
+    so the result is always valid JSON. Without one, falls back to parsing the text."""
+    msgs = [{"role": "user", "content": json.dumps(payload, default=str)}]
+    if schema:
+        tool = {"name": "submit", "description": "Submit the final answer.", "input_schema": schema}
+        body_extra = {"tool_choice": {"type": "tool", "name": "submit"}}
+        r = messages(model, system, msgs, max_tokens, [tool], extra=body_extra)
+        for b in r.get("content", []):
+            if b.get("type") == "tool_use":
+                return b.get("input") or {}
+        print("AI returned no tool call:", json.dumps(r)[:800])
+        raise Unavailable("The AI didn't return a structured answer. Try again.")
+    r = messages(model, system, msgs, max_tokens)
     t = text_of(r).strip()
-    if t.startswith("```"):
-        t = t.strip("`")
-        t = t[t.find("{"):]
     s, e = t.find("{"), t.rfind("}")
-    if s < 0 or e < 0:
-        raise Unavailable("The AI response wasn't valid JSON.")
-    return json.loads(t[s:e + 1])
+    try:
+        return json.loads(t[s:e + 1])
+    except ValueError:
+        print("AI returned invalid JSON:", t[:800], "stop_reason:", r.get("stop_reason"))
+        raise Unavailable("The AI response wasn't valid JSON. Try again.")

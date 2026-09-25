@@ -101,8 +101,13 @@ def analyze(sub, limit_symbols=6):
             failed.append(sym)
             bars = []
         for t in ts:
+            if time.time() - t0 > 20:
+                break
             ctx = compute(bars, t["openTs"][:10]) if bars else None
-            ctx = enrich(sub, t, ctx, sym, bars, cc)
+            try:
+                ctx = enrich(sub, t, ctx, sym, bars, cc)
+            except Exception as e:  # intraday / option extras are optional
+                print("enrich failed", t["sym"], e)
             db.update(pk, t["SK"], {"ctx": ctx or {"v": VERSION, "missing": True}})
             done += 1
     remaining = len(trades) - done

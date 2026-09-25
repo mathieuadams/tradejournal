@@ -26,15 +26,21 @@ Your job is to give insight the trader could not see at a glance. Rules:
   Say whether this trade fits a pattern that usually makes or loses money for them, with the numbers.
 - Do not recommend buying or selling any security; talk about process, entry location, sizing and exits only.
 
-Respond with JSON only, no prose, no code fences, exactly:
-{"verdict":"followed_plan|partial|broke_plan|no_plan",
- "summary":"one sentence: what really decided this trade's result",
- "what_worked":["...", "..."],
- "what_broke":["...", "..."],
- "pattern":"one sentence tying this trade to the trader's historical numbers for similar trades, or empty",
- "suggested_tags":["tags from allowed_tags that clearly apply and are not already set"],
- "lesson":"one concrete, testable adjustment for the next similar trade"}
-At most 3 items per list. Plain words. Dollar amounts like $120, percentages like 4.2%."""
+Answer by calling the submit tool. At most 3 items per list. Plain words. Dollar amounts like $120, percentages like 4.2%."""
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["followed_plan", "partial", "broke_plan", "no_plan"]},
+        "summary": {"type": "string", "description": "One sentence: what really decided this trade's result."},
+        "what_worked": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+        "what_broke": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+        "pattern": {"type": "string", "description": "One sentence tying this trade to the trader's numbers for similar trades, or empty."},
+        "suggested_tags": {"type": "array", "items": {"type": "string"}, "description": "Only from allowed_tags, not already set."},
+        "lesson": {"type": "string", "description": "One concrete, testable adjustment for the next similar trade."},
+    },
+    "required": ["verdict", "summary", "what_worked", "what_broke", "pattern", "suggested_tags", "lesson"],
+}
 
 
 def enrich_excursion(sub, trade):
@@ -161,7 +167,7 @@ def run(sub, trade):
                     "5-min entry bar volume vs prior 20 bars, day VWAP, and study levels vs the actual entry price. option = the "
                     "contract's volume that day vs its 5-day average.",
     }
-    out = claude.json_call(os.environ.get("REVIEW_MODEL", "claude-haiku-4-5-20251001"), SYSTEM, payload, 1400)
+    out = claude.json_call(os.environ.get("REVIEW_MODEL", "claude-haiku-4-5-20251001"), SYSTEM, payload, 2000, SCHEMA)
     review = {
         "verdict": out.get("verdict", "partial"),
         "summary": str(out.get("summary") or ""),

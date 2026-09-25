@@ -75,7 +75,13 @@ def call(method, path, body=None, q=None):
     return r["statusCode"], json.loads(r["body"]) if r["body"] else None
 
 
-def fake_claude(model, system, msgs, max_tokens=1500, tools=None):
+def fake_claude(model, system, msgs, max_tokens=1500, tools=None, extra=None):
+    if tools and tools[0]["name"] == "submit":
+        if "weekly" in system.lower():
+            data = {"headline": "Mixed week", "summary": "s", "leaks": [], "rule": "Stop after two losses.", "rule_reason": "r", "last_rule_followed": "unknown"}
+        else:
+            data = {"verdict": "broke_plan", "summary": "s", "what_worked": ["a"], "what_broke": ["b"], "pattern": "", "suggested_tags": ["Revenge", "Nope"], "lesson": "l"}
+        return {"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "x", "name": "submit", "input": data}]}
     if tools:
         last = msgs[-1]
         if isinstance(last["content"], str):
@@ -317,6 +323,9 @@ def test_chart_context():
     assert all(t["ctx"] and "v" in t["ctx"] for t in d["trades"])
     nv = next(t for t in d["trades"] if t["sym"] == "NVDA")
     assert nv["cost"] == round(178.42 * 150, 2) and nv["retPct"] is not None
+    tid = d["trades"][0]["id"]
+    code, v = call("POST", f"/trades/{tid}/context", {"force": True})
+    assert code == 200 and v["ctx"]["v"] == 2
     importer.process(SUB, "i2", "Main", open(os.path.join(HERE, "..", "samples", "sample-fills.csv")).read())
     code, d2 = call("GET", "/trades")
     assert all(t["ctx"] for t in d2["trades"])            # context survives a re-import

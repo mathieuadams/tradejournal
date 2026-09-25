@@ -304,6 +304,7 @@ let cur = null; const replay = { k: Infinity, timer: null };
 function openTrade(id) {
   cur = byId(id); if (!cur) return;
   S.tf = cur.hold == null || cur.hold > 2 * 1440 ? '1d' : cur.hold > 360 ? '1h' : '5m';
+  if (!cur.ctx || cur.ctx.v !== 2) setTimeout(() => cur && cur.id === id && tradeContext(id, true), 0);
   replay.k = Infinity; stopReplay(); renderDrawer();
   $('#scrim').hidden = false; $('#drawer').classList.add('open'); document.body.style.overflow = 'hidden';
   setTimeout(() => $('#dr-close')?.focus(), 50);
@@ -353,7 +354,7 @@ async function patch(body, msg) {
 const pct = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`;
 function ctxPanel(t) {
   const c = t.ctx, who = t.assetType === 'option' ? `${esc(t.underlying)} (the stock)` : esc(t.underlying || t.sym);
-  if (!c || c.v !== 2) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0 0 10px">Trend, moving averages, extension, volume and gap for ${who} when you entered.</p><button class="btn" id="ctx-run">Analyze chart</button>`;
+  if (!c || c.v !== 2) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0 0 10px">${S.ctxBusy?.[t.id] ? 'Analyzing the chart for this trade…' : `Trend, moving averages, your study levels, volume and gap for ${who} when you entered.`}</p><button class="btn" id="ctx-run"${S.ctxBusy?.[t.id] ? ' disabled' : ''}>${S.ctxBusy?.[t.id] ? 'Analyzing…' : 'Analyze chart'}</button>`;
   if (c.missing) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0">No daily price history was found for ${who}.</p>`;
   const row = (k, v, note) => `<tr><td>${k}</td><td class="r">${v}${note ? ` <span class="muted">${note}</span>` : ''}</td></tr>`;
   const ma = (m) => c[m] == null ? '—' : `${px(c[m])} <span class="${c.prevClose >= c[m] ? 'gain' : 'loss'}">${c.prevClose >= c[m] ? 'above' : 'below'}</span>`;
@@ -383,18 +384,30 @@ function ctxPanel(t) {
       ${row('Contract volume', `${c.option.optVolume.toLocaleString('en-US')}`, c.option.optVolRatio != null ? `(${c.option.optVolRatio.toFixed(1)}x its 5-day average)` : '')}` : t.assetType === 'option' ? `<tr><td colspan="2" class="muted" style="padding-top:10px;white-space:normal">Option contract volume needs Alpaca connected (Settings → Brokers). History starts Feb 2024.</td></tr>` : ''}
   </tbody></table></div>`;
 }
-async function runContext(all) {
-  const btn = $(all ? '#ctx-all' : '#ctx-run'); if (btn) { btn.disabled = true; btn.textContent = 'Analyzing…'; }
+async function tradeContext(id, quiet) {
+  if (S.ctxBusy?.[id]) return; (S.ctxBusy = S.ctxBusy || {})[id] = true;
+  const btn = $('#ctx-run'); if (btn && !quiet) { btn.disabled = true; btn.textContent = 'Analyzing…'; }
   try {
-    for (let i = 0; i < 40; i++) {
+    const v = replaceTrade(await api(`/trades/${id}/context`, { method: 'POST', body: {} }));
+    if (cur && cur.id === id) { cur = v; const p = $('#ctx-panel'); if (p) p.innerHTML = ctxPanel(v); }
+  } catch (e) { if (!quiet) toast(e.message); if (btn) { btn.disabled = false; btn.textContent = 'Try again'; } }
+  finally { S.ctxBusy[id] = false; }
+}
+async function runContext(all) {
+  if (!all) { if (cur) tradeContext(cur.id); return; }
+  const btn = $('#ctx-all'); if (btn) { btn.disabled = true; btn.textContent = 'Analyzing…'; }
+  let fails = 0, last = null;
+  for (let i = 0; i < 200; i++) {
+    try {
       const r = await api('/analysis/context', { method: 'POST' });
-      if (btn) btn.textContent = `Analyzing… ${r.remaining} trades left`;
-      if (!r.remaining || !all) break;
-    }
-    const id = cur && cur.id; await reload();
-    if (id) { cur = byId(id); if (cur) renderDrawer(); }
-    toast('Chart analysis done');
-  } catch (e) { toast(e.message); if (btn) { btn.disabled = false; btn.textContent = 'Try again'; } }
+      fails = 0;
+      const b = $('#ctx-all'); if (b) b.textContent = `Analyzing… ${r.remaining} trade${r.remaining === 1 ? '' : 's'} left`;
+      if (!r.remaining) break;
+      if (last === r.remaining && !r.analyzed) break;   // nothing moved: stop instead of looping
+      last = r.remaining;
+    } catch (e) { if (++fails >= 3) { toast(e.message); break; } await sleep(2000); }
+  }
+  await reload(); toast('Chart analysis done');
 }
 function reviewHtml(r) {
   const v = { followed_plan: ['ok', 'Followed the plan'], partial: ['mid', 'Partly followed the plan'], broke_plan: ['bad', 'Broke the plan'], no_plan: ['mid', 'No plan logged'] }[r.verdict] || ['mid', 'Reviewed'];
