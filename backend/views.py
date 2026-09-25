@@ -16,6 +16,10 @@ DEFAULT_SETTINGS = {
     "setups": DEFAULT_SETUPS,
     "prop": {"enabled": False, "account": "", "start": "", "balance": 50000, "trailing": 2500,
              "target": 3000, "dailyLoss": 1000},
+    "liveCoach": {"enabled": False, "premarket": True, "preclose": True, "entry": True},
+    "rules": "",
+    "accountSize": 0,
+    "maxPositionPct": 10,
 }
 
 
@@ -74,4 +78,5 @@ def load_settings(sub):
     p = db.get(db.upk(sub), "PROFILE") or {}
     s = {**DEFAULT_SETTINGS, **(p.get("settings") or {})}
     s["prop"] = {**DEFAULT_SETTINGS["prop"], **(s.get("prop") or {})}
+    s["liveCoach"] = {**DEFAULT_SETTINGS["liveCoach"], **(s.get("liveCoach") or {})}
     return s

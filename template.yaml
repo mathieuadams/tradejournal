@@ -248,6 +248,7 @@ Resources:
         Variables:
           SYNC_FUNCTION: !Ref SyncFunction
           WEEKLY_FUNCTION: !Ref WeeklyFunction
+          LIVECOACH_FUNCTION: !Ref LiveCoachFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3WritePolicy: { BucketName: !Sub "${AppName}-uploads-${AWS::AccountId}-${AWS::Region}" }
@@ -257,6 +258,7 @@ Resources:
         - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
         - LambdaInvokePolicy: { FunctionName: !Ref SyncFunction }
         - LambdaInvokePolicy: { FunctionName: !Ref WeeklyFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref LiveCoachFunction }
       Events:
         # One route per method (not ANY) so browser CORS preflight (OPTIONS) is answered by
         # API Gateway itself instead of hitting the JWT authorizer and failing with 401.
@@ -300,10 +302,12 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: reviewer.handler
-      Timeout: 120
+      Timeout: 180
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
+        - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
         - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
       Events:
         TradeInserted:
@@ -315,7 +319,7 @@ Resources:
             MaximumRetryAttempts: 2
             FilterCriteria:
               Filters:
-                - Pattern: '{"eventName":["INSERT"],"dynamodb":{"Keys":{"SK":{"S":[{"prefix":"TRADE#"}]}}}}'
+                - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"SK":{"S":[{"prefix":"TRADE#"}]}}}}'
 
   SyncFunction:
     Type: AWS::Serverless::Function
@@ -338,6 +342,32 @@ Resources:
           Properties:
             ScheduleExpression: cron(30 17 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
+
+  LiveCoachFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: livecoach.handler
+      Timeout: 600
+      MemorySize: 1024
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
+        - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
+        - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
+      Events:
+        PreMarket:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(0 9 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"kind": "premarket"}'
+        PreClose:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(30 15 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"kind": "preclose"}'
 
   WeeklyFunction:
     Type: AWS::Serverless::Function

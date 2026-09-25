@@ -254,3 +254,35 @@ def sync_user(sub):
     except Exception as e:
         db.update(pk, SK, {"status": "error", "error": str(e)[:300], "lastSync": iso(now_ny())})
         return {"status": "error", "error": str(e)}
+
+
+def positions(sub):
+    """Current positions from Schwab (None when not connected or the login expired)."""
+    item = db.get(db.upk(sub), SK)
+    if not item or not app_config():
+        return None
+    try:
+        access = _access_token(sub, item)
+    except Exception:
+        return None
+    out = []
+    for a in item.get("accounts") or []:
+        try:
+            acct = _http("GET", f"{TRADER}/accounts/{a['hash']}?fields=positions",
+                         {"Authorization": f"Bearer {access}", "Accept": "application/json"}) or {}
+        except Exception:
+            continue
+        sa = acct.get("securitiesAccount") or {}
+        for p in sa.get("positions") or []:
+            ins = p.get("instrument") or {}
+            qty = (p.get("longQuantity") or 0) - (p.get("shortQuantity") or 0)
+            if not qty:
+                continue
+            out.append({"acct": a["name"], "sym": (ins.get("symbol") or "").replace(" ", "").upper(),
+                        "assetType": ins.get("assetType"), "qty": qty, "avgPrice": p.get("averagePrice"),
+                        "marketValue": p.get("marketValue"), "dayPL": p.get("currentDayProfitLoss"),
+                        "openPL": p.get("longOpenProfitLoss") if qty > 0 else p.get("shortOpenProfitLoss")})
+        bal = sa.get("currentBalances") or {}
+        if bal:
+            out.append({"acct": a["name"], "balances": {k: bal.get(k) for k in ("liquidationValue", "cashBalance", "buyingPower", "equity") if k in bal}})
+    return out

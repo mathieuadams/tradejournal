@@ -94,6 +94,15 @@ def put_settings(sub, claims, body, q):
         }
         if s["prop"]["start"] and not re.match(r"^\d{4}-\d{2}-\d{2}$", s["prop"]["start"]):
             raise BadRequest("Start date must be YYYY-MM-DD.")
+    if "liveCoach" in body and isinstance(body["liveCoach"], dict):
+        lc = body["liveCoach"]
+        s["liveCoach"] = {k: bool(lc.get(k, s["liveCoach"].get(k))) for k in ("enabled", "premarket", "preclose", "entry")}
+    if "rules" in body:
+        s["rules"] = _str(body["rules"], "Rules", 4000) or ""
+    if "accountSize" in body:
+        s["accountSize"] = _num(body["accountSize"], "Account size") or 0
+    if "maxPositionPct" in body:
+        s["maxPositionPct"] = _num(body["maxPositionPct"], "Max position %") or 0
     pk = db.upk(sub)
     p = db.get(pk, "PROFILE") or {"PK": pk, "SK": "PROFILE", "createdAt": iso(now_ny())}
     p["settings"] = s
@@ -306,6 +315,24 @@ def schwab_disconnect(sub, claims, body, q):
 @route("POST", "/coach/chat")
 def coach_chat(sub, claims, body, q):
     return chat.run(sub, body.get("messages"))
+
+
+@route("GET", "/coach/notes")
+def coach_notes(sub, claims, body, q):
+    items = db.q_prefix(db.upk(sub), "COACHNOTE#", desc=True, limit=int(q.get("limit") or 20))
+    if q.get("tradeId"):
+        items = [i for i in items if i.get("tradeId") == q["tradeId"]]
+    return {"notes": [{k: v for k, v in i.items() if k not in ("PK", "SK")} for i in items]}
+
+
+@route("POST", "/coach/notes")
+def coach_run(sub, claims, body, q):
+    kind = body.get("kind") if body.get("kind") in ("premarket", "preclose", "manual", "entry") else "manual"
+    payload = {"sub": sub, "kind": kind}
+    if body.get("tradeId"):
+        payload["tradeId"] = _str(body["tradeId"], "Trade", 20)
+    _lambda().invoke(FunctionName=os.environ["LIVECOACH_FUNCTION"], InvocationType="Event", Payload=json.dumps(payload))
+    return {"status": "started"}
 
 
 @route("GET", "/reports/latest")

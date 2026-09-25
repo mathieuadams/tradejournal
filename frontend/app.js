@@ -184,7 +184,9 @@ function vDashboard() {
   if (!S.trades.length) return head('Overview', '', '') + emptyState();
   const St = stats(ts);
   const W = worstLeak(ts);
+  const n = S.notes && S.notes[0];
   return head('Overview', periodText(ts)) + `
+  ${n ? `<section class="coach" style="padding:14px 18px">${noteHtml(n, true)}<a href="#coach" class="linkbtn">Open the full check</a></section>` : ''}
   <section>${periods()}</section>
   <section class="grid2"><div class="panel">${calendar()}</div><div class="panel"><h2>Equity curve</h2>${equity(ts)}</div></section>
   <section class="panel">${pnlBars()}</section>
@@ -319,6 +321,7 @@ function renderDrawer() {
     <div class="chartbox"><div id="chart-note" class="muted" style="font-size:.85rem;margin:0 4px 6px"></div><div id="chart"><p class="loading">Loading chart…</p></div>
       <div class="chart-ctl"><div class="seg" role="group" aria-label="Timeframe">${[['5m', '5m'], ['15m', '15m'], ['1h', '1h'], ['4h', '4h'], ['1d', 'Daily']].map(([k, l]) => `<button data-tf="${k}" aria-pressed="${S.tf === k}">${l}</button>`).join('')}</div>
       <button class="btn" id="rp-play">Replay</button><input type="range" id="rp" min="1" aria-label="Replay position"></div></div>
+    ${t.status === 'open' ? `<div class="coach" id="entry-note"><p class="loading" style="padding:0">Loading entry check…</p></div>` : ''}
     <div class="coach review" id="review"><p class="loading" style="padding:0">Loading coach review…</p></div>
     <div class="panel" id="ctx-panel">${ctxPanel(t)}</div>
     <div class="panel"><h2>Fills</h2><div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
@@ -344,7 +347,7 @@ function renderDrawer() {
       <div class="filters" role="group" aria-label="Emotion">${S.me.emotions.map(m => `<button class="toggle emo" data-emo="${m}" aria-pressed="${t.emotion === m}">${m}</button>`).join('')}</div>
     </div>
   </div>`;
-  loadBars(); loadReview();
+  loadBars(); loadReview(); if (t.status === 'open') loadEntryNote();
 }
 async function patch(body, msg) {
   const id = cur.id;
@@ -419,6 +422,13 @@ function reviewHtml(r) {
     ${r.lesson ? `<h3>Next time</h3><p style="margin:0">${esc(r.lesson)}</p>` : ''}
     ${r.suggested_tags?.filter(x => !cur.tags.includes(x)).length ? `<div class="sug-tags"><span class="muted">Suggested tags:</span> ${r.suggested_tags.filter(x => !cur.tags.includes(x)).map(x => `<button class="toggle" data-tag="${esc(x)}" aria-pressed="false">Add ${esc(x)}</button>`).join(' ')}</div>` : ''}
     <p style="margin:12px 0 0"><button class="linkbtn" id="rv-run">Review again with my latest plan and tags</button></p>`;
+}
+async function loadEntryNote() {
+  const id = cur.id; let notes = [];
+  try { notes = (await api(`/coach/notes?tradeId=${id}&limit=50`)).notes; } catch (e) {}
+  const box = $('#entry-note'); if (!box || !cur || cur.id !== id) return;
+  box.innerHTML = notes.length ? noteHtml(notes[0]) + `<p style="margin:10px 0 0"><button class="linkbtn" data-coach="entry" data-trade="${id}">Check this position again</button></p>`
+    : `<div class="coach-who">${spark()} Entry check</div><p style="margin:0 0 10px">The coach can review this open position against your rules, the chart and your history.</p><button class="btn coachbtn" data-coach="entry" data-trade="${id}">Check this entry</button>`;
 }
 async function loadReview() {
   const id = cur.id, box = () => cur && cur.id === id ? $('#review') : null;
@@ -649,6 +659,53 @@ function scatter(ts) {
 }
 
 /* ---------- coach ---------- */
+const KIND_LABEL = { premarket: 'Pre-market check', preclose: 'Pre-close check', entry: 'New entry check', manual: 'Portfolio check' };
+const STATUS_CLS = { 'on plan': 'ok', 'watch': 'mid', 'rule broken': 'bad', 'no plan': 'mid' };
+function noteHtml(n, compact) {
+  if (!n) return '';
+  const when = (n.createdAt || '').replace('T', ' ').slice(0, 16) + ' ET';
+  return `<div class="coach-who">${spark()} ${esc(KIND_LABEL[n.kind] || 'Coach')} <span class="muted" style="font-weight:400">· ${esc(when)}</span></div>
+    <p class="rule" style="margin:4px 0 10px">${esc(n.headline || '')}</p>
+    ${compact ? '' : `
+    ${(n.portfolio || []).length ? `<h3 style="font-size:.95rem;margin:10px 0 4px">Portfolio</h3><ul style="margin:0;padding-left:18px">${n.portfolio.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    ${(n.positions || []).length ? `<h3 style="font-size:.95rem;margin:14px 0 6px">Positions</h3><ul class="patterns" style="margin-top:0">${n.positions.map(p => `<li><b>${esc(p.ticker)}</b> <span class="verdict ${STATUS_CLS[p.status] || 'mid'}" style="margin-left:6px">${esc(p.status)}</span>
+        <div style="margin-top:6px">${esc(p.note)}</div>
+        ${p.levels ? `<small><b>Levels:</b> ${esc(p.levels)}</small>` : ''}
+        ${p.action ? `<div style="margin-top:6px"><b>Per your rules:</b> ${esc(p.action)}</div>` : ''}</li>`).join('')}</ul>` : ''}
+    ${(n.focus || []).length ? `<h3 style="font-size:.95rem;margin:14px 0 4px">Focus</h3><ul style="margin:0;padding-left:18px">${n.focus.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    ${(n.rule_checks || []).length ? `<h3 style="font-size:.95rem;margin:14px 0 4px">Your rules</h3><ul style="margin:0;padding-left:0;list-style:none">${n.rule_checks.map(r => `<li style="margin:3px 0"><b class="${r.ok ? 'gain' : 'loss'}">${r.ok ? '✓' : '✗'}</b> ${esc(r.rule)} <span class="muted">${esc(r.detail)}</span></li>`).join('')}</ul>` : ''}`}`;
+}
+async function loadNotes(force) {
+  if (S.notes !== undefined && !force) return;
+  try { S.notes = (await api('/coach/notes?limit=15')).notes; } catch (e) { S.notes = []; }
+}
+async function runCoach(kind, tradeId) {
+  await loadNotes();
+  const before = (S.notes && S.notes[0] && S.notes[0].createdAt) || '';
+  try { await api('/coach/notes', { method: 'POST', body: { kind, tradeId } }); } catch (e) { toast(e.message); return; }
+  S.coachBusy = kind; if (['coach', 'dashboard'].includes(route())) render();
+  toast('The coach is reviewing your positions. This takes about a minute.');
+  for (let i = 0; i < 30; i++) {
+    await sleep(5000);
+    await loadNotes(true);
+    if (S.notes[0] && S.notes[0].createdAt !== before) { S.coachBusy = null; if (route() === 'coach' || route() === 'dashboard') render(); if (cur && tradeId && cur.id === tradeId) loadEntryNote(); toast('Coach check ready'); return; }
+  }
+  S.coachBusy = null; toast('The coach is taking longer than usual. Check back in a minute.');
+}
+function liveCoachPanel() {
+  const n = S.notes && S.notes[0], lc = S.me.settings.liveCoach || {};
+  return `<section class="coach" id="live-coach">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div class="coach-who" style="margin:0">${spark()} Live coach</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn" data-coach="premarket" ${S.coachBusy ? 'disabled' : ''}>Pre-market check</button>
+        <button class="btn" data-coach="preclose" ${S.coachBusy ? 'disabled' : ''}>Pre-close check</button>
+        <button class="btn coachbtn" data-coach="manual" ${S.coachBusy ? 'disabled' : ''}>${S.coachBusy ? 'Reviewing…' : 'Check my portfolio now'}</button></div></div>
+    ${S.notes === undefined ? '<p class="loading" style="padding:0">Loading…</p>' : n ? noteHtml(n) : '<p style="margin:0">No coach checks yet. Run one now, or turn on the automatic checks in Settings.</p>'}
+    <p class="muted" style="font-size:.82rem;margin:12px 0 0">${lc.enabled ? `Automatic: ${[lc.premarket && 'pre-market 9:00 ET', lc.preclose && 'pre-close 15:30 ET', lc.entry && 'every new entry'].filter(Boolean).join(', ')}.` : 'Automatic checks are off (Settings → Live coach).'} Coaching on your own positions and rules, not financial advice.</p>
+    ${(S.notes || []).length > 1 ? `<details style="margin-top:10px"><summary class="muted" style="cursor:pointer">Earlier checks</summary>${S.notes.slice(1).map(x => `<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px">${noteHtml(x)}</div>`).join('')}</details>` : ''}
+  </section>`;
+}
 function vCoach() {
   const r = S.report;
   const rep = r === undefined ? `<p class="loading" style="padding:0">Loading your latest report…</p>`
@@ -656,7 +713,7 @@ function vCoach() {
     : `<div class="coach-who">${spark()} Weekly report, week ending ${fmtDate(r.weekEnding)}</div><p class="rule">${esc(r.headline)}</p><p style="margin:0 0 6px">${esc(r.summary)}</p>
       ${(r.leaks || []).length ? `<ul class="patterns">${r.leaks.map((b, i) => `<li><b>${i === 0 ? 'Top leak' : 'Leak'}: ${esc(b.label)}</b>, ${money(b.dollars)}<small>${esc(b.comment)}</small></li>`).join('')}</ul>` : ''}
       ${r.rule ? `<p style="margin:14px 0 0"><b>Rule for next week:</b> ${esc(r.rule)}</p><p class="muted" style="margin:4px 0 0">${esc(r.rule_reason || '')}</p>` : ''}`;
-  return head('Coach', 'Weekly report and questions about your trades', `<button class="btn coachbtn" id="rep-run">Write report now</button>`) + `
+  return head('Coach', 'Live checks on your positions, weekly report, and questions about your trades', `<button class="btn" id="rep-run">Write weekly report</button>`) + liveCoachPanel() + `
   <section class="coach" id="report">${rep}</section>
   <section><h2>Ask about your trades</h2>
     <div class="chat" id="chat">${S.chat.length ? S.chat.map(m => `<div class="msg ${m.role === 'assistant' ? 'ai' : 'me'}">${m.role === 'assistant' ? esc(m.content).replace(/\n/g, '<br>') + (m.tradeIds?.length ? tradeTable(m.tradeIds.map(byId).filter(Boolean), true) : '') : esc(m.content)}</div>`).join('')
@@ -666,6 +723,7 @@ function vCoach() {
   </section>`;
 }
 async function afterCoach() {
+  if (S.notes === undefined) { await loadNotes(); if (route() === 'coach') render(); }
   if (S.report !== undefined) return;
   try { S.report = await api('/reports/latest'); } catch (e) { S.report = e.status === 404 ? null : null; }
   if (route() === 'coach') render();
@@ -781,6 +839,18 @@ function vSettings() {
     <div class="field"><label for="s-risk">Planned risk per trade ($)</label><input id="s-risk" type="number" min="0" step="any" value="${s.riskPerTrade}"></div></div>
     <div class="field"><label for="s-setups">Your setups, one per line</label><textarea id="s-setups">${esc((s.setups || []).join('\n'))}</textarea></div>
   </section>
+  <section class="panel"><h2>Live coach</h2>
+    <p class="muted" style="margin-top:-4px">The coach reviews your open positions against your rules: before the open, 30 minutes before the close, and right after each new entry. It uses Claude, so each check has a small API cost.</p>
+    <div class="field"><label><input type="checkbox" id="lc-on" ${s.liveCoach?.enabled ? 'checked' : ''}> Run automatic checks</label></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
+      <label><input type="checkbox" id="lc-pre" ${s.liveCoach?.premarket !== false ? 'checked' : ''}> Pre-market (9:00 ET)</label>
+      <label><input type="checkbox" id="lc-close" ${s.liveCoach?.preclose !== false ? 'checked' : ''}> Pre-close (15:30 ET)</label>
+      <label><input type="checkbox" id="lc-entry" ${s.liveCoach?.entry !== false ? 'checked' : ''}> Every new entry</label></div>
+    <div class="form-grid">
+      <div class="field"><label for="s-acct">Account size ($)</label><input id="s-acct" type="number" min="0" step="any" value="${s.accountSize || ''}"></div>
+      <div class="field"><label for="s-maxpos">Max size per position (% of account)</label><input id="s-maxpos" type="number" min="0" step="any" value="${s.maxPositionPct ?? 10}"></div></div>
+    <div class="field"><label for="s-rules">My trading rules, one per line</label><textarea id="s-rules" style="min-height:140px" placeholder="Max 3 new entries per day&#10;Close any option below -40% of premium&#10;No new trades after 2 losses in a row&#10;Close options with less than 10 days to expiry&#10;Only enter within 1 ATR of the 21 EMA">${esc(s.rules || '')}</textarea></div>
+  </section>
   <section class="panel"><h2>Prop challenge</h2>
     <div class="field"><label><input type="checkbox" id="pp-on" ${P.enabled ? 'checked' : ''}> Track a prop challenge on the home page</label></div>
     <div class="form-grid">
@@ -822,6 +892,8 @@ async function afterSettings() {
   if (S.broker !== undefined) return; try { S.broker = await api('/broker/alpaca'); } catch (e) { S.broker = { connected: false }; toast(e.message); } if (route() === 'settings') render(); }
 async function saveSettings() {
   const body = { riskPerTrade: $('#s-risk').value, setups: $('#s-setups').value.split('\n'),
+    liveCoach: { enabled: $('#lc-on').checked, premarket: $('#lc-pre').checked, preclose: $('#lc-close').checked, entry: $('#lc-entry').checked },
+    rules: $('#s-rules').value, accountSize: $('#s-acct').value, maxPositionPct: $('#s-maxpos').value,
     prop: { enabled: $('#pp-on').checked, account: $('#pp-acct').value, start: $('#pp-start').value, balance: $('#pp-bal').value, trailing: $('#pp-trail').value, target: $('#pp-target').value, dailyLoss: $('#pp-dll').value } };
   try { S.me.settings = await api('/settings', { method: 'PUT', body }); toast('Settings saved'); } catch (e) { toast(e.message); }
 }
@@ -837,7 +909,7 @@ async function pollBroker() {
 }
 
 /* ---------- router & events ---------- */
-const VIEWS = { dashboard: [vDashboard], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
@@ -848,8 +920,9 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#signout');
+  const el = e.target.closest('[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#signout');
   if (!el) return;
+  if (el.dataset.coach) { runCoach(el.dataset.coach, el.dataset.trade); if (el.dataset.trade) { el.disabled = true; el.textContent = 'Reviewing…'; } return; }
   if (el.dataset.sort) { const k = el.dataset.sort, c = S.sort || { key: 'date', dir: 'desc' };
     S.sort = c.key === k ? { key: k, dir: c.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: SORT_FIRST_DESC.has(k) ? 'desc' : 'asc' };
     if ($('#trade-table')) $('#trade-table').innerHTML = tradeTable(filtered()); else render(); return; }

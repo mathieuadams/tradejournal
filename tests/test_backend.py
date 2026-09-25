@@ -77,7 +77,9 @@ def call(method, path, body=None, q=None):
 
 def fake_claude(model, system, msgs, max_tokens=1500, tools=None, extra=None):
     if tools and tools[0]["name"] == "submit":
-        if "weekly" in system.lower():
+        if "personal trading coach" in system:
+            data = {"headline": "h", "portfolio": ["p"], "positions": [{"ticker": "MES", "status": "watch", "note": "n", "levels": "l", "action": "a"}], "focus": ["f"], "rule_checks": [{"rule": "r", "ok": True, "detail": "d"}]}
+        elif "weekly" in system.lower():
             data = {"headline": "Mixed week", "summary": "s", "leaks": [], "rule": "Stop after two losses.", "rule_reason": "r", "last_rule_followed": "unknown"}
         else:
             data = {"verdict": "broke_plan", "summary": "s", "what_worked": ["a"], "what_broke": ["b"], "pattern": "", "suggested_tags": ["Revenge", "Nope"], "lesson": "l"}
@@ -329,6 +331,35 @@ def test_chart_context():
     importer.process(SUB, "i2", "Main", open(os.path.join(HERE, "..", "samples", "sample-fills.csv")).read())
     code, d2 = call("GET", "/trades")
     assert all(t["ctx"] for t in d2["trades"])            # context survives a re-import
+
+
+def test_live_coach():
+    import livecoach, datetime as dt
+    STORE.clear()
+    now = __import__("util").now_ny()
+    t0 = (now - dt.timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    importer.process(SUB, "i", "Main", f"time,symbol,side,qty,price\n{t0},AMD,buy,10,150\n")
+    def fake(sym, tf, s_, e):
+        out, p, d = [], 100.0, s_
+        step = dt.timedelta(days=1) if tf == "1d" else dt.timedelta(minutes=5)
+        while d <= e:
+            p *= 1.001
+            out.append({"t": d.strftime("%Y-%m-%dT%H:%M:%S"), "o": p, "h": p * 1.01, "l": p * .99, "c": p, "v": 1000})
+            d += step
+        return out
+    livecoach._yahoo = fake
+    code, s = call("PUT", "/settings", {"liveCoach": {"enabled": True}, "rules": "Max 3 positions", "accountSize": 20000})
+    assert code == 200 and s["liveCoach"]["enabled"] and s["liveCoach"]["preclose"]
+    payload = livecoach.build_payload(SUB, "preclose")
+    pos = payload["open_positions"][0]
+    assert pos["ticker"] == "AMD" and pos["mark"] and pos["underlying"]["keltner"] and "study" in pos["underlying"]
+    note = livecoach.run(SUB, "preclose")
+    assert note["headline"] == "h" and note["kind"] == "preclose"
+    code, n = call("GET", "/coach/notes")
+    assert code == 200 and n["notes"][0]["positions"][0]["ticker"] == "MES"
+    os.environ["LIVECOACH_FUNCTION"] = "lc"
+    code, r = call("POST", "/coach/notes", {"kind": "premarket"})
+    assert code == 200
 
 
 def test_analytics():
