@@ -14,7 +14,7 @@ Parameters:
     Description: Globally unique prefix for the sign-in page, e.g. tradejournal-mathieu (no "aws", "amazon" or "cognito")
   ReviewModel:
     Type: String
-    Default: claude-haiku-4-5-20251001
+    Default: claude-sonnet-5
   CoachModel:
     Type: String
     Default: claude-sonnet-5

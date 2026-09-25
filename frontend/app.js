@@ -353,7 +353,7 @@ async function patch(body, msg) {
 const pct = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`;
 function ctxPanel(t) {
   const c = t.ctx, who = t.assetType === 'option' ? `${esc(t.underlying)} (the stock)` : esc(t.underlying || t.sym);
-  if (!c) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0 0 10px">Trend, moving averages, extension, volume and gap for ${who} when you entered.</p><button class="btn" id="ctx-run">Analyze chart</button>`;
+  if (!c || c.v !== 2) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0 0 10px">Trend, moving averages, extension, volume and gap for ${who} when you entered.</p><button class="btn" id="ctx-run">Analyze chart</button>`;
   if (c.missing) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0">No daily price history was found for ${who}.</p>`;
   const row = (k, v, note) => `<tr><td>${k}</td><td class="r">${v}${note ? ` <span class="muted">${note}</span>` : ''}</td></tr>`;
   const ma = (m) => c[m] == null ? '—' : `${px(c[m])} <span class="${c.prevClose >= c[m] ? 'gain' : 'loss'}">${c.prevClose >= c[m] ? 'above' : 'below'}</span>`;
@@ -370,6 +370,17 @@ function ctxPanel(t) {
     ${c.rvol != null ? row('Volume that day vs 20-day average', `${c.rvol.toFixed(1)}x`) : ''}
     ${c.brokeHigh20 != null ? row('Took out the 20-day high that day', c.brokeHigh20 ? 'Yes' : 'No') : ''}
     ${c.dayChgPct != null ? row('Stock’s move that day', pct(c.dayChgPct)) : ''}
+    ${c.study ? `<tr><td colspan="2" style="padding-top:14px"><b>Your study (HVC, anchored VWAP, FVG)</b></td></tr>
+      ${row('High-volume close (HVC)', c.study.hvc == null ? '—' : `${px(c.study.hvc)} <span class="muted">bands ${px(c.study.hvDn)}–${px(c.study.hvUp)}</span>`, c.study.vsHvc ? `(${c.study.vsHvc}, ${pct(c.study.hvcDistPct)})` : '')}
+      ${row('Anchored VWAP', c.study.avwap == null ? '—' : `${px(c.study.avwap)} <span class="muted">since ${fmtDate(c.study.avwapAnchor)}</span>`, c.study.vsAvwap ? `(${c.study.vsAvwap}, ${pct(c.study.avwapDistPct)})` : '')}
+      ${row('Fair value gap', esc(c.study.fvgState), c.study.bullFvg ? `bull ${px(c.study.bullFvg[0])}–${px(c.study.bullFvg[1])}` : c.study.bearFvg ? `bear ${px(c.study.bearFvg[0])}–${px(c.study.bearFvg[1])}` : '')}` : ''}
+    ${c.intraday ? `<tr><td colspan="2" style="padding-top:14px"><b>At the moment you entered</b></td></tr>
+      ${row('Stock price at entry', px(c.intraday.underlyingAtEntry))}
+      ${row('Volume of the 5-min entry bar', c.intraday.entryBarRvol == null ? '—' : `${c.intraday.entryBarRvol.toFixed(1)}x the previous 20 bars`)}
+      ${c.intraday.sessionVwap ? row('Day VWAP', `${px(c.intraday.sessionVwap)} <span class="${c.intraday.aboveSessionVwap ? 'gain' : 'loss'}">${c.intraday.aboveSessionVwap ? 'above' : 'below'}</span>`) : ''}
+      ${c.intraday.studyAtEntryPrice ? row('Entry price vs HVC / anchored VWAP', `${esc(c.intraday.studyAtEntryPrice.vsHvc || '—')} / ${esc(c.intraday.studyAtEntryPrice.vsAvwap || '—')}`, esc(c.intraday.studyAtEntryPrice.fvgState || '')) : ''}` : ''}
+    ${c.option ? `<tr><td colspan="2" style="padding-top:14px"><b>The option contract that day</b></td></tr>
+      ${row('Contract volume', `${c.option.optVolume.toLocaleString('en-US')}`, c.option.optVolRatio != null ? `(${c.option.optVolRatio.toFixed(1)}x its 5-day average)` : '')}` : t.assetType === 'option' ? `<tr><td colspan="2" class="muted" style="padding-top:10px;white-space:normal">Option contract volume needs Alpaca connected (Settings → Brokers). History starts Feb 2024.</td></tr>` : ''}
   </tbody></table></div>`;
 }
 async function runContext(all) {
@@ -388,9 +399,11 @@ async function runContext(all) {
 function reviewHtml(r) {
   const v = { followed_plan: ['ok', 'Followed the plan'], partial: ['mid', 'Partly followed the plan'], broke_plan: ['bad', 'Broke the plan'], no_plan: ['mid', 'No plan logged'] }[r.verdict] || ['mid', 'Reviewed'];
   return `<div class="coach-who">${spark()} Coach review <span class="verdict ${v[0]}" style="margin-left:6px">${v[1]}</span></div>
+    ${r.summary ? `<p class="rule" style="font-size:1.05rem;margin:6px 0 4px">${esc(r.summary)}</p>` : ''}
+    ${r.pattern ? `<p style="margin:8px 0 0;padding:10px 12px;background:var(--surface);border-radius:8px"><b>Your pattern:</b> ${esc(r.pattern)}</p>` : ''}
     ${r.what_worked?.length ? `<h3>What worked</h3><ul>${r.what_worked.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
     ${r.what_broke?.length ? `<h3>What broke</h3><ul>${r.what_broke.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
-    ${r.lesson ? `<h3>Takeaway</h3><p style="margin:0">${esc(r.lesson)}</p>` : ''}
+    ${r.lesson ? `<h3>Next time</h3><p style="margin:0">${esc(r.lesson)}</p>` : ''}
     ${r.suggested_tags?.filter(x => !cur.tags.includes(x)).length ? `<div class="sug-tags"><span class="muted">Suggested tags:</span> ${r.suggested_tags.filter(x => !cur.tags.includes(x)).map(x => `<button class="toggle" data-tag="${esc(x)}" aria-pressed="false">Add ${esc(x)}</button>`).join(' ')}</div>` : ''}
     <p style="margin:12px 0 0"><button class="linkbtn" id="rv-run">Review again with my latest plan and tags</button></p>`;
 }
@@ -415,6 +428,25 @@ async function loadBars() {
     if (!S.bars[key]) S.bars[key] = await api(`/trades/${id}/bars?tf=${S.tf}`);
     if (cur && cur.id === id) drawChart();
   } catch (e) { S.bars[key] = { error: e.message }; if (cur && cur.id === id) drawChart(); }
+}
+function studySeries(bars) {
+  const out = []; let hvc = null, up = null, dn = null, anchor = null, pv = 0, vv = 0; const trs = [];
+  let bearTop = null, bearBot = null, bullTop = null, bullBot = null;
+  const adr = j => { if (j < 20) return null; let t = 0; for (let k = 0; k < 21; k++) t += bars[j - k].h / bars[j - k].l; return 100 * (t / 20 - 1); };
+  bars.forEach((b, i) => {
+    const prev = hvc;
+    if (i >= 1) { const w = bars.slice(Math.max(0, i - 21), i).map(x => x.v || 0), v1 = bars[i - 1].v || 0;
+      if (w.length && v1 > 0 && v1 === Math.max(...w)) { const c1 = bars[i - 1].c, a = adr(i - 1); hvc = c1; up = a == null ? null : c1 * (1 + a / 100); dn = a == null ? null : c1 * (1 - a * .618 / 100); } }
+    if (hvc != null && hvc !== prev) { anchor = i; pv = 0; vv = 0; }
+    if (anchor != null) { pv += (b.h + b.l + b.c) / 3 * (b.v || 0); vv += b.v || 0; }
+    const pc = i ? bars[i - 1].c : b.c; trs.push(Math.max(b.h, pc) - Math.min(b.l, pc));
+    const last = trs.slice(-20), thr = .33 * last.reduce((a, x) => a + x, 0) / last.length;
+    const bear = i >= 2 && bars[i - 2].l - b.h > thr, bull = i >= 2 && b.l - bars[i - 2].h > thr;
+    if (bear) { bearTop = bars[i - 2].l; bearBot = b.h; } else if (bearTop != null && b.c > bearTop) bearTop = bearBot = null;
+    if (bull) { bullBot = bars[i - 2].h; bullTop = b.l; } else if (bullBot != null && b.c < bullBot) bullTop = bullBot = null;
+    out.push({ hvc, up, dn, avwap: anchor != null && vv ? pv / vv : null, bullTop, bullBot, bearTop, bearBot });
+  });
+  return out;
 }
 function drawChart() {
   const t = cur, data = S.bars[t.id + ':' + S.tf];
@@ -441,6 +473,15 @@ function drawChart() {
     for (const [n, col] of [[10, '#5b8def'], [20, '#e0a544'], [50, '#a15cf0']]) {
       const pts = []; for (let i = n - 1; i < k; i++) { const v = cl.slice(i - n + 1, i + 1).reduce((a, b) => a + b, 0) / n; if (v >= lo - pad && v <= hi + pad) pts.push(`${X(i).toFixed(1)},${Y(v).toFixed(1)}`); }
       if (pts.length > 1) maLines += `<polyline points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="1.3" opacity=".9"/>`;
+    }
+    if (bars.some(b => b.v)) {
+      const st = studySeries(bars), seg = (key, col, w, dash) => { let d = '', on = false; for (let i = 0; i < k; i++) { const v = st[i][key]; if (v == null || v < lo - pad || v > hi + pad) { on = false; continue; } d += `${on ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `; on = true; } return d ? `<path d="${d}" fill="none" stroke="${col}" stroke-width="${w}"${dash ? ` stroke-dasharray="${dash}"` : ''}/>` : ''; };
+      let zones = '';
+      for (let i = 0; i < k; i++) { const z = st[i];
+        if (z.bullTop != null) zones += `<rect x="${X(i) - bw / 2}" y="${Y(Math.max(z.bullTop, z.bullBot))}" width="${bw}" height="${Math.abs(Y(z.bullTop) - Y(z.bullBot))}" fill="#e0c341" opacity=".22"/>`;
+        if (z.bearTop != null) zones += `<rect x="${X(i) - bw / 2}" y="${Y(Math.max(z.bearTop, z.bearBot))}" width="${bw}" height="${Math.abs(Y(z.bearTop) - Y(z.bearBot))}" fill="#d14fd1" opacity=".2"/>`; }
+      maLines = zones + maLines + seg('hvc', '#18b5c9', 2) + seg('up', '#18b5c9', 1, '4 3') + seg('dn', '#18b5c9', 1, '4 3') + seg('avwap', '#e6b800', 2);
+      maLines += `<text x="${pl + 112}" y="${pt + 10}" font-size="10" fill="#18b5c9">HVC ± bands</text><text x="${pl + 186}" y="${pt + 10}" font-size="10" fill="#c9a000">Anchored VWAP</text><text x="${pl + 272}" y="${pt + 10}" font-size="10" fill="#b39b1f">FVG zones</text>`;
     }
     maLines += `<text x="${pl + 4}" y="${pt + 10}" font-size="10" fill="#5b8def">MA10</text><text x="${pl + 40}" y="${pt + 10}" font-size="10" fill="#e0a544">MA20</text><text x="${pl + 76}" y="${pt + 10}" font-size="10" fill="#a15cf0">MA50</text>`;
   }
@@ -509,6 +550,12 @@ const BD = {
   rvol: ['Volume vs average', t => { const x = t.ctx && t.ctx.rvol; return x == null ? 'Not analyzed' : x < 1 ? 'Under 1x' : x < 2 ? '1–2x' : x < 3 ? '2–3x' : '3x or more'; }],
   gap: ['Gap at open', t => { const x = t.ctx && t.ctx.gapPct; return x == null ? 'Not analyzed' : x <= -2 ? 'Gap down 2%+' : x < -0.5 ? 'Small gap down' : x <= 0.5 ? 'Flat open' : x < 2 ? 'Small gap up' : 'Gap up 2%+'; }],
   high20: ['Near 20-day high', t => { const c = t.ctx; if (!c || c.missing) return 'Not analyzed'; if (c.brokeHigh20) return 'Broke the 20-day high'; const x = c.fromHigh20Pct; return x >= -3 ? 'Within 3% of high' : x >= -10 ? '3–10% below high' : 'More than 10% below high'; }],
+  hvcRel: ['Vs HVC (study)', t => t.ctx && t.ctx.study && t.ctx.study.vsHvc ? ({ above: 'Above HVC', near: 'Near HVC (±1.5%)', below: 'Below HVC' })[t.ctx.study.vsHvc] : 'Not analyzed'],
+  avwapRel: ['Vs anchored VWAP', t => t.ctx && t.ctx.study && t.ctx.study.vsAvwap ? (t.ctx.study.vsAvwap === 'above' ? 'Above anchored VWAP' : 'Below anchored VWAP') : 'Not analyzed'],
+  fvg: ['Fair value gap', t => t.ctx && t.ctx.study ? t.ctx.study.fvgState : 'Not analyzed'],
+  entryVol: ['Entry-bar volume', t => { const x = t.ctx && t.ctx.intraday && t.ctx.intraday.entryBarRvol; return x == null ? 'Not available' : x < 1 ? 'Under 1x' : x < 2 ? '1–2x' : x < 4 ? '2–4x' : '4x or more'; }],
+  dayVwap: ['Vs day VWAP at entry', t => t.ctx && t.ctx.intraday && t.ctx.intraday.aboveSessionVwap != null ? (t.ctx.intraday.aboveSessionVwap ? 'Above day VWAP' : 'Below day VWAP') : 'Not available'],
+  optVol: ['Option volume vs its average', t => { const x = t.ctx && t.ctx.option && t.ctx.option.optVolRatio; return x == null ? 'Not available' : x < 1 ? 'Under 1x' : x < 2 ? '1–2x' : x < 5 ? '2–5x' : '5x or more'; }],
   rsi: ['RSI at entry', t => { const x = t.ctx && t.ctx.rsi14; return x == null ? 'Not analyzed' : x < 30 ? 'Under 30' : x < 50 ? '30–50' : x < 70 ? '50–70' : '70 and up'; }]
 };
 const BD_ORDER = {
@@ -518,7 +565,10 @@ const BD_ORDER = {
   rvol: ['Under 1x', '1–2x', '2–3x', '3x or more', 'Not analyzed'],
   gap: ['Gap down 2%+', 'Small gap down', 'Flat open', 'Small gap up', 'Gap up 2%+', 'Not analyzed'],
   high20: ['Broke the 20-day high', 'Within 3% of high', '3–10% below high', 'More than 10% below high', 'Not analyzed'],
-  rsi: ['Under 30', '30–50', '50–70', '70 and up', 'Not analyzed']
+  rsi: ['Under 30', '30–50', '50–70', '70 and up', 'Not analyzed'],
+  hvcRel: ['Above HVC', 'Near HVC (±1.5%)', 'Below HVC', 'Not analyzed'],
+  entryVol: ['Under 1x', '1–2x', '2–4x', '4x or more', 'Not available'],
+  optVol: ['Under 1x', '1–2x', '2–5x', '5x or more', 'Not available']
 };
 function vAnalytics() {
   const ts = closed(scoped());
@@ -548,11 +598,11 @@ function vAnalytics() {
   </section>`;
 }
 function chartAnalysisPanel(ts) {
-  const todo = S.trades.filter(t => !t.ctx).length, have = ts.filter(t => t.ctx && !t.ctx.missing);
-  const feats = [['trend', 'Trend at entry'], ['ma50', 'Vs 50-day MA'], ['ext', 'Extension from 20-day MA'], ['rvol', 'Volume vs average'], ['gap', 'Gap at open'], ['high20', 'Near 20-day high'], ['rsi', 'RSI at entry']];
+  const todo = S.trades.filter(t => !t.ctx || t.ctx.v !== 2).length, have = ts.filter(t => t.ctx && !t.ctx.missing);
+  const feats = [['trend', 'Trend at entry'], ['ma50', 'Vs 50-day MA'], ['ext', 'Extension from 20-day MA'], ['rvol', 'Volume vs average'], ['gap', 'Gap at open'], ['high20', 'Near 20-day high'], ['rsi', 'RSI at entry'], ['hvcRel', 'Vs HVC'], ['avwapRel', 'Vs anchored VWAP'], ['fvg', 'Fair value gap'], ['entryVol', 'Entry-bar volume'], ['dayVwap', 'Vs day VWAP'], ['optVol', 'Option volume']];
   const findings = [];
   if (have.length >= 8) for (const [k, label] of feats) {
-    const g = {}; for (const t of have) { const b = BD[k][1](t); if (b !== 'Not analyzed' && b !== 'Not enough history') (g[b] = g[b] || []).push(t); }
+    const g = {}; for (const t of have) { const b = BD[k][1](t); if (b !== 'Not analyzed' && b !== 'Not enough history' && b !== 'Not available') (g[b] = g[b] || []).push(t); }
     const ent = Object.entries(g).filter(([, a]) => a.length >= 3).map(([b, a]) => [b, stats(a)]);
     if (ent.length < 2) continue;
     ent.sort((a, b) => b[1].net / b[1].n - a[1].net / a[1].n);
@@ -560,7 +610,7 @@ function chartAnalysisPanel(ts) {
     findings.push(`<li><b>${label}:</b> ${esc(bb)} is your best group, ${money(bs.net)} over ${bs.n} trades (${(bs.wr * 100).toFixed(0)}% winners). ${esc(wb)} is your weakest, ${money(ws.net)} over ${ws.n} trades (${(ws.wr * 100).toFixed(0)}% winners).<small><button class="linkbtn" data-bd="${k}">See the full breakdown</button></small></li>`);
   }
   return `<section class="coach"><div class="coach-who">${spark()} Chart analysis</div>
-    <p style="margin:0 0 6px">For every trade, the app looks at the stock's daily chart before you entered: trend, moving averages, how extended it was, volume, gap and RSI. Then it compares your results in each situation.</p>
+    <p style="margin:0 0 6px">For every trade, the app looks at the stock's daily chart before you entered (trend, moving averages, extension, volume, gap, RSI) and your study: high-volume close with bands, anchored VWAP and fair value gaps. For recent trades it also checks the 5-minute entry bar, the day VWAP and, with Alpaca connected, the option contract's volume. Then it compares your results in each situation.</p>
     ${todo ? `<p style="margin:10px 0"><button class="btn coachbtn" id="ctx-all">Analyze charts for ${todo} trade${todo === 1 ? '' : 's'}</button></p>` : ''}
     ${findings.length ? `<ul class="patterns">${findings.join('')}</ul>` : have.length ? '<p class="muted" style="margin:0">Not enough analyzed trades in this period for comparisons yet.</p>' : ''}</section>`;
 }

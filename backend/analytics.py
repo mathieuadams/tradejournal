@@ -140,6 +140,9 @@ def breakdown(ts, by):
         "vs_50day_ma": lambda t: {True: "above 50-day MA", False: "below 50-day MA"}.get((t.get("ctx") or {}).get("above50"), "unknown"),
         "extension_from_20ma": lambda t: _ext_bucket((t.get("ctx") or {}).get("ext20Adr")),
         "relative_volume": lambda t: _rvol_bucket((t.get("ctx") or {}).get("rvol")),
+        "vs_hvc": lambda t: ((t.get("ctx") or {}).get("study") or {}).get("vsHvc") or "unknown",
+        "vs_anchored_vwap": lambda t: ((t.get("ctx") or {}).get("study") or {}).get("vsAvwap") or "unknown",
+        "fair_value_gap": lambda t: ((t.get("ctx") or {}).get("study") or {}).get("fvgState") or "unknown",
         "hour": lambda t: f"{t['time'][:2]}:00",
         "weekday": lambda t: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][
             __import__("datetime").date.fromisoformat(t["date"]).weekday()],

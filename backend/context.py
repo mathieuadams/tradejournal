@@ -7,11 +7,12 @@ Options use the underlying stock, futures the continuous front-month contract.
 from datetime import datetime, timedelta
 
 import db
+import indicators
 from charts import _yahoo  # Yahoo daily bars, no key needed
 from grouping import describe
 from util import parse_iso
 
-VERSION = 1
+VERSION = 2
 
 
 def _sma(xs, n):
@@ -71,10 +72,12 @@ def compute(bars, entry_date):
     trend = "Uptrend" if ma50 and ma200 and prev > ma50 > ma200 else \
         "Downtrend" if ma50 and ma200 and prev < ma50 < ma200 else "Mixed" if ma50 and ma200 else None
     ctx["trend"] = trend
+    p_idx = bars.index(prior[-1])
+    ctx["study"] = indicators.state_at(bars, p_idx)     # HVC, anchored VWAP and FVG as of the prior close
     return ctx
 
 
-def analyze(sub, limit_symbols=12):
+def analyze(sub, limit_symbols=6):
     """Compute context for trades missing it, a few underlyings per call (one Yahoo request each)."""
     pk = db.upk(sub)
     trades = [t for t in db.q_prefix(pk, "TRADE#") if (t.get("ctx") or {}).get("v") != VERSION]
@@ -83,8 +86,12 @@ def analyze(sub, limit_symbols=12):
         d = describe(t["sym"])
         key = f"{d['underlying']}=F" if d["assetType"] == "future" else d["underlying"].replace(".", "-")
         by_sym.setdefault(key, []).append(t)
-    done, failed = 0, []
+    import time
+    t0 = time.time()
+    done, failed, cc = 0, [], {}
     for sym in list(by_sym)[:limit_symbols]:
+        if time.time() - t0 > 18:   # stay well inside the API's 29-second limit; the browser calls again
+            break
         ts = by_sym[sym]
         first = min(parse_iso(t["openTs"]) for t in ts)
         last = max(parse_iso(t["openTs"]) for t in ts)
@@ -95,7 +102,77 @@ def analyze(sub, limit_symbols=12):
             bars = []
         for t in ts:
             ctx = compute(bars, t["openTs"][:10]) if bars else None
+            ctx = enrich(sub, t, ctx, sym, bars, cc)
             db.update(pk, t["SK"], {"ctx": ctx or {"v": VERSION, "missing": True}})
             done += 1
-    remaining = sum(len(v) for k, v in list(by_sym.items())[limit_symbols:])
+    remaining = len(trades) - done
     return {"analyzed": done, "remaining": remaining, "failedSymbols": failed}
+
+
+def for_trade(sub, trade):
+    """Context for one trade, computing and saving it if missing."""
+    if (trade.get("ctx") or {}).get("v") == VERSION:
+        return trade["ctx"]
+    d = describe(trade["sym"])
+    sym = f"{d['underlying']}=F" if d["assetType"] == "future" else d["underlying"].replace(".", "-")
+    start = parse_iso(trade["openTs"])
+    try:
+        bars = _yahoo(sym, "1d", start - timedelta(days=400), min(start + timedelta(days=2), datetime.utcnow()))
+    except Exception:
+        return None
+    ctx = compute(bars, trade["openTs"][:10])
+    ctx = enrich(sub, trade, ctx, sym, bars, {}) or {"v": VERSION, "missing": True}
+    db.update(db.upk(sub), trade["SK"], {"ctx": ctx})
+    trade["ctx"] = ctx
+    return ctx
+
+
+def intraday(sym, trade, bars_daily):
+    """Entry bar volume vs recent bars, session VWAP, and the study levels vs the actual entry-time price (last ~55 days only)."""
+    start = parse_iso(trade["openTs"])
+    if (datetime.utcnow() - start).days > 55:
+        return None
+    try:
+        bars = _yahoo(sym, "5m", start - timedelta(days=4), start + timedelta(hours=1))
+    except Exception:
+        return None
+    upto = [b for b in bars if b["t"][:16] <= trade["openTs"][:16]]
+    if len(upto) < 5:
+        return None
+    eb = upto[-1]
+    prev = [b.get("v") or 0 for b in upto[-21:-1]]
+    sess = [b for b in upto if b["t"][:10] == trade["openTs"][:10]]
+    pv = sum((b["h"] + b["l"] + b["c"]) / 3 * (b.get("v") or 0) for b in sess)
+    vv = sum(b.get("v") or 0 for b in sess)
+    out = {"underlyingAtEntry": eb["c"], "entryBarVolume": eb.get("v") or 0,
+           "entryBarRvol": round((eb.get("v") or 0) / (sum(prev) / len(prev)), 2) if prev and sum(prev) else None}
+    if vv:
+        out["sessionVwap"] = round(pv / vv, 4)
+        out["aboveSessionVwap"] = eb["c"] > pv / vv
+    prior = [b for b in bars_daily if b["t"][:10] < trade["openTs"][:10]]
+    if prior:
+        st = indicators.state_at(bars_daily, bars_daily.index(prior[-1]), price=eb["c"])
+        out["studyAtEntryPrice"] = {k: st.get(k) for k in ("vsHvc", "hvcDistPct", "vsAvwap", "avwapDistPct", "fvgState")}
+    return out
+
+
+def enrich(sub, trade, ctx, sym, bars_daily, creds_cache):
+    if not ctx or ctx.get("missing"):
+        return ctx
+    intr = intraday(sym, trade, bars_daily)
+    if intr:
+        ctx["intraday"] = intr
+    d = describe(trade["sym"])
+    if d["assetType"] == "option":
+        if "c" not in creds_cache:
+            try:
+                import alpaca
+                creds_cache["c"] = alpaca.creds(sub)
+            except Exception:
+                creds_cache["c"] = None
+        if creds_cache["c"]:
+            import optiondata
+            ov = optiondata.daily_volume(creds_cache["c"], trade["sym"].replace(" ", ""), trade["openTs"][:10])
+            if ov:
+                ctx["option"] = ov
+    return ctx

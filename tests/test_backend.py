@@ -307,9 +307,10 @@ def test_chart_context():
     ctx = context.compute(bars, entry)
     assert ctx["trend"] == "Uptrend" and ctx["above50"] and ctx["rvol"] == 3.0 and 3.9 < ctx["adrPct"] < 4.2
     assert ctx["ext20Adr"] is not None and ctx["rsi14"] == 100.0
+    assert ctx["v"] == 2 and "fvgState" in ctx["study"] and ctx["study"]["hvc"]
     STORE.clear()
     importer.process(SUB, "i1", "Main", open(os.path.join(HERE, "..", "samples", "sample-fills.csv")).read())
-    context._yahoo = lambda sym, tf, s, e: [dict(b, t=b["t"].replace(b["t"][:10], (__import__("datetime").date(2025, 12, 1) + __import__("datetime").timedelta(days=i)).isoformat())) for i, b in enumerate(bars)]
+    context._yahoo = lambda sym, tf, s, e: [] if tf != "1d" else [dict(b, t=b["t"].replace(b["t"][:10], (__import__("datetime").date(2025, 12, 1) + __import__("datetime").timedelta(days=i)).isoformat())) for i, b in enumerate(bars)]
     r = context.analyze(SUB)
     assert r["remaining"] == 0 and r["analyzed"] == 6
     code, d = call("GET", "/trades")
