@@ -710,7 +710,7 @@ function vCoach() {
   const r = S.report;
   const rep = r === undefined ? `<p class="loading" style="padding:0">Loading your latest report…</p>`
     : r === null ? `<p style="margin:0 0 10px">No weekly report yet. Reports are written every Sunday morning, or you can write one now.</p>`
-    : `<div class="coach-who">${spark()} Weekly report, week ending ${fmtDate(r.weekEnding)}</div><p class="rule">${esc(r.headline)}</p><p style="margin:0 0 6px">${esc(r.summary)}</p>
+    : `<div class="coach-who">${spark()} Weekly report, week ending ${fmtDate(r.weekEnding)}</div><p class="rule">${esc(r.headline)}</p><p style="margin:0 0 6px">${esc(String(r.summary || '').split(/<\/\w+>|<parameter/)[0])}</p>
       ${(r.leaks || []).length ? `<ul class="patterns">${r.leaks.map((b, i) => `<li><b>${i === 0 ? 'Top leak' : 'Leak'}: ${esc(b.label)}</b>, ${money(b.dollars)}<small>${esc(b.comment)}</small></li>`).join('')}</ul>` : ''}
       ${r.rule ? `<p style="margin:14px 0 0"><b>Rule for next week:</b> ${esc(r.rule)}</p><p class="muted" style="margin:4px 0 0">${esc(r.rule_reason || '')}</p>` : ''}`;
   return head('Coach', 'Live checks on your positions, weekly report, and questions about your trades', `<button class="btn" id="rep-run">Write weekly report</button>`) + liveCoachPanel() + `
