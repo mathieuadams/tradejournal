@@ -307,6 +307,7 @@ function openTrade(id) {
   cur = byId(id); if (!cur) return;
   S.tf = cur.hold == null || cur.hold > 2 * 1440 ? '1d' : cur.hold > 360 ? '1h' : '5m';
   if (!cur.ctx || cur.ctx.v !== 2) setTimeout(() => cur && cur.id === id && tradeContext(id, true), 0);
+  if (cur.status === 'closed' && (!cur.q || cur.q.v !== 1)) setTimeout(() => cur && cur.id === id && tradeQuality(id, true), 0);
   replay.k = Infinity; stopReplay(); renderDrawer();
   $('#scrim').hidden = false; $('#drawer').classList.add('open'); document.body.style.overflow = 'hidden';
   setTimeout(() => $('#dr-close')?.focus(), 50);
@@ -323,6 +324,7 @@ function renderDrawer() {
       <button class="btn" id="rp-play">Replay</button><input type="range" id="rp" min="1" aria-label="Replay position"></div></div>
     ${t.status === 'open' ? `<div class="coach" id="entry-note"><p class="loading" style="padding:0">Loading entry check…</p></div>` : ''}
     <div class="coach review" id="review"><p class="loading" style="padding:0">Loading coach review…</p></div>
+    ${t.status === 'closed' ? `<div class="panel" id="q-panel">${qPanel(t)}</div>` : ''}
     <div class="panel" id="ctx-panel">${ctxPanel(t)}</div>
     <div class="panel"><h2>Fills</h2><div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
       ${t.assetType === 'option' ? `<tr><td>Contract</td><td class="r">${esc(t.underlying)} ${t.optType} ${t.strike} exp ${esc(fmtExp(t.expiry))} (${t.dte} days at entry)</td></tr>` : ''}<tr><td>Quantity</td><td class="r">${t.qty}${t.assetType === 'option' ? ' contracts' : ''}</td></tr><tr><td>Average entry</td><td class="r">${px(t.entry)}</td></tr><tr><td>Average exit</td><td class="r">${px(t.exit)}</td></tr>
@@ -355,6 +357,54 @@ async function patch(body, msg) {
   catch (e) { toast(e.message); }
 }
 const pct = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`;
+const scoreCol = v => v >= 70 ? 'var(--gain)' : v >= 45 ? 'var(--warn)' : 'var(--loss)';
+const pc = (v, d = 0) => v == null ? '—' : `${(v * 100).toFixed(d)}%`;
+const atrf = v => v == null ? '—' : `${v.toFixed(1)} ATR`;
+function qPanel(t) {
+  const q = t.q;
+  if (!q || q.v !== 1) return `<h2>Execution scorecard</h2><p class="muted" style="margin:0 0 10px">${S.qBusy?.[t.id] ? 'Scoring the entry, exit and size…' : 'Grades the entry, the exit and the position size from the stock’s price path.'}</p><button class="btn" id="q-run"${S.qBusy?.[t.id] ? ' disabled' : ''}>${S.qBusy?.[t.id] ? 'Scoring…' : 'Score this trade'}</button>`;
+  if (q.missing) return `<h2>Execution scorecard</h2><p class="muted" style="margin:0">Not available: ${esc(q.missing)}.</p>`;
+  const g = (label, v) => `<div style="flex:1;min-width:110px"><div class="muted" style="font-size:.84rem">${label}</div><div style="font-size:1.6rem;font-weight:600;color:${scoreCol(v)}">${v}</div><div class="meter" style="margin-top:4px"><i style="width:${v}%;background:${scoreCol(v)}"></i></div></div>`;
+  const row = (k, v, note) => `<tr><td>${k}</td><td class="r">${v}${note ? ` <span class="muted">${note}</span>` : ''}</td></tr>`;
+  const z = q.size || {};
+  return `<h2>Execution scorecard</h2>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px">${g('Entry', q.scores.entry)}${g('Exit', q.scores.exit)}${g('Size', q.scores.size)}</div>
+  <ul style="margin:0 0 12px;padding-left:18px">${(q.verdicts || []).map(v => `<li>${esc(v)}</li>`).join('')}</ul>
+  <div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
+    <tr><td colspan="2"><b>Entry</b></td></tr>
+    ${row('Entry efficiency', pc(q.entryEff), '(100% = bought the best price of the trade)')}
+    ${row('Where in the day’s range', pc(q.entryDayPct), '(0% = best side for your direction)')}
+    ${row('Went against you (heat)', atrf(q.heatAtr))}
+    ${row('Distance from 21 EMA at entry', atrf(q.extAtr))}
+    <tr><td colspan="2" style="padding-top:12px"><b>Exit</b></td></tr>
+    ${row('Exit efficiency', pc(q.exitEff), '(100% = sold the best price of the trade)')}
+    ${row('Share of the best move kept', q.captured == null ? '—' : pc(Math.max(0, q.captured)))}
+    ${row('Best move while held', atrf(q.runupAtr))}
+    ${row('5 days after exit: further in your favor / against', `${atrf(q.afterUpAtr)} / ${atrf(q.afterDownAtr)}`)}
+    ${row('Total efficiency', pc(q.totalEff))}
+    <tr><td colspan="2" style="padding-top:12px"><b>Size</b></td></tr>
+    ${row('Capital used', money(z.cost, false), z.costPctAccount != null ? `(${z.costPctAccount}% of account)` : '')}
+    ${row('Vs your typical position', z.sizeVsTypical ? `${z.sizeVsTypical.toFixed(2)}x` : '—', z.typicalCost ? `(typical ${money(z.typicalCost, false)})` : '')}
+    ${z.maxLoss ? row('Max loss (premium paid)', money(z.maxLoss, false)) : ''}
+  </tbody></table></div>
+  <p class="muted" style="font-size:.82rem;margin:10px 0 0">Measured on ${t.assetType === 'option' ? `${esc(t.underlying)} (the stock)` : 'the stock'} using ${q.tf === '1d' ? 'daily' : q.tf} bars. ATR = 21-day average true range (${px(q.atr)}).</p>`;
+}
+async function tradeQuality(id, quiet) {
+  if (S.qBusy?.[id]) return; (S.qBusy = S.qBusy || {})[id] = true;
+  const p0 = $('#q-panel'); if (p0 && cur && cur.id === id) p0.innerHTML = qPanel(cur);
+  try { const v = replaceTrade(await api(`/trades/${id}/quality`, { method: 'POST', body: {} })); S.qBusy[id] = false; if (cur && cur.id === id) { cur = v; const p = $('#q-panel'); if (p) p.innerHTML = qPanel(v); } }
+  catch (e) { S.qBusy[id] = false; if (!quiet) toast(e.message); const p = $('#q-panel'); if (p && cur && cur.id === id) p.innerHTML = qPanel(cur); }
+}
+async function runQualityAll() {
+  const btn = $('#q-all'); if (btn) { btn.disabled = true; btn.textContent = 'Scoring…'; }
+  let fails = 0, last = null;
+  for (let i = 0; i < 300; i++) {
+    try { const r = await api('/analysis/quality', { method: 'POST' }); fails = 0; const b = $('#q-all'); if (b) b.textContent = `Scoring… ${r.remaining} left`;
+      if (!r.remaining || (last === r.remaining && !r.analyzed)) break; last = r.remaining; }
+    catch (e) { if (++fails >= 3) { toast(e.message); break; } await sleep(2000); }
+  }
+  await reload(); toast('Scoring done');
+}
 function ctxPanel(t) {
   const c = t.ctx, who = t.assetType === 'option' ? `${esc(t.underlying)} (the stock)` : esc(t.underlying || t.sym);
   if (!c || c.v !== 2) return `<h2>Chart context at entry</h2><p class="muted" style="margin:0 0 10px">${S.ctxBusy?.[t.id] ? 'Analyzing the chart for this trade…' : `Trend, moving averages, your study levels, volume and gap for ${who} when you entered.`}</p><button class="btn" id="ctx-run"${S.ctxBusy?.[t.id] ? ' disabled' : ''}>${S.ctxBusy?.[t.id] ? 'Analyzing…' : 'Analyze chart'}</button>`;
@@ -579,6 +629,9 @@ const BD = {
   entryVol: ['Entry-bar volume', t => { const x = t.ctx && t.ctx.intraday && t.ctx.intraday.entryBarRvol; return x == null ? 'Not available' : x < 1 ? 'Under 1x' : x < 2 ? '1–2x' : x < 4 ? '2–4x' : '4x or more'; }],
   dayVwap: ['Vs day VWAP at entry', t => t.ctx && t.ctx.intraday && t.ctx.intraday.aboveSessionVwap != null ? (t.ctx.intraday.aboveSessionVwap ? 'Above day VWAP' : 'Below day VWAP') : 'Not available'],
   optVol: ['Option volume vs its average', t => { const x = t.ctx && t.ctx.option && t.ctx.option.optVolRatio; return x == null ? 'Not available' : x < 1 ? 'Under 1x' : x < 2 ? '1–2x' : x < 5 ? '2–5x' : '5x or more'; }],
+  entryQ: ['Entry score', t => !t.q || t.q.v !== 1 || t.q.missing ? 'Not scored' : t.q.scores.entry >= 70 ? 'Good entry (70+)' : t.q.scores.entry >= 45 ? 'OK entry (45–69)' : 'Poor entry (under 45)'],
+  exitQ: ['Exit score', t => !t.q || t.q.v !== 1 || t.q.missing ? 'Not scored' : t.q.scores.exit >= 70 ? 'Good exit (70+)' : t.q.scores.exit >= 45 ? 'OK exit (45–69)' : 'Poor exit (under 45)'],
+  sizeQ: ['Size vs typical', t => { const x = t.q && t.q.size && t.q.size.sizeVsTypical; return x == null ? 'Not scored' : x < 0.75 ? 'Smaller (<0.75x)' : x <= 1.25 ? 'Typical (0.75–1.25x)' : x < 2 ? 'Larger (1.25–2x)' : '2x or more'; }],
   rsi: ['RSI at entry', t => { const x = t.ctx && t.ctx.rsi14; return x == null ? 'Not analyzed' : x < 30 ? 'Under 30' : x < 50 ? '30–50' : x < 70 ? '50–70' : '70 and up'; }]
 };
 const BD_ORDER = {
@@ -589,6 +642,9 @@ const BD_ORDER = {
   gap: ['Gap down 2%+', 'Small gap down', 'Flat open', 'Small gap up', 'Gap up 2%+', 'Not analyzed'],
   high20: ['Broke the 20-day high', 'Within 3% of high', '3–10% below high', 'More than 10% below high', 'Not analyzed'],
   rsi: ['Under 30', '30–50', '50–70', '70 and up', 'Not analyzed'],
+  entryQ: ['Good entry (70+)', 'OK entry (45–69)', 'Poor entry (under 45)', 'Not scored'],
+  exitQ: ['Good exit (70+)', 'OK exit (45–69)', 'Poor exit (under 45)', 'Not scored'],
+  sizeQ: ['Smaller (<0.75x)', 'Typical (0.75–1.25x)', 'Larger (1.25–2x)', '2x or more', 'Not scored'],
   hvcRel: ['Above HVC', 'Near HVC (±1.5%)', 'Below HVC', 'Not analyzed'],
   entryVol: ['Under 1x', '1–2x', '2–4x', '4x or more', 'Not available'],
   optVol: ['Under 1x', '1–2x', '2–5x', '5x or more', 'Not available']
@@ -608,6 +664,7 @@ function vAnalytics() {
     <div class="tablewrap" style="border:0"><table><thead><tr><th></th><th class="r">Actual</th><th class="r">What if</th><th class="r">Difference</th></tr></thead><tbody>
     ${rows.map(([k, f]) => `<tr><td>${k}</td><td class="r">${f(A)}</td><td class="r">${on ? f(B) : '—'}</td><td class="r">${on && k === 'Net P&L' ? `<b class="${cls(B.net - A.net)}">${money(B.net - A.net)}</b>` : ''}</td></tr>`).join('')}
     </tbody></table></div></section>
+  ${executionPanel(ts)}
   ${chartAnalysisPanel(ts)}
   <section class="panel"><h2>Breakdown</h2><div class="filters" role="group" aria-label="Group by">${Object.entries(BD).map(([k, [l]]) => `<button class="toggle emo" data-bd="${k}" aria-pressed="${S.bd === k}">${l}</button>`).join('')}</div>${breakdown(ts)}</section>
   <section class="grid2">
@@ -619,6 +676,30 @@ function vAnalytics() {
       <div class="kv"><span>Winners that went over 0.7R against you first</span><b>${ts.filter(t => t.r > 0 && t.mae > .7).length}</b></div>
       <div class="kv"><span>Losses bigger than 1.1R</span><b class="loss">${ts.filter(t => t.r != null && t.r < -1.1).length}</b></div></div>
   </section>`;
+}
+function executionPanel(ts) {
+  const todo = closed(S.trades).filter(t => !t.q || t.q.v !== 1).length;
+  const sc = ts.filter(t => t.q && t.q.v === 1 && !t.q.missing);
+  const a = f => { const xs = sc.map(f).filter(x => x != null); return xs.length ? avg(xs) : null; };
+  const early = sc.filter(t => t.q.afterUpAtr >= 1 && t.q.afterUpAtr > (t.q.afterDownAtr || 0)).length;
+  const chased = sc.filter(t => t.q.extAtr != null && t.q.extAtr > 1.5).length;
+  const big = sc.filter(t => t.q.size && t.q.size.sizeVsTypical >= 1.5);
+  const box = (label, v, sub) => `<div class="stat" style="border:0;padding:6px 14px 6px 0"><span>${label}</span><b style="color:${v != null && typeof v === 'number' ? scoreCol(v) : 'inherit'}">${v == null ? '—' : typeof v === 'number' ? Math.round(v) : v}</b>${sub ? `<small class="muted">${sub}</small>` : ''}</div>`;
+  const winners = sc.filter(t => t.net > 0), losers = sc.filter(t => t.net <= 0);
+  return `<section class="panel"><div class="cal-head"><h2>Execution</h2>${todo ? `<button class="btn coachbtn" id="q-all">Score ${todo} trade${todo === 1 ? '' : 's'}</button>` : ''}</div>
+    ${!sc.length ? '<p class="muted" style="margin:0">Score your trades to see how good your entries, exits and sizing are. Each trade is measured on the stock’s price path: where you bought and sold within the move, how much heat you took, and what happened after you exited.</p>' : `
+    <div style="display:flex;flex-wrap:wrap;gap:4px 28px">${box('Avg entry score', a(t => t.q.scores.entry))}${box('Avg exit score', a(t => t.q.scores.exit))}${box('Avg size score', a(t => t.q.scores.size))}</div>
+    <div class="tablewrap" style="border:0;margin-top:8px"><table><thead><tr><th></th><th class="r">All scored</th><th class="r">Winners</th><th class="r">Losers</th></tr></thead><tbody>
+      ${[['Entry efficiency', t => t.q.entryEff, pc], ['Where in the day’s range', t => t.q.entryDayPct, pc], ['Heat taken', t => t.q.heatAtr, atrf], ['Distance from 21 EMA at entry', t => t.q.extAtr, atrf],
+         ['Exit efficiency', t => t.q.exitEff, pc], ['Share of best move kept', t => t.q.captured == null ? null : Math.max(0, t.q.captured), pc], ['Move after exit (in your favor)', t => t.q.afterUpAtr, atrf],
+         ['Size vs typical', t => t.q.size && t.q.size.sizeVsTypical, v => v == null ? '—' : v.toFixed(2) + 'x']]
+        .map(([k, f, fmt]) => { const m = xs => { const v = xs.map(f).filter(x => x != null); return v.length ? fmt(avg(v)) : '—'; }; return `<tr><td>${k}</td><td class="r">${m(sc)}</td><td class="r">${m(winners)}</td><td class="r">${m(losers)}</td></tr>`; }).join('')}
+    </tbody></table></div>
+    <ul class="patterns">
+      <li><b>${early}</b> of ${sc.length} trades kept going at least 1 ATR in your direction within 5 days after you sold.<small><button class="linkbtn" data-bd="exitQ">Exit score breakdown</button></small></li>
+      <li><b>${chased}</b> entries were more than 1.5 ATR above the 21 EMA.<small><button class="linkbtn" data-bd="entryQ">Entry score breakdown</button></small></li>
+      <li><b>${big.length}</b> positions were 1.5x your typical size or more. Their net: <span class="${cls(sum(big.map(t => t.net)))}">${money(sum(big.map(t => t.net)))}</span>.<small><button class="linkbtn" data-bd="sizeQ">Size breakdown</button></small></li>
+    </ul>`}</section>`;
 }
 function chartAnalysisPanel(ts) {
   const todo = S.trades.filter(t => !t.ctx || t.ctx.v !== 2).length, have = ts.filter(t => t.ctx && !t.ctx.missing);
@@ -920,7 +1001,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#signout');
+  const el = e.target.closest('[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#signout');
   if (!el) return;
   if (el.dataset.coach) { runCoach(el.dataset.coach, el.dataset.trade); if (el.dataset.trade) { el.disabled = true; el.textContent = 'Reviewing…'; } return; }
   if (el.dataset.sort) { const k = el.dataset.sort, c = S.sort || { key: 'date', dir: 'desc' };
@@ -955,6 +1036,8 @@ document.addEventListener('click', e => {
     case 'sch-del': if (confirm('Disconnect Schwab? Trades already synced stay in the journal.')) api('/broker/schwab', { method: 'DELETE' }).then(b => { S.schwab = b; render(); }).catch(err => toast(err.message)); return;
     case 'al-show': S.showAlpaca = true; render(); return;
     case 'ctx-run': runContext(false); return;
+    case 'q-run': if (cur) tradeQuality(cur.id); return;
+    case 'q-all': runQualityAll(); return;
     case 'ctx-all': runContext(true); return;
     case 'signout': Auth.logout(); return;
   }

@@ -24,6 +24,8 @@ Your job is to give insight the trader could not see at a glance. Rules:
   underlying, premium paid vs typical size, and whether the underlying move was big enough for this contract to pay.
 - Compare with the trader's history for similar situations (same ticker, same trend / extension / DTE / time bucket).
   Say whether this trade fits a pattern that usually makes or loses money for them, with the numbers.
+- Use execution_scorecard (entry/exit efficiency, heat, run-up, what happened after the exit, size vs typical) to
+  grade the entry, the exit and the size separately, each with its numbers.
 - Do not recommend buying or selling any security; talk about process, entry location, sizing and exits only.
 
 Answer by calling the submit tool. At most 3 items per list. Plain words. Dollar amounts like $120, percentages like 4.2%."""
@@ -116,6 +118,11 @@ def run(sub, trade):
     pk = db.upk(sub)
     trade = enrich_excursion(sub, trade)
     context.for_trade(sub, trade)
+    try:
+        import quality
+        quality.for_trade(sub, trade)
+    except Exception as e:
+        print("quality failed", e)
     j = db.get(pk, f"JRNL#{trade['id']}")
     v = merge(trade, j)
     settings = load_settings(sub)
@@ -153,6 +160,7 @@ def run(sub, trade):
         "option": option,
         "plan": v["plan"] or None,
         "chart_context_before_entry": ctx,
+        "execution_scorecard": v.get("q") if v.get("q") and not v["q"].get("missing") else None,
         "underlying_during_trade": path,
         "same_day_before_this_trade": [{"time": x["time"], "ticker": x.get("underlying"), "net": x["net"] if x["status"] == "closed" else "open"} for x in same_day],
         "previous_two_closed_trades_net": [x["net"] for x in last2],

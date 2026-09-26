@@ -362,6 +362,35 @@ def test_live_coach():
     assert code == 200
 
 
+def test_quality_scorecard():
+    import quality, datetime as dt
+    # stock bought at 100 on day D 10:00, ran to 110, sold 105 at D+1 15:00, then kept rising to 115
+    def fake(sym, tf, s_, e):
+        out = []
+        d = dt.datetime(2026, 1, 1)
+        while d <= dt.datetime(2026, 3, 30):
+            if d.weekday() < 5:
+                day = d.strftime("%Y-%m-%d")
+                if tf == "1d":
+                    p = 100 if day < "2026-03-02" else 110 if day <= "2026-03-03" else 115
+                    out.append({"t": day + "T09:30:00", "o": p, "h": p + 1, "l": p - 1, "c": p, "v": 1})
+                elif "2026-03-02" <= day <= "2026-03-03":
+                    for m in range(0, 390, 30):
+                        t = d + dt.timedelta(hours=9, minutes=30 + m)
+                        p = 99 + (m / 390) * 11 if day == "2026-03-02" else 110 - (m / 390) * 5
+                        out.append({"t": t.strftime("%Y-%m-%dT%H:%M:%S"), "o": p, "h": p + .2, "l": p - .2, "c": p, "v": 1})
+            d += dt.timedelta(days=1)
+        return [b for b in out if s_.strftime("%Y-%m-%d") <= b["t"][:10] <= e.strftime("%Y-%m-%d")]
+    t = {"sym": "AMD", "dir": "Long", "status": "closed", "openTs": "2026-03-02T10:00:00", "closeTs": "2026-03-03T15:00:00",
+         "entry": 100.0, "exit": 105.0, "qty": 10, "mult": 1, "fees": 0}
+    quality.datetime = type("D", (), {"utcnow": staticmethod(lambda: dt.datetime(2026, 3, 20)), "strptime": dt.datetime.strptime})
+    q = quality.compute(t, [], {"accountSize": 10000, "maxPositionPct": 5}, fake)
+    quality.datetime = dt.datetime
+    assert q["entryEff"] > 0.8 and 0.3 < q["captured"] < 0.7 and q["afterUpAtr"] > 1, q
+    assert any("early exit" in v for v in q["verdicts"]) and q["size"]["costPctAccount"] == 10.0
+    assert q["scores"]["size"] < 100
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

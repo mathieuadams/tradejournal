@@ -2,7 +2,7 @@
 import db
 from grouping import group_fills
 
-ENRICH = ("maePx", "mfePx")
+ENRICH = ("maePx", "mfePx", "q")
 COMPARE = ("ctx", "status", "closeTs", "qty", "closedQty", "entry", "exit", "net", "fees", "fillIds")
 
 

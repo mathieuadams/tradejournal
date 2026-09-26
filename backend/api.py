@@ -12,6 +12,7 @@ import alpaca
 import charts
 import chat
 import context
+import quality
 import db
 import review
 import schwab
@@ -185,6 +186,19 @@ def trade_context(sub, claims, body, q, tid):
     context.for_trade(sub, t)
     j = db.get(db.upk(sub), f"JRNL#{tid}")
     return views.merge(t, j, db.get(db.upk(sub), f"REVIEW#{tid}") is not None)
+
+
+@route("POST", r"/trades/(?P<tid>[a-f0-9]{16})/quality")
+def trade_quality(sub, claims, body, q, tid):
+    t = _trade_or_404(sub, tid)
+    quality.for_trade(sub, t, force=bool(body.get("force")))
+    j = db.get(db.upk(sub), f"JRNL#{tid}")
+    return views.merge(t, j, db.get(db.upk(sub), f"REVIEW#{tid}") is not None)
+
+
+@route("POST", "/analysis/quality")
+def analysis_quality(sub, claims, body, q):
+    return quality.analyze(sub)
 
 
 @route("POST", "/analysis/context")
