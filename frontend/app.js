@@ -943,6 +943,9 @@ function vSettings() {
       <div class="field"><label for="pp-dll">Daily loss limit</label><input id="pp-dll" type="number" step="any" value="${P.dailyLoss}"></div></div>
     <button class="btn primary" id="s-save">Save settings</button>
   </section>
+  <section class="panel"><h2>Data</h2>
+    <p class="muted" style="margin-top:-4px">Rebuilds every trade from your stored fills and removes duplicate copies of the same fill. Journal notes, tags and plans are kept.</p>
+    <button class="btn" id="rebuild">Rebuild trades and remove duplicate fills</button></section>
   <section class="panel"><h2>Brokers</h2>
     <p class="muted" style="margin-top:-4px">Connected brokers sync your fills automatically. Each broker account shows up as its own account in the journal, and every page can show one account or all of them together.</p>
     <div class="broker-card"><h3>Charles Schwab</h3>${schwabHtml()}</div>
@@ -1001,7 +1004,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#signout');
+  const el = e.target.closest('[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.coach) { runCoach(el.dataset.coach, el.dataset.trade); if (el.dataset.trade) { el.disabled = true; el.textContent = 'Reviewing…'; } return; }
   if (el.dataset.sort) { const k = el.dataset.sort, c = S.sort || { key: 'date', dir: 'desc' };
@@ -1037,6 +1040,9 @@ document.addEventListener('click', e => {
     case 'al-show': S.showAlpaca = true; render(); return;
     case 'ctx-run': runContext(false); return;
     case 'q-run': if (cur) tradeQuality(cur.id); return;
+    case 'rebuild': el.disabled = true; el.textContent = 'Rebuilding…'; api('/maintenance/rebuild', { method: 'POST' })
+      .then(async r => { await reload(); toast(`Rebuilt ${r.trades} trades. Removed ${r.duplicateFillsRemoved} duplicate fill${r.duplicateFillsRemoved === 1 ? '' : 's'}.`); })
+      .catch(err => { el.disabled = false; el.textContent = 'Rebuild trades and remove duplicate fills'; toast(err.message); }); return;
     case 'q-all': runQualityAll(); return;
     case 'ctx-all': runContext(true); return;
     case 'signout': Auth.logout(); return;

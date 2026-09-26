@@ -201,6 +201,12 @@ def analysis_quality(sub, claims, body, q):
     return quality.analyze(sub)
 
 
+@route("POST", "/maintenance/rebuild")
+def rebuild(sub, claims, body, q):
+    import ingest
+    return ingest.regroup(sub)
+
+
 @route("POST", "/analysis/context")
 def analysis_context(sub, claims, body, q):
     return context.analyze(sub)

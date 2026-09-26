@@ -391,6 +391,22 @@ def test_quality_scorecard():
     assert q["scores"]["size"] < 100
 
 
+def test_no_duplicates_across_time_zone_choices():
+    STORE.clear()
+    text = open(os.path.join(HERE, "..", "samples", "schwab-statement-sample.csv"), encoding="utf-8").read()
+    from parsers import parse_csv as pc
+    import ingest
+    f1, _ = pc(text, "Main", "auto")
+    f2, _ = pc(text, "Main", "ET")
+    ingest.save_fills(SUB, f1)
+    new, dup = ingest.save_fills(SUB, f2)
+    assert new == 0 and dup == len(f2)
+    # simulate an old duplicate stored under a different key, then rebuild
+    old = dict(f2[0]); STORE[(db.upk(SUB), "FILL#Main#1999-01-01T00:00:00#" + old["id"])] = {"PK": db.upk(SUB), "SK": "FILL#Main#1999-01-01T00:00:00#" + old["id"], **old}
+    code, r = call("POST", "/maintenance/rebuild")
+    assert code == 200 and r["duplicateFillsRemoved"] == 1
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]
