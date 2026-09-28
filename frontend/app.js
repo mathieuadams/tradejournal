@@ -1022,6 +1022,7 @@ function vGex() {
       ${card('Net delta exposure', bigMoney(g.netDex), 'Option holders’ delta, in $')}
       ${card('Put/call open interest', g.putCallOi ?? '—', `Volume ${g.putCallVolume ?? '—'} · ${g.callOi.toLocaleString('en-US')} calls, ${g.putOi.toLocaleString('en-US')} puts`)}
     </section>
+    ${emPanel(g)}
     <section class="panel"><div class="cal-head"><h2>Gamma exposure by strike</h2><span class="muted" style="font-size:.85rem">$ of dealer hedging per 1% move. Green: calls, red: puts.</span></div>${gexBars(g)}</section>
     ${g.profile.length ? `<section class="panel"><div class="cal-head"><h2>Total gamma if the price moved</h2><span class="muted" style="font-size:.85rem">Where the line crosses zero is the gamma flip.</span></div>${gexProfile(g)}</section>` : ''}
     <section class="panel"><h2>Largest strikes</h2><div class="tablewrap" style="border:0"><table><thead><tr><th>Strike</th><th class="r">Net GEX</th><th class="r">Call GEX</th><th class="r">Put GEX</th><th class="r">Call OI</th><th class="r">Put OI</th><th class="r">Net DEX</th></tr></thead><tbody>
@@ -1030,6 +1031,44 @@ function vGex() {
     <p class="muted" style="font-size:.84rem">${g.contracts} contracts, ${g.expiry ? `expiring ${fmtExp(g.expiry)}` : `expiring within ${g.maxDays} days`}${g.strikesEachSide ? `, ${g.strikesEachSide} strikes each side of the price` : ''}. The flip depends on which expirations and strikes are included, so it differs between sites using different settings. Open interest is from the previous session${g.oiDate ? ` (${esc(g.oiDate)})` : ''}, so this shows positioning as of this morning. Uses the common assumption that dealers are long calls and short puts; real dealer positioning isn’t public. Loaded ${esc(g.asOf)} ET.</p>`;
   } else body = `<section class="panel"><p class="muted" style="margin:0">Pick a ticker to see where options positioning sits: gamma exposure by strike, the gamma flip level, call and put walls, max pain and delta exposure. Needs Alpaca (free) or Schwab with market data connected in Settings.</p></section>`;
   return head('Options positioning', 'Gamma and delta exposure from the option chain', '') + form + body;
+}
+function emFor(g) {
+  const list = (g.expectedMove && g.expectedMove.byExpiration) || [];
+  return list.find(m => m.exp === g.expiry) || list.find(m => m.dte >= 1) || list[0] || null;
+}
+function emPanel(g) {
+  const f2 = v => v == null ? '—' : Number(v).toFixed(2);
+  const em = g.expectedMove || {}, list = em.byExpiration || [];
+  if (!list.length) return '';
+  const cur = emFor(g), d = em.daily;
+  const mine = S.trades.filter(t => t.status === 'open' && t.assetType === 'option' && t.underlying === g.symbol);
+  const posRows = mine.map(t => {
+    const be = t.optType === 'call' ? t.strike + t.entry : t.strike - t.entry;
+    const need = (be / g.spot - 1) * 100;
+    const m = list.find(x => x.exp === t.expiry) || list.filter(x => x.exp <= t.expiry).pop();
+    const inside = m ? (t.optType === 'call' ? be <= m.upper : be >= m.lower) : null;
+    return `<tr><td><b>${esc(fmtExp(t.expiry))} ${t.strike} ${t.optType}</b></td><td class="r">${px(be)}</td><td class="r ${cls(t.optType === 'call' ? -need : need)}">${pct(need)}</td>
+      <td class="r">${m ? `±${m.pct.toFixed(1)}% (${px(m.lower)}–${px(m.upper)})${m.exp !== t.expiry ? ` <span class="muted">by ${fmtExp(m.exp)}</span>` : ''}` : '—'}</td>
+      <td>${inside == null ? '—' : inside ? '<span class="gain">Within the expected range</span>' : '<span class="loss">Needs a bigger move than expected</span>'}</td></tr>`;
+  }).join('');
+  return `<section class="panel"><div class="cal-head"><h2>Expected move</h2><span class="muted" style="font-size:.85rem">What the options market is pricing, from the at-the-money straddle</span></div>
+    <div class="periods" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-bottom:14px">
+      ${d ? `<div class="period"><h3>Next day</h3><div class="big">±${f2(d.move)}</div><p>±${d.pct.toFixed(1)}% · range ${px(d.lower)}–${px(d.upper)}</p></div>` : ''}
+      ${cur ? `<div class="period"><h3>By ${fmtExp(cur.exp)} (${cur.dte} days)</h3><div class="big">±${f2(cur.move)}</div><p>±${cur.pct.toFixed(1)}% · range ${px(cur.lower)}–${px(cur.upper)}</p></div>` : ''}
+    </div>
+    <div class="tablewrap" style="border:0"><table><thead><tr><th>Expiration</th><th class="r">Days</th><th class="r">ATM straddle</th><th class="r">Expected move</th><th class="r">Range</th><th class="r">IV</th></tr></thead><tbody>
+      ${list.map(m => `<tr><td>${fmtExp(m.exp)}</td><td class="r">${m.dte}</td><td class="r">${m.straddle != null ? f2(m.straddle) : '—'}</td><td class="r"><b>±${f2(m.move)}</b> <span class="muted">(${m.pct.toFixed(1)}%)</span></td><td class="r">${px(m.lower)} – ${px(m.upper)}</td><td class="r">${m.ivAtm ? (m.ivAtm * 100).toFixed(0) + '%' : '—'}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${posRows ? `<h3 style="font-size:.98rem;margin:16px 0 6px">Your open ${esc(g.symbol)} options</h3><div class="tablewrap" style="border:0"><table><thead><tr><th>Contract</th><th class="r">Breakeven at expiry</th><th class="r">Move needed</th><th class="r">Expected move</th><th></th></tr></thead><tbody>${posRows}</tbody></table></div>` : ''}
+    <details style="margin-top:12px"><summary style="cursor:pointer;font-weight:600">How to use the expected move for entries and exits</summary>
+      <ul style="margin:8px 0 0;padding-left:18px;line-height:1.55">
+        <li><b>It’s the market’s range, not a forecast.</b> Roughly two out of three times, price finishes an expiration inside this range.</li>
+        <li><b>Targets:</b> a profit target inside the range is realistic; one far outside needs an unusual move. Walls inside the range are natural targets.</li>
+        <li><b>Stops:</b> a stop inside the daily expected move is likely to get hit by normal noise. Place it beyond the daily range or beyond a gamma level.</li>
+        <li><b>Entries:</b> buying near the edge of the range in positive gamma (mean reversion) gives better location than buying in the middle or chasing the top edge.</li>
+        <li><b>Buying options:</b> if your breakeven sits outside the expected range for that expiration, the option needs a bigger-than-expected move to pay. Choose a strike or expiration whose breakeven is inside it.</li>
+        <li><b>With gamma:</b> in positive gamma, price tends to stay inside the range; in negative gamma (below the flip), breaks outside it are more common.</li>
+      </ul></details></section>`;
 }
 function gexBars(g) {
   const lo = g.spot * 0.85, hi = g.spot * 1.15, xs = g.strikes.filter(b => b.strike >= lo && b.strike <= hi);
@@ -1043,6 +1082,8 @@ function gexBars(g) {
     <rect x="${X(i) - bw * .38}" y="${zy}" width="${bw * .76}" height="${Math.max(0, -b.putGex * sc)}" fill="var(--loss)"><title>${px(b.strike)} puts: ${bigMoney(b.putGex)} (OI ${b.putOi})</title></rect>
     ${i % step === 0 ? `<text x="${X(i)}" y="${H - 12}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${b.strike}</text>` : ''}`).join('');
   const vline = (p, col, lab, y) => `<line x1="${xOf(p)}" x2="${xOf(p)}" y1="${pt}" y2="${H - pb}" stroke="${col}" stroke-dasharray="4 3" stroke-width="1.5"/><text x="${xOf(p) + 4}" y="${y}" font-size="11" fill="${col}" font-weight="600">${lab} ${px(p)}</text>`;
+  const em = emFor(g);
+  if (em) { const a = Math.max(lo, em.lower), b = Math.min(hi, em.upper); svg = `<rect x="${xOf(a)}" y="${pt}" width="${Math.max(0, xOf(b) - xOf(a))}" height="${H - pt - pb}" fill="var(--coach-soft)" opacity=".7"/><text x="${xOf(a) + 4}" y="${H - pb - 6}" font-size="10.5" fill="var(--coach)">Expected move by ${fmtExp(em.exp)}</text>` + svg; }
   svg += `<line x1="${pl}" x2="${W - pr}" y1="${zy}" y2="${zy}" stroke="var(--line)"/>` + vline(g.spot, 'var(--ink)', 'Spot', pt + 10) + (g.gammaFlip && g.gammaFlip >= lo && g.gammaFlip <= hi ? vline(g.gammaFlip, 'var(--coach)', 'Flip', pt + 24) : '');
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Gamma exposure by strike" style="width:100%;height:auto">${svg}</svg>`;
 }

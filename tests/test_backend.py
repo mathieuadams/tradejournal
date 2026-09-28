@@ -420,6 +420,11 @@ def test_gex_math():
     assert r["callWall"] >= 100 and r["putWall"] <= 95 and r["putCallOi"] > 1
     assert r["gammaFlip"] is not None and 85 < r["gammaFlip"] < 115, r["gammaFlip"]
     assert r["maxPain"] in [k for k in range(80, 125, 5)]
+    for c in cs:
+        c["mark"] = 3.0 if c["strike"] == 100 else 1.0
+    em = gex.expected_moves(cs, 100.0)
+    m = em["byExpiration"][0]
+    assert m["straddle"] == 6.0 and m["upper"] == 106.0 and m["lower"] == 94.0 and 7 < m["ivMove"] < 9 and em["daily"]["pct"] > 2
     code, err = call("GET", "/gex", q={"symbol": "NVDA"})
     assert code in (400, 503)
 

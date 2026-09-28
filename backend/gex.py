@@ -89,7 +89,9 @@ def from_schwab(sub, symbol, max_days):
                                 "iv": (c.get("volatility") or 0) / 100 if (c.get("volatility") or 0) > 0 else None,
                                 "delta": c.get("delta") if c.get("delta") not in (None, -999.0) else None,
                                 "gamma": c.get("gamma") if c.get("gamma") not in (None, -999.0) else None,
-                                "volume": c.get("totalVolume") or 0})
+                                "volume": c.get("totalVolume") or 0,
+                                "mark": c.get("mark") if (c.get("mark") or 0) > 0 else
+                                ((c.get("bid") or 0) + (c.get("ask") or 0)) / 2 or None})
     return {"source": "Schwab", "spot": spot, "contracts": out}
 
 
@@ -109,7 +111,8 @@ def from_alpaca(creds, symbol, max_days, spot):
         for c in d.get("option_contracts") or []:
             contracts[c["symbol"]] = {"sym": c["symbol"], "call": c["type"] == "call", "strike": float(c["strike_price"]),
                                       "exp": c["expiration_date"], "oi": int(float(c.get("open_interest") or 0)),
-                                      "oiDate": c.get("open_interest_date"), "iv": None, "delta": None, "gamma": None, "volume": 0}
+                                      "oiDate": c.get("open_interest_date"), "iv": None, "delta": None, "gamma": None, "volume": 0,
+                                      "mark": float(c["close_price"]) if c.get("close_price") else None}
         token = d.get("next_page_token")
         if not token:
             break
@@ -127,10 +130,51 @@ def from_alpaca(creds, symbol, max_days, spot):
             g = snap.get("greeks") or {}
             c["delta"], c["gamma"], c["iv"] = g.get("delta"), g.get("gamma"), snap.get("impliedVolatility")
             c["volume"] = (snap.get("dailyBar") or {}).get("v") or 0
+            qt = snap.get("latestQuote") or {}
+            if qt.get("bp") and qt.get("ap"):
+                c["mark"] = (qt["bp"] + qt["ap"]) / 2
+            elif (snap.get("latestTrade") or {}).get("p"):
+                c["mark"] = snap["latestTrade"]["p"]
         token = d.get("next_page_token")
         if not token:
             break
     return {"source": "Alpaca", "spot": spot, "contracts": list(contracts.values())}
+
+
+def expected_moves(contracts, spot, limit=10):
+    """Expected move per expiration from the at-the-money straddle (what the market charges for a move),
+    plus the implied-volatility version (about a one-standard-deviation range, ~68% probability)."""
+    by_exp = {}
+    for c in contracts:
+        by_exp.setdefault(c["exp"], []).append(c)
+    out = []
+    for exp in sorted(by_exp)[:limit]:
+        cs = by_exp[exp]
+        ks = sorted({c["strike"] for c in cs})
+        if not ks:
+            continue
+        k = min(ks, key=lambda x: abs(x - spot))
+        call = next((c for c in cs if c["call"] and c["strike"] == k), None)
+        put = next((c for c in cs if not c["call"] and c["strike"] == k), None)
+        T = _years(exp)
+        dte = max(0, (datetime.strptime(exp, "%Y-%m-%d").date() - now_ny().date()).days)
+        straddle = (call["mark"] + put["mark"]) if call and put and call.get("mark") and put.get("mark") else None
+        ivs = [x.get("iv") for x in (call, put) if x and x.get("iv")]
+        iv = sum(ivs) / len(ivs) if ivs else None
+        iv_move = spot * iv * math.sqrt(T) if iv else None
+        move = straddle if straddle else iv_move
+        if not move:
+            continue
+        out.append({"exp": exp, "dte": dte, "atmStrike": k, "straddle": round(straddle, 2) if straddle else None,
+                    "ivAtm": round(iv, 4) if iv else None, "ivMove": round(iv_move, 2) if iv_move else None,
+                    "move": round(move, 2), "pct": round(move / spot * 100, 2),
+                    "upper": round(spot + move, 2), "lower": round(spot - move, 2)})
+    daily = None
+    near = next((m for m in out if m["ivAtm"] and m["dte"] >= 1), None)
+    if near:
+        d = spot * near["ivAtm"] / math.sqrt(252)
+        daily = {"move": round(d, 2), "pct": round(d / spot * 100, 2), "upper": round(spot + d, 2), "lower": round(spot - d, 2)}
+    return {"byExpiration": out, "daily": daily}
 
 
 def spot_price(symbol):
@@ -246,6 +290,7 @@ def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
     spot = data["spot"] or spot_price(symbol)
     contracts = data["contracts"]
     all_exps = sorted({c["exp"] for c in contracts if c.get("oi")})
+    em = expected_moves(contracts, spot)
     if expiry:
         contracts = [c for c in contracts if c["exp"] == expiry]
     if strikes_each_side:
@@ -259,6 +304,7 @@ def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
         raise BadRequest(f"No option contracts found for {symbol} in the next {max_days} days.")
     out = compute(contracts, spot)
     out["expirations"] = all_exps
+    out["expectedMove"] = em
     out.update({"symbol": symbol, "source": data["source"], "maxDays": max_days, "expiry": expiry,
                 "strikesEachSide": int(strikes_each_side) if strikes_each_side else None,
                 "asOf": now_ny().strftime("%Y-%m-%d %H:%M"),
