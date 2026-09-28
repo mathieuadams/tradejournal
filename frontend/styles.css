@@ -230,3 +230,5 @@ th.sortable button:focus-visible{outline:2px solid var(--coach);outline-offset:-
 th.sortable .arrow{font-size:.7rem;opacity:.7}
 .chip.emo{background:var(--coach-soft);border-color:transparent;color:var(--coach)}
 .stat small{display:block;font-size:.76rem}
+td{white-space:nowrap}
+td .ellipsis{display:inline-block;max-width:280px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom}
