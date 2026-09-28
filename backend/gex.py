@@ -97,7 +97,7 @@ def from_alpaca(creds, symbol, max_days, spot):
     h = {"APCA-API-KEY-ID": creds["key"], "APCA-API-SECRET-KEY": creds["secret"]}
     base = {"paper": "https://paper-api.alpaca.markets", "live": "https://api.alpaca.markets"}[creds.get("env", "paper")]
     today = now_ny().date()
-    lo, hi = round(spot * 0.7, 2), round(spot * 1.3, 2)
+    lo, hi = round(spot * 0.5, 2), round(spot * 1.5, 2)
     contracts, token = {}, None
     for _ in range(20):
         q = {"underlying_symbols": symbol, "expiration_date_gte": today.isoformat(),
@@ -228,11 +228,11 @@ def compute(contracts, spot):
     }
 
 
-def run(sub, symbol, max_days=45, expiry=None):
+def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
     symbol = (symbol or "").strip().upper()
     if not symbol or len(symbol) > 8 or not symbol.replace(".", "").isalnum():
         raise BadRequest("Enter a ticker symbol, e.g. NVDA.")
-    max_days = max(1, min(int(max_days or 45), 120))
+    max_days = max(1, min(int(max_days or 45), 400))
     data = from_schwab(sub, symbol, max_days)
     if not data or not data["contracts"]:
         import alpaca
@@ -248,11 +248,19 @@ def run(sub, symbol, max_days=45, expiry=None):
     all_exps = sorted({c["exp"] for c in contracts if c.get("oi")})
     if expiry:
         contracts = [c for c in contracts if c["exp"] == expiry]
+    if strikes_each_side:
+        n = int(strikes_each_side)
+        ks = sorted({c["strike"] for c in contracts})
+        below = [k for k in ks if k <= spot][-n:]
+        above = [k for k in ks if k > spot][:n]
+        keep = set(below + above)
+        contracts = [c for c in contracts if c["strike"] in keep]
     if not contracts:
         raise BadRequest(f"No option contracts found for {symbol} in the next {max_days} days.")
     out = compute(contracts, spot)
     out["expirations"] = all_exps
     out.update({"symbol": symbol, "source": data["source"], "maxDays": max_days, "expiry": expiry,
+                "strikesEachSide": int(strikes_each_side) if strikes_each_side else None,
                 "asOf": now_ny().strftime("%Y-%m-%d %H:%M"),
                 "oiDate": max((c.get("oiDate") or "" for c in contracts), default="") or None})
     return out

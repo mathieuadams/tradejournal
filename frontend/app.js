@@ -1001,7 +1001,8 @@ function vGex() {
   const days = S.gexDays || 45;
   const form = `<section class="panel"><div class="form-grid" style="align-items:end">
     <div class="field"><label for="gx-sym">Ticker</label><input id="gx-sym" type="text" list="gx-list" value="${esc(S.gexSym || tickers[0] || '')}" placeholder="Any ticker, e.g. NVDA, SPY, TSLA" style="text-transform:uppercase" autocomplete="off"><datalist id="gx-list">${tickers.map(x => `<option value="${esc(x)}">`).join('')}</datalist></div>
-    <div class="field"><label for="gx-days">Expirations within</label><select id="gx-days">${[7, 14, 30, 45, 60, 90].map(d => `<option value="${d}" ${d == days ? 'selected' : ''}>${d} days</option>`).join('')}</select></div>
+    <div class="field"><label for="gx-days">Expirations within</label><select id="gx-days">${[[7, '7 days'], [14, '14 days'], [30, '30 days'], [45, '45 days'], [60, '60 days'], [90, '90 days'], [180, '6 months'], [400, 'All (up to ~1 year)']].map(([d, l]) => `<option value="${d}" ${d == days ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div class="field"><label for="gx-strikes">Strikes</label><select id="gx-strikes">${[['', 'All near price'], ['10', '10 each side'], ['20', '20 each side'], ['30', '30 each side']].map(([v, l]) => `<option value="${v}" ${String(S.gexStrikes || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     <div class="field"><label for="gx-exp">Expiration</label><select id="gx-exp"><option value="">All in that window</option>${(g && g.expirations || []).map(e => `<option value="${e}" ${S.gexExp === e ? 'selected' : ''}>${fmtExp(e)}</option>`).join('')}</select></div>
     <div class="field"><button class="btn primary" id="gx-run" ${S.gexBusy ? 'disabled' : ''}>${S.gexBusy ? 'Loading…' : 'Load'}</button></div></div>
     ${recent.length ? `<div class="filters" style="margin:0 0 6px"><span class="muted" style="align-self:center;font-size:.85rem">Recent:</span>${recent.map(x => `<button class="toggle emo" data-gex="${esc(x)}" aria-pressed="${S.gexSym === x}">${esc(x)}</button>`).join('')}</div>` : ''}
@@ -1026,7 +1027,7 @@ function vGex() {
     <section class="panel"><h2>Largest strikes</h2><div class="tablewrap" style="border:0"><table><thead><tr><th>Strike</th><th class="r">Net GEX</th><th class="r">Call GEX</th><th class="r">Put GEX</th><th class="r">Call OI</th><th class="r">Put OI</th><th class="r">Net DEX</th></tr></thead><tbody>
       ${g.strikes.slice().sort((a, b) => Math.abs(b.netGex) - Math.abs(a.netGex)).slice(0, 12).map(b => `<tr><td><b>${px(b.strike)}</b></td><td class="r ${cls(b.netGex)}">${bigMoney(b.netGex)}</td><td class="r">${bigMoney(b.callGex)}</td><td class="r">${bigMoney(b.putGex)}</td><td class="r">${b.callOi.toLocaleString('en-US')}</td><td class="r">${b.putOi.toLocaleString('en-US')}</td><td class="r">${bigMoney(b.dex)}</td></tr>`).join('')}
     </tbody></table></div></section>
-    <p class="muted" style="font-size:.84rem">${g.contracts} contracts, ${g.expiry ? `expiring ${fmtExp(g.expiry)}` : `expiring within ${g.maxDays} days`}. Open interest is from the previous session${g.oiDate ? ` (${esc(g.oiDate)})` : ''}, so this shows positioning as of this morning. Uses the common assumption that dealers are long calls and short puts; real dealer positioning isn’t public. Loaded ${esc(g.asOf)} ET.</p>`;
+    <p class="muted" style="font-size:.84rem">${g.contracts} contracts, ${g.expiry ? `expiring ${fmtExp(g.expiry)}` : `expiring within ${g.maxDays} days`}${g.strikesEachSide ? `, ${g.strikesEachSide} strikes each side of the price` : ''}. The flip depends on which expirations and strikes are included, so it differs between sites using different settings. Open interest is from the previous session${g.oiDate ? ` (${esc(g.oiDate)})` : ''}, so this shows positioning as of this morning. Uses the common assumption that dealers are long calls and short puts; real dealer positioning isn’t public. Loaded ${esc(g.asOf)} ET.</p>`;
   } else body = `<section class="panel"><p class="muted" style="margin:0">Pick a ticker to see where options positioning sits: gamma exposure by strike, the gamma flip level, call and put walls, max pain and delta exposure. Needs Alpaca (free) or Schwab with market data connected in Settings.</p></section>`;
   return head('Options positioning', 'Gamma and delta exposure from the option chain', '') + form + body;
 }
@@ -1055,14 +1056,14 @@ function gexProfile(g) {
     <line x1="${pl}" x2="${W - pr}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)"/>
     <path d="${path}" fill="none" stroke="var(--coach)" stroke-width="2.2"/>
     <line x1="${X(si)}" x2="${X(si)}" y1="${pt}" y2="${H - pb}" stroke="var(--ink)" stroke-dasharray="4 3"/><text x="${X(si) + 4}" y="${pt + 10}" font-size="11" fill="var(--ink)">Spot</text>
-    ${[0, 15, 30, 45, 60].map(i => `<text x="${X(i)}" y="${H - 10}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${px(p[i].price)}</text>`).join('')}</svg>`;
+    ${[0, 15, 30, 45, 60].map(i => `<text x="${X(i)}" y="${H - 10}" font-size="10.5" text-anchor="${i === 0 ? 'start' : i === 60 ? 'end' : 'middle'}" fill="var(--muted)">${px(p[i].price)}</text>`).join('')}</svg>`;
 }
 async function loadGex() {
   const sym = ($('#gx-sym')?.value || S.gexSym || '').trim().toUpperCase(); if (!sym) { toast('Enter a ticker'); return; }
   const expSel = $('#gx-exp')?.value || '';
-  S.gexSym = sym; S.gexDays = +($('#gx-days')?.value || S.gexDays || 45); S.gexExp = sym === (S.gex && S.gex.symbol) ? expSel : ''; S.gexBusy = true; S.gexErr = null; render();
+  S.gexSym = sym; S.gexDays = +($('#gx-days')?.value || S.gexDays || 45); S.gexStrikes = $('#gx-strikes') ? $('#gx-strikes').value : (S.gexStrikes || ''); S.gexExp = sym === (S.gex && S.gex.symbol) ? expSel : ''; S.gexBusy = true; S.gexErr = null; render();
   try { const rc = JSON.parse(localStorage.getItem('tj.gexRecent') || '[]').filter(x => x !== sym); rc.unshift(sym); localStorage.setItem('tj.gexRecent', JSON.stringify(rc.slice(0, 10))); } catch (e) {}
-  try { S.gex = await api(`/gex?symbol=${encodeURIComponent(sym)}&days=${S.gexDays}${S.gexExp ? `&expiry=${S.gexExp}` : ''}`); }
+  try { S.gex = await api(`/gex?symbol=${encodeURIComponent(sym)}&days=${S.gexDays}${S.gexExp ? `&expiry=${S.gexExp}` : ''}${S.gexStrikes ? `&strikes=${S.gexStrikes}` : ''}`); }
   catch (e) { S.gexErr = e.message; S.gex = null; }
   S.gexBusy = false; if (route() === 'gex') render();
 }
@@ -1134,7 +1135,7 @@ document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (id === 'jday') { S.jDay = e.target.value; render(); }
-  if (id === 'gx-exp' || id === 'gx-days') { if (id === 'gx-days') S.gexExp = ''; loadGex(); }
+  if (id === 'gx-exp' || id === 'gx-days' || id === 'gx-strikes') { if (id === 'gx-days') S.gexExp = ''; loadGex(); }
   if (id === 'g-acct') { S.acct = e.target.value; render(); }
   if (id === 'file' && e.target.files[0]) upload(e.target.files[0]);
 });

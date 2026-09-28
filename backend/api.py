@@ -204,7 +204,7 @@ def analysis_quality(sub, claims, body, q):
 @route("GET", "/gex")
 def gamma_exposure(sub, claims, body, q):
     import gex
-    return gex.run(sub, q.get("symbol"), q.get("days") or 45, q.get("expiry") or None)
+    return gex.run(sub, q.get("symbol"), q.get("days") or 45, q.get("expiry") or None, q.get("strikes") or None)
 
 
 @route("POST", "/maintenance/rebuild")
