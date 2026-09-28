@@ -407,6 +407,23 @@ def test_no_duplicates_across_time_zone_choices():
     assert code == 200 and r["duplicateFillsRemoved"] == 1
 
 
+def test_gex_math():
+    import gex
+    d, g = gex.bs_greeks(100, 100, 30 / 365, 0.3, True)
+    assert 0.5 < d < 0.6 and 0.04 < g < 0.05
+    exp = (__import__("util").now_ny() + __import__("datetime").timedelta(days=20)).strftime("%Y-%m-%d")
+    cs = []
+    for k in range(80, 125, 5):
+        cs.append({"sym": f"C{k}", "call": True, "strike": k, "exp": exp, "oi": 1000 if k >= 100 else 200, "iv": .35, "delta": None, "gamma": None, "volume": 10})
+        cs.append({"sym": f"P{k}", "call": False, "strike": k, "exp": exp, "oi": 3000 if k <= 95 else 100, "iv": .35, "delta": None, "gamma": None, "volume": 30})
+    r = gex.compute(cs, 100.0)
+    assert r["callWall"] >= 100 and r["putWall"] <= 95 and r["putCallOi"] > 1
+    assert r["gammaFlip"] is not None and 85 < r["gammaFlip"] < 115, r["gammaFlip"]
+    assert r["maxPain"] in [k for k in range(80, 125, 5)]
+    code, err = call("GET", "/gex", q={"symbol": "NVDA"})
+    assert code in (400, 503)
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

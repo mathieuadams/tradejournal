@@ -323,6 +323,7 @@ function renderDrawer() {
       <div class="chart-ctl"><div class="seg" role="group" aria-label="Timeframe">${[['5m', '5m'], ['15m', '15m'], ['1h', '1h'], ['4h', '4h'], ['1d', 'Daily']].map(([k, l]) => `<button data-tf="${k}" aria-pressed="${S.tf === k}">${l}</button>`).join('')}</div>
       <button class="btn" id="rp-play">Replay</button><input type="range" id="rp" min="1" aria-label="Replay position"></div></div>
     ${t.status === 'open' ? `<div class="coach" id="entry-note"><p class="loading" style="padding:0">Loading entry check…</p></div>` : ''}
+    <p style="margin:-8px 0 0"><a href="#gex" class="linkbtn" data-gexlink="${esc(t.underlying || t.sym)}">Options positioning for ${esc(t.underlying || t.sym)} →</a></p>
     <div class="coach review" id="review"><p class="loading" style="padding:0">Loading coach review…</p></div>
     ${t.status === 'closed' ? `<div class="panel" id="q-panel">${qPanel(t)}</div>` : ''}
     <div class="panel" id="ctx-panel">${ctxPanel(t)}</div>
@@ -992,8 +993,82 @@ async function pollBroker() {
   for (let i = 0; i < 30; i++) { await sleep(3000); try { S.broker = await api('/broker/alpaca'); } catch (e) { break; } if (route() === 'settings') render(); if (S.broker.status !== 'syncing') { await reload(); toast('Alpaca sync finished'); return; } }
 }
 
+/* ---------- options positioning (gamma / delta exposure) ---------- */
+const bigMoney = v => { if (v == null) return '—'; const a = Math.abs(v), sg = v < 0 ? '−' : '+'; return a >= 1e9 ? `${sg}$${(a / 1e9).toFixed(2)}B` : a >= 1e6 ? `${sg}$${(a / 1e6).toFixed(1)}M` : a >= 1e3 ? `${sg}$${(a / 1e3).toFixed(0)}K` : `${sg}$${a.toFixed(0)}`; };
+function vGex() {
+  const g = S.gex, tickers = [...new Set(S.trades.filter(t => t.status === 'open').map(t => t.underlying || t.sym))];
+  let recent = []; try { recent = JSON.parse(localStorage.getItem('tj.gexRecent') || '[]'); } catch (e) {}
+  const days = S.gexDays || 45;
+  const form = `<section class="panel"><div class="form-grid" style="align-items:end">
+    <div class="field"><label for="gx-sym">Ticker</label><input id="gx-sym" type="text" list="gx-list" value="${esc(S.gexSym || tickers[0] || '')}" placeholder="Any ticker, e.g. NVDA, SPY, TSLA" style="text-transform:uppercase" autocomplete="off"><datalist id="gx-list">${tickers.map(x => `<option value="${esc(x)}">`).join('')}</datalist></div>
+    <div class="field"><label for="gx-days">Expirations within</label><select id="gx-days">${[7, 14, 30, 45, 60, 90].map(d => `<option value="${d}" ${d == days ? 'selected' : ''}>${d} days</option>`).join('')}</select></div>
+    <div class="field"><label for="gx-exp">Expiration</label><select id="gx-exp"><option value="">All in that window</option>${(g && g.expirations || []).map(e => `<option value="${e}" ${S.gexExp === e ? 'selected' : ''}>${fmtExp(e)}</option>`).join('')}</select></div>
+    <div class="field"><button class="btn primary" id="gx-run" ${S.gexBusy ? 'disabled' : ''}>${S.gexBusy ? 'Loading…' : 'Load'}</button></div></div>
+    ${recent.length ? `<div class="filters" style="margin:0 0 6px"><span class="muted" style="align-self:center;font-size:.85rem">Recent:</span>${recent.map(x => `<button class="toggle emo" data-gex="${esc(x)}" aria-pressed="${S.gexSym === x}">${esc(x)}</button>`).join('')}</div>` : ''}
+    ${tickers.length ? `<div class="filters" style="margin:0"><span class="muted" style="align-self:center;font-size:.85rem">Your open positions:</span>${tickers.map(x => `<button class="toggle emo" data-gex="${esc(x)}" aria-pressed="${S.gexSym === x}">${esc(x)}</button>`).join('')}</div>` : ''}</section>`;
+  let body = '';
+  if (S.gexErr) body = `<div class="errbox">${esc(S.gexErr)}</div>`;
+  else if (g) {
+    const card = (k, v, sub, col) => `<div class="period"><h3>${k}</h3><div class="big" style="${col ? `color:${col}` : ''}">${v}</div><p>${sub || ''}</p></div>`;
+    const pos = g.regime === 'positive';
+    body = `<section class="periods" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+      ${card('Spot', px(g.spot), `${esc(g.symbol)} · ${esc(g.source)} data`)}
+      ${card('Net gamma exposure', bigMoney(g.netGex), pos ? 'Positive: dealers tend to dampen moves' : 'Negative: dealers tend to amplify moves', pos ? 'var(--gain)' : 'var(--loss)')}
+      ${card('Gamma flip', g.gammaFlip ? px(g.gammaFlip) : '—', g.gammaFlip ? `${pct((g.gammaFlip / g.spot - 1) * 100)} from spot` : 'No sign change within ±15%')}
+      ${card('Call wall', px(g.callWall), `${pct((g.callWall / g.spot - 1) * 100)} from spot`)}
+      ${card('Put wall', px(g.putWall), `${pct((g.putWall / g.spot - 1) * 100)} from spot`)}
+      ${card('Max pain', g.maxPain != null ? px(g.maxPain) : '—', `for ${fmtExp(g.maxPainExpiry)}`)}
+      ${card('Net delta exposure', bigMoney(g.netDex), 'Option holders’ delta, in $')}
+      ${card('Put/call open interest', g.putCallOi ?? '—', `Volume ${g.putCallVolume ?? '—'} · ${g.callOi.toLocaleString('en-US')} calls, ${g.putOi.toLocaleString('en-US')} puts`)}
+    </section>
+    <section class="panel"><div class="cal-head"><h2>Gamma exposure by strike</h2><span class="muted" style="font-size:.85rem">$ of dealer hedging per 1% move. Green: calls, red: puts.</span></div>${gexBars(g)}</section>
+    ${g.profile.length ? `<section class="panel"><div class="cal-head"><h2>Total gamma if the price moved</h2><span class="muted" style="font-size:.85rem">Where the line crosses zero is the gamma flip.</span></div>${gexProfile(g)}</section>` : ''}
+    <section class="panel"><h2>Largest strikes</h2><div class="tablewrap" style="border:0"><table><thead><tr><th>Strike</th><th class="r">Net GEX</th><th class="r">Call GEX</th><th class="r">Put GEX</th><th class="r">Call OI</th><th class="r">Put OI</th><th class="r">Net DEX</th></tr></thead><tbody>
+      ${g.strikes.slice().sort((a, b) => Math.abs(b.netGex) - Math.abs(a.netGex)).slice(0, 12).map(b => `<tr><td><b>${px(b.strike)}</b></td><td class="r ${cls(b.netGex)}">${bigMoney(b.netGex)}</td><td class="r">${bigMoney(b.callGex)}</td><td class="r">${bigMoney(b.putGex)}</td><td class="r">${b.callOi.toLocaleString('en-US')}</td><td class="r">${b.putOi.toLocaleString('en-US')}</td><td class="r">${bigMoney(b.dex)}</td></tr>`).join('')}
+    </tbody></table></div></section>
+    <p class="muted" style="font-size:.84rem">${g.contracts} contracts, ${g.expiry ? `expiring ${fmtExp(g.expiry)}` : `expiring within ${g.maxDays} days`}. Open interest is from the previous session${g.oiDate ? ` (${esc(g.oiDate)})` : ''}, so this shows positioning as of this morning. Uses the common assumption that dealers are long calls and short puts; real dealer positioning isn’t public. Loaded ${esc(g.asOf)} ET.</p>`;
+  } else body = `<section class="panel"><p class="muted" style="margin:0">Pick a ticker to see where options positioning sits: gamma exposure by strike, the gamma flip level, call and put walls, max pain and delta exposure. Needs Alpaca (free) or Schwab with market data connected in Settings.</p></section>`;
+  return head('Options positioning', 'Gamma and delta exposure from the option chain', '') + form + body;
+}
+function gexBars(g) {
+  const lo = g.spot * 0.85, hi = g.spot * 1.15, xs = g.strikes.filter(b => b.strike >= lo && b.strike <= hi);
+  if (!xs.length) return '<p class="muted">No strikes near the current price.</p>';
+  const W = 720, H = 300, pl = 10, pr = 10, pt = 16, pb = 34, n = xs.length, bw = (W - pl - pr) / n;
+  const mx = Math.max(1, ...xs.map(b => Math.max(Math.abs(b.callGex), Math.abs(b.putGex))));
+  const zy = pt + (H - pt - pb) / 2, sc = (H - pt - pb) / 2 / mx, X = i => pl + i * bw + bw / 2;
+  const xOf = p => { let i = xs.findIndex(b => b.strike >= p); if (i < 0) i = n - 1; const b0 = xs[Math.max(0, i - 1)], b1 = xs[i]; if (i === 0 || b1.strike === b0.strike) return X(i); return X(i - 1) + (p - b0.strike) / (b1.strike - b0.strike) * bw; };
+  const step = Math.max(1, Math.ceil(n / 12));
+  let svg = xs.map((b, i) => `<rect x="${X(i) - bw * .38}" y="${zy - b.callGex * sc}" width="${bw * .76}" height="${Math.max(0, b.callGex * sc)}" fill="var(--gain)"><title>${px(b.strike)} calls: ${bigMoney(b.callGex)} (OI ${b.callOi})</title></rect>
+    <rect x="${X(i) - bw * .38}" y="${zy}" width="${bw * .76}" height="${Math.max(0, -b.putGex * sc)}" fill="var(--loss)"><title>${px(b.strike)} puts: ${bigMoney(b.putGex)} (OI ${b.putOi})</title></rect>
+    ${i % step === 0 ? `<text x="${X(i)}" y="${H - 12}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${b.strike}</text>` : ''}`).join('');
+  const vline = (p, col, lab, y) => `<line x1="${xOf(p)}" x2="${xOf(p)}" y1="${pt}" y2="${H - pb}" stroke="${col}" stroke-dasharray="4 3" stroke-width="1.5"/><text x="${xOf(p) + 4}" y="${y}" font-size="11" fill="${col}" font-weight="600">${lab} ${px(p)}</text>`;
+  svg += `<line x1="${pl}" x2="${W - pr}" y1="${zy}" y2="${zy}" stroke="var(--line)"/>` + vline(g.spot, 'var(--ink)', 'Spot', pt + 10) + (g.gammaFlip && g.gammaFlip >= lo && g.gammaFlip <= hi ? vline(g.gammaFlip, 'var(--coach)', 'Flip', pt + 24) : '');
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Gamma exposure by strike" style="width:100%;height:auto">${svg}</svg>`;
+}
+function gexProfile(g) {
+  const p = g.profile, W = 720, H = 220, pl = 10, pr = 10, pt = 12, pb = 28;
+  const lo = Math.min(0, ...p.map(x => x.gex)), hi = Math.max(0, ...p.map(x => x.gex)), sp = hi - lo || 1;
+  const X = i => pl + i / (p.length - 1) * (W - pl - pr), Y = v => pt + (hi - v) / sp * (H - pt - pb);
+  const path = p.map((q, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(q.gex).toFixed(1)).join(' ');
+  const si = p.reduce((b, q, i) => Math.abs(q.price - g.spot) < Math.abs(p[b].price - g.spot) ? i : b, 0);
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Total gamma exposure across prices" style="width:100%;height:auto">
+    <line x1="${pl}" x2="${W - pr}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)"/>
+    <path d="${path}" fill="none" stroke="var(--coach)" stroke-width="2.2"/>
+    <line x1="${X(si)}" x2="${X(si)}" y1="${pt}" y2="${H - pb}" stroke="var(--ink)" stroke-dasharray="4 3"/><text x="${X(si) + 4}" y="${pt + 10}" font-size="11" fill="var(--ink)">Spot</text>
+    ${[0, 15, 30, 45, 60].map(i => `<text x="${X(i)}" y="${H - 10}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${px(p[i].price)}</text>`).join('')}</svg>`;
+}
+async function loadGex() {
+  const sym = ($('#gx-sym')?.value || S.gexSym || '').trim().toUpperCase(); if (!sym) { toast('Enter a ticker'); return; }
+  const expSel = $('#gx-exp')?.value || '';
+  S.gexSym = sym; S.gexDays = +($('#gx-days')?.value || S.gexDays || 45); S.gexExp = sym === (S.gex && S.gex.symbol) ? expSel : ''; S.gexBusy = true; S.gexErr = null; render();
+  try { const rc = JSON.parse(localStorage.getItem('tj.gexRecent') || '[]').filter(x => x !== sym); rc.unshift(sym); localStorage.setItem('tj.gexRecent', JSON.stringify(rc.slice(0, 10))); } catch (e) {}
+  try { S.gex = await api(`/gex?symbol=${encodeURIComponent(sym)}&days=${S.gexDays}${S.gexExp ? `&expiry=${S.gexExp}` : ''}`); }
+  catch (e) { S.gexErr = e.message; S.gex = null; }
+  S.gexBusy = false; if (route() === 'gex') render();
+}
+
 /* ---------- router & events ---------- */
-const VIEWS = { dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { gex: [vGex], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
@@ -1004,8 +1079,11 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
+  if (el.dataset.gexlink) { S.gexSym = el.dataset.gexlink; S.gexExp = ''; closeTrade(); location.hash = '#gex'; setTimeout(loadGex, 50); return; }
+  if (el.dataset.gex) { $('#gx-sym').value = el.dataset.gex; S.gexExp = ''; loadGex(); return; }
+  if (el.id === 'gx-run') { loadGex(); return; }
   if (el.dataset.coach) { runCoach(el.dataset.coach, el.dataset.trade); if (el.dataset.trade) { el.disabled = true; el.textContent = 'Reviewing…'; } return; }
   if (el.dataset.sort) { const k = el.dataset.sort, c = S.sort || { key: 'date', dir: 'desc' };
     S.sort = c.key === k ? { key: k, dir: c.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: SORT_FIRST_DESC.has(k) ? 'desc' : 'asc' };
@@ -1056,11 +1134,13 @@ document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (id === 'jday') { S.jDay = e.target.value; render(); }
+  if (id === 'gx-exp' || id === 'gx-days') { if (id === 'gx-days') S.gexExp = ''; loadGex(); }
   if (id === 'g-acct') { S.acct = e.target.value; render(); }
   if (id === 'file' && e.target.files[0]) upload(e.target.files[0]);
 });
 document.addEventListener('submit', e => { if (e.target.id === 'ask') { e.preventDefault(); ask($('#askq').value); } });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.id === 'gx-sym') { e.preventDefault(); S.gexExp = ''; loadGex(); return; }
   if (e.key === 'Escape' && $('#drawer').classList.contains('open')) closeTrade();
   if (e.key === 'Enter' && e.target.matches('tr[data-open]')) openTrade(e.target.dataset.open);
 });
