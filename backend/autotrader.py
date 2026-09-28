@@ -252,7 +252,9 @@ def evaluate(sub, symbol, earnings_date=None):
 
     # invalidation level: nearest gamma support below price, capped at the expected move of the chosen expiry
     heavy = [b["strike"] for b in g["strikes"] if abs(b["putGex"]) >= 0.25 * max(1, max(abs(x["putGex"]) for x in g["strikes"]))]
-    below = [v for v in [g.get("gammaFlip"), g.get("putWall"), sig["ema21"], *heavy] if v and v < spot]
+    # ignore levels hugging the price: a stop needs at least 0.75 ATR of room or normal noise hits it
+    min_gap = 0.75 * sig["atr21"]
+    below = [v for v in [g.get("gammaFlip"), g.get("putWall"), sig["ema21"], *heavy] if v and v <= spot - min_gap]
     stop_lvl = max(below) if below else spot - 1.5 * sig["atr21"]
     emx = next((m for m in em_list if best and m["exp"] == best["exp"]), None)
     if emx and stop_lvl < emx["lower"]:
@@ -282,7 +284,7 @@ def evaluate(sub, symbol, earnings_date=None):
         ("events", "No implied-volatility jump (likely event) before the chosen expiration" +
          (f": IV jumps between {event_in_window[0]['between'][0]} and {event_in_window[0]['between'][1]}" if event_in_window else ""),
          not event_in_window, False),
-        ("contract", f"Liquid contract found ({best['symbol']})" if best else ("Contract found but: " + "; ".join(cands[0]["problems"]) if cands else "No contract in the delta and DTE range"), bool(best), True),
+        ("contract", f"Liquid contract found: {symbol} {best['exp']} {best['strike']} call (delta {best['delta']}, mid {best['mid']}, open interest {best['oi']})" if best else (f"Best contract {symbol} {cands[0]['exp']} {cands[0]['strike']} call (delta {cands[0]['delta']}, mid {cands[0]['mid']}, {cands[0]['dte']} days) fails: " + "; ".join(cands[0]["problems"]) if cands else f"No call with delta {cfg['deltaMin']}-{cfg['deltaMax']} expiring in {cfg['dteMin']}-{cfg['dteMax']} days"), bool(best), True),
     ]
     hard_fail = [t for (_, t, ok, hard) in checks if hard and not ok]
     soft_fail = [t for (_, t, ok, hard) in checks if not hard and not ok]

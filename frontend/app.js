@@ -1204,7 +1204,7 @@ function botResult(r) {
         <tr><td>Exit if ${esc(r.symbol)} closes below</td><td class="r">${px(p.underlyingStop)}</td></tr>
         <tr><td>Take profit if ${esc(r.symbol)} reaches</td><td class="r">${px(p.underlyingTarget)}</td></tr>
       </tbody></table></div>` : ''}
-    ${(r.candidates || []).length ? `<details style="margin-top:10px"><summary style="cursor:pointer" class="muted">Contracts considered</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>Expiry</th><th class="r">Strike</th><th class="r">Delta</th><th class="r">Mid</th><th class="r">Spread</th><th class="r">OI</th><th class="r">Breakeven</th><th class="r">EM upper</th><th>Issues</th></tr></thead><tbody>
+    ${(r.candidates || []).length ? `<details style="margin-top:10px" ${r.proposal ? '' : 'open'}><summary style="cursor:pointer" class="muted">Contracts considered (best first)</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>Expiry</th><th class="r">Strike</th><th class="r">Delta</th><th class="r">Mid</th><th class="r">Spread</th><th class="r">OI</th><th class="r">Breakeven</th><th class="r">EM upper</th><th>Issues</th></tr></thead><tbody>
       ${r.candidates.map(c => `<tr><td>${fmtExp(c.exp)} (${c.dte}d)</td><td class="r">${c.strike}</td><td class="r">${c.delta}</td><td class="r">${c.mid}</td><td class="r">${c.spreadPct ?? '—'}%</td><td class="r">${c.oi}</td><td class="r">${c.breakeven}</td><td class="r">${c.emUpper ?? '—'}</td><td>${c.problems.map(esc).join(', ') || '<span class="gain">ok</span>'}</td></tr>`).join('')}
     </tbody></table></div></details>` : ''}
     ${p && r.status === 'proposed' ? `<div class="form-grid" style="align-items:end;margin-top:12px">
