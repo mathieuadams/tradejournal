@@ -1018,20 +1018,34 @@ function marketCards() {
 function tradeCheck(g) {
   const list = (g.expectedMove && g.expectedMove.byExpiration) || [];
   const tc = S.tc || {};
-  const exps = g.expirations || [];
+  const exps = list.map(m => m.exp);
+  if (!tc.exp || !exps.includes(tc.exp)) tc.exp = (list.find(m => m.dte >= 40) || list[list.length - 1] || {}).exp;
   const form = `<div class="form-grid" style="align-items:end">
     <div class="field"><label for="tc-type">Type</label><select id="tc-type"><option value="call" ${tc.type !== 'put' ? 'selected' : ''}>Call</option><option value="put" ${tc.type === 'put' ? 'selected' : ''}>Put</option></select></div>
     <div class="field"><label for="tc-strike">Strike</label><input id="tc-strike" type="number" step="any" value="${tc.strike ?? ''}"></div>
-    <div class="field"><label for="tc-exp">Expiration</label><select id="tc-exp">${exps.map(e => `<option value="${e}" ${tc.exp === e ? 'selected' : ''}>${fmtExp(e)}</option>`).join('')}</select></div>
+    <div class="field"><label for="tc-exp">Expiration</label><select id="tc-exp">${list.map(m => `<option value="${m.exp}" ${tc.exp === m.exp ? 'selected' : ''}>${fmtExp(m.exp)} (${m.dte}d)${/^\d{4}-\d{2}-(1[5-9]|2[01])$/.test(m.exp) && new Date(m.exp + 'T12:00:00Z').getUTCDay() === 5 ? ' · monthly' : ''}</option>`).join('')}</select></div>
     <div class="field"><label for="tc-prem">Premium</label><input id="tc-prem" type="number" step="any" value="${tc.prem ?? ''}"></div>
     <div class="field"><button class="btn primary" id="tc-run">Check</button></div></div>`;
+  return tcSection(form, tcResult(g));
+}
+function tcResult(g) {
+  const list = (g.expectedMove && g.expectedMove.byExpiration) || [];
+  const tc = S.tc || {};
   let out = '';
   if (tc.strike && tc.prem && tc.exp) {
     const call = tc.type !== 'put', sg = call ? 1 : -1, spot = g.spot;
     const be = call ? tc.strike + tc.prem : tc.strike - tc.prem, need = (be / spot - 1) * 100;
     const em = list.find(x => x.exp === tc.exp) || list.filter(x => x.exp <= tc.exp).pop();
     const target = call ? g.callWall : g.putWall;
-    const stopLvl = call ? Math.min(g.gammaFlip || g.putWall, g.putWall) : Math.max(g.gammaFlip || g.callWall, g.callWall);
+    // Invalidation: the nearest meaningful gamma level on the other side of price (flip, put/call wall, or a
+    // strike with heavy opposite-side gamma), but never farther than the expected move for that expiration.
+    const maxOpp = Math.max(1, ...g.strikes.map(b => Math.abs(call ? b.putGex : b.callGex)));
+    const heavy = g.strikes.filter(b => Math.abs(call ? b.putGex : b.callGex) >= 0.25 * maxOpp).map(b => b.strike);
+    const levels = [g.gammaFlip, call ? g.putWall : g.callWall, ...heavy].filter(v => v != null && (call ? v < spot : v > spot));
+    let stopLvl = levels.length ? (call ? Math.max(...levels) : Math.min(...levels)) : null;
+    const emEdge = em ? (call ? em.lower : em.upper) : null;
+    if (emEdge != null && (stopLvl == null || (call ? stopLvl < emEdge : stopLvl > emEdge))) stopLvl = emEdge;
+    if (stopLvl == null) stopLvl = call ? spot * 0.95 : spot * 1.05;
     const above = g.gammaFlip ? spot > g.gammaFlip : null;
     const roomPct = (target / spot - 1) * 100 * sg, riskPct = (1 - stopLvl / spot) * 100 * sg;
     const mk = (ok, text) => `<li><b class="${ok === true ? 'gain' : ok === false ? 'loss' : 'muted'}">${ok === true ? '✓' : ok === false ? '✗' : '•'}</b> ${text}</li>`;
@@ -1040,12 +1054,15 @@ function tradeCheck(g) {
       ${mk(above == null ? null : (call ? above : !above), `Gamma regime: price is ${above ? 'above' : 'below'} the flip (${px(g.gammaFlip)}). ${above ? 'Positive gamma: moves tend to be absorbed, so expect a grind, and buy pullbacks rather than chase.' : 'Negative gamma: moves tend to extend. Good for momentum, but stops must be respected.'}`)}
       ${mk(em ? (call ? be <= em.upper : be >= em.lower) : null, `Breakeven ${px(be)} needs ${need >= 0 ? '+' : ''}${need.toFixed(1)}%. Expected move by ${em ? fmtExp(em.exp) : '—'}: ±${em ? em.pct.toFixed(1) : '—'}% (${em ? px(em.lower) + '–' + px(em.upper) : '—'}).`)}
       ${mk(call ? be < target : be > target, `${call ? 'Call' : 'Put'} wall at ${px(target)} (${roomPct >= 0 ? '+' : ''}${roomPct.toFixed(1)}% away). ${call ? (be < target ? 'Breakeven is below the wall, so the move to the wall pays.' : 'Breakeven is past the wall, so the option only pays if price breaks through resistance.') : (be > target ? 'Breakeven is above the put wall, so the move to the wall pays.' : 'Breakeven is past the put wall.')}`)}
-      ${mk(roomPct > riskPct, `Room vs risk on the stock: ${roomPct.toFixed(1)}% to the ${call ? 'call' : 'put'} wall vs ${riskPct.toFixed(1)}% to the invalidation level (${px(stopLvl)}, ${call ? 'below the flip / put wall' : 'above the flip / call wall'}). Ratio ${(roomPct / Math.max(0.01, riskPct)).toFixed(1)} : 1.`)}
+      ${mk(roomPct > riskPct, `Room vs risk on the stock: ${roomPct.toFixed(1)}% to the ${call ? 'call' : 'put'} wall vs ${riskPct.toFixed(1)}% to the invalidation level (${px(stopLvl)}, the nearest gamma ${call ? 'support below' : 'resistance above'} price, capped at the expected move). Ratio ${(roomPct / Math.max(0.01, riskPct)).toFixed(1)} : 1.`)}
       ${mkt && !mkt.error ? mk(mkt.regime === 'positive' ? (call ? true : null) : (call ? null : true), `Market: SPY is in ${mkt.regime} gamma (flip ${px(mkt.gammaFlip)}).`) : ''}
     </ul>
     <p class="muted" style="font-size:.84rem;margin:8px 0 0">Suggested plan from the levels: stock target near ${px(target)}, invalidation on a close ${call ? 'below' : 'above'} ${px(stopLvl)}. Size the position so the premium you could lose at that stop fits your risk per trade.</p>`;
   }
-  return `<section class="panel"><div class="cal-head"><h2>Check an option before buying</h2><span class="muted" style="font-size:.85rem">Paste the contract you saw in the flow</span></div>${form}${out}</section>`;
+  return out;
+}
+function tcSection(form, out) {
+  return `<section class="panel"><div class="cal-head"><h2>Check an option before buying</h2><span class="muted" style="font-size:.85rem">Paste the contract you saw in the flow</span></div>${form}<div id="tc-out">${out}</div></section>`;
 }
 function vGex() {
   const g = S.gex, tickers = [...new Set(S.trades.filter(t => t.status === 'open').map(t => t.underlying || t.sym))];
@@ -1178,7 +1195,7 @@ window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); }
 document.addEventListener('click', e => {
   const el = e.target.closest('#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
-  if (el.id === 'tc-run') { S.tc = { type: $('#tc-type').value, strike: +$('#tc-strike').value || null, exp: $('#tc-exp').value, prem: +$('#tc-prem').value || null }; render(); return; }
+  if (el.id === 'tc-run') { tcRead(); return; }
   if (el.id === 'mkt-refresh') { S.mkt = null; render(); loadMarketGamma(true); return; }
   if (el.dataset.gexlink) { S.gexSym = el.dataset.gexlink; S.gexExp = ''; closeTrade(); location.hash = '#gex'; setTimeout(loadGex, 50); return; }
   if (el.dataset.gex) { $('#gx-sym').value = el.dataset.gex; S.gexExp = ''; loadGex(); return; }
@@ -1225,13 +1242,16 @@ document.addEventListener('click', e => {
     case 'signout': Auth.logout(); return;
   }
 });
+function tcRead() { S.tc = { type: $('#tc-type').value, strike: +$('#tc-strike').value || null, exp: $('#tc-exp').value, prem: +$('#tc-prem').value || null }; const o = $('#tc-out'); if (o && S.gex) o.innerHTML = tcResult(S.gex); }
 document.addEventListener('input', e => {
+  if (['tc-strike', 'tc-prem'].includes(e.target.id)) { tcRead(); return; }
   if (e.target.id === 'f-q') { tf.q = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (e.target.id === 'rp') { stopReplay(); replay.k = +e.target.value; drawChart(); }
 });
 document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
+  if (id === 'tc-type' || id === 'tc-exp') { tcRead(); return; }
   if (id === 'jday') { S.jDay = e.target.value; render(); }
   if (id === 'gx-exp' || id === 'gx-days' || id === 'gx-strikes') { if (id === 'gx-days') S.gexExp = ''; loadGex(); }
   if (id === 'g-acct') { S.acct = e.target.value; render(); }

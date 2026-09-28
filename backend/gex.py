@@ -285,7 +285,10 @@ def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
     cached = db.get("CACHE", ck)
     if cached and cached.get("at", 0) > time.time() - 600:     # 10-minute cache: chains are big
         return cached["data"]
-    data = from_schwab(sub, symbol, max_days)
+    # Fetch at least ~4 months so monthly expirations 45-60+ days out are always available for the
+    # expected move and the pre-trade check; gamma itself uses only the window the user picked.
+    fetch_days = max(max_days, 130)
+    data = from_schwab(sub, symbol, fetch_days)
     if not data or not data["contracts"]:
         import alpaca
         creds = alpaca.creds(sub)
@@ -296,11 +299,13 @@ def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
         spot = spot_price(symbol)
         if not spot:
             raise BadRequest(f"No price found for {symbol}.")
-        data = from_alpaca(creds, symbol, max_days, spot)
+        data = from_alpaca(creds, symbol, fetch_days, spot)
     spot = data["spot"] or spot_price(symbol)
-    contracts = data["contracts"]
+    everything = data["contracts"]
+    em = expected_moves(everything, spot, limit=16)
+    horizon = (now_ny() + timedelta(days=max_days)).strftime("%Y-%m-%d")
+    contracts = [c for c in everything if c["exp"] <= horizon]
     all_exps = sorted({c["exp"] for c in contracts if c.get("oi")})
-    em = expected_moves(contracts, spot)
     if expiry:
         contracts = [c for c in contracts if c["exp"] == expiry]
     if strikes_each_side:
