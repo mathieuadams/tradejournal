@@ -207,6 +207,81 @@ def gamma_exposure(sub, claims, body, q):
     return gex.run(sub, q.get("symbol"), q.get("days") or 45, q.get("expiry") or None, q.get("strikes") or None)
 
 
+# ---------- paper bot ----------
+
+@route("GET", "/bot")
+def bot_home(sub, claims, body, q):
+    import autotrader
+    recs = db.q_prefix(db.upk(sub), "BOT#", desc=True, limit=60)
+    return {"settings": autotrader.settings(sub),
+            "items": [{k: v for k, v in r.items() if k not in ("PK", "SK")} for r in recs]}
+
+
+@route("PUT", "/bot/settings")
+def bot_settings(sub, claims, body, q):
+    import autotrader
+    cur = autotrader.settings(sub)
+    num = lambda k, lo, hi: max(lo, min(hi, float(body[k]))) if k in body and body[k] not in (None, "") else cur[k]
+    new = {
+        "enabled": bool(body.get("enabled", cur["enabled"])), "autoSubmit": bool(body.get("autoSubmit", cur["autoSubmit"])),
+        "watchlist": [t.strip().upper()[:8] for t in (body.get("watchlist") if isinstance(body.get("watchlist"), list) else cur["watchlist"])
+                      if isinstance(t, str) and t.strip() and t.strip().replace(".", "").isalnum()][:40],
+        "dteMin": int(num("dteMin", 1, 365)), "dteMax": int(num("dteMax", 1, 400)),
+        "deltaMin": num("deltaMin", 0.05, 0.99), "deltaMax": num("deltaMax", 0.05, 0.99),
+        "minOi": int(num("minOi", 0, 100000)), "maxSpreadPct": num("maxSpreadPct", 1, 100),
+        "stopPct": num("stopPct", 5, 100), "targetPct": num("targetPct", 5, 1000), "timeStopDte": int(num("timeStopDte", 0, 120)),
+        "maxPositions": int(num("maxPositions", 1, 50)), "crossWindow": int(num("crossWindow", 1, 60)),
+        "maxExtAtr": num("maxExtAtr", 0.1, 10), "minRoomRatio": num("minRoomRatio", 0, 10),
+        "requireAboveFlip": bool(body.get("requireAboveFlip", cur["requireAboveFlip"])),
+        "earnings": {k.upper()[:8]: v for k, v in (body.get("earnings") if isinstance(body.get("earnings"), dict) else cur["earnings"]).items()
+                     if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}( (AMC|BMO))?$", v)},
+        "noEntryDays": int(num("noEntryDays", 0, 60)),
+    }
+    if new["dteMin"] > new["dteMax"] or new["deltaMin"] > new["deltaMax"]:
+        raise BadRequest("Minimums must be below maximums.")
+    pk = db.upk(sub)
+    p = db.get(pk, "PROFILE") or {"PK": pk, "SK": "PROFILE", "createdAt": iso(now_ny()), "settings": {}}
+    p.setdefault("settings", {})["autotrade"] = new
+    db.put(p)
+    return new
+
+
+@route("POST", "/bot/evaluate")
+def bot_evaluate(sub, claims, body, q):
+    import autotrader
+    rec = autotrader.evaluate(sub, body.get("symbol"), body.get("earnings") if "earnings" in body else None)
+    return rec
+
+
+@route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/order")
+def bot_order(sub, claims, body, q, bid):
+    import autotrader
+    return autotrader.place(sub, bid, body.get("qty"), body.get("limit"))
+
+
+@route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/close")
+def bot_close(sub, claims, body, q, bid):
+    import autotrader
+    return autotrader.close(sub, bid, "manual")
+
+
+@route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/dismiss")
+def bot_dismiss(sub, claims, body, q, bid):
+    rec = db.get(db.upk(sub), f"BOT#{bid}")
+    if not rec:
+        raise NotFound("Not found.")
+    if rec.get("status") == "proposed":
+        db.update(db.upk(sub), f"BOT#{bid}", {"status": "dismissed"})
+    return {"ok": True}
+
+
+@route("POST", "/bot/run")
+def bot_run(sub, claims, body, q):
+    job = "scan" if body.get("job") == "scan" else "monitor"
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event", Payload=json.dumps({"sub": sub, "job": job}))
+    return {"status": "started"}
+
+
 @route("GET", "/gex/market")
 def gamma_market(sub, claims, body, q):
     import gex

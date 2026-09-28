@@ -45,8 +45,11 @@ def _install_fake_db():
     def scan_sk(v):
         return [dict(i) for (p, s), i in STORE.items() if s == v]
 
+    def scan_prefix(prefix, statuses=None):
+        return [db.from_ddb(db.to_ddb(i)) for (p, s), i in STORE.items() if s.startswith(prefix) and (not statuses or i.get("status") in statuses)]
+
     for name, fn in dict(q_prefix=q_prefix, get=get, put=put, delete=delete, update=update,
-                         batch_write=batch_write, scan_sk=scan_sk).items():
+                         batch_write=batch_write, scan_sk=scan_sk, scan_prefix=scan_prefix).items():
         setattr(db, name, fn)
 
 
@@ -427,6 +430,95 @@ def test_gex_math():
     assert m["straddle"] == 6.0 and m["upper"] == 106.0 and m["lower"] == 94.0 and 7 < m["ivMove"] < 9 and em["daily"]["pct"] > 2
     code, err = call("GET", "/gex", q={"symbol": "NVDA"})
     assert code in (400, 503)
+
+
+def test_paper_bot():
+    import autotrader, gex, datetime as dt
+    from util import now_ny
+    STORE.clear()
+    # price path: decline, base, then a gap up (bull FVG) and a cross above the 21 EMA
+    def fake_yahoo(sym, tf, s_, e):
+        out, d, p = [], (now_ny() - dt.timedelta(days=300)).replace(hour=9, minute=30), 120.0
+        i = 0
+        while d <= now_ny():
+            if d.weekday() < 5:
+                n = i
+                if n < 150: p *= 0.998
+                elif n < 200: p *= 1.0
+                elif n == 200: p *= 1.05
+                else: p *= 1.003
+                gap = 1.03 if n == 200 else 1.0
+                out.append({"t": d.strftime("%Y-%m-%dT%H:%M:%S"), "o": p / 1.01, "h": p * 1.01, "l": p * 0.99 if n != 200 else p * 0.995, "c": p, "v": 1000 + (5000 if n == 200 else 0)})
+                i += 1
+            d += dt.timedelta(days=1)
+        return out
+    autotrader._yahoo = fake_yahoo
+    spot = fake_yahoo("X", "1d", None, None)[-1]["c"]
+    exp = (now_ny() + dt.timedelta(days=50)).strftime("%Y-%m-%d")
+    exp2 = (now_ny() + dt.timedelta(days=20)).strftime("%Y-%m-%d")
+    def fake_chain(sub, sym, days):
+        cs = []
+        for e in (exp2, exp):
+            for k in [round(spot * f) for f in (0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.2)]:
+                for call in (True, False):
+                    d_, g_ = gex.bs_greeks(spot, k, gex._years(e), 0.3, call)
+                    th = max(0.5, (spot - k) if call else (k - spot)) + spot * 0.3 * (gex._years(e) ** 0.5) * 0.4
+                    cs.append({"sym": f"X{e}{'C' if call else 'P'}{k}", "call": call, "strike": k, "exp": e, "oi": 500,
+                               "iv": 0.3, "delta": d_, "gamma": g_, "volume": 10, "bid": th * 0.97, "ask": th * 1.03, "mark": th})
+        return {"source": "Test", "spot": spot, "contracts": cs}
+    autotrader.gex.fetch_chain = fake_chain
+    call("PUT", "/settings", {"riskPerTrade": 500})
+    code, cfg = call("PUT", "/bot/settings", {"enabled": True, "watchlist": ["xyz", "bad ticker!"], "minRoomRatio": 0.1, "crossWindow": 120, "maxExtAtr": 10})
+    assert code == 200 and cfg["watchlist"] == ["XYZ"]
+    code, rec = call("POST", "/bot/evaluate", {"symbol": "XYZ", "earnings": (now_ny() + dt.timedelta(days=30)).strftime("%Y-%m-%d")})
+    assert code == 200 and autotrader.settings(SUB)["earnings"]["XYZ"]
+    code, rec = call("POST", "/bot/evaluate", {"symbol": "XYZ", "earnings": ""})
+    assert "XYZ" not in autotrader.settings(SUB)["earnings"]
+    assert code == 200, rec
+    assert rec["candidates"] and rec["proposal"] and rec["proposal"]["exp"] == exp, rec
+    assert 0.5 <= rec["candidates"][0]["delta"] <= 0.7
+    assert any(c["group"] == "gamma" for c in rec["checks"])
+    # paper-only guard
+    import alpaca
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "live"}
+    code, err = call("POST", f"/bot/{rec['id']}/order", {})
+    assert code == 400 and "PAPER" in err["error"]
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    sent = []
+    def fake_alp(c, method, path, body=None):
+        sent.append((method, path, body))
+        if method == "POST":
+            return {"id": "ord1"}
+        if path.startswith("/v2/orders/"):
+            return {"status": "filled", "filled_avg_price": "5.00"}
+        if path.startswith("/v2/positions/") and method == "GET":
+            return {"unrealized_plpc": "-0.5", "current_price": "2.5"}
+        return {"id": "exit1"}
+    autotrader._alp = fake_alp
+    rec["proposal"]["qty"] = max(1, rec["proposal"]["qty"])
+    db.update(db.upk(SUB), f"BOT#{rec['id']}", {"proposal": rec["proposal"]})
+    code, placed = call("POST", f"/bot/{rec['id']}/order", {})
+    assert code == 200 and placed["status"] == "submitted" and sent[0][2]["time_in_force"] == "day"
+    call("PUT", "/bot/settings", {"enabled": False})
+    out = autotrader.handler({"job": "monitor"}, None)   # schedule off, exits still managed -> fills
+    assert SUB in out
+    r = autotrader.monitor(SUB)  # -50% -> stop
+    assert r["actions"] and "stop" in r["actions"][0][1], r
+    code, home = call("GET", "/bot")
+    assert next(i for i in home["items"] if i["id"] == rec["id"])["status"] == "closing"
+
+
+def test_earnings_exit_timing():
+    import autotrader, datetime as dt
+    D = dt.datetime
+    # after-close report on Wed Oct 28: exit Wed from 15:30
+    assert autotrader.earnings_exit_due("2026-10-28 AMC", D(2026, 10, 28, 15, 0))[0] is False
+    assert autotrader.earnings_exit_due("2026-10-28 AMC", D(2026, 10, 28, 15, 35))[0] is True
+    assert autotrader.earnings_exit_due("2026-10-28", D(2026, 10, 27, 15, 45))[0] is False
+    # before-open report on Monday Nov 2: exit the previous Friday from 15:30
+    assert autotrader.earnings_exit_due("2026-11-02 BMO", D(2026, 10, 30, 15, 40))[0] is True
+    assert autotrader.earnings_exit_due("2026-11-02 BMO", D(2026, 10, 30, 12, 0))[0] is False
+    assert autotrader.earnings_exit_due("2026-11-02 BMO", D(2026, 11, 2, 9, 35))[0] is True   # missed: exit now
 
 
 def test_analytics():

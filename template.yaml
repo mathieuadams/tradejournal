@@ -249,6 +249,7 @@ Resources:
           SYNC_FUNCTION: !Ref SyncFunction
           WEEKLY_FUNCTION: !Ref WeeklyFunction
           LIVECOACH_FUNCTION: !Ref LiveCoachFunction
+          BOT_FUNCTION: !Ref BotFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - S3WritePolicy: { BucketName: !Sub "${AppName}-uploads-${AWS::AccountId}-${AWS::Region}" }
@@ -259,6 +260,7 @@ Resources:
         - LambdaInvokePolicy: { FunctionName: !Ref SyncFunction }
         - LambdaInvokePolicy: { FunctionName: !Ref WeeklyFunction }
         - LambdaInvokePolicy: { FunctionName: !Ref LiveCoachFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref BotFunction }
       Events:
         # One route per method (not ANY) so browser CORS preflight (OPTIONS) is answered by
         # API Gateway itself instead of hitting the JWT authorizer and failing with 401.
@@ -368,6 +370,31 @@ Resources:
             ScheduleExpression: cron(30 15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"kind": "preclose"}'
+
+  BotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: autotrader.handler
+      Timeout: 600
+      MemorySize: 1024
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
+        - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
+        - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
+      Events:
+        Scan:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(15 10,15 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "scan"}'
+        Monitor:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(*/5 9-15 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "monitor"}'
 
   WeeklyFunction:
     Type: AWS::Serverless::Function

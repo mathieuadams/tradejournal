@@ -125,3 +125,20 @@ def scan_sk(sk_value):
             break
         kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
     return [from_ddb(i) for i in items]
+
+
+def scan_prefix(prefix, statuses=None):
+    """All items (any user) whose SK starts with prefix, optionally filtered by status."""
+    from boto3.dynamodb.conditions import Attr
+    f = Attr("SK").begins_with(prefix)
+    if statuses:
+        f = f & Attr("status").is_in(list(statuses))
+    kw = {"FilterExpression": f}
+    items = []
+    while True:
+        r = table().scan(**kw)
+        items += r["Items"]
+        if "LastEvaluatedKey" not in r:
+            break
+        kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+    return [from_ddb(i) for i in items]

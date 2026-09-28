@@ -1181,8 +1181,105 @@ async function loadGex() {
   S.gexBusy = false; if (route() === 'gex') render();
 }
 
+/* ---------- paper bot ---------- */
+async function loadBot(force) {
+  if (S.bot && !force) return;
+  try { S.bot = await api('/bot'); } catch (e) { S.bot = { error: e.message, items: [], settings: {} }; }
+  if (S.broker === undefined) { try { S.broker = await api('/broker/alpaca'); } catch (e) { S.broker = { connected: false }; } }
+  if (route() === 'bot') render();
+}
+const DEC_CLS = { BUY: 'ok', WAIT: 'mid', SKIP: 'bad' };
+function botResult(r) {
+  if (!r) return '';
+  const p = r.proposal, groups = ['chart', 'gamma', 'events', 'contract'], gl = { chart: 'Chart', gamma: 'Gamma', events: 'Events', contract: 'Contract' };
+  return `<section class="panel"><div class="cal-head"><h2>${esc(r.symbol)} <span class="verdict ${DEC_CLS[r.decision]}" style="margin-left:8px">${r.decision}</span></h2><span class="muted" style="font-size:.85rem">${esc(r.createdAt.replace('T', ' ').slice(0, 16))} ET · ${esc(r.source)} data · price ${px(r.signals.price)}</span></div>
+    ${groups.map(gname => { const items = r.checks.filter(c => c.group === gname); return items.length ? `<h3 style="font-size:.95rem;margin:12px 0 4px">${gl[gname]}</h3><ul style="list-style:none;padding:0;margin:0;line-height:1.6">${items.map(c => `<li><b class="${c.ok ? 'gain' : c.required ? 'loss' : 'muted'}">${c.ok ? '✓' : c.required ? '✗' : '!'}</b> ${esc(c.text)}${!c.required ? ' <span class="muted">(warning only)</span>' : ''}</li>`).join('')}</ul>` : ''; }).join('')}
+    ${r.blocking.length && r.decision !== 'BUY' ? `<p style="margin:12px 0 0"><b>Why not a buy:</b> ${r.blocking.map(esc).join('; ')}.</p>` : ''}
+    ${p ? `<h3 style="font-size:.95rem;margin:16px 0 6px">Proposed order</h3>
+      <div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
+        <tr><td>Contract</td><td class="r"><b>${esc(r.symbol)} ${esc(fmtExp(p.exp))} ${p.strike} call</b> <span class="muted">${esc(p.contract)}</span></td></tr>
+        <tr><td>Quantity × limit</td><td class="r">${p.qty} × ${p.limit.toFixed(2)} = ${money(p.cost, false)}</td></tr>
+        <tr><td>Exit if the option falls to</td><td class="r">${p.optionStop.toFixed(2)} <span class="muted">(risk ${money(p.riskAtStop, false)})</span></td></tr>
+        <tr><td>Take profit at option</td><td class="r">${p.optionTarget.toFixed(2)}</td></tr>
+        <tr><td>Exit if ${esc(r.symbol)} closes below</td><td class="r">${px(p.underlyingStop)}</td></tr>
+        <tr><td>Take profit if ${esc(r.symbol)} reaches</td><td class="r">${px(p.underlyingTarget)}</td></tr>
+      </tbody></table></div>` : ''}
+    ${(r.candidates || []).length ? `<details style="margin-top:10px"><summary style="cursor:pointer" class="muted">Contracts considered</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>Expiry</th><th class="r">Strike</th><th class="r">Delta</th><th class="r">Mid</th><th class="r">Spread</th><th class="r">OI</th><th class="r">Breakeven</th><th class="r">EM upper</th><th>Issues</th></tr></thead><tbody>
+      ${r.candidates.map(c => `<tr><td>${fmtExp(c.exp)} (${c.dte}d)</td><td class="r">${c.strike}</td><td class="r">${c.delta}</td><td class="r">${c.mid}</td><td class="r">${c.spreadPct ?? '—'}%</td><td class="r">${c.oi}</td><td class="r">${c.breakeven}</td><td class="r">${c.emUpper ?? '—'}</td><td>${c.problems.map(esc).join(', ') || '<span class="gain">ok</span>'}</td></tr>`).join('')}
+    </tbody></table></div></details>` : ''}
+    ${p && r.status === 'proposed' ? `<div class="form-grid" style="align-items:end;margin-top:12px">
+      <div class="field"><label for="bo-qty">Contracts</label><input id="bo-qty" type="number" min="1" value="${Math.max(1, p.qty)}"></div>
+      <div class="field"><label for="bo-lim">Limit price</label><input id="bo-lim" type="number" step="0.05" value="${p.limit.toFixed(2)}"></div>
+      <div class="field"><button class="btn coachbtn" data-botorder="${r.id}">${r.decision === 'BUY' ? 'Place paper order' : 'Place paper order anyway'}</button></div>
+      <div class="field"><button class="btn" data-botdismiss="${r.id}">Dismiss</button></div></div>` : ''}
+  </section>`;
+}
+function vBot() {
+  const b = S.bot, cfg = (b && b.settings) || {}, br = S.broker;
+  const paperOk = br && br.connected && br.env === 'paper';
+  const warn = !br ? '' : !br.connected ? `<div class="errbox">Connect Alpaca with <b>paper</b> keys in Settings → Brokers. The bot only trades the paper account.</div>`
+    : br.env !== 'paper' ? `<div class="errbox">Alpaca is connected with <b>live</b> keys. The bot only trades paper; reconnect with paper keys to place orders.</div>` : '';
+  const items = (b && b.items) || [];
+  const active = items.filter(i => ['submitted', 'open', 'closing'].includes(i.status));
+  const recent = items.filter(i => !['submitted', 'open', 'closing'].includes(i.status)).slice(0, 25);
+  const row = i => { const p = i.proposal || {};
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td>
+      <td class="r">${i.qty || p.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : (i.limit ? i.limit.toFixed(2) : '')}</td><td class="r ${cls(i.lastPlPct)}">${i.lastPlPct != null ? (i.lastPlPct > 0 ? '+' : '') + i.lastPlPct + '%' : ''}</td><td>${esc(i.exitReason || '')}</td>
+      <td class="r">${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">Close</button>` : ''}</td></tr>`; };
+  const table = rows => `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th class="r">Qty</th><th class="r">Price</th><th class="r">P&L</th><th>Exit</th><th></th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table></div>`;
+  const earnTxt = Object.entries(cfg.earnings || {}).map(([k, v]) => `${k} ${v}`).join('\n');
+  const f = (id, label, v, step = 'any') => `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" step="${step}" value="${v ?? ''}"></div>`;
+  return head('Paper bot', 'Evaluates a ticker with your method, picks the option, and trades the Alpaca paper account', '') + warn + `
+  <section class="panel"><div class="form-grid" style="align-items:end">
+    <div class="field"><label for="bot-sym">Ticker to evaluate</label><input id="bot-sym" type="text" style="text-transform:uppercase" placeholder="e.g. HUBB" value="${esc(S.botSym || '')}" autocomplete="off"></div>
+    <div class="field"><label for="bot-earn">Next earnings date (optional)</label><input id="bot-earn" type="date" value="${esc(((cfg.earnings || {})[S.botSym] || '').split(' ')[0])}"></div>
+    <div class="field"><label for="bot-earn-t">Reported</label><select id="bot-earn-t"><option value="AMC" ${(((cfg.earnings || {})[S.botSym] || '').split(' ')[1] || 'AMC') === 'AMC' ? 'selected' : ''}>After the close</option><option value="BMO" ${((cfg.earnings || {})[S.botSym] || '').split(' ')[1] === 'BMO' ? 'selected' : ''}>Before the open</option></select></div>
+    <div class="field"><button class="btn primary" id="bot-eval" ${S.botBusy ? 'disabled' : ''}>${S.botBusy ? 'Evaluating…' : 'Evaluate'}</button></div></div>
+    ${S.botErr ? `<div class="errbox">${esc(S.botErr)}</div>` : ''}
+    <p class="muted" style="font-size:.84rem;margin:6px 0 0">Long calls only for now. The earnings date is saved for that ticker. The bot won't open a new trade within ${cfg.noEntryDays ?? 5} days of it, and it sells before the report to keep the implied-volatility run-up: from 15:30 ET on earnings day for after-close reports, or 15:30 ET the trading day before for before-open reports. Exits run automatically every 5 minutes during market hours for every bot position, even when the schedule is off. Paper account only; not financial advice.</p></section>
+  ${botResult(S.botRes)}
+  ${active.length ? `<section><h2>Active</h2>${table(active)}</section>` : ''}
+  <section><h2>Recent evaluations and trades</h2>${recent.length ? table(recent) : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
+  <section class="panel"><h2>Bot settings</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
+      <label><input type="checkbox" id="bs-on" ${cfg.enabled ? 'checked' : ''}> Scan the watchlist on a schedule (10:15 and 15:15 ET)</label>
+      <label><input type="checkbox" id="bs-auto" ${cfg.autoSubmit ? 'checked' : ''}> Place paper orders automatically when the decision is BUY</label>
+      <label><input type="checkbox" id="bs-flip" ${cfg.requireAboveFlip ? 'checked' : ''}> Require price above the gamma flip</label></div>
+    <div class="field"><label for="bs-watch">Watchlist (tickers separated by spaces or commas)</label><input id="bs-watch" type="text" style="text-transform:uppercase" value="${esc((cfg.watchlist || []).join(' '))}"></div>
+    <div class="form-grid">
+      ${f('bs-dtemin', 'Days to expiry, min', cfg.dteMin, 1)}${f('bs-dtemax', 'Days to expiry, max', cfg.dteMax, 1)}
+      ${f('bs-dmin', 'Delta, min', cfg.deltaMin, 0.05)}${f('bs-dmax', 'Delta, max', cfg.deltaMax, 0.05)}
+      ${f('bs-oi', 'Min open interest', cfg.minOi, 1)}${f('bs-spread', 'Max bid/ask spread %', cfg.maxSpreadPct)}
+      ${f('bs-stop', 'Option stop (% loss)', cfg.stopPct)}${f('bs-target', 'Option target (% gain)', cfg.targetPct)}
+      ${f('bs-time', 'Exit when days to expiry ≤', cfg.timeStopDte, 1)}${f('bs-max', 'Max open positions', cfg.maxPositions, 1)}
+      ${f('bs-cross', 'EMA cross within (days)', cfg.crossWindow, 1)}${f('bs-ext', 'Max extension (ATR)', cfg.maxExtAtr)}
+      ${f('bs-room', 'Min room/risk ratio', cfg.minRoomRatio)}${f('bs-noentry', 'No new entry within (days of earnings)', cfg.noEntryDays, 1)}</div>
+    <div class="field"><label for="bs-earn">Earnings dates, one per line: ticker, date, AMC (after close) or BMO (before open)</label><textarea id="bs-earn" placeholder="HUBB 2026-10-28 BMO">${esc(earnTxt)}</textarea></div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 10px">Risk per trade comes from Settings (${money((S.me.settings || {}).riskPerTrade || 200, false)}): the bot sizes each trade so the option stop costs about that much.</p>
+    <button class="btn primary" id="bs-save">Save settings</button> <button class="btn" data-botrun="scan">Scan watchlist now</button> <button class="btn" data-botrun="monitor">Check exits now</button>
+  </section>`;
+}
+async function botEvaluate() {
+  const sym = ($('#bot-sym')?.value || '').trim().toUpperCase(); if (!sym) { toast('Enter a ticker'); return; }
+  const earn = $('#bot-earn') && $('#bot-earn').value ? `${$('#bot-earn').value} ${$('#bot-earn-t').value}` : '';
+  S.botSym = sym; S.botBusy = true; S.botErr = null; render();
+  try { S.botRes = await api('/bot/evaluate', { method: 'POST', body: { symbol: sym, earnings: earn } }); await loadBot(true); }
+  catch (e) { S.botErr = e.message; }
+  S.botBusy = false; if (route() === 'bot') render();
+}
+async function botSaveSettings() {
+  const earnings = {}; ($('#bs-earn').value || '').split('\n').forEach(l => { const m = l.trim().split(/[\s,]+/); if (m.length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(m[1])) earnings[m[0].toUpperCase()] = m[1] + (m[2] && /^(amc|bmo)$/i.test(m[2]) ? ' ' + m[2].toUpperCase() : ' AMC'); });
+  const v = id => $(id).value;
+  const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked,
+    watchlist: v('#bs-watch').split(/[\s,]+/).filter(Boolean), dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
+    minOi: v('#bs-oi'), maxSpreadPct: v('#bs-spread'), stopPct: v('#bs-stop'), targetPct: v('#bs-target'), timeStopDte: v('#bs-time'), maxPositions: v('#bs-max'),
+    crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'), earnings };
+  if (body.autoSubmit && !confirm('Automatic paper orders: the bot will place paper trades by itself when every rule passes. Continue?')) return;
+  try { S.bot.settings = await api('/bot/settings', { method: 'PUT', body }); toast('Bot settings saved'); render(); } catch (e) { toast(e.message); }
+}
+
 /* ---------- router & events ---------- */
-const VIEWS = { gex: [vGex, () => loadMarketGamma()], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { bot: [vBot, () => loadBot()], gex: [vGex, () => loadMarketGamma()], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
@@ -1193,8 +1290,16 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
+  if (el.id === 'bot-eval') { botEvaluate(); return; }
+  if (el.id === 'bs-save') { botSaveSettings(); return; }
+  if (el.dataset.botrun) { api('/bot/run', { method: 'POST', body: { job: el.dataset.botrun } }).then(() => { toast(el.dataset.botrun === 'scan' ? 'Scanning the watchlist… refresh in a minute' : 'Checking exits…'); setTimeout(() => loadBot(true), 20000); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.botorder) { const id = el.dataset.botorder; el.disabled = true; api(`/bot/${id}/order`, { method: 'POST', body: { qty: +$('#bo-qty').value, limit: +$('#bo-lim').value } })
+      .then(async r => { S.botRes = { ...S.botRes, ...r }; await loadBot(true); toast('Paper order sent to Alpaca'); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
+  if (el.dataset.botclose) { if (!confirm('Close this paper position at market?')) return; api(`/bot/${el.dataset.botclose}/close`, { method: 'POST' }).then(async () => { await loadBot(true); toast('Close order sent'); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.botdismiss) { api(`/bot/${el.dataset.botdismiss}/dismiss`, { method: 'POST' }).then(async () => { S.botRes = null; await loadBot(true); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.botshow) { S.botRes = (S.bot.items || []).find(i => i.id === el.dataset.botshow) || null; render(); window.scrollTo(0, 0); return; }
   if (el.id === 'tc-run') { tcRead(); return; }
   if (el.id === 'mkt-refresh') { S.mkt = null; render(); loadMarketGamma(true); return; }
   if (el.dataset.gexlink) { S.gexSym = el.dataset.gexlink; S.gexExp = ''; closeTrade(); location.hash = '#gex'; setTimeout(loadGex, 50); return; }
@@ -1245,6 +1350,7 @@ document.addEventListener('click', e => {
 function tcRead() { S.tc = { type: $('#tc-type').value, strike: +$('#tc-strike').value || null, exp: $('#tc-exp').value, prem: +$('#tc-prem').value || null }; const o = $('#tc-out'); if (o && S.gex) o.innerHTML = tcResult(S.gex); }
 document.addEventListener('input', e => {
   if (['tc-strike', 'tc-prem'].includes(e.target.id)) { tcRead(); return; }
+  if (e.target.id === 'bot-sym' && $('#bot-earn') && S.bot) { const d = (((S.bot.settings || {}).earnings || {})[e.target.value.trim().toUpperCase()] || '').split(' '); $('#bot-earn').value = d[0] || ''; $('#bot-earn-t').value = d[1] || 'AMC'; }
   if (e.target.id === 'f-q') { tf.q = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (e.target.id === 'rp') { stopReplay(); replay.k = +e.target.value; drawChart(); }
 });
@@ -1259,6 +1365,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('submit', e => { if (e.target.id === 'ask') { e.preventDefault(); ask($('#askq').value); } });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.id === 'bot-sym') { e.preventDefault(); botEvaluate(); return; }
   if (e.key === 'Enter' && e.target.id === 'gx-sym') { e.preventDefault(); S.gexExp = ''; loadGex(); return; }
   if (e.key === 'Escape' && $('#drawer').classList.contains('open')) closeTrade();
   if (e.key === 'Enter' && e.target.matches('tr[data-open]')) openTrade(e.target.dataset.open);

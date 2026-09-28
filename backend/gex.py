@@ -91,6 +91,7 @@ def from_schwab(sub, symbol, max_days):
                                 "delta": c.get("delta") if c.get("delta") not in (None, -999.0) else None,
                                 "gamma": c.get("gamma") if c.get("gamma") not in (None, -999.0) else None,
                                 "volume": c.get("totalVolume") or 0,
+                                "bid": c.get("bid"), "ask": c.get("ask"),
                                 "mark": c.get("mark") if (c.get("mark") or 0) > 0 else
                                 ((c.get("bid") or 0) + (c.get("ask") or 0)) / 2 or None})
     return {"source": "Schwab", "spot": spot, "contracts": out}
@@ -132,6 +133,7 @@ def from_alpaca(creds, symbol, max_days, spot):
             c["delta"], c["gamma"], c["iv"] = g.get("delta"), g.get("gamma"), snap.get("impliedVolatility")
             c["volume"] = (snap.get("dailyBar") or {}).get("v") or 0
             qt = snap.get("latestQuote") or {}
+            c["bid"], c["ask"] = qt.get("bp"), qt.get("ap")
             if qt.get("bp") and qt.get("ap"):
                 c["mark"] = (qt["bp"] + qt["ap"]) / 2
             elif (snap.get("latestTrade") or {}).get("p"):
@@ -273,6 +275,23 @@ def compute(contracts, spot):
     }
 
 
+def fetch_chain(sub, symbol, days):
+    """Option chain (spot + contracts with OI, greeks, IV, bid/ask/mark): Schwab first, then Alpaca."""
+    data = from_schwab(sub, symbol, days)
+    if data and data["contracts"]:
+        return data
+    import alpaca
+    creds = alpaca.creds(sub)
+    if not creds:
+        raise BadRequest("Option data needs Alpaca (free) or Schwab with the Market Data product connected in Settings → Brokers.")
+    if symbol.startswith("$"):
+        raise BadRequest("Index options (SPX) need Schwab connected with the Market Data product. Use SPY instead.")
+    spot = spot_price(symbol)
+    if not spot:
+        raise BadRequest(f"No price found for {symbol}.")
+    return from_alpaca(creds, symbol, days, spot)
+
+
 def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
     symbol = (symbol or "").strip().upper()
     if symbol in ("SPX", "^SPX", "^GSPC"):
@@ -287,19 +306,7 @@ def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
         return cached["data"]
     # Fetch at least ~4 months so monthly expirations 45-60+ days out are always available for the
     # expected move and the pre-trade check; gamma itself uses only the window the user picked.
-    fetch_days = max(max_days, 130)
-    data = from_schwab(sub, symbol, fetch_days)
-    if not data or not data["contracts"]:
-        import alpaca
-        creds = alpaca.creds(sub)
-        if not creds:
-            raise BadRequest("Gamma exposure needs option data: connect Alpaca (free) or Schwab with the Market Data product in Settings → Brokers.")
-        if symbol.startswith("$"):
-            raise BadRequest("Index options (SPX) need Schwab connected with the Market Data product. Use SPY instead.")
-        spot = spot_price(symbol)
-        if not spot:
-            raise BadRequest(f"No price found for {symbol}.")
-        data = from_alpaca(creds, symbol, fetch_days, spot)
+    data = fetch_chain(sub, symbol, max(max_days, 130))
     spot = data["spot"] or spot_price(symbol)
     everything = data["contracts"]
     em = expected_moves(everything, spot, limit=16)
