@@ -36,6 +36,9 @@ THEIR OWN RULES. You coach like a seasoned trading coach standing next to them:
 - Pre-market: set the day's focus and the if/then plan per position. Pre-close: hold overnight or not, per rules and risk.
   New entry: was this entry consistent with their setup criteria and history; define the stop and the invalidation
   level if missing; what would make them add or cut.
+- Use market_gamma (SPY/QQQ regime, flip, walls, expected move) and each position's gamma levels (flip, call/put
+  wall, expected move): positive gamma means moves tend to be absorbed, negative gamma (below the flip) means moves
+  tend to extend. Use walls and the expected move to judge whether targets and stops are realistic.
 - Use numbers from the data in every point. No generic advice, no boilerplate about "having a plan".
 - Do NOT suggest new tickers or new positions. Talk only about managing existing positions and the trader's process.
   Phrase actions as options tied to their rules and the data ("consider trimming…", "your rule says…"), not as
@@ -201,6 +204,17 @@ def build_payload(sub, kind, trade_id=None):
         if st:
             market[idx] = {k: st.get(k) for k in ("price", "dayChangePct", "trend", "extFromEma21Atr")}
 
+    market_gamma = {}
+    try:
+        import gex
+        for idx in ("SPY", "QQQ"):
+            market_gamma[idx] = gex.summary(sub, idx, 30, 40)
+        for p_ in positions:
+            if p_["type"] in ("stock", "option"):
+                sm = gex.summary(sub, p_["ticker"], 45, None)
+                p_["gamma"] = {k: sm.get(k) for k in ("regime", "gammaFlip", "callWall", "putWall", "dailyMove", "nextExpiryMove")} if "error" not in sm else None
+    except Exception as e:
+        print("gamma context skipped", e)
     total_cost = sum(p["costBasis"] or 0 for p in positions)
     payload = {
         "check": KINDS.get(kind, kind), "time_et": iso(now_ny()),
@@ -208,6 +222,7 @@ def build_payload(sub, kind, trade_id=None):
         "settings": {"riskPerTrade": settings.get("riskPerTrade"), "accountSize": settings.get("accountSize"),
                      "maxPositionPct": settings.get("maxPositionPct"), "dailyLossLimit": (settings.get("prop") or {}).get("dailyLoss")},
         "market": market,
+        "market_gamma": market_gamma,
         "open_positions": positions,
         "portfolio": {
             "count": len(positions), "totalCostBasis": round(total_cost, 2),

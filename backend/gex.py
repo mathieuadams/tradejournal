@@ -12,6 +12,7 @@ Negative net GEX: dealers hedge in the direction of the move (moves amplified).
 """
 import json
 import math
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -274,15 +275,24 @@ def compute(contracts, spot):
 
 def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
     symbol = (symbol or "").strip().upper()
-    if not symbol or len(symbol) > 8 or not symbol.replace(".", "").isalnum():
+    if symbol in ("SPX", "^SPX", "^GSPC"):
+        symbol = "$SPX"
+    if not symbol or len(symbol) > 8 or not symbol.replace(".", "").replace("$", "").isalnum():
         raise BadRequest("Enter a ticker symbol, e.g. NVDA.")
     max_days = max(1, min(int(max_days or 45), 400))
+    import db
+    ck = f"GEX#{symbol}#{max_days}#{expiry or ''}#{strikes_each_side or ''}"
+    cached = db.get("CACHE", ck)
+    if cached and cached.get("at", 0) > time.time() - 600:     # 10-minute cache: chains are big
+        return cached["data"]
     data = from_schwab(sub, symbol, max_days)
     if not data or not data["contracts"]:
         import alpaca
         creds = alpaca.creds(sub)
         if not creds:
             raise BadRequest("Gamma exposure needs option data: connect Alpaca (free) or Schwab with the Market Data product in Settings → Brokers.")
+        if symbol.startswith("$"):
+            raise BadRequest("Index options (SPX) need Schwab connected with the Market Data product. Use SPY instead.")
         spot = spot_price(symbol)
         if not spot:
             raise BadRequest(f"No price found for {symbol}.")
@@ -304,9 +314,29 @@ def run(sub, symbol, max_days=45, expiry=None, strikes_each_side=None):
         raise BadRequest(f"No option contracts found for {symbol} in the next {max_days} days.")
     out = compute(contracts, spot)
     out["expirations"] = all_exps
+    out["_ck"] = ck
     out["expectedMove"] = em
     out.update({"symbol": symbol, "source": data["source"], "maxDays": max_days, "expiry": expiry,
                 "strikesEachSide": int(strikes_each_side) if strikes_each_side else None,
                 "asOf": now_ny().strftime("%Y-%m-%d %H:%M"),
                 "oiDate": max((c.get("oiDate") or "" for c in contracts), default="") or None})
+    out.pop("_ck", None)
+    try:
+        db.put({"PK": "CACHE", "SK": ck, "at": int(time.time()), "data": out})
+    except Exception as e:   # oversized items etc. just skip caching
+        print("gex cache skipped", e)
     return out
+
+
+def summary(sub, symbol, days=30, strikes=40):
+    """Compact market-level view used by the market strip and the live coach."""
+    try:
+        g = run(sub, symbol, days, None, strikes)
+    except Exception as e:
+        return {"symbol": symbol, "error": str(e)[:160]}
+    em = (g.get("expectedMove") or {})
+    return {"symbol": g["symbol"], "spot": g["spot"], "netGex": g["netGex"], "regime": g["regime"],
+            "gammaFlip": g["gammaFlip"], "callWall": g["callWall"], "putWall": g["putWall"],
+            "putCallOi": g["putCallOi"], "dailyMove": em.get("daily"),
+            "nextExpiryMove": next((m for m in em.get("byExpiration") or [] if m["dte"] >= 1), None),
+            "source": g["source"]}

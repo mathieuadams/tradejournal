@@ -207,6 +207,12 @@ def gamma_exposure(sub, claims, body, q):
     return gex.run(sub, q.get("symbol"), q.get("days") or 45, q.get("expiry") or None, q.get("strikes") or None)
 
 
+@route("GET", "/gex/market")
+def gamma_market(sub, claims, body, q):
+    import gex
+    return gex.summary(sub, q.get("symbol") or "SPY", int(q.get("days") or 30), int(q.get("strikes") or 40))
+
+
 @route("POST", "/maintenance/rebuild")
 def rebuild(sub, claims, body, q):
     import ingest

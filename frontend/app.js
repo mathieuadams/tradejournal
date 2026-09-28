@@ -995,6 +995,58 @@ async function pollBroker() {
 
 /* ---------- options positioning (gamma / delta exposure) ---------- */
 const bigMoney = v => { if (v == null) return '—'; const a = Math.abs(v), sg = v < 0 ? '−' : '+'; return a >= 1e9 ? `${sg}$${(a / 1e9).toFixed(2)}B` : a >= 1e6 ? `${sg}$${(a / 1e6).toFixed(1)}M` : a >= 1e3 ? `${sg}$${(a / 1e3).toFixed(0)}K` : `${sg}$${a.toFixed(0)}`; };
+const MARKET_SYMS = ['SPY', 'QQQ', 'IWM', 'SPX'];
+async function loadMarketGamma(force) {
+  if (S.mkt && !force) return; S.mkt = S.mkt || {};
+  await Promise.all(MARKET_SYMS.map(async sym => {
+    try { S.mkt[sym] = await api(`/gex/market?symbol=${sym}`); } catch (e) { S.mkt[sym] = { symbol: sym, error: e.message }; }
+    if (route() === 'gex') { const el = $('#mkt-strip'); if (el) el.innerHTML = marketCards(); }
+  }));
+}
+function marketCards() {
+  return MARKET_SYMS.map(sym => {
+    const m = (S.mkt || {})[sym];
+    if (!m) return `<div class="period"><h3>${sym}</h3><p class="loading" style="padding:0">Loading…</p></div>`;
+    if (m.error) return `<div class="period"><h3>${sym}</h3><p class="muted">${esc(m.error)}</p></div>`;
+    const pos = m.regime === 'positive', dist = m.gammaFlip ? (m.spot / m.gammaFlip - 1) * 100 : null;
+    return `<button class="period" data-gex="${sym}" style="text-align:left;cursor:pointer;font:inherit;color:inherit">
+      <h3>${sym} · ${px(m.spot)}</h3><div class="big" style="font-size:1.2rem;color:${pos ? 'var(--gain)' : 'var(--loss)'}">${pos ? 'Positive gamma' : 'Negative gamma'}</div>
+      <p>Flip ${m.gammaFlip ? px(m.gammaFlip) : '—'}${dist != null ? ` (${dist >= 0 ? 'price ' + dist.toFixed(1) + '% above' : 'price ' + Math.abs(dist).toFixed(1) + '% below'})` : ''}<br>
+      Walls ${px(m.putWall)} / ${px(m.callWall)}${m.dailyMove ? `<br>Next day ±${m.dailyMove.pct.toFixed(1)}%` : ''}</p></button>`;
+  }).join('');
+}
+function tradeCheck(g) {
+  const list = (g.expectedMove && g.expectedMove.byExpiration) || [];
+  const tc = S.tc || {};
+  const exps = g.expirations || [];
+  const form = `<div class="form-grid" style="align-items:end">
+    <div class="field"><label for="tc-type">Type</label><select id="tc-type"><option value="call" ${tc.type !== 'put' ? 'selected' : ''}>Call</option><option value="put" ${tc.type === 'put' ? 'selected' : ''}>Put</option></select></div>
+    <div class="field"><label for="tc-strike">Strike</label><input id="tc-strike" type="number" step="any" value="${tc.strike ?? ''}"></div>
+    <div class="field"><label for="tc-exp">Expiration</label><select id="tc-exp">${exps.map(e => `<option value="${e}" ${tc.exp === e ? 'selected' : ''}>${fmtExp(e)}</option>`).join('')}</select></div>
+    <div class="field"><label for="tc-prem">Premium</label><input id="tc-prem" type="number" step="any" value="${tc.prem ?? ''}"></div>
+    <div class="field"><button class="btn primary" id="tc-run">Check</button></div></div>`;
+  let out = '';
+  if (tc.strike && tc.prem && tc.exp) {
+    const call = tc.type !== 'put', sg = call ? 1 : -1, spot = g.spot;
+    const be = call ? tc.strike + tc.prem : tc.strike - tc.prem, need = (be / spot - 1) * 100;
+    const em = list.find(x => x.exp === tc.exp) || list.filter(x => x.exp <= tc.exp).pop();
+    const target = call ? g.callWall : g.putWall;
+    const stopLvl = call ? Math.min(g.gammaFlip || g.putWall, g.putWall) : Math.max(g.gammaFlip || g.callWall, g.callWall);
+    const above = g.gammaFlip ? spot > g.gammaFlip : null;
+    const roomPct = (target / spot - 1) * 100 * sg, riskPct = (1 - stopLvl / spot) * 100 * sg;
+    const mk = (ok, text) => `<li><b class="${ok === true ? 'gain' : ok === false ? 'loss' : 'muted'}">${ok === true ? '✓' : ok === false ? '✗' : '•'}</b> ${text}</li>`;
+    const mkt = (S.mkt || {}).SPY;
+    out = `<ul style="list-style:none;padding:0;margin:12px 0 0;line-height:1.6">
+      ${mk(above == null ? null : (call ? above : !above), `Gamma regime: price is ${above ? 'above' : 'below'} the flip (${px(g.gammaFlip)}). ${above ? 'Positive gamma: moves tend to be absorbed, so expect a grind, and buy pullbacks rather than chase.' : 'Negative gamma: moves tend to extend. Good for momentum, but stops must be respected.'}`)}
+      ${mk(em ? (call ? be <= em.upper : be >= em.lower) : null, `Breakeven ${px(be)} needs ${need >= 0 ? '+' : ''}${need.toFixed(1)}%. Expected move by ${em ? fmtExp(em.exp) : '—'}: ±${em ? em.pct.toFixed(1) : '—'}% (${em ? px(em.lower) + '–' + px(em.upper) : '—'}).`)}
+      ${mk(call ? be < target : be > target, `${call ? 'Call' : 'Put'} wall at ${px(target)} (${roomPct >= 0 ? '+' : ''}${roomPct.toFixed(1)}% away). ${call ? (be < target ? 'Breakeven is below the wall, so the move to the wall pays.' : 'Breakeven is past the wall, so the option only pays if price breaks through resistance.') : (be > target ? 'Breakeven is above the put wall, so the move to the wall pays.' : 'Breakeven is past the put wall.')}`)}
+      ${mk(roomPct > riskPct, `Room vs risk on the stock: ${roomPct.toFixed(1)}% to the ${call ? 'call' : 'put'} wall vs ${riskPct.toFixed(1)}% to the invalidation level (${px(stopLvl)}, ${call ? 'below the flip / put wall' : 'above the flip / call wall'}). Ratio ${(roomPct / Math.max(0.01, riskPct)).toFixed(1)} : 1.`)}
+      ${mkt && !mkt.error ? mk(mkt.regime === 'positive' ? (call ? true : null) : (call ? null : true), `Market: SPY is in ${mkt.regime} gamma (flip ${px(mkt.gammaFlip)}).`) : ''}
+    </ul>
+    <p class="muted" style="font-size:.84rem;margin:8px 0 0">Suggested plan from the levels: stock target near ${px(target)}, invalidation on a close ${call ? 'below' : 'above'} ${px(stopLvl)}. Size the position so the premium you could lose at that stop fits your risk per trade.</p>`;
+  }
+  return `<section class="panel"><div class="cal-head"><h2>Check an option before buying</h2><span class="muted" style="font-size:.85rem">Paste the contract you saw in the flow</span></div>${form}${out}</section>`;
+}
 function vGex() {
   const g = S.gex, tickers = [...new Set(S.trades.filter(t => t.status === 'open').map(t => t.underlying || t.sym))];
   let recent = []; try { recent = JSON.parse(localStorage.getItem('tj.gexRecent') || '[]'); } catch (e) {}
@@ -1030,7 +1082,10 @@ function vGex() {
     </tbody></table></div></section>
     <p class="muted" style="font-size:.84rem">${g.contracts} contracts, ${g.expiry ? `expiring ${fmtExp(g.expiry)}` : `expiring within ${g.maxDays} days`}${g.strikesEachSide ? `, ${g.strikesEachSide} strikes each side of the price` : ''}. The flip depends on which expirations and strikes are included, so it differs between sites using different settings. Open interest is from the previous session${g.oiDate ? ` (${esc(g.oiDate)})` : ''}, so this shows positioning as of this morning. Uses the common assumption that dealers are long calls and short puts; real dealer positioning isn’t public. Loaded ${esc(g.asOf)} ET.</p>`;
   } else body = `<section class="panel"><p class="muted" style="margin:0">Pick a ticker to see where options positioning sits: gamma exposure by strike, the gamma flip level, call and put walls, max pain and delta exposure. Needs Alpaca (free) or Schwab with market data connected in Settings.</p></section>`;
-  return head('Options positioning', 'Gamma and delta exposure from the option chain', '') + form + body;
+  const market = `<section class="panel"><div class="cal-head"><h2>Market gamma</h2><button class="btn" id="mkt-refresh">Refresh</button></div>
+    <div class="periods" id="mkt-strip" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">${marketCards()}</div>
+    <p class="muted" style="font-size:.82rem;margin:8px 0 0">Options expiring within 30 days, 40 strikes each side. SPX needs Schwab with market data. Click a card for the full view.</p></section>`;
+  return head('Options positioning', 'Gamma and delta exposure from the option chain', '') + market + form + (g && !S.gexErr ? tradeCheck(g) : '') + body;
 }
 function emFor(g) {
   const list = (g.expectedMove && g.expectedMove.byExpiration) || [];
@@ -1110,7 +1165,7 @@ async function loadGex() {
 }
 
 /* ---------- router & events ---------- */
-const VIEWS = { gex: [vGex], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { gex: [vGex, () => loadMarketGamma()], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
@@ -1121,8 +1176,10 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
+  if (el.id === 'tc-run') { S.tc = { type: $('#tc-type').value, strike: +$('#tc-strike').value || null, exp: $('#tc-exp').value, prem: +$('#tc-prem').value || null }; render(); return; }
+  if (el.id === 'mkt-refresh') { S.mkt = null; render(); loadMarketGamma(true); return; }
   if (el.dataset.gexlink) { S.gexSym = el.dataset.gexlink; S.gexExp = ''; closeTrade(); location.hash = '#gex'; setTimeout(loadGex, 50); return; }
   if (el.dataset.gex) { $('#gx-sym').value = el.dataset.gex; S.gexExp = ''; loadGex(); return; }
   if (el.id === 'gx-run') { loadGex(); return; }
