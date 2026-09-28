@@ -548,6 +548,37 @@ def test_bot_chase():
     assert rec["status"] == "open" and rec["filledQty"] >= 2, rec
 
 
+def test_import_undo():
+    STORE.clear()
+    code, imp = call("POST", "/imports", {"fileName": "s.csv", "account": "Alpaca paper"})
+    importer.process(SUB, imp["importId"], "Alpaca paper", open(os.path.join(HERE, "..", "samples", "sample-fills.csv")).read())
+    code, d = call("GET", "/trades"); assert len(d["trades"]) == 6
+    code, r = call("POST", f"/imports/{imp['importId']}/undo")
+    assert code == 200 and r["removedFills"] == 14 and r["trades"] == 0
+    # legacy fills without importId: account cleanup keeps broker-synced fills
+    importer.process(SUB, "20260101000000-aaaaaa", "Alpaca paper", open(os.path.join(HERE, "..", "samples", "sample-fills.csv")).read())
+    for (pk_, sk), it in list(STORE.items()):
+        if sk.startswith("FILL#"):
+            it.pop("importId", None)
+    STORE[(db.upk(SUB), "FILL#Alpaca paper#2026-09-28T10:00:00#alp-1")] = {"PK": db.upk(SUB), "SK": "FILL#Alpaca paper#2026-09-28T10:00:00#alp-1",
+        "id": "alp-1", "acct": "Alpaca paper", "ts": "2026-09-28T10:00:00", "sym": "AMD", "side": "buy", "qty": 1, "price": 1, "fees": 0, "mult": 1}
+    code, r = call("POST", "/maintenance/remove-csv-fills", {"account": "Alpaca paper"})
+    assert r["removedFills"] == 14 and any(s_.endswith("alp-1") for (_, s_) in STORE)
+
+
+def test_flow_alerts():
+    import flowdata
+    STORE.clear()
+    flowdata._key = lambda sub: "k"
+    flowdata._get = lambda key, params: {"data": [
+        {"ticker": "MSFT", "type": "call", "strike": "375", "expiry": "2099-12-18", "total_premium": "186705", "total_ask_side_prem": "151875",
+         "price": "4.05", "underlying_price": "372.99", "volume": 2442, "open_interest": 7913, "volume_oi_ratio": "0.3", "has_sweep": True,
+         "alert_rule": "RepeatedHits", "option_chain": "MSFT991218C00375000", "created_at": "2026-09-28T16:35:52Z"},
+        {"ticker": "AAPL", "type": "put", "strike": "200", "expiry": "2099-12-18", "total_premium": "500000", "total_ask_side_prem": "400000", "created_at": "2026-09-28T16:00:00Z"}]}
+    code, r = call("GET", "/flow", q={"minPremium": "100000", "type": "call", "maxDte": "40000"})
+    assert code == 200 and len(r["alerts"]) == 1 and r["alerts"][0]["askPct"] == 81
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

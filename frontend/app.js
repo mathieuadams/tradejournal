@@ -43,8 +43,11 @@ const RULES = {
   'Chased': 'If price is more than 0.25R past your planned entry, skip it and wait for the next setup.',
   'late': 'Last new entry at 11:00. Afternoons are for review, not trading.'
 };
+const isPaper = a => /paper/i.test(a || '');
+// Account scope for every page: real accounts by default, paper bot accounts only when chosen.
+const inScope = t => { const a = S.acct || '__real'; return a === '__all' ? true : a === '__real' ? !isPaper(t.acct) : a === '__paper' ? isPaper(t.acct) : t.acct === a; };
 function scoped() {
-  const all = S.acct ? S.trades.filter(t => t.acct === S.acct) : S.trades;
+  const all = S.trades.filter(inScope);
   if (S.range === 'all' || !all.length) return all;
   const last = all[all.length - 1].date; const days = S.range === '30' ? 30 : 7;
   const cut = new Date(new Date(last + 'T12:00:00Z').getTime() - days * 864e5).toISOString().slice(0, 10);
@@ -55,8 +58,11 @@ const byId = id => S.trades.find(t => t.id === id);
 function replaceTrade(v) { const i = S.trades.findIndex(t => t.id === v.id); if (i >= 0) S.trades[i] = v; return v; }
 function rangeCtl() {
   const o = [['all', 'All'], ['30', '30 days'], ['7', '7 days']];
-  const accts = [...new Set(S.trades.map(t => t.acct))].sort();
-  const acctSel = accts.length > 1 ? `<select id="g-acct" aria-label="Account" style="background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 10px"><option value="">All accounts</option>${accts.map(a => `<option ${S.acct === a ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select> ` : '';
+  const accts = [...new Set(S.trades.map(t => t.acct))].sort(), cur = S.acct || '__real', hasPaper = accts.some(isPaper);
+  const opt = (v, l) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`;
+  const acctSel = accts.length > 1 || hasPaper ? `<select id="g-acct" aria-label="Account" style="background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 10px">
+    ${opt('__real', hasPaper ? 'Real accounts' : 'All accounts')}${hasPaper ? opt('__paper', 'Paper bot') + opt('__all', 'Everything (real + paper)') : ''}
+    <optgroup label="One account">${accts.map(a => opt(a, a + (isPaper(a) ? ' (paper)' : ''))).join('')}</optgroup></select> ` : '';
   return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${acctSel}<div class="seg" role="group" aria-label="Period">${o.map(([k, l]) => `<button data-range="${k}" aria-pressed="${S.range === k}">${l}</button>`).join('')}</div></div>`;
 }
 function head(title, sub, right = rangeCtl()) { return `<header class="page-head"><div><h1>${title}</h1>${sub ? `<p>${sub}</p>` : ''}</div>${right}</header>`; }
@@ -110,7 +116,7 @@ const nyToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Americ
 const addDays = (d, n) => new Date(Date.parse(d + 'T12:00:00Z') + n * 864e5).toISOString().slice(0, 10);
 const monday = d => { const w = new Date(d + 'T12:00:00Z').getUTCDay(); return addDays(d, -((w + 6) % 7)); };
 const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-function acctClosed() { return closed(S.acct ? S.trades.filter(t => t.acct === S.acct) : S.trades); }
+function acctClosed() { return closed(S.trades.filter(inScope)); }
 function dayMap(ts) { const m = {}; for (const t of ts) { const d = cdate(t); (m[d] = m[d] || []).push(t); } return m; }
 function periodCard(title, ts, sub) {
   if (!ts.length) return `<div class="period"><h3>${title}</h3><div class="big muted">$0</div><p>${sub}<br>No closed trades</p></div>`;
@@ -828,8 +834,8 @@ async function writeReport() {
 /* ---------- daily journal ---------- */
 function vJournal() {
   const todayNY = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-  const days = [...new Set([todayNY, ...S.trades.map(t => t.date), ...S.trades.filter(t => t.closeTs).map(cdate)])].sort().reverse(); if (!S.jDay) S.jDay = days[0];
-  const d = S.daily[S.jDay]; const ts = S.trades.filter(t => t.date === S.jDay || (t.closeTs && cdate(t) === S.jDay));
+  const inAcct = S.trades.filter(inScope); const days = [...new Set([todayNY, ...inAcct.map(t => t.date), ...inAcct.filter(t => t.closeTs).map(cdate)])].sort().reverse(); if (!S.jDay) S.jDay = days[0];
+  const d = S.daily[S.jDay]; const ts = inAcct.filter(t => t.date === S.jDay || (t.closeTs && cdate(t) === S.jDay));
   const St = stats(ts.filter(t => t.status === 'closed' && cdate(t) === S.jDay));
   const score = (k, l) => `<div class="field"><label id="lb-${k}">${l}</label><div class="scores" role="group" aria-labelledby="lb-${k}">${[1, 2, 3, 4, 5].map(n => `<button data-score="${k}" data-v="${n}" aria-pressed="${d && d[k] === n}">${n}</button>`).join('')}</div></div>`;
   return head('Daily journal', 'Plan before the open, recap after the close', '') + `
@@ -864,7 +870,7 @@ function readDaily() { const d = S.daily[S.jDay] = S.daily[S.jDay] || {}; if ($(
 function vImport() {
   const accts = S.me.accounts;
   return head('Import trades', 'Upload fills from any broker as CSV. They are grouped into trades automatically, and re-uploading the same file never creates duplicates.', '') + `
-  <section class="panel"><div class="form-grid"><div class="field"><label for="imp-acct">Account name</label><input id="imp-acct" type="text" list="acct-list" value="${esc(accts[0] || 'Main')}" placeholder="e.g. Topstep 50K, IBKR cash"><datalist id="acct-list">${accts.map(a => `<option value="${esc(a)}">`).join('')}</datalist></div>
+  <section class="panel"><div class="form-grid"><div class="field"><label for="imp-acct">Account name</label><input id="imp-acct" type="text" list="acct-list" value="${esc(defaultImportAccount(accts))}" placeholder="e.g. Topstep 50K, IBKR cash"><datalist id="acct-list">${accts.map(a => `<option value="${esc(a)}">`).join('')}</datalist></div>
     <div class="field"><label for="imp-tz">Times in the file are</label><select id="imp-tz"><option value="auto">Detect automatically</option><option value="ET">Eastern</option><option value="CT">Central</option><option value="MT">Mountain</option><option value="PT">Pacific</option></select></div></div>
     <div class="drop" id="drop"><p style="margin:0 0 10px;font-weight:600">Drop a CSV file here</p>
       <p class="muted" style="margin:0 0 14px">Schwab / thinkorswim account statements and IBKR Flex trade exports work as-is. Any other CSV needs columns for time, symbol, side, quantity and price.</p>
@@ -872,15 +878,20 @@ function vImport() {
     <p id="imp-status" class="status" style="margin:12px 0 0"></p></section>
   <section><h2>Recent imports</h2><div id="imports">${importsTable()}</div></section>`;
 }
+function defaultImportAccount(accts) {
+  const last = (S.imports || []).find(i => i.account && !isPaper(i.account) && i.status !== 'undone');
+  return (last && last.account) || accts.find(a => !isPaper(a)) || 'Main';
+}
 function importsTable() {
   if (!S.imports) return '<p class="loading">Loading…</p>';
   if (!S.imports.length) return '<div class="tablewrap"><p class="empty">No imports yet.</p></div>';
-  return `<div class="tablewrap"><table><thead><tr><th>File</th><th>Account</th><th>Status</th><th class="r">Fills</th><th class="r">New</th><th class="r">Duplicates</th><th class="r">Skipped rows</th><th class="r">Unmatched closes</th><th>When</th></tr></thead><tbody>
-  ${S.imports.map(i => `<tr><td>${esc(i.fileName)}</td><td>${esc(i.account)}</td><td><span class="status ${esc(i.status)}">${esc(i.status)}</span>${i.error ? `<div class="loss" style="white-space:normal;max-width:360px">${esc(i.error)}</div>` : ''}</td><td class="r">${i.fills ?? ''}</td><td class="r">${i.newFills ?? ''}</td><td class="r">${i.duplicates ?? ''}</td><td class="r">${i.skippedRows ?? ''}</td><td class="r">${i.unmatchedCloses ?? ''}</td><td>${esc((i.createdAt || '').replace('T', ' ').slice(0, 16))}</td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="tablewrap"><table><thead><tr><th>File</th><th>Account</th><th>Status</th><th class="r">Fills</th><th class="r">New</th><th class="r">Duplicates</th><th class="r">Skipped rows</th><th class="r">Unmatched closes</th><th>When</th><th></th></tr></thead><tbody>
+  ${S.imports.map(i => `<tr><td>${esc(i.fileName)}</td><td>${esc(i.account)}</td><td><span class="status ${esc(i.status)}">${esc(i.status)}</span>${i.error ? `<div class="loss" style="white-space:normal;max-width:360px">${esc(i.error)}</div>` : ''}</td><td class="r">${i.fills ?? ''}</td><td class="r">${i.newFills ?? ''}</td><td class="r">${i.duplicates ?? ''}</td><td class="r">${i.skippedRows ?? ''}</td><td class="r">${i.unmatchedCloses ?? ''}</td><td>${esc((i.createdAt || '').replace('T', ' ').slice(0, 16))}</td><td>${i.status === 'done' ? `<button class="btn" data-undo="${esc(i.id)}">Undo</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
 }
 async function afterImport() { try { S.imports = (await api('/imports')).imports; } catch (e) { S.imports = []; toast(e.message); } if (route() === 'import') $('#imports').innerHTML = importsTable(); }
 async function upload(file) {
   const st = $('#imp-status'); const account = ($('#imp-acct').value || 'Main').trim();
+  if (isPaper(account) && !confirm(`"${account}" is your paper-bot account. Import this file into it anyway?`)) return;
   if (!/\.csv$/i.test(file.name) && file.type !== 'text/csv') { st.className = 'status error'; st.textContent = 'Choose a .csv file.'; return; }
   if (file.size > 20 * 1024 * 1024) { st.className = 'status error'; st.textContent = 'The file is larger than 20 MB. Split it and upload the parts.'; return; }
   st.className = 'status processing'; st.textContent = `Uploading ${file.name}…`;
@@ -946,7 +957,14 @@ function vSettings() {
   </section>
   <section class="panel"><h2>Data</h2>
     <p class="muted" style="margin-top:-4px">Rebuilds every trade from your stored fills and removes duplicate copies of the same fill. Journal notes, tags and plans are kept.</p>
-    <button class="btn" id="rebuild">Rebuild trades and remove duplicate fills</button></section>
+    <button class="btn" id="rebuild">Rebuild trades and remove duplicate fills</button>
+    <div class="form-grid" style="align-items:end;margin-top:14px">
+      <div class="field"><label for="rm-acct">Remove imported (file) fills from account</label><select id="rm-acct">${S.me.accounts.map(a => `<option>${esc(a)}</option>`).join('')}</select></div>
+      <div class="field"><button class="btn" id="rm-csv">Remove</button></div></div>
+    <p class="muted" style="font-size:.84rem;margin:0">Use this if a statement was imported into the wrong account. Fills synced from Schwab or Alpaca are kept; re-import the file into the right account afterwards. Newer imports can also be undone from the Import page.</p></section>
+  <section class="panel"><h2>Data sources</h2>
+    <p class="muted" style="margin-top:-4px">Unusual options flow comes from the Unusual Whales API with your own key (a paid Unusual Whales API plan). The key is encrypted and never shown again.</p>
+    <div id="flow-key-box"><p class="loading" style="padding:0">Loading…</p></div></section>
   <section class="panel"><h2>Brokers</h2>
     <p class="muted" style="margin-top:-4px">Connected brokers sync your fills automatically. Each broker account shows up as its own account in the journal, and every page can show one account or all of them together.</p>
     <div class="broker-card"><h3>Charles Schwab</h3>${schwabHtml()}</div>
@@ -972,7 +990,14 @@ function schwabHtml() {
     <p class="muted" style="font-size:.9rem">Schwab requires logging in again every 7 days. Click Reconnect before the date above to keep syncing.</p>
     <p><button class="btn primary" id="sch-sync">Sync now</button> <button class="btn" id="sch-reconnect">Reconnect</button> <button class="btn" id="sch-del">Disconnect</button></p>`;
 }
+async function loadFlowKey() {
+  let st = { connected: false }; try { st = await api('/flow/status'); } catch (e) {}
+  const box = $('#flow-key-box'); if (!box) return;
+  box.innerHTML = st.connected ? `<p style="margin:0 0 8px">Unusual Whales connected (key ending ${esc(st.hint)}).</p><button class="btn" id="uw-del">Remove key</button>`
+    : `<div class="form-grid" style="align-items:end"><div class="field"><label for="uw-key">Unusual Whales API key</label><input id="uw-key" type="password" autocomplete="off"></div><div class="field"><button class="btn primary" id="uw-save">Save key</button></div></div>`;
+}
 async function afterSettings() {
+  loadFlowKey();
   if (S.schwab === undefined) { try { S.schwab = await api('/broker/schwab'); } catch (e) { S.schwab = { configured: false, callback: '' }; } if (route() === 'settings') render(); }
   if (S.broker !== undefined) return; try { S.broker = await api('/broker/alpaca'); } catch (e) { S.broker = { connected: false }; toast(e.message); } if (route() === 'settings') render(); }
 async function saveSettings() {
@@ -1208,6 +1233,7 @@ function botResult(r) {
       ${r.candidates.map(c => `<tr><td>${fmtExp(c.exp)} (${c.dte}d)</td><td class="r">${c.strike}</td><td class="r">${c.delta}</td><td class="r">${c.mid}</td><td class="r">${c.spreadPct ?? '—'}%</td><td class="r">${c.oi}</td><td class="r">${c.breakeven}</td><td class="r">${c.emUpper ?? '—'}</td><td>${c.problems.map(esc).join(', ') || '<span class="gain">ok</span>'}</td></tr>`).join('')}
     </tbody></table></div></details>` : ''}
     ${(r.marks || []).length > 1 ? `<h3 style="font-size:.95rem;margin:16px 0 6px">Option value since entry (every ~15 min)</h3>${markLine(r)}` : ''}
+    <p style="margin:12px 0 0"><button class="btn" data-rescan="${esc(r.symbol)}">Re-evaluate ${esc(r.symbol)} now</button></p>
     ${p && r.status === 'proposed' ? `<div class="form-grid" style="align-items:end;margin-top:12px">
       <div class="field"><label for="bo-qty">Contracts</label><input id="bo-qty" type="number" min="1" value="${Math.max(1, p.qty)}"></div>
       <div class="field"><label for="bo-lim">Limit price</label><input id="bo-lim" type="number" step="0.05" value="${p.limit.toFixed(2)}"></div>
@@ -1230,6 +1256,32 @@ function eqLine(hist) {
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Paper account equity"><path d="${hist.map((h, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(h.equity).toFixed(1)).join(' ')}" fill="none" stroke="${up ? 'var(--gain)' : 'var(--loss)'}" stroke-width="2"/></svg>
     <div class="kv"><span class="muted">${esc(fmtDate(hist[0].t))}: ${money(v[0], false)}</span><b class="${cls(v[v.length - 1] - v[0])}">${money(v[v.length - 1] - v[0])} to ${money(v[v.length - 1], false)}</b></div>`;
 }
+function flowPanel() {
+  const f = S.flowF || { minPremium: 100000, type: 'call', minDte: 20, maxDte: 120, askSide: true, sweeps: false };
+  const rows = (S.flow && S.flow.alerts) || [];
+  return `<section class="panel"><div class="cal-head"><h2>Unusual options flow</h2><span class="muted" style="font-size:.85rem">Unusual Whales flow alerts, newest first</span></div>
+    <div class="form-grid" style="align-items:end">
+      <div class="field"><label for="fl-prem">Min premium ($)</label><input id="fl-prem" type="number" step="10000" value="${f.minPremium}"></div>
+      <div class="field"><label for="fl-type">Type</label><select id="fl-type"><option value="call" ${f.type === 'call' ? 'selected' : ''}>Calls</option><option value="put" ${f.type === 'put' ? 'selected' : ''}>Puts</option><option value="all" ${f.type === 'all' ? 'selected' : ''}>Both</option></select></div>
+      <div class="field"><label for="fl-min">Days to expiry, min</label><input id="fl-min" type="number" value="${f.minDte}"></div>
+      <div class="field"><label for="fl-max">Days to expiry, max</label><input id="fl-max" type="number" value="${f.maxDte}"></div>
+      <div class="field"><label><input type="checkbox" id="fl-ask" ${f.askSide ? 'checked' : ''}> Mostly bought at the ask</label><label><input type="checkbox" id="fl-sweep" ${f.sweeps ? 'checked' : ''}> Sweeps only</label></div>
+      <div class="field"><button class="btn primary" id="fl-load" ${S.flowBusy ? 'disabled' : ''}>${S.flowBusy ? 'Loading…' : 'Load flow'}</button></div></div>
+    ${S.flowErr ? `<div class="errbox">${esc(S.flowErr)}</div>` : ''}
+    ${S.flow ? (rows.length ? `<div class="tablewrap" style="border:0"><table><thead><tr><th>Time</th><th>Ticker</th><th>Contract</th><th class="r">Premium</th><th class="r">At ask</th><th class="r">Vol / OI</th><th class="r">Price</th><th></th></tr></thead><tbody>
+      ${rows.map(a => `<tr><td>${esc((a.at || '').slice(11, 16))}</td><td><b>${esc(a.ticker)}</b></td><td>${esc(fmtExp(a.expiry))} ${a.strike} ${a.type}${a.sweep ? ' <span class="chip">sweep</span>' : ''} <span class="muted">(${a.dte}d)</span></td>
+        <td class="r">${money(a.premium, false)}</td><td class="r">${a.askPct}%</td><td class="r">${a.volOi}</td><td class="r">${a.price.toFixed(2)}</td>
+        <td class="r" style="white-space:nowrap"><button class="btn" data-rescan="${esc(a.ticker)}">Evaluate</button></td></tr>`).join('')}</tbody></table></div>`
+      : `<p class="muted">No alerts match these filters (${S.flow.fetched} alerts checked).</p>`) : ''}</section>`;
+}
+async function loadFlow() {
+  S.flowF = { minPremium: +$('#fl-prem').value || 0, type: $('#fl-type').value, minDte: +$('#fl-min').value || 0, maxDte: +$('#fl-max').value || 120, askSide: $('#fl-ask').checked, sweeps: $('#fl-sweep').checked };
+  S.flowBusy = true; S.flowErr = null; render();
+  const f = S.flowF;
+  try { S.flow = await api(`/flow?minPremium=${f.minPremium}&type=${f.type}&minDte=${f.minDte}&maxDte=${f.maxDte}&askSide=${f.askSide ? 1 : 0}&sweeps=${f.sweeps ? 1 : 0}`); }
+  catch (e) { S.flowErr = e.message; }
+  S.flowBusy = false; if (route() === 'bot') render();
+}
 function vBot() {
   const b = S.bot, cfg = (b && b.settings) || {}, br = S.broker;
   const paperOk = br && br.connected && br.env === 'paper';
@@ -1248,7 +1300,7 @@ function vBot() {
       <td class="r" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
   const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
   const evalRow = i => { const p = i.proposal || {};
-    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td><td style="white-space:normal">${esc((i.blocking || [])[0] || '')}</td></tr>`; };
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td><td style="white-space:normal">${esc((i.blocking || [])[0] || '')}</td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
   const trades = items.filter(i => ['submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice));
   const active = trades.filter(i => i.status !== 'closed');
   const done = trades.filter(i => i.status === 'closed');
@@ -1273,10 +1325,11 @@ function vBot() {
     ${S.botErr ? `<div class="errbox">${esc(S.botErr)}</div>` : ''}
     <p class="muted" style="font-size:.84rem;margin:6px 0 0">Long calls only for now. The earnings date is saved for that ticker. The bot won't open a new trade within ${cfg.noEntryDays ?? 5} days of it, and it sells before the report to keep the implied-volatility run-up: from 15:30 ET on earnings day for after-close reports, or 15:30 ET the trading day before for before-open reports. Exits run automatically every 5 minutes during market hours for every bot position, even when the schedule is off. Paper account only; not financial advice.</p></section>
   ${botResult(S.botRes)}
+  ${flowPanel()}
   ${summaryHtml}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh when you open this page and every 5 minutes during market hours. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
-  <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>` : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
+  <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>` : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
   <section class="panel"><h2>Bot settings</h2>
     <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
       <label><input type="checkbox" id="bs-on" ${cfg.enabled ? 'checked' : ''}> Scan the watchlist on a schedule (10:15 and 15:15 ET)</label>
@@ -1334,8 +1387,14 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
+  if (el.dataset.rescan) { S.botSym = el.dataset.rescan; if (route() !== 'bot') location.hash = '#bot'; render(); const i = $('#bot-sym'); if (i) i.value = el.dataset.rescan; window.scrollTo(0, 0); botEvaluate(); return; }
+  if (el.id === 'fl-load') { loadFlow(); return; }
+  if (el.dataset.undo) { if (!confirm('Undo this import? The fills it added are removed and trades are rebuilt. Notes and tags are kept.')) return; api(`/imports/${el.dataset.undo}/undo`, { method: 'POST' }).then(async r => { await reload(); await afterImport(); toast(`Removed ${r.removedFills} fills`); }).catch(err => toast(err.message)); return; }
+  if (el.id === 'rm-csv') { const a = $('#rm-acct').value; if (!confirm(`Remove all file-imported fills from "${a}"? Broker-synced fills are kept.`)) return; api('/maintenance/remove-csv-fills', { method: 'POST', body: { account: a } }).then(async r => { await reload(); toast(`Removed ${r.removedFills} fills from ${a}`); }).catch(err => toast(err.message)); return; }
+  if (el.id === 'uw-save') { api('/flow/key', { method: 'PUT', body: { key: $('#uw-key').value } }).then(() => { toast('Unusual Whales key saved'); loadFlowKey(); }).catch(err => toast(err.message)); return; }
+  if (el.id === 'uw-del') { api('/flow/key', { method: 'PUT', body: { key: '' } }).then(() => loadFlowKey()).catch(err => toast(err.message)); return; }
   if (el.dataset.botchase) { api(`/bot/${el.dataset.botchase}/chase`, { method: 'POST' }).then(() => { toast('Chasing the fill…'); setTimeout(() => loadBot(true), 30000); }).catch(err => toast(err.message)); return; }
   if (el.id === 'bot-eval') { botEvaluate(); return; }
   if (el.id === 'bs-save') { botSaveSettings(); return; }

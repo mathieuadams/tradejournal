@@ -302,6 +302,58 @@ def gamma_market(sub, claims, body, q):
     return gex.summary(sub, q.get("symbol") or "SPY", int(q.get("days") or 30), int(q.get("strikes") or 40))
 
 
+@route("POST", r"/imports/(?P<iid>[0-9]{14}-[a-f0-9]{6})/undo")
+def undo_import(sub, claims, body, q, iid):
+    import ingest
+    pk = db.upk(sub)
+    rec = db.get(pk, f"IMPORT#{iid}")
+    if not rec:
+        raise NotFound("Import not found.")
+    mine = [(pk, f["SK"]) for f in db.q_prefix(pk, "FILL#") if f.get("importId") == iid]
+    if not mine:
+        raise BadRequest("This import was made before undo was available, so its fills can't be told apart. "
+                         "Use Settings → Data → Remove imported fills from an account instead.")
+    db.batch_write(deletes=mine)
+    g = ingest.regroup(sub)
+    db.update(pk, f"IMPORT#{iid}", {"status": "undone", "undoneFills": len(mine)})
+    return {"removedFills": len(mine), "trades": g["trades"]}
+
+
+@route("POST", "/maintenance/remove-csv-fills")
+def remove_csv_fills(sub, claims, body, q):
+    """Delete fills that came from file imports in one account (broker-synced fills are kept)."""
+    import ingest
+    acct = _str(body.get("account"), "Account", 60)
+    if not acct:
+        raise BadRequest("Choose an account.")
+    pk = db.upk(sub)
+    rm = [(pk, f["SK"]) for f in db.q_prefix(pk, "FILL#")
+          if f.get("acct") == acct and not str(f.get("id", "")).startswith(("alp-", "sch-"))]
+    db.batch_write(deletes=rm)
+    g = ingest.regroup(sub)
+    return {"removedFills": len(rm), "trades": g["trades"]}
+
+
+@route("GET", "/flow/status")
+def flow_status(sub, claims, body, q):
+    import flowdata
+    return flowdata.status(sub)
+
+
+@route("PUT", "/flow/key")
+def flow_key(sub, claims, body, q):
+    import flowdata
+    return flowdata.save_key(sub, _str(body.get("key"), "API key", 200) or "")
+
+
+@route("GET", "/flow")
+def flow_alerts(sub, claims, body, q):
+    import flowdata
+    return flowdata.alerts(sub, float(q.get("minPremium") or 100000), q.get("type") or "call",
+                           int(q.get("minDte") or 0), int(q.get("maxDte") or 120),
+                           q.get("askSide", "1") == "1", q.get("sweeps") == "1", q.get("ticker") or None)
+
+
 @route("POST", "/maintenance/rebuild")
 def rebuild(sub, claims, body, q):
     import ingest

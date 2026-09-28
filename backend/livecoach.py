@@ -16,7 +16,7 @@ import indicators
 from charts import _yahoo
 from grouping import describe
 from util import Unavailable, iso, now_ny, parse_iso
-from views import load_settings, load_views
+from views import load_real_views as load_views, load_settings
 
 KINDS = {"premarket": "Pre-market check", "preclose": "Pre-close check (30 min before the close)",
          "entry": "New entry check", "manual": "Portfolio check"}

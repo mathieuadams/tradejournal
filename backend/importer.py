@@ -26,6 +26,8 @@ def process(sub, import_id, account, text):
     except ParseError as e:
         db.update(pk, sk, {"status": "error", "error": str(e), "finishedAt": iso(now_ny())})
         return {"status": "error", "error": str(e)}
+    for f in fills:
+        f["importId"] = import_id          # lets the user undo this import later
     new, dupes = ingest.save_fills(sub, fills)
     g = ingest.regroup(sub)
     result = {"status": "done", "fills": len(fills), "newFills": new, "duplicates": dupes,

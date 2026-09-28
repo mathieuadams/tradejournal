@@ -81,3 +81,12 @@ def load_settings(sub):
     s["prop"] = {**DEFAULT_SETTINGS["prop"], **(s.get("prop") or {})}
     s["liveCoach"] = {**DEFAULT_SETTINGS["liveCoach"], **(s.get("liveCoach") or {})}
     return s
+
+
+def is_paper(acct):
+    return "paper" in (acct or "").lower()
+
+
+def load_real_views(sub):
+    """Trades from real accounts only (the paper bot is excluded from coaching and reports)."""
+    return [v for v in load_views(sub) if not is_paper(v["acct"])]

@@ -4,7 +4,7 @@ import os
 import analytics
 import claude
 from util import BadRequest, now_ny
-from views import load_views
+from views import load_real_views as load_views
 
 FILTERS = {
     "symbol": {"type": "string", "description": "Ticker or underlying, e.g. TSLA, NVDA or MNQ. Matches the stock and all its options."},

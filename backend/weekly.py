@@ -9,7 +9,7 @@ import analytics
 import claude
 import db
 from util import Unavailable, iso, now_ny
-from views import load_views
+from views import load_real_views as load_views
 
 SYSTEM = """You are a trading coach writing a trader's weekly report from their own journal data.
 All numbers are already computed; use them exactly and never invent any.

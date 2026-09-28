@@ -270,7 +270,8 @@ def evaluate(sub, symbol, earnings_date=None):
     earn_soon = bool(earnings and today <= earnings <= (now_ny() + timedelta(days=cfg["noEntryDays"])).strftime("%Y-%m-%d"))
     event_in_window = [e for e in events if best and e["between"][1] <= best["exp"]]
     checks = [
-        ("chart", "Active bull fair value gap, no bear gap", c["bullFvg"] and c["noBearFvg"], True),
+        ("chart", "Active bull fair value gap" + (f" ({sig['study']['bullFvg'][0]}–{sig['study']['bullFvg'][1]})" if sig["study"].get("bullFvg") else " (none active)"), c["bullFvg"], True),
+        ("chart", "No active bear (negative) fair value gap" + (f": bear gap at {sig['study']['bearFvg'][0]}–{sig['study']['bearFvg'][1]} overhead" if sig["study"].get("bearFvg") else ""), c["noBearFvg"], True),
         ("chart", "Close above the 21 EMA", c["aboveEma"], True),
         ("chart", f"Crossed above the 21 EMA in the last {cfg['crossWindow']} days" + (f" ({sig['crossAgo']} days ago)" if sig["crossAgo"] is not None else ""), c["recentCross"], True),
         ("chart", f"Momentum rising ({sig['momentumPrev']} → {sig['momentum']})", c["momentumUp"], True),

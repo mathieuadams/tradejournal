@@ -23,7 +23,7 @@ def handler(event, context):
             continue
         t = _plain(img)
         sub = t["PK"][5:]
-        if t.get("status") == "open" and rec.get("eventName") == "INSERT":
+        if t.get("status") == "open" and rec.get("eventName") == "INSERT" and "paper" not in (t.get("acct") or "").lower():
             # a new position: live coach entry check (opt-in, only for fresh entries)
             try:
                 from views import load_settings
@@ -36,6 +36,8 @@ def handler(event, context):
                 print("entry coach skipped:", e)
             continue
         if t.get("status") != "closed" or not review.is_recent(t):
+            continue
+        if "paper" in (t.get("acct") or "").lower():   # no automatic AI reviews for paper-bot trades
             continue
         if db.get(t["PK"], f"REVIEW#{t['id']}"):
             continue
