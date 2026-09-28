@@ -351,7 +351,8 @@ def flow_alerts(sub, claims, body, q):
     import flowdata
     return flowdata.alerts(sub, float(q.get("minPremium") or 100000), q.get("type") or "call",
                            int(q.get("minDte") or 0), int(q.get("maxDte") or 120),
-                           q.get("askSide", "1") == "1", q.get("sweeps") == "1", q.get("ticker") or None)
+                           q.get("askSide", "1") == "1", q.get("sweeps") == "1", q.get("ticker") or None,
+                           float(q.get("minVolOi") or 0), int(q.get("days") or 1))
 
 
 @route("POST", "/maintenance/rebuild")

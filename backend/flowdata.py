@@ -67,11 +67,51 @@ def _f(x):
         return 0.0
 
 
-def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask_side=True, sweeps_only=False, ticker=None):
-    data = _get(_key(sub), {"limit": 200}).get("data") or []
+def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask_side=True, sweeps_only=False,
+           ticker=None, min_vol_oi=0.0, days=1):
+    """Today's (or the last `days` sessions') flow alerts matching the filters.
+
+    Filters are sent to Unusual Whales so the 200-per-page limit is spent on relevant alerts, then pages are
+    walked backwards (older_than) to cover the whole session. The same filters are re-applied here in case a
+    parameter isn't supported by the plan."""
+    from datetime import timedelta
+    from util import ny_to_utc, utc_to_ny
+    key = _key(sub)
+    start_ny = now_ny().replace(hour=4, minute=0, second=0, microsecond=0) - timedelta(days=max(0, days - 1))
+    start_utc = ny_to_utc(start_ny).strftime("%Y-%m-%dT%H:%M:%SZ")
+    base = {"limit": 200, "min_premium": int(min_premium), "min_dte": int(min_dte), "max_dte": int(max_dte),
+            "newer_than": start_utc}
+    if opt_type == "call":
+        base["is_call"] = "true"; base["is_put"] = "false"
+    elif opt_type == "put":
+        base["is_put"] = "true"; base["is_call"] = "false"
+    if ask_side:
+        base["is_ask_side"] = "true"
+    if sweeps_only:
+        base["is_sweep"] = "true"
+    if ticker:
+        base["ticker_symbol"] = ticker.upper()
+    if min_vol_oi:
+        base["min_volume_oi_ratio"] = min_vol_oi
+    raw, older, pages = [], None, 0
+    for pages in range(1, 16):
+        q = dict(base)
+        if older:
+            q["older_than"] = older
+        page = _get(key, q).get("data") or []
+        raw += page
+        if len(page) < 200:
+            break
+        older = min((a.get("created_at") or "") for a in page)
+        if older and older < start_utc:
+            break
     today = now_ny().date()
-    out = []
-    for a in data:
+    out, seen = [], set()
+    for a in raw:
+        uid = a.get("id") or (a.get("option_chain"), a.get("created_at"))
+        if uid in seen:
+            continue
+        seen.add(uid)
         exp = a.get("expiry")
         try:
             dte = (datetime.strptime(exp, "%Y-%m-%d").date() - today).days
@@ -90,10 +130,25 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
             continue
         if sweeps_only and not a.get("has_sweep"):
             continue
+        voi = _f(a.get("volume_oi_ratio"))
+        if min_vol_oi and voi < min_vol_oi:
+            continue
+        created = a.get("created_at") or ""
+        try:
+            at_et = utc_to_ny(datetime.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")).strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            at_et = created[:16]
         out.append({"ticker": a.get("ticker"), "type": typ, "strike": _f(a.get("strike")), "expiry": exp, "dte": dte,
                     "premium": prem, "askPct": round(ask_pct), "price": _f(a.get("price")), "underlying": _f(a.get("underlying_price")),
-                    "volume": a.get("volume"), "openInterest": a.get("open_interest"), "volOi": round(_f(a.get("volume_oi_ratio")), 2),
+                    "volume": a.get("volume"), "openInterest": a.get("open_interest"), "volOi": round(voi, 2),
                     "sweep": bool(a.get("has_sweep")), "rule": a.get("alert_rule"), "contract": a.get("option_chain"),
-                    "at": a.get("created_at")})
+                    "at": created, "atEt": at_et})
     out.sort(key=lambda x: x["at"] or "", reverse=True)
-    return {"alerts": out, "fetched": len(data)}
+    tickers = {}
+    for a in out:
+        t = tickers.setdefault(a["ticker"], {"ticker": a["ticker"], "alerts": 0, "premium": 0.0})
+        t["alerts"] += 1
+        t["premium"] += a["premium"]
+    top = sorted(tickers.values(), key=lambda x: -x["premium"])[:10]
+    return {"alerts": out, "fetched": len(raw), "pages": pages, "since": start_ny.strftime("%Y-%m-%d %H:%M"),
+            "totalPremium": round(sum(a["premium"] for a in out)), "topTickers": top}

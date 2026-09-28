@@ -570,7 +570,7 @@ def test_flow_alerts():
     import flowdata
     STORE.clear()
     flowdata._key = lambda sub: "k"
-    flowdata._get = lambda key, params: {"data": [
+    flowdata._get = lambda key, params: {"data": [] if params.get("older_than") else [
         {"ticker": "MSFT", "type": "call", "strike": "375", "expiry": "2099-12-18", "total_premium": "186705", "total_ask_side_prem": "151875",
          "price": "4.05", "underlying_price": "372.99", "volume": 2442, "open_interest": 7913, "volume_oi_ratio": "0.3", "has_sweep": True,
          "alert_rule": "RepeatedHits", "option_chain": "MSFT991218C00375000", "created_at": "2026-09-28T16:35:52Z"},

@@ -1258,7 +1258,7 @@ function eqLine(hist) {
     <div class="kv"><span class="muted">${esc(fmtDate(hist[0].t))}: ${money(v[0], false)}</span><b class="${cls(v[v.length - 1] - v[0])}">${money(v[v.length - 1] - v[0])} to ${money(v[v.length - 1], false)}</b></div>`;
 }
 function flowPanel() {
-  const f = S.flowF || { minPremium: 100000, type: 'call', minDte: 20, maxDte: 120, askSide: true, sweeps: false };
+  const f = S.flowF || { minPremium: 100000, type: 'call', minDte: 20, maxDte: 120, askSide: true, sweeps: false, minVolOi: 0, days: 1, ticker: '' };
   const rows = (S.flow && S.flow.alerts) || [];
   return `<section class="panel"><div class="cal-head"><h2>Unusual options flow</h2><span class="muted" style="font-size:.85rem">Unusual Whales flow alerts, newest first</span></div>
     <div class="form-grid" style="align-items:end">
@@ -1266,20 +1266,25 @@ function flowPanel() {
       <div class="field"><label for="fl-type">Type</label><select id="fl-type"><option value="call" ${f.type === 'call' ? 'selected' : ''}>Calls</option><option value="put" ${f.type === 'put' ? 'selected' : ''}>Puts</option><option value="all" ${f.type === 'all' ? 'selected' : ''}>Both</option></select></div>
       <div class="field"><label for="fl-min">Days to expiry, min</label><input id="fl-min" type="number" value="${f.minDte}"></div>
       <div class="field"><label for="fl-max">Days to expiry, max</label><input id="fl-max" type="number" value="${f.maxDte}"></div>
+      <div class="field"><label for="fl-voi">Min volume / OI</label><input id="fl-voi" type="number" step="0.1" value="${f.minVolOi || ''}" placeholder="e.g. 1 = volume > OI"></div>
+      <div class="field"><label for="fl-tk">Ticker (optional)</label><input id="fl-tk" type="text" style="text-transform:uppercase" value="${esc(f.ticker || '')}"></div>
+      <div class="field"><label for="fl-days">Period</label><select id="fl-days">${[[1, 'Today'], [2, 'Last 2 days'], [5, 'Last 5 days']].map(([v, l]) => `<option value="${v}" ${f.days == v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="field"><label><input type="checkbox" id="fl-ask" ${f.askSide ? 'checked' : ''}> Mostly bought at the ask</label><label><input type="checkbox" id="fl-sweep" ${f.sweeps ? 'checked' : ''}> Sweeps only</label></div>
       <div class="field"><button class="btn primary" id="fl-load" ${S.flowBusy ? 'disabled' : ''}>${S.flowBusy ? 'Loading…' : 'Load flow'}</button></div></div>
     ${S.flowErr ? `<div class="errbox">${esc(S.flowErr)}</div>` : ''}
-    ${S.flow ? (rows.length ? `<div class="tablewrap" style="border:0"><table><thead><tr><th>Time</th><th>Ticker</th><th>Contract</th><th class="r">Premium</th><th class="r">At ask</th><th class="r">Vol / OI</th><th class="r">Price</th><th></th></tr></thead><tbody>
-      ${rows.map(a => `<tr><td>${esc((a.at || '').slice(11, 16))}</td><td><b>${esc(a.ticker)}</b></td><td>${esc(fmtExp(a.expiry))} ${a.strike} ${a.type}${a.sweep ? ' <span class="chip">sweep</span>' : ''} <span class="muted">(${a.dte}d)</span></td>
+    ${S.flow && rows.length ? `<p style="margin:4px 0 10px"><b>${rows.length}</b> alerts · ${money(S.flow.totalPremium, false)} premium since ${esc(S.flow.since)} ET${(S.flow.topTickers || []).length ? ` · Top: ${S.flow.topTickers.map(t => `<button class="toggle emo" data-rescan="${esc(t.ticker)}" title="Evaluate ${esc(t.ticker)}">${esc(t.ticker)} ${t.alerts}× ${money(t.premium, false)}</button>`).join(' ')}` : ''}</p>` : ''}
+    ${S.flow ? (rows.length ? `<div class="tablewrap" style="border:0"><table><thead><tr><th>Time (ET)</th><th>Ticker</th><th>Contract</th><th class="r">Premium</th><th class="r">At ask</th><th class="r">Vol / OI</th><th class="r">Price</th><th></th></tr></thead><tbody>
+      ${rows.map(a => `<tr><td>${esc((S.flowF && S.flowF.days > 1) ? (a.atEt || '').slice(5) : (a.atEt || '').slice(11))}</td><td><b>${esc(a.ticker)}</b></td><td>${esc(fmtExp(a.expiry))} ${a.strike} ${a.type}${a.sweep ? ' <span class="chip">sweep</span>' : ''} <span class="muted">(${a.dte}d)</span></td>
         <td class="r">${money(a.premium, false)}</td><td class="r">${a.askPct}%</td><td class="r">${a.volOi}</td><td class="r">${a.price.toFixed(2)}</td>
         <td class="r" style="white-space:nowrap"><button class="btn" data-rescan="${esc(a.ticker)}">Evaluate</button></td></tr>`).join('')}</tbody></table></div>`
-      : `<p class="muted">No alerts match these filters (${S.flow.fetched} alerts checked).</p>`) : ''}</section>`;
+      : `<p class="muted">No alerts match these filters (${S.flow.fetched} alerts checked since ${esc(S.flow.since || '')} ET).</p>`) : ''}</section>`;
 }
 async function loadFlow() {
-  S.flowF = { minPremium: +$('#fl-prem').value || 0, type: $('#fl-type').value, minDte: +$('#fl-min').value || 0, maxDte: +$('#fl-max').value || 120, askSide: $('#fl-ask').checked, sweeps: $('#fl-sweep').checked };
+  S.flowF = { minPremium: +$('#fl-prem').value || 0, type: $('#fl-type').value, minDte: +$('#fl-min').value || 0, maxDte: +$('#fl-max').value || 120, askSide: $('#fl-ask').checked, sweeps: $('#fl-sweep').checked,
+    minVolOi: +$('#fl-voi').value || 0, days: +$('#fl-days').value || 1, ticker: ($('#fl-tk').value || '').trim().toUpperCase() };
   S.flowBusy = true; S.flowErr = null; render();
   const f = S.flowF;
-  try { S.flow = await api(`/flow?minPremium=${f.minPremium}&type=${f.type}&minDte=${f.minDte}&maxDte=${f.maxDte}&askSide=${f.askSide ? 1 : 0}&sweeps=${f.sweeps ? 1 : 0}`); }
+  try { S.flow = await api(`/flow?minPremium=${f.minPremium}&type=${f.type}&minDte=${f.minDte}&maxDte=${f.maxDte}&askSide=${f.askSide ? 1 : 0}&sweeps=${f.sweeps ? 1 : 0}&minVolOi=${f.minVolOi}&days=${f.days}${f.ticker ? '&ticker=' + encodeURIComponent(f.ticker) : ''}`); }
   catch (e) { S.flowErr = e.message; }
   S.flowBusy = false; if (route() === 'bot') render();
 }
