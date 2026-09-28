@@ -34,6 +34,7 @@ from views import load_settings
 DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40, "dteMax": 65,
             "deltaMin": 0.50, "deltaMax": 0.70, "minOi": 100, "maxSpreadPct": 12, "stopPct": 40, "targetPct": 80,
             "timeStopDte": 14, "maxPositions": 5, "crossWindow": 10, "maxExtAtr": 1.5, "earnings": {}, "noEntryDays": 5,
+            "chaseStep": 0.10, "chaseSeconds": 12, "chaseMaxSteps": 5, "chaseMaxPct": 10,
             "requireAboveFlip": False, "minRoomRatio": 1.5}
 
 
@@ -363,7 +364,66 @@ def place(sub, bot_id, qty=None, limit=None):
     order = _alp(c, "POST", "/v2/orders", {"symbol": p["contract"], "qty": str(q), "side": "buy", "type": "limit",
                                            "limit_price": f"{lim:.2f}", "time_in_force": "day"})
     db.update(pk, f"BOT#{bot_id}", {"status": "submitted", "orderId": order.get("id"), "qty": q, "limit": lim,
-                                    "submittedAt": iso(now_ny())})
+                                    "firstLimit": lim, "chaseSteps": 0, "submittedAt": iso(now_ny())})
+    return db.get(pk, f"BOT#{bot_id}")
+
+
+def _order_state(c, oid):
+    o = _alp(c, "GET", f"/v2/orders/{oid}") or {}
+    return o.get("status"), float(o.get("filled_qty") or 0), float(o.get("filled_avg_price") or 0)
+
+
+def chase(sub, bot_id):
+    """Walk an unfilled buy limit up by `chaseStep` every `chaseSeconds` (cancel + resubmit the remaining quantity)
+    until filled, `chaseMaxSteps` is reached, or the price would exceed the first limit by more than `chaseMaxPct`."""
+    cfg = settings(sub)
+    c = _paper_creds(sub)
+    pk = db.upk(sub)
+    rec = db.get(pk, f"BOT#{bot_id}")
+    if not rec or rec.get("status") != "submitted" or not rec.get("orderId"):
+        return rec
+    first = rec.get("firstLimit") or rec["limit"]
+    cap = first * (1 + cfg["chaseMaxPct"] / 100)
+    limit, oid = rec["limit"], rec["orderId"]
+    done_qty, done_cost = rec.get("prevFilledQty", 0), rec.get("prevFilledCost", 0)
+    total = rec["qty"]
+    steps = rec.get("chaseSteps", 0)
+    while steps < cfg["chaseMaxSteps"]:
+        time.sleep(cfg["chaseSeconds"])
+        st, fq, fp = _order_state(c, oid)
+        if st == "filled":
+            break
+        if st in ("canceled", "expired", "rejected"):
+            db.update(pk, f"BOT#{bot_id}", {"status": "not filled", "exitReason": f"order {st}"})
+            return db.get(pk, f"BOT#{bot_id}")
+        new_limit = _tick(limit + cfg["chaseStep"])
+        if new_limit > cap + 1e-9:
+            db.update(pk, f"BOT#{bot_id}", {"chaseNote": f"stopped chasing at {limit:.2f} (cap {cap:.2f})"})
+            return db.get(pk, f"BOT#{bot_id}")
+        _alp(c, "DELETE", f"/v2/orders/{oid}")
+        for _ in range(10):                         # wait for the cancel to settle
+            st, fq, fp = _order_state(c, oid)
+            if st in ("canceled", "filled", "expired", "rejected"):
+                break
+            time.sleep(0.5)
+        if st == "filled":
+            break
+        done_qty += fq
+        done_cost += fq * fp
+        remaining = int(round(total - done_qty))
+        if remaining <= 0:
+            break
+        o = _alp(c, "POST", "/v2/orders", {"symbol": rec["proposal"]["contract"], "qty": str(remaining), "side": "buy",
+                                           "type": "limit", "limit_price": f"{new_limit:.2f}", "time_in_force": "day"})
+        steps += 1
+        oid, limit = o.get("id"), new_limit
+        db.update(pk, f"BOT#{bot_id}", {"orderId": oid, "limit": limit, "chaseSteps": steps,
+                                        "prevFilledQty": done_qty, "prevFilledCost": done_cost})
+    st, fq, fp = _order_state(c, oid)
+    if st == "filled":
+        q = done_qty + fq
+        avg = (done_cost + fq * fp) / q if q else fp
+        db.update(pk, f"BOT#{bot_id}", {"status": "open", "fillPrice": round(avg, 4), "filledQty": q, "filledAt": iso(now_ny())})
     return db.get(pk, f"BOT#{bot_id}")
 
 
@@ -404,7 +464,10 @@ def monitor(sub):
         if st == "submitted":
             o = _alp(c, "GET", f"/v2/orders/{rec['orderId']}") if rec.get("orderId") else None
             if o and o.get("status") == "filled":
-                db.update(pk, rec["SK"], {"status": "open", "fillPrice": float(o.get("filled_avg_price") or 0), "filledAt": o.get("filled_at")})
+                fq, fp = float(o.get("filled_qty") or 0), float(o.get("filled_avg_price") or 0)
+                q = rec.get("prevFilledQty", 0) + fq
+                avg = (rec.get("prevFilledCost", 0) + fq * fp) / q if q else fp
+                db.update(pk, rec["SK"], {"status": "open", "fillPrice": round(avg, 4), "filledQty": q, "filledAt": o.get("filled_at")})
                 actions.append((rec["symbol"], "filled"))
             elif o and o.get("status") in ("canceled", "expired", "rejected"):
                 db.update(pk, rec["SK"], {"status": "not filled", "exitReason": o.get("status")})
@@ -466,6 +529,7 @@ def scan(sub):
         if cfg["autoSubmit"] and rec["decision"] == "BUY" and open_n < cfg["maxPositions"]:
             try:
                 place(sub, rec["id"])
+                chase(sub, rec["id"])
                 open_n += 1
             except Exception as e:
                 results[-1]["orderError"] = str(e)[:160]
@@ -483,7 +547,10 @@ def handler(event, context_):
     out = {}
     for sub in subs:
         try:
-            out[sub] = scan(sub) if job == "scan" else monitor(sub)
+            if job == "chase":
+                out[sub] = {"status": (chase(sub, event["id"]) or {}).get("status")}
+            else:
+                out[sub] = scan(sub) if job == "scan" else monitor(sub)
         except Exception as e:
             print("autotrade error", sub, e)
             out[sub] = {"error": str(e)[:200]}

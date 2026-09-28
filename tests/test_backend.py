@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "backend"))
 os.environ.setdefault("UPLOAD_BUCKET", "test-bucket")
 os.environ.setdefault("SYNC_FUNCTION", "sync")
 os.environ.setdefault("WEEKLY_FUNCTION", "weekly")
+os.environ.setdefault("BOT_FUNCTION", "bot")
 
 import db  # noqa: E402
 
@@ -519,6 +520,34 @@ def test_earnings_exit_timing():
     assert autotrader.earnings_exit_due("2026-11-02 BMO", D(2026, 10, 30, 15, 40))[0] is True
     assert autotrader.earnings_exit_due("2026-11-02 BMO", D(2026, 10, 30, 12, 0))[0] is False
     assert autotrader.earnings_exit_due("2026-11-02 BMO", D(2026, 11, 2, 9, 35))[0] is True   # missed: exit now
+
+
+def test_bot_chase():
+    import autotrader, alpaca
+    STORE.clear()
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    autotrader.time.sleep = lambda x: None
+    pk = db.upk(SUB)
+    db.put({"PK": pk, "SK": "BOT#20260928120000-abcdef", "id": "20260928120000-abcdef", "symbol": "HON", "status": "submitted",
+            "orderId": "o1", "qty": 2, "limit": 13.40, "firstLimit": 13.40, "proposal": {"contract": "HON261218C00210000"}})
+    state = {"o1": ["new", "new", "canceled"], "o2": ["new", "canceled"], "o3": ["filled"]}
+    posts = []
+    def fake(c, method, path, body=None):
+        if method == "POST":
+            posts.append(body); oid = f"o{len(posts) + 1}"; return {"id": oid}
+        if method == "DELETE":
+            return {}
+        oid = path.split("/")[-1]
+        seq = state[oid]
+        st = seq.pop(0) if len(seq) > 1 else seq[0]
+        return {"status": st, "filled_qty": "2" if st == "filled" else ("1" if oid == "o2" and st == "canceled" else "0"),
+                "filled_avg_price": "13.60" if oid == "o2" else "13.70"}
+    autotrader._alp = fake
+    code, _ = call("PUT", "/bot/settings", {"chaseStep": 0.2, "chaseMaxSteps": 5, "chaseMaxPct": 10})
+    rec = autotrader.chase(SUB, "20260928120000-abcdef")
+    assert [p["limit_price"] for p in posts] == ["13.60", "13.80"], posts
+    assert posts[1]["qty"] == "1"                     # one contract filled at 13.60 before the second chase step
+    assert rec["status"] == "open" and rec["filledQty"] >= 2, rec
 
 
 def test_analytics():

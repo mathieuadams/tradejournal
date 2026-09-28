@@ -1224,8 +1224,8 @@ function vBot() {
   const recent = items.filter(i => !['submitted', 'open', 'closing'].includes(i.status)).slice(0, 25);
   const row = i => { const p = i.proposal || {};
     return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td>
-      <td class="r">${i.qty || p.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : (i.limit ? i.limit.toFixed(2) : '')}</td><td class="r ${cls(i.lastPlPct)}">${i.lastPlPct != null ? (i.lastPlPct > 0 ? '+' : '') + i.lastPlPct + '%' : ''}</td><td>${esc(i.exitReason || '')}</td>
-      <td class="r">${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">Close</button>` : ''}</td></tr>`; };
+      <td class="r">${i.qty || p.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : (i.limit ? i.limit.toFixed(2) : '')}</td><td class="r ${cls(i.lastPlPct)}">${i.lastPlPct != null ? (i.lastPlPct > 0 ? '+' : '') + i.lastPlPct + '%' : ''}</td><td>${esc(i.exitReason || i.chaseNote || (i.status === 'submitted' && i.chaseSteps ? `raised ${i.chaseSteps}× (limit ${i.limit.toFixed(2)})` : ''))}</td>
+      <td class="r" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
   const table = rows => `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th class="r">Qty</th><th class="r">Price</th><th class="r">P&L</th><th>Exit</th><th></th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table></div>`;
   const earnTxt = Object.entries(cfg.earnings || {}).map(([k, v]) => `${k} ${v}`).join('\n');
   const f = (id, label, v, step = 'any') => `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" step="${step}" value="${v ?? ''}"></div>`;
@@ -1253,9 +1253,12 @@ function vBot() {
       ${f('bs-stop', 'Option stop (% loss)', cfg.stopPct)}${f('bs-target', 'Option target (% gain)', cfg.targetPct)}
       ${f('bs-time', 'Exit when days to expiry ≤', cfg.timeStopDte, 1)}${f('bs-max', 'Max open positions', cfg.maxPositions, 1)}
       ${f('bs-cross', 'EMA cross within (days)', cfg.crossWindow, 1)}${f('bs-ext', 'Max extension (ATR)', cfg.maxExtAtr)}
+      ${f('bs-cstep', 'Raise unfilled limit by ($)', cfg.chaseStep, 0.05)}${f('bs-csec', '… every (seconds)', cfg.chaseSeconds, 1)}
+      ${f('bs-cmax', 'Max raises', cfg.chaseMaxSteps, 1)}${f('bs-cpct', 'Never pay more than first limit + (%)', cfg.chaseMaxPct)}
+      ${f('bs-risk', 'Risk per trade ($)', (S.me.settings || {}).riskPerTrade ?? 200, 1)}
       ${f('bs-room', 'Min room/risk ratio', cfg.minRoomRatio)}${f('bs-noentry', 'No new entry within (days of earnings)', cfg.noEntryDays, 1)}</div>
     <div class="field"><label for="bs-earn">Earnings dates, one per line: ticker, date, AMC (after close) or BMO (before open)</label><textarea id="bs-earn" placeholder="HUBB 2026-10-28 BMO">${esc(earnTxt)}</textarea></div>
-    <p class="muted" style="font-size:.84rem;margin:0 0 10px">Risk per trade comes from Settings (${money((S.me.settings || {}).riskPerTrade || 200, false)}): the bot sizes each trade so the option stop costs about that much.</p>
+    <p class="muted" style="font-size:.84rem;margin:0 0 10px">Risk per trade: the bot buys as many contracts as fit so that hitting the option stop loses about this amount. It is the same value as Settings → Trading plan → Planned risk per trade.</p>
     <button class="btn primary" id="bs-save">Save settings</button> <button class="btn" data-botrun="scan">Scan watchlist now</button> <button class="btn" data-botrun="monitor">Check exits now</button>
   </section>`;
 }
@@ -1273,9 +1276,13 @@ async function botSaveSettings() {
   const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked,
     watchlist: v('#bs-watch').split(/[\s,]+/).filter(Boolean), dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
     minOi: v('#bs-oi'), maxSpreadPct: v('#bs-spread'), stopPct: v('#bs-stop'), targetPct: v('#bs-target'), timeStopDte: v('#bs-time'), maxPositions: v('#bs-max'),
-    crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'), earnings };
+    crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings };
   if (body.autoSubmit && !confirm('Automatic paper orders: the bot will place paper trades by itself when every rule passes. Continue?')) return;
-  try { S.bot.settings = await api('/bot/settings', { method: 'PUT', body }); toast('Bot settings saved'); render(); } catch (e) { toast(e.message); }
+  try {
+    const risk = +v('#bs-risk');
+    if (risk > 0 && risk !== (S.me.settings || {}).riskPerTrade) S.me.settings = await api('/settings', { method: 'PUT', body: { riskPerTrade: risk } });
+    S.bot.settings = await api('/bot/settings', { method: 'PUT', body }); toast('Bot settings saved'); render();
+  } catch (e) { toast(e.message); }
 }
 
 /* ---------- router & events ---------- */
@@ -1290,13 +1297,14 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
+  if (el.dataset.botchase) { api(`/bot/${el.dataset.botchase}/chase`, { method: 'POST' }).then(() => { toast('Chasing the fill…'); setTimeout(() => loadBot(true), 30000); }).catch(err => toast(err.message)); return; }
   if (el.id === 'bot-eval') { botEvaluate(); return; }
   if (el.id === 'bs-save') { botSaveSettings(); return; }
   if (el.dataset.botrun) { api('/bot/run', { method: 'POST', body: { job: el.dataset.botrun } }).then(() => { toast(el.dataset.botrun === 'scan' ? 'Scanning the watchlist… refresh in a minute' : 'Checking exits…'); setTimeout(() => loadBot(true), 20000); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botorder) { const id = el.dataset.botorder; el.disabled = true; api(`/bot/${id}/order`, { method: 'POST', body: { qty: +$('#bo-qty').value, limit: +$('#bo-lim').value } })
-      .then(async r => { S.botRes = { ...S.botRes, ...r }; await loadBot(true); toast('Paper order sent to Alpaca'); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
+      .then(async r => { S.botRes = { ...S.botRes, ...r }; await loadBot(true); const c = S.bot.settings || {}; toast(`Paper order sent. If it doesn't fill, the limit rises ${c.chaseStep ?? 0.1} every ${c.chaseSeconds ?? 12}s (up to ${c.chaseMaxSteps ?? 5} times).`); setTimeout(() => loadBot(true), 60000); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
   if (el.dataset.botclose) { if (!confirm('Close this paper position at market?')) return; api(`/bot/${el.dataset.botclose}/close`, { method: 'POST' }).then(async () => { await loadBot(true); toast('Close order sent'); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botdismiss) { api(`/bot/${el.dataset.botdismiss}/dismiss`, { method: 'POST' }).then(async () => { S.botRes = null; await loadBot(true); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botshow) { S.botRes = (S.bot.items || []).find(i => i.id === el.dataset.botshow) || null; render(); window.scrollTo(0, 0); return; }

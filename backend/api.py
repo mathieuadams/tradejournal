@@ -236,6 +236,8 @@ def bot_settings(sub, claims, body, q):
         "earnings": {k.upper()[:8]: v for k, v in (body.get("earnings") if isinstance(body.get("earnings"), dict) else cur["earnings"]).items()
                      if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}( (AMC|BMO))?$", v)},
         "noEntryDays": int(num("noEntryDays", 0, 60)),
+        "chaseStep": num("chaseStep", 0.05, 5), "chaseSeconds": int(num("chaseSeconds", 5, 60)),
+        "chaseMaxSteps": int(num("chaseMaxSteps", 0, 20)), "chaseMaxPct": num("chaseMaxPct", 0, 50),
     }
     if new["dteMin"] > new["dteMax"] or new["deltaMin"] > new["deltaMax"]:
         raise BadRequest("Minimums must be below maximums.")
@@ -256,7 +258,17 @@ def bot_evaluate(sub, claims, body, q):
 @route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/order")
 def bot_order(sub, claims, body, q, bid):
     import autotrader
-    return autotrader.place(sub, bid, body.get("qty"), body.get("limit"))
+    rec = autotrader.place(sub, bid, body.get("qty"), body.get("limit"))
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "chase", "id": bid}))
+    return rec
+
+
+@route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/chase")
+def bot_chase(sub, claims, body, q, bid):
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "chase", "id": bid}))
+    return {"status": "chasing"}
 
 
 @route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/close")
