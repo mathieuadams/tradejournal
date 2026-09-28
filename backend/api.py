@@ -212,8 +212,10 @@ def gamma_exposure(sub, claims, body, q):
 @route("GET", "/bot")
 def bot_home(sub, claims, body, q):
     import autotrader
+    if q.get("sync") != "0":
+        autotrader.sync(sub)
     recs = db.q_prefix(db.upk(sub), "BOT#", desc=True, limit=60)
-    return {"settings": autotrader.settings(sub),
+    return {"settings": autotrader.settings(sub), "summary": autotrader.summary(sub),
             "items": [{k: v for k, v in r.items() if k not in ("PK", "SK")} for r in recs]}
 
 

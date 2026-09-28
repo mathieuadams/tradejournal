@@ -501,10 +501,8 @@ def test_paper_bot():
     code, placed = call("POST", f"/bot/{rec['id']}/order", {})
     assert code == 200 and placed["status"] == "submitted" and sent[0][2]["time_in_force"] == "day"
     call("PUT", "/bot/settings", {"enabled": False})
-    out = autotrader.handler({"job": "monitor"}, None)   # schedule off, exits still managed -> fills
-    assert SUB in out
-    r = autotrader.monitor(SUB)  # -50% -> stop
-    assert r["actions"] and "stop" in r["actions"][0][1], r
+    out = autotrader.handler({"job": "monitor"}, None)   # schedule off, exits still managed: fill, then -50% -> stop
+    assert SUB in out and out[SUB]["actions"] and "stop" in out[SUB]["actions"][0][1], out
     code, home = call("GET", "/bot")
     assert next(i for i in home["items"] if i["id"] == rec["id"])["status"] == "closing"
 

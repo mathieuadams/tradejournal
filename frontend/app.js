@@ -1207,6 +1207,7 @@ function botResult(r) {
     ${(r.candidates || []).length ? `<details style="margin-top:10px" ${r.proposal ? '' : 'open'}><summary style="cursor:pointer" class="muted">Contracts considered (best first)</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>Expiry</th><th class="r">Strike</th><th class="r">Delta</th><th class="r">Mid</th><th class="r">Spread</th><th class="r">OI</th><th class="r">Breakeven</th><th class="r">EM upper</th><th>Issues</th></tr></thead><tbody>
       ${r.candidates.map(c => `<tr><td>${fmtExp(c.exp)} (${c.dte}d)</td><td class="r">${c.strike}</td><td class="r">${c.delta}</td><td class="r">${c.mid}</td><td class="r">${c.spreadPct ?? '—'}%</td><td class="r">${c.oi}</td><td class="r">${c.breakeven}</td><td class="r">${c.emUpper ?? '—'}</td><td>${c.problems.map(esc).join(', ') || '<span class="gain">ok</span>'}</td></tr>`).join('')}
     </tbody></table></div></details>` : ''}
+    ${(r.marks || []).length > 1 ? `<h3 style="font-size:.95rem;margin:16px 0 6px">Option value since entry (every ~15 min)</h3>${markLine(r)}` : ''}
     ${p && r.status === 'proposed' ? `<div class="form-grid" style="align-items:end;margin-top:12px">
       <div class="field"><label for="bo-qty">Contracts</label><input id="bo-qty" type="number" min="1" value="${Math.max(1, p.qty)}"></div>
       <div class="field"><label for="bo-lim">Limit price</label><input id="bo-lim" type="number" step="0.05" value="${p.limit.toFixed(2)}"></div>
@@ -1214,19 +1215,53 @@ function botResult(r) {
       <div class="field"><button class="btn" data-botdismiss="${r.id}">Dismiss</button></div></div>` : ''}
   </section>`;
 }
+function markLine(r) {
+  const m = r.marks, W = 720, H = 160, p = 10, v = m.map(x => x.mark), lo = Math.min(...v, r.fillPrice || Infinity), hi = Math.max(...v, r.fillPrice || -Infinity), sp = hi - lo || 1;
+  const X = i => p + i / (m.length - 1) * (W - 2 * p), Y = x => H - p - (x - lo) / sp * (H - 2 * p);
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Option value over time">
+    ${r.fillPrice ? `<line x1="${p}" x2="${W - p}" y1="${Y(r.fillPrice)}" y2="${Y(r.fillPrice)}" stroke="var(--muted)" stroke-dasharray="4 3"/><text x="${W - p}" y="${Y(r.fillPrice) - 4}" font-size="10.5" text-anchor="end" fill="var(--muted)">entry ${r.fillPrice.toFixed(2)}</text>` : ''}
+    <path d="${m.map((x, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(x.mark).toFixed(1)).join(' ')}" fill="none" stroke="var(--coach)" stroke-width="2"/></svg>
+    <div class="kv"><span class="muted">${esc(m[0].t.replace('T', ' ').slice(5, 16))}</span><b>${m[m.length - 1].mark.toFixed(2)} (${m[m.length - 1].plPct > 0 ? '+' : ''}${m[m.length - 1].plPct}%) at ${esc(m[m.length - 1].t.slice(11, 16))}</b></div>`;
+}
+function eqLine(hist) {
+  const W = 720, H = 180, p = 10, v = hist.map(h => h.equity), lo = Math.min(...v), hi = Math.max(...v), sp = hi - lo || 1;
+  const X = i => p + i / (hist.length - 1) * (W - 2 * p), Y = x => H - p - (x - lo) / sp * (H - 2 * p);
+  const up = v[v.length - 1] >= v[0];
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Paper account equity"><path d="${hist.map((h, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(h.equity).toFixed(1)).join(' ')}" fill="none" stroke="${up ? 'var(--gain)' : 'var(--loss)'}" stroke-width="2"/></svg>
+    <div class="kv"><span class="muted">${esc(fmtDate(hist[0].t))}: ${money(v[0], false)}</span><b class="${cls(v[v.length - 1] - v[0])}">${money(v[v.length - 1] - v[0])} to ${money(v[v.length - 1], false)}</b></div>`;
+}
 function vBot() {
   const b = S.bot, cfg = (b && b.settings) || {}, br = S.broker;
   const paperOk = br && br.connected && br.env === 'paper';
   const warn = !br ? '' : !br.connected ? `<div class="errbox">Connect Alpaca with <b>paper</b> keys in Settings → Brokers. The bot only trades the paper account.</div>`
     : br.env !== 'paper' ? `<div class="errbox">Alpaca is connected with <b>live</b> keys. The bot only trades paper; reconnect with paper keys to place orders.</div>` : '';
   const items = (b && b.items) || [];
-  const active = items.filter(i => ['submitted', 'open', 'closing'].includes(i.status));
-  const recent = items.filter(i => !['submitted', 'open', 'closing'].includes(i.status)).slice(0, 25);
-  const row = i => { const p = i.proposal || {};
-    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td>
-      <td class="r">${i.qty || p.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : (i.limit ? i.limit.toFixed(2) : '')}</td><td class="r ${cls(i.lastPlPct)}">${i.lastPlPct != null ? (i.lastPlPct > 0 ? '+' : '') + i.lastPlPct + '%' : ''}</td><td>${esc(i.exitReason || i.chaseNote || (i.status === 'submitted' && i.chaseSteps ? `raised ${i.chaseSteps}× (limit ${i.limit.toFixed(2)})` : ''))}</td>
+  const posRow = i => { const p = i.proposal || {};
+    const placed = i.placedBy === 'auto' ? 'Bot' : `You <span class="muted">(bot said ${esc(i.decision)})</span>`;
+    const pl = i.status === 'closed' ? i.realizedPl : i.lastPl, plp = i.status === 'closed' ? i.realizedPct : i.lastPlPct;
+    const now = i.status === 'closed' ? i.exitPrice : i.lastMark;
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td>${placed}</td><td>${esc(i.status === 'submitted' ? 'order working' : i.status)}</td>
+      <td class="r">${i.filledQty || i.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? `<span class="muted">limit ${i.limit.toFixed(2)}</span>` : ''}</td>
+      <td class="r">${now != null ? Number(now).toFixed(2) : '—'}</td>
+      <td class="r ${cls(pl)}">${pl != null ? money(pl) + (plp != null ? ` <span style="font-weight:400">(${plp > 0 ? '+' : ''}${plp}%)</span>` : '') : '—'}</td>
+      <td style="white-space:normal;max-width:220px">${esc(i.exitReason || i.chaseNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</td>
       <td class="r" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
-  const table = rows => `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th class="r">Qty</th><th class="r">Price</th><th class="r">P&L</th><th>Exit</th><th></th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table></div>`;
+  const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
+  const evalRow = i => { const p = i.proposal || {};
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td><td style="white-space:normal">${esc((i.blocking || [])[0] || '')}</td></tr>`; };
+  const trades = items.filter(i => ['submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice));
+  const active = trades.filter(i => i.status !== 'closed');
+  const done = trades.filter(i => i.status === 'closed');
+  const evals = items.filter(i => !trades.includes(i)).slice(0, 25);
+  const sm = (b && b.summary) || {}, ac = sm.account;
+  const card = (k, v, sub, col) => `<div class="period"><h3>${k}</h3><div class="big" style="${col ? 'color:' + col : ''}">${v}</div><p>${sub || ''}</p></div>`;
+  const summaryHtml = `<section class="periods" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+    ${ac ? card('Paper account', money(ac.equity, false), `Today ${money(ac.dayChange)}`, null) : ''}
+    ${card('Bot total P&L', money(sm.total || 0), 'Closed + open trades', (sm.total || 0) >= 0 ? 'var(--gain)' : 'var(--loss)')}
+    ${card('Realized', money(sm.realized || 0), `${sm.closedTrades || 0} closed · ${sm.winRate != null ? sm.winRate + '% winners' : 'no closed trades yet'}${sm.avgReturnPct != null ? ` · avg ${sm.avgReturnPct > 0 ? '+' : ''}${sm.avgReturnPct}%` : ''}`, (sm.realized || 0) >= 0 ? 'var(--gain)' : 'var(--loss)')}
+    ${card('Open', money(sm.unrealized || 0), `${sm.openPositions || 0} positions · ${money(sm.capitalInOpen || 0, false)} value`, (sm.unrealized || 0) >= 0 ? 'var(--gain)' : 'var(--loss)')}
+  </section>
+  ${(sm.equityHistory || []).length > 1 ? `<section class="panel"><h2>Paper account equity</h2>${eqLine(sm.equityHistory)}</section>` : ''}`;
   const earnTxt = Object.entries(cfg.earnings || {}).map(([k, v]) => `${k} ${v}`).join('\n');
   const f = (id, label, v, step = 'any') => `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" step="${step}" value="${v ?? ''}"></div>`;
   return head('Paper bot', 'Evaluates a ticker with your method, picks the option, and trades the Alpaca paper account', '') + warn + `
@@ -1238,8 +1273,10 @@ function vBot() {
     ${S.botErr ? `<div class="errbox">${esc(S.botErr)}</div>` : ''}
     <p class="muted" style="font-size:.84rem;margin:6px 0 0">Long calls only for now. The earnings date is saved for that ticker. The bot won't open a new trade within ${cfg.noEntryDays ?? 5} days of it, and it sells before the report to keep the implied-volatility run-up: from 15:30 ET on earnings day for after-close reports, or 15:30 ET the trading day before for before-open reports. Exits run automatically every 5 minutes during market hours for every bot position, even when the schedule is off. Paper account only; not financial advice.</p></section>
   ${botResult(S.botRes)}
-  ${active.length ? `<section><h2>Active</h2>${table(active)}</section>` : ''}
-  <section><h2>Recent evaluations and trades</h2>${recent.length ? table(recent) : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
+  ${summaryHtml}
+  ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh when you open this page and every 5 minutes during market hours. Exits are automatic.</p></section>` : ''}
+  ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
+  <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>` : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
   <section class="panel"><h2>Bot settings</h2>
     <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
       <label><input type="checkbox" id="bs-on" ${cfg.enabled ? 'checked' : ''}> Scan the watchlist on a schedule (10:15 and 15:15 ET)</label>

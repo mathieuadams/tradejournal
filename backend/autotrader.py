@@ -348,7 +348,7 @@ def _alp(c, method, path, body=None):
         raise Unavailable(f"Alpaca couldn't be reached: {e.reason}")
 
 
-def place(sub, bot_id, qty=None, limit=None):
+def place(sub, bot_id, qty=None, limit=None, placed_by="manual"):
     c = _paper_creds(sub)
     pk = db.upk(sub)
     rec = db.get(pk, f"BOT#{bot_id}")
@@ -364,7 +364,7 @@ def place(sub, bot_id, qty=None, limit=None):
     order = _alp(c, "POST", "/v2/orders", {"symbol": p["contract"], "qty": str(q), "side": "buy", "type": "limit",
                                            "limit_price": f"{lim:.2f}", "time_in_force": "day"})
     db.update(pk, f"BOT#{bot_id}", {"status": "submitted", "orderId": order.get("id"), "qty": q, "limit": lim,
-                                    "firstLimit": lim, "chaseSteps": 0, "submittedAt": iso(now_ny())})
+                                    "firstLimit": lim, "chaseSteps": 0, "submittedAt": iso(now_ny()), "placedBy": placed_by})
     return db.get(pk, f"BOT#{bot_id}")
 
 
@@ -419,7 +419,11 @@ def chase(sub, bot_id):
         oid, limit = o.get("id"), new_limit
         db.update(pk, f"BOT#{bot_id}", {"orderId": oid, "limit": limit, "chaseSteps": steps,
                                         "prevFilledQty": done_qty, "prevFilledCost": done_cost})
-    st, fq, fp = _order_state(c, oid)
+    for _ in range(6):                               # the last order often fills a few seconds later
+        st, fq, fp = _order_state(c, oid)
+        if st != "new" and st != "accepted" and st != "pending_new":
+            break
+        time.sleep(5)
     if st == "filled":
         q = done_qty + fq
         avg = (done_cost + fq * fp) / q if q else fp
@@ -448,6 +452,97 @@ def close(sub, bot_id, reason="manual"):
 
 # ---------------- monitoring ----------------
 
+def _refresh(sub, c, rec):
+    """Bring one bot record up to date with Alpaca (fill, live value, exit fill). Returns (rec, position)."""
+    pk = db.upk(sub)
+    st, p = rec.get("status"), rec["proposal"]
+    if st == "submitted" and rec.get("orderId"):
+        o = _alp(c, "GET", f"/v2/orders/{rec['orderId']}")
+        if o and o.get("status") == "filled":
+            fq, fp = float(o.get("filled_qty") or 0), float(o.get("filled_avg_price") or 0)
+            q = rec.get("prevFilledQty", 0) + fq
+            avg = (rec.get("prevFilledCost", 0) + fq * fp) / q if q else fp
+            db.update(pk, rec["SK"], {"status": "open", "fillPrice": round(avg, 4), "filledQty": q, "filledAt": o.get("filled_at")})
+            rec.update(status="open", fillPrice=round(avg, 4), filledQty=q)
+        elif o and o.get("status") in ("canceled", "expired", "rejected") and not rec.get("prevFilledQty"):
+            db.update(pk, rec["SK"], {"status": "not filled", "exitReason": o.get("status")})
+            rec["status"] = "not filled"
+            return rec, None
+        else:
+            return rec, None
+    if rec["status"] not in ("open", "closing"):
+        return rec, None
+    pos = _alp(c, "GET", f"/v2/positions/{p['contract']}")
+    if not pos:
+        upd = {"status": "closed"}
+        if rec.get("exitOrderId"):
+            o = _alp(c, "GET", f"/v2/orders/{rec['exitOrderId']}") or {}
+            if o.get("filled_avg_price"):
+                upd["exitPrice"] = float(o["filled_avg_price"])
+        exit_px = upd.get("exitPrice") or rec.get("lastMark")
+        qty = rec.get("filledQty") or rec.get("qty") or 0
+        if exit_px is not None and rec.get("fillPrice"):
+            upd["realizedPl"] = round((exit_px - rec["fillPrice"]) * qty * 100, 2)
+            upd["realizedPct"] = round((exit_px / rec["fillPrice"] - 1) * 100, 1)
+        if rec["status"] == "open" and not rec.get("exitReason"):
+            upd["exitReason"] = "closed outside the bot"
+        db.update(pk, rec["SK"], upd)
+        rec.update(upd)
+        return rec, None
+    mark = float(pos.get("current_price") or 0)
+    upd = {"lastMark": mark, "lastPlPct": round(float(pos.get("unrealized_plpc") or 0) * 100, 1),
+           "lastPl": round(float(pos.get("unrealized_pl") or 0), 2), "marketValue": round(float(pos.get("market_value") or 0), 2),
+           "lastCheck": iso(now_ny())}
+    if not rec.get("fillPrice") and pos.get("avg_entry_price"):
+        upd["fillPrice"] = float(pos["avg_entry_price"])
+    snaps = list(rec.get("marks") or [])
+    if not snaps or (datetime.strptime(snaps[-1]["t"], "%Y-%m-%dT%H:%M:%S") <= now_ny() - timedelta(minutes=14)):
+        snaps.append({"t": iso(now_ny()), "mark": mark, "plPct": upd["lastPlPct"]})
+        upd["marks"] = snaps[-300:]
+    db.update(pk, rec["SK"], upd)
+    rec.update(upd)
+    return rec, pos
+
+
+def sync(sub):
+    """Quick status refresh for the page (no exit decisions)."""
+    try:
+        c = _paper_creds(sub)
+    except BadRequest:
+        return
+    for rec in db.q_prefix(db.upk(sub), "BOT#"):
+        if rec.get("status") in ("submitted", "open", "closing"):
+            try:
+                _refresh(sub, c, rec)
+            except Exception as e:
+                print("sync failed", rec.get("id"), e)
+
+
+def summary(sub):
+    items = db.q_prefix(db.upk(sub), "BOT#")
+    closed = [r for r in items if r.get("status") == "closed" and r.get("realizedPl") is not None]
+    opn = [r for r in items if r.get("status") == "open"]
+    wins = [r for r in closed if r["realizedPl"] > 0]
+    out = {"realized": round(sum(r["realizedPl"] for r in closed), 2), "closedTrades": len(closed), "wins": len(wins),
+           "winRate": round(len(wins) / len(closed) * 100) if closed else None,
+           "avgReturnPct": round(sum(r.get("realizedPct") or 0 for r in closed) / len(closed), 1) if closed else None,
+           "unrealized": round(sum(r.get("lastPl") or 0 for r in opn), 2), "openPositions": len(opn),
+           "capitalInOpen": round(sum(r.get("marketValue") or 0 for r in opn), 2)}
+    out["total"] = round(out["realized"] + out["unrealized"], 2)
+    try:
+        c = _paper_creds(sub)
+        acct = _alp(c, "GET", "/v2/account") or {}
+        eq, last = float(acct.get("equity") or 0), float(acct.get("last_equity") or 0)
+        out["account"] = {"equity": eq, "dayChange": round(eq - last, 2), "cash": float(acct.get("cash") or 0),
+                          "buyingPower": float(acct.get("options_buying_power") or acct.get("buying_power") or 0)}
+        h = _alp(c, "GET", "/v2/account/portfolio/history?period=3M&timeframe=1D") or {}
+        out["equityHistory"] = [{"t": datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d"), "equity": e}
+                                for ts, e in zip(h.get("timestamp") or [], h.get("equity") or []) if e is not None]
+    except Exception as e:
+        out["accountError"] = str(e)[:160]
+    return out
+
+
 def monitor(sub):
     cfg = settings(sub)
     pk = db.upk(sub)
@@ -457,36 +552,20 @@ def monitor(sub):
         return {"skipped": "no paper account"}
     actions = []
     for rec in db.q_prefix(pk, "BOT#"):
-        st = rec.get("status")
-        if st not in ("submitted", "open", "closing"):
+        if rec.get("status") not in ("submitted", "open", "closing"):
+            continue
+        rec, pos = _refresh(sub, c, rec)
+        if rec.get("status") != "open" or not pos:
             continue
         p = rec["proposal"]
-        if st == "submitted":
-            o = _alp(c, "GET", f"/v2/orders/{rec['orderId']}") if rec.get("orderId") else None
-            if o and o.get("status") == "filled":
-                fq, fp = float(o.get("filled_qty") or 0), float(o.get("filled_avg_price") or 0)
-                q = rec.get("prevFilledQty", 0) + fq
-                avg = (rec.get("prevFilledCost", 0) + fq * fp) / q if q else fp
-                db.update(pk, rec["SK"], {"status": "open", "fillPrice": round(avg, 4), "filledQty": q, "filledAt": o.get("filled_at")})
-                actions.append((rec["symbol"], "filled"))
-            elif o and o.get("status") in ("canceled", "expired", "rejected"):
-                db.update(pk, rec["SK"], {"status": "not filled", "exitReason": o.get("status")})
-            continue
-        pos = _alp(c, "GET", f"/v2/positions/{p['contract']}")
-        if st == "closing":
-            if not pos:
-                db.update(pk, rec["SK"], {"status": "closed"})
-            continue
-        if not pos:
-            db.update(pk, rec["SK"], {"status": "closed", "exitReason": rec.get("exitReason") or "position gone"})
-            continue
-        pl_pct = float(pos.get("unrealized_plpc") or 0) * 100
-        mark = float(pos.get("current_price") or 0)
+        pl_pct = rec["lastPlPct"]
         try:
             bars = _yahoo(rec["symbol"].replace(".", "-"), "5m", now_ny() - timedelta(days=3), now_ny() + timedelta(hours=1))
             under = bars[-1]["c"] if bars else None
         except Exception:
             under = None
+        if under is not None:
+            db.update(pk, rec["SK"], {"lastUnderlying": under})
         dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
         due, earn_reason = earnings_exit_due((cfg.get("earnings") or {}).get(rec["symbol"]))
         reason = None
@@ -502,7 +581,6 @@ def monitor(sub):
             reason = f"time stop ({dte} days to expiry)"
         elif due:
             reason = earn_reason
-        db.update(pk, rec["SK"], {"lastMark": mark, "lastPlPct": round(pl_pct, 1), "lastUnderlying": under, "lastCheck": iso(now_ny())})
         if reason:
             close(sub, rec["id"], reason)
             actions.append((rec["symbol"], reason))
@@ -528,7 +606,7 @@ def scan(sub):
         results.append({"symbol": sym, "decision": rec["decision"]})
         if cfg["autoSubmit"] and rec["decision"] == "BUY" and open_n < cfg["maxPositions"]:
             try:
-                place(sub, rec["id"])
+                place(sub, rec["id"], placed_by="auto")
                 chase(sub, rec["id"])
                 open_n += 1
             except Exception as e:
