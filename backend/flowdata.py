@@ -188,6 +188,10 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
                     "sweep": bool(a.get("has_sweep")), "rule": a.get("alert_rule"), "contract": a.get("option_chain"),
                     "at": created, "atEt": at_et})
     out.sort(key=lambda x: x["at"] or "", reverse=True)
+    try:
+        live_prices(sub, out)
+    except Exception as e:
+        print("live prices skipped", e)
     tickers = {}
     for a in out:
         t = tickers.setdefault(a["ticker"], {"ticker": a["ticker"], "alerts": 0, "premium": 0.0})
@@ -203,3 +207,50 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
     return {"alerts": out, "fetched": len(raw), "stale": stale, "pages": pages, "window": label,
             "returnedFrom": _et(stamps[0]) if stamps else None, "returnedTo": _et(stamps[-1]) if stamps else None, "since": start_ny.strftime("%Y-%m-%d %H:%M"),
             "totalPremium": round(sum(a["premium"] for a in out)), "topTickers": top}
+
+
+def live_prices(sub, rows):
+    """Add the option's current price and the stock's current price to each alert (Alpaca market data)."""
+    import alpaca
+    c = alpaca.creds(sub)
+    if not c or not rows:
+        return
+    h = {"APCA-API-KEY-ID": c["key"], "APCA-API-SECRET-KEY": c["secret"]}
+
+    def fetch(url):
+        req = urllib.request.Request(url, headers=h)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read())
+        except (urllib.error.HTTPError, urllib.error.URLError):
+            return {}
+
+    contracts = sorted({r["contract"] for r in rows if r.get("contract")})
+    opt = {}
+    for i in range(0, len(contracts), 100):
+        q = urllib.parse.urlencode({"symbols": ",".join(contracts[i:i + 100]), "feed": "indicative"})
+        for sym, snap in (fetch(f"https://data.alpaca.markets/v1beta1/options/snapshots?{q}").get("snapshots") or {}).items():
+            qt, tr = snap.get("latestQuote") or {}, snap.get("latestTrade") or {}
+            bid, ask = qt.get("bp"), qt.get("ap")
+            opt[sym] = {"mark": round((bid + ask) / 2, 2) if bid and ask else tr.get("p"), "bid": bid, "ask": ask}
+    tickers = sorted({r["ticker"] for r in rows if r.get("ticker")})
+    stk = {}
+    for i in range(0, len(tickers), 100):
+        q = urllib.parse.urlencode({"symbols": ",".join(tickers[i:i + 100]), "feed": "iex"})
+        data = fetch(f"https://data.alpaca.markets/v2/stocks/snapshots?{q}") or {}
+        for sym, snap in data.items():
+            p = ((snap or {}).get("latestTrade") or {}).get("p") or ((snap or {}).get("dailyBar") or {}).get("c")
+            if p:
+                stk[sym] = p
+    for r in rows:
+        o = opt.get(r.get("contract") or "")
+        if o and o.get("mark"):
+            r["nowPrice"], r["nowBid"], r["nowAsk"] = o["mark"], o.get("bid"), o.get("ask")
+            if r.get("price"):
+                r["nowChangePct"] = round((o["mark"] / r["price"] - 1) * 100, 1)
+        sp = stk.get(r.get("ticker"))
+        if sp:
+            r["nowStock"] = round(sp, 2)
+            if r.get("underlying"):
+                r["stockChangePct"] = round((sp / r["underlying"] - 1) * 100, 2)
+    return rows
