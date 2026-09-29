@@ -68,7 +68,8 @@ def _f(x):
 
 
 def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask_side=True, sweeps_only=False,
-           ticker=None, min_vol_oi=0.0, days=1, since_utc=None, exclude_etfs=False):
+           ticker=None, min_vol_oi=0.0, days=1, since_utc=None, exclude_etfs=False, period=None, date_from=None,
+           date_to=None, tz="America/Los_Angeles"):
     """Today's (or the last `days` sessions') flow alerts matching the filters.
 
     Filters are sent to Unusual Whales so the 200-per-page limit is spent on relevant alerts, then pages are
@@ -79,8 +80,38 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
     key = _key(sub)
     start_ny = now_ny().replace(hour=4, minute=0, second=0, microsecond=0) - timedelta(days=max(0, days - 1))
     start_utc = since_utc or ny_to_utc(start_ny).strftime("%Y-%m-%dT%H:%M:%SZ")
-    base = {"limit": 200, "min_premium": int(min_premium), "min_dte": int(min_dte), "max_dte": int(max_dte),
-            "newer_than": start_utc}
+    end_utc = "9999"
+    label = start_ny.strftime("%Y-%m-%d %H:%M") + " ET"
+    if period and not since_utc:
+        from zoneinfo import ZoneInfo
+        from datetime import timezone
+        z = ZoneInfo(tz or "America/Los_Angeles")
+        today_local = datetime.now(z).date()
+        if period == "today":
+            d0 = d1 = today_local
+        elif period == "yesterday":
+            d0 = d1 = today_local - timedelta(days=1)
+        elif period == "7d":
+            d0, d1 = today_local - timedelta(days=6), today_local
+        else:
+            try:
+                d0 = datetime.strptime(date_from, "%Y-%m-%d").date()
+                d1 = datetime.strptime(date_to or date_from, "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                raise BadRequest("Choose a start and end date.")
+            if d1 < d0:
+                d0, d1 = d1, d0
+            if (d1 - d0).days > 31:
+                raise BadRequest("Choose a range of 31 days or less.")
+        s_loc = datetime(d0.year, d0.month, d0.day, 0, 0, 0, tzinfo=z)
+        e_loc = datetime(d1.year, d1.month, d1.day, 23, 59, 59, tzinfo=z)
+        start_utc = s_loc.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_utc = e_loc.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        tzname = s_loc.strftime("%Z")
+        label = f"{d0.isoformat()} 00:00 to {d1.isoformat()} 23:59 {tzname}"
+    # No date parameter: its format isn't reliable, so we page back from the newest alerts ourselves and
+    # stop once we pass the start of the window.
+    base = {"limit": 200, "min_premium": int(min_premium), "min_dte": int(min_dte), "max_dte": int(max_dte)}
     if opt_type == "call":
         base["is_call"] = "true"; base["is_put"] = "false"
     elif opt_type == "put":
@@ -94,7 +125,7 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
     if min_vol_oi:
         base["min_volume_oi_ratio"] = min_vol_oi
     raw, older, pages = [], None, 0
-    for pages in range(1, 16):
+    for pages in range(1, 41):
         q = dict(base)
         if older:
             q["older_than"] = older
@@ -102,15 +133,16 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
         raw += page
         if len(page) < 200:
             break
-        older = min((a.get("created_at") or "") for a in page)
-        if older and older < start_utc:
+        oldest = min((a.get("created_at") or "") for a in page)
+        if not oldest or oldest[:19] < start_utc[:19] or oldest == older:   # passed the window, or paging not moving
             break
+        older = oldest
     today = now_ny().date()
     out, seen, stale = [], set(), 0
     for a in raw:
         created = (a.get("created_at") or "").replace(" ", "T")
         # Never trust the date filter blindly: drop anything older than the requested window.
-        if not created or created[:19] < start_utc[:19]:
+        if not created or created[:19] < start_utc[:19] or created[:19] > end_utc[:19]:
             stale += 1
             continue
         uid = a.get("id") or (a.get("option_chain"), a.get("created_at"))
@@ -162,5 +194,12 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
         t["alerts"] += 1
         t["premium"] += a["premium"]
     top = sorted(tickers.values(), key=lambda x: -x["premium"])[:10]
-    return {"alerts": out, "fetched": len(raw), "stale": stale, "pages": pages, "since": start_ny.strftime("%Y-%m-%d %H:%M"),
+    def _et(c):
+        try:
+            return utc_to_ny(datetime.strptime(c[:19].replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, TypeError):
+            return None
+    stamps = sorted(c for c in (a.get("created_at") for a in raw) if c)
+    return {"alerts": out, "fetched": len(raw), "stale": stale, "pages": pages, "window": label,
+            "returnedFrom": _et(stamps[0]) if stamps else None, "returnedTo": _et(stamps[-1]) if stamps else None, "since": start_ny.strftime("%Y-%m-%d %H:%M"),
             "totalPremium": round(sum(a["premium"] for a in out)), "topTickers": top}

@@ -396,7 +396,9 @@ def flow_alerts(sub, claims, body, q):
     return flowdata.alerts(sub, float(q.get("minPremium") or 100000), q.get("type") or "call",
                            int(q.get("minDte") or 0), int(q.get("maxDte") or 120),
                            q.get("askSide", "1") == "1", q.get("sweeps") == "1", q.get("ticker") or None,
-                           float(q.get("minVolOi") or 0), int(q.get("days") or 1), exclude_etfs=q.get("noEtf") == "1")
+                           float(q.get("minVolOi") or 0), int(q.get("days") or 1), exclude_etfs=q.get("noEtf") == "1",
+                           period=q.get("period") or "today", date_from=q.get("from"), date_to=q.get("to"),
+                           tz=q.get("tz") or "America/Los_Angeles")
 
 
 @route("POST", "/maintenance/rebuild")

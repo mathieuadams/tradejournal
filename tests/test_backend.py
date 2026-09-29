@@ -597,7 +597,7 @@ def test_flow_alerts():
     flowdata._get = lambda key, params: {"data": [] if params.get("older_than") else [
         {"ticker": "MSFT", "type": "call", "strike": "375", "expiry": "2099-12-18", "total_premium": "186705", "total_ask_side_prem": "151875",
          "price": "4.05", "underlying_price": "372.99", "volume": 2442, "open_interest": 7913, "volume_oi_ratio": "0.3", "has_sweep": True,
-         "alert_rule": "RepeatedHits", "option_chain": "MSFT991218C00375000", "created_at": "2099-01-01T16:35:52Z"},
+         "alert_rule": "RepeatedHits", "option_chain": "MSFT991218C00375000", "created_at": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")},
         {"ticker": "BABA", "type": "call", "strike": "160", "expiry": "2099-12-18", "total_premium": "200000", "total_ask_side_prem": "200000",
          "created_at": "2020-08-01T14:00:00Z"},
         {"ticker": "AAPL", "type": "put", "strike": "200", "expiry": "2099-12-18", "total_premium": "500000", "total_ask_side_prem": "400000", "created_at": "2026-09-28T16:00:00Z"}]}
