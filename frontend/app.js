@@ -1239,7 +1239,7 @@ async function loadNtStatus(force) {
 }
 async function loadBot(force) {
   if (S.bot && !force) return;
-  try { S.bot = await api('/bot'); } catch (e) { S.bot = { error: e.message, items: [], settings: {} }; }
+  try { S.bot = await api('/bot'); S.botAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch (e) { S.bot = { error: e.message, items: [], settings: {} }; }
   if (S.broker === undefined) { try { S.broker = await api('/broker/alpaca'); } catch (e) { S.broker = { connected: false }; } }
   if (route() === 'bot') render();
 }
@@ -1302,7 +1302,7 @@ function flowPanel() {
       ${f.period === 'custom' ? `<div class="field"><label for="fl-from">From</label><input id="fl-from" type="date" value="${esc(f.from || '')}"></div><div class="field"><label for="fl-to">To</label><input id="fl-to" type="date" value="${esc(f.to || '')}"></div>` : ''}
       <div class="field"><label><input type="checkbox" id="fl-etf" ${f.noEtf ? 'checked' : ''}> Hide ETFs</label><label><input type="checkbox" id="fl-ask" ${f.askSide ? 'checked' : ''}> Mostly bought at the ask</label><label><input type="checkbox" id="fl-sweep" ${f.sweeps ? 'checked' : ''}> Sweeps only</label></div>
       <div class="field"><button class="btn primary" id="fl-load" ${S.flowBusy ? 'disabled' : ''}>${S.flowBusy ? 'Loading…' : 'Load flow'}</button>
-        <label style="margin-top:6px"><input type="checkbox" id="fl-auto" ${S.flowAuto ? 'checked' : ''}> Refresh every minute</label></div></div>
+        <label style="margin-top:6px"><input type="checkbox" id="fl-auto" ${S.flowAuto !== false ? 'checked' : ''}> Refresh every minute</label></div></div>
     ${S.flow && S.flowAt ? `<p class="muted" style="font-size:.82rem;margin:0 0 4px">Prices as of ${esc(S.flowAt)} (your time). "Now" prices are the live option mid and last stock trade.</p>` : ''}
     ${S.flowErr ? `<div class="errbox">${esc(S.flowErr)}</div>` : ''}
     ${S.flow && S.flow.fetched ? `<p class="muted" style="font-size:.84rem;margin:4px 0">Unusual Whales returned ${S.flow.fetched} alerts matching your filters, from ${esc(S.flow.returnedFrom || '?')} to ${esc(S.flow.returnedTo || '?')} ET${S.flow.stale ? `; ${S.flow.stale} fall outside ${esc(S.flow.window || '')} and are not shown` : ''}.${S.flow.stale && !(S.flow.alerts || []).length ? ' If the newest is from a previous day, no alert matching these filters has printed yet today: loosen the filters or choose a longer period.' : ''}</p>` : ''}
@@ -1369,7 +1369,8 @@ function vBot() {
         `<button class="switch" data-bottoggle="${k}" aria-pressed="${!!cfg[k]}"><span class="knob" aria-hidden="true"></span><span><b>${l}</b> <span class="sw-state">${cfg[k] ? 'On' : 'Off'}</span><small>${d}</small></span></button>`).join('')}
     </div>
     <p style="margin:0">${cfg.flowAuto ? `<b class="gain">Flow trading is on.</b> Every minute from 9:35 to 15:50 ET the bot pulls new unusual-flow alerts, analyzes up to ${cfg.flowMaxEvals} tickers, and ${cfg.autoSubmit ? 'places a paper order when every rule passes' : '<b>only logs the analysis</b> (automatic orders are off)'}.` : '<b>Flow trading is off.</b> Turn on <b>Flow trading</b> above (and <b>Automatic orders</b> to let it place trades).'} Exits are checked every minute for every bot position.</p>
-    <p class="muted" style="margin:6px 0 0;font-size:.86rem">${lastRun}</p></section>
+    <p class="muted" style="margin:6px 0 0;font-size:.86rem">${lastRun}</p>
+    <p class="muted" style="margin:4px 0 0;font-size:.8rem">This page refreshes every minute${S.botAt ? ` · last update ${esc(S.botAt)}` : ''}.</p></section>
   ${botResult(S.botRes)}
   ${summaryHtml}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh when you open this page and every 5 minutes during market hours. Exits are automatic.</p></section>` : ''}
@@ -1454,6 +1455,15 @@ async function botSaveSettings() {
     S.bot.settings = await api('/bot/settings', { method: 'PUT', body }); toast('Bot settings saved'); render();
   } catch (e) { toast(e.message); }
 }
+
+/* ---------- auto refresh (every minute, only while the page is visible and you're not typing) ---------- */
+setInterval(() => {
+  if (document.visibilityState !== 'visible') return;
+  const a = document.activeElement;
+  if (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName)) return;
+  if (route() === 'bot') { loadBot(true).then(() => { if (route() === 'bot') render(); }); }
+  else if (route() === 'gex' && S.flow && S.flowAuto !== false && !S.flowBusy && $('#fl-prem')) loadFlow();
+}, 60000);
 
 /* ---------- router & events ---------- */
 const VIEWS = { bot: [vBot, () => { loadBot(); loadNtStatus(); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
@@ -1552,7 +1562,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
-  if (id === 'fl-auto') { S.flowAuto = e.target.checked; clearInterval(S.flowTimer); if (S.flowAuto) { S.flowTimer = setInterval(() => { if (route() === 'gex' && document.visibilityState === 'visible' && !S.flowBusy && $('#fl-prem')) loadFlow(); }, 60000); loadFlow(); } return; }
+  if (id === 'fl-auto') { S.flowAuto = e.target.checked; if (S.flowAuto && S.flow) loadFlow(); return; }
   if (id === 'fl-period') { S.flowF = { ...(S.flowF || {}), period: e.target.value }; if (e.target.value !== 'custom') { loadFlow(); } else render(); return; }
   if (id === 'tc-type' || id === 'tc-exp') { tcRead(); return; }
   if (route() === 'settings' && /^(s-|pp-|lc-)/.test(id)) { clearTimeout(S.autoSave); S.autoSave = setTimeout(saveSettings, 400); }
