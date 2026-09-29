@@ -106,7 +106,16 @@ def put_settings(sub, claims, body, q):
         if phone and not re.match(r"^\+[1-9]\d{7,14}$", phone):
             raise BadRequest("Enter the phone number with country code, e.g. +19165551234.")
         ev = [e for e in (n.get("events") or ["entry", "fill", "exit", "closed", "cancel"]) if e in ("entry", "fill", "exit", "closed", "cancel")]
-        s["notify"] = {"phone": phone, "sms": bool(n.get("sms")) and bool(phone), "events": ev}
+        email = str(n.get("email") or "").strip()
+        if email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise BadRequest("Enter a valid email address.")
+        s["notify"] = {"phone": phone, "sms": bool(n.get("sms")) and bool(phone), "events": ev, "email": email}
+        if email:
+            try:
+                import notify as _n
+                _n.subscribe_email(sub, email)
+            except Exception as e:
+                print("subscribe failed", e)
     if "rules" in body:
         s["rules"] = _str(body["rules"], "Rules", 4000) or ""
     if "accountSize" in body:
@@ -350,6 +359,17 @@ def remove_csv_fills(sub, claims, body, q):
     db.batch_write(deletes=rm)
     g = ingest.regroup(sub)
     return {"removedFills": len(rm), "trades": g["trades"]}
+
+
+@route("GET", "/notify/status")
+def notify_status(sub, claims, body, q):
+    import notify
+    email = (views.load_settings(sub).get("notify") or {}).get("email")
+    try:
+        st = notify.email_status(email)
+    except Exception as e:
+        st = f"unknown ({str(e)[:80]})"
+    return {"email": email, "emailStatus": st}
 
 
 @route("POST", "/notify/test")

@@ -1226,6 +1226,7 @@ async function anaEvaluate(sym) {
 }
 
 /* ---------- paper bot ---------- */
+async function loadNtStatus() { try { S.ntStatus = await api('/notify/status'); } catch (e) { S.ntStatus = null; } if (route() === 'bot') render(); }
 async function loadBot(force) {
   if (S.bot && !force) return;
   try { S.bot = await api('/bot'); } catch (e) { S.bot = { error: e.message, items: [], settings: {} }; }
@@ -1362,14 +1363,18 @@ function vBot() {
       ${f('bf-prem', 'Min premium ($)', cfg.flowMinPremium, 10000)}${f('bf-dmin', 'Flow days to expiry, min', cfg.flowMinDte, 1)}${f('bf-dmax', 'Flow days to expiry, max', cfg.flowMaxDte, 1)}
       ${f('bf-voi', 'Min volume / OI', cfg.flowMinVolOi, 0.1)}${f('bf-cool', 'Re-check a ticker after (min)', cfg.flowCooldownMin, 1)}${f('bf-evals', 'Max tickers analyzed per minute', cfg.flowMaxEvals, 1)}</div>
     <p class="muted" style="font-size:.84rem;margin:0">Orders are placed only when <b>Place paper orders automatically</b> (below) is also on. Calls only; the contract the bot buys is chosen by its own rules, not copied from the flow.</p></section>
-  <section class="panel"><h2>Text alerts</h2>
+  <section class="panel"><h2>Alerts</h2>
+    <p class="muted" style="margin-top:-4px">Every bot order is sent as an Amazon SNS notification to your email right away. Text messages are optional and need a registered toll-free number in AWS (SETUP.md step 8).</p>
+    <div class="form-grid" style="align-items:end">
+      <div class="field"><label for="nt-email">Email for alerts (SNS)</label><input id="nt-email" type="email" placeholder="you@example.com" value="${esc(nt.email || '')}"></div>
+      <div class="field"><span class="muted" style="font-size:.88rem">${S.ntStatus ? (S.ntStatus.emailStatus === 'confirmed' ? '<b class="gain">Subscribed and confirmed</b>' : S.ntStatus.emailStatus === 'pending' ? '<b class="warn" style="color:var(--warn)">Waiting for you to confirm:</b> open the email from AWS Notifications and click <b>Confirm subscription</b>' : S.ntStatus.email ? esc(S.ntStatus.emailStatus || '') : 'Not set') : ''}</span></div></div>
     <div class="form-grid" style="align-items:end">
       <div class="field"><label for="nt-phone">Mobile number (with country code)</label><input id="nt-phone" type="tel" placeholder="+19165551234" value="${esc(nt.phone || '')}"></div>
-      <div class="field"><label><input type="checkbox" id="nt-on" ${nt.sms ? 'checked' : ''}> Send text alerts</label></div>
+      <div class="field"><label><input type="checkbox" id="nt-on" ${nt.sms ? 'checked' : ''}> I agree to receive text alerts about my paper-bot orders at this number. Frequency varies. Msg &amp; data rates may apply. Reply STOP to opt out, HELP for help. <a href="/terms.html" target="_blank">Terms</a> · <a href="/privacy.html" target="_blank">Privacy</a></label></div>
       <div class="field"><button class="btn primary" id="nt-save">Save</button> <button class="btn" id="nt-test">Send test</button></div></div>
     <div style="display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 10px">${[['entry', 'Buy orders placed'], ['fill', 'Buys filled'], ['exit', 'Exit orders (with reason)'], ['closed', 'Positions closed (with P&L)'], ['cancel', 'Unfilled orders cancelled']]
       .map(([k, l]) => `<label><input type="checkbox" class="nt-ev" value="${k}" ${(nt.events || ['entry', 'fill', 'exit', 'closed', 'cancel']).includes(k) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
-    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Sent with Amazon SNS from your AWS account. US numbers need a one-time SMS setup in AWS (see SETUP.md, step 8).</p>
+    
     ${(b && b.notifications || []).length ? `<details><summary class="muted" style="cursor:pointer">Recent alerts</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>When</th><th>Message</th><th>Status</th></tr></thead><tbody>
       ${b.notifications.map(n => `<tr><td>${esc((n.at || '').replace('T', ' ').slice(5, 16))}</td><td title="${esc(n.text)}"><span class="ellipsis" style="max-width:520px">${esc(n.text)}</span></td><td class="${n.status === 'sent' ? 'gain' : n.status === 'failed' ? 'loss' : 'muted'}" title="${esc(n.error || '')}">${esc(n.status)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
   </section>
@@ -1421,7 +1426,7 @@ async function botSaveSettings() {
 }
 
 /* ---------- router & events ---------- */
-const VIEWS = { bot: [vBot, () => loadBot()], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { bot: [vBot, () => { loadBot(); loadNtStatus(); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
@@ -1437,8 +1442,8 @@ document.addEventListener('click', e => {
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
   if (el.id === 'ana-run') { anaEvaluate(S.gexSym); return; }
-  if (el.id === 'nt-save' || el.id === 'nt-test') { const body = { notify: { phone: $('#nt-phone').value, sms: $('#nt-on').checked, events: [...document.querySelectorAll('.nt-ev')].filter(x => x.checked).map(x => x.value) } };
-    api('/settings', { method: 'PUT', body }).then(async s2 => { S.me.settings = s2; if (el.id === 'nt-test') { const r = await api('/notify/test', { method: 'POST' }); toast(r.status === 'sent' ? 'Test text sent' : r.status === 'failed' ? 'Text failed: ' + (r.error || '') : 'Text alerts are off, so the test was only logged'); } else toast('Text alert settings saved'); loadBot(true); }).catch(err => toast(err.message)); return; }
+  if (el.id === 'nt-save' || el.id === 'nt-test') { const body = { notify: { email: $('#nt-email').value.trim(), phone: $('#nt-phone').value, sms: $('#nt-on').checked, events: [...document.querySelectorAll('.nt-ev')].filter(x => x.checked).map(x => x.value) } };
+    api('/settings', { method: 'PUT', body }).then(async s2 => { S.me.settings = s2; if (el.id === 'nt-test') { const r = await api('/notify/test', { method: 'POST' }); toast(r.status === 'sent' ? 'Test alert sent' : r.status === 'failed' ? 'Alert failed: ' + (r.error || '') : 'No email or text is set up, so the test was only logged'); } else toast(s2.notify && s2.notify.email ? 'Saved. If this is a new email, confirm the subscription from your inbox.' : 'Alert settings saved'); loadBot(true); loadNtStatus(); }).catch(err => toast(err.message)); return; }
   if (el.id === 'fl-load') { loadFlow(); return; }
   if (el.dataset.undo) { if (!confirm('Undo this import? The fills it added are removed and trades are rebuilt. Notes and tags are kept.')) return; api(`/imports/${el.dataset.undo}/undo`, { method: 'POST' }).then(async r => { await reload(); await afterImport(); toast(`Removed ${r.removedFills} fills`); }).catch(err => toast(err.message)); return; }
   if (el.id === 'rm-csv') { const a = $('#rm-acct').value; if (!confirm(`Remove all file-imported fills from "${a}"? Broker-synced fills are kept.`)) return; api('/maintenance/remove-csv-fills', { method: 'POST', body: { account: a } }).then(async r => { await reload(); toast(`Removed ${r.removedFills} fills from ${a}`); }).catch(err => toast(err.message)); return; }

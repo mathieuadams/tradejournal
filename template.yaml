@@ -34,6 +34,7 @@ Globals:
         ANTHROPIC_SECRET_ARN: !Ref AnthropicSecret
         KMS_KEY_ID: !Ref BrokerKey
         SCHWAB_SECRET_ARN: !Ref SchwabSecret
+        ALERT_TOPIC_ARN: !Ref AlertsTopic
         SCHWAB_CALLBACK: !Sub "https://${Distribution.DomainName}/schwab"
         REVIEW_MODEL: !Ref ReviewModel
         COACH_MODEL: !Ref CoachModel
@@ -82,6 +83,11 @@ Resources:
     Properties:
       Description: Anthropic API key for the AI coach. Set with deploy.sh (ANTHROPIC_API_KEY) or put-secret-value.
       SecretString: REPLACE_ME
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Trade Journal alerts
 
   SchwabSecret:
     Type: AWS::SecretsManager::Secret
@@ -263,7 +269,7 @@ Resources:
         - LambdaInvokePolicy: { FunctionName: !Ref BotFunction }
         - Statement:
             - Effect: Allow
-              Action: sns:Publish
+              Action: [sns:Publish, sns:Subscribe, sns:Unsubscribe, sns:ListSubscriptionsByTopic, sns:GetSubscriptionAttributes]
               Resource: "*"
       Events:
         # One route per method (not ANY) so browser CORS preflight (OPTIONS) is answered by
@@ -385,7 +391,7 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - Statement:
             - Effect: Allow
-              Action: sns:Publish
+              Action: [sns:Publish, sns:Subscribe, sns:Unsubscribe, sns:ListSubscriptionsByTopic, sns:GetSubscriptionAttributes]
               Resource: "*"
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
         - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
@@ -440,6 +446,8 @@ Outputs:
     Value: !Ref AnthropicSecret
   SchwabSecretArn:
     Value: !Ref SchwabSecret
+  AlertsTopicArn:
+    Value: !Ref AlertsTopic
   SchwabCallbackUrl:
     Description: Register this exact URL as the callback in your Schwab developer app
     Value: !Sub "https://${Distribution.DomainName}/schwab"
