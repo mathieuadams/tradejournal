@@ -1353,7 +1353,11 @@ function vBot() {
   const lastRun = st.lastFlowRun ? `Last flow check ${esc(st.lastFlowRun.replace('T', ' ').slice(5, 16))} ET · ${st.lastFlowAlerts ?? 0} new alerts${(st.lastFlowResult || []).length ? ' · ' + st.lastFlowResult.map(r => `${esc(r.symbol)}: ${esc(r.decision || r.error || '')}${r.ordered ? ' (ordered)' : ''}`).join(', ') : ''}` : 'No automatic flow check yet.';
   return head('Paper bot', 'Trades the Alpaca paper account automatically from unusual options flow and manages every exit', '') + warn + `
   <section class="coach" style="padding:14px 18px"><div class="coach-who">${spark()} Status</div>
-    <p style="margin:0">${cfg.flowAuto ? `<b class="gain">Flow trading is on.</b> Every minute from 9:35 to 15:50 ET the bot pulls new unusual-flow alerts, analyzes up to ${cfg.flowMaxEvals} tickers, and ${cfg.autoSubmit ? 'places a paper order when every rule passes' : '<b>only logs the analysis</b> (automatic orders are off)'}.` : '<b>Flow trading is off.</b> Turn it on in the settings below.'} Exits are checked every minute for every bot position.</p>
+    <div class="switches">
+      ${[['flowAuto', 'Flow trading', 'Check unusual flow every minute'], ['autoSubmit', 'Automatic orders', 'Place paper orders when every rule passes'], ['enabled', 'Watchlist scans', '10:15 and 15:15 ET']].map(([k, l, d]) =>
+        `<button class="switch" data-bottoggle="${k}" aria-pressed="${!!cfg[k]}"><span class="knob" aria-hidden="true"></span><span><b>${l}</b> <span class="sw-state">${cfg[k] ? 'On' : 'Off'}</span><small>${d}</small></span></button>`).join('')}
+    </div>
+    <p style="margin:0">${cfg.flowAuto ? `<b class="gain">Flow trading is on.</b> Every minute from 9:35 to 15:50 ET the bot pulls new unusual-flow alerts, analyzes up to ${cfg.flowMaxEvals} tickers, and ${cfg.autoSubmit ? 'places a paper order when every rule passes' : '<b>only logs the analysis</b> (automatic orders are off)'}.` : '<b>Flow trading is off.</b> Turn on <b>Flow trading</b> above (and <b>Automatic orders</b> to let it place trades).'} Exits are checked every minute for every bot position.</p>
     <p class="muted" style="margin:6px 0 0;font-size:.86rem">${lastRun}</p></section>
   ${botResult(S.botRes)}
   ${summaryHtml}
@@ -1444,10 +1448,17 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
+  if (el.dataset.bottoggle) {
+    const k = el.dataset.bottoggle, cur = !!((S.bot && S.bot.settings) || {})[k];
+    if (!cur && k === 'autoSubmit' && !confirm('Automatic orders: the bot will place paper trades by itself when every rule passes. Turn on?')) return;
+    el.disabled = true;
+    api('/bot/settings', { method: 'PUT', body: { [k]: !cur } }).then(st => { S.bot.settings = st; render(); toast(`${k === 'flowAuto' ? 'Flow trading' : k === 'autoSubmit' ? 'Automatic orders' : 'Watchlist scans'} ${!cur ? 'on' : 'off'}`); })
+      .catch(err => { el.disabled = false; toast(err.message); }); return;
+  }
   if (el.id === 'ana-run') { anaEvaluate(S.gexSym); return; }
   if (el.id === 'nt-save' || el.id === 'nt-test') { const body = { notify: { email: $('#nt-email').value.trim(), phone: $('#nt-phone').value, sms: $('#nt-on').checked, events: [...document.querySelectorAll('.nt-ev')].filter(x => x.checked).map(x => x.value) } };
     api('/settings', { method: 'PUT', body }).then(async s2 => { S.me.settings = s2; if (el.id === 'nt-test') { const r = await api('/notify/test', { method: 'POST' }); toast(r.status === 'sent' ? 'Test alert sent' : r.status === 'failed' ? 'Alert failed: ' + (r.error || '') : 'No email or text is set up, so the test was only logged'); } else toast(s2.notify && s2.notify.email ? 'Saved. If this is a new email, confirm the subscription from your inbox.' : 'Alert settings saved'); loadBot(true); loadNtStatus(true); }).catch(err => toast(err.message)); return; }
