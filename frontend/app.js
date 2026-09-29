@@ -991,8 +991,9 @@ function schwabHtml() {
     <p class="muted" style="font-size:.9rem">Schwab requires logging in again every 7 days. Click Reconnect before the date above to keep syncing.</p>
     <p><button class="btn primary" id="sch-sync">Sync now</button> <button class="btn" id="sch-reconnect">Reconnect</button> <button class="btn" id="sch-del">Disconnect</button></p>`;
 }
-async function loadFlowKey() {
-  let st = { connected: false }; try { st = await api('/flow/status'); } catch (e) {}
+async function loadFlowKey(force) {
+  if (!S.flowKeySt || force) { let st = { connected: false }; try { st = await api('/flow/status'); } catch (e) {} S.flowKeySt = st; }
+  const st = S.flowKeySt;
   const box = $('#flow-key-box'); if (!box) return;
   box.innerHTML = st.connected ? `<p style="margin:0 0 8px">Unusual Whales connected (key ending ${esc(st.hint)}).</p><button class="btn" id="uw-del">Remove key</button>`
     : `<div class="form-grid" style="align-items:end"><div class="field"><label for="uw-key">Unusual Whales API key</label><input id="uw-key" type="password" autocomplete="off"></div><div class="field"><button class="btn primary" id="uw-save">Save key</button></div></div>`;
@@ -1226,7 +1227,13 @@ async function anaEvaluate(sym) {
 }
 
 /* ---------- paper bot ---------- */
-async function loadNtStatus() { try { S.ntStatus = await api('/notify/status'); } catch (e) { S.ntStatus = null; } if (route() === 'bot') render(); }
+async function loadNtStatus(force) {
+  // load once per visit (the page's after-render hook calls this; re-rendering must not trigger another request)
+  if (S.ntStatus !== undefined && !force) return;
+  S.ntStatus = null;
+  try { S.ntStatus = await api('/notify/status'); } catch (e) { S.ntStatus = { email: null, emailStatus: 'unknown' }; }
+  if (route() === 'bot') render();
+}
 async function loadBot(force) {
   if (S.bot && !force) return;
   try { S.bot = await api('/bot'); } catch (e) { S.bot = { error: e.message, items: [], settings: {} }; }
@@ -1443,12 +1450,12 @@ document.addEventListener('click', e => {
   if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
   if (el.id === 'ana-run') { anaEvaluate(S.gexSym); return; }
   if (el.id === 'nt-save' || el.id === 'nt-test') { const body = { notify: { email: $('#nt-email').value.trim(), phone: $('#nt-phone').value, sms: $('#nt-on').checked, events: [...document.querySelectorAll('.nt-ev')].filter(x => x.checked).map(x => x.value) } };
-    api('/settings', { method: 'PUT', body }).then(async s2 => { S.me.settings = s2; if (el.id === 'nt-test') { const r = await api('/notify/test', { method: 'POST' }); toast(r.status === 'sent' ? 'Test alert sent' : r.status === 'failed' ? 'Alert failed: ' + (r.error || '') : 'No email or text is set up, so the test was only logged'); } else toast(s2.notify && s2.notify.email ? 'Saved. If this is a new email, confirm the subscription from your inbox.' : 'Alert settings saved'); loadBot(true); loadNtStatus(); }).catch(err => toast(err.message)); return; }
+    api('/settings', { method: 'PUT', body }).then(async s2 => { S.me.settings = s2; if (el.id === 'nt-test') { const r = await api('/notify/test', { method: 'POST' }); toast(r.status === 'sent' ? 'Test alert sent' : r.status === 'failed' ? 'Alert failed: ' + (r.error || '') : 'No email or text is set up, so the test was only logged'); } else toast(s2.notify && s2.notify.email ? 'Saved. If this is a new email, confirm the subscription from your inbox.' : 'Alert settings saved'); loadBot(true); loadNtStatus(true); }).catch(err => toast(err.message)); return; }
   if (el.id === 'fl-load') { loadFlow(); return; }
   if (el.dataset.undo) { if (!confirm('Undo this import? The fills it added are removed and trades are rebuilt. Notes and tags are kept.')) return; api(`/imports/${el.dataset.undo}/undo`, { method: 'POST' }).then(async r => { await reload(); await afterImport(); toast(`Removed ${r.removedFills} fills`); }).catch(err => toast(err.message)); return; }
   if (el.id === 'rm-csv') { const a = $('#rm-acct').value; if (!confirm(`Remove all file-imported fills from "${a}"? Broker-synced fills are kept.`)) return; api('/maintenance/remove-csv-fills', { method: 'POST', body: { account: a } }).then(async r => { await reload(); toast(`Removed ${r.removedFills} fills from ${a}`); }).catch(err => toast(err.message)); return; }
-  if (el.id === 'uw-save') { api('/flow/key', { method: 'PUT', body: { key: $('#uw-key').value } }).then(() => { toast('Unusual Whales key saved'); loadFlowKey(); }).catch(err => toast(err.message)); return; }
-  if (el.id === 'uw-del') { api('/flow/key', { method: 'PUT', body: { key: '' } }).then(() => loadFlowKey()).catch(err => toast(err.message)); return; }
+  if (el.id === 'uw-save') { api('/flow/key', { method: 'PUT', body: { key: $('#uw-key').value } }).then(() => { toast('Unusual Whales key saved'); loadFlowKey(true); }).catch(err => toast(err.message)); return; }
+  if (el.id === 'uw-del') { api('/flow/key', { method: 'PUT', body: { key: '' } }).then(() => loadFlowKey(true)).catch(err => toast(err.message)); return; }
   if (el.dataset.botchase) { api(`/bot/${el.dataset.botchase}/chase`, { method: 'POST' }).then(() => { toast('Chasing the fill…'); setTimeout(() => loadBot(true), 30000); }).catch(err => toast(err.message)); return; }
   if (el.id === 'bot-eval') { botEvaluate(); return; }
   if (el.id === 'bs-save') { botSaveSettings(); return; }
