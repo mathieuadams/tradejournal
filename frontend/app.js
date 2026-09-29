@@ -956,6 +956,7 @@ function vSettings() {
       <div class="field"><label for="pp-dll">Daily loss limit</label><input id="pp-dll" type="number" step="any" value="${P.dailyLoss}"></div></div>
     <button class="btn primary" id="s-save">Save settings</button>
   </section>
+  ${botSettingsPanels()}
   <section class="panel"><h2>Data</h2>
     <p class="muted" style="margin-top:-4px">Rebuilds every trade from your stored fills and removes duplicate copies of the same fill. Journal notes, tags and plans are kept.</p>
     <button class="btn" id="rebuild">Rebuild trades and remove duplicate fills</button>
@@ -1000,6 +1001,8 @@ async function loadFlowKey(force) {
 }
 async function afterSettings() {
   loadFlowKey();
+  if (!S.bot) { await loadBot(); if (route() === 'settings') render(); }
+  loadNtStatus();
   if (S.schwab === undefined) { try { S.schwab = await api('/broker/schwab'); } catch (e) { S.schwab = { configured: false, callback: '' }; } if (route() === 'settings') render(); }
   if (S.broker !== undefined) return; try { S.broker = await api('/broker/alpaca'); } catch (e) { S.broker = { connected: false }; toast(e.message); } if (route() === 'settings') render(); }
 async function saveSettings() {
@@ -1232,7 +1235,7 @@ async function loadNtStatus(force) {
   if (S.ntStatus !== undefined && !force) return;
   S.ntStatus = null;
   try { S.ntStatus = await api('/notify/status'); } catch (e) { S.ntStatus = { email: null, emailStatus: 'unknown' }; }
-  if (route() === 'bot') render();
+  if (route() === 'bot' || route() === 'settings') render();
 }
 async function loadBot(force) {
   if (S.bot && !force) return;
@@ -1372,6 +1375,14 @@ function vBot() {
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh when you open this page and every 5 minutes during market hours. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
   <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>` : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
+  <p class="muted" style="margin:18px 0 0">Bot rules, automatic flow trading and alerts are in <a href="#settings">Settings → Paper bot</a>.</p>`;
+}
+function botSettingsPanels() {
+  const b = S.bot, cfg = (b && b.settings) || {}, nt = (S.me.settings || {}).notify || {};
+  if (!b) return `<section class="panel"><h2>Paper bot</h2><p class="loading" style="padding:0">Loading…</p></section>`;
+  const earnTxt = Object.entries(cfg.earnings || {}).map(([k, v]) => `${k} ${v}`).join('\n');
+  const f = (id, label, v, step = 'any') => `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" step="${step}" value="${v ?? ''}"></div>`;
+  return `<h2 style="margin:26px 0 10px">Paper bot</h2>
   <section class="panel"><h2>Automatic flow trading</h2>
     <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
       <label><input type="checkbox" id="bf-on" ${cfg.flowAuto ? 'checked' : ''}> Check unusual flow every minute and analyze new tickers</label>
