@@ -193,6 +193,21 @@ The app reads your executed trades from Schwab. The first sync covers the last y
 
 ---
 
+## Step 8. Text alerts for paper-bot orders (Amazon SNS)
+
+The bot can text you every order (buy, fill, exit, cancel). Messages are sent from your own AWS account with Amazon SNS.
+
+1. In the app: **Paper bot → Text alerts**, enter your mobile number with country code (e.g. `+19165551234`), tick **Text me every order**, **Save**, then **Send test**.
+2. If the test shows **failed**, finish the one-time AWS setup (AWS console, region **us-east-1**):
+   - **SMS sandbox:** new AWS accounts can only text verified numbers. Open **AWS End User Messaging SMS → Phone numbers / Sandbox** (or **SNS → Text messaging (SMS) → Sandbox destination phone numbers**), add your number and enter the code you receive.
+   - **US origination number:** texts to US numbers need an origination identity. Request a **toll-free number** in **AWS End User Messaging SMS** and complete its registration form (review can take several business days).
+   - **Spend limit:** in **SNS → Text messaging (SMS) → Edit text messaging preferences**, raise the monthly spend limit (the default is $1), and set the default message type to **Transactional**.
+3. Click **Send test** again. The **Recent alerts** list under Text alerts shows every message with its status (sent / failed and why).
+
+Messages are also logged in the app even when texting is off or fails.
+
+---
+
 ## Updating the app later
 
 Every time you change code and push to `main`, GitHub tests it and redeploys automatically:

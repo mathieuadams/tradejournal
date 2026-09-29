@@ -68,7 +68,7 @@ def _f(x):
 
 
 def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask_side=True, sweeps_only=False,
-           ticker=None, min_vol_oi=0.0, days=1):
+           ticker=None, min_vol_oi=0.0, days=1, since_utc=None, exclude_etfs=False):
     """Today's (or the last `days` sessions') flow alerts matching the filters.
 
     Filters are sent to Unusual Whales so the 200-per-page limit is spent on relevant alerts, then pages are
@@ -78,7 +78,7 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
     from util import ny_to_utc, utc_to_ny
     key = _key(sub)
     start_ny = now_ny().replace(hour=4, minute=0, second=0, microsecond=0) - timedelta(days=max(0, days - 1))
-    start_utc = ny_to_utc(start_ny).strftime("%Y-%m-%dT%H:%M:%SZ")
+    start_utc = since_utc or ny_to_utc(start_ny).strftime("%Y-%m-%dT%H:%M:%SZ")
     base = {"limit": 200, "min_premium": int(min_premium), "min_dte": int(min_dte), "max_dte": int(max_dte),
             "newer_than": start_utc}
     if opt_type == "call":
@@ -130,6 +130,14 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
             continue
         if sweeps_only and not a.get("has_sweep"):
             continue
+        if exclude_etfs:
+            it = (a.get("issue_type") or "").lower()
+            if "etf" in it or "fund" in it:
+                continue
+            if not it:
+                from charts import is_etf
+                if is_etf(a.get("ticker") or ""):
+                    continue
         voi = _f(a.get("volume_oi_ratio"))
         if min_vol_oi and voi < min_vol_oi:
             continue

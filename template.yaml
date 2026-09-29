@@ -261,6 +261,10 @@ Resources:
         - LambdaInvokePolicy: { FunctionName: !Ref WeeklyFunction }
         - LambdaInvokePolicy: { FunctionName: !Ref LiveCoachFunction }
         - LambdaInvokePolicy: { FunctionName: !Ref BotFunction }
+        - Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: "*"
       Events:
         # One route per method (not ANY) so browser CORS preflight (OPTIONS) is answered by
         # API Gateway itself instead of hitting the JWT authorizer and failing with 401.
@@ -379,6 +383,10 @@ Resources:
       MemorySize: 1024
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: "*"
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
         - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
         - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
@@ -389,12 +397,12 @@ Resources:
             ScheduleExpression: cron(15 10,15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "scan"}'
-        Monitor:
+        EveryMinute:
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: cron(*/5 9-15 ? * MON-FRI *)
+            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "monitor"}'
+            Input: '{"job": "tick"}'
 
   WeeklyFunction:
     Type: AWS::Serverless::Function

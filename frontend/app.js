@@ -1128,7 +1128,15 @@ function vGex() {
   const market = `<section class="panel"><div class="cal-head"><h2>Market gamma</h2><button class="btn" id="mkt-refresh">Refresh</button></div>
     <div class="periods" id="mkt-strip" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">${marketCards()}</div>
     <p class="muted" style="font-size:.82rem;margin:8px 0 0">Options expiring within 30 days, 40 strikes each side. SPX needs Schwab with market data. Click a card for the full view.</p></section>`;
-  return head('Options positioning', 'Gamma and delta exposure from the option chain', '') + market + form + (g && !S.gexErr ? tradeCheck(g) : '') + body;
+  const cfgB = (S.bot && S.bot.settings) || {}, ek = ((cfgB.earnings || {})[S.gexSym] || '').split(' ');
+  const analysis = `<section class="panel"><div class="form-grid" style="align-items:end">
+      <div class="field"><label for="gx-earn">Next earnings date for ${esc(S.gexSym || 'this ticker')} (optional)</label><input id="gx-earn" type="date" value="${esc(ek[0] || '')}"></div>
+      <div class="field"><label for="gx-earn-t">Reported</label><select id="gx-earn-t"><option value="AMC" ${(ek[1] || 'AMC') === 'AMC' ? 'selected' : ''}>After the close</option><option value="BMO" ${ek[1] === 'BMO' ? 'selected' : ''}>Before the open</option></select></div>
+      <div class="field"><button class="btn primary" id="ana-run" ${S.anaBusy || !S.gexSym ? 'disabled' : ''}>${S.anaBusy ? 'Analyzing…' : 'Analyze with the bot rules'}</button></div></div>
+      ${S.anaErr ? `<div class="errbox">${esc(S.anaErr)}</div>` : ''}
+      <p class="muted" style="font-size:.84rem;margin:6px 0 0">Loading a ticker runs the same analysis the bot uses: chart, gamma, events and contract, with a proposed paper order.</p></section>
+    ${S.anaBusy && !S.anaRes ? '<section class="panel"><p class="loading" style="padding:0">Analyzing…</p></section>' : botResult(S.anaRes && S.anaRes.symbol === S.gexSym ? S.anaRes : null)}`;
+  return head('Flow & options', 'Unusual options flow, market gamma, and full analysis of any ticker', '') + market + flowPanel() + form + (S.gexSym ? analysis : '') + (g && !S.gexErr ? tradeCheck(g) : '') + body;
 }
 function emFor(g) {
   const list = (g.expectedMove && g.expectedMove.byExpiration) || [];
@@ -1200,11 +1208,21 @@ function gexProfile(g) {
 async function loadGex() {
   const sym = ($('#gx-sym')?.value || S.gexSym || '').trim().toUpperCase(); if (!sym) { toast('Enter a ticker'); return; }
   const expSel = $('#gx-exp')?.value || '';
+  if (sym !== S.gexSym || !S.anaRes || S.anaRes.symbol !== sym) setTimeout(() => anaEvaluate(sym), 0);
   S.gexSym = sym; S.gexDays = +($('#gx-days')?.value || S.gexDays || 45); S.gexStrikes = $('#gx-strikes') ? $('#gx-strikes').value : (S.gexStrikes || ''); S.gexExp = sym === (S.gex && S.gex.symbol) ? expSel : ''; S.gexBusy = true; S.gexErr = null; render();
   try { const rc = JSON.parse(localStorage.getItem('tj.gexRecent') || '[]').filter(x => x !== sym); rc.unshift(sym); localStorage.setItem('tj.gexRecent', JSON.stringify(rc.slice(0, 10))); } catch (e) {}
   try { S.gex = await api(`/gex?symbol=${encodeURIComponent(sym)}&days=${S.gexDays}${S.gexExp ? `&expiry=${S.gexExp}` : ''}${S.gexStrikes ? `&strikes=${S.gexStrikes}` : ''}`); }
   catch (e) { S.gexErr = e.message; S.gex = null; }
   S.gexBusy = false; if (route() === 'gex') render();
+}
+async function anaEvaluate(sym) {
+  sym = (sym || S.gexSym || '').toUpperCase(); if (!sym) return;
+  const d = $('#gx-earn') && $('#gx-earn').value, t = $('#gx-earn-t') && $('#gx-earn-t').value;
+  const body = { symbol: sym }; if ($('#gx-earn')) body.earnings = d ? `${d} ${t}` : '';
+  S.anaBusy = true; S.anaErr = null; if (route() === 'gex') render();
+  try { S.anaRes = await api('/bot/evaluate', { method: 'POST', body }); if (S.bot) loadBot(true); }
+  catch (e) { S.anaErr = e.message; }
+  S.anaBusy = false; if (route() === 'gex') render();
 }
 
 /* ---------- paper bot ---------- */
@@ -1219,6 +1237,7 @@ function botResult(r) {
   if (!r) return '';
   const p = r.proposal, groups = ['chart', 'gamma', 'events', 'contract'], gl = { chart: 'Chart', gamma: 'Gamma', events: 'Events', contract: 'Contract' };
   return `<section class="panel"><div class="cal-head"><h2>${esc(r.symbol)} <span class="verdict ${DEC_CLS[r.decision]}" style="margin-left:8px">${r.decision}</span></h2><span class="muted" style="font-size:.85rem">${esc(r.createdAt.replace('T', ' ').slice(0, 16))} ET · ${esc(r.source)} data · price ${px(r.signals.price)}</span></div>
+    ${r.origin && r.origin.type === 'flow' ? `<p style="margin:6px 0 0"><b>From unusual flow:</b> ${money(r.origin.premium, false)} in ${r.origin.alerts} alert${r.origin.alerts === 1 ? '' : 's'}${r.origin.sweep ? ', sweep' : ''}${r.origin.askPct != null ? `, ${r.origin.askPct}% at the ask` : ''}${r.origin.volOi != null ? `, vol/OI ${r.origin.volOi}` : ''}${r.origin.contract ? ` · flow contract ${esc(r.origin.contract)}` : ''}</p>` : ''}
     ${groups.map(gname => { const items = r.checks.filter(c => c.group === gname); return items.length ? `<h3 style="font-size:.95rem;margin:12px 0 4px">${gl[gname]}</h3><ul style="list-style:none;padding:0;margin:0;line-height:1.6">${items.map(c => `<li><b class="${c.ok ? 'gain' : c.required ? 'loss' : 'muted'}">${c.ok ? '✓' : c.required ? '✗' : '!'}</b> ${esc(c.text)}${!c.required ? ' <span class="muted">(warning only)</span>' : ''}</li>`).join('')}</ul>` : ''; }).join('')}
     ${r.blocking.length && r.decision !== 'BUY' ? `<p style="margin:12px 0 0"><b>Why not a buy:</b> ${r.blocking.map(esc).join('; ')}.</p>` : ''}
     ${p ? `<h3 style="font-size:.95rem;margin:16px 0 6px">Proposed order</h3>
@@ -1269,7 +1288,7 @@ function flowPanel() {
       <div class="field"><label for="fl-voi">Min volume / OI</label><input id="fl-voi" type="number" step="0.1" value="${f.minVolOi || ''}" placeholder="e.g. 1 = volume > OI"></div>
       <div class="field"><label for="fl-tk">Ticker (optional)</label><input id="fl-tk" type="text" style="text-transform:uppercase" value="${esc(f.ticker || '')}"></div>
       <div class="field"><label for="fl-days">Period</label><select id="fl-days">${[[1, 'Today'], [2, 'Last 2 days'], [5, 'Last 5 days']].map(([v, l]) => `<option value="${v}" ${f.days == v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-      <div class="field"><label><input type="checkbox" id="fl-ask" ${f.askSide ? 'checked' : ''}> Mostly bought at the ask</label><label><input type="checkbox" id="fl-sweep" ${f.sweeps ? 'checked' : ''}> Sweeps only</label></div>
+      <div class="field"><label><input type="checkbox" id="fl-etf" ${f.noEtf ? 'checked' : ''}> Hide ETFs</label><label><input type="checkbox" id="fl-ask" ${f.askSide ? 'checked' : ''}> Mostly bought at the ask</label><label><input type="checkbox" id="fl-sweep" ${f.sweeps ? 'checked' : ''}> Sweeps only</label></div>
       <div class="field"><button class="btn primary" id="fl-load" ${S.flowBusy ? 'disabled' : ''}>${S.flowBusy ? 'Loading…' : 'Load flow'}</button></div></div>
     ${S.flowErr ? `<div class="errbox">${esc(S.flowErr)}</div>` : ''}
     ${S.flow && rows.length ? `<p style="margin:4px 0 10px"><b>${rows.length}</b> alerts · ${money(S.flow.totalPremium, false)} premium since ${esc(S.flow.since)} ET${(S.flow.topTickers || []).length ? ` · Top: ${S.flow.topTickers.map(t => `<button class="toggle emo" data-rescan="${esc(t.ticker)}" title="Evaluate ${esc(t.ticker)}">${esc(t.ticker)} ${t.alerts}× ${money(t.premium, false)}</button>`).join(' ')}` : ''}</p>` : ''}
@@ -1281,12 +1300,12 @@ function flowPanel() {
 }
 async function loadFlow() {
   S.flowF = { minPremium: +$('#fl-prem').value || 0, type: $('#fl-type').value, minDte: +$('#fl-min').value || 0, maxDte: +$('#fl-max').value || 120, askSide: $('#fl-ask').checked, sweeps: $('#fl-sweep').checked,
-    minVolOi: +$('#fl-voi').value || 0, days: +$('#fl-days').value || 1, ticker: ($('#fl-tk').value || '').trim().toUpperCase() };
+    minVolOi: +$('#fl-voi').value || 0, days: +$('#fl-days').value || 1, ticker: ($('#fl-tk').value || '').trim().toUpperCase(), noEtf: $('#fl-etf').checked };
   S.flowBusy = true; S.flowErr = null; render();
   const f = S.flowF;
-  try { S.flow = await api(`/flow?minPremium=${f.minPremium}&type=${f.type}&minDte=${f.minDte}&maxDte=${f.maxDte}&askSide=${f.askSide ? 1 : 0}&sweeps=${f.sweeps ? 1 : 0}&minVolOi=${f.minVolOi}&days=${f.days}${f.ticker ? '&ticker=' + encodeURIComponent(f.ticker) : ''}`); }
+  try { S.flow = await api(`/flow?minPremium=${f.minPremium}&type=${f.type}&minDte=${f.minDte}&maxDte=${f.maxDte}&askSide=${f.askSide ? 1 : 0}&sweeps=${f.sweeps ? 1 : 0}&minVolOi=${f.minVolOi}&days=${f.days}${f.noEtf ? '&noEtf=1' : ''}${f.ticker ? '&ticker=' + encodeURIComponent(f.ticker) : ''}`); }
   catch (e) { S.flowErr = e.message; }
-  S.flowBusy = false; if (route() === 'bot') render();
+  S.flowBusy = false; if (route() === 'gex') render();
 }
 function vBot() {
   const b = S.bot, cfg = (b && b.settings) || {}, br = S.broker;
@@ -1295,10 +1314,10 @@ function vBot() {
     : br.env !== 'paper' ? `<div class="errbox">Alpaca is connected with <b>live</b> keys. The bot only trades paper; reconnect with paper keys to place orders.</div>` : '';
   const items = (b && b.items) || [];
   const posRow = i => { const p = i.proposal || {};
-    const placed = i.placedBy === 'auto' ? 'Bot' : `You <span class="muted">(bot said ${esc(i.decision)})</span>`;
+    const placed = (i.placedBy || '').startsWith('auto') ? (i.placedBy === 'auto-flow' ? 'Bot (flow)' : 'Bot') : `You <span class="muted">(bot said ${esc(i.decision)})</span>`;
     const pl = i.status === 'closed' ? i.realizedPl : i.lastPl, plp = i.status === 'closed' ? i.realizedPct : i.lastPlPct;
     const now = i.status === 'closed' ? i.exitPrice : i.lastMark;
-    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td>${placed}</td><td>${esc(i.status === 'submitted' ? 'order working' : i.status)}</td>
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td>${placed}</td><td>${esc(['submitted', 'submitting'].includes(i.status) ? 'order working' : i.status)}</td>
       <td class="r">${i.filledQty || i.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? `<span class="muted">limit ${i.limit.toFixed(2)}</span>` : ''}</td>
       <td class="r">${now != null ? Number(now).toFixed(2) : '—'}</td>
       <td class="r ${cls(pl)}">${pl != null ? money(pl) + (plp != null ? ` <span style="font-weight:400">(${plp > 0 ? '+' : ''}${plp}%)</span>` : '') : '—'}</td>
@@ -1307,7 +1326,7 @@ function vBot() {
   const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
   const evalRow = i => { const p = i.proposal || {};
     return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
-  const trades = items.filter(i => ['submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice));
+  const trades = items.filter(i => ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice || i.status === 'submitting'));
   const active = trades.filter(i => i.status !== 'closed');
   const done = trades.filter(i => i.status === 'closed');
   const evals = items.filter(i => !trades.includes(i)).slice(0, 25);
@@ -1322,20 +1341,38 @@ function vBot() {
   ${(sm.equityHistory || []).length > 1 ? `<section class="panel"><h2>Paper account equity</h2>${eqLine(sm.equityHistory)}</section>` : ''}`;
   const earnTxt = Object.entries(cfg.earnings || {}).map(([k, v]) => `${k} ${v}`).join('\n');
   const f = (id, label, v, step = 'any') => `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" step="${step}" value="${v ?? ''}"></div>`;
-  return head('Paper bot', 'Evaluates a ticker with your method, picks the option, and trades the Alpaca paper account', '') + warn + `
-  <section class="panel"><div class="form-grid" style="align-items:end">
-    <div class="field"><label for="bot-sym">Ticker to evaluate</label><input id="bot-sym" type="text" style="text-transform:uppercase" placeholder="e.g. HUBB" value="${esc(S.botSym || '')}" autocomplete="off"></div>
-    <div class="field"><label for="bot-earn">Next earnings date (optional)</label><input id="bot-earn" type="date" value="${esc(((cfg.earnings || {})[S.botSym] || '').split(' ')[0])}"></div>
-    <div class="field"><label for="bot-earn-t">Reported</label><select id="bot-earn-t"><option value="AMC" ${(((cfg.earnings || {})[S.botSym] || '').split(' ')[1] || 'AMC') === 'AMC' ? 'selected' : ''}>After the close</option><option value="BMO" ${((cfg.earnings || {})[S.botSym] || '').split(' ')[1] === 'BMO' ? 'selected' : ''}>Before the open</option></select></div>
-    <div class="field"><button class="btn primary" id="bot-eval" ${S.botBusy ? 'disabled' : ''}>${S.botBusy ? 'Evaluating…' : 'Evaluate'}</button></div></div>
-    ${S.botErr ? `<div class="errbox">${esc(S.botErr)}</div>` : ''}
-    <p class="muted" style="font-size:.84rem;margin:6px 0 0">Long calls only for now. The earnings date is saved for that ticker. The bot won't open a new trade within ${cfg.noEntryDays ?? 5} days of it, and it sells before the report to keep the implied-volatility run-up: from 15:30 ET on earnings day for after-close reports, or 15:30 ET the trading day before for before-open reports. Exits run automatically every 5 minutes during market hours for every bot position, even when the schedule is off. Paper account only; not financial advice.</p></section>
+  const st = (b && b.state) || {}, nt = (S.me.settings || {}).notify || {};
+  const lastRun = st.lastFlowRun ? `Last flow check ${esc(st.lastFlowRun.replace('T', ' ').slice(5, 16))} ET · ${st.lastFlowAlerts ?? 0} new alerts${(st.lastFlowResult || []).length ? ' · ' + st.lastFlowResult.map(r => `${esc(r.symbol)}: ${esc(r.decision || r.error || '')}${r.ordered ? ' (ordered)' : ''}`).join(', ') : ''}` : 'No automatic flow check yet.';
+  return head('Paper bot', 'Trades the Alpaca paper account automatically from unusual options flow and manages every exit', '') + warn + `
+  <section class="coach" style="padding:14px 18px"><div class="coach-who">${spark()} Status</div>
+    <p style="margin:0">${cfg.flowAuto ? `<b class="gain">Flow trading is on.</b> Every minute from 9:35 to 15:50 ET the bot pulls new unusual-flow alerts, analyzes up to ${cfg.flowMaxEvals} tickers, and ${cfg.autoSubmit ? 'places a paper order when every rule passes' : '<b>only logs the analysis</b> (automatic orders are off)'}.` : '<b>Flow trading is off.</b> Turn it on in the settings below.'} Exits are checked every minute for every bot position.</p>
+    <p class="muted" style="margin:6px 0 0;font-size:.86rem">${lastRun}</p></section>
   ${botResult(S.botRes)}
-  ${flowPanel()}
   ${summaryHtml}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh when you open this page and every 5 minutes during market hours. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
   <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>` : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
+  <section class="panel"><h2>Automatic flow trading</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
+      <label><input type="checkbox" id="bf-on" ${cfg.flowAuto ? 'checked' : ''}> Check unusual flow every minute and analyze new tickers</label>
+      <label><input type="checkbox" id="bf-etf" ${cfg.excludeEtfs ? 'checked' : ''}> Skip ETFs</label>
+      <label><input type="checkbox" id="bf-ask" ${cfg.flowAskSide ? 'checked' : ''}> Mostly bought at the ask</label>
+      <label><input type="checkbox" id="bf-sweep" ${cfg.flowSweeps ? 'checked' : ''}> Sweeps only</label></div>
+    <div class="form-grid">
+      ${f('bf-prem', 'Min premium ($)', cfg.flowMinPremium, 10000)}${f('bf-dmin', 'Flow days to expiry, min', cfg.flowMinDte, 1)}${f('bf-dmax', 'Flow days to expiry, max', cfg.flowMaxDte, 1)}
+      ${f('bf-voi', 'Min volume / OI', cfg.flowMinVolOi, 0.1)}${f('bf-cool', 'Re-check a ticker after (min)', cfg.flowCooldownMin, 1)}${f('bf-evals', 'Max tickers analyzed per minute', cfg.flowMaxEvals, 1)}</div>
+    <p class="muted" style="font-size:.84rem;margin:0">Orders are placed only when <b>Place paper orders automatically</b> (below) is also on. Calls only; the contract the bot buys is chosen by its own rules, not copied from the flow.</p></section>
+  <section class="panel"><h2>Text alerts</h2>
+    <div class="form-grid" style="align-items:end">
+      <div class="field"><label for="nt-phone">Mobile number (with country code)</label><input id="nt-phone" type="tel" placeholder="+19165551234" value="${esc(nt.phone || '')}"></div>
+      <div class="field"><label><input type="checkbox" id="nt-on" ${nt.sms ? 'checked' : ''}> Send text alerts</label></div>
+      <div class="field"><button class="btn primary" id="nt-save">Save</button> <button class="btn" id="nt-test">Send test</button></div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 10px">${[['entry', 'Buy orders placed'], ['fill', 'Buys filled'], ['exit', 'Exit orders (with reason)'], ['closed', 'Positions closed (with P&L)'], ['cancel', 'Unfilled orders cancelled']]
+      .map(([k, l]) => `<label><input type="checkbox" class="nt-ev" value="${k}" ${(nt.events || ['entry', 'fill', 'exit', 'closed', 'cancel']).includes(k) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Sent with Amazon SNS from your AWS account. US numbers need a one-time SMS setup in AWS (see SETUP.md, step 8).</p>
+    ${(b && b.notifications || []).length ? `<details><summary class="muted" style="cursor:pointer">Recent alerts</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>When</th><th>Message</th><th>Status</th></tr></thead><tbody>
+      ${b.notifications.map(n => `<tr><td>${esc((n.at || '').replace('T', ' ').slice(5, 16))}</td><td title="${esc(n.text)}"><span class="ellipsis" style="max-width:520px">${esc(n.text)}</span></td><td class="${n.status === 'sent' ? 'gain' : n.status === 'failed' ? 'loss' : 'muted'}" title="${esc(n.error || '')}">${esc(n.status)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+  </section>
   <section class="panel"><h2>Bot settings</h2>
     <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
       <label><input type="checkbox" id="bs-on" ${cfg.enabled ? 'checked' : ''}> Scan the watchlist on a schedule (10:15 and 15:15 ET)</label>
@@ -1372,8 +1409,10 @@ async function botSaveSettings() {
   const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked,
     watchlist: v('#bs-watch').split(/[\s,]+/).filter(Boolean), dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
     minOi: v('#bs-oi'), maxSpreadPct: v('#bs-spread'), stopPct: v('#bs-stop'), targetPct: v('#bs-target'), timeStopDte: v('#bs-time'), maxPositions: v('#bs-max'),
-    crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings };
-  if (body.autoSubmit && !confirm('Automatic paper orders: the bot will place paper trades by itself when every rule passes. Continue?')) return;
+    crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'),
+    flowAuto: $('#bf-on').checked, excludeEtfs: $('#bf-etf').checked, flowAskSide: $('#bf-ask').checked, flowSweeps: $('#bf-sweep').checked,
+    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings };
+  if (body.autoSubmit && !(S.bot.settings || {}).autoSubmit && !confirm('Automatic paper orders: the bot will place paper trades by itself when every rule passes. Continue?')) return;
   try {
     const risk = +v('#bs-risk');
     if (risk > 0 && risk !== (S.me.settings || {}).riskPerTrade) S.me.settings = await api('/settings', { method: 'PUT', body: { riskPerTrade: risk } });
@@ -1382,7 +1421,7 @@ async function botSaveSettings() {
 }
 
 /* ---------- router & events ---------- */
-const VIEWS = { bot: [vBot, () => loadBot()], gex: [vGex, () => loadMarketGamma()], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { bot: [vBot, () => loadBot()], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
@@ -1393,10 +1432,13 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
-  if (el.dataset.rescan) { S.botSym = el.dataset.rescan; if (route() !== 'bot') location.hash = '#bot'; render(); const i = $('#bot-sym'); if (i) i.value = el.dataset.rescan; window.scrollTo(0, 0); botEvaluate(); return; }
+  if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
+  if (el.id === 'ana-run') { anaEvaluate(S.gexSym); return; }
+  if (el.id === 'nt-save' || el.id === 'nt-test') { const body = { notify: { phone: $('#nt-phone').value, sms: $('#nt-on').checked, events: [...document.querySelectorAll('.nt-ev')].filter(x => x.checked).map(x => x.value) } };
+    api('/settings', { method: 'PUT', body }).then(async s2 => { S.me.settings = s2; if (el.id === 'nt-test') { const r = await api('/notify/test', { method: 'POST' }); toast(r.status === 'sent' ? 'Test text sent' : r.status === 'failed' ? 'Text failed: ' + (r.error || '') : 'Text alerts are off, so the test was only logged'); } else toast('Text alert settings saved'); loadBot(true); }).catch(err => toast(err.message)); return; }
   if (el.id === 'fl-load') { loadFlow(); return; }
   if (el.dataset.undo) { if (!confirm('Undo this import? The fills it added are removed and trades are rebuilt. Notes and tags are kept.')) return; api(`/imports/${el.dataset.undo}/undo`, { method: 'POST' }).then(async r => { await reload(); await afterImport(); toast(`Removed ${r.removedFills} fills`); }).catch(err => toast(err.message)); return; }
   if (el.id === 'rm-csv') { const a = $('#rm-acct').value; if (!confirm(`Remove all file-imported fills from "${a}"? Broker-synced fills are kept.`)) return; api('/maintenance/remove-csv-fills', { method: 'POST', body: { account: a } }).then(async r => { await reload(); toast(`Removed ${r.removedFills} fills from ${a}`); }).catch(err => toast(err.message)); return; }

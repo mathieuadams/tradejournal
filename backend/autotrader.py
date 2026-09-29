@@ -35,6 +35,8 @@ DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40
             "deltaMin": 0.50, "deltaMax": 0.70, "minOi": 100, "maxSpreadPct": 12, "stopPct": 40, "targetPct": 80,
             "timeStopDte": 14, "maxPositions": 5, "crossWindow": 10, "maxExtAtr": 1.5, "earnings": {}, "noEntryDays": 5,
             "chaseStep": 0.10, "chaseSeconds": 12, "chaseMaxSteps": 5, "chaseMaxPct": 10,
+            "flowAuto": False, "flowMinPremium": 100000, "flowMinDte": 20, "flowMaxDte": 120, "flowAskSide": True,
+            "flowSweeps": False, "flowMinVolOi": 0, "excludeEtfs": True, "flowCooldownMin": 120, "flowMaxEvals": 3,
             "requireAboveFlip": False, "minRoomRatio": 1.5}
 
 
@@ -230,7 +232,7 @@ def set_earnings(sub, symbol, date):
     db.put(p)
 
 
-def evaluate(sub, symbol, earnings_date=None):
+def evaluate(sub, symbol, earnings_date=None, source=None):
     symbol = (symbol or "").strip().upper()
     if not symbol or not symbol.replace(".", "").isalnum() or len(symbol) > 8:
         raise BadRequest("Enter a ticker symbol.")
@@ -267,6 +269,9 @@ def evaluate(sub, symbol, earnings_date=None):
 
     c = sig["checks"]
     today = now_ny().date().isoformat()
+    from charts import instrument_type
+    itype = instrument_type(symbol)
+    etf_blocked = cfg["excludeEtfs"] and itype in ("ETF", "MUTUALFUND")
     earn_soon = bool(earnings and today <= earnings <= (now_ny() + timedelta(days=cfg["noEntryDays"])).strftime("%Y-%m-%d"))
     event_in_window = [e for e in events if best and e["between"][1] <= best["exp"]]
     checks = [
@@ -286,6 +291,7 @@ def evaluate(sub, symbol, earnings_date=None):
         ("events", "No implied-volatility jump (likely event) before the chosen expiration" +
          (f": IV jumps between {event_in_window[0]['between'][0]} and {event_in_window[0]['between'][1]}" if event_in_window else ""),
          not event_in_window, False),
+        ("events", f"{symbol} is an ETF and ETFs are excluded in the bot settings" if etf_blocked else f"Not an excluded ETF ({itype.lower()})", not etf_blocked, True),
         ("contract", f"Liquid contract found: {symbol} {best['exp']} {best['strike']} call (delta {best['delta']}, mid {best['mid']}, open interest {best['oi']})" if best else (f"Best contract {symbol} {cands[0]['exp']} {cands[0]['strike']} call (delta {cands[0]['delta']}, mid {cands[0]['mid']}, {cands[0]['dte']} days) fails: " + "; ".join(cands[0]["problems"]) if cands else f"No call with delta {cfg['deltaMin']}-{cfg['deltaMax']} expiring in {cfg['dteMin']}-{cfg['dteMax']} days"), bool(best), True),
     ]
     hard_fail = [t for (_, t, ok, hard) in checks if hard and not ok]
@@ -316,7 +322,7 @@ def evaluate(sub, symbol, earnings_date=None):
            "blocking": hard_fail, "warnings": soft_fail, "proposal": proposal, "candidates": cands,
            "signals": {k: sig[k] for k in ("price", "asOf", "ema21", "atr21", "extAtr", "crossAgo", "momentum", "momentumPrev")},
            "gamma": {k: g.get(k) for k in ("gammaFlip", "callWall", "putWall", "netGex", "regime")},
-           "events": events, "source": chain["source"], "status": "proposed"}
+           "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}}
     db.put({"PK": db.upk(sub), "SK": f"BOT#{rec['id']}", **rec})
     return rec
 
@@ -349,6 +355,19 @@ def _alp(c, method, path, body=None):
         raise Unavailable(f"Alpaca couldn't be reached: {e.reason}")
 
 
+def _desc(rec):
+    p = rec.get("proposal") or {}
+    return f"{rec.get('symbol')} {p.get('exp', '')[5:].replace('-', '/')} {p.get('strike')}C"
+
+
+def _notify(sub, text, kind):
+    try:
+        import notify
+        notify.send(sub, text, kind)
+    except Exception as e:
+        print("notify failed", e)
+
+
 def place(sub, bot_id, qty=None, limit=None, placed_by="manual"):
     c = _paper_creds(sub)
     pk = db.upk(sub)
@@ -362,10 +381,34 @@ def place(sub, bot_id, qty=None, limit=None, placed_by="manual"):
     if q < 1:
         raise BadRequest("Quantity must be at least 1.")
     lim = _tick(float(limit or p["limit"]))
-    order = _alp(c, "POST", "/v2/orders", {"symbol": p["contract"], "qty": str(q), "side": "buy", "type": "limit",
-                                           "limit_price": f"{lim:.2f}", "time_in_force": "day"})
+    # 1) no second bot position or working order on the same underlying (our records)
+    for other in db.q_prefix(pk, "BOT#"):
+        if other.get("id") != bot_id and other.get("symbol") == rec["symbol"] and other.get("status") in ("submitting", "submitted", "open", "closing"):
+            raise BadRequest(f"Already have a {other['status']} bot trade on {rec['symbol']} ({_desc(other)}). Close it first.")
+    # 2) broker truth: no existing position or open buy order on this underlying at Alpaca
+    root = rec["symbol"].upper()
+    same = lambda sym: sym and sym.upper().startswith(root) and sym[len(root):len(root) + 1].isdigit()
+    for pos in (_alp(c, "GET", "/v2/positions") or []):
+        if same(pos.get("symbol")):
+            raise BadRequest(f"Alpaca already holds {pos['symbol']} ({pos.get('qty')}). Not placing a second order.")
+    for o in (_alp(c, "GET", "/v2/orders?status=open&limit=200") or []):
+        if o.get("side") == "buy" and same(o.get("symbol")):
+            raise BadRequest(f"Alpaca already has an open buy order for {o['symbol']}. Not placing a second order.")
+    # 3) atomic claim so two clicks / two runs can't both submit
+    if not db.claim(pk, f"BOT#{bot_id}", ["proposed"], "submitting"):
+        raise BadRequest("This proposal is already being submitted.")
+    try:
+        order = _alp(c, "POST", "/v2/orders", {"symbol": p["contract"], "qty": str(q), "side": "buy", "type": "limit",
+                                               "limit_price": f"{lim:.2f}", "time_in_force": "day",
+                                               "client_order_id": f"tj-{bot_id}-0"})   # Alpaca rejects a reused id
+    except Exception:
+        db.update(pk, f"BOT#{bot_id}", {"status": "proposed"})
+        raise
     db.update(pk, f"BOT#{bot_id}", {"status": "submitted", "orderId": order.get("id"), "qty": q, "limit": lim,
                                     "firstLimit": lim, "chaseSteps": 0, "submittedAt": iso(now_ny()), "placedBy": placed_by})
+    origin = rec.get("origin") or {}
+    why = f" | flow {origin.get('premium', 0) / 1000:.0f}K {'sweep' if origin.get('sweep') else ''}".rstrip() if origin.get("type") == "flow" else ""
+    _notify(sub, f"Paper bot BUY {_desc(rec)} x{q} limit {lim:.2f} ({'auto' if placed_by != 'manual' else 'manual'}){why}", "entry")
     return db.get(pk, f"BOT#{bot_id}")
 
 
@@ -415,7 +458,8 @@ def chase(sub, bot_id):
         if remaining <= 0:
             break
         o = _alp(c, "POST", "/v2/orders", {"symbol": rec["proposal"]["contract"], "qty": str(remaining), "side": "buy",
-                                           "type": "limit", "limit_price": f"{new_limit:.2f}", "time_in_force": "day"})
+                                           "type": "limit", "limit_price": f"{new_limit:.2f}", "time_in_force": "day",
+                                           "client_order_id": f"tj-{bot_id}-{steps + 1}"})
         steps += 1
         oid, limit = o.get("id"), new_limit
         db.update(pk, f"BOT#{bot_id}", {"orderId": oid, "limit": limit, "chaseSteps": steps,
@@ -429,6 +473,7 @@ def chase(sub, bot_id):
         q = done_qty + fq
         avg = (done_cost + fq * fp) / q if q else fp
         db.update(pk, f"BOT#{bot_id}", {"status": "open", "fillPrice": round(avg, 4), "filledQty": q, "filledAt": iso(now_ny())})
+        _notify(sub, f"Paper bot FILLED {_desc(rec)} x{q:g} @ {avg:.2f}", "fill")
     return db.get(pk, f"BOT#{bot_id}")
 
 
@@ -438,16 +483,24 @@ def close(sub, bot_id, reason="manual"):
     rec = db.get(pk, f"BOT#{bot_id}")
     if not rec:
         raise BadRequest("Bot trade not found.")
+    if rec.get("status") not in ("submitted", "open"):
+        return rec                                        # already closing/closed: never send a second exit
     if rec.get("status") == "submitted" and rec.get("orderId"):
         o = _alp(c, "GET", f"/v2/orders/{rec['orderId']}")
         if o and o.get("status") in ("new", "accepted", "partially_filled", "pending_new"):
             _alp(c, "DELETE", f"/v2/orders/{rec['orderId']}")
             if not float(o.get("filled_qty") or 0):
                 db.update(pk, f"BOT#{bot_id}", {"status": "cancelled", "exitReason": reason, "closedAt": iso(now_ny())})
+                _notify(sub, f"Paper bot CANCELLED unfilled order {_desc(rec)} ({reason})", "cancel")
                 return db.get(pk, f"BOT#{bot_id}")
+    if not db.claim(pk, f"BOT#{bot_id}", ["open"], "closing"):
+        return db.get(pk, f"BOT#{bot_id}")
     res = _alp(c, "DELETE", f"/v2/positions/{rec['proposal']['contract']}")
     db.update(pk, f"BOT#{bot_id}", {"status": "closing", "exitReason": reason, "exitOrderId": (res or {}).get("id"),
                                     "closedAt": iso(now_ny())})
+    pl = rec.get("lastPl")
+    _notify(sub, f"Paper bot SELL {_desc(rec)} x{(rec.get('filledQty') or rec.get('qty') or 0):g} at market: {reason}"
+                 + (f" (P&L ~{'+' if pl >= 0 else '-'}${abs(pl):,.0f})" if pl is not None else ""), "exit")
     return db.get(pk, f"BOT#{bot_id}")
 
 
@@ -465,6 +518,7 @@ def _refresh(sub, c, rec):
             avg = (rec.get("prevFilledCost", 0) + fq * fp) / q if q else fp
             db.update(pk, rec["SK"], {"status": "open", "fillPrice": round(avg, 4), "filledQty": q, "filledAt": o.get("filled_at")})
             rec.update(status="open", fillPrice=round(avg, 4), filledQty=q)
+            _notify(sub, f"Paper bot FILLED {_desc(rec)} x{q:g} @ {avg:.2f}", "fill")
         elif o and o.get("status") in ("canceled", "expired", "rejected") and not rec.get("prevFilledQty"):
             db.update(pk, rec["SK"], {"status": "not filled", "exitReason": o.get("status")})
             rec["status"] = "not filled"
@@ -489,6 +543,10 @@ def _refresh(sub, c, rec):
             upd["exitReason"] = "closed outside the bot"
         db.update(pk, rec["SK"], upd)
         rec.update(upd)
+        rp = upd.get("realizedPl")
+        _notify(sub, f"Paper bot CLOSED {_desc(rec)}" + (f" @ {upd['exitPrice']:.2f}" if upd.get("exitPrice") else "")
+                     + (f": {'+' if rp >= 0 else '-'}${abs(rp):,.0f} ({upd.get('realizedPct', 0):+.1f}%)" if rp is not None else "")
+                     + f" | {rec.get('exitReason') or ''}", "closed")
         return rec, None
     mark = float(pos.get("current_price") or 0)
     upd = {"lastMark": mark, "lastPlPct": round(float(pos.get("unrealized_plpc") or 0) * 100, 1),
@@ -615,18 +673,99 @@ def scan(sub):
     return {"results": results}
 
 
+def market_open(now=None):
+    now = now or now_ny()
+    m = now.hour * 60 + now.minute
+    return now.weekday() < 5 and 9 * 60 + 35 <= m <= 15 * 60 + 50
+
+
+def flow_scan(sub, cfg=None):
+    """Pull new unusual-flow alerts, evaluate the tickers and trade the ones that pass every rule."""
+    import flowdata
+    cfg = cfg or settings(sub)
+    pk = db.upk(sub)
+    state = db.get(pk, "BOTSTATE") or {"PK": pk, "SK": "BOTSTATE"}
+    last = state.get("lastFlowAt")
+    res = flowdata.alerts(sub, cfg["flowMinPremium"], "call", cfg["flowMinDte"], cfg["flowMaxDte"], cfg["flowAskSide"],
+                          cfg["flowSweeps"], None, cfg["flowMinVolOi"], 1, since_utc=last, exclude_etfs=cfg["excludeEtfs"])
+    alerts = res["alerts"]
+    newest = max([a["at"] for a in alerts if a.get("at")] + ([last] if last else []), default=None)
+    recs = db.q_prefix(pk, "BOT#")
+    held = {r["symbol"] for r in recs if r.get("status") in ("submitting", "submitted", "open", "closing")}
+    open_n = sum(1 for r in recs if r.get("status") in ("submitting", "submitted", "open"))
+    evaluated = dict(state.get("evaluated") or {})
+    cutoff = iso(now_ny() - timedelta(minutes=cfg["flowCooldownMin"]))
+    by_ticker = {}
+    for a in alerts:                                   # biggest premium per ticker first
+        t = by_ticker.setdefault(a["ticker"], {"ticker": a["ticker"], "premium": 0.0, "alerts": []})
+        t["premium"] += a["premium"]
+        t["alerts"].append(a)
+    queue = sorted(by_ticker.values(), key=lambda t: -t["premium"])
+    done = []
+    for t in queue:
+        if len(done) >= cfg["flowMaxEvals"]:
+            break
+        sym = t["ticker"]
+        if not sym or sym in held or evaluated.get(sym, "") > cutoff:
+            continue
+        top = max(t["alerts"], key=lambda a: a["premium"])
+        origin = {"type": "flow", "premium": round(t["premium"]), "alerts": len(t["alerts"]), "sweep": any(a["sweep"] for a in t["alerts"]),
+                  "contract": top.get("contract"), "askPct": top.get("askPct"), "volOi": top.get("volOi"), "at": top.get("at")}
+        try:
+            rec = evaluate(sub, sym, source=origin)
+        except Exception as e:
+            done.append({"symbol": sym, "error": str(e)[:120]})
+            evaluated[sym] = iso(now_ny())
+            continue
+        evaluated[sym] = iso(now_ny())
+        item = {"symbol": sym, "decision": rec["decision"]}
+        if cfg["autoSubmit"] and rec["decision"] == "BUY" and open_n < cfg["maxPositions"]:
+            try:
+                place(sub, rec["id"], placed_by="auto-flow")
+                chase(sub, rec["id"])
+                open_n += 1
+                held.add(sym)
+                item["ordered"] = True
+            except Exception as e:
+                item["orderError"] = str(e)[:160]
+        done.append(item)
+    evaluated = {k: v for k, v in evaluated.items() if v > iso(now_ny() - timedelta(days=1))}
+    db.update(pk, "BOTSTATE", {"lastFlowAt": newest or last, "evaluated": evaluated, "lastFlowRun": iso(now_ny()),
+                               "lastFlowResult": done[-10:], "lastFlowAlerts": len(alerts)})
+    return {"alerts": len(alerts), "evaluated": done}
+
+
+def tick(sub):
+    """Runs every minute in market hours: manage exits, then (if enabled) act on new unusual flow."""
+    if not db.try_lock(db.upk(sub), "BOTLOCK", 170):
+        return {"skipped": "previous run still working"}
+    try:
+        out = {"monitor": monitor(sub)}
+        cfg = settings(sub)
+        if cfg["flowAuto"] and market_open():
+            out["flow"] = flow_scan(sub, cfg)
+        return out
+    finally:
+        db.unlock(db.upk(sub), "BOTLOCK")
+
+
 def handler(event, context_):
     job = event.get("job", "monitor")
     if event.get("sub"):
         subs = [event["sub"]]
     elif job == "scan":   # watchlist scans only for users who turned the schedule on
         subs = [p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("enabled")]
+    elif job == "tick":   # every minute: users with open bot trades or flow trading on
+        flow_users = {p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("flowAuto")}
+        subs = sorted(flow_users | {r["PK"][5:] for r in db.scan_prefix("BOT#", ("submitted", "open", "closing"))})
     else:                 # exits are always managed for every open bot position, schedule on or off
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("submitted", "open", "closing"))})
     out = {}
     for sub in subs:
         try:
-            if job == "chase":
+            if job == "tick":
+                out[sub] = tick(sub)
+            elif job == "chase":
                 out[sub] = {"status": (chase(sub, event["id"]) or {}).get("status")}
             else:
                 out[sub] = scan(sub) if job == "scan" else monitor(sub)

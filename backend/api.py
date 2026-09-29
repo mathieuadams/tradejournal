@@ -98,6 +98,15 @@ def put_settings(sub, claims, body, q):
     if "liveCoach" in body and isinstance(body["liveCoach"], dict):
         lc = body["liveCoach"]
         s["liveCoach"] = {k: bool(lc.get(k, s["liveCoach"].get(k))) for k in ("enabled", "premarket", "preclose", "entry")}
+    if "notify" in body and isinstance(body["notify"], dict):
+        n = body["notify"]
+        phone = re.sub(r"[\s\-().]", "", str(n.get("phone") or ""))
+        if phone and not phone.startswith("+"):
+            phone = "+1" + phone if len(phone) == 10 else "+" + phone
+        if phone and not re.match(r"^\+[1-9]\d{7,14}$", phone):
+            raise BadRequest("Enter the phone number with country code, e.g. +19165551234.")
+        ev = [e for e in (n.get("events") or ["entry", "fill", "exit", "closed", "cancel"]) if e in ("entry", "fill", "exit", "closed", "cancel")]
+        s["notify"] = {"phone": phone, "sms": bool(n.get("sms")) and bool(phone), "events": ev}
     if "rules" in body:
         s["rules"] = _str(body["rules"], "Rules", 4000) or ""
     if "accountSize" in body:
@@ -215,7 +224,11 @@ def bot_home(sub, claims, body, q):
     if q.get("sync") != "0":
         autotrader.sync(sub)
     recs = db.q_prefix(db.upk(sub), "BOT#", desc=True, limit=60)
+    import notify
+    state = db.get(db.upk(sub), "BOTSTATE") or {}
     return {"settings": autotrader.settings(sub), "summary": autotrader.summary(sub),
+            "state": {k: state.get(k) for k in ("lastFlowRun", "lastFlowResult", "lastFlowAlerts")},
+            "notifications": notify.recent(sub, 20),
             "items": [{k: v for k, v in r.items() if k not in ("PK", "SK")} for r in recs]}
 
 
@@ -238,6 +251,11 @@ def bot_settings(sub, claims, body, q):
         "earnings": {k.upper()[:8]: v for k, v in (body.get("earnings") if isinstance(body.get("earnings"), dict) else cur["earnings"]).items()
                      if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}( (AMC|BMO))?$", v)},
         "noEntryDays": int(num("noEntryDays", 0, 60)),
+        "flowAuto": bool(body.get("flowAuto", cur["flowAuto"])), "flowMinPremium": num("flowMinPremium", 0, 1e9),
+        "flowMinDte": int(num("flowMinDte", 0, 400)), "flowMaxDte": int(num("flowMaxDte", 0, 800)),
+        "flowAskSide": bool(body.get("flowAskSide", cur["flowAskSide"])), "flowSweeps": bool(body.get("flowSweeps", cur["flowSweeps"])),
+        "flowMinVolOi": num("flowMinVolOi", 0, 1000), "excludeEtfs": bool(body.get("excludeEtfs", cur["excludeEtfs"])),
+        "flowCooldownMin": int(num("flowCooldownMin", 1, 1440)), "flowMaxEvals": int(num("flowMaxEvals", 1, 10)),
         "chaseStep": num("chaseStep", 0.05, 5), "chaseSeconds": int(num("chaseSeconds", 5, 60)),
         "chaseMaxSteps": int(num("chaseMaxSteps", 0, 20)), "chaseMaxPct": num("chaseMaxPct", 0, 50),
     }
@@ -334,6 +352,12 @@ def remove_csv_fills(sub, claims, body, q):
     return {"removedFills": len(rm), "trades": g["trades"]}
 
 
+@route("POST", "/notify/test")
+def notify_test(sub, claims, body, q):
+    import notify
+    return notify.send(sub, "Trade Journal: test message. Paper bot order alerts will look like this.", "test")
+
+
 @route("GET", "/flow/status")
 def flow_status(sub, claims, body, q):
     import flowdata
@@ -352,7 +376,7 @@ def flow_alerts(sub, claims, body, q):
     return flowdata.alerts(sub, float(q.get("minPremium") or 100000), q.get("type") or "call",
                            int(q.get("minDte") or 0), int(q.get("maxDte") or 120),
                            q.get("askSide", "1") == "1", q.get("sweeps") == "1", q.get("ticker") or None,
-                           float(q.get("minVolOi") or 0), int(q.get("days") or 1))
+                           float(q.get("minVolOi") or 0), int(q.get("days") or 1), exclude_etfs=q.get("noEtf") == "1")
 
 
 @route("POST", "/maintenance/rebuild")

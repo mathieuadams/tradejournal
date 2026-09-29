@@ -125,3 +125,27 @@ def get_bars(sub, trade, tf):
     if not bars:
         raise BadRequest(f"No {tf} bars for {symbol} in this period. Try the daily chart.")
     return {"tf": tf, "symbol": symbol, "kind": kind, "source": source, "bars": bars}
+
+
+def instrument_type(symbol):
+    """'ETF', 'EQUITY', ... from Yahoo's chart metadata (cached for a week)."""
+    import db
+    import time as _t
+    sym = symbol.upper()
+    c = db.get("CACHE", f"ITYPE#{sym}")
+    if c and c.get("at", 0) > _t.time() - 7 * 86400:
+        return c["type"]
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym.replace('.', '-'))}?range=5d&interval=1d"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (tradejournal)", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            meta = ((json.loads(r.read()).get("chart") or {}).get("result") or [{}])[0].get("meta") or {}
+        typ = (meta.get("instrumentType") or "UNKNOWN").upper()
+    except Exception:
+        return "UNKNOWN"
+    db.put({"PK": "CACHE", "SK": f"ITYPE#{sym}", "type": typ, "at": int(_t.time())})
+    return typ
+
+
+def is_etf(symbol):
+    return instrument_type(symbol) in ("ETF", "MUTUALFUND")

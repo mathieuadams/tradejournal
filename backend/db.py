@@ -142,3 +142,45 @@ def scan_prefix(prefix, statuses=None):
             break
         kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
     return [from_ddb(i) for i in items]
+
+
+def try_lock(pk, sk, seconds):
+    """Take a short lock (conditional write). Returns False if someone else holds it."""
+    import time as _t
+    from botocore.exceptions import ClientError
+    now = int(_t.time())
+    try:
+        table().put_item(Item={"PK": pk, "SK": sk, "until": now + seconds},
+                         ConditionExpression="attribute_not_exists(PK) OR #u < :now",
+                         ExpressionAttributeNames={"#u": "until"}, ExpressionAttributeValues={":now": now})
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def unlock(pk, sk):
+    delete(pk, sk)
+
+
+def claim(pk, sk, from_statuses, to_status, extra=None):
+    """Atomically move an item's status (e.g. proposed -> submitting). False if another request got there first."""
+    from botocore.exceptions import ClientError
+    names, values, sets = {"#s": "status"}, {":to": to_status}, ["#s = :to"]
+    for i, (k, v) in enumerate((extra or {}).items()):
+        names[f"#e{i}"] = k
+        values[f":e{i}"] = to_ddb(v)
+        sets.append(f"#e{i} = :e{i}")
+    conds = []
+    for i, st in enumerate(from_statuses):
+        values[f":f{i}"] = st
+        conds.append(f"#s = :f{i}")
+    try:
+        table().update_item(Key={"PK": pk, "SK": sk}, UpdateExpression="SET " + ", ".join(sets),
+                            ConditionExpression=" OR ".join(conds), ExpressionAttributeNames=names, ExpressionAttributeValues=values)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise

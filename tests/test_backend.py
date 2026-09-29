@@ -46,11 +46,30 @@ def _install_fake_db():
     def scan_sk(v):
         return [dict(i) for (p, s), i in STORE.items() if s == v]
 
+    def try_lock(pk, sk, seconds):
+        import time as _t
+        cur = STORE.get((pk, sk))
+        if cur and cur.get("until", 0) > _t.time():
+            return False
+        STORE[(pk, sk)] = {"PK": pk, "SK": sk, "until": _t.time() + seconds}
+        return True
+
+    def unlock(pk, sk):
+        STORE.pop((pk, sk), None)
+
+    def claim(pk, sk, from_statuses, to_status, extra=None):
+        it = STORE.get((pk, sk))
+        if not it or it.get("status") not in from_statuses:
+            return False
+        it["status"] = to_status
+        it.update(extra or {})
+        return True
+
     def scan_prefix(prefix, statuses=None):
         return [db.from_ddb(db.to_ddb(i)) for (p, s), i in STORE.items() if s.startswith(prefix) and (not statuses or i.get("status") in statuses)]
 
     for name, fn in dict(q_prefix=q_prefix, get=get, put=put, delete=delete, update=update,
-                         batch_write=batch_write, scan_sk=scan_sk, scan_prefix=scan_prefix).items():
+                         batch_write=batch_write, scan_sk=scan_sk, scan_prefix=scan_prefix, try_lock=try_lock, unlock=unlock, claim=claim).items():
         setattr(db, name, fn)
 
 
@@ -488,6 +507,8 @@ def test_paper_bot():
     sent = []
     def fake_alp(c, method, path, body=None):
         sent.append((method, path, body))
+        if path == "/v2/positions" or path.startswith("/v2/orders?"):
+            return []
         if method == "POST":
             return {"id": "ord1"}
         if path.startswith("/v2/orders/"):
@@ -499,7 +520,10 @@ def test_paper_bot():
     rec["proposal"]["qty"] = max(1, rec["proposal"]["qty"])
     db.update(db.upk(SUB), f"BOT#{rec['id']}", {"proposal": rec["proposal"]})
     code, placed = call("POST", f"/bot/{rec['id']}/order", {})
-    assert code == 200 and placed["status"] == "submitted" and sent[0][2]["time_in_force"] == "day"
+    post = next(x for x in sent if x[0] == "POST")
+    assert code == 200 and placed["status"] == "submitted" and post[2]["time_in_force"] == "day" and post[2]["client_order_id"].startswith("tj-")
+    code, again = call("POST", f"/bot/{rec['id']}/order", {})              # double click
+    assert code == 400
     call("PUT", "/bot/settings", {"enabled": False})
     out = autotrader.handler({"job": "monitor"}, None)   # schedule off, exits still managed: fill, then -50% -> stop
     assert SUB in out and out[SUB]["actions"] and "stop" in out[SUB]["actions"][0][1], out
@@ -577,6 +601,57 @@ def test_flow_alerts():
         {"ticker": "AAPL", "type": "put", "strike": "200", "expiry": "2099-12-18", "total_premium": "500000", "total_ask_side_prem": "400000", "created_at": "2026-09-28T16:00:00Z"}]}
     code, r = call("GET", "/flow", q={"minPremium": "100000", "type": "call", "maxDte": "40000"})
     assert code == 200 and len(r["alerts"]) == 1 and r["alerts"][0]["askPct"] == 81
+
+
+def test_flow_autotrade():
+    import autotrader, flowdata, alpaca, notify
+    STORE.clear()
+    saved = (autotrader.evaluate, autotrader.place, autotrader.chase, flowdata.alerts)
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    flowdata.alerts = lambda sub, *a, **k: {"alerts": [
+        {"ticker": "LRCX", "premium": 190000, "sweep": True, "contract": "LRCX261120C00390000", "askPct": 85, "volOi": 7.4, "at": "2026-09-28T19:59:00Z"},
+        {"ticker": "LRCX", "premium": 50000, "sweep": False, "contract": "x", "askPct": 70, "volOi": 1, "at": "2026-09-28T19:50:00Z"},
+        {"ticker": "SPY", "premium": 900000, "sweep": True, "contract": "y", "askPct": 90, "volOi": 2, "at": "2026-09-28T19:58:00Z"}]}
+    evaluated = []
+    def fake_eval(sub, sym, earnings_date=None, source=None):
+        evaluated.append(sym)
+        rid = "20260928155900-" + ("abcdef" if sym == "LRCX" else "fedcba")
+        db.put({"PK": db.upk(sub), "SK": f"BOT#{rid}", "id": rid, "symbol": sym, "decision": "BUY" if sym == "LRCX" else "SKIP",
+                "proposal": {"contract": "LRCX261120C00390000", "qty": 1, "limit": 9.4, "exp": "2026-11-20", "strike": 390}, "status": "proposed", "origin": source})
+        return {"id": rid, "decision": "BUY" if sym == "LRCX" else "SKIP"}
+    autotrader.evaluate = fake_eval
+    placed = []
+    autotrader.place = lambda sub, rid, qty=None, limit=None, placed_by="manual": placed.append((rid, placed_by))
+    autotrader.chase = lambda sub, rid: None
+    call("PUT", "/bot/settings", {"flowAuto": True, "autoSubmit": True, "excludeEtfs": True})
+    code, st = call("PUT", "/settings", {"notify": {"phone": "916 555 1234", "sms": True}})
+    assert st["notify"]["phone"] == "+19165551234"
+    out = autotrader.flow_scan(SUB)
+    assert evaluated[0] == "SPY" or evaluated[0] == "LRCX"          # biggest premium first (ETFs are dropped inside flowdata)
+    assert ("20260928155900-abcdef", "auto-flow") in placed
+    again = autotrader.flow_scan(SUB)                                # cooldown: not re-evaluated
+    assert again["evaluated"] == []
+    assert autotrader.tick(SUB) is not None
+    sent = []
+    notify_boto = __import__("types").SimpleNamespace(client=lambda n: __import__("types").SimpleNamespace(publish=lambda **k: sent.append(k)))
+    sys.modules["boto3"] = notify_boto
+    r = notify.send(SUB, "hello")
+    assert r["status"] == "sent" and sent[0]["PhoneNumber"] == "+19165551234"
+    del sys.modules["boto3"]
+    autotrader.evaluate, autotrader.place, autotrader.chase, flowdata.alerts = saved
+
+
+def test_no_double_order_at_broker():
+    import autotrader, alpaca
+    STORE.clear()
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    pk = db.upk(SUB)
+    db.put({"PK": pk, "SK": "BOT#20260928150000-aaaaaa", "id": "20260928150000-aaaaaa", "symbol": "HON", "status": "proposed",
+            "proposal": {"contract": "HON261218C00210000", "qty": 1, "limit": 13.4, "exp": "2026-12-18", "strike": 210}})
+    autotrader._alp = lambda c, m, path, body=None: ([{"symbol": "HON261218C00210000", "qty": "1"}] if path == "/v2/positions" else [] if path.startswith("/v2/orders?") else {"id": "x"})
+    code, err = call("POST", "/bot/20260928150000-aaaaaa/order", {})
+    assert code == 400 and "already holds" in err["error"]
+    assert STORE[(pk, "BOT#20260928150000-aaaaaa")]["status"] == "proposed"
 
 
 def test_analytics():
