@@ -1,0 +1,12 @@
+{
+  "name": "tradejournal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Trade journal with AI coaching on AWS",
+  "scripts": {
+    "start": "node scripts/py.js dev/local_server.py",
+    "test": "node scripts/py.js tests/test_backend.py && node scripts/check.js",
+    "build": "npm test && node scripts/build.js"
+  },
+  "engines": { "node": ">=18" }
+}
