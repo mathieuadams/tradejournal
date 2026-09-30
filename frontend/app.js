@@ -1237,6 +1237,10 @@ async function loadNtStatus(force) {
   try { S.ntStatus = await api('/notify/status'); } catch (e) { S.ntStatus = { email: null, emailStatus: 'unknown' }; }
   if (route() === 'bot' || route() === 'settings') render();
 }
+async function loadEvals(page) {
+  try { S.botEvals = await api(`/bot/evaluations?page=${page || (S.botEvals && S.botEvals.page) || 1}&size=20`); } catch (e) {}
+  if (route() === 'bot') render();
+}
 async function loadBot(force) {
   if (S.bot && !force) return;
   try { S.bot = await api('/bot'); S.botAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch (e) { S.bot = { error: e.message, items: [], settings: {} }; }
@@ -1348,7 +1352,14 @@ function vBot() {
   const trades = items.filter(i => ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice || i.status === 'submitting'));
   const active = trades.filter(i => i.status !== 'closed');
   const done = trades.filter(i => i.status === 'closed');
-  const evals = items.filter(i => !trades.includes(i)).slice(0, 25);
+  const ev = S.botEvals, evals = ev ? ev.items : items.filter(i => !trades.includes(i)).slice(0, 20);
+  const pager = ev && ev.pages > 1 ? (() => {
+    const cur = ev.page, last = ev.pages, nums = [...new Set([1, cur - 2, cur - 1, cur, cur + 1, cur + 2, last])].filter(n => n >= 1 && n <= last).sort((a, b) => a - b);
+    let prev = 0; const parts = [];
+    for (const n of nums) { if (n - prev > 1) parts.push('<span class="muted">…</span>'); parts.push(`<button class="toggle" data-evpage="${n}" aria-pressed="${n === cur}">${n}</button>`); prev = n; }
+    return `<div class="filters" style="justify-content:center;margin:10px 0 0;align-items:center"><button class="toggle" data-evpage="${Math.max(1, cur - 1)}" ${cur === 1 ? 'disabled' : ''}>‹ Newer</button>${parts.join('')}<button class="toggle" data-evpage="${Math.min(last, cur + 1)}" ${cur === last ? 'disabled' : ''}>Older ›</button></div>
+      <p class="muted" style="text-align:center;font-size:.82rem;margin:4px 0 0">${ev.total} evaluations · page ${cur} of ${last}</p>`;
+  })() : '';
   const sm = (b && b.summary) || {}, ac = sm.account;
   const card = (k, v, sub, col) => `<div class="period"><h3>${k}</h3><div class="big" style="${col ? 'color:' + col : ''}">${v}</div><p>${sub || ''}</p></div>`;
   const summaryHtml = `<section class="periods" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
@@ -1375,7 +1386,7 @@ function vBot() {
   ${summaryHtml}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh every minute. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
-  <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>` : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
+  <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : '<div class="tablewrap"><p class="empty">No evaluations yet.</p></div>'}</section>
   <p class="muted" style="margin:18px 0 0">Bot rules, automatic flow trading and alerts are in <a href="#settings">Settings → Paper bot</a>.</p>`;
 }
 function botSettingsPanels() {
@@ -1393,6 +1404,7 @@ function botSettingsPanels() {
     <div class="form-grid">
       ${f('bf-prem', 'Min premium ($)', cfg.flowMinPremium, 10000)}${f('bf-dmin', 'Flow days to expiry, min', cfg.flowMinDte, 1)}${f('bf-dmax', 'Flow days to expiry, max', cfg.flowMaxDte, 1)}
       ${f('bf-voi', 'Min volume / OI', cfg.flowMinVolOi, 0.1)}${f('bf-cool', 'Re-check a ticker after (min)', cfg.flowCooldownMin, 1)}${f('bf-evals', 'Max tickers analyzed per minute', cfg.flowMaxEvals, 1)}</div>
+    <p style="margin:0 0 8px"><button class="btn primary" data-botsave="1">Save</button> <span class="muted" style="font-size:.84rem">Bot settings also save automatically when you change a field.</span></p>
     <p class="muted" style="font-size:.84rem;margin:0">Orders are placed only when <b>Place paper orders automatically</b> (below) is also on. Calls only; the contract the bot buys is chosen by its own rules, not copied from the flow.</p></section>
   <section class="panel"><h2>Alerts</h2>
     <p class="muted" style="margin-top:-4px">Every bot order is sent as an Amazon SNS notification to your email right away. Text messages are optional and need a registered toll-free number in AWS (SETUP.md step 8).</p>
@@ -1441,7 +1453,7 @@ async function botEvaluate() {
   catch (e) { S.botErr = e.message; }
   S.botBusy = false; if (route() === 'bot') render();
 }
-async function botSaveSettings() {
+async function botSaveSettings(quiet) {
   const earnings = {}; ($('#bs-earn').value || '').split('\n').forEach(l => { const m = l.trim().split(/[\s,]+/); if (m.length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(m[1])) earnings[m[0].toUpperCase()] = m[1] + (m[2] && /^(amc|bmo)$/i.test(m[2]) ? ' ' + m[2].toUpperCase() : ' AMC'); });
   const v = id => $(id).value;
   const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked,
@@ -1455,7 +1467,7 @@ async function botSaveSettings() {
   try {
     const risk = +v('#bs-risk');
     if (risk > 0 && risk !== (S.me.settings || {}).riskPerTrade) S.me.settings = await api('/settings', { method: 'PUT', body: { riskPerTrade: risk } });
-    S.bot.settings = await api('/bot/settings', { method: 'PUT', body }); toast('Bot settings saved'); render();
+    S.bot.settings = await api('/bot/settings', { method: 'PUT', body }); toast('Bot settings saved'); if (!quiet) render();
   } catch (e) { toast(e.message); }
 }
 
@@ -1464,12 +1476,12 @@ setInterval(() => {
   if (document.visibilityState !== 'visible') return;
   const a = document.activeElement;
   if (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName)) return;
-  if (route() === 'bot') { loadBot(true).then(() => { if (route() === 'bot') render(); }); }
+  if (route() === 'bot') { loadBot(true).then(() => { if (!S.botEvals || S.botEvals.page === 1) loadEvals(1); else if (route() === 'bot') render(); }); }
   else if (route() === 'gex' && S.flow && S.flowAuto !== false && !S.flowBusy && $('#fl-prem')) loadFlow();
 }, 60000);
 
 /* ---------- router & events ---------- */
-const VIEWS = { bot: [vBot, () => { loadBot(); loadNtStatus(); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { bot: [vBot, () => { loadBot(); loadNtStatus(); if (!S.botEvals) loadEvals(1); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
@@ -1480,10 +1492,12 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-botsave],[data-evpage],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
+  if (el.dataset.botsave) { botSaveSettings(); return; }
+  if (el.dataset.evpage) { loadEvals(+el.dataset.evpage); return; }
   if (el.dataset.bottoggle) {
     const k = el.dataset.bottoggle, cur = !!((S.bot && S.bot.settings) || {})[k];
     if (!cur && k === 'autoSubmit' && !confirm('Automatic orders: the bot will place paper trades by itself when every rule passes. Turn on?')) return;
@@ -1569,6 +1583,7 @@ document.addEventListener('change', e => {
   if (id === 'fl-period') { S.flowF = { ...(S.flowF || {}), period: e.target.value }; if (e.target.value !== 'custom') { loadFlow(); } else render(); return; }
   if (id === 'tc-type' || id === 'tc-exp') { tcRead(); return; }
   if (route() === 'settings' && /^(s-|pp-|lc-)/.test(id)) { clearTimeout(S.autoSave); S.autoSave = setTimeout(saveSettings, 400); }
+  if (route() === 'settings' && /^(bs-|bf-)/.test(id) && id !== 'bs-auto') { clearTimeout(S.botAutoSave); S.botAutoSave = setTimeout(() => botSaveSettings(true), 500); }
   if (id === 'jday') { S.jDay = e.target.value; render(); }
   if (id === 'gx-exp' || id === 'gx-days' || id === 'gx-strikes') { if (id === 'gx-days') S.gexExp = ''; loadGex(); }
   if (id === 'g-acct') { S.acct = e.target.value; render(); }
