@@ -232,7 +232,11 @@ def bot_home(sub, claims, body, q):
     import autotrader
     if q.get("sync") != "0":
         autotrader.sync(sub)
-    recs = db.q_prefix(db.upk(sub), "BOT#", desc=True, limit=60)
+    allrecs = db.q_prefix(db.upk(sub), "BOT#", desc=True)
+    active = [r for r in allrecs if r.get("status") in ("submitting", "submitted", "open", "closing")]
+    closed = [r for r in allrecs if r.get("status") == "closed"][:60]
+    others = [r for r in allrecs if r not in active and r not in closed][:60]
+    recs = sorted(active + closed + others, key=lambda r: r["SK"], reverse=True)
     import notify
     state = db.get(db.upk(sub), "BOTSTATE") or {}
     return {"settings": autotrader.settings(sub), "summary": autotrader.summary(sub),
@@ -260,6 +264,10 @@ def bot_settings(sub, claims, body, q):
         "earnings": {k.upper()[:8]: v for k, v in (body.get("earnings") if isinstance(body.get("earnings"), dict) else cur["earnings"]).items()
                      if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}( (AMC|BMO))?$", v)},
         "noEntryDays": int(num("noEntryDays", 0, 60)),
+        "minGrowth30": num("minGrowth30", -100, 1000),
+        "invalidationOnClose": bool(body.get("invalidationOnClose", cur["invalidationOnClose"])),
+        "emergencyAtr": num("emergencyAtr", 0, 10), "trailAfterTarget": bool(body.get("trailAfterTarget", cur["trailAfterTarget"])),
+        "trailPct": num("trailPct", 5, 90),
         "flowAuto": bool(body.get("flowAuto", cur["flowAuto"])), "flowMinPremium": num("flowMinPremium", 0, 1e9),
         "flowMinDte": int(num("flowMinDte", 0, 400)), "flowMaxDte": int(num("flowMaxDte", 0, 800)),
         "flowAskSide": bool(body.get("flowAskSide", cur["flowAskSide"])), "flowSweeps": bool(body.get("flowSweeps", cur["flowSweeps"])),

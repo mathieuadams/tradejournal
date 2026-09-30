@@ -35,6 +35,8 @@ DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40
             "deltaMin": 0.50, "deltaMax": 0.70, "minOi": 100, "maxSpreadPct": 12, "stopPct": 40, "targetPct": 80,
             "timeStopDte": 14, "maxPositions": 5, "crossWindow": 10, "maxExtAtr": 1.5, "earnings": {}, "noEntryDays": 5,
             "chaseStep": 0.10, "chaseSeconds": 12, "chaseMaxSteps": 5, "chaseMaxPct": 10,
+            "minGrowth30": 10,
+            "invalidationOnClose": True, "emergencyAtr": 1.0, "trailAfterTarget": True, "trailPct": 25,
             "flowAuto": False, "flowMinPremium": 100000, "flowMinDte": 20, "flowMaxDte": 120, "flowAskSide": True,
             "flowSweeps": False, "flowMinVolOi": 0, "excludeEtfs": True, "flowCooldownMin": 120, "flowMaxEvals": 3,
             "requireAboveFlip": False, "minRoomRatio": 1.5}
@@ -99,9 +101,15 @@ def chart_signals(symbol, cfg):
     st = indicators.state_at(bars, i)
     cross_ago = next((k for k in range(0, min(cfg["crossWindow"] + 1, i)) if closes[i - k] > ema[i - k] and closes[i - k - 1] <= ema[i - k - 1]), None)
     ext = (last["c"] - ema[i]) / atr[i] if atr[i] else None
+    cut = (datetime.strptime(last["t"][:10], "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
+    window = [b for b in bars if b["t"][:10] > cut]
+    low_bar = min(window, key=lambda b: b["l"]) if window else None
+    growth30 = (last["c"] / low_bar["l"] - 1) * 100 if low_bar and low_bar["l"] else None
     return {
         "price": round(last["c"], 2), "asOf": last["t"][:10], "ema21": round(ema[i], 2), "atr21": round(atr[i], 2),
         "extAtr": round(ext, 2) if ext is not None else None, "crossAgo": cross_ago,
+        "growth30": round(growth30, 1) if growth30 is not None else None,
+        "low30": round(low_bar["l"], 2) if low_bar else None, "low30Date": low_bar["t"][:10] if low_bar else None,
         "momentum": round(mom[i], 3) if mom[i] is not None else None,
         "momentumPrev": round(mom[i - 1], 3) if mom[i - 1] is not None else None,
         "study": st,
@@ -110,6 +118,7 @@ def chart_signals(symbol, cfg):
             "aboveEma": last["c"] > ema[i], "recentCross": cross_ago is not None,
             "momentumUp": mom[i] is not None and mom[i - 1] is not None and mom[i] > mom[i - 1],
             "aboveAvwap": st.get("vsAvwap") == "above", "notExtended": ext is not None and ext <= cfg["maxExtAtr"],
+            "growth30": growth30 is not None and growth30 >= cfg["minGrowth30"],
         },
     }
 
@@ -281,6 +290,8 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
         ("chart", f"Crossed above the 21 EMA in the last {cfg['crossWindow']} days" + (f" ({sig['crossAgo']} days ago)" if sig["crossAgo"] is not None else ""), c["recentCross"], True),
         ("chart", f"Momentum rising ({sig['momentumPrev']} → {sig['momentum']})", c["momentumUp"], True),
         ("chart", "Close above the anchored VWAP", c["aboveAvwap"], True),
+        ("chart", f"Up at least {cfg['minGrowth30']:g}% from the 30-day low (low {sig['low30']} on {sig['low30Date']}, now {sig['growth30']:+.1f}%)" if sig.get("growth30") is not None else "30-day low unavailable",
+         c["growth30"] or cfg["minGrowth30"] <= -100, cfg["minGrowth30"] > -100),
         ("chart", f"Not extended ({sig['extAtr']} ATR above the EMA, limit {cfg['maxExtAtr']})", c["notExtended"], True),
         ("gamma", (f"Price {'above' if spot > g['gammaFlip'] else 'below'} the gamma flip ({g['gammaFlip']})" if g.get("gammaFlip")
                    else f"No gamma flip within ±15%: gamma is {g['regime']} across the whole range"),
@@ -311,7 +322,7 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
                     "qty": qty, "limit": _tick(best["mid"]), "cost": round(qty * best["mid"] * 100, 2),
                     "optionStop": round(best["mid"] * (1 - cfg["stopPct"] / 100), 2),
                     "optionTarget": round(best["mid"] * (1 + cfg["targetPct"] / 100), 2),
-                    "underlyingStop": round(stop_lvl, 2), "underlyingTarget": round(target_lvl, 2),
+                    "underlyingStop": round(stop_lvl, 2), "underlyingTarget": round(target_lvl, 2), "underlyingAtr": sig["atr21"],
                     "riskAtStop": round(qty * per_contract_loss, 2)}
         if qty < 1:
             decision = "SKIP" if decision == "BUY" else decision
@@ -320,7 +331,7 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
     rec = {"id": now_ny().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6], "symbol": symbol, "createdAt": iso(now_ny()),
            "decision": decision, "checks": [{"group": grp, "text": t, "ok": ok, "required": hard} for (grp, t, ok, hard) in checks],
            "blocking": hard_fail, "warnings": soft_fail, "proposal": proposal, "candidates": cands,
-           "signals": {k: sig[k] for k in ("price", "asOf", "ema21", "atr21", "extAtr", "crossAgo", "momentum", "momentumPrev")},
+           "signals": {k: sig.get(k) for k in ("price", "asOf", "ema21", "atr21", "extAtr", "crossAgo", "momentum", "momentumPrev", "growth30", "low30", "low30Date")},
            "gamma": {k: g.get(k) for k in ("gammaFlip", "callWall", "putWall", "netGex", "regime")},
            "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}}
     db.put({"PK": db.upk(sub), "SK": f"BOT#{rec['id']}", **rec})
@@ -628,17 +639,34 @@ def monitor(sub):
         dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
         due, earn_reason = earnings_exit_due((cfg.get("earnings") or {}).get(rec["symbol"]))
         reason = None
+        mark = rec.get("lastMark") or 0
+        now = now_ny()
+        near_close = now.hour * 60 + now.minute >= 15 * 60 + 50
+        atr = p.get("underlyingAtr") or 0
+        emergency = p["underlyingStop"] - cfg["emergencyAtr"] * atr if atr else None
+        # trailing stop once the target was reached: let winners run, exit on a pullback from the best price
+        peak = max(rec.get("peakMark") or 0, mark)
+        trailing = rec.get("trailing") or False
+        if not trailing and cfg["trailAfterTarget"] and (pl_pct >= cfg["targetPct"] or (under is not None and under >= p["underlyingTarget"])):
+            trailing = True
+        if peak != rec.get("peakMark") or trailing != rec.get("trailing"):
+            db.update(pk, rec["SK"], {"peakMark": peak, "trailing": trailing})
         if pl_pct <= -cfg["stopPct"]:
             reason = f"option stop ({pl_pct:.0f}%)"
-        elif under is not None and under < p["underlyingStop"]:
-            reason = f"{rec['symbol']} below invalidation {p['underlyingStop']} ({under:.2f})"
+        elif under is not None and under < p["underlyingStop"] and (not cfg["invalidationOnClose"] or near_close):
+            reason = f"{rec['symbol']} {'closing' if cfg['invalidationOnClose'] else 'trading'} below invalidation {p['underlyingStop']} ({under:.2f})"
+        elif under is not None and emergency is not None and under < emergency:
+            reason = f"{rec['symbol']} fell {cfg['emergencyAtr']} ATR below invalidation ({under:.2f} < {emergency:.2f})"
+        elif trailing and cfg["trailAfterTarget"]:
+            if peak and mark <= peak * (1 - cfg["trailPct"] / 100):
+                reason = f"trailing stop: option {mark:.2f} is {cfg['trailPct']:.0f}% below its peak {peak:.2f} (target was reached)"
         elif pl_pct >= cfg["targetPct"]:
             reason = f"option target (+{pl_pct:.0f}%)"
         elif under is not None and under >= p["underlyingTarget"]:
             reason = f"{rec['symbol']} reached target {p['underlyingTarget']}"
-        elif dte <= cfg["timeStopDte"]:
+        if not reason and dte <= cfg["timeStopDte"]:
             reason = f"time stop ({dte} days to expiry)"
-        elif due:
+        elif not reason and due:
             reason = earn_reason
         if reason:
             close(sub, rec["id"], reason)

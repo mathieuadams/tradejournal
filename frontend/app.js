@@ -1340,7 +1340,7 @@ function vBot() {
       <td class="r">${i.filledQty || i.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? `<span class="muted">limit ${i.limit.toFixed(2)}</span>` : ''}</td>
       <td class="r">${now != null ? Number(now).toFixed(2) : '—'}</td>
       <td class="r ${cls(pl)}">${pl != null ? money(pl) + (plp != null ? ` <span style="font-weight:400">(${plp > 0 ? '+' : ''}${plp}%)</span>` : '') : '—'}</td>
-      <td title="${esc(i.exitReason || i.chaseNote || '')}"><span class="ellipsis">${esc(i.exitReason || i.chaseNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</span></td>
+      <td title="${esc(i.exitReason || i.chaseNote || '')}"><span class="ellipsis">${esc(i.exitReason || i.chaseNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.trailing ? `<span class="gain">trailing from ${Number(i.peakMark || 0).toFixed(2)}</span>` : '') || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</span></td>
       <td class="r" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
   const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
   const evalRow = i => { const p = i.proposal || {};
@@ -1373,7 +1373,7 @@ function vBot() {
     <p class="muted" style="margin:4px 0 0;font-size:.8rem">This page refreshes every minute${S.botAt ? ` · last update ${esc(S.botAt)}` : ''}.</p></section>
   ${botResult(S.botRes)}
   ${summaryHtml}
-  ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh when you open this page and every 5 minutes during market hours. Exits are automatic.</p></section>` : ''}
+  ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh every minute. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
   <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>` : '<div class="tablewrap"><p class="empty">Nothing yet. Evaluate a ticker above.</p></div>'}</section>
   <p class="muted" style="margin:18px 0 0">Bot rules, automatic flow trading and alerts are in <a href="#settings">Settings → Paper bot</a>.</p>`;
@@ -1413,15 +1413,17 @@ function botSettingsPanels() {
     <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
       <label><input type="checkbox" id="bs-on" ${cfg.enabled ? 'checked' : ''}> Scan the watchlist on a schedule (10:15 and 15:15 ET)</label>
       <label><input type="checkbox" id="bs-auto" ${cfg.autoSubmit ? 'checked' : ''}> Place paper orders automatically when the decision is BUY</label>
-      <label><input type="checkbox" id="bs-flip" ${cfg.requireAboveFlip ? 'checked' : ''}> Require price above the gamma flip</label></div>
+      <label><input type="checkbox" id="bs-flip" ${cfg.requireAboveFlip ? 'checked' : ''}> Require price above the gamma flip</label>
+      <label><input type="checkbox" id="bs-onclose" ${cfg.invalidationOnClose !== false ? 'checked' : ''}> Exit on the invalidation level only on a close below it (checked from 15:50 ET)</label>
+      <label><input type="checkbox" id="bs-trail" ${cfg.trailAfterTarget !== false ? 'checked' : ''}> After the target is reached, trail instead of selling</label></div>
     <div class="field"><label for="bs-watch">Watchlist (tickers separated by spaces or commas)</label><input id="bs-watch" type="text" style="text-transform:uppercase" value="${esc((cfg.watchlist || []).join(' '))}"></div>
     <div class="form-grid">
       ${f('bs-dtemin', 'Days to expiry, min', cfg.dteMin, 1)}${f('bs-dtemax', 'Days to expiry, max', cfg.dteMax, 1)}
       ${f('bs-dmin', 'Delta, min', cfg.deltaMin, 0.05)}${f('bs-dmax', 'Delta, max', cfg.deltaMax, 0.05)}
       ${f('bs-oi', 'Min open interest', cfg.minOi, 1)}${f('bs-spread', 'Max bid/ask spread %', cfg.maxSpreadPct)}
       ${f('bs-stop', 'Option stop (% loss)', cfg.stopPct)}${f('bs-target', 'Option target (% gain)', cfg.targetPct)}
-      ${f('bs-time', 'Exit when days to expiry ≤', cfg.timeStopDte, 1)}${f('bs-max', 'Max open positions', cfg.maxPositions, 1)}
-      ${f('bs-cross', 'EMA cross within (days)', cfg.crossWindow, 1)}${f('bs-ext', 'Max extension (ATR)', cfg.maxExtAtr)}
+      ${f('bs-time', 'Exit when days to expiry ≤', cfg.timeStopDte, 1)}${f('bs-emerg', 'Exit at once if stock is this many ATR below invalidation', cfg.emergencyAtr ?? 1, 0.25)}${f('bs-trailpct', 'Trail: exit when option falls this % from its best', cfg.trailPct ?? 25, 1)}${f('bs-max', 'Max open positions', cfg.maxPositions, 1)}
+      ${f('bs-g30', 'Min gain from the 30-day low (%) to enter', cfg.minGrowth30 ?? 10, 1)}${f('bs-cross', 'EMA cross within (days)', cfg.crossWindow, 1)}${f('bs-ext', 'Max extension (ATR)', cfg.maxExtAtr)}
       ${f('bs-cstep', 'Raise unfilled limit by ($)', cfg.chaseStep, 0.05)}${f('bs-csec', '… every (seconds)', cfg.chaseSeconds, 1)}
       ${f('bs-cmax', 'Max raises', cfg.chaseMaxSteps, 1)}${f('bs-cpct', 'Never pay more than first limit + (%)', cfg.chaseMaxPct)}
       ${f('bs-risk', 'Risk per trade ($)', (S.me.settings || {}).riskPerTrade ?? 200, 1)}
@@ -1445,6 +1447,7 @@ async function botSaveSettings() {
   const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked,
     watchlist: v('#bs-watch').split(/[\s,]+/).filter(Boolean), dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
     minOi: v('#bs-oi'), maxSpreadPct: v('#bs-spread'), stopPct: v('#bs-stop'), targetPct: v('#bs-target'), timeStopDte: v('#bs-time'), maxPositions: v('#bs-max'),
+    minGrowth30: v('#bs-g30'), invalidationOnClose: $('#bs-onclose').checked, trailAfterTarget: $('#bs-trail').checked, emergencyAtr: v('#bs-emerg'), trailPct: v('#bs-trailpct'),
     crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'),
     flowAuto: $('#bf-on').checked, excludeEtfs: $('#bf-etf').checked, flowAskSide: $('#bf-ask').checked, flowSweeps: $('#bf-sweep').checked,
     flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings };

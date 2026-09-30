@@ -659,6 +659,45 @@ def test_no_double_order_at_broker():
     assert STORE[(pk, "BOT#20260928150000-aaaaaa")]["status"] == "proposed"
 
 
+def test_exit_rules():
+    import autotrader, alpaca, datetime as dt
+    STORE.clear()
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    pk = db.upk(SUB)
+    def rec(pl):
+        db.put({"PK": pk, "SK": "BOT#20260929100000-aaaaaa", "id": "20260929100000-aaaaaa", "symbol": "MRVL", "status": "open",
+                "fillPrice": 10.0, "filledQty": 1, "proposal": {"contract": "MRVL261120C00260000", "exp": "2099-11-20", "strike": 260,
+                "underlyingStop": 250.0, "underlyingTarget": 280.0, "underlyingAtr": 8.0}})
+        return pl
+    state = {"pl": "-0.10", "px": "9.0"}
+    closes = []
+    def fake_alp(c, m, path, body=None):
+        if m == "DELETE":
+            closes.append(path); return {"id": "x"}
+        if path.startswith("/v2/positions/"):
+            return {"unrealized_plpc": state["pl"], "current_price": state["px"], "unrealized_pl": "-100", "market_value": "900"}
+        return {}
+    autotrader._alp = fake_alp
+    under = {"v": 248.0}
+    autotrader._yahoo = lambda *a, **k: [{"t": "x", "o": 1, "h": 1, "l": 1, "c": under["v"], "v": 1}]
+    real_now = autotrader.now_ny
+    autotrader.now_ny = lambda: dt.datetime(2026, 9, 29, 11, 0)
+    rec(0); autotrader.monitor(SUB)
+    assert not closes, "intraday dip below invalidation must not exit before the close"
+    under["v"] = 241.0                                    # more than 1 ATR below: emergency exit
+    autotrader.monitor(SUB); assert closes
+    closes.clear(); under["v"] = 248.0
+    autotrader.now_ny = lambda: dt.datetime(2026, 9, 29, 15, 55)
+    rec(0); autotrader.monitor(SUB); assert closes, "closing below invalidation exits"
+    # trailing after target
+    closes.clear(); autotrader.now_ny = lambda: dt.datetime(2026, 9, 29, 11, 0)
+    rec(0); under["v"] = 281.0; state.update(pl="1.2", px="22.0")
+    autotrader.monitor(SUB); assert not closes and STORE[(pk, "BOT#20260929100000-aaaaaa")]["trailing"]
+    state.update(pl="0.9", px="19.0"); autotrader.monitor(SUB); assert not closes          # -14% from peak: hold
+    state.update(pl="0.5", px="15.0"); autotrader.monitor(SUB); assert closes             # -32% from peak: exit
+    autotrader.now_ny = real_now
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]
