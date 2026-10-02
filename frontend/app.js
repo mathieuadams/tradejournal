@@ -1238,7 +1238,7 @@ async function loadNtStatus(force) {
   if (route() === 'bot' || route() === 'settings') render();
 }
 async function loadEvals(page) {
-  try { S.botEvals = await api(`/bot/evaluations?page=${page || (S.botEvals && S.botEvals.page) || 1}&size=20`); } catch (e) {}
+  try { S.botEvals = await api(`/bot/evaluations?page=${page || (S.botEvals && S.botEvals.page) || 1}&size=20${S.evClaude ? '&claude=1' : ''}`); } catch (e) {}
   if (route() === 'bot') render();
 }
 async function loadBot(force) {
@@ -1296,6 +1296,11 @@ function botResult(r) {
 }
 /* ---------- Claude's chart check (final visual verification before an order) ---------- */
 const AI_CLS = { approve: 'ok', caution: 'mid', reject: 'bad' };
+const aiCell = i => { const a = i.aiCheck && i.aiCheck.verdict ? i.aiCheck : null;
+  if (a) return `<td title="${esc(a.summary || '')}"><span class="verdict ${AI_CLS[a.verdict] || 'mid'}">${esc(a.verdict.toUpperCase())}</span>${i.aiFrom ? ' <span class="muted" style="font-size:.78rem">carried</span>' : ''}</td>`;
+  if (i.aiRunning) return '<td><span class="muted">checking…</span></td>';
+  if (i.aiError) return `<td title="${esc(i.aiError)}"><span class="loss">error</span></td>`;
+  return '<td><span class="muted">—</span></td>'; };
 S.aiImgs = S.aiImgs || {}; S.aiImgBusy = S.aiImgBusy || {};
 const aiOn = () => ((S.bot && S.bot.settings) || {}).aiCheck !== false;
 const nyTime = ms => new Date(ms).toLocaleString('sv-SE', { timeZone: 'America/New_York' }).replace(' ', 'T');
@@ -1418,15 +1423,15 @@ function vBot() {
     const placed = (i.placedBy || '').startsWith('auto') ? (i.placedBy === 'auto-flow' ? 'Bot (flow)' : 'Bot') : `You <span class="muted">(bot said ${esc(i.decision)})</span>`;
     const pl = i.status === 'closed' ? i.realizedPl : i.lastPl, plp = i.status === 'closed' ? i.realizedPct : i.lastPlPct;
     const now = i.status === 'closed' ? i.exitPrice : i.lastMark;
-    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td>${placed}</td><td>${esc(['submitted', 'submitting'].includes(i.status) ? 'order working' : i.status)}</td>
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td>${placed}</td>${aiCell(i)}<td>${esc(['submitted', 'submitting'].includes(i.status) ? 'order working' : i.status)}</td>
       <td class="r">${i.filledQty || i.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? `<span class="muted">limit ${i.limit.toFixed(2)}</span>` : ''}</td>
       <td class="r">${now != null ? Number(now).toFixed(2) : '—'}</td>
       <td class="r ${cls(pl)}">${pl != null ? money(pl) + (plp != null ? ` <span style="font-weight:400">(${plp > 0 ? '+' : ''}${plp}%)</span>` : '') : '—'}</td>
       <td title="${esc(i.exitReason || i.chaseNote || i.rollNote || '')}"><span class="ellipsis">${esc(i.exitReason || i.chaseNote || i.rollNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.trailing ? `<span class="gain">trailing from ${Number(i.peakMark || 0).toFixed(2)}</span>` : '') || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</span></td>
       <td class="r" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
-  const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
+  const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Claude</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
   const evalRow = i => { const p = i.proposal || {};
-    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td>${aiCell(i)}<td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
   const trades = items.filter(i => ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice || i.status === 'submitting'));
   const active = trades.filter(i => i.status !== 'closed');
   const done = trades.filter(i => i.status === 'closed');
@@ -1464,7 +1469,7 @@ function vBot() {
   ${summaryHtml}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh every minute. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
-  <section><h2>Evaluations</h2>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : '<div class="tablewrap"><p class="empty">No evaluations yet.</p></div>'}</section>
+  <section><div class="cal-head"><h2>Evaluations</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Claude</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>
   <p class="muted" style="margin:18px 0 0">Bot rules, automatic flow trading and alerts are in <a href="#settings">Settings → Paper bot</a>.</p>`;
 }
 function botSettingsPanels() {
@@ -1725,6 +1730,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
+  if (id === 'ev-claude') { S.evClaude = e.target.checked; loadEvals(1); return; }
   if (id === 'bs-strat') { $('#bs-bull').hidden = e.target.value !== 'bull_call'; $('#bs-diag').hidden = e.target.value !== 'diagonal'; return; }
   if (id === 'fl-auto') { S.flowAuto = e.target.checked; if (S.flowAuto && S.flow) loadFlow(); return; }
   if (id === 'fl-period') { S.flowF = { ...(S.flowF || {}), period: e.target.value }; if (e.target.value !== 'custom') { loadFlow(); } else render(); return; }

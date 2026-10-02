@@ -986,6 +986,11 @@ def test_ai_chart_check():
         autotrader._carry_ai(SUB, other, autotrader.settings(SUB))
         assert "aiCheck" not in other and other["prevAiCheck"]["verdict"] == "caution", other
         STORE[(pk, "BOT#20260930120000-cccccc")]["status"] = "dismissed"
+        code, ev = call("GET", "/bot/evaluations", q={"claude": "1"})
+        assert code == 200 and ev["total"] >= 1 and all(i["aiCheck"]["verdict"] for i in ev["items"]), ev
+        mk(8)                                     # evaluated, never checked
+        code, allev = call("GET", "/bot/evaluations")
+        assert allev["total"] == ev["total"] + 1
         code, placed = call("POST", f"/bot/{r4}/order", {})
         assert code == 200 and len(posts) == 2, placed
         STORE[(pk, f"BOT#{r4}")]["status"] = "closed"

@@ -250,11 +250,13 @@ def bot_evaluations(sub, claims, body, q):
     """Evaluations that didn't become trades, newest first, 20 per page."""
     size = max(5, min(int(q.get("size") or 20), 100))
     page = max(1, int(q.get("page") or 1))
+    claude_only = q.get("claude") in ("1", "true")
     ev = [r for r in db.q_prefix(db.upk(sub), "BOT#", desc=True)
-          if r.get("status") not in ("submitting", "submitted", "open", "closing", "closed") and not r.get("orderId")]
+          if r.get("status") not in ("submitting", "submitted", "open", "closing", "closed") and not r.get("orderId")
+          and (not claude_only or (r.get("aiCheck") or {}).get("verdict"))]
     total = len(ev)
     chunk = ev[(page - 1) * size: page * size]
-    return {"page": page, "size": size, "total": total, "pages": max(1, -(-total // size)),
+    return {"page": page, "size": size, "total": total, "pages": max(1, -(-total // size)), "claude": claude_only,
             "items": [{k: v for k, v in r.items() if k not in ("PK", "SK")} for r in chunk]}
 
 
