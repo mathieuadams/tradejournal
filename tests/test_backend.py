@@ -966,6 +966,26 @@ def test_ai_chart_check():
         autotrader.handler({"sub": SUB, "job": "aicheck", "id": r4}, None)
         r = STORE[(pk, f"BOT#{r4}")]
         assert r["aiCheck"]["verdict"] == "approve" and r["aiRunning"] is False
+        # Claude sometimes sends the lists as one string: still shown as separate points
+        seen["verdict"] = "caution"
+        claude.vision_json = lambda *a, **k: {"verdict": "caution", "confidence": 58, "summary": "<p>Basing</p>",
+                                              "supports": "<li>Reclaimed the 21 EMA</li><li>Above the flip</li>", "concerns": '["Overhead supply to 35"]'}
+        rr = mk(7)
+        v = aicheck.run(SUB, STORE[(pk, f"BOT#{rr}")])
+        assert v["supports"] == ["Reclaimed the 21 EMA", "Above the flip"] and v["concerns"] == ["Overhead supply to 35"] and v["summary"] == "Basing", v
+        STORE[(pk, f"BOT#{rr}")]["status"] = "dismissed"
+        claude.vision_json = fake_vision
+        # a re-evaluation of the same contract keeps the check (and its charts); a different contract shows it as previous
+        new = {"id": "20260930120000-cccccc", "symbol": "XYZ", "proposal": prop}
+        autotrader._carry_ai(SUB, new, autotrader.settings(SUB))
+        assert new["aiCheck"]["verdict"] == "caution" and new["aiFrom"] == rr, new
+        db.put({"PK": pk, "SK": "BOT#20260930120000-cccccc", **new})
+        code, ch = call("GET", "/bot/20260930120000-cccccc/charts")
+        assert code == 200 and len(ch["images"]) == 2
+        other = {"id": "20260930120001-dddddd", "symbol": "XYZ", "proposal": {**prop, "contract": "XYZ261218C00105000"}}
+        autotrader._carry_ai(SUB, other, autotrader.settings(SUB))
+        assert "aiCheck" not in other and other["prevAiCheck"]["verdict"] == "caution", other
+        STORE[(pk, "BOT#20260930120000-cccccc")]["status"] = "dismissed"
         code, placed = call("POST", f"/bot/{r4}/order", {})
         assert code == 200 and len(posts) == 2, placed
         STORE[(pk, f"BOT#{r4}")]["status"] = "closed"

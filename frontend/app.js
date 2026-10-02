@@ -1309,12 +1309,15 @@ function orderLabel(r) {
 }
 function aiPanel(r) {
   if (!r.proposal) return '';
-  const a = r.aiCheck, busy = S.aiBusy === r.id || (r.aiRunning && !a);
+  const busy = S.aiBusy === r.id || (r.aiRunning && !r.aiCheck);
+  const prev = !r.aiCheck && r.prevAiCheck && r.prevAiCheck.verdict ? r.prevAiCheck : null, a = r.aiCheck || prev;
   const imgs = S.aiImgs[r.id];
   if (a && !imgs && !S.aiImgBusy[r.id]) setTimeout(() => loadAiImgs(r.id), 0);
   return `<h3 style="font-size:.95rem;margin:16px 0 6px">Claude's chart check</h3>
     ${busy ? '<p class="loading" style="padding:0;margin:0">Claude is looking at the daily and hourly charts… (about 20 seconds)</p>' : ''}
-    ${!busy && a ? `<p style="margin:0 0 6px"><span class="verdict ${AI_CLS[a.verdict] || 'mid'}">${esc(a.verdict.toUpperCase())}</span> <span class="muted" style="font-size:.85rem">${a.confidence}% confidence · ${esc((a.at || '').replace('T', ' ').slice(5, 16))} ET${aiFresh(a) ? '' : ' · older than the allowed age, will re-check before placing'}</span></p>
+    ${!busy && prev ? `<p class="muted" style="margin:0 0 6px;font-size:.85rem">Previous check for ${esc(r.symbol)} from an earlier evaluation${prev.contract && r.proposal && prev.contract !== r.proposal.contract ? ` on ${esc(prev.contract)} (different contract)` : ''}. Claude looks again before an order.</p>` : ''}
+    ${!busy && !prev && r.aiFrom ? '<p class="muted" style="margin:0 0 6px;font-size:.85rem">Carried over from the earlier evaluation of the same contract.</p>' : ''}
+    ${!busy && a ? `<p style="margin:0 0 6px"><span class="verdict ${AI_CLS[a.verdict] || 'mid'}">${esc(a.verdict.toUpperCase())}</span> <span class="muted" style="font-size:.85rem">${a.confidence}% confidence · ${esc((a.at || '').replace('T', ' ').slice(5, 16))} ET${prev || aiFresh(a) ? '' : ' · older than the allowed age, will re-check before placing'}</span></p>
       <p style="margin:0 0 6px">${esc(a.summary)}</p>
       <ul style="list-style:none;padding:0;margin:0;line-height:1.6">${(a.supports || []).map(x => `<li><b class="gain">✓</b> ${esc(x)}</li>`).join('')}${(a.concerns || []).map(x => `<li><b class="loss">✗</b> ${esc(x)}</li>`).join('')}</ul>` : ''}
     ${!busy && !a ? `<p class="muted" style="margin:0">${aiOn() ? 'Not checked yet. Claude looks at the daily and hourly charts with the stop, target, gamma levels and fair value gaps before the order goes in.' : 'Off in the bot settings.'}</p>` : ''}

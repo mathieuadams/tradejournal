@@ -517,8 +517,27 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
            "signals": {k: sig.get(k) for k in ("price", "asOf", "ema21", "atr21", "extAtr", "crossAgo", "momentum", "momentumPrev", "growth30", "low30", "low30Date")},
            "gamma": {k: g.get(k) for k in ("gammaFlip", "callWall", "putWall", "netGex", "regime")},
            "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}}
+    _carry_ai(sub, rec, cfg)
     db.put({"PK": db.upk(sub), "SK": f"BOT#{rec['id']}", **rec})
     return rec
+
+
+def _carry_ai(sub, rec, cfg):
+    """A re-evaluation creates a new record: keep Claude's last chart check for this ticker with it.
+    Same contract and still fresh -> it counts for placing the order (aiCheck). Otherwise it is shown as the previous
+    check (prevAiCheck) and Claude looks again before an order."""
+    p = rec.get("proposal") or {}
+    for old in db.q_prefix(db.upk(sub), "BOT#", desc=True, limit=300):
+        if old.get("symbol") != rec["symbol"] or not old.get("aiCheck") or old.get("id") == rec["id"]:
+            continue
+        chk = {**old["aiCheck"], "fromId": old.get("aiFrom") or old["id"]}
+        same = (old.get("proposal") or {}).get("contract") == p.get("contract") and p.get("contract")
+        fresh = chk.get("at", "") >= iso(now_ny() - timedelta(minutes=cfg["aiMaxAgeMin"]))
+        if same and fresh:
+            rec["aiCheck"], rec["aiFrom"] = chk, chk["fromId"]
+        else:
+            rec["prevAiCheck"] = {**chk, "contract": (old.get("proposal") or {}).get("contract")}
+        return
 
 
 # ---------------- Alpaca paper orders ----------------

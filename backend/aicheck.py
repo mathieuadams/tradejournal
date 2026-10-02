@@ -4,6 +4,7 @@ to look at them. Verdict: approve / caution / reject. Stored on the bot record; 
 import base64
 import json
 import os
+import re
 from datetime import timedelta
 
 import chartimg
@@ -125,6 +126,24 @@ def _brief(rec):
     }
 
 
+def _clean(t):
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(t or ""))).strip()
+
+
+def _items(v):
+    """A list of short points. The model sometimes sends one string (JSON text, <li> markup or lines) instead of a list."""
+    if isinstance(v, str):
+        t = v.strip()
+        try:
+            parsed = json.loads(t)
+            v = parsed if isinstance(parsed, list) else [t]
+        except ValueError:
+            parts = re.split(r"</?li>|</?ul>|\n+|(?:^|\s)[-•*]\s+", t)
+            v = parts if len([x for x in parts if x.strip()]) > 1 else [t]
+    out = [_clean(x)[:240] for x in (v or []) if _clean(x)]
+    return out[:8]
+
+
 def run(sub, rec):
     """Draw the charts, ask Claude, store the verdict and the images. Returns the verdict dict."""
     pk = db.upk(sub)
@@ -136,17 +155,22 @@ def run(sub, rec):
             "\n\nLook at both charts and submit your verdict.")
     out = claude.vision_json(model, SYSTEM, images, text, SCHEMA)
     verdict = {"verdict": out.get("verdict") if out.get("verdict") in ("approve", "caution", "reject") else "caution",
-               "confidence": int(out.get("confidence") or 0), "summary": str(out.get("summary") or "")[:600],
-               "supports": [str(x)[:240] for x in (out.get("supports") or [])][:8],
-               "concerns": [str(x)[:240] for x in (out.get("concerns") or [])][:8],
+               "confidence": int(out.get("confidence") or 0), "summary": _clean(out.get("summary"))[:600],
+               "supports": _items(out.get("supports")), "concerns": _items(out.get("concerns")),
                "model": model, "at": iso(now_ny()), "images": [label for label, _ in images]}
     db.put({"PK": pk, "SK": f"BOTCHART#{rec['id']}", "images": [{"label": l, "b64": base64.b64encode(png).decode()} for l, png in images],
             "createdAt": iso(now_ny())})
-    db.update(pk, f"BOT#{rec['id']}", {"aiCheck": verdict})
+    db.update(pk, f"BOT#{rec['id']}", {"aiCheck": verdict, "aiFrom": "", "prevAiCheck": {}})
     rec["aiCheck"] = verdict
     return verdict
 
 
 def charts(sub, bot_id):
-    it = db.get(db.upk(sub), f"BOTCHART#{bot_id}") or {}
+    pk = db.upk(sub)
+    it = db.get(pk, f"BOTCHART#{bot_id}")
+    if not it:                                   # a re-evaluation shows the charts of the check it carried over
+        rec = db.get(pk, f"BOT#{bot_id}") or {}
+        src = rec.get("aiFrom") or (rec.get("prevAiCheck") or {}).get("fromId")
+        it = db.get(pk, f"BOTCHART#{src}") if src else None
+    it = it or {}
     return {"images": it.get("images") or [], "createdAt": it.get("createdAt")}
