@@ -105,7 +105,7 @@ def put_settings(sub, claims, body, q):
             phone = "+1" + phone if len(phone) == 10 else "+" + phone
         if phone and not re.match(r"^\+[1-9]\d{7,14}$", phone):
             raise BadRequest("Enter the phone number with country code, e.g. +19165551234.")
-        ev = [e for e in (n.get("events") or ["entry", "fill", "exit", "closed", "cancel"]) if e in ("entry", "fill", "exit", "closed", "cancel")]
+        ev = [e for e in (n.get("events") or ["entry", "fill", "exit", "closed", "cancel", "roll", "ai"]) if e in ("entry", "fill", "exit", "closed", "cancel", "roll", "ai")]
         email = str(n.get("email") or "").strip()
         if email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
             raise BadRequest("Enter a valid email address.")
@@ -274,6 +274,8 @@ def bot_settings(sub, claims, body, q):
         "maxPositions": int(num("maxPositions", 1, 50)), "crossWindow": int(num("crossWindow", 1, 60)),
         "maxExtAtr": num("maxExtAtr", 0.1, 10), "minRoomRatio": num("minRoomRatio", 0, 10),
         "requireAboveFlip": bool(body.get("requireAboveFlip", cur["requireAboveFlip"])),
+        "aiCheck": bool(body.get("aiCheck", cur["aiCheck"])), "aiAllowCaution": bool(body.get("aiAllowCaution", cur["aiAllowCaution"])),
+        "aiBlockOnError": bool(body.get("aiBlockOnError", cur["aiBlockOnError"])), "aiMaxAgeMin": int(num("aiMaxAgeMin", 5, 1440)),
         "earnings": {k.upper()[:8]: v for k, v in (body.get("earnings") if isinstance(body.get("earnings"), dict) else cur["earnings"]).items()
                      if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}( (AMC|BMO))?$", v)},
         "noEntryDays": int(num("noEntryDays", 0, 60)),
@@ -288,9 +290,25 @@ def bot_settings(sub, claims, body, q):
         "flowCooldownMin": int(num("flowCooldownMin", 1, 1440)), "flowMaxEvals": int(num("flowMaxEvals", 1, 10)),
         "chaseStep": num("chaseStep", 0.05, 5), "chaseSeconds": int(num("chaseSeconds", 5, 60)),
         "chaseMaxSteps": int(num("chaseMaxSteps", 0, 20)), "chaseMaxPct": num("chaseMaxPct", 0, 50),
+        "strategy": body.get("strategy") if body.get("strategy") in autotrader.STRATEGIES else cur["strategy"],
+        "spreadShortDeltaMin": num("spreadShortDeltaMin", 0.05, 0.95), "spreadShortDeltaMax": num("spreadShortDeltaMax", 0.05, 0.95),
+        "spreadMaxDebitPct": num("spreadMaxDebitPct", 10, 100), "spreadStopPct": num("spreadStopPct", 5, 100),
+        "spreadTargetPct": num("spreadTargetPct", 5, 100),
+        "diagLongDteMin": int(num("diagLongDteMin", 1, 800)), "diagLongDteMax": int(num("diagLongDteMax", 1, 800)),
+        "diagLongDeltaMin": num("diagLongDeltaMin", 0.05, 0.99), "diagLongDeltaMax": num("diagLongDeltaMax", 0.05, 0.99),
+        "diagShortDteMin": int(num("diagShortDteMin", 0, 120)), "diagShortDteMax": int(num("diagShortDteMax", 0, 120)),
+        "diagShortDeltaMin": num("diagShortDeltaMin", 0.05, 0.95), "diagShortDeltaMax": num("diagShortDeltaMax", 0.05, 0.95),
+        "diagTargetPct": num("diagTargetPct", 0, 1000), "diagMinShortCredit": num("diagMinShortCredit", 0, 10000),
+        "diagRollDte": int(num("diagRollDte", 0, 10)), "diagRollWaitMin": int(num("diagRollWaitMin", 1, 30)),
     }
     if new["dteMin"] > new["dteMax"] or new["deltaMin"] > new["deltaMax"]:
         raise BadRequest("Minimums must be below maximums.")
+    if (new["spreadShortDeltaMin"] > new["spreadShortDeltaMax"] or new["diagLongDteMin"] > new["diagLongDteMax"]
+            or new["diagLongDeltaMin"] > new["diagLongDeltaMax"] or new["diagShortDteMin"] > new["diagShortDteMax"]
+            or new["diagShortDeltaMin"] > new["diagShortDeltaMax"]):
+        raise BadRequest("Spread minimums must be below maximums.")
+    if new["diagShortDteMax"] >= new["diagLongDteMin"]:
+        raise BadRequest("Diagonal: the short call must expire before the long call (short max days < long min days).")
     pk = db.upk(sub)
     p = db.get(pk, "PROFILE") or {"PK": pk, "SK": "PROFILE", "createdAt": iso(now_ny()), "settings": {}}
     p.setdefault("settings", {})["autotrade"] = new
@@ -308,10 +326,35 @@ def bot_evaluate(sub, claims, body, q):
 @route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/order")
 def bot_order(sub, claims, body, q, bid):
     import autotrader
-    rec = autotrader.place(sub, bid, body.get("qty"), body.get("limit"))
+    rec = autotrader.place(sub, bid, body.get("qty"), body.get("limit"), ai_inline=False, override=bool(body.get("override")))
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
                      Payload=json.dumps({"sub": sub, "job": "chase", "id": bid}))
     return rec
+
+
+@route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})")
+def bot_one(sub, claims, body, q, bid):
+    rec = db.get(db.upk(sub), f"BOT#{bid}")
+    if not rec:
+        raise NotFound("Not found.")
+    return {k: v for k, v in rec.items() if k not in ("PK", "SK")}
+
+
+@route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/aicheck")
+def bot_aicheck(sub, claims, body, q, bid):
+    """Claude's chart check runs in the bot function (it takes ~20 s); the page polls the record for aiCheck."""
+    if not db.get(db.upk(sub), f"BOT#{bid}"):
+        raise NotFound("Not found.")
+    db.update(db.upk(sub), f"BOT#{bid}", {"aiRunning": True, "aiError": "", "aiRequestedAt": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "aicheck", "id": bid}))
+    return {"status": "running"}
+
+
+@route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/charts")
+def bot_charts(sub, claims, body, q, bid):
+    import aicheck
+    return aicheck.charts(sub, bid)
 
 
 @route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/chase")

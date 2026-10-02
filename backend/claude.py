@@ -106,3 +106,22 @@ def repair(obj, schema):
         cut = re.search(r"</\w+>|<parameter", val)
         out[key] = val[:cut.start()].strip() if cut else val
     return out, leaked
+
+
+def vision_json(model, system, images, text, schema, max_tokens=1500):
+    """Structured answer about images. images: [(label, png bytes)]. Claude answers by calling a `submit` tool."""
+    import base64
+    content = []
+    for label, png in images:
+        content.append({"type": "text", "text": f"Chart: {label}"})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(png).decode()}})
+    content.append({"type": "text", "text": text})
+    tool = {"name": "submit", "description": "Submit the final verdict.", "input_schema": schema}
+    extra = {"tool_choice": {"type": "tool", "name": "submit"}}
+    for attempt in range(2):
+        r = messages(model, system, [{"role": "user", "content": content}], max_tokens, [tool], extra=extra)
+        out = next((b.get("input") or {} for b in r.get("content", []) if b.get("type") == "tool_use"), None)
+        if out is not None:
+            return repair(out, schema)[0]
+        print("vision: no tool call", json.dumps(r)[:600])
+    raise Unavailable("Claude didn't return a verdict. Try again.")

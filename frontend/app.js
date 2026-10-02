@@ -1248,6 +1248,10 @@ async function loadBot(force) {
   if (route() === 'bot') render();
 }
 const DEC_CLS = { BUY: 'ok', WAIT: 'mid', SKIP: 'bad' };
+const STRAT_LBL = { long_call: 'Long call', bull_call: 'Bull call spread', diagonal: 'Diagonal' };
+const isSpread = p => !!(p && p.legs && (p.strategy === 'bull_call' || p.strategy === 'diagonal'));
+const legTxt = p => !p || !p.exp ? '' : p.strategy === 'bull_call' && p.shortStrike ? `${fmtExp(p.exp)} ${p.strike}/${p.shortStrike}c`
+  : p.strategy === 'diagonal' ? `${fmtExp(p.exp)} ${p.strike}c / ${p.shortStrike ? `${fmtExp(p.shortExp)} ${p.shortStrike}c` : 'no short'}` : `${fmtExp(p.exp)} ${p.strike}c`;
 function botResult(r) {
   if (!r) return '';
   const p = r.proposal, groups = ['chart', 'gamma', 'events', 'contract'], gl = { chart: 'Chart', gamma: 'Gamma', events: 'Events', contract: 'Contract' };
@@ -1257,24 +1261,95 @@ function botResult(r) {
     ${r.blocking.length && r.decision !== 'BUY' ? `<p style="margin:12px 0 0"><b>Why not a buy:</b> ${r.blocking.map(esc).join('; ')}.</p>` : ''}
     ${p ? `<h3 style="font-size:.95rem;margin:16px 0 6px">Proposed order</h3>
       <div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
-        <tr><td>Contract</td><td class="r"><b>${esc(r.symbol)} ${esc(fmtExp(p.exp))} ${p.strike} call</b> <span class="muted">${esc(p.contract)}</span></td></tr>
+        ${isSpread(p) ? `<tr><td>Structure</td><td class="r"><b>${STRAT_LBL[p.strategy]}</b></td></tr>
+        <tr><td>Buy</td><td class="r"><b>${esc(r.symbol)} ${esc(fmtExp(p.exp))} ${p.strike} call</b> <span class="muted">${esc(p.contract)} · mid ${p.legs[0].mid} · delta ${p.legs[0].delta}</span></td></tr>
+        <tr><td>Sell</td><td class="r"><b>${p.shortContract ? `${esc(r.symbol)} ${esc(fmtExp(p.shortExp))} ${p.shortStrike} call` : 'no short call held — selling the next cycle'}</b>${p.shortContract ? ` <span class="muted">${esc(p.shortContract)} · mid ${p.legs[1].mid} · delta ${p.legs[1].delta}</span>` : ''}</td></tr>
+        <tr><td>Spreads × net debit</td><td class="r">${p.qty} × ${p.limit.toFixed(2)} = ${money(p.cost, false)}</td></tr>
+        <tr><td>Width${p.maxProfit != null ? ' / max profit' : ''} / max loss</td><td class="r">${p.width}${p.maxProfit != null ? ` / ${money(p.maxProfit * 100 * p.qty, false)}` : ''} / ${money(p.maxLoss * 100 * p.qty, false)}${p.breakeven ? ` <span class="muted">(breakeven ${px(p.breakeven)} at expiry)</span>` : ''}</td></tr>
+        <tr><td>Exit if the spread falls to</td><td class="r">${p.optionStop.toFixed(2)} <span class="muted">(risk ${money(p.riskAtStop, false)})</span></td></tr>
+        <tr><td>Take profit at spread</td><td class="r">${p.optionTarget != null ? p.optionTarget.toFixed(2) : 'none — keeps rolling the short call'}</td></tr>
+        ${(r.rolls || []).length ? `<tr><td>Short calls rolled</td><td class="r">${r.rolls.length}× · net ${money((r.cashAdj || 0) * 100 * (r.filledQty || p.qty), false)} ${(r.cashAdj || 0) >= 0 ? 'collected' : 'paid'}</td></tr>` : ''}` : `<tr><td>Contract</td><td class="r"><b>${esc(r.symbol)} ${esc(fmtExp(p.exp))} ${p.strike} call</b> <span class="muted">${esc(p.contract)}</span></td></tr>
         <tr><td>Quantity × limit</td><td class="r">${p.qty} × ${p.limit.toFixed(2)} = ${money(p.cost, false)}</td></tr>
         <tr><td>Exit if the option falls to</td><td class="r">${p.optionStop.toFixed(2)} <span class="muted">(risk ${money(p.riskAtStop, false)})</span></td></tr>
-        <tr><td>Take profit at option</td><td class="r">${p.optionTarget.toFixed(2)}</td></tr>
+        <tr><td>Take profit at option</td><td class="r">${p.optionTarget.toFixed(2)}</td></tr>`}
         <tr><td>Exit if ${esc(r.symbol)} closes below</td><td class="r">${px(p.underlyingStop)}</td></tr>
         <tr><td>Take profit if ${esc(r.symbol)} reaches</td><td class="r">${px(p.underlyingTarget)}</td></tr>
       </tbody></table></div>` : ''}
     ${(r.candidates || []).length ? `<details style="margin-top:10px" ${r.proposal ? '' : 'open'}><summary style="cursor:pointer" class="muted">Contracts considered (best first)</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>Expiry</th><th class="r">Strike</th><th class="r">Delta</th><th class="r">Mid</th><th class="r">Spread</th><th class="r">OI</th><th class="r">Breakeven</th><th class="r">EM upper</th><th>Issues</th></tr></thead><tbody>
       ${r.candidates.map(c => `<tr><td>${fmtExp(c.exp)} (${c.dte}d)</td><td class="r">${c.strike}</td><td class="r">${c.delta}</td><td class="r">${c.mid}</td><td class="r">${c.spreadPct ?? '—'}%</td><td class="r">${c.oi}</td><td class="r">${c.breakeven}</td><td class="r">${c.emUpper ?? '—'}</td><td>${c.problems.map(esc).join(', ') || '<span class="gain">ok</span>'}</td></tr>`).join('')}
     </tbody></table></div></details>` : ''}
-    ${(r.marks || []).length > 1 ? `<h3 style="font-size:.95rem;margin:16px 0 6px">Option value since entry (every ~15 min)</h3>${markLine(r)}` : ''}
+    ${(r.spreadCandidates || []).length ? `<details style="margin-top:6px"><summary style="cursor:pointer" class="muted">Short calls considered (best first)</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>Expiry</th><th class="r">Strike</th><th class="r">Delta</th><th class="r">Mid</th><th class="r">Net debit</th><th class="r">Width</th><th class="r">Max profit</th><th>Issues</th></tr></thead><tbody>
+      ${r.spreadCandidates.map(c => `<tr><td>${fmtExp(c.exp)} (${c.dte}d)</td><td class="r">${c.strike}</td><td class="r">${c.delta}</td><td class="r">${c.mid}</td><td class="r">${c.debit.toFixed(2)}</td><td class="r">${c.width}</td><td class="r">${c.maxProfit != null ? c.maxProfit.toFixed(2) : '—'}</td><td>${c.problems.map(esc).join(', ') || '<span class="gain">ok</span>'}</td></tr>`).join('')}
+    </tbody></table></div></details>` : ''}
+    ${(r.rolls || []).length ? `<details style="margin-top:6px"><summary style="cursor:pointer" class="muted">Rolls</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>When</th><th>Bought back</th><th>Sold</th><th class="r">Net per spread</th></tr></thead><tbody>
+      ${r.rolls.map(x => `<tr><td>${esc(x.at.replace('T', ' ').slice(5, 16))}</td><td>${esc(x.from || '—')}</td><td>${esc(x.to)}</td><td class="r ${cls(x.credit)}">${x.credit >= 0 ? '+' : ''}${x.credit.toFixed(2)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+    ${(r.marks || []).length > 1 ? `<h3 style="font-size:.95rem;margin:16px 0 6px">${p && (p.strategy === 'bull_call' || p.strategy === 'diagonal') ? 'Spread' : 'Option'} value since entry (every ~15 min)</h3>${markLine(r)}` : ''}
+    ${aiPanel(r)}
     <p style="margin:12px 0 0"><button class="btn" data-rescan="${esc(r.symbol)}">Re-evaluate ${esc(r.symbol)} now</button></p>
     ${p && r.status === 'proposed' ? `<div class="form-grid" style="align-items:end;margin-top:12px">
-      <div class="field"><label for="bo-qty">Contracts</label><input id="bo-qty" type="number" min="1" value="${Math.max(1, p.qty)}"></div>
-      <div class="field"><label for="bo-lim">Limit price</label><input id="bo-lim" type="number" step="0.05" value="${p.limit.toFixed(2)}"></div>
-      <div class="field"><button class="btn coachbtn" data-botorder="${r.id}">${r.decision === 'BUY' ? 'Place paper order' : 'Place paper order anyway'}</button></div>
+      <div class="field"><label for="bo-qty">${isSpread(p) ? 'Spreads' : 'Contracts'}</label><input id="bo-qty" type="number" min="1" value="${Math.max(1, p.qty)}"></div>
+      <div class="field"><label for="bo-lim">${isSpread(p) ? 'Net debit limit' : 'Limit price'}</label><input id="bo-lim" type="number" step="0.05" value="${p.limit.toFixed(2)}"></div>
+      <div class="field"><button class="btn coachbtn" data-botorder="${r.id}" ${S.aiBusy === r.id ? 'disabled' : ''}>${orderLabel(r)}</button></div>
+      ${aiOn() && r.aiCheck && r.aiCheck.verdict !== 'approve' ? `<div class="field"><button class="btn" data-botorder="${r.id}" data-override="1">Place anyway (override Claude)</button></div>` : ''}
       <div class="field"><button class="btn" data-botdismiss="${r.id}">Dismiss</button></div></div>` : ''}
   </section>`;
+}
+/* ---------- Claude's chart check (final visual verification before an order) ---------- */
+const AI_CLS = { approve: 'ok', caution: 'mid', reject: 'bad' };
+S.aiImgs = S.aiImgs || {}; S.aiImgBusy = S.aiImgBusy || {};
+const aiOn = () => ((S.bot && S.bot.settings) || {}).aiCheck !== false;
+const nyTime = ms => new Date(ms).toLocaleString('sv-SE', { timeZone: 'America/New_York' }).replace(' ', 'T');
+const aiFresh = a => { const m = ((S.bot && S.bot.settings) || {}).aiMaxAgeMin || 30; return !!(a && a.at && a.at >= nyTime(Date.now() - m * 60000)); };
+function orderLabel(r) {
+  const base = r.decision === 'BUY' ? 'Place paper order' : 'Place paper order anyway';
+  if (!aiOn()) return base;
+  if (S.aiBusy === r.id) return 'Claude is checking…';
+  if (r.aiCheck && aiFresh(r.aiCheck) && r.aiCheck.verdict === 'approve') return base;
+  return r.decision === 'BUY' ? 'Check chart with Claude, then place' : 'Check chart with Claude, then place anyway';
+}
+function aiPanel(r) {
+  if (!r.proposal) return '';
+  const a = r.aiCheck, busy = S.aiBusy === r.id || (r.aiRunning && !a);
+  const imgs = S.aiImgs[r.id];
+  if (a && !imgs && !S.aiImgBusy[r.id]) setTimeout(() => loadAiImgs(r.id), 0);
+  return `<h3 style="font-size:.95rem;margin:16px 0 6px">Claude's chart check</h3>
+    ${busy ? '<p class="loading" style="padding:0;margin:0">Claude is looking at the daily and hourly charts… (about 20 seconds)</p>' : ''}
+    ${!busy && a ? `<p style="margin:0 0 6px"><span class="verdict ${AI_CLS[a.verdict] || 'mid'}">${esc(a.verdict.toUpperCase())}</span> <span class="muted" style="font-size:.85rem">${a.confidence}% confidence · ${esc((a.at || '').replace('T', ' ').slice(5, 16))} ET${aiFresh(a) ? '' : ' · older than the allowed age, will re-check before placing'}</span></p>
+      <p style="margin:0 0 6px">${esc(a.summary)}</p>
+      <ul style="list-style:none;padding:0;margin:0;line-height:1.6">${(a.supports || []).map(x => `<li><b class="gain">✓</b> ${esc(x)}</li>`).join('')}${(a.concerns || []).map(x => `<li><b class="loss">✗</b> ${esc(x)}</li>`).join('')}</ul>` : ''}
+    ${!busy && !a ? `<p class="muted" style="margin:0">${aiOn() ? 'Not checked yet. Claude looks at the daily and hourly charts with the stop, target, gamma levels and fair value gaps before the order goes in.' : 'Off in the bot settings.'}</p>` : ''}
+    ${r.aiError ? `<p class="loss" style="margin:6px 0 0">${esc(r.aiError)}</p>` : ''}
+    ${imgs && imgs.length ? `<div style="display:grid;gap:10px;margin-top:10px">${imgs.map(x => `<figure style="margin:0"><img src="data:image/png;base64,${x.b64}" alt="${esc(r.symbol)} ${esc(x.label)} chart sent to Claude" style="width:100%;height:auto;border:1px solid var(--line);border-radius:8px"><figcaption class="muted" style="font-size:.8rem">${esc(x.label)} — what Claude saw</figcaption></figure>`).join('')}</div>` : ''}
+    ${r.status === 'proposed' && !busy ? `<p style="margin:8px 0 0"><button class="btn" data-aicheck="${r.id}">${a ? 'Check again' : 'Ask Claude to check the chart'}</button></p>` : ''}`;
+}
+async function loadAiImgs(id) {
+  S.aiImgBusy[id] = true;
+  try { const r = await api(`/bot/${id}/charts`); S.aiImgs[id] = r.images || []; if (route() === 'bot' || route() === 'gex') render(); } catch (e) { S.aiImgs[id] = []; }
+}
+function mergeRes(rec) {
+  if (S.botRes && S.botRes.id === rec.id) S.botRes = { ...S.botRes, ...rec };
+  if (S.anaRes && S.anaRes.id === rec.id) S.anaRes = { ...S.anaRes, ...rec };
+}
+async function aiRun(id, placeAfter) {
+  S.aiBusy = id; render();
+  try { await api(`/bot/${id}/aicheck`, { method: 'POST' }); } catch (e) { S.aiBusy = null; render(); toast(e.message); return; }
+  for (let i = 0; i < 30; i++) {
+    await sleep(4000);
+    let rec; try { rec = await api(`/bot/${id}`); } catch (e) { continue; }
+    if (rec.aiRunning) continue;
+    S.aiBusy = null; delete S.aiImgs[id]; S.aiImgBusy[id] = false; mergeRes(rec); render();
+    if (rec.aiError) { toast(rec.aiError); return; }
+    const v = rec.aiCheck && rec.aiCheck.verdict;
+    if (placeAfter && v === 'approve') { placeOrder(id, false, placeAfter); return; }
+    toast(placeAfter ? `Claude: ${v}. Not placed — review the chart, or "Place anyway" if you disagree.` : `Claude: ${v}`);
+    return;
+  }
+  S.aiBusy = null; render(); toast('The chart check is taking longer than usual. Refresh in a minute.');
+}
+function placeOrder(id, override, form) {
+  api(`/bot/${id}/order`, { method: 'POST', body: { qty: form.qty, limit: form.limit, override } })
+    .then(async r => { mergeRes(r); await loadBot(true); const c = S.bot.settings || {}; toast(`Paper order sent. If it doesn't fill, the limit moves ${c.chaseStep ?? 0.1} every ${c.chaseSeconds ?? 12}s (up to ${c.chaseMaxSteps ?? 5} times).`); setTimeout(() => loadBot(true), 60000); })
+    .catch(err => { toast(err.message); render(); });
 }
 function markLine(r) {
   const m = r.marks, W = 720, H = 160, p = 10, v = m.map(x => x.mark), lo = Math.min(...v, r.fillPrice || Infinity), hi = Math.max(...v, r.fillPrice || -Infinity), sp = hi - lo || 1;
@@ -1340,15 +1415,15 @@ function vBot() {
     const placed = (i.placedBy || '').startsWith('auto') ? (i.placedBy === 'auto-flow' ? 'Bot (flow)' : 'Bot') : `You <span class="muted">(bot said ${esc(i.decision)})</span>`;
     const pl = i.status === 'closed' ? i.realizedPl : i.lastPl, plp = i.status === 'closed' ? i.realizedPct : i.lastPlPct;
     const now = i.status === 'closed' ? i.exitPrice : i.lastMark;
-    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td>${placed}</td><td>${esc(['submitted', 'submitting'].includes(i.status) ? 'order working' : i.status)}</td>
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td>${placed}</td><td>${esc(['submitted', 'submitting'].includes(i.status) ? 'order working' : i.status)}</td>
       <td class="r">${i.filledQty || i.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? `<span class="muted">limit ${i.limit.toFixed(2)}</span>` : ''}</td>
       <td class="r">${now != null ? Number(now).toFixed(2) : '—'}</td>
       <td class="r ${cls(pl)}">${pl != null ? money(pl) + (plp != null ? ` <span style="font-weight:400">(${plp > 0 ? '+' : ''}${plp}%)</span>` : '') : '—'}</td>
-      <td title="${esc(i.exitReason || i.chaseNote || '')}"><span class="ellipsis">${esc(i.exitReason || i.chaseNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.trailing ? `<span class="gain">trailing from ${Number(i.peakMark || 0).toFixed(2)}</span>` : '') || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</span></td>
+      <td title="${esc(i.exitReason || i.chaseNote || i.rollNote || '')}"><span class="ellipsis">${esc(i.exitReason || i.chaseNote || i.rollNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.trailing ? `<span class="gain">trailing from ${Number(i.peakMark || 0).toFixed(2)}</span>` : '') || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</span></td>
       <td class="r" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
   const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
   const evalRow = i => { const p = i.proposal || {};
-    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(fmtExp(p.exp))} ${p.strike}c</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td><td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
   const trades = items.filter(i => ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice || i.status === 'submitting'));
   const active = trades.filter(i => i.status !== 'closed');
   const done = trades.filter(i => i.status === 'closed');
@@ -1415,8 +1490,8 @@ function botSettingsPanels() {
       <div class="field"><label for="nt-phone">Mobile number (with country code)</label><input id="nt-phone" type="tel" placeholder="+19165551234" value="${esc(nt.phone || '')}"></div>
       <div class="field"><label><input type="checkbox" id="nt-on" ${nt.sms ? 'checked' : ''}> I agree to receive text alerts about my paper-bot orders at this number. Frequency varies. Msg &amp; data rates may apply. Reply STOP to opt out, HELP for help. <a href="/terms.html" target="_blank">Terms</a> · <a href="/privacy.html" target="_blank">Privacy</a></label></div>
       <div class="field"><button class="btn primary" id="nt-save">Save</button> <button class="btn" id="nt-test">Send test</button></div></div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 10px">${[['entry', 'Buy orders placed'], ['fill', 'Buys filled'], ['exit', 'Exit orders (with reason)'], ['closed', 'Positions closed (with P&L)'], ['cancel', 'Unfilled orders cancelled']]
-      .map(([k, l]) => `<label><input type="checkbox" class="nt-ev" value="${k}" ${(nt.events || ['entry', 'fill', 'exit', 'closed', 'cancel']).includes(k) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 10px">${[['entry', 'Buy orders placed'], ['fill', 'Buys filled'], ['exit', 'Exit orders (with reason)'], ['closed', 'Positions closed (with P&L)'], ['cancel', 'Unfilled orders cancelled'], ['roll', 'Diagonal short calls rolled'], ['ai', 'Orders blocked by Claude']]
+      .map(([k, l]) => `<label><input type="checkbox" class="nt-ev" value="${k}" ${(nt.events || ['entry', 'fill', 'exit', 'closed', 'cancel', 'roll', 'ai']).includes(k) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
     
     ${(b && b.notifications || []).length ? `<details><summary class="muted" style="cursor:pointer">Recent alerts</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>When</th><th>Message</th><th>Status</th></tr></thead><tbody>
       ${b.notifications.map(n => `<tr><td>${esc((n.at || '').replace('T', ' ').slice(5, 16))}</td><td title="${esc(n.text)}"><span class="ellipsis" style="max-width:520px">${esc(n.text)}</span></td><td class="${n.status === 'sent' ? 'gain' : n.status === 'failed' ? 'loss' : 'muted'}" title="${esc(n.error || '')}">${esc(n.status)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
@@ -1426,8 +1501,25 @@ function botSettingsPanels() {
       <label><input type="checkbox" id="bs-on" ${cfg.enabled ? 'checked' : ''}> Scan the watchlist on a schedule (10:15 and 15:15 ET)</label>
       <label><input type="checkbox" id="bs-auto" ${cfg.autoSubmit ? 'checked' : ''}> Place paper orders automatically when the decision is BUY</label>
       <label><input type="checkbox" id="bs-flip" ${cfg.requireAboveFlip ? 'checked' : ''}> Require price above the gamma flip</label>
+      <label><input type="checkbox" id="bs-ai" ${cfg.aiCheck !== false ? 'checked' : ''}> Claude checks the chart before every order</label>
+      <label><input type="checkbox" id="bs-aicau" ${cfg.aiAllowCaution ? 'checked' : ''}> Still place when Claude says “caution”</label>
+      <label><input type="checkbox" id="bs-aierr" ${cfg.aiBlockOnError !== false ? 'checked' : ''}> Don't place if the chart check can't run</label>
       <label><input type="checkbox" id="bs-onclose" ${cfg.invalidationOnClose !== false ? 'checked' : ''}> Exit on the invalidation level only on a close below it (checked from 15:50 ET)</label>
       <label><input type="checkbox" id="bs-trail" ${cfg.trailAfterTarget !== false ? 'checked' : ''}> After the target is reached, trail instead of selling</label></div>
+    <h3 style="font-size:.95rem;margin:4px 0 6px">Structure</h3>
+    <div class="form-grid">
+      <div class="field"><label for="bs-strat">Trade as</label><select id="bs-strat">${Object.entries(STRAT_LBL).map(([k, l]) => `<option value="${k}" ${(cfg.strategy || 'long_call') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      ${f('bs-sstop', 'Spread stop (% of debit lost)', cfg.spreadStopPct ?? 50, 1)}</div>
+    <div class="form-grid" ${(cfg.strategy || 'long_call') === 'bull_call' ? '' : 'hidden'} id="bs-bull">
+      ${f('bs-sdmin', 'Short call delta, min', cfg.spreadShortDeltaMin ?? 0.2, 0.05)}${f('bs-sdmax', 'Short call delta, max', cfg.spreadShortDeltaMax ?? 0.4, 0.05)}
+      ${f('bs-sdebit', 'Max debit (% of width)', cfg.spreadMaxDebitPct ?? 70, 1)}${f('bs-starget', 'Take profit at (% of max profit)', cfg.spreadTargetPct ?? 70, 1)}</div>
+    <div class="form-grid" ${cfg.strategy === 'diagonal' ? '' : 'hidden'} id="bs-diag">
+      ${f('bs-dldmin', 'Long call days, min', cfg.diagLongDteMin ?? 60, 1)}${f('bs-dldmax', 'Long call days, max', cfg.diagLongDteMax ?? 150, 1)}
+      ${f('bs-dlxmin', 'Long call delta, min', cfg.diagLongDeltaMin ?? 0.65, 0.05)}${f('bs-dlxmax', 'Long call delta, max', cfg.diagLongDeltaMax ?? 0.85, 0.05)}
+      ${f('bs-dsdmin', 'Short call days, min', cfg.diagShortDteMin ?? 5, 1)}${f('bs-dsdmax', 'Short call days, max', cfg.diagShortDteMax ?? 21, 1)}
+      ${f('bs-dsxmin', 'Short call delta, min', cfg.diagShortDeltaMin ?? 0.2, 0.05)}${f('bs-dsxmax', 'Short call delta, max', cfg.diagShortDeltaMax ?? 0.4, 0.05)}
+      ${f('bs-dcredit', 'Short call must pay at least ($ per contract)', cfg.diagMinShortCredit ?? 100, 1)}${f('bs-droll', 'Roll the short call when it has ≤ days left (from 15:30 ET)', cfg.diagRollDte ?? 0, 1)}
+      ${f('bs-drollwait', 'Roll at mid for (minutes), then at market', cfg.diagRollWaitMin ?? 3, 1)}${f('bs-dtarget', 'Take profit (% gain on debit, 0 = keep rolling)', cfg.diagTargetPct ?? 0, 1)}</div>
     <div class="field"><label for="bs-watch">Watchlist (tickers separated by spaces or commas)</label><input id="bs-watch" type="text" style="text-transform:uppercase" value="${esc((cfg.watchlist || []).join(' '))}"></div>
     <div class="form-grid">
       ${f('bs-dtemin', 'Days to expiry, min', cfg.dteMin, 1)}${f('bs-dtemax', 'Days to expiry, max', cfg.dteMax, 1)}
@@ -1456,13 +1548,17 @@ async function botEvaluate() {
 async function botSaveSettings(quiet) {
   const earnings = {}; ($('#bs-earn').value || '').split('\n').forEach(l => { const m = l.trim().split(/[\s,]+/); if (m.length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(m[1])) earnings[m[0].toUpperCase()] = m[1] + (m[2] && /^(amc|bmo)$/i.test(m[2]) ? ' ' + m[2].toUpperCase() : ' AMC'); });
   const v = id => $(id).value;
-  const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked,
+  const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked, aiCheck: $('#bs-ai').checked, aiAllowCaution: $('#bs-aicau').checked, aiBlockOnError: $('#bs-aierr').checked,
     watchlist: v('#bs-watch').split(/[\s,]+/).filter(Boolean), dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
     minOi: v('#bs-oi'), maxSpreadPct: v('#bs-spread'), stopPct: v('#bs-stop'), targetPct: v('#bs-target'), timeStopDte: v('#bs-time'), maxPositions: v('#bs-max'),
     minGrowth30: v('#bs-g30'), invalidationOnClose: $('#bs-onclose').checked, trailAfterTarget: $('#bs-trail').checked, emergencyAtr: v('#bs-emerg'), trailPct: v('#bs-trailpct'),
     crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'),
     flowAuto: $('#bf-on').checked, excludeEtfs: $('#bf-etf').checked, flowAskSide: $('#bf-ask').checked, flowSweeps: $('#bf-sweep').checked,
-    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings };
+    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings,
+    strategy: v('#bs-strat'), spreadStopPct: v('#bs-sstop'), spreadShortDeltaMin: v('#bs-sdmin'), spreadShortDeltaMax: v('#bs-sdmax'),
+    spreadMaxDebitPct: v('#bs-sdebit'), spreadTargetPct: v('#bs-starget'), diagLongDteMin: v('#bs-dldmin'), diagLongDteMax: v('#bs-dldmax'),
+    diagLongDeltaMin: v('#bs-dlxmin'), diagLongDeltaMax: v('#bs-dlxmax'), diagShortDteMin: v('#bs-dsdmin'), diagShortDteMax: v('#bs-dsdmax'),
+    diagShortDeltaMin: v('#bs-dsxmin'), diagShortDeltaMax: v('#bs-dsxmax'), diagTargetPct: v('#bs-dtarget'), diagMinShortCredit: v('#bs-dcredit'), diagRollDte: v('#bs-droll'), diagRollWaitMin: v('#bs-drollwait') };
   if (body.autoSubmit && !(S.bot.settings || {}).autoSubmit && !confirm('Automatic paper orders: the bot will place paper trades by itself when every rule passes. Continue?')) return;
   try {
     const risk = +v('#bs-risk');
@@ -1470,6 +1566,45 @@ async function botSaveSettings(quiet) {
     S.bot.settings = await api('/bot/settings', { method: 'PUT', body }); toast('Bot settings saved'); if (!quiet) render();
   } catch (e) { toast(e.message); }
 }
+
+/* ---------- manual refresh (button + pull down), and refresh when the app comes back to the foreground ---------- */
+let refreshing = false, hiddenAt = 0;
+async function refreshNow(quiet) {
+  if (refreshing) return;
+  refreshing = true;
+  const b = $('#refresh-btn'); if (b) b.classList.add('spin');
+  try {
+    const v = route();
+    await reload();
+    if (v === 'bot') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); }
+    else if (v === 'gex') { if (S.flow && !S.flowBusy && $('#fl-prem')) loadFlow(); loadMarketGamma(true); }
+    else if (v === 'coach' || v === 'dashboard') { await loadNotes(true); }
+    if (S.botRes && S.botRes.id && S.bot && S.bot.items) { const n = S.bot.items.find(i => i.id === S.botRes.id); if (n) S.botRes = { ...S.botRes, ...n }; }
+    render();
+    if (!quiet) toast('Up to date');
+  } catch (e) { toast(e.message); }
+  finally { refreshing = false; const b2 = $('#refresh-btn'); if (b2) b2.classList.remove('spin'); }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (hiddenAt && Date.now() - hiddenAt > 15000 && !$('#app').hidden) refreshNow(true);   // back from another app / lock screen
+});
+window.addEventListener('pageshow', e => { if (e.persisted && !$('#app').hidden) refreshNow(true); });
+(() => {   // pull down from the top of the page to refresh (phones)
+  let y0 = null, pulled = 0;
+  const ind = () => $('#pull-ind');
+  window.addEventListener('touchstart', e => { y0 = window.scrollY <= 0 && !document.body.style.overflow ? e.touches[0].clientY : null; pulled = 0; }, { passive: true });
+  window.addEventListener('touchmove', e => {
+    if (y0 === null) return;
+    pulled = Math.max(0, e.touches[0].clientY - y0);
+    const i = ind(); if (i) { i.style.opacity = Math.min(1, pulled / 80); i.textContent = pulled > 80 ? 'Release to refresh' : 'Pull to refresh'; }
+  }, { passive: true });
+  window.addEventListener('touchend', () => {
+    const i = ind(); if (i) i.style.opacity = 0;
+    if (y0 !== null && pulled > 80) refreshNow();
+    y0 = null; pulled = 0;
+  });
+})();
 
 /* ---------- auto refresh (every minute, only while the page is visible and you're not typing) ---------- */
 setInterval(() => {
@@ -1492,7 +1627,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-botsave],[data-evpage],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-botsave],[data-evpage],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],#refresh-btn,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
@@ -1517,8 +1652,16 @@ document.addEventListener('click', e => {
   if (el.id === 'bot-eval') { botEvaluate(); return; }
   if (el.id === 'bs-save') { botSaveSettings(); return; }
   if (el.dataset.botrun) { api('/bot/run', { method: 'POST', body: { job: el.dataset.botrun } }).then(() => { toast(el.dataset.botrun === 'scan' ? 'Scanning the watchlist… refresh in a minute' : 'Checking exits…'); setTimeout(() => loadBot(true), 20000); }).catch(err => toast(err.message)); return; }
-  if (el.dataset.botorder) { const id = el.dataset.botorder; el.disabled = true; api(`/bot/${id}/order`, { method: 'POST', body: { qty: +$('#bo-qty').value, limit: +$('#bo-lim').value } })
-      .then(async r => { S.botRes = { ...S.botRes, ...r }; await loadBot(true); const c = S.bot.settings || {}; toast(`Paper order sent. If it doesn't fill, the limit rises ${c.chaseStep ?? 0.1} every ${c.chaseSeconds ?? 12}s (up to ${c.chaseMaxSteps ?? 5} times).`); setTimeout(() => loadBot(true), 60000); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
+  if (el.dataset.botorder) {
+    const id = el.dataset.botorder, form = { qty: +$('#bo-qty').value, limit: +$('#bo-lim').value }, override = !!el.dataset.override;
+    const r = [S.botRes, S.anaRes].find(x => x && x.id === id) || {};
+    if (override && !confirm("Place this order even though Claude's chart check didn't approve it?")) return;
+    el.disabled = true;
+    if (aiOn() && !override && !(r.aiCheck && aiFresh(r.aiCheck) && r.aiCheck.verdict === 'approve')) { aiRun(id, form); return; }
+    placeOrder(id, override, form); return;
+  }
+  if (el.dataset.aicheck) { aiRun(el.dataset.aicheck, null); return; }
+  if (el.id === 'refresh-btn') { refreshNow(); return; }
   if (el.dataset.botclose) { if (!confirm('Close this paper position at market?')) return; api(`/bot/${el.dataset.botclose}/close`, { method: 'POST' }).then(async () => { await loadBot(true); toast('Close order sent'); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botdismiss) { api(`/bot/${el.dataset.botdismiss}/dismiss`, { method: 'POST' }).then(async () => { S.botRes = null; await loadBot(true); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botshow) { S.botRes = (S.bot.items || []).find(i => i.id === el.dataset.botshow) || null; render(); window.scrollTo(0, 0); return; }
@@ -1579,6 +1722,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
+  if (id === 'bs-strat') { $('#bs-bull').hidden = e.target.value !== 'bull_call'; $('#bs-diag').hidden = e.target.value !== 'diagonal'; return; }
   if (id === 'fl-auto') { S.flowAuto = e.target.checked; if (S.flowAuto && S.flow) loadFlow(); return; }
   if (id === 'fl-period') { S.flowF = { ...(S.flowF || {}), period: e.target.value }; if (e.target.value !== 'custom') { loadFlow(); } else render(); return; }
   if (id === 'tc-type' || id === 'tc-exp') { tcRead(); return; }

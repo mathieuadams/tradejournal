@@ -268,3 +268,17 @@ td .ellipsis{display:inline-block;max-width:280px;overflow:hidden;text-overflow:
   .periods{grid-template-columns:1fr}
   .form-grid{grid-template-columns:1fr}
 }
+
+/* refresh button (always reachable, sits clear of the phone notch) + pull-to-refresh hint */
+.refresh-fab{position:fixed;top:calc(env(safe-area-inset-top,0px) + 10px);right:calc(env(safe-area-inset-right,0px) + 12px);z-index:60;
+  width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--ink);
+  display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12);cursor:pointer}
+.refresh-fab:active{transform:scale(.94)}
+.refresh-fab.spin svg{animation:rf-spin .8s linear infinite}
+@keyframes rf-spin{to{transform:rotate(360deg)}}
+.pull-ind{position:fixed;top:calc(env(safe-area-inset-top,0px) + 14px);left:50%;transform:translateX(-50%);z-index:59;
+  font-size:.8rem;padding:4px 10px;border-radius:12px;background:var(--surface);border:1px solid var(--line);opacity:0;pointer-events:none;transition:opacity .15s}
+body:has(#app[hidden]) .refresh-fab{display:none}
+@media (max-width:900px){
+  .refresh-fab{top:auto;bottom:calc(env(safe-area-inset-bottom,0px) + 74px);right:14px;width:46px;height:46px}
+}

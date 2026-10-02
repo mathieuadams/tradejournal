@@ -389,6 +389,7 @@ Resources:
       MemorySize: 1024
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }   # Claude's chart check
         - Statement:
             - Effect: Allow
               Action: [sns:Publish, sns:Subscribe, sns:Unsubscribe, sns:ListSubscriptionsByTopic, sns:GetSubscriptionAttributes]

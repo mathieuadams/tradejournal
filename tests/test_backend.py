@@ -85,6 +85,8 @@ from grouping import group_fills  # noqa: E402
 from parsers import ParseError, parse_csv  # noqa: E402
 
 SUB = "user-123"
+import autotrader  # noqa: E402
+autotrader.DEFAULTS["aiCheck"] = False     # the order tests below don't exercise Claude's chart check (see test_ai_chart_check)
 
 
 def event(method, path, body=None, q=None):
@@ -696,6 +698,283 @@ def test_exit_rules():
     state.update(pl="0.9", px="19.0"); autotrader.monitor(SUB); assert not closes          # -14% from peak: hold
     state.update(pl="0.5", px="15.0"); autotrader.monitor(SUB); assert closes             # -32% from peak: exit
     autotrader.now_ny = real_now
+
+
+def _bs(s, k, t, v, call):
+    import math
+    n = lambda x: 0.5 * (1 + math.erf(x / 2 ** 0.5))
+    d1 = (math.log(s / k) + 0.5 * v * v * t) / (v * t ** 0.5); d2 = d1 - v * t ** 0.5
+    return max(0.05, s * n(d1) - k * n(d2) if call else k * n(-d2) - s * n(-d1))
+
+
+def _spread_fakes():
+    import autotrader, gex, datetime as dt
+    from util import now_ny
+    def fake_yahoo(sym, tf, s_, e):
+        out, d, p = [], (now_ny() - dt.timedelta(days=300)).replace(hour=9, minute=30), 120.0
+        i = 0
+        while d <= now_ny():
+            if d.weekday() < 5:
+                n = i
+                if n < 150: p *= 0.998
+                elif n == 200: p *= 1.05
+                elif n > 200: p *= 1.003
+                out.append({"t": d.strftime("%Y-%m-%dT%H:%M:%S"), "o": p / 1.01, "h": p * 1.01, "l": p * 0.99 if n != 200 else p * 0.995, "c": p, "v": 1000})
+                i += 1
+            d += dt.timedelta(days=1)
+        return out
+    autotrader._yahoo = fake_yahoo
+    spot = fake_yahoo("X", "1d", None, None)[-1]["c"]
+    exps = [(now_ny() + dt.timedelta(days=n)).strftime("%Y-%m-%d") for n in (14, 50, 100)]
+    def fake_chain(sub, sym, days):
+        cs = []
+        for e in exps:
+            for k in [round(spot * f) for f in (0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2)]:
+                for call in (True, False):
+                    d_, g_ = gex.bs_greeks(spot, k, gex._years(e), 0.3, call)
+                    th = _bs(spot, k, gex._years(e), 0.3, call)
+                    cs.append({"sym": f"X{e.replace('-', '')}{'C' if call else 'P'}{k}", "call": call, "strike": k, "exp": e, "oi": 500,
+                               "iv": 0.3, "delta": d_, "gamma": g_, "volume": 10, "bid": th * 0.97, "ask": th * 1.03, "mark": th})
+        return {"source": "Test", "spot": spot, "contracts": cs}
+    autotrader.gex.fetch_chain = fake_chain
+    return spot, exps
+
+
+def test_bull_call_spread():
+    import autotrader, alpaca
+    STORE.clear()
+    spot, exps = _spread_fakes()
+    call("PUT", "/settings", {"riskPerTrade": 5000})
+    code, cfg = call("PUT", "/bot/settings", {"strategy": "bull_call", "minRoomRatio": 0.1, "crossWindow": 120, "maxExtAtr": 10,
+                                              "spreadMaxDebitPct": 95, "minGrowth30": -100})
+    assert code == 200 and cfg["strategy"] == "bull_call", cfg
+    code, rec = call("POST", "/bot/evaluate", {"symbol": "XYZ"})
+    assert code == 200, rec
+    p = rec["proposal"]
+    assert p and p["strategy"] == "bull_call" and p["shortExp"] == p["exp"] and p["shortStrike"] > p["strike"], (p, rec["blocking"], rec["spreadCandidates"])
+    assert p["debit"] > 0 and p["width"] > p["debit"] and abs(p["maxProfit"] - (p["width"] - p["debit"])) < 0.02
+    assert any("Bull call spread" in c["text"] for c in rec["checks"])
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    sent, pos = [], {}
+    def fake_alp(c, method, path, body=None):
+        sent.append((method, path, body))
+        if path == "/v2/positions" or path.startswith("/v2/orders?"):
+            return []
+        if method == "POST":
+            return {"id": f"o{len(sent)}"}
+        if path.startswith("/v2/orders/"):
+            return {"status": "filled", "filled_qty": "1", "filled_avg_price": f"{p['debit']:.2f}"}
+        if path.startswith("/v2/positions/") and method == "GET":
+            return pos.get(path.split("/")[-1])
+        return {"id": "del"}
+    autotrader._alp = fake_alp
+    p["qty"] = 1
+    db.update(db.upk(SUB), f"BOT#{rec['id']}", {"proposal": p})
+    code, placed = call("POST", f"/bot/{rec['id']}/order", {})
+    body = next(x for x in sent if x[0] == "POST")[2]
+    assert code == 200 and body["order_class"] == "mleg" and float(body["limit_price"]) > 0, body
+    assert [l["position_intent"] for l in body["legs"]] == ["buy_to_open", "sell_to_open"]
+    assert body["legs"][1]["symbol"] == p["shortContract"]
+    # spread worth half the debit -> 50% spread stop -> one mleg market close (sell long, buy back short)
+    d = p["debit"]
+    pos[p["contract"]] = {"qty": "1", "current_price": f"{d:.2f}", "avg_entry_price": f"{d + 1:.2f}", "unrealized_pl": "-50", "market_value": f"{d * 100:.0f}"}
+    pos[p["shortContract"]] = {"qty": "-1", "current_price": f"{d * 0.6:.2f}", "avg_entry_price": "1.00", "unrealized_pl": "0", "market_value": f"{-d * 50:.0f}"}
+    sent.clear()
+    out = autotrader.monitor(SUB)
+    assert out["actions"] and "spread stop" in out["actions"][0][1], out
+    close = next(x for x in sent if x[0] == "POST")[2]
+    assert close["order_class"] == "mleg" and close["type"] == "market"
+    assert [l["position_intent"] for l in close["legs"]] == ["sell_to_close", "buy_to_close"]
+    r = STORE[(db.upk(SUB), f"BOT#{rec['id']}")]
+    assert r["status"] == "closing" and r["lastPlPct"] <= -49
+    # both legs gone -> closed with P&L from the exit fill
+    pos.clear()
+    autotrader.monitor(SUB)
+    r = STORE[(db.upk(SUB), f"BOT#{rec['id']}")]
+    assert r["status"] == "closed" and r["realizedPl"] is not None
+
+
+def test_spread_close_fallback_and_missing_leg():
+    import autotrader, alpaca
+    from autotrader import BadRequest
+    STORE.clear()
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    pk = db.upk(SUB)
+    prop = {"strategy": "bull_call", "contract": "AMD261120C00150000", "shortContract": "AMD261120C00170000", "exp": "2099-11-20",
+            "shortExp": "2099-11-20", "strike": 150, "shortStrike": 170, "width": 20, "debit": 8.0, "limit": 8.0,
+            "underlyingStop": 100.0, "underlyingTarget": 500.0, "underlyingAtr": 5.0}
+    db.put({"PK": pk, "SK": "BOT#20260930100000-bbbbbb", "id": "20260930100000-bbbbbb", "symbol": "AMD", "status": "open",
+            "fillPrice": 8.0, "filledQty": 1, "proposal": prop})
+    pos = {"AMD261120C00150000": {"qty": "1", "current_price": "3.0", "unrealized_pl": "-500", "market_value": "300"},
+           "AMD261120C00170000": {"qty": "-1", "current_price": "0.5", "unrealized_pl": "0", "market_value": "-50"}}
+    order = []
+    def fake_alp(c, m, path, body=None):
+        if m == "POST":
+            raise BadRequest("Alpaca refused the request (422): mleg close not supported")
+        if m == "DELETE":
+            order.append(path.split("/")[-1]); pos.pop(path.split("/")[-1], None); return {"id": "d" + str(len(order))}
+        if path.startswith("/v2/positions/"):
+            return pos.get(path.split("/")[-1])
+        return {}
+    autotrader._alp = fake_alp
+    autotrader._yahoo = lambda *a, **k: [{"t": "x", "o": 1, "h": 1, "l": 1, "c": 160.0, "v": 1}]
+    autotrader.monitor(SUB)
+    assert order == ["AMD261120C00170000", "AMD261120C00150000"], order     # short bought back first
+    # short leg assigned away: close the long leg
+    order.clear()
+    pos["AMD261120C00150000"] = {"qty": "1", "current_price": "12.0", "unrealized_pl": "400", "market_value": "1200"}
+    db.put({"PK": pk, "SK": "BOT#20260930100000-bbbbbb", "id": "20260930100000-bbbbbb", "symbol": "AMD", "status": "open",
+            "fillPrice": 8.0, "filledQty": 1, "proposal": prop})
+    out = autotrader.monitor(SUB)
+    assert order == ["AMD261120C00150000"] and "no longer held" in out["actions"][0][1], (order, out)
+
+
+def test_diagonal():
+    import autotrader, alpaca, datetime as dt
+    STORE.clear()
+    spot, exps = _spread_fakes()
+    call("PUT", "/settings", {"riskPerTrade": 5000})
+    code, err = call("PUT", "/bot/settings", {"strategy": "diagonal", "diagShortDteMax": 80, "diagLongDteMin": 60})
+    assert code == 400
+    base = {"strategy": "diagonal", "minRoomRatio": 0.1, "crossWindow": 120, "maxExtAtr": 10, "minGrowth30": -100,
+            "diagLongDteMin": 80, "diagLongDteMax": 120, "diagLongDeltaMin": 0.6, "diagLongDeltaMax": 0.95,
+            "diagShortDteMin": 1, "diagShortDteMax": 60, "diagShortDeltaMin": 0.05, "diagShortDeltaMax": 0.5}
+    code, cfg = call("PUT", "/bot/settings", {**base, "diagMinShortCredit": 100})
+    assert code == 200 and cfg["diagTargetPct"] == 0, cfg
+    code, rec = call("POST", "/bot/evaluate", {"symbol": "XYZ"})
+    # the 14-day call pays less than $100, so the next cycle (50 days) is used
+    p = rec["proposal"]
+    assert p and p["shortExp"] == exps[1] and p["shortCredit"] * 100 >= 100, (p, rec["spreadCandidates"])
+    code, cfg = call("PUT", "/bot/settings", {**base, "diagMinShortCredit": 50})
+    code, rec = call("POST", "/bot/evaluate", {"symbol": "XYZ"})
+    p = rec["proposal"]
+    assert p and p["strategy"] == "diagonal" and p["exp"] == exps[2] and p["shortExp"] == exps[0], (p, rec["blocking"])   # closest cycle
+    assert p["shortStrike"] > max(p["strike"], spot) and p["optionTarget"] is None
+    # short call at its roll day -> one mleg roll: buy back the old short, sell the next cycle
+    pk = db.upk(SUB)
+    old_short = "XOLD1C" + str(p["shortStrike"])
+    yday = (autotrader.now_ny() - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    p = {**p, "shortContract": old_short, "shortExp": yday}
+    db.update(pk, f"BOT#{rec['id']}", {"status": "open", "fillPrice": p["debit"], "filledQty": 2, "proposal": p})
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    real_open = autotrader.market_open
+    autotrader.market_open = lambda now=None: True
+    posts, pos, orders = [], {p["contract"]: {"qty": "2", "current_price": str(p["legs"][0]["mid"]), "market_value": "0"},
+                              old_short: {"qty": "-2", "current_price": "0.05", "market_value": "0"}}, {}
+    def fake_alp(c, m, path, body=None):
+        if m == "POST":
+            posts.append(body); return {"id": f"r{len(posts)}"}
+        if m == "DELETE":
+            pos.pop(path.split("/")[-1], None); return {"id": "d"}
+        if path.startswith("/v2/orders/"):
+            return orders.get(path.split("/")[3].split("?")[0], {"status": "new"})
+        if path.startswith("/v2/positions/"):
+            return pos.get(path.split("/")[-1])
+        return {}
+    autotrader._alp = fake_alp
+    autotrader._yahoo = lambda *a, **k: [{"t": "x", "o": 1, "h": 1, "l": 1, "c": spot, "v": 1}]
+    out = autotrader.monitor(SUB)
+    roll = posts[-1]
+    assert roll["order_class"] == "mleg" and roll["qty"] == "2" and float(roll["limit_price"]) < 0, (roll, out)   # net credit
+    assert [(l["symbol"], l["position_intent"]) for l in roll["legs"]] == [(old_short, "buy_to_close"), (roll["legs"][1]["symbol"], "sell_to_open")]
+    new_sym = roll["legs"][1]["symbol"]
+    assert STORE[(pk, f"BOT#{rec['id']}")]["status"] == "open"        # the long call is kept
+    # roll fills: short leg swapped, credit booked
+    orders["r1"] = {"status": "filled", "order_class": "mleg", "legs": [{"side": "buy", "filled_avg_price": "0.05"}, {"side": "sell", "filled_avg_price": "0.75"}]}
+    pos.pop(old_short); pos[new_sym] = {"qty": "-2", "current_price": "0.75", "market_value": "0"}
+    autotrader.monitor(SUB)
+    r = STORE[(pk, f"BOT#{rec['id']}")]
+    assert r["proposal"]["shortContract"] == new_sym and abs(r["cashAdj"] - 0.70) < 1e-9 and r["rolls"][0].get("from") == old_short, r.get("rolls")
+    # short expires worthless (no shares): keep the long, sell the next cycle as a single sell_to_open
+    pos.pop(new_sym)
+    orders.clear()
+    autotrader.monitor(SUB)
+    r = STORE[(pk, f"BOT#{rec['id']}")]
+    assert not r["proposal"].get("shortContract") and r["status"] == "open", {k: r.get(k) for k in ("status", "legMissing", "rollNote", "exitReason", "rollOrderId")}
+    autotrader.monitor(SUB)
+    sell = posts[-1]
+    assert sell.get("position_intent") == "sell_to_open" and sell["side"] == "sell" and sell["qty"] == "2", sell
+    autotrader.market_open = real_open
+
+
+def test_ai_chart_check():
+    import autotrader, alpaca, aicheck, base64, datetime as dt
+    STORE.clear()
+    autotrader.DEFAULTS["aiCheck"] = True
+    try:
+        pk = db.upk(SUB)
+        def bars(n, step):
+            out, p, t = [], 100.0, autotrader.now_ny() - step * n
+            for i in range(n):
+                p *= 1.003
+                out.append({"t": (t + step * i).strftime("%Y-%m-%dT%H:%M:%S"), "o": p / 1.01, "h": p * 1.01, "l": p * 0.99, "c": p, "v": 1000 + i})
+            return out
+        aicheck._yahoo = lambda sym, tf, s_, e: bars(250, dt.timedelta(days=1)) if tf == "1d" else bars(140, dt.timedelta(hours=1))
+        seen = {}
+        def fake_vision(model, system, images, text, schema, max_tokens=1500):
+            seen["images"], seen["text"] = images, text
+            return {"verdict": seen["verdict"], "confidence": 72, "summary": "Clean base under the call wall.",
+                    "supports": ["higher lows"], "concerns": ["gap overhead"]}
+        claude.vision_json = fake_vision
+        alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+        posts = []
+        def fake_alp(c, m, path, body=None):
+            if m == "POST":
+                posts.append(body); return {"id": "o1"}
+            return [] if path == "/v2/positions" or path.startswith("/v2/orders?") else None
+        autotrader._alp = fake_alp
+        prop = {"strategy": "long_call", "contract": "XYZ261120C00100000", "exp": "2026-11-20", "strike": 100, "qty": 1, "limit": 2.5,
+                "underlyingStop": 95.0, "underlyingTarget": 112.0, "underlyingAtr": 2.0}
+        def mk(i):
+            rid = f"2026093010000{i}-aaaaa{i}"
+            db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "XYZ", "status": "proposed", "decision": "BUY", "proposal": prop,
+                    "checks": [{"group": "chart", "text": "Close above the 21 EMA", "ok": True, "required": True}],
+                    "signals": {"price": 101.0}, "gamma": {"gammaFlip": 98.0, "callWall": 110.0, "putWall": 92.0}})
+            return rid
+        # bot run (inline): Claude rejects -> no order, record flagged, charts stored
+        seen["verdict"] = "reject"
+        r1 = mk(1)
+        try:
+            autotrader.place(SUB, r1, placed_by="auto-flow")
+            assert False, "should have been blocked"
+        except autotrader.BadRequest as e:
+            assert "reject" in str(e)
+        assert not posts and STORE[(pk, f"BOT#{r1}")]["aiBlocked"] is True
+        assert len(seen["images"]) == 2 and seen["images"][0][1][:8] == b"\x89PNG\r\n\x1a\n" and "STOP" not in seen["text"][:0]
+        assert "underlyingStop" in seen["text"] and "rule_checks" in seen["text"]
+        code, ch = call("GET", f"/bot/{r1}/charts")
+        assert code == 200 and len(ch["images"]) == 2 and base64.b64decode(ch["images"][1]["b64"])[:4] == b"\x89PNG"
+        # caution blocks unless allowed; approve places
+        seen["verdict"] = "caution"
+        r2 = mk(2)
+        try:
+            autotrader.place(SUB, r2, placed_by="auto")
+            assert False
+        except autotrader.BadRequest:
+            pass
+        seen["verdict"] = "approve"
+        r3 = mk(3)
+        autotrader.place(SUB, r3, placed_by="auto")
+        assert len(posts) == 1 and STORE[(pk, f"BOT#{r3}")]["aiCheck"]["verdict"] == "approve"
+        STORE[(pk, f"BOT#{r3}")]["status"] = "closed"
+        # web app: the check must have run first (background job); override skips it
+        r4 = mk(4)
+        code, err = call("POST", f"/bot/{r4}/order", {})
+        assert code == 400 and "chart check first" in err["error"], err
+        code, _ = call("POST", f"/bot/{r4}/aicheck", {})
+        assert code == 200 and STORE[(pk, f"BOT#{r4}")]["aiRunning"] is True
+        autotrader.handler({"sub": SUB, "job": "aicheck", "id": r4}, None)
+        r = STORE[(pk, f"BOT#{r4}")]
+        assert r["aiCheck"]["verdict"] == "approve" and r["aiRunning"] is False
+        code, placed = call("POST", f"/bot/{r4}/order", {})
+        assert code == 200 and len(posts) == 2, placed
+        STORE[(pk, f"BOT#{r4}")]["status"] = "closed"
+        seen["verdict"] = "reject"
+        r5 = mk(5)
+        code, _ = call("POST", f"/bot/{r5}/order", {"override": True})
+        assert code == 200 and len(posts) == 3
+    finally:
+        autotrader.DEFAULTS["aiCheck"] = False
 
 
 def test_analytics():

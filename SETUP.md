@@ -193,6 +193,24 @@ The app reads your executed trades from Schwab. The first sync covers the last y
 
 ---
 
+## Step 7b. Spreads (bull call spread, diagonal)
+
+**Paper bot → Bot settings → Structure → Trade as** picks what the bot opens: *Long call*, *Bull call spread* or *Diagonal*. Save settings; the next evaluation uses it, whether it comes from flow, the watchlist or a manual evaluate.
+
+- **Bull call spread:** buys the call from the normal delta/days window and sells a higher-strike call in the same expiration (short delta window, strike closest to the target level). Take profit is a % of the max profit.
+- **Diagonal:** buys a longer-dated in-the-money call (long days/delta window) and sells a call in the closest expiration cycle that pays at least the minimum ($100 per contract by default), strike above the long strike and the stock. On the short call's roll day (default: expiration day, from 15:30 ET) the bot buys it back and sells the next cycle's call in one multi-leg order (at mid first, then at market after the set minutes). If no call pays the minimum, it buys the short back and retries every 15 minutes. If the short expires or is closed outside the bot, it sells the next cycle. The long call is held until the spread stop, invalidation, earnings exit or the time stop on the long call; take profit is off by default (0).
+
+Spreads go to Alpaca as one multi-leg order at the net debit and are closed as one multi-leg order. If Alpaca refuses the combined close, the bot buys back the short call first, then sells the long call. If one leg disappears (assignment or closed outside the bot), the other leg is closed. The Alpaca paper account needs options level 3 (multi-leg); check it under **Account → Configure → Options trading level** in the Alpaca dashboard.
+
+## Step 7c. Claude's chart check before every order
+
+Before any paper order (automatic from flow or the watchlist, or from the Place button), the bot draws the daily (~6 months) and hourly (~15 sessions) charts with the 21 EMA, 50-day, anchored VWAP, active fair value gaps, the invalidation and target levels, the gamma flip and walls, and the strike(s), and sends them to Claude with the rule results. Claude answers **approve**, **caution** or **reject** with what supports and what argues against the trade.
+
+- Approve: the order goes in. Caution or reject: no order, and an alert is sent (alert type "Orders blocked by Claude"). In the app you can still press **Place anyway**.
+- The verdict and the two chart images appear under each proposal on the Paper bot page. **Ask Claude to check the chart** runs it on demand.
+- Settings → Bot settings: turn the check off, allow orders on "caution", or allow orders when the check can't run. A verdict older than 30 minutes is redone before placing.
+- Uses the same Anthropic API key as the AI coach (the bot function now has access to it) and the `CoachModel` parameter; about one vision call per order.
+
 ## Step 8. Alerts for paper-bot orders (Amazon SNS)
 
 The bot publishes every order (buy, fill, exit order, position closed, cancel) to an Amazon SNS topic that the deploy creates.

@@ -21,7 +21,7 @@ def send(sub, text, kind="order"):
     cfg = _settings(sub)
     item = {"PK": db.upk(sub), "SK": f"NOTIFY#{iso(now_ny())}#{kind}", "text": text[:480], "kind": kind, "status": "logged"}
     phone = cfg.get("phone")
-    events = cfg.get("events") or ["entry", "fill", "exit", "closed", "cancel", "test"]
+    events = cfg.get("events") or ["entry", "fill", "exit", "closed", "cancel", "roll", "ai", "test"]
     if cfg.get("sms") and phone and re.match(r"^\+[1-9]\d{7,14}$", phone) and (kind in events or kind in ("test", "order")):
         try:
             import boto3
