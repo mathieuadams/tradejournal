@@ -1218,7 +1218,7 @@ def test_shadow_tracking():
     ubars = [{"t": d + "T00:00:00", "o": 100, "h": 104, "l": 98, "c": 102} for d in days[:2]]
     seen = {}
     shadow._creds = lambda sub: {"key": "k", "secret": "s"}
-    shadow.option_bars = lambda c, syms, start: (seen.update(syms=sorted(set(x for x in syms if x)), start=start) or obars)
+    shadow.option_bars = lambda c, syms, start, errors=None: (seen.update(syms=sorted(set(x for x in syms if x)), start=start) or obars)
     import charts
     charts._yahoo = lambda *a, **k: ubars
     # a closed bot trade: followed for 10 trading days after its exit
@@ -1267,6 +1267,12 @@ def test_shadow_tracking():
     low = [{"t": days[0] + "T00:00:00", "o": 100, "h": 100, "l": 93, "c": 94}]
     sh = shadow.simulate(r, {"C1": [bar(days[0], 5, 5.2, 4.0, 4.1)]}, low, cfg)
     assert sh["status"] == "done" and "invalidation" in sh["exitReason"] and sh["plPct"] == -18.0
+    # evaluated during the session: that day's close is the first point (close only); evaluated after hours: next day
+    r_in = {**r, "createdAt": f"{d0}T11:00:00"}
+    sh = shadow.simulate(r_in, {"C1": [bar(d0, 5, 9.9, 1.0, 5.5)]}, ubars, cfg)
+    assert sh["days"] == 1 and sh["plPct"] == 10.0 and sh["mfePct"] == 10.0 and sh["maePct"] == 10.0, sh
+    sh = shadow.simulate({**r, "createdAt": f"{d0}T18:00:00"}, {"C1": [bar(d0, 5, 6, 4, 5.5)]}, ubars, cfg)
+    assert sh["days"] == 0 and sh["status"] == "nodata"
     # spreads use the net of the leg closes
     sp = {**r, "proposal": {**prop, "contract": "L", "shortContract": "S", "limit": 2.0, "strategy": "bull_call", "width": 10, "debit": 2.0}}
     sh = shadow.simulate(sp, {"L": [bar(days[0], 5, 6, 5, 6.0)], "S": [bar(days[0], 3, 3.5, 3, 3.5)]}, ubars, cfg)
@@ -1300,6 +1306,30 @@ def test_excursions_and_r():
     autotrader.monitor(SUB)
     r = STORE[(pk, f"BOT#{rid}")]
     assert r["status"] == "closed" and r["realizedPl"] == 100.0 and r["realizedR"] == round(100.0 / r["riskAtFill"], 2), r
+
+
+def test_option_bars_partial_failure():
+    """One contract Alpaca refuses doesn't stop the others."""
+    import shadow, io, json as _j, urllib.error, importlib
+    shadow = importlib.reload(shadow)           # an earlier test replaced option_bars with a stub
+    orig = shadow.urllib.request.urlopen
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    def fake(req, timeout=25):
+        q = shadow.urllib.parse.parse_qs(shadow.urllib.parse.urlparse(req.full_url).query)
+        syms = q["symbols"][0].split(",")
+        assert q["end"][0].endswith("Z")
+        if "BAD1" in syms:
+            raise urllib.error.HTTPError("u", 400, "x", {}, io.BytesIO(b'{"message":"invalid symbol"}'))
+        return R(_j.dumps({"bars": {s: [{"t": "2026-09-29T04:00:00Z", "o": 1, "h": 1, "l": 1, "c": 1}] for s in syms}}).encode())
+    try:
+        shadow.urllib.request.urlopen = fake
+        errs = []
+        out = shadow.option_bars({"key": "k", "secret": "s"}, ["A1", "BAD1", "C1"], "2026-09-28", errs)
+        assert sorted(out) == ["A1", "C1"] and len(errs) == 1 and errs[0].startswith("BAD1: 400"), (out, errs)
+    finally:
+        shadow.urllib.request.urlopen = orig
 
 
 def test_analytics():

@@ -28,25 +28,51 @@ def _creds(sub):
     return c
 
 
-def option_bars(c, symbols, start):
-    """Daily bars per option symbol since `start` (YYYY-MM-DD). {symbol: [{t,o,h,l,c,v}]}"""
+def option_bars(c, symbols, start, errors=None):
+    """Daily bars per option symbol since `start` (YYYY-MM-DD). {symbol: [{t,o,h,l,c,v}]}
+    Requests end 20 minutes ago (free market-data plans can't query the most recent data). A failing batch is
+    retried symbol by symbol so one bad contract doesn't stop the others; failures are appended to `errors`."""
+    import urllib.error
     out = {}
-    syms = sorted(set(s for s in symbols if s))
-    for i in range(0, len(syms), 100):
+    errors = errors if errors is not None else []
+    end = (datetime.utcnow() - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def fetch(batch):
         token = None
         for _ in range(20):
-            q = {"symbols": ",".join(syms[i:i + 100]), "timeframe": "1Day", "start": start, "limit": 10000}
+            q = {"symbols": ",".join(batch), "timeframe": "1Day", "start": start, "end": end, "limit": 10000}
             if token:
                 q["page_token"] = token
             req = urllib.request.Request(f"{DATA}?{urllib.parse.urlencode(q)}",
                                          headers={"APCA-API-KEY-ID": c["key"], "APCA-API-SECRET-KEY": c["secret"]})
             with urllib.request.urlopen(req, timeout=25) as r:
                 d = json.loads(r.read())
-            for s, bars in (d.get("bars") or {}).items():
-                out.setdefault(s, []).extend(bars)
+            for sym, bars in (d.get("bars") or {}).items():
+                out.setdefault(sym, []).extend(bars)
             token = d.get("next_page_token")
             if not token:
-                break
+                return
+
+    def why(e):
+        if isinstance(e, urllib.error.HTTPError):
+            return f"{e.code} {e.read().decode(errors='replace')[:140]}"
+        return str(e)[:140]
+
+    syms = sorted(set(s for s in symbols if s))
+    for i in range(0, len(syms), 50):
+        batch = syms[i:i + 50]
+        try:
+            fetch(batch)
+        except Exception as e:
+            first = why(e)
+            if len(batch) == 1:
+                errors.append(f"{batch[0]}: {first}")
+                continue
+            for one in batch:
+                try:
+                    fetch([one])
+                except Exception as e2:
+                    errors.append(f"{one}: {why(e2)}")
     return out
 
 
@@ -92,6 +118,9 @@ def simulate(rec, obars, ubars, cfg, earnings=None):
     shortb = {_day(b["t"]): b for b in obars.get(p.get("shortContract"), [])} if spread else {}
     ub = {_day(b["t"]): b for b in ubars}
     days = sorted(d for d in longb if d > d0 and (not spread or d in shortb))
+    # evaluated during the session: that day's close counts too (close only: its high/low may be from before the evaluation)
+    if "09:30" <= (rec.get("createdAt") or "")[11:16] < "16:00" and d0 in longb and (not spread or d0 in shortb):
+        days = [d0] + days
     stp = autotrader.stop_pct(cfg, p)
     tgt = autotrader.target_pct(cfg, p, entry)
     stop_px = entry * (1 - stp / 100)
@@ -99,7 +128,8 @@ def simulate(rec, obars, ubars, cfg, earnings=None):
     out = {"entry": round(entry, 2), "stopPct": stp, "targetPct": tgt, "approx": True, "updatedAt": iso(now_ny())}
     if not days:
         stale = (now_ny().date() - datetime.strptime(d0, "%Y-%m-%d").date()).days > 8 if d0 else True
-        return {**out, "status": "nodata" if stale else "tracking", "note": "no trades in this contract yet"}
+        return {**out, "status": "nodata" if stale else "tracking", "days": 0,
+                "note": "no trading day since the evaluation yet" if not stale else "no trades in this contract"}
     hi_all, lo_all, umax, umin = None, None, None, None
     exit_px = exit_reason = exit_day = None
     last = None
@@ -111,6 +141,8 @@ def simulate(rec, obars, ubars, cfg, earnings=None):
             hi = lo = cl                      # spread high/low per day isn't known from leg bars: closes only
         else:
             hi, lo, cl = float(b["h"]), float(b["l"]), float(b["c"])
+        if d == d0:
+            hi = lo = cl
         last = cl
         hi_all = hi if hi_all is None else max(hi_all, hi)
         lo_all = lo if lo_all is None else min(lo_all, lo)
@@ -231,11 +263,12 @@ def run(sub):
              [(r.get("closedAt") or r.get("lastCheck") or today.isoformat())[:10] for r in exits]
     start = min(starts)
     syms = [x for r in todo + exits for x in (r["proposal"]["contract"], r["proposal"].get("shortContract"))]
-    try:
-        obars = option_bars(c, syms, start)
-    except Exception as e:
-        print("shadow: option bars failed", e)
-        return {"error": str(e)[:160]}
+    errors = []
+    obars = option_bars(c, syms, start, errors)
+    if errors:
+        print("shadow: option bars errors", errors[:5])
+    if not obars and errors:
+        return {"error": f"Alpaca option bars failed: {errors[0]}", "errors": len(errors)}
     ucache = {}
     cfg = autotrader.settings(sub)
     n = 0
@@ -253,7 +286,10 @@ def run(sub):
         n += 1
     for r in exits:
         db.update(pk, r["SK"], {"afterExit": after_exit(r, obars)})
-    return {"tracked": n, "dups": len(dups), "exits": len(exits)}
+    out = {"tracked": n, "dups": len(dups), "exits": len(exits)}
+    if errors:
+        out.update(errors=len(errors), firstError=errors[0])
+    return out
 
 
 # ---------------- summary: what the skipped trades would have done ----------------

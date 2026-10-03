@@ -1322,7 +1322,8 @@ function shadowSummary() {
   const row = (label, g) => `<tr><td>${label}</td><td class="r">${g.n}${g.tracking ? ` <span class="muted">(${g.tracking} still open)</span>` : ''}</td><td class="r">${g.winPct == null ? '—' : g.winPct + '%'}</td><td class="r">${R(g.avgR)}</td><td class="r">${R(g.totalR)}</td></tr>`;
   const th = first => `<thead><tr><th>${first}</th><th class="r">Trades</th><th class="r">Winners</th><th class="r">Avg R</th><th class="r">Total R</th></tr></thead>`;
   const sk = d.skipped, tk = d.taken;
-  const runTxt = d.run && d.run.at ? `Last update ${esc(d.run.at.replace('T', ' ').slice(5, 16))} ET${d.run.status === 'error' ? ' (failed)' : ''}` : 'Not run yet';
+  const rr = (d.run && d.run.result) || {};
+  const runTxt = d.run && d.run.at ? `Last update ${esc(d.run.at.replace('T', ' ').slice(5, 16))} ET${d.run.status === 'error' || rr.error ? ` (failed: ${esc(rr.error || 'unknown error')})` : rr.errors ? ` (${rr.errors} contract${rr.errors > 1 ? 's' : ''} without data: ${esc(rr.firstError || '')})` : ''}` : 'Not run yet: press <b>Update now</b>';
   const exits = (d.exits || []).length ? `<h3 style="font-size:.95rem;margin:16px 0 6px">After the bot's exits <span class="muted" style="font-weight:400;font-size:.82rem">change from the exit price, in R · positive = it kept going up (exit was early)</span></h3>
     <div class="tablewrap"><table><thead><tr><th>Exit reason</th><th class="r">Trades</th><th class="r">+1 day</th><th class="r">+5 days</th><th class="r">+10 days</th><th class="r">Best after</th><th class="r">Higher now</th></tr></thead><tbody>
     ${d.exits.map(g => `<tr><td>${esc(g.why)}</td><td class="r">${g.n}</td><td class="r">${R(g.day1R)}</td><td class="r">${R(g.day5R)}</td><td class="r">${R(g.day10R)}</td><td class="r">${R(g.bestR)}</td><td class="r">${g.earlyPct == null ? '—' : g.earlyPct + '%'}</td></tr>`).join('')}
@@ -1347,6 +1348,7 @@ function shadowCell(i) {
   if (!s) return '<td><span class="muted">—</span></td>';
   if (s.status === 'dup') return '<td><span class="muted" title="Same contract evaluated earlier that day: followed once">same as earlier</span></td>';
   if (s.status === 'nodata') return `<td><span class="muted" title="${esc(s.note || '')}">no data</span></td>`;
+  if (s.status === 'tracking' && !s.days) return '<td><span class="muted" title="No trading day since the evaluation yet">waiting</span></td>';
   const cls = s.plPct > 0 ? 'gain' : s.plPct < 0 ? 'loss' : '';
   return `<td title="${esc(s.exitReason || 'still being followed')}"><span class="${cls}">${sgn(s.plPct)}%</span>${s.R != null ? ` <span class="muted">${sgn(s.R, 2)}R</span>` : ''}${s.status === 'tracking' ? ' <span class="muted" style="font-size:.78rem">tracking</span>' : ''}</td>`;
 }
@@ -1354,7 +1356,9 @@ function shadowPanel(r) {
   const s = r.shadow;
   if (r.orderId || ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(r.status) || !r.proposal) return '';
   const head = '<h3 style="font-size:.95rem;margin:16px 0 6px">If the bot had taken it <span class="muted" style="font-weight:400;font-size:.82rem">shadow tracking · daily bars · the bot\'s exit rules</span></h3>';
-  if (!s) return head + '<p class="muted" style="margin:0">Followed every trading day after the close (16:20 ET) for up to 20 trading days.</p>';
+  const sat = (r.createdAt || '').slice(0, 10), nextRun = 'the next update (every trading day at 16:20 ET, or <b>Update now</b> on the Paper bot page)';
+  if (!s) return head + `<p class="muted" style="margin:0">Not followed yet: it starts with ${nextRun}. Evaluated ${esc(sat)}; the first result uses that day's close if it was evaluated during the session, otherwise the next trading day.</p>`;
+  if (s.status === 'tracking' && !s.days) return head + `<p class="muted" style="margin:0">Waiting for the first trading day after the evaluation (${esc(sat)}). The result appears with ${nextRun} after that day's close.</p>`;
   if (s.status === 'dup') return head + '<p class="muted" style="margin:0">The same contract was evaluated earlier that day; that evaluation is the one followed.</p>';
   if (s.status === 'nodata') return head + `<p class="muted" style="margin:0">No trades in this contract to follow (${esc(s.note || 'no data')}).</p>`;
   const cls = s.plPct > 0 ? 'gain' : s.plPct < 0 ? 'loss' : '';
