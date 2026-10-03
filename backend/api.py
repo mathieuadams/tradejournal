@@ -316,6 +316,7 @@ def bot_settings(sub, claims, body, q):
         raise BadRequest("Diagonal: the short call must expire before the long call (short max days < long min days).")
     pk = db.upk(sub)
     p = db.get(pk, "PROFILE") or {"PK": pk, "SK": "PROFILE", "createdAt": iso(now_ny()), "settings": {}}
+    new["earningsAuto"] = ((p.get("settings") or {}).get("autotrade") or {}).get("earningsAuto") or {}   # kept: pulled automatically
     p.setdefault("settings", {})["autotrade"] = new
     db.put(p)
     return new

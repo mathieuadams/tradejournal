@@ -254,3 +254,29 @@ def live_prices(sub, rows):
             if r.get("underlying"):
                 r["stockChangePct"] = round((sp / r["underlying"] - 1) * 100, 2)
     return rows
+
+
+def next_earnings(sub, symbol):
+    """Next earnings date for a ticker from Unusual Whales (GET /api/stock/{ticker}/info: next_earnings_date,
+    announce_time premarket/afterhours/unknown). Returns 'YYYY-MM-DD BMO|AMC', '' when none is scheduled
+    (ETFs, unknown), or None when there is no Unusual Whales key."""
+    it = db.get(db.upk(sub), SK)
+    if not it:
+        return None
+    key = _key(sub)
+    req = urllib.request.Request(f"https://api.unusualwhales.com/api/stock/{urllib.parse.quote(symbol)}/info",
+                                 headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = (json.loads(r.read()) or {}).get("data") or {}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return ""
+        raise Unavailable(f"Unusual Whales returned an error ({e.code}) for {symbol} earnings.")
+    except urllib.error.URLError as e:
+        raise Unavailable(f"Unusual Whales couldn't be reached: {e.reason}")
+    d = str(data.get("next_earnings_date") or "")[:10]
+    if len(d) != 10:
+        return ""
+    # unknown timing -> before the open: the bot then exits a day earlier, the safe side
+    return f"{d} {'AMC' if data.get('announce_time') == 'afterhours' else 'BMO'}"

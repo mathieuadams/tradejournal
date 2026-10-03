@@ -1114,6 +1114,44 @@ def test_chart_uses_todays_close():
     assert ctx["price"] == 20.8 and ctx["bullFvg"] is None, ctx
 
 
+def test_auto_earnings():
+    """Earnings dates come from Unusual Whales automatically, for new evaluations and open positions."""
+    import autotrader, flowdata, datetime as dt
+    STORE.clear()
+    pk = db.upk(SUB)
+    soon = (autotrader.now_ny() + dt.timedelta(days=12)).strftime("%Y-%m-%d")
+    calls = []
+    def fake_next(sub, sym):
+        calls.append(sym)
+        return {"HON": f"{soon} BMO", "SPY": ""}.get(sym, f"{soon} AMC")
+    flowdata.next_earnings = fake_next
+    # pulled once, cached for 12 hours
+    assert autotrader.refresh_earnings(SUB, ["HON", "SPY"]) == ["HON", "SPY"]
+    assert autotrader.refresh_earnings(SUB, ["HON"]) == [] and calls == ["HON", "SPY"]
+    cfg = autotrader.settings(SUB)
+    assert autotrader.earn_for(cfg, "HON") == (f"{soon} BMO", "Unusual Whales") and autotrader.earn_for(cfg, "SPY") == (None, None)
+    # a date you enter wins; a past one is ignored
+    autotrader.set_earnings(SUB, "HON", (autotrader.now_ny() + dt.timedelta(days=20)).strftime("%Y-%m-%d") + " AMC")
+    assert autotrader.earn_for(autotrader.settings(SUB), "HON")[1] == "entered"
+    autotrader.set_earnings(SUB, "HON", "2020-01-01 AMC")
+    assert autotrader.earn_for(autotrader.settings(SUB), "HON")[1] == "Unusual Whales"
+    # saving bot settings keeps the pulled dates
+    call("PUT", "/bot/settings", {"maxPositions": 6})
+    assert autotrader.settings(SUB)["earningsAuto"]["HON"]["v"] == f"{soon} BMO"
+    # open positions get theirs pulled by the minute check
+    db.put({"PK": pk, "SK": "BOT#20261002100000-aaaaaa", "id": "20261002100000-aaaaaa", "symbol": "MRVL", "status": "open",
+            "proposal": {"contract": "MRVL261120C00260000", "exp": "2026-11-20", "strike": 260, "underlyingStop": 1, "underlyingTarget": 999}})
+    import alpaca
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    autotrader._alp = lambda *a, **k: {"qty": "1", "current_price": "2", "unrealized_plpc": "0", "unrealized_pl": "0", "market_value": "200"}
+    autotrader._yahoo = lambda *a, **k: [{"t": "x", "o": 1, "h": 1, "l": 1, "c": 270.0, "v": 1}]
+    autotrader.monitor(SUB)
+    assert "MRVL" in calls and autotrader.settings(SUB)["earningsAuto"]["MRVL"]["v"] == f"{soon} AMC"
+    # without a key nothing is pulled and nothing breaks
+    flowdata.next_earnings = lambda sub, sym: None
+    assert autotrader.refresh_earnings(SUB, ["NVDA"]) == []
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

@@ -45,7 +45,7 @@ from views import load_settings
 
 DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40, "dteMax": 65,
             "deltaMin": 0.50, "deltaMax": 0.70, "minOi": 100, "maxSpreadPct": 12, "stopPct": 40, "targetPct": 80,
-            "timeStopDte": 14, "maxPositions": 5, "crossWindow": 10, "maxExtAtr": 1.5, "earnings": {}, "noEntryDays": 5,
+            "timeStopDte": 14, "maxPositions": 5, "crossWindow": 10, "maxExtAtr": 1.5, "earnings": {}, "earningsAuto": {}, "noEntryDays": 5,
             "chaseStep": 0.10, "chaseSeconds": 12, "chaseMaxSteps": 5, "chaseMaxPct": 10,
             "minGrowth30": 10,
             "invalidationOnClose": True, "emergencyAtr": 1.0, "trailAfterTarget": True, "trailPct": 25,
@@ -363,6 +363,47 @@ def pick_roll_short(contracts, spot, p, cfg, after_exp):
 
 # ---------------- evaluation ----------------
 
+def earn_for(cfg, symbol):
+    """Earnings date used by the rules: one you entered (if not already past), else the one pulled automatically."""
+    today = now_ny().date().isoformat()
+    manual = (cfg.get("earnings") or {}).get(symbol)
+    if manual and parse_earn(manual)[0] >= today:
+        return manual, "entered"
+    auto = (cfg.get("earningsAuto") or {}).get(symbol) or {}
+    if auto.get("v") and parse_earn(auto["v"])[0] >= today:
+        return auto["v"], "Unusual Whales"
+    return None, None
+
+
+def refresh_earnings(sub, symbols, max_age_hours=12):
+    """Pull the next earnings date of each ticker from Unusual Whales (at most every `max_age_hours`) into the bot
+    settings (earningsAuto). Silently does nothing without an Unusual Whales key. Returns the symbols refreshed."""
+    import flowdata
+    pk = db.upk(sub)
+    p = db.get(pk, "PROFILE") or {"PK": pk, "SK": "PROFILE", "createdAt": iso(now_ny()), "settings": {}}
+    at = {**DEFAULTS, **((p.get("settings") or {}).get("autotrade") or {})}
+    auto = dict(at.get("earningsAuto") or {})
+    cut = iso(now_ny() - timedelta(hours=max_age_hours))
+    done = []
+    for sym in dict.fromkeys(s for s in symbols if s):
+        if (auto.get(sym) or {}).get("at", "") >= cut:
+            continue
+        try:
+            v = flowdata.next_earnings(sub, sym)
+        except Exception as e:
+            print("earnings pull failed", sym, e)
+            continue
+        if v is None:
+            return done                      # no Unusual Whales key
+        auto[sym] = {"v": v, "at": iso(now_ny())}
+        done.append(sym)
+    if done:
+        at["earningsAuto"] = auto
+        p.setdefault("settings", {})["autotrade"] = at
+        db.put(p)
+    return done
+
+
 def set_earnings(sub, symbol, date):
     """Save (or clear with an empty date) the next earnings date for a ticker in the bot settings."""
     import re
@@ -385,8 +426,9 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
     symbol = (symbol or "").strip().upper()
     if not symbol or not symbol.replace(".", "").isalnum() or len(symbol) > 8:
         raise BadRequest("Enter a ticker symbol.")
-    if earnings_date is not None:
+    if earnings_date is not None:        # your own date (blank clears it; the automatic one still applies)
         set_earnings(sub, symbol, earnings_date.strip())
+    refresh_earnings(sub, [symbol])
     cfg = settings(sub)
     base = load_settings(sub)
     strategy = cfg["strategy"] if cfg.get("strategy") in STRATEGIES else "long_call"
@@ -401,7 +443,7 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
     em = gex.expected_moves(chain["contracts"], spot, limit=16)
     em_list = em["byExpiration"]
     events = iv_events(em_list)
-    earnings_raw = (cfg.get("earnings") or {}).get(symbol)
+    earnings_raw, earn_src = earn_for(cfg, symbol)
     earnings, earn_timing = parse_earn(earnings_raw)
     cands = pick_contract(chain["contracts"], spot, em_list, lcfg, earnings, g)
     best = cands[0] if cands and not cands[0]["problems"] else None
@@ -444,7 +486,7 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
          (spot > g["gammaFlip"]) if g.get("gammaFlip") else g["regime"] == "positive", cfg["requireAboveFlip"]),
         ("gamma", f"Room {room:.1f}% to target {target_lvl} vs {risk:.1f}% to invalidation {round(stop_lvl, 2)} (ratio {ratio and round(ratio, 1)} : 1, need {cfg['minRoomRatio']})",
          bool(ratio and ratio >= cfg["minRoomRatio"]), True),
-        ("events", f"No earnings within {cfg['noEntryDays']} days" + (f" (entered: {earnings} {'after close' if earn_timing == 'AMC' else 'before open'}; the bot exits before the report)" if earnings else " (no date entered)"), not earn_soon, True),
+        ("events", f"No earnings within {cfg['noEntryDays']} days" + (f" ({earn_src}: {earnings} {'after close' if earn_timing == 'AMC' else 'before open'}; the bot exits before the report)" if earnings else " (no upcoming date found)"), not earn_soon, True),
         ("events", "No implied-volatility jump (likely event) before the chosen expiration" +
          (f": IV jumps between {event_in_window[0]['between'][0]} and {event_in_window[0]['between'][1]}" if event_in_window else ""),
          not event_in_window, False),
@@ -942,6 +984,9 @@ def summary(sub):
 
 
 def monitor(sub):
+    held = [r["symbol"] for r in db.q_prefix(db.upk(sub), "BOT#") if r.get("status") in ("submitted", "open", "closing")]
+    if held:
+        refresh_earnings(sub, held)          # existing positions keep an up-to-date earnings date (pulled at most every 12 h)
     cfg = settings(sub)
     pk = db.upk(sub)
     try:
@@ -981,7 +1026,7 @@ def monitor(sub):
         if under is not None:
             db.update(pk, rec["SK"], {"lastUnderlying": under})
         dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
-        due, earn_reason = earnings_exit_due((cfg.get("earnings") or {}).get(rec["symbol"]))
+        due, earn_reason = earnings_exit_due(earn_for(cfg, rec["symbol"])[0])
         reason = None
         mark = rec.get("lastMark") or 0
         now = now_ny()

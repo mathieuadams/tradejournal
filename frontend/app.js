@@ -1134,7 +1134,7 @@ function vGex() {
     <p class="muted" style="font-size:.82rem;margin:8px 0 0">Options expiring within 30 days, 40 strikes each side. Click a card for the full view.</p></section>`;
   const cfgB = (S.bot && S.bot.settings) || {}, ek = ((cfgB.earnings || {})[S.gexSym] || '').split(' ');
   const analysis = `<section class="panel"><div class="form-grid" style="align-items:end">
-      <div class="field"><label for="gx-earn">Next earnings date for ${esc(S.gexSym || 'this ticker')} (optional)</label><input id="gx-earn" type="date" value="${esc(ek[0] || '')}"></div>
+      <div class="field"><label for="gx-earn">Next earnings date for ${esc(S.gexSym || 'this ticker')} (optional override)</label><input id="gx-earn" type="date" value="${esc(ek[0] || '')}">${(() => { const a = ((cfgB.earningsAuto || {})[S.gexSym] || {}).v; return a ? `<span class="muted" style="font-size:.8rem">Pulled automatically: ${esc(a.split(' ')[0])} ${a.split(' ')[1] === 'AMC' ? 'after the close' : 'before the open'} (Unusual Whales). Leave blank to use it.</span>` : '<span class="muted" style="font-size:.8rem">Pulled automatically from Unusual Whales when you analyze.</span>'; })()}</div>
       <div class="field"><label for="gx-earn-t">Reported</label><select id="gx-earn-t"><option value="AMC" ${(ek[1] || 'AMC') === 'AMC' ? 'selected' : ''}>After the close</option><option value="BMO" ${ek[1] === 'BMO' ? 'selected' : ''}>Before the open</option></select></div>
       <div class="field"><button class="btn primary" id="ana-run" ${S.anaBusy || !S.gexSym ? 'disabled' : ''}>${S.anaBusy ? 'Analyzing…' : 'Analyze with the bot rules'}</button></div></div>
       ${S.anaErr ? `<div class="errbox">${esc(S.anaErr)}</div>` : ''}
