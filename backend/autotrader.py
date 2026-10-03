@@ -893,9 +893,14 @@ def _refresh(sub, c, rec):
                 upd["exitPrice"] = abs(float(o["filled_avg_price"])) + (rec.get("cashAdj") or 0 if diag else 0)   # net, after rolls
         exit_px = upd.get("exitPrice") or rec.get("lastMark")
         qty = rec.get("filledQty") or rec.get("qty") or 0
+        if not rec.get("riskAtFill") and rec.get("fillPrice"):
+            upd.update(_risk_at_fill(sub, rec, rec["fillPrice"]))
         if exit_px is not None and rec.get("fillPrice"):
             upd["realizedPl"] = round((exit_px - rec["fillPrice"]) * qty * 100, 2)
             upd["realizedPct"] = round((exit_px / rec["fillPrice"] - 1) * 100, 1)
+            risk = upd.get("riskAtFill") or rec.get("riskAtFill")
+            if risk:
+                upd["realizedR"] = round(upd["realizedPl"] / risk, 2)
         if rec["status"] == "open" and not rec.get("exitReason"):
             upd["exitReason"] = "closed outside the bot"
         db.update(pk, rec["SK"], upd)
@@ -938,7 +943,12 @@ def _refresh(sub, c, rec):
     snaps = list(rec.get("marks") or [])
     if not snaps or (datetime.strptime(snaps[-1]["t"], "%Y-%m-%dT%H:%M:%S") <= now_ny() - timedelta(minutes=14)):
         snaps.append({"t": iso(now_ny()), "mark": mark, "plPct": upd["lastPlPct"]})
-        upd["marks"] = snaps[-300:]
+        while len(snaps) > 600:          # keep the whole trade: thin the older part (every other point), keep the last 200 as is
+            snaps = snaps[:-200][::2] + snaps[-200:]
+        upd["marks"] = snaps
+    fill = upd.get("fillPrice") or rec.get("fillPrice")
+    if fill and not rec.get("riskAtFill"):
+        upd.update(_risk_at_fill(sub, rec, fill))
     db.update(pk, rec["SK"], upd)
     rec.update(upd)
     return rec, pos
@@ -983,6 +993,32 @@ def summary(sub):
     return out
 
 
+def _risk_at_fill(sub, rec, fill):
+    """Dollars at risk when the order filled: actual filled quantity x fill price x the stop % in force then.
+    Results are measured in R = P&L / this amount."""
+    cfg = settings(sub)
+    p = rec.get("proposal") or {}
+    qty = rec.get("filledQty") or rec.get("qty") or (p.get("qty") or 0)
+    stp = stop_pct(cfg, p)
+    risk = round(float(fill) * float(qty) * 100 * stp / 100, 2)
+    return {"riskAtFill": risk, "stopPctAtFill": stp} if risk > 0 else {}
+
+
+def _excursions(rec, under):
+    """Best and worst seen during the trade (checked every minute): option price, P&L %, and the stock price.
+    Only the changed fields are returned, so nothing grows over time."""
+    upd, now = {}, iso(now_ny())
+    mark, pct = rec.get("lastMark"), rec.get("lastPlPct")
+    for key, v, hi in (("optMax", mark, True), ("optMin", mark, False), ("plMax", pct, True), ("plMin", pct, False),
+                       ("undMax", under, True), ("undMin", under, False)):
+        if v is None:
+            continue
+        cur = rec.get(key)
+        if cur is None or (v > cur if hi else v < cur):
+            upd[key], upd[key + "At"] = v, now
+    return upd
+
+
 def monitor(sub):
     held = [r["symbol"] for r in db.q_prefix(db.upk(sub), "BOT#") if r.get("status") in ("submitted", "open", "closing")]
     if held:
@@ -1023,8 +1059,12 @@ def monitor(sub):
             under = bars[-1]["c"] if bars else None
         except Exception:
             under = None
+        exc = _excursions(rec, under)
         if under is not None:
-            db.update(pk, rec["SK"], {"lastUnderlying": under})
+            exc["lastUnderlying"] = under
+        if exc:
+            db.update(pk, rec["SK"], exc)
+            rec.update(exc)
         dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
         due, earn_reason = earnings_exit_due(earn_for(cfg, rec["symbol"])[0])
         reason = None
@@ -1291,6 +1331,8 @@ def handler(event, context_):
         subs = [event["sub"]]
     elif job == "scan":   # watchlist scans only for users who turned the schedule on
         subs = [p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("enabled")]
+    elif job == "shadow":  # after the close: users with evaluations that weren't placed
+        subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed"))})
     elif job == "review":  # end of day: users with open bot positions
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
     elif job == "tick":   # every minute: users with open bot trades or flow trading on
@@ -1305,6 +1347,9 @@ def handler(event, context_):
                 out[sub] = tick(sub)
             elif job == "chase":
                 out[sub] = {"status": (chase(sub, event["id"]) or {}).get("status")}
+            elif job == "shadow":
+                import shadow
+                out[sub] = shadow.run(sub)
             elif job in ("review", "aireview"):
                 import aicheck
                 out[sub] = aicheck.review_all(sub, only_id=event.get("id"), auto_close=(job == "review"))

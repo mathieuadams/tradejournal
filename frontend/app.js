@@ -1278,6 +1278,8 @@ function botResult(r) {
     ${(r.rolls || []).length ? `<details style="margin-top:6px"><summary style="cursor:pointer" class="muted">Rolls</summary><div class="tablewrap" style="border:0"><table><thead><tr><th>When</th><th>Bought back</th><th>Sold</th><th class="r">Net per spread</th></tr></thead><tbody>
       ${r.rolls.map(x => `<tr><td>${esc(x.at.replace('T', ' ').slice(5, 16))}</td><td>${esc(x.from || '—')}</td><td>${esc(x.to)}</td><td class="r ${cls(x.credit)}">${x.credit >= 0 ? '+' : ''}${x.credit.toFixed(2)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${(r.marks || []).length > 1 ? `<h3 style="font-size:.95rem;margin:16px 0 6px">${p && (p.strategy === 'bull_call' || p.strategy === 'diagonal') ? 'Spread' : 'Option'} value since entry (every ~15 min)</h3>${markLine(r)}` : ''}
+    ${tradePathPanel(r)}
+    ${shadowPanel(r)}
     ${aiPanel(r)}
     ${reviewPanel(r)}
     <p style="margin:12px 0 0"><button class="btn" data-rescan="${esc(r.symbol)}">Re-evaluate ${esc(r.symbol)} now</button></p>
@@ -1289,6 +1291,43 @@ function botResult(r) {
       <div class="field"><button class="btn" data-botdismiss="${r.id}">Dismiss</button></div></div>` : ''}
   </section>`;
 }
+/* ---------- tracking for optimization: best/worst during taken trades, and what skipped trades would have done ---------- */
+const sgn = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${(+v).toFixed(d)}`;
+function shadowCell(i) {
+  const s = i.shadow;
+  if (!s) return '<td><span class="muted">—</span></td>';
+  if (s.status === 'dup') return '<td><span class="muted" title="Same contract evaluated earlier that day: followed once">same as earlier</span></td>';
+  if (s.status === 'nodata') return `<td><span class="muted" title="${esc(s.note || '')}">no data</span></td>`;
+  const cls = s.plPct > 0 ? 'gain' : s.plPct < 0 ? 'loss' : '';
+  return `<td title="${esc(s.exitReason || 'still being followed')}"><span class="${cls}">${sgn(s.plPct)}%</span>${s.R != null ? ` <span class="muted">${sgn(s.R, 2)}R</span>` : ''}${s.status === 'tracking' ? ' <span class="muted" style="font-size:.78rem">tracking</span>' : ''}</td>`;
+}
+function shadowPanel(r) {
+  const s = r.shadow;
+  if (r.orderId || ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(r.status) || !r.proposal) return '';
+  const head = '<h3 style="font-size:.95rem;margin:16px 0 6px">If the bot had taken it <span class="muted" style="font-weight:400;font-size:.82rem">shadow tracking · daily bars · the bot\'s exit rules</span></h3>';
+  if (!s) return head + '<p class="muted" style="margin:0">Followed every trading day after the close (16:20 ET) for up to 20 trading days.</p>';
+  if (s.status === 'dup') return head + '<p class="muted" style="margin:0">The same contract was evaluated earlier that day; that evaluation is the one followed.</p>';
+  if (s.status === 'nodata') return head + `<p class="muted" style="margin:0">No trades in this contract to follow (${esc(s.note || 'no data')}).</p>`;
+  const cls = s.plPct > 0 ? 'gain' : s.plPct < 0 ? 'loss' : '';
+  return head + `<div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
+    <tr><td>Result</td><td class="r"><b class="${cls}">${sgn(s.plPct)}%</b>${s.R != null ? ` · ${sgn(s.R, 2)}R` : ''} ${s.status === 'tracking' ? '<span class="muted">(still being followed)</span>' : ''}</td></tr>
+    <tr><td>${s.status === 'done' ? 'Exit' : 'So far'}</td><td class="r">${esc(s.exitReason || `day ${s.days} of 20`)}${s.exitDate ? ` <span class="muted">${esc(s.exitDate)}</span>` : ''}</td></tr>
+    <tr><td>Entry → ${s.status === 'done' ? 'exit' : 'last'}</td><td class="r">${(+s.entry).toFixed(2)} → ${(+(s.exitPrice ?? s.last)).toFixed(2)}</td></tr>
+    <tr><td>Best / worst option move</td><td class="r"><span class="gain">${sgn(s.mfePct)}%</span> / <span class="loss">${sgn(s.maePct)}%</span>${s.closesOnly ? ' <span class="muted">(daily closes)</span>' : ''}</td></tr>
+    ${s.undMax != null ? `<tr><td>${esc(r.symbol)} range while followed</td><td class="r">${s.undMin} – ${s.undMax}</td></tr>` : ''}
+  </tbody></table></div><p class="muted" style="font-size:.8rem;margin:4px 0 0">Approximate: daily bars, so when a stop and a target both fall on the same day the stop is counted.</p>`;
+}
+function tradePathPanel(r) {
+  if (!r.fillPrice || r.optMax == null) return '';
+  const R = r.realizedR != null ? r.realizedR : (r.riskAtFill && r.lastPl != null ? Math.round(r.lastPl / r.riskAtFill * 100) / 100 : null);
+  return `<h3 style="font-size:.95rem;margin:16px 0 6px">During the trade</h3><div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
+    <tr><td>Result in R</td><td class="r"><b class="${R > 0 ? 'gain' : R < 0 ? 'loss' : ''}">${sgn(R, 2)}R</b>${r.riskAtFill ? ` <span class="muted">(1R = ${money(r.riskAtFill, false)}, the ${r.stopPctAtFill}% stop on the filled size)</span>` : ''}</td></tr>
+    <tr><td>Best / worst P&L</td><td class="r"><span class="gain">${sgn(r.plMax)}%</span> / <span class="loss">${sgn(r.plMin)}%</span></td></tr>
+    <tr><td>Option high / low</td><td class="r">${(+r.optMax).toFixed(2)} / ${(+r.optMin).toFixed(2)}</td></tr>
+    ${r.undMax != null ? `<tr><td>${esc(r.symbol)} high / low</td><td class="r">${r.undMax} / ${r.undMin}</td></tr>` : ''}
+  </tbody></table></div>`;
+}
+
 /* ---------- Claude's chart check (final visual verification before an order) ---------- */
 const AI_CLS = { approve: 'ok', caution: 'mid', reject: 'bad' };
 const aiCell = i => { const a = i.aiCheck && i.aiCheck.verdict ? i.aiCheck : null;
@@ -1465,7 +1504,7 @@ function vBot() {
       <td class="r" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
   const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Claude</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
   const evalRow = i => { const p = i.proposal || {};
-    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td>${aiCell(i)}<td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
+    return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td>${aiCell(i)}${shadowCell(i)}<td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
   const trades = items.filter(i => ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice || i.status === 'submitting'));
   const active = trades.filter(i => i.status !== 'closed');
   const done = trades.filter(i => i.status === 'closed');
@@ -1503,7 +1542,7 @@ function vBot() {
   ${summaryHtml}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh every minute. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
-  <section><div class="cal-head"><h2>Evaluations</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Claude</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>
+  <section><div class="cal-head"><h2>Evaluations</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Claude</th><th title="What it would have done if the bot had taken it (daily bars, the bot's exit rules)">If taken</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>
   <p class="muted" style="margin:18px 0 0">Bot rules, automatic flow trading and alerts are in <a href="#settings">Settings → Paper bot</a>.</p>`;
 }
 function botSettingsPanels() {

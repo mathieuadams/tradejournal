@@ -410,6 +410,12 @@ Resources:
             ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "tick"}'
+        ShadowTracking:     # after the close: what the evaluations the bot didn't take would have done
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(20 16 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "shadow"}'
         EndOfDayReview:     # Claude: hold overnight or close, while there's time to exit before 16:00
           Type: ScheduleV2
           Properties:

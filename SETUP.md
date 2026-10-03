@@ -215,6 +215,11 @@ Before any paper order (automatic from flow or the watchlist, or from the Place 
 
 Every trading day at 15:40 ET Claude reviews each open bot position on fresh daily and hourly charts (with P&L, days held, expiration, the entry check and earlier reviews) and answers **hold** or **close**. Close with at least 60% confidence closes the position at market before the bell (exit reason "Claude end-of-day review"); a lower-confidence close only sends an alert. The review and its charts are on the position, the Claude column shows EOD HOLD / EOD CLOSE, and **Ask Claude now: hold or close?** runs it on demand (on-demand reviews never close by themselves). Settings → Bot settings: turn it off, turn auto-close off, or change the confidence threshold.
 
+### Tracking for optimization
+
+- **Taken trades:** every minute the bot records the best and worst option price, P&L % and stock price during the trade, and the price history is kept for the whole trade (older points thinned, never dropped). At the fill it records 1R = filled quantity x fill price x the stop % in force, and the result in R when the trade closes. Shown under **During the trade** on each position.
+- **Skipped evaluations (shadow tracking):** every trading day at 16:20 ET, each evaluation from the last 5 weeks that had a proposed order but wasn't placed (WAIT, SKIP, blocked by Claude, max positions, dismissed) is followed for up to 20 trading days on daily option and stock bars, with the bot's exit rules (option stop, invalidation close, target, stock target, time stop, earnings). The result (% and R, exit reason, best/worst move) is in the **If taken** column and under **If the bot had taken it**. Approximate: daily bars, stop counted first when a stop and a target fall on the same day. The same contract evaluated several times on one day is followed once.
+
 ## Step 8. Alerts for paper-bot orders (Amazon SNS)
 
 The bot publishes every order (buy, fill, exit order, position closed, cancel) to an Amazon SNS topic that the deploy creates.

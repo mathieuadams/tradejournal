@@ -1191,6 +1191,90 @@ def test_option_data_retries():
         gex.urllib.request.urlopen, time.sleep = orig_open, orig_sleep
 
 
+def test_shadow_tracking():
+    """Evaluations that weren't placed are followed with the bot's exit rules on daily bars."""
+    import autotrader, shadow, alpaca, datetime as dt
+    STORE.clear()
+    pk = db.upk(SUB)
+    now = autotrader.now_ny()
+    d0 = (now - dt.timedelta(days=10)).strftime("%Y-%m-%d")
+    days = [(now - dt.timedelta(days=9 - i)).strftime("%Y-%m-%d") for i in range(8)]
+    prop = {"contract": "XYZ261120C00100000", "exp": "2026-11-20", "strike": 100, "qty": 2, "limit": 5.0,
+            "underlyingStop": 95.0, "underlyingTarget": 115.0}
+    def ev(i, decision, **kw):
+        rid = f"2026092{i}100000-aaaaa{i}"
+        r = {"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "XYZ", "status": "proposed", "decision": decision,
+             "createdAt": f"{d0}T10:0{i}:00", "proposal": prop, **kw}
+        db.put(r)
+        return rid
+    skip = ev(1, "WAIT")
+    dup = ev(2, "WAIT")                                    # same contract, same day: followed once
+    rej = ev(3, "BUY", aiBlocked=True, proposal={**prop, "contract": "XYZ261120C00105000"})
+    taken = ev(4, "BUY", orderId="o1", status="closed", proposal={**prop, "contract": "XYZ261120C00110000"})
+    cfg = autotrader.settings(SUB)
+    bar = lambda d, o, h, l, c: {"t": d + "T04:00:00Z", "o": o, "h": h, "l": l, "c": c}
+    obars = {"XYZ261120C00100000": [bar(days[0], 5, 6, 4.5, 5.5), bar(days[1], 5.5, 9.5, 5.4, 9.0)],          # +80% target day 2
+             "XYZ261120C00105000": [bar(days[0], 5, 5.2, 2.8, 3.0), bar(days[1], 3, 3, 2, 2)]}                  # -40% stop day 1
+    ubars = [{"t": d + "T00:00:00", "o": 100, "h": 104, "l": 98, "c": 102} for d in days[:2]]
+    seen = {}
+    shadow._creds = lambda sub: {"key": "k", "secret": "s"}
+    shadow.option_bars = lambda c, syms, start: (seen.update(syms=sorted(set(x for x in syms if x)), start=start) or obars)
+    import charts
+    charts._yahoo = lambda *a, **k: ubars
+    out = shadow.run(SUB)
+    assert out == {"tracked": 2, "dups": 1}, out
+    assert seen["syms"] == ["XYZ261120C00100000", "XYZ261120C00105000"] and seen["start"] == d0     # taken trade not followed
+    s1 = STORE[(pk, f"BOT#{skip}")]["shadow"]
+    assert s1["status"] == "done" and s1["exitReason"].startswith("option target") and s1["days"] == 2, s1
+    assert s1["plPct"] == round((5 * (1 + cfg["targetPct"] / 100) / 5 - 1) * 100, 1) and s1["mfePct"] == 90.0 and s1["maePct"] == -10.0
+    assert s1["R"] == round(s1["plPct"] / cfg["stopPct"], 2) and s1["undMax"] == 104
+    s3 = STORE[(pk, f"BOT#{rej}")]["shadow"]
+    assert s3["status"] == "done" and s3["exitReason"].startswith("option stop") and s3["R"] == -1.0 and s3["days"] == 1, s3
+    assert STORE[(pk, f"BOT#{dup}")]["shadow"]["status"] == "dup" and "shadow" not in STORE[(pk, f"BOT#{taken}")]
+    # finished ones aren't fetched again
+    assert shadow.run(SUB) == {"tracked": 0, "dups": 0}
+    # still running: tracking with the current result; invalidation on a close below the level
+    r = {"id": "x", "symbol": "XYZ", "createdAt": f"{d0}T10:00:00", "proposal": {**prop, "contract": "C1"}}
+    sh = shadow.simulate(r, {"C1": [bar(days[0], 5, 5.5, 4.8, 5.2)]}, ubars, cfg)
+    assert sh["status"] == "tracking" and sh["plPct"] == 4.0 and sh["days"] == 1
+    low = [{"t": days[0] + "T00:00:00", "o": 100, "h": 100, "l": 93, "c": 94}]
+    sh = shadow.simulate(r, {"C1": [bar(days[0], 5, 5.2, 4.0, 4.1)]}, low, cfg)
+    assert sh["status"] == "done" and "invalidation" in sh["exitReason"] and sh["plPct"] == -18.0
+    # spreads use the net of the leg closes
+    sp = {**r, "proposal": {**prop, "contract": "L", "shortContract": "S", "limit": 2.0, "strategy": "bull_call", "width": 10, "debit": 2.0}}
+    sh = shadow.simulate(sp, {"L": [bar(days[0], 5, 6, 5, 6.0)], "S": [bar(days[0], 3, 3.5, 3, 3.5)]}, ubars, cfg)
+    assert sh["closesOnly"] and sh["last"] == 2.5 and sh["plPct"] == 25.0
+
+
+def test_excursions_and_r():
+    """Taken trades record the best/worst option price, P&L and stock price, and the result in R."""
+    import autotrader, alpaca
+    STORE.clear()
+    pk = db.upk(SUB)
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    px = {"opt": "5.0", "und": 100.0}
+    autotrader._alp = lambda c, m, path, body=None: ({"qty": "2", "current_price": px["opt"], "avg_entry_price": "5.0",
+                                                       "unrealized_plpc": str(float(px["opt"]) / 5 - 1), "unrealized_pl": "0",
+                                                       "market_value": "0"} if path.startswith("/v2/positions/") and px["opt"] else None)
+    autotrader._yahoo = lambda *a, **k: [{"t": "x", "o": 1, "h": 1, "l": 1, "c": px["und"], "v": 1}]
+    rid = "20261001100000-bbbbbb"
+    db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "XYZ", "status": "open", "fillPrice": 5.0, "filledQty": 2,
+            "proposal": {"contract": "XYZ261120C00100000", "exp": "2099-11-20", "strike": 100, "qty": 3, "underlyingStop": 50.0,
+                         "underlyingTarget": 500.0, "underlyingAtr": 2.0}})
+    for opt, und in (("4.0", 97.0), ("6.5", 108.0), ("5.5", 103.0)):
+        px.update(opt=opt, und=und)
+        autotrader.monitor(SUB)
+    r = STORE[(pk, f"BOT#{rid}")]
+    cfg = autotrader.settings(SUB)
+    assert r["optMin"] == 4.0 and r["optMax"] == 6.5 and r["plMin"] == -20.0 and r["plMax"] == 30.0, r
+    assert r["undMin"] == 97.0 and r["undMax"] == 108.0 and r["undMaxAt"]
+    assert r["riskAtFill"] == round(5.0 * 2 * 100 * cfg["stopPct"] / 100, 2)        # filled quantity, not the proposed 3
+    px["opt"] = ""                                                                  # position gone: closed at the last mark
+    autotrader.monitor(SUB)
+    r = STORE[(pk, f"BOT#{rid}")]
+    assert r["status"] == "closed" and r["realizedPl"] == 100.0 and r["realizedR"] == round(100.0 / r["riskAtFill"], 2), r
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]
