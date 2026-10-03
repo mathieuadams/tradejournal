@@ -278,6 +278,8 @@ def bot_settings(sub, claims, body, q):
         "requireAboveFlip": bool(body.get("requireAboveFlip", cur["requireAboveFlip"])),
         "aiCheck": bool(body.get("aiCheck", cur["aiCheck"])), "aiAllowCaution": bool(body.get("aiAllowCaution", cur["aiAllowCaution"])),
         "aiBlockOnError": bool(body.get("aiBlockOnError", cur["aiBlockOnError"])), "aiMaxAgeMin": int(num("aiMaxAgeMin", 5, 1440)),
+        "aiExitReview": bool(body.get("aiExitReview", cur["aiExitReview"])), "aiExitAutoClose": bool(body.get("aiExitAutoClose", cur["aiExitAutoClose"])),
+        "aiExitMinConf": int(num("aiExitMinConf", 0, 100)),
         "earnings": {k.upper()[:8]: v for k, v in (body.get("earnings") if isinstance(body.get("earnings"), dict) else cur["earnings"]).items()
                      if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}( (AMC|BMO))?$", v)},
         "noEntryDays": int(num("noEntryDays", 0, 60)),
@@ -351,6 +353,26 @@ def bot_aicheck(sub, claims, body, q, bid):
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
                      Payload=json.dumps({"sub": sub, "job": "aicheck", "id": bid}))
     return {"status": "running"}
+
+
+@route("POST", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/aireview")
+def bot_aireview(sub, claims, body, q, bid):
+    """On-demand hold/close review of an open position (doesn't auto-close; the end-of-day run does)."""
+    rec = db.get(db.upk(sub), f"BOT#{bid}")
+    if not rec:
+        raise NotFound("Not found.")
+    if rec.get("status") != "open":
+        raise BadRequest("Only open positions can be reviewed.")
+    db.update(db.upk(sub), f"BOT#{bid}", {"aiReviewRunning": True, "aiReviewError": ""})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "aireview", "id": bid}))
+    return {"status": "running"}
+
+
+@route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/reviewcharts")
+def bot_reviewcharts(sub, claims, body, q, bid):
+    import aicheck
+    return aicheck.review_charts(sub, bid)
 
 
 @route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/charts")

@@ -59,7 +59,9 @@ DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40
             "diagShortDteMin": 1, "diagShortDteMax": 21, "diagShortDeltaMin": 0.20, "diagShortDeltaMax": 0.40,
             "diagMinShortCredit": 100, "diagRollDte": 0, "diagRollWaitMin": 3, "diagTargetPct": 0,
             # final visual check by Claude before any order
-            "aiCheck": True, "aiAllowCaution": False, "aiBlockOnError": True, "aiMaxAgeMin": 30}
+            "aiCheck": True, "aiAllowCaution": True, "aiBlockOnError": True, "aiMaxAgeMin": 30,
+            # Claude's end-of-day review of every open bot position (15:40 ET): hold overnight or close
+            "aiExitReview": True, "aiExitAutoClose": True, "aiExitMinConf": 60}
 
 STRATEGIES = ("long_call", "bull_call", "diagonal")
 SPREADS = ("bull_call", "diagonal")
@@ -1242,6 +1244,8 @@ def handler(event, context_):
         subs = [event["sub"]]
     elif job == "scan":   # watchlist scans only for users who turned the schedule on
         subs = [p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("enabled")]
+    elif job == "review":  # end of day: users with open bot positions
+        subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
     elif job == "tick":   # every minute: users with open bot trades or flow trading on
         flow_users = {p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("flowAuto")}
         subs = sorted(flow_users | {r["PK"][5:] for r in db.scan_prefix("BOT#", ("submitted", "open", "closing"))})
@@ -1254,6 +1258,9 @@ def handler(event, context_):
                 out[sub] = tick(sub)
             elif job == "chase":
                 out[sub] = {"status": (chase(sub, event["id"]) or {}).get("status")}
+            elif job in ("review", "aireview"):
+                import aicheck
+                out[sub] = aicheck.review_all(sub, only_id=event.get("id"), auto_close=(job == "review"))
             elif job == "aicheck":
                 import aicheck
                 rec = db.get(db.upk(sub), f"BOT#{event['id']}")

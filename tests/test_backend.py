@@ -944,14 +944,21 @@ def test_ai_chart_check():
         assert "underlyingStop" in seen["text"] and "rule_checks" in seen["text"]
         code, ch = call("GET", f"/bot/{r1}/charts")
         assert code == 200 and len(ch["images"]) == 2 and base64.b64decode(ch["images"][1]["b64"])[:4] == b"\x89PNG"
-        # caution blocks unless allowed; approve places
+        # caution: blocked when caution isn't allowed (it is by default); approve places
         seen["verdict"] = "caution"
+        assert autotrader.settings(SUB)["aiAllowCaution"] is True
+        call("PUT", "/bot/settings", {"aiAllowCaution": False})
         r2 = mk(2)
         try:
             autotrader.place(SUB, r2, placed_by="auto")
             assert False
         except autotrader.BadRequest:
             pass
+        call("PUT", "/bot/settings", {"aiAllowCaution": True})
+        autotrader.place(SUB, r2, placed_by="auto")             # default: caution enters
+        assert len(posts) == 1
+        STORE[(pk, f"BOT#{r2}")]["status"] = "closed"
+        posts.clear()
         seen["verdict"] = "approve"
         r3 = mk(3)
         autotrader.place(SUB, r3, placed_by="auto")
@@ -1000,6 +1007,67 @@ def test_ai_chart_check():
         assert code == 200 and len(posts) == 3
     finally:
         autotrader.DEFAULTS["aiCheck"] = False
+
+
+def test_ai_end_of_day_review():
+    import autotrader, alpaca, aicheck, datetime as dt
+    STORE.clear()
+    pk = db.upk(SUB)
+    def bars(n, step):
+        out, p, t0 = [], 30.0, autotrader.now_ny() - step * n
+        for i in range(n):
+            p *= 0.998
+            out.append({"t": (t0 + step * i).strftime("%Y-%m-%dT%H:%M:%S"), "o": p * 1.01, "h": p * 1.02, "l": p * 0.98, "c": p, "v": 1000})
+        return out
+    aicheck._yahoo = lambda sym, tf, s_, e: bars(250, dt.timedelta(days=1)) if tf == "1d" else bars(140, dt.timedelta(hours=1))
+    answer = {}
+    claude.vision_json = lambda model, system, images, text, schema, max_tokens=1500: (answer.update(text=text, system=system) or answer["out"])
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    deletes = []
+    def fake_alp(c, m, path, body=None):
+        if m == "DELETE":
+            deletes.append(path); return {"id": "x1"}
+        return {"qty": "2", "current_price": "2.0"} if path.startswith("/v2/positions/") else None
+    autotrader._alp = fake_alp
+    prop = {"strategy": "long_call", "contract": "BMNR261120C00027000", "exp": "2026-11-20", "strike": 27, "qty": 2, "limit": 2.53,
+            "underlyingStop": 25.0, "underlyingTarget": 27.0, "underlyingAtr": 1.5}
+    def mk(i):
+        rid = f"2026100210000{i}-eeeee{i}"
+        db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "BMNR", "status": "open", "proposal": prop, "fillPrice": 2.53,
+                "filledQty": 2, "lastMark": 2.0, "lastPlPct": -21.0, "createdAt": "2026-10-01T10:00:00", "filledAt": "2026-10-01T10:01:00"})
+        return rid
+    # Claude says close with enough confidence -> position closed at market, review kept
+    a, b, c3 = mk(1), mk(2), mk(3)
+    answer["out"] = {"action": "close", "confidence": 80, "summary": "Lost the 27.7 shelf; closing near the low.",
+                     "hold_reasons": [], "close_reasons": ["Broke below the range", "Weak close"]}
+    out = autotrader.handler({"job": "review"}, None)
+    assert out[SUB]["reviews"] and all(r["closed"] for r in out[SUB]["reviews"]), out
+    r = STORE[(pk, f"BOT#{a}")]
+    assert r["status"] == "closing" and r["exitReason"].startswith("Claude end-of-day review (80%)") and r["aiReview"]["action"] == "close"
+    assert len(deletes) == 3 and "days_held" in answer["text"] and "OPEN options position" in answer["system"]
+    code, ch = call("GET", f"/bot/{a}/reviewcharts")
+    assert code == 200 and len(ch["images"]) == 2
+    # hold, or close below the confidence threshold -> stays open (the second one only alerts)
+    deletes.clear()
+    d, e = mk(4), mk(5)
+    for x in (a, b, c3):
+        STORE[(pk, f"BOT#{x}")]["status"] = "closed"
+    answer["out"] = {"action": "hold", "confidence": 70, "summary": "Holding the base.", "hold_reasons": ["Above EMA"], "close_reasons": []}
+    aicheck.review_all(SUB, only_id=d)
+    answer["out"] = {"action": "close", "confidence": 40, "summary": "Maybe.", "hold_reasons": [], "close_reasons": ["Soft"]}
+    aicheck.review_all(SUB, only_id=e)
+    assert not deletes and STORE[(pk, f"BOT#{d}")]["status"] == "open" and STORE[(pk, f"BOT#{e}")]["status"] == "open"
+    assert len(STORE[(pk, f"BOT#{e}")]["aiReviews"]) == 1 and STORE[(pk, f"BOT#{e}")]["aiReview"]["closed"] is False
+    # on demand from the app: never auto-closes
+    answer["out"] = {"action": "close", "confidence": 95, "summary": "Close.", "hold_reasons": [], "close_reasons": ["x"]}
+    code, _ = call("POST", f"/bot/{d}/aireview", {})
+    assert code == 200 and STORE[(pk, f"BOT#{d}")]["aiReviewRunning"] is True
+    autotrader.handler({"sub": SUB, "job": "aireview", "id": d}, None)
+    r = STORE[(pk, f"BOT#{d}")]
+    assert r["status"] == "open" and r["aiReview"]["action"] == "close" and len(r["aiReviews"]) == 2 and not deletes
+    # turned off: the scheduled run skips
+    call("PUT", "/bot/settings", {"aiExitReview": False})
+    assert autotrader.handler({"job": "review"}, None)[SUB] == {"skipped": "end-of-day review off"}
 
 
 def test_analytics():

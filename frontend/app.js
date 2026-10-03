@@ -1285,31 +1285,35 @@ function botResult(r) {
       ${r.rolls.map(x => `<tr><td>${esc(x.at.replace('T', ' ').slice(5, 16))}</td><td>${esc(x.from || '—')}</td><td>${esc(x.to)}</td><td class="r ${cls(x.credit)}">${x.credit >= 0 ? '+' : ''}${x.credit.toFixed(2)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${(r.marks || []).length > 1 ? `<h3 style="font-size:.95rem;margin:16px 0 6px">${p && (p.strategy === 'bull_call' || p.strategy === 'diagonal') ? 'Spread' : 'Option'} value since entry (every ~15 min)</h3>${markLine(r)}` : ''}
     ${aiPanel(r)}
+    ${reviewPanel(r)}
     <p style="margin:12px 0 0"><button class="btn" data-rescan="${esc(r.symbol)}">Re-evaluate ${esc(r.symbol)} now</button></p>
     ${p && r.status === 'proposed' ? `<div class="form-grid" style="align-items:end;margin-top:12px">
       <div class="field"><label for="bo-qty">${isSpread(p) ? 'Spreads' : 'Contracts'}</label><input id="bo-qty" type="number" min="1" value="${Math.max(1, p.qty)}"></div>
       <div class="field"><label for="bo-lim">${isSpread(p) ? 'Net debit limit' : 'Limit price'}</label><input id="bo-lim" type="number" step="0.05" value="${p.limit.toFixed(2)}"></div>
       <div class="field"><button class="btn coachbtn" data-botorder="${r.id}" ${S.aiBusy === r.id ? 'disabled' : ''}>${orderLabel(r)}</button></div>
-      ${aiOn() && r.aiCheck && r.aiCheck.verdict !== 'approve' ? `<div class="field"><button class="btn" data-botorder="${r.id}" data-override="1">Place anyway (override Claude)</button></div>` : ''}
+      ${aiOn() && r.aiCheck && !aiPasses(r.aiCheck) ? `<div class="field"><button class="btn" data-botorder="${r.id}" data-override="1">Place anyway (override Claude)</button></div>` : ''}
       <div class="field"><button class="btn" data-botdismiss="${r.id}">Dismiss</button></div></div>` : ''}
   </section>`;
 }
 /* ---------- Claude's chart check (final visual verification before an order) ---------- */
 const AI_CLS = { approve: 'ok', caution: 'mid', reject: 'bad' };
 const aiCell = i => { const a = i.aiCheck && i.aiCheck.verdict ? i.aiCheck : null;
-  if (a) return `<td title="${esc(a.summary || '')}"><span class="verdict ${AI_CLS[a.verdict] || 'mid'}">${esc(a.verdict.toUpperCase())}</span>${i.aiFrom ? ' <span class="muted" style="font-size:.78rem">carried</span>' : ''}</td>`;
+  const rv = i.aiReview, rvb = rv ? ` <span class="verdict ${rv.action === 'close' ? 'bad' : 'ok'}" title="${esc(`End-of-day review ${(rv.at || '').slice(5, 16).replace('T', ' ')}: ${rv.summary}`)}">${rv.action === 'close' ? 'EOD CLOSE' : 'EOD HOLD'}</span>` : '';
+  if (a) return `<td title="${esc(a.summary || '')}"><span class="verdict ${AI_CLS[a.verdict] || 'mid'}">${esc(a.verdict.toUpperCase())}</span>${i.aiFrom ? ' <span class="muted" style="font-size:.78rem">carried</span>' : ''}${rvb}</td>`;
+  if (rv) return `<td>${rvb}</td>`;
   if (i.aiRunning) return '<td><span class="muted">checking…</span></td>';
   if (i.aiError) return `<td title="${esc(i.aiError)}"><span class="loss">error</span></td>`;
   return '<td><span class="muted">—</span></td>'; };
 S.aiImgs = S.aiImgs || {}; S.aiImgBusy = S.aiImgBusy || {};
 const aiOn = () => ((S.bot && S.bot.settings) || {}).aiCheck !== false;
+const aiPasses = a => !!a && (a.verdict === 'approve' || (a.verdict === 'caution' && ((S.bot && S.bot.settings) || {}).aiAllowCaution !== false));
 const nyTime = ms => new Date(ms).toLocaleString('sv-SE', { timeZone: 'America/New_York' }).replace(' ', 'T');
 const aiFresh = a => { const m = ((S.bot && S.bot.settings) || {}).aiMaxAgeMin || 30; return !!(a && a.at && a.at >= nyTime(Date.now() - m * 60000)); };
 function orderLabel(r) {
   const base = r.decision === 'BUY' ? 'Place paper order' : 'Place paper order anyway';
   if (!aiOn()) return base;
   if (S.aiBusy === r.id) return 'Claude is checking…';
-  if (r.aiCheck && aiFresh(r.aiCheck) && r.aiCheck.verdict === 'approve') return base;
+  if (r.aiCheck && aiFresh(r.aiCheck) && aiPasses(r.aiCheck)) return base;
   return r.decision === 'BUY' ? 'Check chart with Claude, then place' : 'Check chart with Claude, then place anyway';
 }
 function aiPanel(r) {
@@ -1330,6 +1334,41 @@ function aiPanel(r) {
     ${imgs && imgs.length ? `<div style="display:grid;gap:10px;margin-top:10px">${imgs.map(x => `<figure style="margin:0"><img src="data:image/png;base64,${x.b64}" alt="${esc(r.symbol)} ${esc(x.label)} chart sent to Claude" style="width:100%;height:auto;border:1px solid var(--line);border-radius:8px"><figcaption class="muted" style="font-size:.8rem">${esc(x.label)} — what Claude saw</figcaption></figure>`).join('')}</div>` : ''}
     ${r.status === 'proposed' && !busy ? `<p style="margin:8px 0 0"><button class="btn" data-aicheck="${r.id}">${a ? 'Check again' : 'Ask Claude to check the chart'}</button></p>` : ''}`;
 }
+S.rvImgs = S.rvImgs || {}; S.rvImgBusy = S.rvImgBusy || {};
+function reviewPanel(r) {
+  if (!['open', 'closing', 'closed'].includes(r.status) || (!r.aiReview && r.status !== 'open')) return '';
+  const rv = r.aiReview, busy = S.rvBusy === r.id || r.aiReviewRunning, hist = (r.aiReviews || []).slice(0, -1).reverse();
+  const imgs = S.rvImgs[r.id];
+  if (rv && !imgs && !S.rvImgBusy[r.id]) setTimeout(() => loadRvImgs(r.id), 0);
+  const cfg = (S.bot && S.bot.settings) || {};
+  return `<h3 style="font-size:.95rem;margin:16px 0 6px">Claude's end-of-day review <span class="muted" style="font-weight:400;font-size:.82rem">hold overnight or close · 15:40 ET${cfg.aiExitReview === false ? ' · off in settings' : ''}</span></h3>
+    ${busy ? '<p class="loading" style="padding:0;margin:0">Claude is reviewing the position… (about 20 seconds)</p>' : ''}
+    ${!busy && rv ? `<p style="margin:0 0 6px"><span class="verdict ${rv.action === 'close' ? 'bad' : 'ok'}">${rv.action.toUpperCase()}</span> <span class="muted" style="font-size:.85rem">${rv.confidence}% confidence · ${esc((rv.at || '').replace('T', ' ').slice(5, 16))} ET${rv.plPct != null ? ` · P&L then ${rv.plPct > 0 ? '+' : ''}${rv.plPct}%` : ''}${rv.closed ? ' · <b class="loss">closed by the review</b>' : ''}</span></p>
+      <p style="margin:0 0 6px">${esc(rv.summary)}</p>
+      <ul style="list-style:none;padding:0;margin:0;line-height:1.6">${(rv.supports || []).map(x => `<li><b class="gain">✓</b> ${esc(x)}</li>`).join('')}${(rv.concerns || []).map(x => `<li><b class="loss">✗</b> ${esc(x)}</li>`).join('')}</ul>` : ''}
+    ${!busy && !rv ? '<p class="muted" style="margin:0">No review yet. It runs every trading day at 15:40 ET for each open position.</p>' : ''}
+    ${r.aiReviewError ? `<p class="loss" style="margin:6px 0 0">${esc(r.aiReviewError)}</p>` : ''}
+    ${hist.length ? `<details style="margin-top:6px"><summary class="muted" style="cursor:pointer">Earlier reviews (${hist.length})</summary><ul style="list-style:none;padding:0;margin:6px 0 0;line-height:1.6">${hist.map(h => `<li><span class="verdict ${h.action === 'close' ? 'bad' : 'ok'}">${h.action.toUpperCase()}</span> <span class="muted">${esc((h.at || '').replace('T', ' ').slice(5, 16))} · ${h.confidence}%</span> ${esc(h.summary)}</li>`).join('')}</ul></details>` : ''}
+    ${imgs && imgs.length ? `<details style="margin-top:6px"><summary class="muted" style="cursor:pointer">Charts Claude reviewed</summary><div style="display:grid;gap:10px;margin-top:8px">${imgs.map(x => `<img src="data:image/png;base64,${x.b64}" alt="${esc(r.symbol)} ${esc(x.label)} chart" style="width:100%;height:auto;border:1px solid var(--line);border-radius:8px">`).join('')}</div></details>` : ''}
+    ${r.status === 'open' && !busy ? `<p style="margin:8px 0 0"><button class="btn" data-aireview="${r.id}">Ask Claude now: hold or close?</button></p>` : ''}`;
+}
+async function loadRvImgs(id) {
+  S.rvImgBusy[id] = true;
+  try { const r = await api(`/bot/${id}/reviewcharts`); S.rvImgs[id] = r.images || []; if (route() === 'bot' || route() === 'gex') render(); } catch (e) { S.rvImgs[id] = []; }
+}
+async function rvRun(id) {
+  S.rvBusy = id; render();
+  try { await api(`/bot/${id}/aireview`, { method: 'POST' }); } catch (e) { S.rvBusy = null; render(); toast(e.message); return; }
+  for (let i = 0; i < 30; i++) {
+    await sleep(4000);
+    let rec; try { rec = await api(`/bot/${id}`); } catch (e) { continue; }
+    if (rec.aiReviewRunning) continue;
+    S.rvBusy = null; delete S.rvImgs[id]; S.rvImgBusy[id] = false; mergeRes(rec); await loadBot(true); render();
+    toast(rec.aiReviewError || `Claude: ${rec.aiReview.action} (${rec.aiReview.confidence}%)${rec.aiReview.action === 'close' ? ' — use Close if you agree' : ''}`);
+    return;
+  }
+  S.rvBusy = null; render(); toast('The review is taking longer than usual. Refresh in a minute.');
+}
 async function loadAiImgs(id) {
   S.aiImgBusy[id] = true;
   try { const r = await api(`/bot/${id}/charts`); S.aiImgs[id] = r.images || []; if (route() === 'bot' || route() === 'gex') render(); } catch (e) { S.aiImgs[id] = []; }
@@ -1348,7 +1387,7 @@ async function aiRun(id, placeAfter) {
     S.aiBusy = null; delete S.aiImgs[id]; S.aiImgBusy[id] = false; mergeRes(rec); render();
     if (rec.aiError) { toast(rec.aiError); return; }
     const v = rec.aiCheck && rec.aiCheck.verdict;
-    if (placeAfter && v === 'approve') { placeOrder(id, false, placeAfter); return; }
+    if (placeAfter && aiPasses(rec.aiCheck)) { placeOrder(id, false, placeAfter); return; }
     toast(placeAfter ? `Claude: ${v}. Not placed — review the chart, or "Place anyway" if you disagree.` : `Claude: ${v}`);
     return;
   }
@@ -1512,6 +1551,8 @@ function botSettingsPanels() {
       <label><input type="checkbox" id="bs-ai" ${cfg.aiCheck !== false ? 'checked' : ''}> Claude checks the chart before every order</label>
       <label><input type="checkbox" id="bs-aicau" ${cfg.aiAllowCaution ? 'checked' : ''}> Still place when Claude says “caution”</label>
       <label><input type="checkbox" id="bs-aierr" ${cfg.aiBlockOnError !== false ? 'checked' : ''}> Don't place if the chart check can't run</label>
+      <label><input type="checkbox" id="bs-aiexit" ${cfg.aiExitReview !== false ? 'checked' : ''}> Claude reviews every open position at 15:40 ET</label>
+      <label><input type="checkbox" id="bs-aiexitauto" ${cfg.aiExitAutoClose !== false ? 'checked' : ''}> Close when Claude says close with at least <input id="bs-aiexitconf" type="number" min="0" max="100" step="5" value="${cfg.aiExitMinConf ?? 60}" style="width:4.2em;padding:2px 4px"> % confidence</label>
       <label><input type="checkbox" id="bs-onclose" ${cfg.invalidationOnClose !== false ? 'checked' : ''}> Exit on the invalidation level only on a close below it (checked from 15:50 ET)</label>
       <label><input type="checkbox" id="bs-trail" ${cfg.trailAfterTarget !== false ? 'checked' : ''}> After the target is reached, trail instead of selling</label></div>
     <h3 style="font-size:.95rem;margin:4px 0 6px">Structure</h3>
@@ -1556,7 +1597,7 @@ async function botEvaluate() {
 async function botSaveSettings(quiet) {
   const earnings = {}; ($('#bs-earn').value || '').split('\n').forEach(l => { const m = l.trim().split(/[\s,]+/); if (m.length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(m[1])) earnings[m[0].toUpperCase()] = m[1] + (m[2] && /^(amc|bmo)$/i.test(m[2]) ? ' ' + m[2].toUpperCase() : ' AMC'); });
   const v = id => $(id).value;
-  const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked, aiCheck: $('#bs-ai').checked, aiAllowCaution: $('#bs-aicau').checked, aiBlockOnError: $('#bs-aierr').checked,
+  const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked, aiCheck: $('#bs-ai').checked, aiAllowCaution: $('#bs-aicau').checked, aiBlockOnError: $('#bs-aierr').checked, aiExitReview: $('#bs-aiexit').checked, aiExitAutoClose: $('#bs-aiexitauto').checked, aiExitMinConf: v('#bs-aiexitconf'),
     watchlist: v('#bs-watch').split(/[\s,]+/).filter(Boolean), dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
     minOi: v('#bs-oi'), maxSpreadPct: v('#bs-spread'), stopPct: v('#bs-stop'), targetPct: v('#bs-target'), timeStopDte: v('#bs-time'), maxPositions: v('#bs-max'),
     minGrowth30: v('#bs-g30'), invalidationOnClose: $('#bs-onclose').checked, trailAfterTarget: $('#bs-trail').checked, emergencyAtr: v('#bs-emerg'), trailPct: v('#bs-trailpct'),
@@ -1635,7 +1676,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-botsave],[data-evpage],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],#refresh-btn,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-botsave],[data-evpage],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
@@ -1665,10 +1706,11 @@ document.addEventListener('click', e => {
     const r = [S.botRes, S.anaRes].find(x => x && x.id === id) || {};
     if (override && !confirm("Place this order even though Claude's chart check didn't approve it?")) return;
     el.disabled = true;
-    if (aiOn() && !override && !(r.aiCheck && aiFresh(r.aiCheck) && r.aiCheck.verdict === 'approve')) { aiRun(id, form); return; }
+    if (aiOn() && !override && !(r.aiCheck && aiFresh(r.aiCheck) && aiPasses(r.aiCheck))) { aiRun(id, form); return; }
     placeOrder(id, override, form); return;
   }
   if (el.dataset.aicheck) { aiRun(el.dataset.aicheck, null); return; }
+  if (el.dataset.aireview) { rvRun(el.dataset.aireview); return; }
   if (el.id === 'refresh-btn') { refreshNow(); return; }
   if (el.dataset.botclose) { if (!confirm('Close this paper position at market?')) return; api(`/bot/${el.dataset.botclose}/close`, { method: 'POST' }).then(async () => { await loadBot(true); toast('Close order sent'); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botdismiss) { api(`/bot/${el.dataset.botdismiss}/dismiss`, { method: 'POST' }).then(async () => { S.botRes = null; await loadBot(true); }).catch(err => toast(err.message)); return; }

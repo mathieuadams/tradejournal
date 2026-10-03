@@ -174,3 +174,109 @@ def charts(sub, bot_id):
         it = db.get(pk, f"BOTCHART#{src}") if src else None
     it = it or {}
     return {"images": it.get("images") or [], "createdAt": it.get("createdAt")}
+
+
+# ---------------- end-of-day review of open positions ----------------
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["hold", "close"]},
+        "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+        "summary": {"type": "string", "description": "One or two sentences: what the charts show now and the decision."},
+        "hold_reasons": {"type": "array", "items": {"type": "string"}},
+        "close_reasons": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["action", "confidence", "summary", "hold_reasons", "close_reasons"],
+}
+
+REVIEW_SYSTEM = """You are reviewing an OPEN options position of an automated trading bot (paper account) 20 minutes
+before the close. Decide: hold it overnight, or close it now. The bot's own rules (option stop, invalidation level,
+target, trailing stop, time stop, earnings) still run; you are the discretionary trader's end-of-day look at the chart.
+
+Judge from the charts whether the reason for the trade is still intact:
+- Did price lose the structure that justified the entry (back inside / below a range, below the breakout level,
+  below the 21 EMA or anchored VWAP, filled the fair value gap it was supposed to hold)?
+- Failed breakout, lower highs, distribution (heavy volume on down days), a wide-range reversal or blow-off bar?
+- Momentum fading into resistance or the target, with overhead supply making the remaining reward small?
+- Time decay: with few days to expiration and no progress, holding is costly.
+- Overnight risk: gaps, an event, a weak close near the low of the day.
+
+Close when the chart has turned against the trade or the remaining reward no longer justifies the overnight risk.
+Hold when the structure is intact, even if the position is down a little within the plan. Name the levels and bars you
+see. Keep each list item to one short sentence."""
+
+
+def _review_brief(rec):
+    b = _brief(rec)
+    p = rec.get("proposal") or {}
+    days = None
+    try:
+        from datetime import datetime
+        days = (now_ny().date() - datetime.strptime((rec.get("filledAt") or rec.get("submittedAt") or rec["createdAt"])[:10], "%Y-%m-%d").date()).days
+    except Exception:
+        pass
+    b["position"] = {"entry_option_price": rec.get("fillPrice"), "option_price_now": rec.get("lastMark"), "pl_pct": rec.get("lastPlPct"),
+                     "pl_dollars": rec.get("lastPl"), "peak_option_price": rec.get("peakMark"), "days_held": days,
+                     "contracts": rec.get("filledQty") or rec.get("qty"), "expiration": p.get("exp"),
+                     "stock_price_when_evaluated": (rec.get("signals") or {}).get("price")}
+    b["entry_check_by_claude"] = {k: (rec.get("aiCheck") or {}).get(k) for k in ("verdict", "summary")} if rec.get("aiCheck") else None
+    b["previous_reviews"] = [{k: r.get(k) for k in ("at", "action", "summary")} for r in (rec.get("aiReviews") or [])[-3:]]
+    return b
+
+
+def review(sub, rec, auto_close=True):
+    """Ask Claude hold/close for one open position. Closes it (market) when Claude says close with enough confidence
+    and auto-close is on. Returns the review."""
+    import autotrader
+    cfg = autotrader.settings(sub)
+    pk = db.upk(sub)
+    images = build_charts({**rec, "signals": {**(rec.get("signals") or {}), "price": None}})
+    if not images:
+        raise claude.Unavailable("No price data to draw the chart.")
+    model = os.environ.get("VISION_MODEL") or os.environ.get("COACH_MODEL") or "claude-sonnet-5"
+    out = claude.vision_json(model, REVIEW_SYSTEM, images,
+                             "Open position (JSON):\n" + json.dumps(_review_brief(rec), default=str) + "\n\nHold overnight or close now?",
+                             REVIEW_SCHEMA)
+    rv = {"action": "close" if out.get("action") == "close" else "hold", "confidence": int(out.get("confidence") or 0),
+          "summary": _clean(out.get("summary"))[:600], "supports": _items(out.get("hold_reasons")),
+          "concerns": _items(out.get("close_reasons")), "model": model, "at": iso(now_ny()),
+          "plPct": rec.get("lastPlPct"), "mark": rec.get("lastMark")}
+    will_close = rv["action"] == "close" and rv["confidence"] >= cfg["aiExitMinConf"] and auto_close and cfg["aiExitAutoClose"]
+    rv["closed"] = bool(will_close)
+    reviews = list(rec.get("aiReviews") or []) + [rv]
+    db.put({"PK": pk, "SK": f"BOTREVIEW#{rec['id']}", "images": [{"label": l, "b64": base64.b64encode(png).decode()} for l, png in images],
+            "createdAt": iso(now_ny())})
+    db.update(pk, f"BOT#{rec['id']}", {"aiReview": rv, "aiReviews": reviews[-20:], "aiReviewRunning": False, "aiReviewError": ""})
+    rec.update(aiReview=rv, aiReviews=reviews[-20:])
+    if will_close:
+        autotrader.close(sub, rec["id"], f"Claude end-of-day review ({rv['confidence']}%): {rv['summary'][:200]}")
+    elif rv["action"] == "close":
+        autotrader._notify(sub, f"Paper bot {autotrader._desc(rec)}: Claude suggests CLOSE ({rv['confidence']}%), not closed "
+                                f"({'below the confidence threshold' if auto_close and cfg['aiExitAutoClose'] else 'auto-close off'}). {rv['summary'][:200]}", "ai")
+    return rv
+
+
+def review_all(sub, only_id=None, auto_close=True):
+    import autotrader
+    cfg = autotrader.settings(sub)
+    if not only_id and not cfg["aiExitReview"]:
+        return {"skipped": "end-of-day review off"}
+    pk = db.upk(sub)
+    out = []
+    recs = [db.get(pk, f"BOT#{only_id}")] if only_id else db.q_prefix(pk, "BOT#")
+    for rec in recs:
+        if not rec or rec.get("status") != "open":
+            continue
+        try:
+            rv = review(sub, rec, auto_close)
+            out.append({"symbol": rec["symbol"], "action": rv["action"], "confidence": rv["confidence"], "closed": rv["closed"]})
+        except Exception as e:
+            db.update(pk, f"BOT#{rec['id']}", {"aiReviewRunning": False, "aiReviewError": f"Claude's review failed: {str(e)[:160]}"})
+            out.append({"symbol": rec["symbol"], "error": str(e)[:160]})
+    return {"reviews": out}
+
+
+def review_charts(sub, bot_id):
+    it = db.get(db.upk(sub), f"BOTREVIEW#{bot_id}") or {}
+    return {"images": it.get("images") or [], "createdAt": it.get("createdAt")}

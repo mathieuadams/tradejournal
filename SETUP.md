@@ -206,10 +206,14 @@ Spreads go to Alpaca as one multi-leg order at the net debit and are closed as o
 
 Before any paper order (automatic from flow or the watchlist, or from the Place button), the bot draws the daily (~6 months) and hourly (~15 sessions) charts with the 21 EMA, 50-day, anchored VWAP, active fair value gaps, the invalidation and target levels, the gamma flip and walls, and the strike(s), and sends them to Claude with the rule results. Claude answers **approve**, **caution** or **reject** with what supports and what argues against the trade.
 
-- Approve: the order goes in. Caution or reject: no order, and an alert is sent (alert type "Orders blocked by Claude"). In the app you can still press **Place anyway**.
+- Approve or caution: the order goes in. Reject: no order, and an alert is sent (alert type "Orders blocked by Claude"). In the app you can still press **Place anyway**. Untick "Still place when Claude says caution" to block caution too.
 - The verdict and the two chart images appear under each proposal on the Paper bot page. **Ask Claude to check the chart** runs it on demand.
 - Settings → Bot settings: turn the check off, allow orders on "caution", or allow orders when the check can't run. A verdict older than 30 minutes is redone before placing.
 - Uses the same Anthropic API key as the AI coach (the bot function now has access to it) and the `CoachModel` parameter; about one vision call per order.
+
+### End-of-day review (15:40 ET)
+
+Every trading day at 15:40 ET Claude reviews each open bot position on fresh daily and hourly charts (with P&L, days held, expiration, the entry check and earlier reviews) and answers **hold** or **close**. Close with at least 60% confidence closes the position at market before the bell (exit reason "Claude end-of-day review"); a lower-confidence close only sends an alert. The review and its charts are on the position, the Claude column shows EOD HOLD / EOD CLOSE, and **Ask Claude now: hold or close?** runs it on demand (on-demand reviews never close by themselves). Settings → Bot settings: turn it off, turn auto-close off, or change the confidence threshold.
 
 ## Step 8. Alerts for paper-bot orders (Amazon SNS)
 
