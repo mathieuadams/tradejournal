@@ -1221,9 +1221,19 @@ def test_shadow_tracking():
     shadow.option_bars = lambda c, syms, start: (seen.update(syms=sorted(set(x for x in syms if x)), start=start) or obars)
     import charts
     charts._yahoo = lambda *a, **k: ubars
+    # a closed bot trade: followed for 10 trading days after its exit
+    closed = "20260921150000-cccccc"
+    db.put({"PK": pk, "SK": f"BOT#{closed}", "id": closed, "symbol": "XYZ", "status": "closed", "orderId": "o9", "fillPrice": 4.0,
+            "filledQty": 2, "riskAtFill": 320.0, "exitPrice": 3.0, "exitReason": "option stop (-40%)", "closedAt": f"{d0}T15:30:00",
+            "createdAt": f"{d0}T09:40:00", "proposal": {**prop, "contract": "XYZ261120C00120000"}})
+    obars["XYZ261120C00120000"] = [bar(days[i], 3, 3.3 + i * 0.4, 2.8, 3.2 + i * 0.3) for i in range(6)]
     out = shadow.run(SUB)
-    assert out == {"tracked": 2, "dups": 1}, out
-    assert seen["syms"] == ["XYZ261120C00100000", "XYZ261120C00105000"] and seen["start"] == d0     # taken trade not followed
+    assert out == {"tracked": 2, "dups": 1, "exits": 1}, out
+    ae = STORE[(pk, f"BOT#{closed}")]["afterExit"]
+    assert ae["status"] == "tracking" and ae["days"] == 6 and ae["day1Pct"] == round((3.2 / 3 - 1) * 100, 1), ae
+    assert ae["day5R"] == round((3.2 + 4 * 0.3 - 3.0) * 2 * 100 / 320.0, 2) and ae["bestR"] > ae["day5R"] and ae.get("day10Pct") is None
+    assert "XYZ261120C00120000" in seen["syms"]
+    assert "XYZ261120C00110000" not in seen["syms"] and seen["start"] == d0     # taken trade with no fill: not followed
     s1 = STORE[(pk, f"BOT#{skip}")]["shadow"]
     assert s1["status"] == "done" and s1["exitReason"].startswith("option target") and s1["days"] == 2, s1
     assert s1["plPct"] == round((5 * (1 + cfg["targetPct"] / 100) / 5 - 1) * 100, 1) and s1["mfePct"] == 90.0 and s1["maePct"] == -10.0
@@ -1232,7 +1242,24 @@ def test_shadow_tracking():
     assert s3["status"] == "done" and s3["exitReason"].startswith("option stop") and s3["R"] == -1.0 and s3["days"] == 1, s3
     assert STORE[(pk, f"BOT#{dup}")]["shadow"]["status"] == "dup" and "shadow" not in STORE[(pk, f"BOT#{taken}")]
     # finished ones aren't fetched again
-    assert shadow.run(SUB) == {"tracked": 0, "dups": 0}
+    assert shadow.run(SUB)["tracked"] == 0
+    # summary of what the skipped trades would have done, by reason and by Claude verdict
+    STORE[(pk, f"BOT#{skip}")]["blocking"] = ["Up at least 10% from the 30-day low (low 196.98 on 2026-09-14, now +8.6%)"]
+    code, sm = call("GET", "/bot/shadow/summary", q={"days": "35"})
+    assert code == 200 and sm["skipped"]["n"] == 2 and sm["skipped"]["winPct"] == 50, sm
+    whys = {g["why"]: g for g in sm["byReason"]}
+    assert "Claude rejected" in whys and whys["Claude rejected"]["avgR"] == -1.0
+    assert "Up at least #% from the #-day low" in whys, list(whys)
+    assert sm["best"][0]["symbol"] == "XYZ" and sm["best"][0]["R"] > 0
+    ex = {g["why"]: g for g in sm["exits"]}
+    assert ex["option stop"]["n"] == 1 and ex["option stop"]["day5R"] > 0 and ex["option stop"]["earlyPct"] == 100, sm["exits"]
+    # run now from the app: background job, status recorded
+    code, _ = call("POST", "/bot/shadow/run", {})
+    assert code == 200 and STORE[(pk, "SHADOWRUN")]["status"] == "running"
+    autotrader.handler({"sub": SUB, "job": "shadow"}, None)
+    assert STORE[(pk, "SHADOWRUN")]["status"] == "done"
+    code, sm = call("GET", "/bot/shadow/summary")
+    assert code == 200 and sm["run"]["status"] == "done" and sm["days"] == 5
     # still running: tracking with the current result; invalidation on a close below the level
     r = {"id": "x", "symbol": "XYZ", "createdAt": f"{d0}T10:00:00", "proposal": {**prop, "contract": "C1"}}
     sh = shadow.simulate(r, {"C1": [bar(days[0], 5, 5.5, 4.8, 5.2)]}, ubars, cfg)

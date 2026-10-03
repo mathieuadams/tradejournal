@@ -338,6 +338,25 @@ def bot_order(sub, claims, body, q, bid):
     return rec
 
 
+@route("POST", "/bot/shadow/run")
+def bot_shadow_run(sub, claims, body, q):
+    """Run shadow tracking now (normally after the close): follows the skipped evaluations of the last 5 weeks."""
+    db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "running", "at": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "shadow"}))
+    return {"status": "running"}
+
+
+@route("GET", "/bot/shadow/summary")
+def bot_shadow_summary(sub, claims, body, q):
+    import shadow
+    try:
+        days = max(1, min(35, int(q.get("days") or 5)))
+    except ValueError:
+        days = 5
+    return shadow.summary(sub, days)
+
+
 @route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})")
 def bot_one(sub, claims, body, q, bid):
     rec = db.get(db.upk(sub), f"BOT#{bid}")

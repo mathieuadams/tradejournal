@@ -1279,6 +1279,7 @@ function botResult(r) {
       ${r.rolls.map(x => `<tr><td>${esc(x.at.replace('T', ' ').slice(5, 16))}</td><td>${esc(x.from || '—')}</td><td>${esc(x.to)}</td><td class="r ${cls(x.credit)}">${x.credit >= 0 ? '+' : ''}${x.credit.toFixed(2)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${(r.marks || []).length > 1 ? `<h3 style="font-size:.95rem;margin:16px 0 6px">${p && (p.strategy === 'bull_call' || p.strategy === 'diagonal') ? 'Spread' : 'Option'} value since entry (every ~15 min)</h3>${markLine(r)}` : ''}
     ${tradePathPanel(r)}
+    ${afterExitPanel(r)}
     ${shadowPanel(r)}
     ${aiPanel(r)}
     ${reviewPanel(r)}
@@ -1293,6 +1294,54 @@ function botResult(r) {
 }
 /* ---------- tracking for optimization: best/worst during taken trades, and what skipped trades would have done ---------- */
 const sgn = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${(+v).toFixed(d)}`;
+async function loadShadow() {
+  try { S.shadowSum = await api(`/bot/shadow/summary?days=${S.shadowDays || 5}`); } catch (e) { S.shadowSum = { error: e.message }; }
+  if (route() === 'bot') render();
+}
+async function runShadow() {
+  const before = S.shadowSum && S.shadowSum.run && S.shadowSum.run.at;
+  S.shadowBusy = true; render();
+  try { await api('/bot/shadow/run', { method: 'POST' }); } catch (e) { S.shadowBusy = false; render(); toast(e.message); return; }
+  for (let i = 0; i < 40; i++) {
+    await sleep(4000);
+    try { const r = await api(`/bot/shadow/summary?days=${S.shadowDays || 5}`); if (r.run && r.run.status !== 'running' && r.run.at !== before) { S.shadowSum = r; break; } } catch (e) {}
+  }
+  S.shadowBusy = false; await loadEvals(S.botEvals ? S.botEvals.page : 1); render();
+  const res = (S.shadowSum && S.shadowSum.run && S.shadowSum.run.result) || {};
+  toast(res.error ? `Shadow tracking failed: ${res.error}` : `Shadow tracking updated (${res.tracked ?? 0} evaluations followed).`);
+}
+function shadowSummary() {
+  const d = S.shadowSum;
+  const days = S.shadowDays || 5;
+  const sel = `<select id="sh-days" aria-label="Period">${[5, 10, 20, 35].map(n => `<option value="${n}" ${n === days ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select>`;
+  const btn = `<button class="btn" id="sh-run" ${S.shadowBusy ? 'disabled' : ''}>${S.shadowBusy ? 'Following the skipped trades…' : 'Update now'}</button>`;
+  const head = `<div class="cal-head"><h2>Skipped trades: what they would have done</h2><div style="display:flex;gap:8px;align-items:center">${sel}${btn}</div></div>`;
+  if (!d) return `<section>${head}<p class="loading">Loading…</p></section>`;
+  if (d.error) return `<section>${head}<div class="errbox">${esc(d.error)}</div></section>`;
+  const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
+  const row = (label, g) => `<tr><td>${label}</td><td class="r">${g.n}${g.tracking ? ` <span class="muted">(${g.tracking} still open)</span>` : ''}</td><td class="r">${g.winPct == null ? '—' : g.winPct + '%'}</td><td class="r">${R(g.avgR)}</td><td class="r">${R(g.totalR)}</td></tr>`;
+  const th = first => `<thead><tr><th>${first}</th><th class="r">Trades</th><th class="r">Winners</th><th class="r">Avg R</th><th class="r">Total R</th></tr></thead>`;
+  const sk = d.skipped, tk = d.taken;
+  const runTxt = d.run && d.run.at ? `Last update ${esc(d.run.at.replace('T', ' ').slice(5, 16))} ET${d.run.status === 'error' ? ' (failed)' : ''}` : 'Not run yet';
+  const exits = (d.exits || []).length ? `<h3 style="font-size:.95rem;margin:16px 0 6px">After the bot's exits <span class="muted" style="font-weight:400;font-size:.82rem">change from the exit price, in R · positive = it kept going up (exit was early)</span></h3>
+    <div class="tablewrap"><table><thead><tr><th>Exit reason</th><th class="r">Trades</th><th class="r">+1 day</th><th class="r">+5 days</th><th class="r">+10 days</th><th class="r">Best after</th><th class="r">Higher now</th></tr></thead><tbody>
+    ${d.exits.map(g => `<tr><td>${esc(g.why)}</td><td class="r">${g.n}</td><td class="r">${R(g.day1R)}</td><td class="r">${R(g.day5R)}</td><td class="r">${R(g.day10R)}</td><td class="r">${R(g.bestR)}</td><td class="r">${g.earlyPct == null ? '—' : g.earlyPct + '%'}</td></tr>`).join('')}
+    </tbody></table></div>` : '';
+  if (!sk.n) return `<section>${head}<p class="muted">No skipped trade has a result yet in this period.${d.pending ? ` ${d.pending} evaluation${d.pending > 1 ? 's are' : ' is'} waiting to be followed: press <b>Update now</b>.` : ''} ${runTxt}.</p>${exits}</section>`;
+  const list = (title, xs) => xs.length ? `<h3 style="font-size:.95rem;margin:14px 0 6px">${title}</h3><ul style="list-style:none;padding:0;margin:0;line-height:1.7">${xs.map(x => `<li>${R(x.R)} <b>${esc(x.symbol)}</b> <span class="muted">${esc((x.at || '').replace('T', ' ').slice(5, 16))} · ${esc(x.decision)}${x.claude ? ` · Claude ${esc(x.claude)}` : ''} · ${esc(x.why)} · ${esc(x.exitReason || 'still open')}</span></li>`).join('')}</ul>` : '';
+  return `<section>${head}
+    <div class="strip" style="margin-bottom:12px">
+      <div class="stat"><span>Skipped with a result</span><b>${sk.n}</b><span>${sk.done} finished · ${sk.tracking} still open${d.pending ? ` · ${d.pending} waiting` : ''}</span></div>
+      <div class="stat"><span>If taken: avg R</span><b>${R(sk.avgR)}</b><span>${sk.winPct ?? '—'}% winners · total ${sk.totalR ?? '—'}R</span></div>
+      <div class="stat"><span>Taken by the bot: avg R</span><b>${R(tk.avgR)}</b><span>${tk.n} trades · ${tk.winPct ?? '—'}% winners</span></div>
+    </div>
+    <div class="tablewrap"><table>${th('Why it was skipped')}<tbody>${d.byReason.map(g => row(esc(g.why), g)).join('')}</tbody></table></div>
+    <div class="tablewrap" style="margin-top:10px"><table>${th("Claude's entry check")}<tbody>${d.byClaude.map(g => row(esc(g.verdict), g)).join('')}</tbody></table></div>
+    ${list('Best skipped trades', d.best)}${list('Worst skipped trades', d.worst)}
+    ${exits}
+    <p class="muted" style="font-size:.82rem;margin:10px 0 0">${runTxt}. Skipped trades are followed for up to 20 trading days with the bot's exit rules, closed trades for 10 trading days after the exit, on daily bars (approximate). A positive avg R on a skip reason means that filter is removing winners; a positive R after an exit reason means those exits come too early.</p>
+  </section>`;
+}
 function shadowCell(i) {
   const s = i.shadow;
   if (!s) return '<td><span class="muted">—</span></td>';
@@ -1316,6 +1365,20 @@ function shadowPanel(r) {
     <tr><td>Best / worst option move</td><td class="r"><span class="gain">${sgn(s.mfePct)}%</span> / <span class="loss">${sgn(s.maePct)}%</span>${s.closesOnly ? ' <span class="muted">(daily closes)</span>' : ''}</td></tr>
     ${s.undMax != null ? `<tr><td>${esc(r.symbol)} range while followed</td><td class="r">${s.undMin} – ${s.undMax}</td></tr>` : ''}
   </tbody></table></div><p class="muted" style="font-size:.8rem;margin:4px 0 0">Approximate: daily bars, so when a stop and a target both fall on the same day the stop is counted.</p>`;
+}
+function afterExitPanel(r) {
+  const a = r.afterExit;
+  if (r.status !== 'closed') return '';
+  const head = '<h3 style="font-size:.95rem;margin:16px 0 6px">After the exit <span class="muted" style="font-weight:400;font-size:.82rem">the option for 10 trading days after the bot closed it</span></h3>';
+  if (!a) return head + '<p class="muted" style="margin:0">Followed every trading day after the close (16:20 ET).</p>';
+  if (!a.days) return head + `<p class="muted" style="margin:0">${esc(a.note || 'Nothing to show yet.')}</p>`;
+  const v = (p, rr) => p == null ? '—' : `<span class="${p > 0 ? 'gain' : p < 0 ? 'loss' : ''}">${sgn(p)}%</span>${rr != null ? ` <span class="muted">${sgn(rr, 2)}R</span>` : ''}`;
+  return head + `<div class="tablewrap" style="border:0"><table class="pvsa"><tbody>
+    <tr><td>Exit price</td><td class="r">${(+a.exitPrice).toFixed(2)} <span class="muted">${esc(a.exitDate || '')}</span></td></tr>
+    <tr><td>1 / 5 / 10 trading days later</td><td class="r">${v(a.day1Pct, a.day1R)} · ${v(a.day5Pct, a.day5R)} · ${v(a.day10Pct, a.day10R)}</td></tr>
+    <tr><td>Best / worst after the exit</td><td class="r">${v(a.bestPct, a.bestR)} / ${v(a.worstPct, a.worstR)}${a.closesOnly ? ' <span class="muted">(daily closes)</span>' : ''}</td></tr>
+    <tr><td>Verdict so far (day ${a.days})</td><td class="r">${a.lastPct > 10 ? '<b class="loss">Closed too early</b>' : a.lastPct < -10 ? '<b class="gain">Good exit</b>' : 'About even'}${a.status === 'tracking' ? ' <span class="muted">(still being followed)</span>' : ''}</td></tr>
+  </tbody></table></div>`;
 }
 function tradePathPanel(r) {
   if (!r.fillPrice || r.optMax == null) return '';
@@ -1542,6 +1605,7 @@ function vBot() {
   ${summaryHtml}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh every minute. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
+  ${shadowSummary()}
   <section><div class="cal-head"><h2>Evaluations</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Claude</th><th title="What it would have done if the bot had taken it (daily bars, the bot's exit rules)">If taken</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>
   <p class="muted" style="margin:18px 0 0">Bot rules, automatic flow trading and alerts are in <a href="#settings">Settings → Paper bot</a>.</p>`;
 }
@@ -1660,7 +1724,7 @@ async function refreshNow(quiet) {
   try {
     const v = route();
     await reload();
-    if (v === 'bot') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); }
+    if (v === 'bot') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); await loadShadow(); }
     else if (v === 'gex') { if (S.flow && !S.flowBusy && $('#fl-prem')) loadFlow(); loadMarketGamma(true); }
     else if (v === 'coach' || v === 'dashboard') { await loadNotes(true); }
     if (S.botRes && S.botRes.id && S.bot && S.bot.items) { const n = S.bot.items.find(i => i.id === S.botRes.id); if (n) S.botRes = { ...S.botRes, ...n }; }
@@ -1724,7 +1788,7 @@ document.addEventListener('click', e => {
   if (e.target.closest('#acct-menu a')) toggleAccount(false);
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleAccount(false); });
-const VIEWS = { bot: [vBot, () => { loadBot(); loadNtStatus(); if (!S.botEvals) loadEvals(1); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { bot: [vBot, () => { loadBot(); loadNtStatus(); if (!S.botEvals) loadEvals(1); if (!S.shadowSum) loadShadow(); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
@@ -1742,7 +1806,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-botsave],[data-evpage],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-botsave],[data-evpage],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
@@ -1778,6 +1842,7 @@ document.addEventListener('click', e => {
   if (el.dataset.aicheck) { aiRun(el.dataset.aicheck, null); return; }
   if (el.dataset.aireview) { rvRun(el.dataset.aireview); return; }
   if (el.id === 'refresh-btn') { refreshNow(); return; }
+  if (el.id === 'sh-run') { runShadow(); return; }
   if (el.dataset.botclose) { if (!confirm('Close this paper position at market?')) return; api(`/bot/${el.dataset.botclose}/close`, { method: 'POST' }).then(async () => { await loadBot(true); toast('Close order sent'); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botdismiss) { api(`/bot/${el.dataset.botdismiss}/dismiss`, { method: 'POST' }).then(async () => { S.botRes = null; await loadBot(true); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botshow) { S.botRes = (S.bot.items || []).find(i => i.id === el.dataset.botshow) || null; render(); window.scrollTo(0, 0); return; }
@@ -1838,6 +1903,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
+  if (id === 'sh-days') { S.shadowDays = +e.target.value; loadShadow(); return; }
   if (id === 'ev-claude') { S.evClaude = e.target.checked; loadEvals(1); return; }
   if (id === 'bs-strat') { $('#bs-bull').hidden = e.target.value !== 'bull_call'; $('#bs-diag').hidden = e.target.value !== 'diagonal'; return; }
   if (id === 'fl-auto') { S.flowAuto = e.target.checked; if (S.flowAuto && S.flow) loadFlow(); return; }

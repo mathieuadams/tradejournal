@@ -219,6 +219,7 @@ Every trading day at 15:40 ET Claude reviews each open bot position on fresh dai
 
 - **Taken trades:** every minute the bot records the best and worst option price, P&L % and stock price during the trade, and the price history is kept for the whole trade (older points thinned, never dropped). At the fill it records 1R = filled quantity x fill price x the stop % in force, and the result in R when the trade closes. Shown under **During the trade** on each position.
 - **Skipped evaluations (shadow tracking):** every trading day at 16:20 ET, each evaluation from the last 5 weeks that had a proposed order but wasn't placed (WAIT, SKIP, blocked by Claude, max positions, dismissed) is followed for up to 20 trading days on daily option and stock bars, with the bot's exit rules (option stop, invalidation close, target, stock target, time stop, earnings). The result (% and R, exit reason, best/worst move) is in the **If taken** column and under **If the bot had taken it**. Approximate: daily bars, stop counted first when a stop and a target fall on the same day. The same contract evaluated several times on one day is followed once.
+- **After the exit:** every closed bot trade from the last 5 weeks is followed for 10 trading days after the bot closed it: the option 1, 5 and 10 days later and its best/worst, against the exit price, in % and R. Under **After the exit** on the trade, and by exit reason in **After the bot's exits** (positive R = those exits come too early).
 
 ## Step 8. Alerts for paper-bot orders (Amazon SNS)
 

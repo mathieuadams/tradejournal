@@ -1332,7 +1332,7 @@ def handler(event, context_):
     elif job == "scan":   # watchlist scans only for users who turned the schedule on
         subs = [p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("enabled")]
     elif job == "shadow":  # after the close: users with evaluations that weren't placed
-        subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed"))})
+        subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed", "closed"))})
     elif job == "review":  # end of day: users with open bot positions
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
     elif job == "tick":   # every minute: users with open bot trades or flow trading on
@@ -1349,7 +1349,12 @@ def handler(event, context_):
                 out[sub] = {"status": (chase(sub, event["id"]) or {}).get("status")}
             elif job == "shadow":
                 import shadow
-                out[sub] = shadow.run(sub)
+                try:
+                    out[sub] = shadow.run(sub)
+                    db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "done", "at": iso(now_ny()), "result": out[sub]})
+                except Exception as e:
+                    db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "error", "at": iso(now_ny()), "result": {"error": str(e)[:200]}})
+                    raise
             elif job in ("review", "aireview"):
                 import aicheck
                 out[sub] = aicheck.review_all(sub, only_id=event.get("id"), auto_close=(job == "review"))
