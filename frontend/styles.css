@@ -282,3 +282,28 @@ body:has(#app[hidden]) .refresh-fab{display:none}
 @media (max-width:900px){
   .refresh-fab{top:auto;bottom:calc(env(safe-area-inset-bottom,0px) + 74px);right:14px;width:46px;height:46px}
 }
+
+/* sub navigation (Trades: list/stats/coach/journal, Settings: general/import) */
+.nav-sub{display:flex;flex-direction:column;gap:2px;margin:0 0 4px 28px;border-left:1px solid var(--line);padding-left:6px}
+.nav-sub a{padding:6px 10px;font-size:.9rem}
+.subnav{display:flex;gap:4px;margin:0 0 14px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:10px;width:max-content;max-width:100%;overflow-x:auto}
+.subnav a{padding:7px 14px;border-radius:7px;text-decoration:none;color:var(--muted);font-weight:500;white-space:nowrap}
+.subnav a:hover{color:var(--ink)}
+.subnav a[aria-current="page"]{background:var(--sunk);color:var(--ink)}
+/* account menu (click the user at the bottom of the sidebar, or Account on phones) */
+.nav-acct{display:none!important}
+.who{display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;border:0;border-radius:8px;background:none;color:var(--muted);font:inherit;font-size:.82rem;cursor:pointer;text-align:left}
+.who:hover,.who.on,.who[aria-expanded="true"]{background:var(--sunk);color:var(--ink)}
+.who-avatar svg{width:18px;height:18px;display:block}
+.who-email{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct-menu{position:absolute;left:14px;right:14px;bottom:64px;z-index:70;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:6px;display:flex;flex-direction:column;gap:2px}
+.acct-menu[hidden]{display:none}
+.acct-menu a,.acct-menu button{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:7px;border:0;background:none;color:var(--ink);font:inherit;text-decoration:none;cursor:pointer;text-align:left}
+.acct-menu a:hover,.acct-menu button:hover{background:var(--sunk)}
+.acct-menu svg{width:18px;height:18px;flex:none}
+@media (max-width:900px){
+  .nav-sub{display:none!important}
+  .nav-acct{display:flex!important}
+  .nav-acct.on{color:var(--ink)}
+  .acct-menu{position:fixed;left:auto;right:10px;bottom:calc(env(safe-area-inset-bottom,0px) + 70px);width:200px}
+}

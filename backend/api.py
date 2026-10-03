@@ -279,7 +279,8 @@ def bot_settings(sub, claims, body, q):
         "aiCheck": bool(body.get("aiCheck", cur["aiCheck"])), "aiAllowCaution": bool(body.get("aiAllowCaution", cur["aiAllowCaution"])),
         "aiBlockOnError": bool(body.get("aiBlockOnError", cur["aiBlockOnError"])), "aiMaxAgeMin": int(num("aiMaxAgeMin", 5, 1440)),
         "aiExitReview": bool(body.get("aiExitReview", cur["aiExitReview"])), "aiExitAutoClose": bool(body.get("aiExitAutoClose", cur["aiExitAutoClose"])),
-        "aiExitMinConf": int(num("aiExitMinConf", 0, 100)),
+        "aiExitMinConf": int(num("aiExitMinConf", 0, 100)), "aiExitHoldMinConf": int(num("aiExitHoldMinConf", 0, 100)),
+        "aiExitHoldLossPct": num("aiExitHoldLossPct", 0, 100),
         "earnings": {k.upper()[:8]: v for k, v in (body.get("earnings") if isinstance(body.get("earnings"), dict) else cur["earnings"]).items()
                      if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}( (AMC|BMO))?$", v)},
         "noEntryDays": int(num("noEntryDays", 0, 60)),

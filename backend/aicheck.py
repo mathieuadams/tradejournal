@@ -322,15 +322,20 @@ def review(sub, rec, auto_close=True):
           "summary": _clean(out.get("summary"))[:600], "supports": _items(out.get("hold_reasons")),
           "concerns": _items(out.get("close_reasons")), "model": model, "at": iso(now_ny()),
           "plPct": rec.get("lastPlPct"), "mark": rec.get("lastMark")}
-    will_close = rv["action"] == "close" and rv["confidence"] >= cfg["aiExitMinConf"] and auto_close and cfg["aiExitAutoClose"]
+    weak_hold = (rv["action"] == "hold" and rv["confidence"] < cfg["aiExitHoldMinConf"]
+                 and (rec.get("lastPlPct") or 0) <= -cfg["aiExitHoldLossPct"])
+    will_close = (rv["action"] == "close" and rv["confidence"] >= cfg["aiExitMinConf"] or weak_hold) and auto_close and cfg["aiExitAutoClose"]
     rv["closed"] = bool(will_close)
+    rv["weakHold"] = bool(weak_hold)
     reviews = list(rec.get("aiReviews") or []) + [rv]
     db.put({"PK": pk, "SK": f"BOTREVIEW#{rec['id']}", "images": [{"label": l, "b64": base64.b64encode(png).decode()} for l, png in images],
             "createdAt": iso(now_ny())})
     db.update(pk, f"BOT#{rec['id']}", {"aiReview": rv, "aiReviews": reviews[-20:], "aiReviewRunning": False, "aiReviewError": ""})
     rec.update(aiReview=rv, aiReviews=reviews[-20:])
     if will_close:
-        autotrader.close(sub, rec["id"], f"Claude end-of-day review ({rv['confidence']}%): {rv['summary'][:200]}")
+        why = (f"Claude end-of-day review: HOLD only {rv['confidence']}% confident with the option down {rec.get('lastPlPct')}%"
+               if weak_hold else f"Claude end-of-day review ({rv['confidence']}%): {rv['summary'][:200]}")
+        autotrader.close(sub, rec["id"], why)
     elif rv["action"] == "close":
         autotrader._notify(sub, f"Paper bot {autotrader._desc(rec)}: Claude suggests CLOSE ({rv['confidence']}%), not closed "
                                 f"({'below the confidence threshold' if auto_close and cfg['aiExitAutoClose'] else 'auto-close off'}). {rv['summary'][:200]}", "ai")

@@ -1064,6 +1064,22 @@ def test_ai_end_of_day_review():
     aicheck.review_all(SUB, only_id=e)
     assert not deletes and STORE[(pk, f"BOT#{d}")]["status"] == "open" and STORE[(pk, f"BOT#{e}")]["status"] == "open"
     assert len(STORE[(pk, f"BOT#{e}")]["aiReviews"]) == 1 and STORE[(pk, f"BOT#{e}")]["aiReview"]["closed"] is False
+    # a HOLD under 50% confidence on a position down 25%+ closes it; 55% or a smaller loss holds
+    STORE[(pk, f"BOT#{e}")]["status"] = "closed"
+    f1, f2, f3 = mk(6), mk(7), mk(8)
+    STORE[(pk, f"BOT#{f1}")]["lastPlPct"] = STORE[(pk, f"BOT#{f2}")]["lastPlPct"] = -29.7
+    STORE[(pk, f"BOT#{f3}")]["lastPlPct"] = -10.0
+    answer["out"] = {"action": "hold", "confidence": 45, "summary": "Coin flip.", "hold_reasons": ["x"], "close_reasons": ["y"]}
+    aicheck.review_all(SUB, only_id=f1)
+    r = STORE[(pk, f"BOT#{f1}")]
+    assert r["status"] == "closing" and "HOLD only 45% confident" in r["exitReason"] and r["aiReview"]["weakHold"], r.get("exitReason")
+    aicheck.review_all(SUB, only_id=f3)
+    answer["out"] = {**answer["out"], "confidence": 55}
+    aicheck.review_all(SUB, only_id=f2)
+    assert STORE[(pk, f"BOT#{f2}")]["status"] == "open" and STORE[(pk, f"BOT#{f3}")]["status"] == "open"
+    for x in (f1, f2, f3):
+        STORE[(pk, f"BOT#{x}")]["status"] = "closed"
+    deletes.clear()
     # on demand from the app: never auto-closes
     answer["out"] = {"action": "close", "confidence": 95, "summary": "Close.", "hold_reasons": [], "close_reasons": ["x"]}
     code, _ = call("POST", f"/bot/{d}/aireview", {})

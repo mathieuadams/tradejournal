@@ -36,15 +36,22 @@
     <nav class="nav" aria-label="Main">
       <a href="#dashboard" data-r="dashboard"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 10.5 10 4l7 6.5M5 9v7h10V9"/></svg>Home</a>
       <a href="#trades" data-r="trades"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h12M4 10h12M4 15h12"/></svg>Trades</a>
-      <a href="#analytics" data-r="analytics"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 16V9M10 16V4M16 16v-5"/></svg>Stats</a>
-      <a href="#coach" data-r="coach"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 3l1.8 4.2L16 9l-4.2 1.8L10 15l-1.8-4.2L4 9l4.2-1.8z"/></svg>Coach</a>
-      <a href="#journal" data-r="journal"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 3h10v14H5zM8 7h4M8 10h4"/></svg>Journal</a>
-      <a href="#gex" data-r="gex"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 10h14M6 10V5M9 10V3M12 10v4M15 10v6"/></svg>Flow &amp; options</a>
+      <div class="nav-sub" hidden>
+        <a href="#analytics" data-r="analytics">Stats</a>
+        <a href="#coach" data-r="coach">Coach</a>
+        <a href="#journal" data-r="journal">Journal</a>
+      </div>
+      <a href="#gex" data-r="gex"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 10h14M6 10V5M9 10V3M12 10v4M15 10v6"/></svg>Analysis</a>
       <a href="#bot" data-r="bot"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="6" width="12" height="10" rx="2"/><path d="M10 3v3M7.5 10.5h.01M12.5 10.5h.01M8 13.5h4"/></svg>Paper bot</a>
-      <a href="#import" data-r="import"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 3v9m-4-4 4 4 4-4M4 16h12"/></svg>Import</a>
-      <a href="#settings" data-r="settings"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/></svg>Settings</a>
+      <a href="#account" class="nav-acct" data-acct aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10" cy="7" r="3"/><path d="M4 17c1-3.3 3.3-5 6-5s5 1.7 6 5"/></svg>Account</a>
     </nav>
-    <div class="side-foot" id="who"></div>
+    <div class="side-foot">
+      <button type="button" class="who" data-acct aria-haspopup="menu" aria-expanded="false"><span class="who-avatar" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10" cy="7" r="3"/><path d="M4 17c1-3.3 3.3-5 6-5s5 1.7 6 5"/></svg></span><span id="who-email" class="who-email"></span><svg class="who-chev" viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 12l4-4 4 4"/></svg></button>
+    </div>
+    <div id="acct-menu" class="acct-menu" role="menu" hidden>
+      <a href="#settings" role="menuitem"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/></svg>Settings</a>
+      <button type="button" id="signout" role="menuitem"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 4H4v12h4M12 6l4 4-4 4M16 10H8"/></svg>Log out</button>
+    </div>
   </aside>
   <main id="view"><p class="loading">Loading your journal…</p></main>
 </div>

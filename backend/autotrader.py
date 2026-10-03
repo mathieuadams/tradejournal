@@ -61,7 +61,9 @@ DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40
             # final visual check by Claude before any order
             "aiCheck": True, "aiAllowCaution": True, "aiBlockOnError": True, "aiMaxAgeMin": 30,
             # Claude's end-of-day review of every open bot position (15:40 ET): hold overnight or close
-            "aiExitReview": True, "aiExitAutoClose": True, "aiExitMinConf": 60}
+            "aiExitReview": True, "aiExitAutoClose": True, "aiExitMinConf": 60,
+            # a HOLD with low confidence on a losing position also closes it
+            "aiExitHoldMinConf": 50, "aiExitHoldLossPct": 25}
 
 STRATEGIES = ("long_call", "bull_call", "diagonal")
 SPREADS = ("bull_call", "diagonal")

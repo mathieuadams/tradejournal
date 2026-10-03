@@ -927,7 +927,7 @@ function vSettings() {
       <div class="field"><label for="al-env">Account</label><select id="al-env"><option value="paper">Paper</option><option value="live">Live</option></select></div>
       <div class="field"><label for="al-feed">Market data</label><select id="al-feed"><option value="iex">IEX (free)</option><option value="sip">SIP (paid plan)</option></select></div></div>
     <button class="btn primary" id="al-save">Connect Alpaca</button>`}`;
-  return head('Settings', esc(Auth.email()), `<button class="btn" id="signout">Sign out</button>`) + `
+  return head('Settings', esc(Auth.email()), '') + `
   <section class="panel"><h2>Trading plan</h2><div class="form-grid">
     <div class="field"><label for="s-risk">Planned risk per trade ($)</label><input id="s-risk" type="number" min="0" step="any" value="${s.riskPerTrade}"></div></div>
     <div class="field"><label for="s-setups">Your setups, one per line</label><textarea id="s-setups">${esc((s.setups || []).join('\n'))}</textarea></div>
@@ -1025,7 +1025,7 @@ async function pollBroker() {
 
 /* ---------- options positioning (gamma / delta exposure) ---------- */
 const bigMoney = v => { if (v == null) return '—'; const a = Math.abs(v), sg = v < 0 ? '−' : '+'; return a >= 1e9 ? `${sg}$${(a / 1e9).toFixed(2)}B` : a >= 1e6 ? `${sg}$${(a / 1e6).toFixed(1)}M` : a >= 1e3 ? `${sg}$${(a / 1e3).toFixed(0)}K` : `${sg}$${a.toFixed(0)}`; };
-const MARKET_SYMS = ['SPY', 'QQQ', 'IWM', 'SPX'];
+const MARKET_SYMS = ['SPY', 'QQQ', 'IWM'];
 async function loadMarketGamma(force) {
   if (S.mkt && !force) return; S.mkt = S.mkt || {};
   await Promise.all(MARKET_SYMS.map(async sym => {
@@ -1131,7 +1131,7 @@ function vGex() {
   } else body = `<section class="panel"><p class="muted" style="margin:0">Pick a ticker to see where options positioning sits: gamma exposure by strike, the gamma flip level, call and put walls, max pain and delta exposure. Needs Alpaca (free) or Schwab with market data connected in Settings.</p></section>`;
   const market = `<section class="panel"><div class="cal-head"><h2>Market gamma</h2><button class="btn" id="mkt-refresh">Refresh</button></div>
     <div class="periods" id="mkt-strip" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">${marketCards()}</div>
-    <p class="muted" style="font-size:.82rem;margin:8px 0 0">Options expiring within 30 days, 40 strikes each side. SPX needs Schwab with market data. Click a card for the full view.</p></section>`;
+    <p class="muted" style="font-size:.82rem;margin:8px 0 0">Options expiring within 30 days, 40 strikes each side. Click a card for the full view.</p></section>`;
   const cfgB = (S.bot && S.bot.settings) || {}, ek = ((cfgB.earnings || {})[S.gexSym] || '').split(' ');
   const analysis = `<section class="panel"><div class="form-grid" style="align-items:end">
       <div class="field"><label for="gx-earn">Next earnings date for ${esc(S.gexSym || 'this ticker')} (optional)</label><input id="gx-earn" type="date" value="${esc(ek[0] || '')}"></div>
@@ -1140,7 +1140,7 @@ function vGex() {
       ${S.anaErr ? `<div class="errbox">${esc(S.anaErr)}</div>` : ''}
       <p class="muted" style="font-size:.84rem;margin:6px 0 0">Loading a ticker runs the same analysis the bot uses: chart, gamma, events and contract, with a proposed paper order.</p></section>
     ${S.anaBusy && !S.anaRes ? '<section class="panel"><p class="loading" style="padding:0">Analyzing…</p></section>' : botResult(S.anaRes && S.anaRes.symbol === S.gexSym ? S.anaRes : null)}`;
-  return head('Flow & options', 'Unusual options flow, market gamma, and full analysis of any ticker', '') + market + flowPanel() + form + (S.gexSym ? analysis : '') + (g && !S.gexErr ? tradeCheck(g) : '') + body;
+  return head('Analysis', 'Market gamma and the full analysis of any ticker', '') + market + form + (S.gexSym ? analysis : '') + body;
 }
 function emFor(g) {
   const list = (g.expectedMove && g.expectedMove.byExpiration) || [];
@@ -1318,7 +1318,7 @@ function orderLabel(r) {
   return r.decision === 'BUY' ? 'Check chart with Claude, then place' : 'Check chart with Claude, then place anyway';
 }
 function aiPanel(r) {
-  if (!r.proposal) return '';
+  if (!r.signals) return '';
   const busy = S.aiBusy === r.id || (r.aiRunning && !r.aiCheck);
   const prev = !r.aiCheck && r.prevAiCheck && r.prevAiCheck.verdict ? r.prevAiCheck : null, a = r.aiCheck || prev;
   const imgs = S.aiImgs[r.id];
@@ -1344,7 +1344,7 @@ function reviewPanel(r) {
   const cfg = (S.bot && S.bot.settings) || {};
   return `<h3 style="font-size:.95rem;margin:16px 0 6px">Claude's end-of-day review <span class="muted" style="font-weight:400;font-size:.82rem">hold overnight or close · 15:40 ET${cfg.aiExitReview === false ? ' · off in settings' : ''}</span></h3>
     ${busy ? '<p class="loading" style="padding:0;margin:0">Claude is reviewing the position… (about 20 seconds)</p>' : ''}
-    ${!busy && rv ? `<p style="margin:0 0 6px"><span class="verdict ${rv.action === 'close' ? 'bad' : 'ok'}">${rv.action.toUpperCase()}</span> <span class="muted" style="font-size:.85rem">${rv.confidence}% confidence · ${esc((rv.at || '').replace('T', ' ').slice(5, 16))} ET${rv.plPct != null ? ` · P&L then ${rv.plPct > 0 ? '+' : ''}${rv.plPct}%` : ''}${rv.closed ? ' · <b class="loss">closed by the review</b>' : ''}</span></p>
+    ${!busy && rv ? `<p style="margin:0 0 6px"><span class="verdict ${rv.action === 'close' ? 'bad' : 'ok'}">${rv.action.toUpperCase()}</span> <span class="muted" style="font-size:.85rem">${rv.confidence}% confidence · ${esc((rv.at || '').replace('T', ' ').slice(5, 16))} ET${rv.plPct != null ? ` · P&L then ${rv.plPct > 0 ? '+' : ''}${rv.plPct}%` : ''}${rv.closed ? ` · <b class="loss">closed by the review${rv.weakHold ? ' (low-confidence hold on a losing position)' : ''}</b>` : ''}</span></p>
       <p style="margin:0 0 6px">${esc(rv.summary)}</p>
       <ul style="list-style:none;padding:0;margin:0;line-height:1.6">${(rv.supports || []).map(x => `<li><b class="gain">✓</b> ${esc(x)}</li>`).join('')}${(rv.concerns || []).map(x => `<li><b class="loss">✗</b> ${esc(x)}</li>`).join('')}</ul>` : ''}
     ${!busy && !rv ? '<p class="muted" style="margin:0">No review yet. It runs every trading day at 15:40 ET for each open position.</p>' : ''}
@@ -1554,6 +1554,7 @@ function botSettingsPanels() {
       <label><input type="checkbox" id="bs-aierr" ${cfg.aiBlockOnError !== false ? 'checked' : ''}> Don't place if the chart check can't run</label>
       <label><input type="checkbox" id="bs-aiexit" ${cfg.aiExitReview !== false ? 'checked' : ''}> Claude reviews every open position at 15:40 ET</label>
       <label><input type="checkbox" id="bs-aiexitauto" ${cfg.aiExitAutoClose !== false ? 'checked' : ''}> Close when Claude says close with at least <input id="bs-aiexitconf" type="number" min="0" max="100" step="5" value="${cfg.aiExitMinConf ?? 60}" style="width:4.2em;padding:2px 4px"> % confidence</label>
+      <label>…or says hold with under <input id="bs-aiholdconf" type="number" min="0" max="100" step="5" value="${cfg.aiExitHoldMinConf ?? 50}" style="width:4.2em;padding:2px 4px"> % confidence while the option is down <input id="bs-aiholdloss" type="number" min="0" max="100" step="5" value="${cfg.aiExitHoldLossPct ?? 25}" style="width:4.2em;padding:2px 4px"> % or more</label>
       <label><input type="checkbox" id="bs-onclose" ${cfg.invalidationOnClose !== false ? 'checked' : ''}> Exit on the invalidation level only on a close below it (checked from 15:50 ET)</label>
       <label><input type="checkbox" id="bs-trail" ${cfg.trailAfterTarget !== false ? 'checked' : ''}> After the target is reached, trail instead of selling</label></div>
     <h3 style="font-size:.95rem;margin:4px 0 6px">Structure</h3>
@@ -1598,7 +1599,7 @@ async function botEvaluate() {
 async function botSaveSettings(quiet) {
   const earnings = {}; ($('#bs-earn').value || '').split('\n').forEach(l => { const m = l.trim().split(/[\s,]+/); if (m.length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(m[1])) earnings[m[0].toUpperCase()] = m[1] + (m[2] && /^(amc|bmo)$/i.test(m[2]) ? ' ' + m[2].toUpperCase() : ' AMC'); });
   const v = id => $(id).value;
-  const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked, aiCheck: $('#bs-ai').checked, aiAllowCaution: $('#bs-aicau').checked, aiBlockOnError: $('#bs-aierr').checked, aiExitReview: $('#bs-aiexit').checked, aiExitAutoClose: $('#bs-aiexitauto').checked, aiExitMinConf: v('#bs-aiexitconf'),
+  const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked, aiCheck: $('#bs-ai').checked, aiAllowCaution: $('#bs-aicau').checked, aiBlockOnError: $('#bs-aierr').checked, aiExitReview: $('#bs-aiexit').checked, aiExitAutoClose: $('#bs-aiexitauto').checked, aiExitMinConf: v('#bs-aiexitconf'), aiExitHoldMinConf: v('#bs-aiholdconf'), aiExitHoldLossPct: v('#bs-aiholdloss'),
     watchlist: v('#bs-watch').split(/[\s,]+/).filter(Boolean), dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
     minOi: v('#bs-oi'), maxSpreadPct: v('#bs-spread'), stopPct: v('#bs-stop'), targetPct: v('#bs-target'), timeStopDte: v('#bs-time'), maxPositions: v('#bs-max'),
     minGrowth30: v('#bs-g30'), invalidationOnClose: $('#bs-onclose').checked, trailAfterTarget: $('#bs-trail').checked, emergencyAtr: v('#bs-emerg'), trailPct: v('#bs-trailpct'),
@@ -1666,12 +1667,43 @@ setInterval(() => {
 }, 60000);
 
 /* ---------- router & events ---------- */
+/* ---------- navigation groups: Trades (list, stats, coach, journal) and Settings (general, import) ---------- */
+const GROUPS = {
+  trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
+  settings: [['settings', 'General'], ['import', 'Import']],
+};
+const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
+function subnav(v) {
+  const g = groupOf(v);
+  if (!g) return '';
+  return `<nav class="subnav" aria-label="${g === 'trades' ? 'Trades' : 'Settings'} sections">${GROUPS[g].map(([r, l]) =>
+    `<a href="#${r}" ${r === v ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
+}
+function toggleAccount(force) {
+  const m = $('#acct-menu'); if (!m) return;
+  const open = force !== undefined ? force : m.hidden;
+  m.hidden = !open;
+  document.querySelectorAll('[data-acct]').forEach(b => b.setAttribute('aria-expanded', open ? 'true' : 'false'));
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-acct]')) { e.preventDefault(); toggleAccount(); return; }
+  if (!e.target.closest('#acct-menu')) toggleAccount(false);
+  if (e.target.closest('#acct-menu a')) toggleAccount(false);
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleAccount(false); });
 const VIEWS = { bot: [vBot, () => { loadBot(); loadNtStatus(); if (!S.botEvals) loadEvals(1); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
-  document.querySelectorAll('.nav a').forEach(a => { if (a.dataset.r === v) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
-  try { $('#view').innerHTML = VIEWS[v][0](); } catch (e) { console.error(e); $('#view').innerHTML = `<div class="errbox">This page failed to load: ${esc(e.message)}</div>`; }
+  const grp = groupOf(v);
+  document.querySelectorAll('.nav a[data-r]').forEach(a => {
+    const on = a.dataset.r === v || (grp === 'trades' && a.dataset.r === 'trades');
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
+  document.querySelectorAll('.nav .nav-sub a').forEach(a => { if (a.dataset.r === v) a.setAttribute('aria-current', 'page'); });
+  document.querySelectorAll('.nav .nav-sub').forEach(x => { x.hidden = grp !== 'trades'; });
+  document.querySelectorAll('[data-acct]').forEach(b => b.classList.toggle('on', grp === 'settings'));
+  try { $('#view').innerHTML = subnav(v) + VIEWS[v][0](); } catch (e) { console.error(e); $('#view').innerHTML = `<div class="errbox">This page failed to load: ${esc(e.message)}</div>`; }
   if (VIEWS[v][1]) VIEWS[v][1]();
 }
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
@@ -1804,7 +1836,7 @@ $('#signin').addEventListener('click', () => Auth.login());
   if (!C || /REPLACE/.test(C.clientId)) { showLogin('This copy isn’t configured yet. Run deploy.sh (or deploy.ps1) to generate config.js.'); $('#signin').disabled = true; return; }
   try { await Auth.handleCallback(); } catch (e) { showLogin(e.message); return; }
   if (!(await Auth.token())) { showLogin(); return; }
-  $('#login').hidden = true; $('#app').hidden = false; $('#who').textContent = Auth.email();
+  $('#login').hidden = true; $('#app').hidden = false; $('#who-email').textContent = Auth.email();
   if (location.pathname === '/schwab') {
     const p = new URLSearchParams(location.search);
     history.replaceState({}, '', '/#settings');
