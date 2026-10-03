@@ -1301,6 +1301,7 @@ const aiCell = i => { const a = i.aiCheck && i.aiCheck.verdict ? i.aiCheck : nul
   const rv = i.aiReview, rvb = rv ? ` <span class="verdict ${rv.action === 'close' ? 'bad' : 'ok'}" title="${esc(`End-of-day review ${(rv.at || '').slice(5, 16).replace('T', ' ')}: ${rv.summary}`)}">${rv.action === 'close' ? 'EOD CLOSE' : 'EOD HOLD'}</span>` : '';
   if (a) return `<td title="${esc(a.summary || '')}"><span class="verdict ${AI_CLS[a.verdict] || 'mid'}">${esc(a.verdict.toUpperCase())}</span>${i.aiFrom ? ' <span class="muted" style="font-size:.78rem">carried</span>' : ''}${rvb}</td>`;
   if (rv) return `<td>${rvb}</td>`;
+  if (i.aiReviewError) return `<td title="${esc(i.aiReviewError)}"><span class="loss">EOD error</span></td>`;
   if (i.aiRunning) return '<td><span class="muted">checking…</span></td>';
   if (i.aiError) return `<td title="${esc(i.aiError)}"><span class="loss">error</span></td>`;
   return '<td><span class="muted">—</span></td>'; };

@@ -89,24 +89,36 @@ def _levels(rec):
     return lv
 
 
-def build_charts(rec):
+def build_charts(rec, ctx=None):
+    """Daily + hourly charts with the trade's levels. ctx (dict, optional) receives the current price and indicator
+    values; when given, the price line is the current price (NOW) instead of the price at evaluation (LAST)."""
     sym = rec["symbol"]
     now = now_ny()
     daily = _yahoo(sym.replace(".", "-"), "1d", now - timedelta(days=420), now + timedelta(hours=1))
+    hourly = _yahoo(sym.replace(".", "-"), "1h", now - timedelta(days=22), now + timedelta(hours=1))
     out = []
+    levels = _levels(rec)
+    if ctx is not None and (hourly or daily):
+        price = (hourly or daily)[-1]["c"]
+        ctx["price"] = round(price, 2)
+        levels = [("NOW", price, GRAY, False)] + [lv for lv in levels if lv[0] != "LAST"]
     if daily:
         cl = [b["c"] for b in daily]
         ema, sma50, ser = _ema(cl, 21), _sma(cl, 50), indicators.series(daily)
         k = max(0, len(daily) - 130)
+        if ctx is not None:
+            ctx.update(ema21=round(ema[-1], 2) if ema[-1] else None, sma50=round(sma50[-1], 2) if sma50[-1] else None,
+                       avwap=ser[-1]["avwap"], bullFvg=[ser[-1]["bullBot"], ser[-1]["bullTop"]] if ser[-1]["bullTop"] else None,
+                       bearFvg=[ser[-1]["bearBot"], ser[-1]["bearTop"]] if ser[-1]["bearTop"] else None,
+                       high20=round(max(b["h"] for b in daily[-20:]), 2), lastDaily=daily[-1]["t"][:10])
         out.append(("daily (about 6 months)", chartimg.render(
             daily[k:], f"{sym} DAILY",
             lines=[("EMA21", ORANGE, ema[k:]), ("SMA50", BLUE, sma50[k:]), ("AVWAP", TEAL, [s["avwap"] for s in ser[k:]])],
-            levels=_levels(rec), zones=_zones(ser, k))))
-    hourly = _yahoo(sym.replace(".", "-"), "1h", now - timedelta(days=22), now + timedelta(hours=1))
+            levels=levels, zones=_zones(ser, k))))
     if hourly:
         hourly = hourly[-110:]
         out.append(("hourly (about 15 sessions)", chartimg.render(
-            hourly, f"{sym} 1 HOUR", lines=[("EMA21", ORANGE, _ema([b["c"] for b in hourly], 21))], levels=_levels(rec))))
+            hourly, f"{sym} 1 HOUR", lines=[("EMA21", ORANGE, _ema([b["c"] for b in hourly], 21))], levels=levels)))
     return out
 
 
@@ -203,26 +215,73 @@ Judge from the charts whether the reason for the trade is still intact:
 - Overnight risk: gaps, an event, a weak close near the low of the day.
 
 Close when the chart has turned against the trade or the remaining reward no longer justifies the overnight risk.
-Hold when the structure is intact, even if the position is down a little within the plan. Name the levels and bars you
+Hold when the structure is intact, even if the position is down a little within the plan.
+
+Be consistent with your own recent views on this ticker (listed in the brief). If a recent entry check rejected a NEW
+entry here because the setup has broken down, holding the existing position needs a clear reason visible on the chart
+now (for example price reclaimed the level since). "Would I open this trade today?" is a fair test: if the answer is a
+clear no and the position is already well into its loss, closing is usually right. A large loss close to the option
+stop with no sign of recovery is not "within the plan". Name the levels and bars you
 see. Keep each list item to one short sentence."""
 
 
-def _review_brief(rec):
-    b = _brief(rec)
+def _recent_claude(sub, rec, days=5):
+    """Claude's recent entry checks and reviews on this ticker, from any record (newest first)."""
+    from datetime import timedelta as _td
+    cut = iso(now_ny() - _td(days=days))
+    out = []
+    for r in db.q_prefix(db.upk(sub), "BOT#", desc=True, limit=400):
+        if r.get("symbol") != rec["symbol"]:
+            continue
+        c = r.get("aiCheck") or {}
+        if c.get("verdict") and c.get("at", "") >= cut and not r.get("aiFrom"):
+            out.append({"kind": "entry check (new entry on this ticker)", "at": c["at"], "verdict": c["verdict"], "confidence": c.get("confidence"),
+                        "contract": (r.get("proposal") or {}).get("contract"), "summary": c.get("summary"), "concerns": c.get("concerns")})
+        for v in (r.get("aiReviews") or []) if r.get("id") == rec["id"] else []:
+            if v.get("at", "") >= cut:
+                out.append({"kind": "end-of-day review of this position", "at": v["at"], "verdict": v["action"], "confidence": v.get("confidence"),
+                            "summary": v.get("summary")})
+        if len(out) >= 8:
+            break
+    out.sort(key=lambda x: x["at"], reverse=True)
+    return out[:6]
+
+
+def _review_brief(sub, rec, ctx, cfg):
+    """What Claude needs to decide now. The entry-day rule results are left out on purpose: they describe the chart as it
+    was when the trade was opened, not now, and made Claude lean toward holding."""
+    from datetime import datetime
     p = rec.get("proposal") or {}
     days = None
     try:
-        from datetime import datetime
         days = (now_ny().date() - datetime.strptime((rec.get("filledAt") or rec.get("submittedAt") or rec["createdAt"])[:10], "%Y-%m-%d").date()).days
     except Exception:
         pass
-    b["position"] = {"entry_option_price": rec.get("fillPrice"), "option_price_now": rec.get("lastMark"), "pl_pct": rec.get("lastPlPct"),
-                     "pl_dollars": rec.get("lastPl"), "peak_option_price": rec.get("peakMark"), "days_held": days,
-                     "contracts": rec.get("filledQty") or rec.get("qty"), "expiration": p.get("exp"),
-                     "stock_price_when_evaluated": (rec.get("signals") or {}).get("price")}
-    b["entry_check_by_claude"] = {k: (rec.get("aiCheck") or {}).get(k) for k in ("verdict", "summary")} if rec.get("aiCheck") else None
-    b["previous_reviews"] = [{k: r.get(k) for k in ("at", "action", "summary")} for r in (rec.get("aiReviews") or [])[-3:]]
-    return b
+    try:
+        dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
+    except Exception:
+        dte = None
+    price = ctx.get("price")
+    pct = lambda lvl: round((lvl / price - 1) * 100, 1) if lvl and price else None
+    import autotrader
+    stop = autotrader.stop_pct(cfg, p)
+    keep = ("strategy", "contract", "shortContract", "exp", "strike", "shortExp", "shortStrike", "width", "maxProfit", "maxLoss", "breakeven")
+    return {
+        "symbol": rec["symbol"], "trade": {k: p.get(k) for k in keep if p.get(k) is not None},
+        "now": {"stock_price": price, "ema21": ctx.get("ema21"), "sma50": ctx.get("sma50"), "anchored_vwap": ctx.get("avwap"),
+                "active_bull_fvg": ctx.get("bullFvg"), "active_bear_fvg": ctx.get("bearFvg"), "high_last_20_days": ctx.get("high20")},
+        "plan": {"invalidation_level": p.get("underlyingStop"), "pct_from_price_to_invalidation": pct(p.get("underlyingStop")),
+                 "target_level": p.get("underlyingTarget"), "pct_from_price_to_target": pct(p.get("underlyingTarget")),
+                 "option_stop_pct": -stop},
+        "position": {"entry_option_price": rec.get("fillPrice"), "option_price_now": rec.get("lastMark"), "pl_pct": rec.get("lastPlPct"),
+                     "pl_dollars": rec.get("lastPl"), "peak_option_price": rec.get("peakMark"), "days_held": days, "days_to_expiration": dte,
+                     "contracts": rec.get("filledQty") or rec.get("qty"), "why_entered": rec.get("origin") or {"type": "manual"}},
+        "recent_claude_views_on_this_ticker": _recent_claude(sub, rec),
+        "chart_legend": "Candles green up / red down, volume at the bottom. Orange = 21 EMA, blue = 50-day SMA, teal = anchored VWAP "
+                        "(daily only). Shaded bands = active fair value gaps. Gray NOW = current price, dashed red STOP = invalidation "
+                        "level, dashed green TARGET = target, amber FLIP = gamma flip (at entry), blue/purple = call/put wall (at entry), "
+                        "dashed gray STRIKE / magenta SHORT = option strikes.",
+    }
 
 
 def review(sub, rec, auto_close=True):
@@ -231,12 +290,13 @@ def review(sub, rec, auto_close=True):
     import autotrader
     cfg = autotrader.settings(sub)
     pk = db.upk(sub)
-    images = build_charts({**rec, "signals": {**(rec.get("signals") or {}), "price": None}})
+    ctx = {}
+    images = build_charts(rec, ctx)
     if not images:
         raise claude.Unavailable("No price data to draw the chart.")
     model = os.environ.get("VISION_MODEL") or os.environ.get("COACH_MODEL") or "claude-sonnet-5"
     out = claude.vision_json(model, REVIEW_SYSTEM, images,
-                             "Open position (JSON):\n" + json.dumps(_review_brief(rec), default=str) + "\n\nHold overnight or close now?",
+                             "Open position (JSON):\n" + json.dumps(_review_brief(sub, rec, ctx, cfg), default=str) + "\n\nHold overnight or close now?",
                              REVIEW_SCHEMA)
     rv = {"action": "close" if out.get("action") == "close" else "hold", "confidence": int(out.get("confidence") or 0),
           "summary": _clean(out.get("summary"))[:600], "supports": _items(out.get("hold_reasons")),

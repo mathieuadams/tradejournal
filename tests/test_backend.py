@@ -1036,6 +1036,10 @@ def test_ai_end_of_day_review():
         db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "BMNR", "status": "open", "proposal": prop, "fillPrice": 2.53,
                 "filledQty": 2, "lastMark": 2.0, "lastPlPct": -21.0, "createdAt": "2026-10-01T10:00:00", "filledAt": "2026-10-01T10:01:00"})
         return rid
+    # a newer evaluation of BMNR that Claude rejected for a new entry
+    db.put({"PK": pk, "SK": "BOT#20261002092800-ffffff", "id": "20261002092800-ffffff", "symbol": "BMNR", "status": "proposed",
+            "proposal": {**prop, "contract": "BMNR261120C00028000"}, "createdAt": autotrader.iso(autotrader.now_ny()),
+            "aiCheck": {"verdict": "reject", "confidence": 78, "summary": "Pulled back hard off the highs", "at": autotrader.iso(autotrader.now_ny())}})
     # Claude says close with enough confidence -> position closed at market, review kept
     a, b, c3 = mk(1), mk(2), mk(3)
     answer["out"] = {"action": "close", "confidence": 80, "summary": "Lost the 27.7 shelf; closing near the low.",
@@ -1045,6 +1049,8 @@ def test_ai_end_of_day_review():
     r = STORE[(pk, f"BOT#{a}")]
     assert r["status"] == "closing" and r["exitReason"].startswith("Claude end-of-day review (80%)") and r["aiReview"]["action"] == "close"
     assert len(deletes) == 3 and "days_held" in answer["text"] and "OPEN options position" in answer["system"]
+    assert "Pulled back hard off the highs" in answer["text"] and '"reject"' in answer["text"]      # its own recent view is passed
+    assert "rule_checks" not in answer["text"] and '"stock_price"' in answer["text"]                  # no stale entry-day rules
     code, ch = call("GET", f"/bot/{a}/reviewcharts")
     assert code == 200 and len(ch["images"]) == 2
     # hold, or close below the confidence threshold -> stays open (the second one only alerts)
