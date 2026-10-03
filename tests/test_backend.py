@@ -1076,6 +1076,28 @@ def test_ai_end_of_day_review():
     assert autotrader.handler({"job": "review"}, None)[SUB] == {"skipped": "end-of-day review off"}
 
 
+def test_chart_uses_todays_close():
+    """A lagging daily feed must not keep a fair value gap alive that today's close broke."""
+    import aicheck, datetime as dt
+    now = aicheck.now_ny().replace(hour=15, minute=40)
+    day = lambda k: (now - dt.timedelta(days=k)).strftime("%Y-%m-%dT00:00:00")
+    daily = [{"t": day(40 - i), "o": 20, "h": 20.5, "l": 19.5, "c": 20, "v": 100} for i in range(30)]
+    daily += [{"t": day(9), "o": 20, "h": 21, "l": 19.8, "c": 21, "v": 100},          # gap up: bull FVG 21 -> 22.5
+              {"t": day(8), "o": 22, "h": 24, "l": 21.8, "c": 23.5, "v": 300},
+              {"t": day(7), "o": 23.5, "h": 25, "l": 22.5, "c": 24.5, "v": 200}]
+    daily += [{"t": day(k), "o": 24, "h": 24.6, "l": 23.4, "c": 24, "v": 100} for k in range(6, 0, -1)]
+    assert aicheck.indicators.series(daily)[-1]["bullTop"] is not None                 # gap still alive without today
+    today = now.date().isoformat()
+    hourly = [{"t": f"{today}T{h:02d}:30:00", "o": 23, "h": 23.2, "l": 20.5, "c": 20.8, "v": 50} for h in range(10, 16)]
+    merged = aicheck._with_today(daily, hourly, now)
+    assert merged[-1]["t"][:10] == today and merged[-1]["c"] == 20.8
+    assert aicheck.indicators.series(merged)[-1]["bullTop"] is None                    # closed below the gap: gone
+    aicheck._yahoo = lambda sym, tf, s_, e: daily if tf == "1d" else hourly
+    ctx = {}
+    aicheck.build_charts({"symbol": "XYZ", "proposal": {}}, ctx)
+    assert ctx["price"] == 20.8 and ctx["bullFvg"] is None, ctx
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

@@ -89,6 +89,25 @@ def _levels(rec):
     return lv
 
 
+def _with_today(daily, hourly, now):
+    """The daily feed can lag (today's bar missing or not updated after the close). Rebuild today's daily bar from
+    today's hourly bars so the close, the fair value gaps and the EMA reflect today."""
+    if not daily or not hourly:
+        return daily
+    today = now.date().isoformat()
+    hs = [b for b in hourly if b["t"][:10] == today]
+    if not hs:
+        return daily
+    bar = {"t": today + "T00:00:00", "o": hs[0]["o"], "h": max(b["h"] for b in hs), "l": min(b["l"] for b in hs),
+           "c": hs[-1]["c"], "v": sum(b.get("v") or 0 for b in hs)}
+    if daily[-1]["t"][:10] == today:
+        d = daily[-1]
+        return daily[:-1] + [{**d, "h": max(d["h"], bar["h"]), "l": min(d["l"], bar["l"]), "c": bar["c"], "v": max(d.get("v") or 0, bar["v"])}]
+    if daily[-1]["t"][:10] < today:
+        return daily + [bar]
+    return daily
+
+
 def build_charts(rec, ctx=None):
     """Daily + hourly charts with the trade's levels. ctx (dict, optional) receives the current price and indicator
     values; when given, the price line is the current price (NOW) instead of the price at evaluation (LAST)."""
@@ -96,6 +115,7 @@ def build_charts(rec, ctx=None):
     now = now_ny()
     daily = _yahoo(sym.replace(".", "-"), "1d", now - timedelta(days=420), now + timedelta(hours=1))
     hourly = _yahoo(sym.replace(".", "-"), "1h", now - timedelta(days=22), now + timedelta(hours=1))
+    daily = _with_today(daily, hourly, now)
     out = []
     levels = _levels(rec)
     if ctx is not None and (hourly or daily):
