@@ -46,15 +46,27 @@ def _years(exp):
     return max((end - now_ny()).total_seconds() / (365 * 86400), 1 / (365 * 24))
 
 
-def _get(url, headers):
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        raise Unavailable(f"Option data request failed ({e.code}): {e.read().decode(errors='replace')[:160]}")
-    except urllib.error.URLError as e:
-        raise Unavailable(f"Option data couldn't be reached: {e.reason}")
+def _get(url, headers, attempts=3):
+    """GET with retries: the data providers sometimes time out on their side (Alpaca answers 400 'DeadlineExceeded'
+    on a big options snapshot), rate-limit (429) or fail (5xx). Those are retried with a short backoff."""
+    import time
+    last = None
+    for i in range(attempts):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")[:160]
+            transient = e.code in (429, 500, 502, 503, 504) or "deadline" in body.lower() or "timeout" in body.lower()
+            if not transient:
+                raise Unavailable(f"Option data request failed ({e.code}): {body}")
+            last = f"the option data provider timed out ({e.code})"
+        except (urllib.error.URLError, TimeoutError) as e:
+            last = f"option data couldn't be reached ({getattr(e, 'reason', e)})"
+        if i < attempts - 1:
+            time.sleep(1.5 * (i + 1))
+    raise Unavailable(f"Option data unavailable right now: {last}. Try again in a minute.")
 
 
 # ---------- sources ----------

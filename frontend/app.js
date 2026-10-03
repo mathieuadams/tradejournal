@@ -1132,13 +1132,7 @@ function vGex() {
   const market = `<section class="panel"><div class="cal-head"><h2>Market gamma</h2><button class="btn" id="mkt-refresh">Refresh</button></div>
     <div class="periods" id="mkt-strip" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">${marketCards()}</div>
     <p class="muted" style="font-size:.82rem;margin:8px 0 0">Options expiring within 30 days, 40 strikes each side. Click a card for the full view.</p></section>`;
-  const cfgB = (S.bot && S.bot.settings) || {}, ek = ((cfgB.earnings || {})[S.gexSym] || '').split(' ');
-  const analysis = `<section class="panel"><div class="form-grid" style="align-items:end">
-      <div class="field"><label for="gx-earn">Next earnings date for ${esc(S.gexSym || 'this ticker')} (optional override)</label><input id="gx-earn" type="date" value="${esc(ek[0] || '')}">${(() => { const a = ((cfgB.earningsAuto || {})[S.gexSym] || {}).v; return a ? `<span class="muted" style="font-size:.8rem">Pulled automatically: ${esc(a.split(' ')[0])} ${a.split(' ')[1] === 'AMC' ? 'after the close' : 'before the open'} (Unusual Whales). Leave blank to use it.</span>` : '<span class="muted" style="font-size:.8rem">Pulled automatically from Unusual Whales when you analyze.</span>'; })()}</div>
-      <div class="field"><label for="gx-earn-t">Reported</label><select id="gx-earn-t"><option value="AMC" ${(ek[1] || 'AMC') === 'AMC' ? 'selected' : ''}>After the close</option><option value="BMO" ${ek[1] === 'BMO' ? 'selected' : ''}>Before the open</option></select></div>
-      <div class="field"><button class="btn primary" id="ana-run" ${S.anaBusy || !S.gexSym ? 'disabled' : ''}>${S.anaBusy ? 'Analyzing…' : 'Analyze with the bot rules'}</button></div></div>
-      ${S.anaErr ? `<div class="errbox">${esc(S.anaErr)}</div>` : ''}
-      <p class="muted" style="font-size:.84rem;margin:6px 0 0">Loading a ticker runs the same analysis the bot uses: chart, gamma, events and contract, with a proposed paper order.</p></section>
+  const analysis = `${S.anaErr ? `<section class="panel"><div class="errbox">${esc(S.anaErr)}</div></section>` : ''}
     ${S.anaBusy && !S.anaRes ? '<section class="panel"><p class="loading" style="padding:0">Analyzing…</p></section>' : botResult(S.anaRes && S.anaRes.symbol === S.gexSym ? S.anaRes : null)}`;
   return head('Analysis', 'Market gamma and the full analysis of any ticker', '') + market + form + (S.gexSym ? analysis : '') + body;
 }

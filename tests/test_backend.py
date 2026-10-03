@@ -1152,6 +1152,45 @@ def test_auto_earnings():
     assert autotrader.refresh_earnings(SUB, ["NVDA"]) == []
 
 
+def test_option_data_retries():
+    """Alpaca's 'DeadlineExceeded' (400) on an options snapshot is retried, real errors are not."""
+    import gex, io, time, urllib.error
+    calls = {"n": 0}
+    orig_open, orig_sleep = gex.urllib.request.urlopen, time.sleep
+    def fail(code, body):
+        return urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(body.encode()))
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    def flaky(req, timeout=20):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise fail(400, '{"message":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}')
+        return R(b'{"ok": 1}')
+    time.sleep = lambda s: None
+    try:
+        gex.urllib.request.urlopen = flaky
+        assert gex._get("https://x", {}) == {"ok": 1} and calls["n"] == 3
+        calls["n"] = 0
+        def bad(req, timeout=20):
+            calls["n"] += 1
+            raise fail(400, '{"message":"invalid symbol"}')
+        gex.urllib.request.urlopen = bad
+        try:
+            gex._get("https://x", {}); assert False
+        except gex.Unavailable as e:
+            assert "invalid symbol" in str(e) and calls["n"] == 1
+        def always(req, timeout=20):
+            raise fail(400, "DeadlineExceeded")
+        gex.urllib.request.urlopen = always
+        try:
+            gex._get("https://x", {}); assert False
+        except gex.Unavailable as e:
+            assert "Try again in a minute" in str(e)
+    finally:
+        gex.urllib.request.urlopen, time.sleep = orig_open, orig_sleep
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]
