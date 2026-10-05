@@ -187,12 +187,13 @@ function pnlBars() {
 }
 function vDashboard() {
   const ts = closed(scoped());
-  if (!S.trades.length) return head('Overview', '', '') + emptyState();
+  if (!S.trades.length) return head('Overview', '', '') + botHome() + emptyState();
   const St = stats(ts);
   const W = worstLeak(ts);
   const n = S.notes && S.notes[0];
   return head('Overview', periodText(ts)) + `
   ${n ? `<section class="coach" style="padding:14px 18px">${noteHtml(n, true)}<a href="#coach" class="linkbtn">Open the full check</a></section>` : ''}
+  ${botHome()}
   <section>${periods()}</section>
   <section class="grid2"><div class="panel">${calendar()}</div><div class="panel"><h2>Equity curve</h2>${equity(ts)}</div></section>
   <section class="panel">${pnlBars()}</section>
@@ -1229,17 +1230,17 @@ async function loadNtStatus(force) {
   if (S.ntStatus !== undefined && !force) return;
   S.ntStatus = null;
   try { S.ntStatus = await api('/notify/status'); } catch (e) { S.ntStatus = { email: null, emailStatus: 'unknown' }; }
-  if (route() === 'bot' || route() === 'settings') render();
+  if (isBotRoute() || route() === 'settings') render();
 }
 async function loadEvals(page) {
   try { S.botEvals = await api(`/bot/evaluations?page=${page || (S.botEvals && S.botEvals.page) || 1}&size=20${S.evClaude ? '&claude=1' : ''}`); } catch (e) {}
-  if (route() === 'bot') render();
+  if (isBotRoute()) render();
 }
 async function loadBot(force) {
   if (S.bot && !force) return;
   try { S.bot = await api('/bot'); S.botAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch (e) { S.bot = { error: e.message, items: [], settings: {} }; }
   if (S.broker === undefined) { try { S.broker = await api('/broker/alpaca'); } catch (e) { S.broker = { connected: false }; } }
-  if (route() === 'bot') render();
+  if (isBotRoute() || route() === 'dashboard') render();
 }
 const DEC_CLS = { BUY: 'ok', WAIT: 'mid', SKIP: 'bad' };
 const STRAT_LBL = { long_call: 'Long call', bull_call: 'Bull call spread', diagonal: 'Diagonal' };
@@ -1299,7 +1300,7 @@ async function loadShadow() {
   const [a, b] = await Promise.all([api(`/bot/shadow/summary?days=${days}`).catch(e => ({ error: e.message })),
                                     api(`/bot/flow/summary?days=${days}`).catch(e => ({ error: e.message }))]);
   S.shadowSum = a; S.flowSum = b;
-  if (route() === 'bot') render();
+  if (isBotRoute()) render();
 }
 async function runShadow() {
   const before = S.shadowSum && S.shadowSum.run && S.shadowSum.run.at;
@@ -1471,7 +1472,7 @@ function reviewPanel(r) {
 }
 async function loadRvImgs(id) {
   S.rvImgBusy[id] = true;
-  try { const r = await api(`/bot/${id}/reviewcharts`); S.rvImgs[id] = r.images || []; if (route() === 'bot' || route() === 'gex') render(); } catch (e) { S.rvImgs[id] = []; }
+  try { const r = await api(`/bot/${id}/reviewcharts`); S.rvImgs[id] = r.images || []; if (isBotRoute() || route() === 'gex') render(); } catch (e) { S.rvImgs[id] = []; }
 }
 async function rvRun(id) {
   S.rvBusy = id; render();
@@ -1488,7 +1489,7 @@ async function rvRun(id) {
 }
 async function loadAiImgs(id) {
   S.aiImgBusy[id] = true;
-  try { const r = await api(`/bot/${id}/charts`); S.aiImgs[id] = r.images || []; if (route() === 'bot' || route() === 'gex') render(); } catch (e) { S.aiImgs[id] = []; }
+  try { const r = await api(`/bot/${id}/charts`); S.aiImgs[id] = r.images || []; if (isBotRoute() || route() === 'gex') render(); } catch (e) { S.aiImgs[id] = []; }
 }
 function mergeRes(rec) {
   if (S.botRes && S.botRes.id === rec.id) S.botRes = { ...S.botRes, ...rec };
@@ -1522,6 +1523,32 @@ function markLine(r) {
     ${r.fillPrice ? `<line x1="${p}" x2="${W - p}" y1="${Y(r.fillPrice)}" y2="${Y(r.fillPrice)}" stroke="var(--muted)" stroke-dasharray="4 3"/><text x="${W - p}" y="${Y(r.fillPrice) - 4}" font-size="10.5" text-anchor="end" fill="var(--muted)">entry ${r.fillPrice.toFixed(2)}</text>` : ''}
     <path d="${m.map((x, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(x.mark).toFixed(1)).join(' ')}" fill="none" stroke="var(--coach)" stroke-width="2"/></svg>
     <div class="kv"><span class="muted">${esc(m[0].t.replace('T', ' ').slice(5, 16))}</span><b>${m[m.length - 1].mark.toFixed(2)} (${m[m.length - 1].plPct > 0 ? '+' : ''}${m[m.length - 1].plPct}%) at ${esc(m[m.length - 1].t.slice(11, 16))}</b></div>`;
+}
+function botHome() {
+  const b = S.bot;
+  if (!b || b.error || !(b.summary || {}).account) return '';
+  const sm = b.summary, ac = sm.account, items = b.items || [];
+  const closedT = items.filter(i => i.status === 'closed' && i.fillPrice);
+  const rs = closedT.map(i => i.realizedR).filter(v => v != null);
+  const avgR = rs.length ? Math.round(rs.reduce((a, c) => a + c, 0) / rs.length * 100) / 100 : null;
+  const hist = (sm.equityHistory || []).filter(h => h.equity > 0);
+  let peak = 0, dd = 0;
+  hist.forEach(h => { peak = Math.max(peak, h.equity); if (peak) dd = Math.min(dd, (h.equity / peak - 1) * 100); });
+  const today = nyTime(Date.now()).slice(0, 10);
+  const evToday = items.filter(i => (i.createdAt || '').startsWith(today) && !i.orderId).length;
+  const card = (k, v, sub, c) => `<div class="period"><h3>${k}</h3><div class="big" ${c != null ? `style="color:${c >= 0 ? 'var(--gain)' : 'var(--loss)'}"` : ''}>${v}</div><p>${sub}</p></div>`;
+  return `<section><div class="cal-head"><h2>Paper bot</h2><a href="#bot" class="linkbtn">Open the paper bot</a></div>
+    <div class="periods" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+      ${card('Paper account', money(ac.equity, false), `Today ${money(ac.dayChange)}`, null)}
+      ${card('Bot P&L', money(sm.total || 0), `${money(sm.realized || 0)} closed · ${money(sm.unrealized || 0)} open`, sm.total || 0)}
+      ${card('Open positions', String(sm.openPositions || 0), `${money(sm.capitalInOpen || 0, false)} invested`, null)}
+      ${card('Win rate', sm.winRate != null ? sm.winRate + '%' : '—', `${sm.closedTrades || 0} closed trade${sm.closedTrades === 1 ? '' : 's'}`, null)}
+      ${card('Avg result', avgR != null ? `${avgR > 0 ? '+' : ''}${avgR}R` : '—', rs.length ? `per closed trade (${rs.length})` : 'no closed trade with R yet', avgR)}
+      ${card('Max drawdown', hist.length > 1 ? `${dd.toFixed(1)}%` : '—', 'from the equity peak', hist.length > 1 && dd < 0 ? dd : null)}
+    </div>
+    ${hist.length > 1 ? `<section class="panel" style="margin-top:14px"><h2>Paper account equity</h2>${eqLine(hist)}</section>` : ''}
+    <p class="muted" style="font-size:.84rem;margin:8px 0 0">${evToday} evaluation${evToday === 1 ? '' : 's'} today · <a href="#botevals">Evaluations</a> · <a href="#botskipped">Skipped & what-if</a></p>
+  </section>`;
 }
 function eqLine(hist) {
   const W = 720, H = 180, p = 10, v = hist.map(h => h.equity), lo = Math.min(...v), hi = Math.max(...v), sp = hi - lo || 1;
@@ -1569,7 +1596,12 @@ async function loadFlow() {
   catch (e) { S.flowErr = e.message; }
   S.flowBusy = false; if (route() === 'gex') render();
 }
-function vBot() {
+function vBotEvals() { return vBot('evals'); }
+function vBotSkipped() {
+  return head('Skipped & what-if', 'What the trades the bot skipped would have done, what happened after its exits, and which flow is worth acting on', '')
+    + shadowSummary() + flowSummary();
+}
+function vBot(mode) {
   const b = S.bot, cfg = (b && b.settings) || {}, br = S.broker;
   const paperOk = br && br.connected && br.env === 'paper';
   const warn = !br ? '' : !br.connected ? `<div class="errbox">Connect Alpaca with <b>paper</b> keys in Settings → Brokers. The bot only trades the paper account.</div>`
@@ -1612,6 +1644,9 @@ function vBot() {
   const f = (id, label, v, step = 'any') => `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" step="${step}" value="${v ?? ''}"></div>`;
   const st = (b && b.state) || {}, nt = (S.me.settings || {}).notify || {};
   const lastRun = st.lastFlowRun ? `Last flow check ${esc(st.lastFlowRun.replace('T', ' ').slice(5, 16))} ET · ${st.lastFlowAlerts ?? 0} new alerts${(st.lastFlowResult || []).length ? ' · ' + st.lastFlowResult.map(r => `${esc(r.symbol)}: ${esc(r.decision || r.error || '')}${r.ordered ? ' (ordered)' : ''}`).join(', ') : ''}` : 'No automatic flow check yet.';
+  if (mode === 'evals') return head('Evaluations', 'Every ticker the bot analyzed: from unusual flow, watchlist scans, and your own analyses', '') + botResult(S.botRes) + `
+  <section><div class="cal-head"><h2>Latest first</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Claude</th><th title="What it would have done if the bot had taken it (daily bars, the bot's exit rules)">If taken</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>
+`;
   return head('Paper bot', 'Trades the Alpaca paper account automatically from unusual options flow and manages every exit', '') + warn + `
   <section class="coach" style="padding:14px 18px"><div class="coach-who">${spark()} Status</div>
     <div class="switches">
@@ -1622,12 +1657,9 @@ function vBot() {
     <p class="muted" style="margin:6px 0 0;font-size:.86rem">${lastRun}</p>
     <p class="muted" style="margin:4px 0 0;font-size:.8rem">This page refreshes every minute${S.botAt ? ` · last update ${esc(S.botAt)}` : ''}.</p></section>
   ${botResult(S.botRes)}
-  ${summaryHtml}
+  ${summaryHtml.replace(/<section class="panel"><h2>Paper account equity[\s\S]*$/, '')}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh every minute. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
-  ${shadowSummary()}
-  ${flowSummary()}
-  <section><div class="cal-head"><h2>Evaluations</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Claude</th><th title="What it would have done if the bot had taken it (daily bars, the bot's exit rules)">If taken</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>
   <p class="muted" style="margin:18px 0 0">Bot rules, automatic flow trading and alerts are in <a href="#settings">Settings → Paper bot</a>.</p>`;
 }
 function botSettingsPanels() {
@@ -1724,7 +1756,7 @@ async function botEvaluate() {
   S.botSym = sym; S.botBusy = true; S.botErr = null; render();
   try { S.botRes = await api('/bot/evaluate', { method: 'POST', body: { symbol: sym, earnings: earn } }); await loadBot(true); }
   catch (e) { S.botErr = e.message; }
-  S.botBusy = false; if (route() === 'bot') render();
+  S.botBusy = false; if (isBotRoute()) render();
 }
 async function botSaveSettings(quiet) {
   const earnings = {}; ($('#bs-earn').value || '').split('\n').forEach(l => { const m = l.trim().split(/[\s,]+/); if (m.length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(m[1])) earnings[m[0].toUpperCase()] = m[1] + (m[2] && /^(amc|bmo)$/i.test(m[2]) ? ' ' + m[2].toUpperCase() : ' AMC'); });
@@ -1757,7 +1789,9 @@ async function refreshNow(quiet) {
   try {
     const v = route();
     await reload();
-    if (v === 'bot') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); await loadShadow(); }
+    if (v === 'bot' || v === 'dashboard') { await loadBot(true); }
+    if (v === 'botevals') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); }
+    if (v === 'botskipped') { await loadShadow(); }
     else if (v === 'gex') { if (S.flow && !S.flowBusy && $('#fl-prem')) loadFlow(); loadMarketGamma(true); }
     else if (v === 'coach' || v === 'dashboard') { await loadNotes(true); }
     if (S.botRes && S.botRes.id && S.bot && S.bot.items) { const n = S.bot.items.find(i => i.id === S.botRes.id); if (n) S.botRes = { ...S.botRes, ...n }; }
@@ -1792,7 +1826,7 @@ setInterval(() => {
   if (document.visibilityState !== 'visible') return;
   const a = document.activeElement;
   if (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName)) return;
-  if (route() === 'bot') { loadBot(true).then(() => { if (!S.botEvals || S.botEvals.page === 1) loadEvals(1); else if (route() === 'bot') render(); }); }
+  if (isBotRoute()) { loadBot(true).then(() => { if (!S.botEvals || S.botEvals.page === 1) loadEvals(1); else if (isBotRoute()) render(); }); }
   else if (route() === 'gex' && S.flow && S.flowAuto !== false && !S.flowBusy && $('#fl-prem')) loadFlow();
 }, 60000);
 
@@ -1801,12 +1835,14 @@ setInterval(() => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
+  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botskipped', 'Skipped & what-if']],
 };
+const isBotRoute = () => ['bot', 'botevals', 'botskipped'].includes(route());
 const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
   if (!g) return '';
-  return `<nav class="subnav" aria-label="${g === 'trades' ? 'Trades' : 'Settings'} sections">${GROUPS[g].map(([r, l]) =>
+  return `<nav class="subnav" aria-label="${{ trades: 'Trades', settings: 'Settings', bot: 'Paper bot' }[g]} sections">${GROUPS[g].map(([r, l]) =>
     `<a href="#${r}" ${r === v ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
 }
 function toggleAccount(force) {
@@ -1821,17 +1857,19 @@ document.addEventListener('click', e => {
   if (e.target.closest('#acct-menu a')) toggleAccount(false);
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleAccount(false); });
-const VIEWS = { bot: [vBot, () => { loadBot(); loadNtStatus(); if (!S.botEvals) loadEvals(1); if (!S.shadowSum) loadShadow(); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
+  botevals: [vBotEvals, () => { if (!S.bot) loadBot(); loadEvals(S.botEvals ? S.botEvals.page : 1); }],
+  botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 function render() {
   const v = route();
   const grp = groupOf(v);
   document.querySelectorAll('.nav a[data-r]').forEach(a => {
-    const on = a.dataset.r === v || (grp === 'trades' && a.dataset.r === 'trades');
+    const on = a.dataset.r === v || (grp === 'trades' && a.dataset.r === 'trades') || (grp === 'bot' && a.dataset.r === 'bot');
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   document.querySelectorAll('.nav .nav-sub a').forEach(a => { if (a.dataset.r === v) a.setAttribute('aria-current', 'page'); });
-  document.querySelectorAll('.nav .nav-sub').forEach(x => { x.hidden = grp !== 'trades'; });
+  document.querySelectorAll('.nav .nav-sub').forEach(x => { x.hidden = grp !== (x.dataset.group || 'trades'); });
   document.querySelectorAll('[data-acct]').forEach(b => b.classList.toggle('on', grp === 'settings'));
   try { $('#view').innerHTML = subnav(v) + VIEWS[v][0](); } catch (e) { console.error(e); $('#view').innerHTML = `<div class="errbox">This page failed to load: ${esc(e.message)}</div>`; }
   if (VIEWS[v][1]) VIEWS[v][1]();
@@ -1878,7 +1916,7 @@ document.addEventListener('click', e => {
   if (el.id === 'sh-run') { runShadow(); return; }
   if (el.dataset.botclose) { if (!confirm('Close this paper position at market?')) return; api(`/bot/${el.dataset.botclose}/close`, { method: 'POST' }).then(async () => { await loadBot(true); toast('Close order sent'); }).catch(err => toast(err.message)); return; }
   if (el.dataset.botdismiss) { api(`/bot/${el.dataset.botdismiss}/dismiss`, { method: 'POST' }).then(async () => { S.botRes = null; await loadBot(true); }).catch(err => toast(err.message)); return; }
-  if (el.dataset.botshow) { S.botRes = (S.bot.items || []).find(i => i.id === el.dataset.botshow) || null; render(); window.scrollTo(0, 0); return; }
+  if (el.dataset.botshow) { const id = el.dataset.botshow; S.botRes = [...((S.bot || {}).items || []), ...((S.botEvals || {}).items || [])].find(i => i.id === id) || null; render(); window.scrollTo(0, 0); return; }
   if (el.id === 'tc-run') { tcRead(); return; }
   if (el.id === 'mkt-refresh') { S.mkt = null; render(); loadMarketGamma(true); return; }
   if (el.dataset.gexlink) { S.gexSym = el.dataset.gexlink; S.gexExp = ''; closeTrade(); location.hash = '#gex'; setTimeout(loadGex, 50); return; }
