@@ -1699,12 +1699,12 @@ function vBot(mode) {
     const groups = ev2 ? ev2.items : [];
     return head('Evaluations', 'One row per ticker, latest evaluation first. Open a ticker for its full history and to re-evaluate it.', '')
       + feedStatus() + `<section style="margin-top:14px"><div class="cal-head"><h2>Tickers</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>
-      ${!ev2 ? '<p class="loading">Loading…</p>' : groups.length ? `<div class="tablewrap"><table><thead><tr><th>Ticker</th><th class="r">Evaluations</th><th>Latest</th><th>Decision</th><th>Claude</th><th>If taken</th><th>Main reason</th></tr></thead><tbody>
+      ${!ev2 ? '<p class="loading">Loading…</p>' : groups.length ? `<div class="tablewrap"><table class="evg"><thead><tr><th>Ticker</th><th class="r">Evaluations</th><th>Latest</th><th>Decision</th><th>Claude</th><th>Main reason</th></tr></thead><tbody>
         ${groups.map(g => { const l = g.latest || {}, p = l.proposal || {}, d = g.decisions || {};
-          return `<tr data-evticker="${esc(g.symbol)}" style="cursor:pointer"><td><b>${esc(g.symbol)}</b>${g.held ? ' <span class="verdict ok" style="font-size:.72rem">held</span>' : ''}${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td>
-            <td class="r">${g.count}${g.count > 1 ? ` <span class="muted" style="font-size:.8rem">${Object.entries(d).map(([k, n]) => `${n} ${k}`).join(' · ')}</span>` : ''}</td>
-            <td>${esc((l.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><span class="verdict ${DEC_CLS[l.decision] || 'mid'}">${l.decision}</span></td>${aiCell(l)}${shadowCell(l)}
-            <td title="${esc((l.blocking || []).join('; '))}"><span class="ellipsis">${esc((l.blocking || [])[0] || '')}</span></td></tr>`; }).join('')}
+          return `<tr data-evticker="${esc(g.symbol)}" style="cursor:pointer"><td class="evg-t"><b>${esc(g.symbol)}</b>${g.held ? ' <span class="verdict ok" style="font-size:.72rem">held</span>' : ''}${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td>
+            <td class="r evg-n">${g.count}${g.count > 1 ? ` <span class="muted" style="font-size:.8rem">${Object.entries(d).map(([k, n]) => `${n} ${k}`).join(' · ')}</span>` : ''}</td>
+            <td class="evg-w">${esc((l.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td class="evg-d"><span class="verdict ${DEC_CLS[l.decision] || 'mid'}">${l.decision}</span></td>${aiCell(l).replace('<td', '<td class="evg-c"')}
+            <td class="evg-r" title="${esc((l.blocking || []).join('; '))}"><span class="ellipsis">${esc((l.blocking || [])[0] || '')}</span></td></tr>`; }).join('')}
       </tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>`;
   }
   return head('Paper bot', 'Trades the Alpaca paper account automatically from unusual options flow and manages every exit', '') + warn + `
