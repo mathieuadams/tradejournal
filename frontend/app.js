@@ -189,7 +189,6 @@ function vDashboard() {
   const ts = closed(scoped());
   if (!S.trades.length) return head('Overview', '', '') + botHome() + emptyState();
   const St = stats(ts);
-  const W = worstLeak(ts);
   const n = S.notes && S.notes[0];
   return head('Overview', periodText(ts)) + `
   ${n ? `<section class="coach" style="padding:14px 18px">${noteHtml(n, true)}<a href="#coach" class="linkbtn">Open the full check</a></section>` : ''}
@@ -197,11 +196,7 @@ function vDashboard() {
   <section>${periods()}</section>
   <section class="grid2"><div class="panel">${calendar()}</div><div class="panel"><h2>Equity curve</h2>${equity(ts)}</div></section>
   <section class="panel">${pnlBars()}</section>
-  <section>${strip(St)}</section>
-  <section class="grid2"><div class="panel">${prop()}</div>
-  <div class="coach" aria-label="AI coach"><div class="coach-who">${spark()} Coach: rule for next week</div>
-    ${W ? `<p class="rule">${RULES[W.k]}</p><p class="muted" style="margin:0">Your biggest leak is ${W.label.toLowerCase()}: ${money(W.val)} across ${W.n} trades.</p>` : `<p class="rule">No leak stands out in this period. Tag your mistakes so the coach can find them.</p>`}
-    <ul class="patterns">${patterns(ts).slice(0, 3).map(p => `<li>${p.text}<small>Based on ${p.n} trades</small></li>`).join('')}</ul></div></section>`;
+  <section>${strip(St)}</section>`;
 }
 function strip(St) {
   const it = [['Net P&L', `<span class="${cls(St.net)}">${money(St.net)}</span>`], ['Win rate', (St.wr * 100).toFixed(0) + '%'], ['Profit factor', St.pf === Infinity ? '∞' : St.pf.toFixed(2)],
@@ -1631,13 +1626,16 @@ function vBot(mode) {
     const placed = (i.placedBy || '').startsWith('auto') ? (i.placedBy === 'auto-flow' ? 'Bot (flow)' : 'Bot') : `You <span class="muted">(bot said ${esc(i.decision)})</span>`;
     const pl = i.status === 'closed' ? i.realizedPl : i.lastPl, plp = i.status === 'closed' ? i.realizedPct : i.lastPlPct;
     const now = i.status === 'closed' ? i.exitPrice : i.lastMark;
-    return `<tr data-evopen="${i.id}" style="cursor:pointer"><td>${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td>${placed}</td>${aiCell(i)}<td>${esc(['submitted', 'submitting'].includes(i.status) ? 'order working' : i.status)}</td>
-      <td class="r">${i.filledQty || i.qty || ''}</td><td class="r">${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? `<span class="muted">limit ${i.limit.toFixed(2)}</span>` : ''}</td>
-      <td class="r">${now != null ? Number(now).toFixed(2) : '—'}</td>
-      <td class="r ${cls(pl)}">${pl != null ? money(pl) + (plp != null ? ` <span style="font-weight:400">(${plp > 0 ? '+' : ''}${plp}%)</span>` : '') : '—'}</td>
-      <td title="${esc(i.exitReason || i.chaseNote || i.rollNote || '')}"><span class="ellipsis">${esc(i.exitReason || i.chaseNote || i.rollNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.trailing ? `<span class="gain">trailing from ${Number(i.peakMark || 0).toFixed(2)}</span>` : '') || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</span></td>
-      <td class="r" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
-  const posTable = rows => `<div class="tablewrap"><table><thead><tr><th>Placed</th><th>Contract</th><th>By</th><th>Claude</th><th>Status</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
+    const st = i.status === 'open' ? 'st-open' : ['submitting', 'submitted', 'closing'].includes(i.status) ? 'st-work' : 'st-closed';
+    const stTxt = i.status === 'open' ? 'Open' : i.status === 'closing' ? 'Closing' : ['submitting', 'submitted'].includes(i.status) ? 'Order working' : 'Closed';
+    return `<tr data-evopen="${i.id}" class="pos-row ${st}" style="cursor:pointer" title="${stTxt}"><td data-l="Placed">${esc((i.submittedAt || i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td class="pos-c"><span class="st-dot" aria-label="${stTxt}"></span><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td>${aiCell(i).replace('<td', '<td data-l="Claude"')}
+      <td class="r" data-l="Qty">${i.filledQty || i.qty || ''}</td><td class="r" data-l="Entry">${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? `<span class="muted">limit ${i.limit.toFixed(2)}</span>` : ''}</td>
+      <td class="r" data-l="Now">${now != null ? Number(now).toFixed(2) : '—'}</td>
+      <td class="r pos-pl ${cls(pl)}" data-l="P&L">${pl != null ? money(pl) + (plp != null ? ` <span style="font-weight:400">(${plp > 0 ? '+' : ''}${plp}%)</span>` : '') : '—'}</td>
+      <td class="pos-sum">${i.filledQty || i.qty || ''} × ${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? 'limit ' + i.limit.toFixed(2) : '—'} → ${now != null ? Number(now).toFixed(2) : '—'}</td>
+      <td class="pos-note" title="${esc(i.exitReason || i.chaseNote || i.rollNote || '')}"><span class="ellipsis">${esc(i.exitReason || i.chaseNote || i.rollNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.trailing ? `<span class="gain">trailing from ${Number(i.peakMark || 0).toFixed(2)}</span>` : '') || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</span></td>
+      <td class="r pos-act" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
+  const posTable = rows => `<p class="st-legend"><span><i class="st-dot g"></i>Open</span><span><i class="st-dot y"></i>Order working / closing</span><span><i class="st-dot n"></i>Closed</span></p><div class="tablewrap"><table class="pos"><thead><tr><th>Placed</th><th>Contract</th><th>Claude</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
   const evalRow = i => { const p = i.proposal || {};
     return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td>${aiCell(i)}${shadowCell(i)}<td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
   const trades = items.filter(i => ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(i.status) && (i.orderId || i.fillPrice || i.status === 'submitting'));

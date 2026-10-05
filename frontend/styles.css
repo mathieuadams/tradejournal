@@ -307,3 +307,35 @@ body:has(#app[hidden]) .refresh-fab{display:none}
   .nav-acct.on{color:var(--ink)}
   .acct-menu{position:fixed;left:auto;right:10px;bottom:calc(env(safe-area-inset-bottom,0px) + 70px);width:200px}
 }
+
+/* bot positions: status by color (green open, yellow order working / closing, gray closed) */
+.pos-row.st-open td:first-child{box-shadow:inset 4px 0 0 var(--gain)}
+.pos-row.st-work td:first-child{box-shadow:inset 4px 0 0 #d4a106}
+.pos-row.st-closed td:first-child{box-shadow:inset 4px 0 0 var(--line)}
+.pos-row.st-work{background:color-mix(in srgb,#d4a106 7%,transparent)}
+table.pos td.pos-sum{display:none}
+.st-dot{display:none;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle}
+.st-legend{display:flex;gap:16px;flex-wrap:wrap;margin:0 0 6px;font-size:.8rem;color:var(--muted)}
+.st-legend .st-dot{display:inline-block}
+.st-dot.g,.st-open .st-dot{background:var(--gain)}.st-dot.y,.st-work .st-dot{background:#d4a106}.st-dot.n,.st-closed .st-dot{background:var(--line)}
+/* phones: each position becomes a compact card */
+@media (max-width:700px){
+  table.pos thead{display:none}
+  table.pos,table.pos tbody{display:block}
+  table.pos tr.pos-row{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:10px 12px;border-bottom:1px solid var(--line)}
+  table.pos tr.pos-row td{display:block;padding:0;border:0;box-shadow:none!important;text-align:left}
+  table.pos tr.pos-row.st-open{box-shadow:inset 4px 0 0 var(--gain)}
+  table.pos tr.pos-row.st-work{box-shadow:inset 4px 0 0 #d4a106}
+  table.pos tr.pos-row.st-closed{box-shadow:inset 4px 0 0 var(--line)}
+  table.pos tr.pos-row .pos-c{grid-column:1;grid-row:1;font-size:.98rem}
+  table.pos tr.pos-row .pos-c .st-dot{display:inline-block}
+  table.pos tr.pos-row .pos-pl{grid-column:2;grid-row:1;text-align:right;font-weight:600}
+  table.pos tr.pos-row td[data-l="Placed"]{grid-column:1;grid-row:3;font-size:.8rem;color:var(--muted)}
+  table.pos tr.pos-row td[data-l="Qty"],table.pos tr.pos-row td[data-l="Entry"],table.pos tr.pos-row td[data-l="Now"]{display:none}
+  table.pos tr.pos-row td.pos-sum{display:block;grid-column:1;grid-row:2;font-size:.86rem}
+  table.pos tr.pos-row td[data-l="Claude"]{grid-column:2;grid-row:3;text-align:right}
+  table.pos tr.pos-row .pos-note{grid-column:1/3;grid-row:4;font-size:.8rem;color:var(--muted)}
+  table.pos tr.pos-row .pos-note .ellipsis{white-space:normal}
+  table.pos tr.pos-row .pos-act{grid-column:1/3;grid-row:5;text-align:right}
+  table.pos tr.pos-row .pos-act:empty{display:none}
+}
