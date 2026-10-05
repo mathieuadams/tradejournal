@@ -1539,6 +1539,24 @@ function markLine(r) {
     <path d="${m.map((x, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(x.mark).toFixed(1)).join(' ')}" fill="none" stroke="var(--coach)" stroke-width="2"/></svg>
     <div class="kv"><span class="muted">${esc(m[0].t.replace('T', ' ').slice(5, 16))}</span><b>${m[m.length - 1].mark.toFixed(2)} (${m[m.length - 1].plPct > 0 ? '+' : ''}${m[m.length - 1].plPct}%) at ${esc(m[m.length - 1].t.slice(11, 16))}</b></div>`;
 }
+function feedStatus() {
+  const st = ((S.bot || {}).state) || {}, cfg = ((S.bot || {}).settings) || {};
+  const now = nyTime(Date.now()), hm = now.slice(11, 16), day = now.slice(0, 10);
+  const wd = new Date(day + 'T12:00:00').getDay();
+  const open = wd >= 1 && wd <= 5 && hm >= '09:35' && hm <= '15:50';
+  const t = x => x ? esc(x.replace('T', ' ').slice(x.slice(0, 10) === day ? 11 : 5, 16)) : '—';
+  const ago = x => x ? Math.round((Date.parse(now + 'Z') - Date.parse(x + 'Z')) / 60000) : null;
+  const err = st.uwErrorAt && (!st.uwOkAt || st.uwErrorAt > st.uwOkAt);
+  const stale = open && cfg.flowAuto && (ago(st.lastFlowRun) == null || ago(st.lastFlowRun) > 5);
+  const counts = st.flowDay === day ? `${st.alertsToday || 0} new alert${st.alertsToday === 1 ? '' : 's'} today · ${st.evalsToday || 0} analyzed today` : 'no flow check yet today';
+  const [color, msg] = err ? ['var(--loss)', `<b>Unusual Whales: error</b> at ${t(st.uwErrorAt)} ET — ${esc(st.uwError || '')}`]
+    : stale ? ['#b7860b', `<b>No flow check since ${t(st.lastFlowRun)} ET</b> during market hours — the bot may be stopped or the feed slow`]
+    : !open ? ['var(--muted)', `<b>Market closed for flow:</b> checks run 9:35–15:50 ET on weekdays · last good pull ${t(st.uwOkAt)} ET`]
+    : ['var(--gain)', `<b>Unusual Whales connected</b> · last pull ${t(st.uwOkAt || st.lastFlowRun)} ET (${ago(st.uwOkAt || st.lastFlowRun)} min ago)`];
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin:8px 0 0;padding:8px 10px;border-radius:8px;background:var(--surface);border-left:4px solid ${color}">
+    <span style="flex:1;min-width:220px;font-size:.88rem">${msg}<br><span class="muted">${counts}</span></span>
+    <button class="btn" data-uwtest="1" ${S.uwTesting ? 'disabled' : ''}>${S.uwTesting ? 'Testing…' : 'Test the feed now'}</button></div>`;
+}
 function botHome() {
   const b = S.bot;
   if (!b || b.error || !(b.summary || {}).account) return '';
@@ -1675,7 +1693,7 @@ function vBot(mode) {
     }
     const groups = ev2 ? ev2.items : [];
     return head('Evaluations', 'One row per ticker, latest evaluation first. Open a ticker for its full history and to re-evaluate it.', '')
-      + `<section><div class="cal-head"><h2>Tickers</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>
+      + feedStatus() + `<section style="margin-top:14px"><div class="cal-head"><h2>Tickers</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>
       ${!ev2 ? '<p class="loading">Loading…</p>' : groups.length ? `<div class="tablewrap"><table><thead><tr><th>Ticker</th><th class="r">Evaluations</th><th>Latest</th><th>Decision</th><th>Claude</th><th>If taken</th><th>Main reason</th></tr></thead><tbody>
         ${groups.map(g => { const l = g.latest || {}, p = l.proposal || {}, d = g.decisions || {};
           return `<tr data-evticker="${esc(g.symbol)}" style="cursor:pointer"><td><b>${esc(g.symbol)}</b>${g.held ? ' <span class="verdict ok" style="font-size:.72rem">held</span>' : ''}${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td>
@@ -1691,6 +1709,7 @@ function vBot(mode) {
         `<button class="switch" data-bottoggle="${k}" aria-pressed="${!!cfg[k]}"><span class="knob" aria-hidden="true"></span><span><b>${l}</b> <span class="sw-state">${cfg[k] ? 'On' : 'Off'}</span><small>${d}</small></span></button>`).join('')}
     </div>
     <p style="margin:0">${cfg.flowAuto ? `<b class="gain">Flow trading is on.</b> Every minute from 9:35 to 15:50 ET the bot pulls new unusual-flow alerts, analyzes up to ${cfg.flowMaxEvals} tickers, and ${cfg.autoSubmit ? 'places a paper order when every rule passes' : '<b>only logs the analysis</b> (automatic orders are off)'}.` : '<b>Flow trading is off.</b> Turn on <b>Flow trading</b> above (and <b>Automatic orders</b> to let it place trades).'} Exits are checked every minute for every bot position.</p>
+    ${feedStatus()}
     <p class="muted" style="margin:6px 0 0;font-size:.86rem">${lastRun}</p>
     <p class="muted" style="margin:4px 0 0;font-size:.8rem">This page refreshes every minute${S.botAt ? ` · last update ${esc(S.botAt)}` : ''}.</p></section>
   ${summaryHtml.replace(/<section class="panel"><h2>Paper account equity[\s\S]*$/, '')}
@@ -1915,13 +1934,19 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-botsave],[data-evpage],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
   if (el.dataset.botsave) { botSaveSettings(); return; }
   if (el.dataset.evpage) { loadEvals(+el.dataset.evpage); return; }
   if (el.dataset.reeval) { reEvaluate(el.dataset.reeval); return; }
+  if (el.dataset.uwtest) {
+    S.uwTesting = true; render();
+    api('/bot/flow/test', { method: 'POST' }).then(r => toast(r.ok ? `Unusual Whales OK: ${r.alerts} alerts over your minimum in the last hour (${r.tickers} tickers, ${r.ms} ms)${r.newest ? ` · newest ${r.newest.slice(11, 16)} ET` : ''}` : `Unusual Whales error: ${r.error}`))
+      .catch(err => toast(err.message)).finally(async () => { S.uwTesting = false; await loadBot(true); });
+    return;
+  }
   if (el.dataset.resclose) { if (isBotRoute()) S.botRes = null; else S.anaRes = null; render(); return; }
   if (el.dataset.evopen) {
     const it = ((S.bot || {}).items || []).find(x => x.id === el.dataset.evopen);

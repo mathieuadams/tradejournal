@@ -1448,6 +1448,37 @@ def test_evaluations_grouped_by_ticker():
     assert g["items"][0]["symbol"] == "NBIS" and g["items"][0]["held"] is True
 
 
+def test_feed_health():
+    """Flow checks record whether Unusual Whales answered; the app can test the feed on demand."""
+    import autotrader, flowdata
+    STORE.clear()
+    pk = db.upk(SUB)
+    saved = flowdata.alerts
+    try:
+        def boom(*a, **k):
+            raise RuntimeError("Unusual Whales returned an error (401)")
+        flowdata.alerts = boom
+        try:
+            autotrader.flow_scan(SUB)
+            assert False
+        except RuntimeError:
+            pass
+        st = STORE[(pk, "BOTSTATE")]
+        assert "401" in st["uwError"] and st["uwErrorAt"]
+        flowdata.alerts = lambda *a, **k: {"alerts": []}
+        autotrader.flow_scan(SUB)
+        st = STORE[(pk, "BOTSTATE")]
+        assert st["uwOkAt"] >= st["uwErrorAt"] and st["alertsToday"] == 0 and st["flowDay"]
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "A", "atEt": "2026-10-05 09:40"}, {"ticker": "B", "atEt": "2026-10-05 09:41"}]}
+        code, r = call("POST", "/bot/flow/test", {})
+        assert code == 200 and r["ok"] and r["alerts"] == 2 and r["tickers"] == 2 and r["newest"] == "2026-10-05 09:41", r
+        flowdata.alerts = boom
+        code, r = call("POST", "/bot/flow/test", {})
+        assert code == 200 and not r["ok"] and "401" in r["error"]
+    finally:
+        flowdata.alerts = saved
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

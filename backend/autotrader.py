@@ -1350,8 +1350,12 @@ def flow_scan(sub, cfg=None):
     pk = db.upk(sub)
     state = db.get(pk, "BOTSTATE") or {"PK": pk, "SK": "BOTSTATE"}
     last = state.get("lastFlowAt")
-    res = flowdata.alerts(sub, cfg["flowMinPremium"], "call", cfg["flowMinDte"], cfg["flowMaxDte"], cfg["flowAskSide"],
-                          cfg["flowSweeps"], None, cfg["flowMinVolOi"], 1, since_utc=last, exclude_etfs=cfg["excludeEtfs"])
+    try:
+        res = flowdata.alerts(sub, cfg["flowMinPremium"], "call", cfg["flowMinDte"], cfg["flowMaxDte"], cfg["flowAskSide"],
+                              cfg["flowSweeps"], None, cfg["flowMinVolOi"], 1, since_utc=last, exclude_etfs=cfg["excludeEtfs"])
+    except Exception as e:                             # record it so the app shows the feed is down
+        db.update(pk, "BOTSTATE", {"uwErrorAt": iso(now_ny()), "uwError": str(e)[:240], "lastFlowRun": iso(now_ny())})
+        raise
     # only act on fresh alerts (the last 20 minutes), whatever the data source returned
     fresh_cut = (datetime.utcnow() - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S")
     alerts = [x for x in res["alerts"] if (x.get("at") or "")[:19] >= fresh_cut]
@@ -1399,8 +1403,12 @@ def flow_scan(sub, cfg=None):
                 item["orderError"] = str(e)[:160]
         done.append(item)
     evaluated = {k: v for k, v in evaluated.items() if v > iso(now_ny() - timedelta(days=1))}
+    today = now_ny().strftime("%Y-%m-%d")
+    same_day = state.get("flowDay") == today
     db.update(pk, "BOTSTATE", {"lastFlowAt": newest or last, "evaluated": evaluated, "lastFlowRun": iso(now_ny()),
-                               "lastFlowResult": done[-10:], "lastFlowAlerts": len(alerts)})
+                               "lastFlowResult": done[-10:], "lastFlowAlerts": len(alerts), "uwOkAt": iso(now_ny()),
+                               "flowDay": today, "alertsToday": (state.get("alertsToday", 0) if same_day else 0) + len(alerts),
+                               "evalsToday": (state.get("evalsToday", 0) if same_day else 0) + sum(1 for d in done if "decision" in d)})
     return {"alerts": len(alerts), "evaluated": done}
 
 
