@@ -383,22 +383,16 @@ def bot_shadow_run(sub, claims, body, q):
 
 @route("POST", "/bot/flow/test")
 def bot_flow_test(sub, claims, body, q):
-    """Check the Unusual Whales feed right now: alerts over the flow minimum in the last hour."""
-    import autotrader, flowdata, time as _t
-    from datetime import datetime, timedelta as _td
-    cfg = autotrader.settings(sub)
-    since = (datetime.utcnow() - _td(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Is the Unusual Whales feed alive? One request with no filters (any premium, type, expiry): the newest alerts."""
+    import flowdata, time as _t
     t0 = _t.time()
     try:
-        res = flowdata.alerts(sub, cfg["flowMinPremium"], "call", cfg["flowMinDte"], cfg["flowMaxDte"], cfg["flowAskSide"],
-                              cfg["flowSweeps"], None, cfg["flowMinVolOi"], 1, since_utc=since, exclude_etfs=cfg["excludeEtfs"])
+        r = flowdata.ping(sub)
     except Exception as e:
         db.update(db.upk(sub), "BOTSTATE", {"uwErrorAt": iso(now_ny()), "uwError": str(e)[:240]})
         return {"ok": False, "error": str(e)[:240]}
     db.update(db.upk(sub), "BOTSTATE", {"uwOkAt": iso(now_ny())})
-    al = res.get("alerts") or []
-    return {"ok": True, "alerts": len(al), "tickers": len({a.get("ticker") for a in al}), "ms": round((_t.time() - t0) * 1000),
-            "newest": max([a.get("atEt") or "" for a in al], default=None)}
+    return {"ok": True, **r, "ms": round((_t.time() - t0) * 1000)}
 
 
 @route("GET", "/bot/flow/summary")

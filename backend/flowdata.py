@@ -280,3 +280,21 @@ def next_earnings(sub, symbol):
         return ""
     # unknown timing -> before the open: the bot then exits a day earlier, the safe side
     return f"{d} {'AMC' if data.get('announce_time') == 'afterhours' else 'BMO'}"
+
+
+def ping(sub):
+    """Liveness check with no filters: the newest flow alerts of any kind. Returns how many came back and the newest
+    alert's time (ET) and ticker."""
+    from util import utc_to_ny
+    key = _key(sub)
+    d = _get(key, {"limit": 50})
+    rows = d.get("data") or []
+    newest = max(rows, key=lambda a: a.get("created_at") or "", default=None)
+    at = None
+    if newest and newest.get("created_at"):
+        try:
+            at = utc_to_ny(datetime.strptime(str(newest["created_at"])[:19], "%Y-%m-%dT%H:%M:%S")).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            at = str(newest["created_at"])[:16]
+    return {"alerts": len(rows), "tickers": len({a.get("ticker") for a in rows}), "newest": at,
+            "newestTicker": (newest or {}).get("ticker")}

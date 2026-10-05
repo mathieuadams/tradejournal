@@ -1943,7 +1943,7 @@ document.addEventListener('click', e => {
   if (el.dataset.reeval) { reEvaluate(el.dataset.reeval); return; }
   if (el.dataset.uwtest) {
     S.uwTesting = true; render();
-    api('/bot/flow/test', { method: 'POST' }).then(r => toast(r.ok ? `Unusual Whales OK: ${r.alerts} alerts over your minimum in the last hour (${r.tickers} tickers, ${r.ms} ms)${r.newest ? ` · newest ${r.newest.slice(11, 16)} ET` : ''}` : `Unusual Whales error: ${r.error}`))
+    api('/bot/flow/test', { method: 'POST' }).then(r => toast(r.ok ? `Unusual Whales is live: answered in ${r.ms} ms${r.newest ? ` · newest alert ${r.newestTicker || ''} at ${r.newest.slice(5).replace(' ', ' ')} ET` : ' · no alerts returned'} (no filters)` : `Unusual Whales error: ${r.error}`))
       .catch(err => toast(err.message)).finally(async () => { S.uwTesting = false; await loadBot(true); });
     return;
   }

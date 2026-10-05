@@ -1469,11 +1469,18 @@ def test_feed_health():
         autotrader.flow_scan(SUB)
         st = STORE[(pk, "BOTSTATE")]
         assert st["uwOkAt"] >= st["uwErrorAt"] and st["alertsToday"] == 0 and st["flowDay"]
-        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "A", "atEt": "2026-10-05 09:40"}, {"ticker": "B", "atEt": "2026-10-05 09:41"}]}
+        sent = {}
+        saved_get, saved_key = flowdata._get, flowdata._key
+        def fake_get(key, params):
+            sent.update(params)
+            return {"data": [{"ticker": "A", "created_at": "2026-10-05T13:40:00Z"}, {"ticker": "B", "created_at": "2026-10-05T13:41:30.5Z"}]}
+        flowdata._get, flowdata._key = fake_get, lambda sub: "k"
         code, r = call("POST", "/bot/flow/test", {})
-        assert code == 200 and r["ok"] and r["alerts"] == 2 and r["tickers"] == 2 and r["newest"] == "2026-10-05 09:41", r
-        flowdata.alerts = boom
+        assert code == 200 and r["ok"] and r["alerts"] == 2 and r["tickers"] == 2 and r["newest"] == "2026-10-05 09:41" and r["newestTicker"] == "B", r
+        assert sent == {"limit": 50}                                    # no filters at all
+        flowdata._get = lambda key, params: boom()
         code, r = call("POST", "/bot/flow/test", {})
+        flowdata._get, flowdata._key = saved_get, saved_key
         assert code == 200 and not r["ok"] and "401" in r["error"]
     finally:
         flowdata.alerts = saved
