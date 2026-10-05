@@ -326,7 +326,7 @@ def bot_settings(sub, claims, body, q):
         "flowAuto": bool(body.get("flowAuto", cur["flowAuto"])), "flowMinPremium": num("flowMinPremium", 0, 1e9),
         "flowMinDte": int(num("flowMinDte", 0, 400)), "flowMaxDte": int(num("flowMaxDte", 0, 800)),
         "flowAskSide": bool(body.get("flowAskSide", cur["flowAskSide"])), "flowSweeps": bool(body.get("flowSweeps", cur["flowSweeps"])),
-        "flowMinVolOi": num("flowMinVolOi", 0, 1000), "excludeEtfs": bool(body.get("excludeEtfs", cur["excludeEtfs"])),
+        "flowMinVolOi": num("flowMinVolOi", 0, 1000), "flowWindowMin": int(num("flowWindowMin", 5, 240)), "excludeEtfs": bool(body.get("excludeEtfs", cur["excludeEtfs"])),
         "flowCooldownMin": int(num("flowCooldownMin", 1, 1440)), "flowMaxEvals": int(num("flowMaxEvals", 1, 10)),
         "chaseStep": num("chaseStep", 0.05, 5), "chaseSeconds": int(num("chaseSeconds", 5, 60)),
         "chaseMaxSteps": int(num("chaseMaxSteps", 0, 20)), "chaseMaxPct": num("chaseMaxPct", 0, 50),
@@ -384,16 +384,31 @@ def bot_shadow_run(sub, claims, body, q):
 
 @route("POST", "/bot/flow/test")
 def bot_flow_test(sub, claims, body, q):
-    """Is the Unusual Whales feed alive? One request with no filters (any premium, type, expiry): the newest alerts."""
-    import flowdata, time as _t
+    """Is the Unusual Whales feed alive (one request, no filters: the newest alerts), and how many alerts pass your
+    flow filters in the last 20 and 60 minutes (to tell a quiet market from a problem)."""
+    import autotrader, flowdata, time as _t
+    from datetime import datetime, timedelta as _td
     t0 = _t.time()
     try:
         r = flowdata.ping(sub)
     except Exception as e:
         db.update(db.upk(sub), "BOTSTATE", {"uwErrorAt": iso(now_ny()), "uwError": str(e)[:240]})
         return {"ok": False, "error": str(e)[:240]}
+    ms = round((_t.time() - t0) * 1000)
     db.update(db.upk(sub), "BOTSTATE", {"uwOkAt": iso(now_ny())})
-    return {"ok": True, **r, "ms": round((_t.time() - t0) * 1000)}
+    cfg = autotrader.settings(sub)
+    out = {"ok": True, **r, "ms": ms}
+    try:
+        since = (datetime.utcnow() - _td(minutes=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        res = flowdata.alerts(sub, cfg["flowMinPremium"], "call", cfg["flowMinDte"], cfg["flowMaxDte"], cfg["flowAskSide"],
+                              cfg["flowSweeps"], None, cfg["flowMinVolOi"], 1, since_utc=since, exclude_etfs=cfg["excludeEtfs"])
+        al = res.get("alerts") or []
+        cut20 = (datetime.utcnow() - _td(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S")
+        out.update(filtered60=len(al), filtered20=sum(1 for a in al if (a.get("at") or "")[:19] >= cut20),
+                   filteredTickers=len({a.get("ticker") for a in al}), filteredNewest=max([a.get("atEt") or "" for a in al], default=None))
+    except Exception as e:
+        out["filterError"] = str(e)[:200]
+    return out
 
 
 @route("GET", "/bot/flow/summary")

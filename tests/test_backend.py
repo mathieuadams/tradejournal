@@ -1477,6 +1477,7 @@ def test_feed_health():
         flowdata._get, flowdata._key = fake_get, lambda sub: "k"
         code, r = call("POST", "/bot/flow/test", {})
         assert code == 200 and r["ok"] and r["alerts"] == 2 and r["tickers"] == 2 and r["newest"] == "2026-10-05 09:41" and r["newestTicker"] == "B", r
+        assert "filtered60" in r or "filterError" in r
         assert sent == {"limit": 50}                                    # no filters at all
         flowdata._get = lambda key, params: boom()
         code, r = call("POST", "/bot/flow/test", {})
@@ -1506,7 +1507,7 @@ def test_flow_rolling_window():
         autotrader.evaluate = lambda sub, sym, source=None, **k: (seen.append(sym) or {"id": "x", "decision": "WAIT"})
         r1 = autotrader.flow_scan(SUB)
         assert seen == ["T0", "T1", "T2"] and r1["alerts"] == 5 and r1["skips"]["waiting"] == 2
-        assert windows[0] > (now - dt.timedelta(minutes=21)).strftime("%Y-%m-%dT%H:%M:%SZ")      # rolling 20-minute window
+        assert (now - dt.timedelta(minutes=61)).strftime("%Y-%m-%dT%H:%M:%SZ") < windows[0] < (now - dt.timedelta(minutes=59)).strftime("%Y-%m-%dT%H:%M:%SZ")
         r2 = autotrader.flow_scan(SUB)                    # no new alerts, but the 2 left over get their turn
         assert seen[3:] == ["T3", "T4"] and r2["alerts"] == 0 and r2["window"] == 5 and r2["skips"]["recent"] == 3
         st = STORE[(pk, "BOTSTATE")]

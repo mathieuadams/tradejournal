@@ -1551,7 +1551,7 @@ function feedStatus() {
   const sk = st.lastFlowSkips || {};
   const counts = st.flowDay === day
     ? `Today: ${st.alertsToday || 0} alert${st.alertsToday === 1 ? '' : 's'} over your minimum · ${st.evalsToday || 0} analyzed`
-      + (st.lastFlowWindow != null ? `<br>Last check: ${st.lastFlowWindow} alerts in the last 20 min on ${st.lastFlowTickers || 0} ticker${st.lastFlowTickers === 1 ? '' : 's'}`
+      + (st.lastFlowWindow != null ? `<br>Last check: ${st.lastFlowWindow} alerts in the last ${cfg.flowWindowMin || 60} min on ${st.lastFlowTickers || 0} ticker${st.lastFlowTickers === 1 ? '' : 's'}`
         + ` (${[sk.held ? `${sk.held} already held` : '', sk.recent ? `${sk.recent} analyzed in the last ${cfg.flowCooldownMin || 120} min` : '', sk.waiting ? `${sk.waiting} waiting for the next minute` : ''].filter(Boolean).join(', ') || 'all analyzed'})` : '')
     : 'No flow check yet today';
   const [color, msg] = err ? ['var(--loss)', `<b>Unusual Whales: error</b> at ${t(st.uwErrorAt)} ET — ${esc(st.uwError || '')}`]
@@ -1736,7 +1736,7 @@ function botSettingsPanels() {
       <label><input type="checkbox" id="bf-sweep" ${cfg.flowSweeps ? 'checked' : ''}> Sweeps only</label></div>
     <div class="form-grid">
       ${f('bf-prem', 'Min premium ($)', cfg.flowMinPremium, 10000)}${f('bf-dmin', 'Flow days to expiry, min', cfg.flowMinDte, 1)}${f('bf-dmax', 'Flow days to expiry, max', cfg.flowMaxDte, 1)}
-      ${f('bf-voi', 'Min volume / OI', cfg.flowMinVolOi, 0.1)}${f('bf-cool', 'Re-check a ticker after (min)', cfg.flowCooldownMin, 1)}${f('bf-evals', 'Max tickers analyzed per minute', cfg.flowMaxEvals, 1)}</div>
+      ${f('bf-voi', 'Min volume / OI', cfg.flowMinVolOi, 0.1)}${f('bf-cool', 'Re-check a ticker after (min)', cfg.flowCooldownMin, 1)}${f('bf-evals', 'Max tickers analyzed per minute', cfg.flowMaxEvals, 1)}${f('bf-win', 'Look at alerts from the last (min)', cfg.flowWindowMin ?? 60, 5)}</div>
     <h3 style="font-size:.95rem;margin:10px 0 6px">Repeat buyers</h3>
     <label style="display:block;margin-bottom:6px"><input type="checkbox" id="bf-rep" ${cfg.repeatEnabled !== false ? 'checked' : ''}> Look for smaller call buys (under the min premium) on the ticker, any contract</label>
     <div class="form-grid">
@@ -1823,7 +1823,7 @@ async function botSaveSettings(quiet) {
     minGrowth30: v('#bs-g30'), invalidationOnClose: $('#bs-onclose').checked, trailAfterTarget: $('#bs-trail').checked, emergencyAtr: v('#bs-emerg'), trailPct: v('#bs-trailpct'),
     crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'),
     flowAuto: $('#bf-on').checked, excludeEtfs: $('#bf-etf').checked, flowAskSide: $('#bf-ask').checked, flowSweeps: $('#bf-sweep').checked,
-    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), repeatEnabled: $('#bf-rep').checked, repeatDays: v('#bf-rdays'), repeatMinPremium: v('#bf-rprem'), repeatMinHits: v('#bf-rhits'), repeatMinMinutes: v('#bf-rmin'), repeatMinTotal: v('#bf-rtot'), putCheck: $('#bf-put').checked, putBlock: $('#bf-putb').checked, putMaxRatio: v('#bf-putr'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'),
+    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), flowWindowMin: v('#bf-win'), repeatEnabled: $('#bf-rep').checked, repeatDays: v('#bf-rdays'), repeatMinPremium: v('#bf-rprem'), repeatMinHits: v('#bf-rhits'), repeatMinMinutes: v('#bf-rmin'), repeatMinTotal: v('#bf-rtot'), putCheck: $('#bf-put').checked, putBlock: $('#bf-putb').checked, putMaxRatio: v('#bf-putr'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'),
     strategy: v('#bs-strat'), spreadStopPct: v('#bs-sstop'), spreadShortDeltaMin: v('#bs-sdmin'), spreadShortDeltaMax: v('#bs-sdmax'),
     spreadMaxDebitPct: v('#bs-sdebit'), spreadTargetPct: v('#bs-starget'), diagLongDteMin: v('#bs-dldmin'), diagLongDteMax: v('#bs-dldmax'),
     diagLongDeltaMin: v('#bs-dlxmin'), diagLongDeltaMax: v('#bs-dlxmax'), diagShortDteMin: v('#bs-dsdmin'), diagShortDteMax: v('#bs-dsdmax'),
@@ -1948,7 +1948,7 @@ document.addEventListener('click', e => {
   if (el.dataset.reeval) { reEvaluate(el.dataset.reeval); return; }
   if (el.dataset.uwtest) {
     S.uwTesting = true; render();
-    api('/bot/flow/test', { method: 'POST' }).then(r => toast(r.ok ? `Unusual Whales is live: answered in ${r.ms} ms${r.newest ? ` · newest alert ${r.newestTicker || ''} at ${r.newest.slice(5).replace(' ', ' ')} ET` : ' · no alerts returned'} (no filters)` : `Unusual Whales error: ${r.error}`))
+    api('/bot/flow/test', { method: 'POST' }).then(r => toast(r.ok ? `Unusual Whales is live (${r.ms} ms): newest alert ${r.newestTicker || ''} ${r.newest ? r.newest.slice(11) + ' ET' : '—'}. With your filters: ${r.filtered20 ?? '?'} alerts in the last 20 min, ${r.filtered60 ?? '?'} in the last 60 min on ${r.filteredTickers ?? '?'} tickers${r.filteredNewest ? `, newest ${r.filteredNewest.slice(11)} ET` : ''}${r.filterError ? ` (filter check failed: ${r.filterError})` : ''}` : `Unusual Whales error: ${r.error}`))
       .catch(err => toast(err.message)).finally(async () => { S.uwTesting = false; await loadBot(true); });
     return;
   }

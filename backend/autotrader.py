@@ -65,6 +65,7 @@ DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40
             # a HOLD with low confidence on a losing position also closes it
             "aiExitHoldMinConf": 50, "aiExitHoldLossPct": 25,
             # repeat buyers: many smaller prints on the same contract during the session
+            "flowWindowMin": 60,
             "repeatEnabled": True, "repeatDays": 5, "repeatMinPremium": 10000, "repeatMinHits": 4, "repeatMinTotal": 200000, "repeatMinMinutes": 3,
             # the other side: puts bought on the same ticker during the session
             "putCheck": True, "putBlock": True, "putMaxRatio": 0.5}
@@ -1351,7 +1352,7 @@ def flow_scan(sub, cfg=None):
     state = db.get(pk, "BOTSTATE") or {"PK": pk, "SK": "BOTSTATE"}
     # a rolling 20-minute window every minute (not "since the newest alert seen"): alerts the feed publishes late
     # are still picked up, and tickers left over when the per-minute limit is reached get their turn next minute
-    window_start = (datetime.utcnow() - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    window_start = (datetime.utcnow() - timedelta(minutes=cfg["flowWindowMin"])).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         res = flowdata.alerts(sub, cfg["flowMinPremium"], "call", cfg["flowMinDte"], cfg["flowMaxDte"], cfg["flowAskSide"],
                               cfg["flowSweeps"], None, cfg["flowMinVolOi"], 1, since_utc=window_start, exclude_etfs=cfg["excludeEtfs"])
@@ -1359,7 +1360,7 @@ def flow_scan(sub, cfg=None):
         db.update(pk, "BOTSTATE", {"uwErrorAt": iso(now_ny()), "uwError": str(e)[:240], "lastFlowRun": iso(now_ny())})
         raise
     # only act on fresh alerts (the last 20 minutes), whatever the data source returned
-    fresh_cut = (datetime.utcnow() - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S")
+    fresh_cut = (datetime.utcnow() - timedelta(minutes=cfg["flowWindowMin"])).strftime("%Y-%m-%dT%H:%M:%S")
     alerts = [x for x in res["alerts"] if (x.get("at") or "")[:19] >= fresh_cut]
     akey = lambda a: str(a.get("id") or f"{a.get('contract')}|{a.get('at')}|{a.get('premium')}")
     seen = list(state.get("flowSeen") or [])
