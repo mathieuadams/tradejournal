@@ -1486,6 +1486,37 @@ def test_feed_health():
         flowdata.alerts = saved
 
 
+def test_flow_rolling_window():
+    """Every minute looks at the last 20 minutes: tickers over the per-minute limit are analyzed the next minute,
+    and the same alert is counted once."""
+    import autotrader, flowdata, datetime as dt
+    STORE.clear()
+    pk = db.upk(SUB)
+    saved = (flowdata.alerts, autotrader.evaluate)
+    try:
+        now = dt.datetime.utcnow()
+        al = [{"id": f"a{i}", "ticker": f"T{i}", "premium": 500000 - i * 1000, "sweep": False, "contract": f"T{i}C",
+               "at": (now - dt.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")} for i in range(5)]
+        windows = []
+        def fake_alerts(sub, *a, since_utc=None, **k):
+            windows.append(since_utc)
+            return {"alerts": al}
+        flowdata.alerts = fake_alerts
+        seen = []
+        autotrader.evaluate = lambda sub, sym, source=None, **k: (seen.append(sym) or {"id": "x", "decision": "WAIT"})
+        r1 = autotrader.flow_scan(SUB)
+        assert seen == ["T0", "T1", "T2"] and r1["alerts"] == 5 and r1["skips"]["waiting"] == 2
+        assert windows[0] > (now - dt.timedelta(minutes=21)).strftime("%Y-%m-%dT%H:%M:%SZ")      # rolling 20-minute window
+        r2 = autotrader.flow_scan(SUB)                    # no new alerts, but the 2 left over get their turn
+        assert seen[3:] == ["T3", "T4"] and r2["alerts"] == 0 and r2["window"] == 5 and r2["skips"]["recent"] == 3
+        st = STORE[(pk, "BOTSTATE")]
+        assert st["alertsToday"] == 5 and st["evalsToday"] == 5 and st["lastFlowTickers"] == 5
+        code, b = call("GET", "/bot")
+        assert code == 200 and b["state"]["alertsToday"] == 5 and b["state"]["uwOkAt"]
+    finally:
+        flowdata.alerts, autotrader.evaluate = saved
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

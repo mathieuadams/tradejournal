@@ -1548,7 +1548,12 @@ function feedStatus() {
   const ago = x => x ? Math.round((Date.parse(now + 'Z') - Date.parse(x + 'Z')) / 60000) : null;
   const err = st.uwErrorAt && (!st.uwOkAt || st.uwErrorAt > st.uwOkAt);
   const stale = open && cfg.flowAuto && (ago(st.lastFlowRun) == null || ago(st.lastFlowRun) > 5);
-  const counts = st.flowDay === day ? `${st.alertsToday || 0} new alert${st.alertsToday === 1 ? '' : 's'} today · ${st.evalsToday || 0} analyzed today` : 'no flow check yet today';
+  const sk = st.lastFlowSkips || {};
+  const counts = st.flowDay === day
+    ? `Today: ${st.alertsToday || 0} alert${st.alertsToday === 1 ? '' : 's'} over your minimum · ${st.evalsToday || 0} analyzed`
+      + (st.lastFlowWindow != null ? `<br>Last check: ${st.lastFlowWindow} alerts in the last 20 min on ${st.lastFlowTickers || 0} ticker${st.lastFlowTickers === 1 ? '' : 's'}`
+        + ` (${[sk.held ? `${sk.held} already held` : '', sk.recent ? `${sk.recent} analyzed in the last ${cfg.flowCooldownMin || 120} min` : '', sk.waiting ? `${sk.waiting} waiting for the next minute` : ''].filter(Boolean).join(', ') || 'all analyzed'})` : '')
+    : 'No flow check yet today';
   const [color, msg] = err ? ['var(--loss)', `<b>Unusual Whales: error</b> at ${t(st.uwErrorAt)} ET — ${esc(st.uwError || '')}`]
     : stale ? ['#b7860b', `<b>No flow check since ${t(st.lastFlowRun)} ET</b> during market hours — the bot may be stopped or the feed slow`]
     : !open ? ['var(--muted)', `<b>Market closed for flow:</b> checks run 9:35–15:50 ET on weekdays · last good pull ${t(st.uwOkAt)} ET`]

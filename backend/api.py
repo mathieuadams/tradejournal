@@ -240,7 +240,8 @@ def bot_home(sub, claims, body, q):
     import notify
     state = db.get(db.upk(sub), "BOTSTATE") or {}
     return {"settings": autotrader.settings(sub), "summary": autotrader.summary(sub),
-            "state": {k: state.get(k) for k in ("lastFlowRun", "lastFlowResult", "lastFlowAlerts")},
+            "state": {k: state.get(k) for k in ("lastFlowRun", "lastFlowResult", "lastFlowAlerts", "lastFlowWindow", "lastFlowTickers",
+                                                "lastFlowSkips", "uwOkAt", "uwErrorAt", "uwError", "flowDay", "alertsToday", "evalsToday")},
             "notifications": notify.recent(sub, 20),
             "items": [{k: v for k, v in r.items() if k not in ("PK", "SK")} for r in recs]}
 

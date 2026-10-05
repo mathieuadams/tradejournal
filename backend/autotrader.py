@@ -1349,17 +1349,23 @@ def flow_scan(sub, cfg=None):
     cfg = cfg or settings(sub)
     pk = db.upk(sub)
     state = db.get(pk, "BOTSTATE") or {"PK": pk, "SK": "BOTSTATE"}
-    last = state.get("lastFlowAt")
+    # a rolling 20-minute window every minute (not "since the newest alert seen"): alerts the feed publishes late
+    # are still picked up, and tickers left over when the per-minute limit is reached get their turn next minute
+    window_start = (datetime.utcnow() - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         res = flowdata.alerts(sub, cfg["flowMinPremium"], "call", cfg["flowMinDte"], cfg["flowMaxDte"], cfg["flowAskSide"],
-                              cfg["flowSweeps"], None, cfg["flowMinVolOi"], 1, since_utc=last, exclude_etfs=cfg["excludeEtfs"])
+                              cfg["flowSweeps"], None, cfg["flowMinVolOi"], 1, since_utc=window_start, exclude_etfs=cfg["excludeEtfs"])
     except Exception as e:                             # record it so the app shows the feed is down
         db.update(pk, "BOTSTATE", {"uwErrorAt": iso(now_ny()), "uwError": str(e)[:240], "lastFlowRun": iso(now_ny())})
         raise
     # only act on fresh alerts (the last 20 minutes), whatever the data source returned
     fresh_cut = (datetime.utcnow() - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S")
     alerts = [x for x in res["alerts"] if (x.get("at") or "")[:19] >= fresh_cut]
-    newest = max([a["at"] for a in alerts if a.get("at")] + ([last] if last else []), default=None)
+    akey = lambda a: str(a.get("id") or f"{a.get('contract')}|{a.get('at')}|{a.get('premium')}")
+    seen = list(state.get("flowSeen") or [])
+    seen_set = set(seen)
+    new = [a for a in alerts if akey(a) not in seen_set]
+    seen = (seen + [akey(a) for a in new])[-3000:]
     recs = db.q_prefix(pk, "BOT#")
     held = {r["symbol"] for r in recs if r.get("status") in ("submitting", "submitted", "open", "closing")}
     open_n = sum(1 for r in recs if r.get("status") in ("submitting", "submitted", "open"))
@@ -1372,11 +1378,17 @@ def flow_scan(sub, cfg=None):
         t["alerts"].append(a)
     queue = sorted(by_ticker.values(), key=lambda t: -t["premium"])
     done = []
+    skips = {"held": 0, "recent": 0, "waiting": 0}
     for t in queue:
-        if len(done) >= cfg["flowMaxEvals"]:
-            break
         sym = t["ticker"]
-        if not sym or sym in held or evaluated.get(sym, "") > cutoff:
+        if not sym or sym in held:
+            skips["held"] += 1
+            continue
+        if evaluated.get(sym, "") > cutoff:
+            skips["recent"] += 1
+            continue
+        if len(done) >= cfg["flowMaxEvals"]:
+            skips["waiting"] += 1                        # analyzed in the next minutes
             continue
         top = max(t["alerts"], key=lambda a: a["premium"])
         origin = {"type": "flow", "premium": round(t["premium"]), "alerts": len(t["alerts"]),
@@ -1405,11 +1417,12 @@ def flow_scan(sub, cfg=None):
     evaluated = {k: v for k, v in evaluated.items() if v > iso(now_ny() - timedelta(days=1))}
     today = now_ny().strftime("%Y-%m-%d")
     same_day = state.get("flowDay") == today
-    db.update(pk, "BOTSTATE", {"lastFlowAt": newest or last, "evaluated": evaluated, "lastFlowRun": iso(now_ny()),
-                               "lastFlowResult": done[-10:], "lastFlowAlerts": len(alerts), "uwOkAt": iso(now_ny()),
-                               "flowDay": today, "alertsToday": (state.get("alertsToday", 0) if same_day else 0) + len(alerts),
+    db.update(pk, "BOTSTATE", {"evaluated": evaluated, "lastFlowRun": iso(now_ny()), "flowSeen": seen,
+                               "lastFlowResult": done[-10:], "lastFlowAlerts": len(new), "lastFlowWindow": len(alerts),
+                               "lastFlowTickers": len(queue), "lastFlowSkips": skips, "uwOkAt": iso(now_ny()),
+                               "flowDay": today, "alertsToday": (state.get("alertsToday", 0) if same_day else 0) + len(new),
                                "evalsToday": (state.get("evalsToday", 0) if same_day else 0) + sum(1 for d in done if "decision" in d)})
-    return {"alerts": len(alerts), "evaluated": done}
+    return {"alerts": len(new), "window": len(alerts), "evaluated": done, "skips": skips}
 
 
 def tick(sub):
