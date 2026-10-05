@@ -1426,6 +1426,28 @@ def test_repeat_buyers():
     assert dims["repeatOk"]["Yes"]["n"] == 1 and dims["puts"]["50–100%"]["n"] == 1 and dims["puts"]["No puts"]["n"] == 2
 
 
+def test_evaluations_grouped_by_ticker():
+    STORE.clear()
+    pk = db.upk(SUB)
+    rows = [("20261003082700-aaaaa1", "MRVL", "SKIP", "proposed"), ("20261003085800-aaaaa2", "MRVL", "SKIP", "proposed"),
+            ("20261003111300-aaaaa3", "LUV", "WAIT", "proposed"), ("20261003122400-aaaaa4", "LUV", "WAIT", "proposed"),
+            ("20261003091800-aaaaa5", "NBIS", "BUY", "open"), ("20261003090000-aaaaa6", "LUV", "BUY", "closed")]
+    for rid, sym, dec, st in rows:
+        db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": sym, "decision": dec, "status": st, "createdAt": rid[:8] + "T" + rid[8:14],
+                **({"orderId": "o"} if st in ("open", "closed") else {})})
+    code, g = call("GET", "/bot/evaluations", q={"group": "ticker"})
+    assert code == 200 and g["group"] == "ticker" and [x["symbol"] for x in g["items"]] == ["LUV", "MRVL"], g
+    luv = g["items"][0]
+    assert luv["count"] == 2 and luv["latest"]["id"] == "20261003122400-aaaaa4" and luv["decisions"] == {"WAIT": 2} and not luv["held"]
+    code, h = call("GET", "/bot/evaluations", q={"symbol": "luv"})
+    assert code == 200 and h["symbol"] == "LUV" and h["total"] == 3 and [x["taken"] for x in h["items"]] == [False, False, True], h
+    code, n = call("GET", "/bot/evaluations", q={"group": "ticker"})
+    db.put({"PK": pk, "SK": "BOT#20261003130000-aaaaa7", "id": "20261003130000-aaaaa7", "symbol": "NBIS", "decision": "WAIT",
+            "status": "proposed", "createdAt": "2026-10-03T13:00:00"})
+    code, g = call("GET", "/bot/evaluations", q={"group": "ticker"})
+    assert g["items"][0]["symbol"] == "NBIS" and g["items"][0]["held"] is True
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

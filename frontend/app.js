@@ -1233,8 +1233,28 @@ async function loadNtStatus(force) {
   if (isBotRoute() || route() === 'settings') render();
 }
 async function loadEvals(page) {
-  try { S.botEvals = await api(`/bot/evaluations?page=${page || (S.botEvals && S.botEvals.page) || 1}&size=20${S.evClaude ? '&claude=1' : ''}`); } catch (e) {}
+  const t = evTicker(), mode = t ? `t:${t}` : 'group';
+  const pg = page || (S.botEvals && S.botEvals.mode === mode && S.botEvals.page) || 1;
+  try {
+    const r = await api(`/bot/evaluations?page=${pg}&size=20${t ? `&symbol=${encodeURIComponent(t)}` : `&group=ticker${S.evClaude ? '&claude=1' : ''}`}`);
+    S.botEvals = { ...r, mode };
+    // on a ticker page, show its latest evaluation unless one of its evaluations is already open
+    if (t && r.items.length && !(S.botRes && S.botRes.symbol === t)) S.botRes = r.items[0];
+  } catch (e) {}
   if (isBotRoute()) render();
+}
+async function reEvaluate(sym) {
+  sym = (sym || '').toUpperCase();
+  if (!sym) return;
+  if (evTicker() !== sym) location.hash = `#botevals?t=${encodeURIComponent(sym)}`;
+  S.evBusy = sym; render();
+  try {
+    const rec = await api('/bot/evaluate', { method: 'POST', body: { symbol: sym } });
+    S.botRes = rec; toast(`${sym}: ${rec.decision}`);
+  } catch (e) { toast(e.message); }
+  S.evBusy = null;
+  await loadEvals(1);
+  window.scrollTo(0, 0);
 }
 async function loadBot(force) {
   if (S.bot && !force) return;
@@ -1284,7 +1304,7 @@ function botResult(r) {
     ${shadowPanel(r)}
     ${aiPanel(r)}
     ${reviewPanel(r)}
-    <p style="margin:12px 0 0"><button class="btn" data-rescan="${esc(r.symbol)}">Re-evaluate ${esc(r.symbol)} now</button></p>
+    ${evTicker() === r.symbol ? '' : `<p style="margin:12px 0 0"><button class="btn" data-rescan="${esc(r.symbol)}">Re-evaluate ${esc(r.symbol)} now</button></p>`}
     ${p && r.status === 'proposed' ? `<div class="form-grid" style="align-items:end;margin-top:12px">
       <div class="field"><label for="bo-qty">${isSpread(p) ? 'Spreads' : 'Contracts'}</label><input id="bo-qty" type="number" min="1" value="${Math.max(1, p.qty)}"></div>
       <div class="field"><label for="bo-lim">${isSpread(p) ? 'Net debit limit' : 'Limit price'}</label><input id="bo-lim" type="number" step="0.05" value="${p.limit.toFixed(2)}"></div>
@@ -1629,7 +1649,7 @@ function vBot(mode) {
     let prev = 0; const parts = [];
     for (const n of nums) { if (n - prev > 1) parts.push('<span class="muted">…</span>'); parts.push(`<button class="toggle" data-evpage="${n}" aria-pressed="${n === cur}">${n}</button>`); prev = n; }
     return `<div class="filters" style="justify-content:center;margin:10px 0 0;align-items:center"><button class="toggle" data-evpage="${Math.max(1, cur - 1)}" ${cur === 1 ? 'disabled' : ''}>‹ Newer</button>${parts.join('')}<button class="toggle" data-evpage="${Math.min(last, cur + 1)}" ${cur === last ? 'disabled' : ''}>Older ›</button></div>
-      <p class="muted" style="text-align:center;font-size:.82rem;margin:4px 0 0">${ev.total} evaluations · page ${cur} of ${last}</p>`;
+      <p class="muted" style="text-align:center;font-size:.82rem;margin:4px 0 0">${ev.total} ${ev.group === 'ticker' ? 'tickers' : 'evaluations'} · page ${cur} of ${last}</p>`;
   })() : '';
   const sm = (b && b.summary) || {}, ac = sm.account;
   const card = (k, v, sub, col) => `<div class="period"><h3>${k}</h3><div class="big" style="${col ? 'color:' + col : ''}">${v}</div><p>${sub || ''}</p></div>`;
@@ -1644,9 +1664,28 @@ function vBot(mode) {
   const f = (id, label, v, step = 'any') => `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" step="${step}" value="${v ?? ''}"></div>`;
   const st = (b && b.state) || {}, nt = (S.me.settings || {}).notify || {};
   const lastRun = st.lastFlowRun ? `Last flow check ${esc(st.lastFlowRun.replace('T', ' ').slice(5, 16))} ET · ${st.lastFlowAlerts ?? 0} new alerts${(st.lastFlowResult || []).length ? ' · ' + st.lastFlowResult.map(r => `${esc(r.symbol)}: ${esc(r.decision || r.error || '')}${r.ordered ? ' (ordered)' : ''}`).join(', ') : ''}` : 'No automatic flow check yet.';
-  if (mode === 'evals') return head('Evaluations', 'Every ticker the bot analyzed: from unusual flow, watchlist scans, and your own analyses', '') + botResult(S.botRes) + `
-  <section><div class="cal-head"><h2>Latest first</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Claude</th><th title="What it would have done if the bot had taken it (daily bars, the bot's exit rules)">If taken</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>
-`;
+  if (mode === 'evals') {
+    const t = evTicker(), ev2 = S.botEvals && S.botEvals.mode === (t ? `t:${t}` : 'group') ? S.botEvals : null;
+    if (t) {
+      const rows = ev2 ? ev2.items : [];
+      return head(t, `Every evaluation of ${esc(t)}, newest first`, `<a href="#botevals" class="linkbtn">‹ All tickers</a>`)
+        + `<p style="margin:0 0 12px"><button class="btn coachbtn" data-reeval="${esc(t)}" ${S.evBusy ? 'disabled' : ''}>${S.evBusy === t ? `Evaluating ${esc(t)}…` : `Re-evaluate ${esc(t)} now`}</button></p>`
+        + botResult(S.botRes && S.botRes.symbol === t ? S.botRes : null)
+        + `<section><h2>History</h2>${!ev2 ? '<p class="loading">Loading…</p>' : rows.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Contract</th><th>Decision</th><th>Claude</th><th>If taken</th><th>Status</th><th>Main reason</th></tr></thead><tbody>
+          ${rows.map(i => { const p = i.proposal || {}; return `<tr data-botshow="${i.id}" style="cursor:pointer" ${S.botRes && S.botRes.id === i.id ? 'aria-current="true" class="sel"' : ''}><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td>${p.exp ? esc(legTxt(p)) : '<span class="muted">no contract</span>'}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td>${aiCell(i)}${i.taken ? '<td><span class="muted">traded</span></td>' : shadowCell(i)}<td>${esc(i.taken ? (i.status === 'closed' ? 'trade closed' : 'trade ' + i.status) : i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td></tr>`; }).join('')}
+          </tbody></table></div>${pager}` : '<p class="muted">No evaluation of this ticker yet.</p>'}</section>`;
+    }
+    const groups = ev2 ? ev2.items : [];
+    return head('Evaluations', 'One row per ticker, latest evaluation first. Open a ticker for its full history and to re-evaluate it.', '')
+      + `<section><div class="cal-head"><h2>Tickers</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>
+      ${!ev2 ? '<p class="loading">Loading…</p>' : groups.length ? `<div class="tablewrap"><table><thead><tr><th>Ticker</th><th class="r">Evaluations</th><th>Latest</th><th>Decision</th><th>Claude</th><th>If taken</th><th>Main reason</th></tr></thead><tbody>
+        ${groups.map(g => { const l = g.latest || {}, p = l.proposal || {}, d = g.decisions || {};
+          return `<tr data-evticker="${esc(g.symbol)}" style="cursor:pointer"><td><b>${esc(g.symbol)}</b>${g.held ? ' <span class="verdict ok" style="font-size:.72rem">held</span>' : ''}${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td>
+            <td class="r">${g.count}${g.count > 1 ? ` <span class="muted" style="font-size:.8rem">${Object.entries(d).map(([k, n]) => `${n} ${k}`).join(' · ')}</span>` : ''}</td>
+            <td>${esc((l.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><span class="verdict ${DEC_CLS[l.decision] || 'mid'}">${l.decision}</span></td>${aiCell(l)}${shadowCell(l)}
+            <td title="${esc((l.blocking || []).join('; '))}"><span class="ellipsis">${esc((l.blocking || [])[0] || '')}</span></td></tr>`; }).join('')}
+      </tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>`;
+  }
   return head('Paper bot', 'Trades the Alpaca paper account automatically from unusual options flow and manages every exit', '') + warn + `
   <section class="coach" style="padding:14px 18px"><div class="coach-who">${spark()} Status</div>
     <div class="switches">
@@ -1858,9 +1897,15 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleAccount(false); });
 const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
-  botevals: [vBotEvals, () => { if (!S.bot) loadBot(); loadEvals(S.botEvals ? S.botEvals.page : 1); }],
+  botevals: [vBotEvals, () => {
+    if (!S.bot) loadBot();
+    const t = evTicker(), mode = t ? `t:${t}` : 'group';
+    if ((!S.botEvals || S.botEvals.mode !== mode) && S.evLoading !== mode) { S.evLoading = mode; loadEvals(1).finally(() => { S.evLoading = null; }); }
+  }],
   botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
-const route = () => { const r = location.hash.slice(1) || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
+const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
+const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
+const evTicker = () => route() === 'botevals' ? (hashParam('t') || '').toUpperCase() : '';
 function render() {
   const v = route();
   const grp = groupOf(v);
@@ -1877,12 +1922,14 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-botsave],[data-evpage],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-botsave],[data-evpage],[data-reeval],[data-evticker],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
-  if (el.dataset.rescan) { const sym = el.dataset.rescan; S.gexSym = sym; S.anaRes = null; S.gexExp = ''; if (route() !== 'gex') location.hash = '#gex'; render(); const i = $('#gx-sym'); if (i) i.value = sym; loadGex(); setTimeout(() => { const a = document.querySelector('#ana-run'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'start' }); }, 50); return; }
+  if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
   if (el.dataset.botsave) { botSaveSettings(); return; }
   if (el.dataset.evpage) { loadEvals(+el.dataset.evpage); return; }
+  if (el.dataset.reeval) { reEvaluate(el.dataset.reeval); return; }
+  if (el.dataset.evticker) { S.botRes = null; location.hash = `#botevals?t=${encodeURIComponent(el.dataset.evticker)}`; return; }
   if (el.dataset.bottoggle) {
     const k = el.dataset.bottoggle, cur = !!((S.bot && S.bot.settings) || {})[k];
     if (!cur && k === 'autoSubmit' && !confirm('Automatic orders: the bot will place paper trades by itself when every rule passes. Turn on?')) return;

@@ -247,17 +247,46 @@ def bot_home(sub, claims, body, q):
 
 @route("GET", "/bot/evaluations")
 def bot_evaluations(sub, claims, body, q):
-    """Evaluations that didn't become trades, newest first, 20 per page."""
+    """Evaluations newest first, 20 per page.
+    ?group=ticker: one row per ticker (its latest evaluation, how many, decisions), ordered by the latest one.
+    ?symbol=XYZ: every evaluation of that ticker, including the ones that became trades.
+    Otherwise: evaluations that didn't become trades."""
     size = max(5, min(int(q.get("size") or 20), 100))
     page = max(1, int(q.get("page") or 1))
     claude_only = q.get("claude") in ("1", "true")
-    ev = [r for r in db.q_prefix(db.upk(sub), "BOT#", desc=True)
-          if r.get("status") not in ("submitting", "submitted", "open", "closing", "closed") and not r.get("orderId")
-          and (not claude_only or (r.get("aiCheck") or {}).get("verdict"))]
+    taken = lambda r: r.get("status") in ("submitting", "submitted", "open", "closing", "closed") or r.get("orderId")
+    allr = db.q_prefix(db.upk(sub), "BOT#", desc=True)
+    clean = lambda r: {k: v for k, v in r.items() if k not in ("PK", "SK")}
+    sym = (q.get("symbol") or "").strip().upper()
+    if sym:
+        ev = [r for r in allr if r.get("symbol") == sym]
+        total = len(ev)
+        chunk = ev[(page - 1) * size: page * size]
+        return {"page": page, "size": size, "total": total, "pages": max(1, -(-total // size)), "symbol": sym,
+                "items": [{**clean(r), "taken": bool(taken(r))} for r in chunk]}
+    ev = [r for r in allr if not taken(r) and (not claude_only or (r.get("aiCheck") or {}).get("verdict"))]
+    if q.get("group") == "ticker":
+        groups, order = {}, []
+        for r in ev:                                   # newest first, so the first one seen is the latest
+            g = groups.get(r.get("symbol"))
+            if not g:
+                g = groups[r.get("symbol")] = {"symbol": r.get("symbol"), "count": 0, "decisions": {}, "first": r.get("createdAt"),
+                                                "latest": {k: r.get(k) for k in ("id", "createdAt", "decision", "status", "proposal", "aiCheck",
+                                                                                  "shadow", "blocking", "origin")}}
+                order.append(g)
+            g["count"] += 1
+            g["first"] = r.get("createdAt")
+            g["decisions"][r.get("decision") or "?"] = g["decisions"].get(r.get("decision") or "?", 0) + 1
+        held = {r.get("symbol") for r in allr if r.get("status") in ("submitting", "submitted", "open", "closing")}
+        for g in order:
+            g["held"] = g["symbol"] in held
+        total = len(order)
+        return {"page": page, "size": size, "total": total, "pages": max(1, -(-total // size)), "claude": claude_only, "group": "ticker",
+                "items": order[(page - 1) * size: page * size]}
     total = len(ev)
     chunk = ev[(page - 1) * size: page * size]
     return {"page": page, "size": size, "total": total, "pages": max(1, -(-total // size)), "claude": claude_only,
-            "items": [{k: v for k, v in r.items() if k not in ("PK", "SK")} for r in chunk]}
+            "items": [clean(r) for r in chunk]}
 
 
 @route("PUT", "/bot/settings")
