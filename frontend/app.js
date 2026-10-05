@@ -1695,7 +1695,7 @@ function vBot(mode) {
     <p style="margin:0">${cfg.flowAuto ? `<b class="gain">Flow trading is on.</b> Every minute from 9:35 to 15:50 ET the bot pulls new unusual-flow alerts, analyzes up to ${cfg.flowMaxEvals} tickers, and ${cfg.autoSubmit ? 'places a paper order when every rule passes' : '<b>only logs the analysis</b> (automatic orders are off)'}.` : '<b>Flow trading is off.</b> Turn on <b>Flow trading</b> above (and <b>Automatic orders</b> to let it place trades).'} Exits are checked every minute for every bot position.</p>
     <p class="muted" style="margin:6px 0 0;font-size:.86rem">${lastRun}</p>
     <p class="muted" style="margin:4px 0 0;font-size:.8rem">This page refreshes every minute${S.botAt ? ` · last update ${esc(S.botAt)}` : ''}.</p></section>
-  ${botResult(S.botRes)}
+  ${S.botRes && (S.botRes.orderId || S.botRes.fillPrice || ['submitting', 'submitted', 'open', 'closing', 'closed'].includes(S.botRes.status)) ? botResult(S.botRes) : ''}
   ${summaryHtml.replace(/<section class="panel"><h2>Paper account equity[\s\S]*$/, '')}
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh every minute. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
