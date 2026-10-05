@@ -423,24 +423,21 @@ DIMENSIONS = [
     ("tod", "Time of the alert (ET)", ["9:30–10:30", "10:30–12:00", "12:00–14:00", "14:00–16:00", "Outside hours"]),
     ("dte", "Flow contract days to expiry", ["< 30", "30–60", "60–120", "120+"]),
     ("otm", "Flow strike vs price", ["In the money", "0–5% OTM", "5–10% OTM", "10%+ OTM"]),
-    ("repeat", "Smaller prints on the contract (that session)", ["None", "1 print", "2–3 prints", "4–9 prints", "10+ prints"]),
-    ("repeatOk", "Repeat buyer (smaller prints meet the thresholds)", ["Yes", "No"]),
-    ("puts", "Puts bought on the ticker that day (vs calls)", ["No puts", "Under 25%", "25–50%", "50–100%", "More puts than calls"]),
+    ("repeat", "Smaller call buys on the ticker (last days, any contract)", ["None", "1 print", "2–3 prints", "4–9 prints", "10+ prints"]),
+    ("repeatOk", "Repeat buyer (smaller buys meet the thresholds)", ["Yes", "No"]),
+    ("puts", "Puts bought on the ticker, last days (vs calls)", ["No puts", "Under 25%", "25–50%", "50–100%", "More puts than calls"]),
     ("taken", "What the bot did", ["Taken", "Skipped"]),
 ]
 
 
 def _puts_bucket(r):
-    txt = next((c.get("text") for c in r.get("checks") or [] if (c.get("text") or "").startswith("Puts not piling in: $")), None)
-    if not txt:
+    tf = r.get("tickerFlow")
+    if not tf:
         return None
-    m = _re.search(r"\$([\d,]+) of puts bought.*?vs \$([\d,]+) of calls", txt)
-    if not m:
-        return None
-    pp, cp = float(m.group(1).replace(",", "")), float(m.group(2).replace(",", ""))
-    if not pp:
+    w = tf.get("window") or {}
+    if not (w.get("puts") or {}).get("premium"):
         return "No puts"
-    r_ = pp / cp if cp else 9
+    r_ = tf.get("putRatio") or 99
     return "Under 25%" if r_ < 0.25 else "25–50%" if r_ < 0.5 else "50–100%" if r_ <= 1 else "More puts than calls"
 
 
@@ -464,12 +461,12 @@ def _dims(r):
             d = (occ[2] / price - 1) * 100 if occ[1] == "C" else (1 - occ[2] / price) * 100
             otm = "In the money" if d < 0 else "0–5% OTM" if d < 5 else "5–10% OTM" if d < 10 else "10%+ OTM"
     n = o.get("alerts") or 1
-    rp = o.get("repeat") or {}
-    hits = rp.get("hits")
-    repeat = None if "repeat" not in o else \
+    tf = r.get("tickerFlow")
+    hits = ((tf or {}).get("window") or {}).get("smallCalls", {}).get("hits") if tf else None
+    repeat = None if not tf else \
         ("None" if not hits else "1 print" if hits == 1 else "2–3 prints" if hits <= 3 else "4–9 prints" if hits <= 9 else "10+ prints")
     return {
-        "puts": _puts_bucket(r), "repeat": repeat, "repeatOk": None if "repeat" not in o else ("Yes" if rp.get("qualifies") else "No"),
+        "puts": _puts_bucket(r), "repeat": repeat, "repeatOk": None if not tf else ("Yes" if tf.get("repeatQualifies") else "No"),
         "premium": _bucket(o.get("premium"), [250e3, 500e3, 1e6, 5e6], ["< $250k", "$250k–500k", "$500k–1M", "$1M–5M", "$5M+"]),
         "sweep": "Sweep" if o.get("sweep") else "No sweep",
         "ask": _bucket(o.get("askPct"), [70, 85, 95], ["< 70%", "70–85%", "85–95%", "95%+"]),

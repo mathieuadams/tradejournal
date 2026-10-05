@@ -281,7 +281,7 @@ def bot_settings(sub, claims, body, q):
         "aiExitReview": bool(body.get("aiExitReview", cur["aiExitReview"])), "aiExitAutoClose": bool(body.get("aiExitAutoClose", cur["aiExitAutoClose"])),
         "aiExitMinConf": int(num("aiExitMinConf", 0, 100)), "aiExitHoldMinConf": int(num("aiExitHoldMinConf", 0, 100)),
         "aiExitHoldLossPct": num("aiExitHoldLossPct", 0, 100),
-        "repeatEnabled": bool(body.get("repeatEnabled", cur["repeatEnabled"])), "repeatMinPremium": num("repeatMinPremium", 1000, 1e7),
+        "repeatEnabled": bool(body.get("repeatEnabled", cur["repeatEnabled"])), "repeatDays": int(num("repeatDays", 1, 20)), "repeatMinPremium": num("repeatMinPremium", 1000, 1e7),
         "repeatMinHits": int(num("repeatMinHits", 2, 100)), "repeatMinTotal": num("repeatMinTotal", 1000, 1e9),
         "repeatMinMinutes": int(num("repeatMinMinutes", 1, 390)),
         "putCheck": bool(body.get("putCheck", cur["putCheck"])), "putBlock": bool(body.get("putBlock", cur["putBlock"])),
