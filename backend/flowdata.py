@@ -186,7 +186,7 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
                     "premium": prem, "askPct": round(ask_pct), "price": _f(a.get("price")), "underlying": _f(a.get("underlying_price")),
                     "volume": a.get("volume"), "openInterest": a.get("open_interest"), "volOi": round(voi, 2),
                     "sweep": bool(a.get("has_sweep")), "rule": a.get("alert_rule"), "contract": a.get("option_chain"),
-                    "at": created, "atEt": at_et})
+                    "at": created, "atEt": at_et, "id": a.get("id")})
     out.sort(key=lambda x: x["at"] or "", reverse=True)
     try:
         live_prices(sub, out)

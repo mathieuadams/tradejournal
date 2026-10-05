@@ -377,3 +377,135 @@ def summary(sub, days=5):
         "run": {k: run.get(k) for k in ("status", "at", "result")},
         "exits": sorted([{"why": k, **_ex(v)} for k, v in ex.items()], key=lambda g: -g["n"]),
     }
+
+
+# ---------------- flow quality: which unusual-flow alerts are worth acting on ----------------
+
+def _occ(sym):
+    """Parse an OCC option symbol -> (expiration date, 'C'/'P', strike) or None."""
+    m = _re.match(r"^([A-Z.]{1,6})(\d{6})([CP])(\d{8})$", sym or "")
+    if not m:
+        return None
+    return datetime.strptime(m.group(2), "%y%m%d").date(), m.group(3), int(m.group(4)) / 1000
+
+
+def _bucket(v, edges, labels):
+    if v is None:
+        return None
+    for e, l in zip(edges, labels):
+        if v < e:
+            return l
+    return labels[-1]
+
+
+def _result(r):
+    """R for an idea, whatever the bot did with it: the real trade if taken, the shadow result otherwise."""
+    if _taken(r):
+        if not r.get("fillPrice"):
+            return None, None
+        if r.get("realizedR") is not None:
+            return r["realizedR"], "done"
+        if r.get("riskAtFill") and r.get("lastPl") is not None:
+            return round(r["lastPl"] / r["riskAtFill"], 2), "done" if r.get("status") == "closed" else "tracking"
+        return None, None
+    sh = r.get("shadow") or {}
+    if sh.get("status") in ("done", "tracking") and sh.get("R") is not None:
+        return sh["R"], sh["status"]
+    return None, None
+
+
+DIMENSIONS = [
+    ("premium", "Flow premium", ["< $250k", "$250k–500k", "$500k–1M", "$1M–5M", "$5M+"]),
+    ("sweep", "Sweep", ["Sweep", "No sweep"]),
+    ("ask", "Bought at the ask", ["< 70%", "70–85%", "85–95%", "95%+"]),
+    ("voi", "Volume / open interest", ["< 1 (may be closing)", "1–3", "3–10", "10+"]),
+    ("alerts", "Alerts on the ticker", ["1 alert", "2–3 alerts", "4+ alerts"]),
+    ("tod", "Time of the alert (ET)", ["9:30–10:30", "10:30–12:00", "12:00–14:00", "14:00–16:00", "Outside hours"]),
+    ("dte", "Flow contract days to expiry", ["< 30", "30–60", "60–120", "120+"]),
+    ("otm", "Flow strike vs price", ["In the money", "0–5% OTM", "5–10% OTM", "10%+ OTM"]),
+    ("repeat", "Smaller prints on the contract (that session)", ["None", "1 print", "2–3 prints", "4–9 prints", "10+ prints"]),
+    ("repeatOk", "Repeat buyer (smaller prints meet the thresholds)", ["Yes", "No"]),
+    ("puts", "Puts bought on the ticker that day (vs calls)", ["No puts", "Under 25%", "25–50%", "50–100%", "More puts than calls"]),
+    ("taken", "What the bot did", ["Taken", "Skipped"]),
+]
+
+
+def _puts_bucket(r):
+    txt = next((c.get("text") for c in r.get("checks") or [] if (c.get("text") or "").startswith("Puts not piling in: $")), None)
+    if not txt:
+        return None
+    m = _re.search(r"\$([\d,]+) of puts bought.*?vs \$([\d,]+) of calls", txt)
+    if not m:
+        return None
+    pp, cp = float(m.group(1).replace(",", "")), float(m.group(2).replace(",", ""))
+    if not pp:
+        return "No puts"
+    r_ = pp / cp if cp else 9
+    return "Under 25%" if r_ < 0.25 else "25–50%" if r_ < 0.5 else "50–100%" if r_ <= 1 else "More puts than calls"
+
+
+def _dims(r):
+    o = r.get("origin") or {}
+    created = r.get("createdAt") or ""
+    hm = created[11:16]
+    tod = None
+    if hm:
+        tod = ("Outside hours" if not ("09:30" <= hm < "16:00") else "9:30–10:30" if hm < "10:30" else "10:30–12:00" if hm < "12:00"
+               else "12:00–14:00" if hm < "14:00" else "14:00–16:00")
+    dte = otm = None
+    occ = _occ(o.get("contract"))
+    price = o.get("underlying") or (r.get("signals") or {}).get("price")
+    if occ:
+        try:
+            dte = (occ[0] - datetime.strptime(created[:10], "%Y-%m-%d").date()).days
+        except ValueError:
+            dte = None
+        if price:
+            d = (occ[2] / price - 1) * 100 if occ[1] == "C" else (1 - occ[2] / price) * 100
+            otm = "In the money" if d < 0 else "0–5% OTM" if d < 5 else "5–10% OTM" if d < 10 else "10%+ OTM"
+    n = o.get("alerts") or 1
+    rp = o.get("repeat") or {}
+    hits = rp.get("hits")
+    repeat = None if "repeat" not in o else \
+        ("None" if not hits else "1 print" if hits == 1 else "2–3 prints" if hits <= 3 else "4–9 prints" if hits <= 9 else "10+ prints")
+    return {
+        "puts": _puts_bucket(r), "repeat": repeat, "repeatOk": None if "repeat" not in o else ("Yes" if rp.get("qualifies") else "No"),
+        "premium": _bucket(o.get("premium"), [250e3, 500e3, 1e6, 5e6], ["< $250k", "$250k–500k", "$500k–1M", "$1M–5M", "$5M+"]),
+        "sweep": "Sweep" if o.get("sweep") else "No sweep",
+        "ask": _bucket(o.get("askPct"), [70, 85, 95], ["< 70%", "70–85%", "85–95%", "95%+"]),
+        "voi": _bucket(o.get("volOi"), [1, 3, 10], ["< 1 (may be closing)", "1–3", "3–10", "10+"]),
+        "alerts": "1 alert" if n == 1 else "2–3 alerts" if n <= 3 else "4+ alerts",
+        "tod": tod,
+        "dte": _bucket(dte, [30, 60, 120], ["< 30", "30–60", "60–120", "120+"]),
+        "otm": otm,
+        "taken": "Taken" if _taken(r) else "Skipped",
+    }
+
+
+def flow_summary(sub, days=35):
+    """Results of flow-originated ideas (taken: real result; skipped: shadow result), bucketed by the flow's
+    characteristics. Same contract evaluated twice on one day counts once."""
+    pk = db.upk(sub)
+    cut = (now_ny() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+    rows = []
+    for r in db.q_prefix(pk, "BOT#"):
+        if (r.get("createdAt") or "") < cut or (r.get("origin") or {}).get("type") != "flow":
+            continue
+        if (r.get("shadow") or {}).get("status") == "dup":
+            continue
+        R, st = _result(r)
+        if R is None:
+            continue
+        rows.append({"R": R, "status": st, "plPct": R, **_dims(r)})
+    out = {"days": days, "n": len(rows), "all": _stats(rows), "dimensions": []}
+    for key, title, labels in DIMENSIONS:
+        groups = []
+        for l in labels:
+            g = [x for x in rows if x.get(key) == l]
+            if g:
+                groups.append({"label": l, **_stats(g)})
+        unknown = [x for x in rows if x.get(key) is None]
+        if unknown:
+            groups.append({"label": "Unknown (older evaluations)", **_stats(unknown)})
+        out["dimensions"].append({"key": key, "title": title, "groups": groups})
+    return out

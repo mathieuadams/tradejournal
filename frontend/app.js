@@ -1248,9 +1248,9 @@ const legTxt = p => !p || !p.exp ? '' : p.strategy === 'bull_call' && p.shortStr
   : p.strategy === 'diagonal' ? `${fmtExp(p.exp)} ${p.strike}c / ${p.shortStrike ? `${fmtExp(p.shortExp)} ${p.shortStrike}c` : 'no short'}` : `${fmtExp(p.exp)} ${p.strike}c`;
 function botResult(r) {
   if (!r) return '';
-  const p = r.proposal, groups = ['chart', 'gamma', 'events', 'contract'], gl = { chart: 'Chart', gamma: 'Gamma', events: 'Events', contract: 'Contract' };
+  const p = r.proposal, groups = ['flow', 'chart', 'gamma', 'events', 'contract'], gl = { flow: 'Flow', chart: 'Chart', gamma: 'Gamma', events: 'Events', contract: 'Contract' };
   return `<section class="panel"><div class="cal-head"><h2>${esc(r.symbol)} <span class="verdict ${DEC_CLS[r.decision]}" style="margin-left:8px">${r.decision}</span></h2><span class="muted" style="font-size:.85rem">${esc(r.createdAt.replace('T', ' ').slice(0, 16))} ET · ${esc(r.source)} data · price ${px(r.signals.price)}</span></div>
-    ${r.origin && r.origin.type === 'flow' ? `<p style="margin:6px 0 0"><b>From unusual flow:</b> ${money(r.origin.premium, false)} in ${r.origin.alerts} alert${r.origin.alerts === 1 ? '' : 's'}${r.origin.sweep ? ', sweep' : ''}${r.origin.askPct != null ? `, ${r.origin.askPct}% at the ask` : ''}${r.origin.volOi != null ? `, vol/OI ${r.origin.volOi}` : ''}${r.origin.contract ? ` · flow contract ${esc(r.origin.contract)}` : ''}</p>` : ''}
+    ${r.origin && r.origin.type === 'flow' ? `<p style="margin:6px 0 0"><b>From unusual flow:</b> ${money(r.origin.premium, false)} in ${r.origin.alerts} alert${r.origin.alerts === 1 ? '' : 's'}${r.origin.sweep ? ', sweep' : ''}${r.origin.askPct != null ? `, ${r.origin.askPct}% at the ask` : ''}${r.origin.volOi != null ? `, vol/OI ${r.origin.volOi}` : ''}${r.origin.contract ? ` · flow contract ${esc(r.origin.contract)}` : ''}</p>${r.origin.repeat && r.origin.repeat.hits > 0 ? `<p style="margin:4px 0 0"><b>Smaller buys on the same contract:</b> ${r.origin.repeat.hits} prints on ${esc(r.origin.repeat.contract)} in ${r.origin.repeat.minutes} different minutes (${esc(r.origin.repeat.first || '')} → ${esc((r.origin.repeat.last || '').slice(-5))}), ${money(r.origin.repeat.premium, false)} total, largest ${money(r.origin.repeat.maxPrint, false)}${r.origin.repeat.sweeps ? `, ${r.origin.repeat.sweeps} sweeps` : ''}${(r.origin.repeat.rules || []).length ? ` · Unusual Whales: ${esc(r.origin.repeat.rules.join(', '))}` : ''}</p>` : ''}` : ''}
     ${groups.map(gname => { const items = r.checks.filter(c => c.group === gname); return items.length ? `<h3 style="font-size:.95rem;margin:12px 0 4px">${gl[gname]}</h3><ul style="list-style:none;padding:0;margin:0;line-height:1.6">${items.map(c => `<li><b class="${c.ok ? 'gain' : c.required ? 'loss' : 'muted'}">${c.ok ? '✓' : c.required ? '✗' : '!'}</b> ${esc(c.text)}${!c.required ? ' <span class="muted">(warning only)</span>' : ''}</li>`).join('')}</ul>` : ''; }).join('')}
     ${r.blocking.length && r.decision !== 'BUY' ? `<p style="margin:12px 0 0"><b>Why not a buy:</b> ${r.blocking.map(esc).join('; ')}.</p>` : ''}
     ${p ? `<h3 style="font-size:.95rem;margin:16px 0 6px">Proposed order</h3>
@@ -1295,7 +1295,10 @@ function botResult(r) {
 /* ---------- tracking for optimization: best/worst during taken trades, and what skipped trades would have done ---------- */
 const sgn = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${(+v).toFixed(d)}`;
 async function loadShadow() {
-  try { S.shadowSum = await api(`/bot/shadow/summary?days=${S.shadowDays || 5}`); } catch (e) { S.shadowSum = { error: e.message }; }
+  const days = S.shadowDays || 5;
+  const [a, b] = await Promise.all([api(`/bot/shadow/summary?days=${days}`).catch(e => ({ error: e.message })),
+                                    api(`/bot/flow/summary?days=${days}`).catch(e => ({ error: e.message }))]);
+  S.shadowSum = a; S.flowSum = b;
   if (route() === 'bot') render();
 }
 async function runShadow() {
@@ -1309,6 +1312,19 @@ async function runShadow() {
   S.shadowBusy = false; await loadEvals(S.botEvals ? S.botEvals.page : 1); render();
   const res = (S.shadowSum && S.shadowSum.run && S.shadowSum.run.result) || {};
   toast(res.error ? `Shadow tracking failed: ${res.error}` : `Shadow tracking updated (${res.tracked ?? 0} evaluations followed).`);
+}
+function flowSummary() {
+  const d = S.flowSum;
+  if (!d || d.error || !d.n) return d && d.error ? `<section><h2>Which flow is worth acting on</h2><div class="errbox">${esc(d.error)}</div></section>` : '';
+  const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
+  const rows = d.dimensions.filter(x => x.groups.length).map(dim => {
+    const best = Math.max(...dim.groups.filter(g => g.n >= 5 && g.avgR != null).map(g => g.avgR));
+    return `<tr><th colspan="5" style="background:var(--sunk);text-align:left">${esc(dim.title)}</th></tr>` + dim.groups.map(g =>
+      `<tr><td style="padding-left:18px">${esc(g.label)}${g.n >= 5 && g.avgR === best && best > 0 ? ' <span class="verdict ok" style="font-size:.72rem">best</span>' : ''}</td><td class="r">${g.n}${g.tracking ? ` <span class="muted">(${g.tracking} open)</span>` : ''}</td><td class="r">${g.winPct == null ? '—' : g.winPct + '%'}</td><td class="r">${R(g.avgR)}</td><td class="r">${R(g.totalR)}</td></tr>`).join('');
+  }).join('');
+  return `<section><div class="cal-head"><h2>Which flow is worth acting on</h2><span class="muted" style="font-size:.85rem">${d.n} flow ideas · ${R(d.all.avgR)} avg · same period</span></div>
+    <div class="tablewrap"><table><thead><tr><th>Flow characteristic</th><th class="r">Ideas</th><th class="r">Winners</th><th class="r">Avg R</th><th class="r">Total R</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="muted" style="font-size:.82rem;margin:10px 0 0">Every idea that came from unusual flow, whatever the bot did with it: the real result when it was taken, the shadow result when it was skipped. "best" marks the strongest group with at least 5 ideas. Look for groups that stay clearly better as the sample grows; small groups are noise.</p></section>`;
 }
 function shadowSummary() {
   const d = S.shadowSum;
@@ -1610,6 +1626,7 @@ function vBot() {
   ${active.length ? `<section><h2>Open positions and working orders</h2>${posTable(active)}<p class="muted" style="font-size:.82rem;margin:6px 0 0">Values refresh every minute. Exits are automatic.</p></section>` : ''}
   ${done.length ? `<section><h2>Closed bot trades</h2>${posTable(done.slice(0, 30))}</section>` : ''}
   ${shadowSummary()}
+  ${flowSummary()}
   <section><div class="cal-head"><h2>Evaluations</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>${evals.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Ticker</th><th>Decision</th><th>Claude</th><th title="What it would have done if the bot had taken it (daily bars, the bot's exit rules)">If taken</th><th>Status</th><th>Main reason</th><th></th></tr></thead><tbody>${evals.map(evalRow).join('')}</tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>
   <p class="muted" style="margin:18px 0 0">Bot rules, automatic flow trading and alerts are in <a href="#settings">Settings → Paper bot</a>.</p>`;
 }
@@ -1628,6 +1645,17 @@ function botSettingsPanels() {
     <div class="form-grid">
       ${f('bf-prem', 'Min premium ($)', cfg.flowMinPremium, 10000)}${f('bf-dmin', 'Flow days to expiry, min', cfg.flowMinDte, 1)}${f('bf-dmax', 'Flow days to expiry, max', cfg.flowMaxDte, 1)}
       ${f('bf-voi', 'Min volume / OI', cfg.flowMinVolOi, 0.1)}${f('bf-cool', 'Re-check a ticker after (min)', cfg.flowCooldownMin, 1)}${f('bf-evals', 'Max tickers analyzed per minute', cfg.flowMaxEvals, 1)}</div>
+    <h3 style="font-size:.95rem;margin:10px 0 6px">Repeat buyers</h3>
+    <label style="display:block;margin-bottom:6px"><input type="checkbox" id="bf-rep" ${cfg.repeatEnabled !== false ? 'checked' : ''}> Look for smaller buys (under the min premium) on the same contract during the session</label>
+    <div class="form-grid">
+      ${f('bf-rprem', 'Smallest print counted ($)', cfg.repeatMinPremium ?? 10000, 5000)}${f('bf-rhits', 'Prints on the same contract', cfg.repeatMinHits ?? 4, 1)}
+      ${f('bf-rmin', 'In at least … different minutes', cfg.repeatMinMinutes ?? 3, 1)}${f('bf-rtot', 'Total of the smaller prints ($)', cfg.repeatMinTotal ?? 200000, 50000)}</div>
+    <h3 style="font-size:.95rem;margin:10px 0 6px">The other side: puts</h3>
+    <label style="display:block;margin-bottom:4px"><input type="checkbox" id="bf-put" ${cfg.putCheck !== false ? 'checked' : ''}> Check the puts bought on the same ticker today (Flow check)</label>
+    <div class="form-grid" style="align-items:end">
+      ${f('bf-putr', 'Max puts vs calls bought (0.5 = half)', cfg.putMaxRatio ?? 0.5, 0.05)}
+      <div class="field"><label><input type="checkbox" id="bf-putb" ${cfg.putBlock !== false ? 'checked' : ''}> Don't buy when puts are above that</label></div></div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Smaller prints never start an analysis: only alerts above the min premium do. When a big alert is analyzed, the smaller buys on its contract that day are shown as a Flow check (✓ when they reach all of these, or Unusual Whales flags repeated hits and the total is reached), passed to Claude, and tracked in "Which flow is worth acting on".</p>
     <p style="margin:0 0 8px"><button class="btn primary" data-botsave="1">Save</button> <span class="muted" style="font-size:.84rem">Bot settings also save automatically when you change a field.</span></p>
     <p class="muted" style="font-size:.84rem;margin:0">Orders are placed only when <b>Place paper orders automatically</b> (below) is also on. Calls only; the contract the bot buys is chosen by its own rules, not copied from the flow.</p></section>
   <section class="panel"><h2>Alerts</h2>
@@ -1706,7 +1734,7 @@ async function botSaveSettings(quiet) {
     minGrowth30: v('#bs-g30'), invalidationOnClose: $('#bs-onclose').checked, trailAfterTarget: $('#bs-trail').checked, emergencyAtr: v('#bs-emerg'), trailPct: v('#bs-trailpct'),
     crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'),
     flowAuto: $('#bf-on').checked, excludeEtfs: $('#bf-etf').checked, flowAskSide: $('#bf-ask').checked, flowSweeps: $('#bf-sweep').checked,
-    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings,
+    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), repeatEnabled: $('#bf-rep').checked, repeatMinPremium: v('#bf-rprem'), repeatMinHits: v('#bf-rhits'), repeatMinMinutes: v('#bf-rmin'), repeatMinTotal: v('#bf-rtot'), putCheck: $('#bf-put').checked, putBlock: $('#bf-putb').checked, putMaxRatio: v('#bf-putr'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings,
     strategy: v('#bs-strat'), spreadStopPct: v('#bs-sstop'), spreadShortDeltaMin: v('#bs-sdmin'), spreadShortDeltaMax: v('#bs-sdmax'),
     spreadMaxDebitPct: v('#bs-sdebit'), spreadTargetPct: v('#bs-starget'), diagLongDteMin: v('#bs-dldmin'), diagLongDteMax: v('#bs-dldmax'),
     diagLongDeltaMin: v('#bs-dlxmin'), diagLongDeltaMax: v('#bs-dlxmax'), diagShortDteMin: v('#bs-dsdmin'), diagShortDteMax: v('#bs-dsdmax'),

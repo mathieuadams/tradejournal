@@ -281,6 +281,11 @@ def bot_settings(sub, claims, body, q):
         "aiExitReview": bool(body.get("aiExitReview", cur["aiExitReview"])), "aiExitAutoClose": bool(body.get("aiExitAutoClose", cur["aiExitAutoClose"])),
         "aiExitMinConf": int(num("aiExitMinConf", 0, 100)), "aiExitHoldMinConf": int(num("aiExitHoldMinConf", 0, 100)),
         "aiExitHoldLossPct": num("aiExitHoldLossPct", 0, 100),
+        "repeatEnabled": bool(body.get("repeatEnabled", cur["repeatEnabled"])), "repeatMinPremium": num("repeatMinPremium", 1000, 1e7),
+        "repeatMinHits": int(num("repeatMinHits", 2, 100)), "repeatMinTotal": num("repeatMinTotal", 1000, 1e9),
+        "repeatMinMinutes": int(num("repeatMinMinutes", 1, 390)),
+        "putCheck": bool(body.get("putCheck", cur["putCheck"])), "putBlock": bool(body.get("putBlock", cur["putBlock"])),
+        "putMaxRatio": num("putMaxRatio", 0, 10),
         "earnings": {k.upper()[:8]: v for k, v in (body.get("earnings") if isinstance(body.get("earnings"), dict) else cur["earnings"]).items()
                      if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}( (AMC|BMO))?$", v)},
         "noEntryDays": int(num("noEntryDays", 0, 60)),
@@ -345,6 +350,16 @@ def bot_shadow_run(sub, claims, body, q):
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
                      Payload=json.dumps({"sub": sub, "job": "shadow"}))
     return {"status": "running"}
+
+
+@route("GET", "/bot/flow/summary")
+def bot_flow_summary(sub, claims, body, q):
+    import shadow
+    try:
+        days = max(1, min(35, int(q.get("days") or 35)))
+    except ValueError:
+        days = 35
+    return shadow.flow_summary(sub, days)
 
 
 @route("GET", "/bot/shadow/summary")

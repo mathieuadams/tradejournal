@@ -754,6 +754,26 @@ def test_bull_call_spread():
     assert p and p["strategy"] == "bull_call" and p["shortExp"] == p["exp"] and p["shortStrike"] > p["strike"], (p, rec["blocking"], rec["spreadCandidates"])
     assert p["debit"] > 0 and p["width"] > p["debit"] and abs(p["maxProfit"] - (p["width"] - p["debit"])) < 0.02
     assert any("Bull call spread" in c["text"] for c in rec["checks"])
+    # flow evaluations show the smaller buys on the contract as an information check
+    r2 = autotrader.evaluate(SUB, "XYZ", source={"type": "flow", "premium": 400000, "alerts": 1, "repeat": {
+        "contract": "XYZ261120C00055000", "hits": 5, "minutes": 4, "premium": 260000, "rules": ["RepeatedHits"], "qualifies": True}})
+    fl = [c for c in r2["checks"] if c["group"] == "flow" and c["text"].startswith("Repeat buying")]
+    assert fl and fl[0]["ok"] and not fl[0]["required"] and "5 smaller prints" in fl[0]["text"] and "RepeatedHits" in fl[0]["text"], fl
+    r3 = autotrader.evaluate(SUB, "XYZ", source={"type": "flow", "premium": 400000, "alerts": 1, "repeat": {}})
+    # puts piling in on the ticker block the trade (required check); light put flow passes; no data: information only
+    put_line = lambda r: next(c for c in r["checks"] if c["text"].startswith("Puts not piling in"))
+    assert put_line(r3)["ok"] and not put_line(r3)["required"] and "no flow data" in put_line(r3)["text"]
+    day = autotrader.now_ny().strftime("%Y-%m-%d")
+    db.put({"PK": db.upk(SUB), "SK": f"REPEAT#{day}", "contracts": {}, "seen": [], "tickers": {"XYZ": {
+        "callPremium": 500000, "callHits": 3, "putPremium": 400000, "putHits": 4, "putBig": 2,
+        "putTop": {"contract": "XYZ261120P00040000", "premium": 250000, "at": day + " 10:05"}}}})
+    r4 = autotrader.evaluate(SUB, "XYZ", source={"type": "flow", "premium": 400000, "alerts": 1})
+    pl = put_line(r4)
+    assert not pl["ok"] and pl["required"] and "put/call 0.80" in pl["text"] and pl["text"] in r4["blocking"], pl
+    STORE[(db.upk(SUB), f"REPEAT#{day}")]["tickers"]["XYZ"]["putPremium"] = 100000
+    assert put_line(autotrader.evaluate(SUB, "XYZ"))["ok"]
+    del STORE[(db.upk(SUB), f"REPEAT#{day}")]
+    assert any(c["text"].startswith("Repeat buying: no smaller prints") for c in r3["checks"])
     alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
     sent, pos = [], {}
     def fake_alp(c, method, path, body=None):
@@ -1330,6 +1350,109 @@ def test_option_bars_partial_failure():
         assert sorted(out) == ["A1", "C1"] and len(errs) == 1 and errs[0].startswith("BAD1: 400"), (out, errs)
     finally:
         shadow.urllib.request.urlopen = orig
+
+
+def test_flow_quality_summary():
+    """Flow ideas bucketed by premium, sweep, ask %, vol/OI, time, DTE, moneyness; taken and skipped together."""
+    import shadow, autotrader
+    STORE.clear()
+    pk = db.upk(SUB)
+    now = autotrader.now_ny()
+    d = now.strftime("%Y-%m-%d")
+    def put(i, origin, **kw):
+        rid = f"2026100{i}100000-fffff{i}"
+        db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "XYZ", "createdAt": f"{d}T10:1{i}:00",
+                "proposal": {"contract": "XYZ261120C00100000"}, "signals": {"price": 100.0}, "origin": origin, **kw})
+    o = {"type": "flow", "premium": 300000, "sweep": True, "askPct": 97, "volOi": 4.2, "alerts": 1, "contract": "XYZ261218C00105000"}
+    put(1, o, status="proposed", shadow={"status": "done", "R": 1.5, "plPct": 60})
+    put(2, {**o, "premium": 2000000, "sweep": False}, status="proposed", shadow={"status": "tracking", "R": -0.5, "plPct": -20})
+    put(3, {**o, "askPct": 60, "volOi": 0.5}, status="closed", orderId="o1", fillPrice=2.0, realizedR=-1.0)
+    put(4, o, status="proposed", shadow={"status": "dup", "of": "x"})                     # duplicate: not counted
+    put(5, {"type": "manual"}, status="proposed", shadow={"status": "done", "R": 3.0})      # not from flow: not counted
+    sm = shadow.flow_summary(SUB, 35)
+    assert sm["n"] == 3 and sm["all"]["totalR"] == 0.0, sm["all"]
+    dims = {x["key"]: {g["label"]: g for g in x["groups"]} for x in sm["dimensions"]}
+    assert dims["premium"]["$250k–500k"]["n"] == 2 and dims["premium"]["$1M–5M"]["avgR"] == -0.5
+    assert dims["sweep"]["Sweep"]["totalR"] == 0.5 and dims["sweep"]["No sweep"]["n"] == 1
+    assert dims["ask"]["95%+"]["n"] == 2 and dims["ask"]["< 70%"]["avgR"] == -1.0
+    assert dims["voi"]["< 1 (may be closing)"]["n"] == 1 and dims["voi"]["3–10"]["n"] == 2
+    assert dims["tod"]["9:30–10:30"]["n"] == 3
+    assert list(dims["otm"]) == ["5–10% OTM"] and dims["taken"]["Taken"]["n"] == 1 and dims["taken"]["Skipped"]["n"] == 2
+    code, api_sm = call("GET", "/bot/flow/summary", q={"days": "10"})
+    assert code == 200 and api_sm["n"] == 3 and api_sm["days"] == 10
+
+
+def test_repeat_buyers():
+    """Smaller prints (under the flow minimum) on the same contract add up during the session. They never start an
+    evaluation; a big alert's evaluation carries them (and whether they qualify as a repeat buyer)."""
+    import autotrader, flowdata, shadow
+    STORE.clear()
+    pk = db.upk(SUB)
+    today = autotrader.now_ny().strftime("%Y-%m-%d")
+    feed = {"main": [], "small": []}
+    def fake_alerts(sub, min_premium, opt_type="call", *a, **k):
+        if min_premium >= 100000:
+            return {"alerts": feed["main"]}
+        assert opt_type == "all"
+        return {"alerts": feed["small"] + feed["main"] + feed.get("puts", [])}
+    flowdata.alerts = fake_alerts
+    evals = []
+    def fake_eval(sub, sym, earnings_date=None, source=None):
+        evals.append((sym, source))
+        rec = {"id": f"2026100510{len(evals):04d}-abcdef", "symbol": sym, "decision": "WAIT", "origin": source,
+               "createdAt": autotrader.iso(autotrader.now_ny())}
+        db.put({"PK": pk, "SK": f"BOT#{rec['id']}", **rec})
+        return rec
+    orig_eval = autotrader.evaluate
+    autotrader.evaluate = fake_eval
+    import datetime as _dt
+    now_utc = _dt.datetime.utcnow()
+    def alert(i, sym, contract, prem, minute, rule=None):
+        at = (now_utc - _dt.timedelta(minutes=30 - i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return {"id": f"{contract}-{i}", "ticker": sym, "contract": contract, "premium": prem, "askPct": 90, "volOi": 2.0,
+                "sweep": False, "rule": rule, "at": at, "atEt": f"{today} 10:{minute:02d}", "price": 1.2, "underlying": 50.0,
+                "type": "put" if "P0" in contract else "call", "dte": 45}
+    try:
+        # many smaller prints: counted, but no evaluation
+        feed["small"] = [alert(i, "ABC", "ABC261120C00055000", 60000, i) for i in range(5)]
+        autotrader.flow_scan(SUB, autotrader.settings(SUB))
+        assert not evals
+        cons = STORE[(pk, f"REPEAT#{today}")]["contracts"]
+        assert cons["ABC261120C00055000"]["hits"] == 5 and cons["ABC261120C00055000"]["premium"] == 300000
+        # overlapping pull: not double counted
+        autotrader.flow_scan(SUB, autotrader.settings(SUB))
+        assert STORE[(pk, f"REPEAT#{today}")]["contracts"]["ABC261120C00055000"]["hits"] == 5
+        # a big alert on ABC: evaluated, with the smaller buys on its contract (5 prints, 5 minutes, $300k: qualifies)
+        feed["small"] = []
+        feed["main"] = [alert(20, "ABC", "ABC261120C00055000", 400000, 20)]
+        autotrader.flow_scan(SUB, autotrader.settings(SUB))
+        assert [e[0] for e in evals] == ["ABC"]
+        rp = evals[0][1]["repeat"]
+        assert rp["hits"] == 5 and rp["minutes"] == 5 and rp["premium"] == 300000 and rp["qualifies"] is True, rp
+        assert STORE[(pk, f"REPEAT#{today}")]["contracts"]["ABC261120C00055000"]["hits"] == 5     # the big print isn't a "smaller" one
+        # big alert with only 2 small prints in one minute: shown, doesn't qualify; with none: {}
+        feed["small"] = [alert(30 + i, "XYZ", "XYZ261120C00030000", 40000, 7) for i in range(2)]
+        feed["main"] = [alert(40, "XYZ", "XYZ261120C00030000", 300000, 9), alert(41, "BIG", "BIG261120C00100000", 900000, 9)]
+        autotrader.flow_scan(SUB, autotrader.settings(SUB))
+        o = {s: src for s, src in evals}
+        assert o["XYZ"]["repeat"]["hits"] == 2 and o["XYZ"]["repeat"]["qualifies"] is False and o["BIG"]["repeat"] == {}
+        # puts bought on the same ticker are tallied against the calls
+        feed["main"] = []
+        feed["puts"] = [alert(60 + i, "ABC", "ABC261120P00045000", 150000, 30 + i) for i in range(2)]
+        autotrader.flow_scan(SUB, autotrader.settings(SUB))
+        pf = autotrader.put_flow(SUB, "ABC")
+        assert pf["putPremium"] == 300000 and pf["putHits"] == 2 and pf["putBig"] == 2 and pf["callPremium"] == 700000, pf
+        assert pf["putTop"]["contract"] == "ABC261120P00045000" and autotrader.put_flow(SUB, "NONE") is None
+        feed["puts"] = []
+        # flow quality buckets
+        for i, (sym, src) in enumerate(evals):
+            STORE[(pk, f"BOT#2026100510{i + 1:04d}-abcdef")].update(proposal={"contract": "C"},
+                                                                    shadow={"status": "done", "R": 1.0 if sym == "ABC" else -0.5, "plPct": 1})
+        dims = {d["key"]: {g["label"]: g for g in d["groups"]} for d in shadow.flow_summary(SUB, 5)["dimensions"]}
+        assert dims["repeat"]["4–9 prints"]["avgR"] == 1.0 and dims["repeat"]["2–3 prints"]["n"] == 1 and dims["repeat"]["None"]["n"] == 1
+        assert dims["repeatOk"]["Yes"]["n"] == 1 and dims["repeatOk"]["No"]["n"] == 2
+    finally:
+        autotrader.evaluate = orig_eval
 
 
 def test_analytics():

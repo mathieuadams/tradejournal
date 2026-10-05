@@ -63,7 +63,11 @@ DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40
             # Claude's end-of-day review of every open bot position (15:40 ET): hold overnight or close
             "aiExitReview": True, "aiExitAutoClose": True, "aiExitMinConf": 60,
             # a HOLD with low confidence on a losing position also closes it
-            "aiExitHoldMinConf": 50, "aiExitHoldLossPct": 25}
+            "aiExitHoldMinConf": 50, "aiExitHoldLossPct": 25,
+            # repeat buyers: many smaller prints on the same contract during the session
+            "repeatEnabled": True, "repeatMinPremium": 10000, "repeatMinHits": 4, "repeatMinTotal": 200000, "repeatMinMinutes": 3,
+            # the other side: puts bought on the same ticker during the session
+            "putCheck": True, "putBlock": True, "putMaxRatio": 0.5}
 
 STRATEGIES = ("long_call", "bull_call", "diagonal")
 SPREADS = ("bull_call", "diagonal")
@@ -506,6 +510,29 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
         else:
             txt = f"{name}: no short call above {best['strike']} with delta {dw[0]}-{dw[1]} ({sw})"
         checks.append(("contract", txt, bool(spread), True))
+    if cfg["putCheck"]:
+        pf = put_flow(sub, symbol)
+        if pf:
+            cp, pp = pf.get("callPremium") or 0, pf.get("putPremium") or 0
+            ratio = pp / cp if cp else (None if not pp else float("inf"))
+            ok = not pp or (ratio is not None and ratio <= cfg["putMaxRatio"])
+            top = pf.get("putTop") or {}
+            checks.append(("flow", f"Puts not piling in: ${pp:,.0f} of puts bought ({pf.get('putHits', 0)} prints"
+                                   + (f", {pf['putBig']} over ${cfg['flowMinPremium']:,.0f}" if pf.get("putBig") else "")
+                                   + f") vs ${cp:,.0f} of calls today" + (f", put/call {ratio:.2f} (max {cfg['putMaxRatio']:g})" if ratio not in (None, float("inf")) else "")
+                                   + (f"; largest put {top.get('contract')} ${top.get('premium', 0):,.0f}" if pp and top else ""),
+                           ok, cfg["putBlock"]))
+        else:
+            checks.append(("flow", "Puts not piling in: no flow data for this ticker today (filled in while flow trading runs)", True, False))
+    rp = (source or {}).get("repeat")
+    if rp is not None:
+        if rp.get("hits"):
+            checks.append(("flow", f"Repeat buying: {rp['hits']} smaller print{'s' if rp['hits'] != 1 else ''} (under ${cfg['flowMinPremium']:,.0f}) on "
+                                   f"{rp.get('contract')} today in {rp.get('minutes')} different minute{'s' if rp.get('minutes') != 1 else ''}, "
+                                   f"${rp.get('premium', 0):,.0f} total" + (f", Unusual Whales: {', '.join(rp['rules'])}" if rp.get("rules") else ""),
+                           bool(rp.get("qualifies")), False))
+        else:
+            checks.append(("flow", f"Repeat buying: no smaller prints (under ${cfg['flowMinPremium']:,.0f}) on this ticker today", False, False))
     hard_fail = [t for (_, t, ok, hard) in checks if hard and not ok]
     soft_fail = [t for (_, t, ok, hard) in checks if not hard and not ok]
     chart_ok = all(ok for (grp, _, ok, _) in checks if grp == "chart")
@@ -1253,6 +1280,85 @@ def market_open(now=None):
     return now.weekday() < 5 and 9 * 60 + 35 <= m <= 15 * 60 + 50
 
 
+def _repeat_scan(sub, cfg, state):
+    """Repeat buyers: pull the smaller call alerts (from repeatMinPremium up to the flow minimum, i.e. under $100k by
+    default) and add them up per contract for the session. They never start an evaluation: they are context for the
+    big-alert evaluations (a flow check, Claude's brief, and the flow-quality breakdown).
+    Returns (BOTSTATE fields to save, {"contracts": today's totals of smaller prints})."""
+    import flowdata
+    pk = db.upk(sub)
+    today = now_ny().strftime("%Y-%m-%d")
+    item = db.get(pk, f"REPEAT#{today}") or {"PK": pk, "SK": f"REPEAT#{today}", "contracts": {}, "seen": []}
+    # both sides, bought at the ask: smaller call prints per contract, and call vs put premium per ticker
+    res = flowdata.alerts(sub, cfg["repeatMinPremium"], "all", 0, 400, True,
+                          False, None, 0, 1, since_utc=state.get("lastRepeatAt"), exclude_etfs=cfg["excludeEtfs"])
+    seen = set(item.get("seen") or [])
+    cons = item.get("contracts") or {}
+    tick = item.get("tickers") or {}
+    newest = state.get("lastRepeatAt")
+    for a in res["alerts"]:
+        if not a.get("contract") or (a.get("atEt") or "")[:10] != today:
+            continue
+        key = a.get("id") or f"{a['contract']}|{a.get('at')}|{a.get('premium')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        if a.get("at") and (not newest or a["at"] > newest):
+            newest = a["at"]
+        side = "put" if a.get("type") == "put" else "call"
+        tk = tick.setdefault(a["ticker"], {"callPremium": 0.0, "callHits": 0, "putPremium": 0.0, "putHits": 0, "putBig": 0, "putTop": None})
+        tk[f"{side}Premium"] = round(tk[f"{side}Premium"] + (a.get("premium") or 0), 2)
+        tk[f"{side}Hits"] += 1
+        if side == "put":
+            if (a.get("premium") or 0) >= cfg["flowMinPremium"]:
+                tk["putBig"] += 1
+            if not tk.get("putTop") or (a.get("premium") or 0) > (tk["putTop"].get("premium") or 0):
+                tk["putTop"] = {"contract": a["contract"], "premium": a.get("premium"), "at": a.get("atEt")}
+            continue
+        if not cfg["repeatEnabled"] or (a.get("premium") or 0) >= cfg["flowMinPremium"] or not (cfg["flowMinDte"] <= (a.get("dte") or 0) <= cfg["flowMaxDte"]):
+            continue
+        c = cons.setdefault(a["contract"], {"contract": a["contract"], "ticker": a["ticker"], "hits": 0, "premium": 0.0,
+                                            "minutes": [], "sweeps": 0, "askSum": 0.0, "rules": [], "maxPrint": 0.0,
+                                            "first": a.get("atEt"), "triggered": False})
+        c["hits"] += 1
+        c["premium"] = round(c["premium"] + (a.get("premium") or 0), 2)
+        m = (a.get("atEt") or "")[-5:]
+        if m and m not in c["minutes"] and len(c["minutes"]) < 120:
+            c["minutes"].append(m)
+        c["sweeps"] += 1 if a.get("sweep") else 0
+        c["askSum"] += a.get("askPct") or 0
+        c["askPct"] = round(c["askSum"] / c["hits"])
+        if a.get("rule") and a["rule"] not in c["rules"]:
+            c["rules"].append(a["rule"])
+        c["maxPrint"] = max(c["maxPrint"], a.get("premium") or 0)
+        c.update(last=a.get("atEt"), lastPrice=a.get("price"), underlying=a.get("underlying"), volOi=a.get("volOi"))
+    item["contracts"], item["tickers"], item["seen"] = cons, tick, list(seen)[-3000:]
+    db.put(item)
+    return {"lastRepeatAt": newest}, {"contracts": cons, "tickers": tick}
+
+
+def put_flow(sub, symbol):
+    """Today's calls vs puts bought at the ask on a ticker (from the minute flow pulls), or None without data."""
+    it = db.get(db.upk(sub), f"REPEAT#{now_ny().strftime('%Y-%m-%d')}") or {}
+    return (it.get("tickers") or {}).get(symbol)
+
+
+def _repeat_ok(c, cfg):
+    """Enough smaller buying on a contract to count as a repeat buyer."""
+    spread_out = c["hits"] >= cfg["repeatMinHits"] and len(c.get("minutes") or []) >= cfg["repeatMinMinutes"]
+    flagged = any("repeat" in (r or "").lower() for r in c.get("rules") or [])
+    return bool(c["premium"] >= cfg["repeatMinTotal"] and (spread_out or flagged))
+
+
+def _repeat_for(repeat, sym, contract=None):
+    """Smaller prints today on the big alert's contract if any, else the ticker's most-bought contract."""
+    cons = repeat.get("contracts") or {}
+    if contract and contract in cons:
+        return cons[contract]
+    cs = [c for c in cons.values() if c.get("ticker") == sym]
+    return max(cs, key=lambda c: (c["hits"], c["premium"])) if cs else None
+
+
 def flow_scan(sub, cfg=None):
     """Pull new unusual-flow alerts, evaluate the tickers and trade the ones that pass every rule."""
     import flowdata
@@ -1266,6 +1372,12 @@ def flow_scan(sub, cfg=None):
     fresh_cut = (datetime.utcnow() - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S")
     alerts = [x for x in res["alerts"] if (x.get("at") or "")[:19] >= fresh_cut]
     newest = max([a["at"] for a in alerts if a.get("at")] + ([last] if last else []), default=None)
+    rep_upd, repeat = ({}, {})
+    if cfg["repeatEnabled"] or cfg["putCheck"]:
+        try:
+            rep_upd, repeat = _repeat_scan(sub, cfg, state)
+        except Exception as e:
+            print("repeat scan failed", e)
     recs = db.q_prefix(pk, "BOT#")
     held = {r["symbol"] for r in recs if r.get("status") in ("submitting", "submitted", "open", "closing")}
     open_n = sum(1 for r in recs if r.get("status") in ("submitting", "submitted", "open"))
@@ -1285,8 +1397,17 @@ def flow_scan(sub, cfg=None):
         if not sym or sym in held or evaluated.get(sym, "") > cutoff:
             continue
         top = max(t["alerts"], key=lambda a: a["premium"])
-        origin = {"type": "flow", "premium": round(t["premium"]), "alerts": len(t["alerts"]), "sweep": any(a["sweep"] for a in t["alerts"]),
-                  "contract": top.get("contract"), "askPct": top.get("askPct"), "volOi": top.get("volOi"), "at": top.get("at")}
+        origin = {"type": "flow", "premium": round(t["premium"]), "alerts": len(t["alerts"]),
+                  "sweep": any(a["sweep"] for a in t["alerts"]),
+                  "contract": top.get("contract"), "askPct": top.get("askPct"), "volOi": top.get("volOi"), "at": top.get("at"),
+                  "rule": top.get("rule"), "underlying": top.get("underlying"), "optPrice": top.get("price"),
+                  "topPremium": round(top.get("premium") or 0)}
+        agg = _repeat_for(repeat, sym, top.get("contract"))
+        if cfg["repeatEnabled"]:                       # {} = looked, no smaller prints on this ticker today
+            origin["repeat"] = {k: (agg.get(k) if k != "minutes" else len(agg.get(k) or [])) for k in
+                                ("contract", "hits", "premium", "minutes", "sweeps", "maxPrint", "rules", "first", "last")} if agg else {}
+            if origin["repeat"]:
+                origin["repeat"]["qualifies"] = _repeat_ok(agg, cfg)
         try:
             rec = evaluate(sub, sym, source=origin)
         except Exception as e:
@@ -1307,7 +1428,7 @@ def flow_scan(sub, cfg=None):
         done.append(item)
     evaluated = {k: v for k, v in evaluated.items() if v > iso(now_ny() - timedelta(days=1))}
     db.update(pk, "BOTSTATE", {"lastFlowAt": newest or last, "evaluated": evaluated, "lastFlowRun": iso(now_ny()),
-                               "lastFlowResult": done[-10:], "lastFlowAlerts": len(alerts)})
+                               "lastFlowResult": done[-10:], "lastFlowAlerts": len(alerts), **rep_upd})
     return {"alerts": len(alerts), "evaluated": done}
 
 
