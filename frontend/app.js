@@ -1746,7 +1746,6 @@ function botSettingsPanels() {
   </section>
   <section class="panel"><h2>Bot settings</h2>
     <div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px">
-      <label><input type="checkbox" id="bs-on" ${cfg.enabled ? 'checked' : ''}> Scan the watchlist on a schedule (10:15 and 15:15 ET)</label>
       <label><input type="checkbox" id="bs-auto" ${cfg.autoSubmit ? 'checked' : ''}> Place paper orders automatically when the decision is BUY</label>
       <label><input type="checkbox" id="bs-flip" ${cfg.requireAboveFlip ? 'checked' : ''}> Require price above the gamma flip</label>
       <label><input type="checkbox" id="bs-ai" ${cfg.aiCheck !== false ? 'checked' : ''}> Claude checks the chart before every order</label>
@@ -1771,7 +1770,6 @@ function botSettingsPanels() {
       ${f('bs-dsxmin', 'Short call delta, min', cfg.diagShortDeltaMin ?? 0.2, 0.05)}${f('bs-dsxmax', 'Short call delta, max', cfg.diagShortDeltaMax ?? 0.4, 0.05)}
       ${f('bs-dcredit', 'Short call must pay at least ($ per contract)', cfg.diagMinShortCredit ?? 100, 1)}${f('bs-droll', 'Roll the short call when it has ≤ days left (from 15:30 ET)', cfg.diagRollDte ?? 0, 1)}
       ${f('bs-drollwait', 'Roll at mid for (minutes), then at market', cfg.diagRollWaitMin ?? 3, 1)}${f('bs-dtarget', 'Take profit (% gain on debit, 0 = keep rolling)', cfg.diagTargetPct ?? 0, 1)}</div>
-    <div class="field"><label for="bs-watch">Watchlist (tickers separated by spaces or commas)</label><input id="bs-watch" type="text" style="text-transform:uppercase" value="${esc((cfg.watchlist || []).join(' '))}"></div>
     <div class="form-grid">
       ${f('bs-dtemin', 'Days to expiry, min', cfg.dteMin, 1)}${f('bs-dtemax', 'Days to expiry, max', cfg.dteMax, 1)}
       ${f('bs-dmin', 'Delta, min', cfg.deltaMin, 0.05)}${f('bs-dmax', 'Delta, max', cfg.deltaMax, 0.05)}
@@ -1783,7 +1781,6 @@ function botSettingsPanels() {
       ${f('bs-cmax', 'Max raises', cfg.chaseMaxSteps, 1)}${f('bs-cpct', 'Never pay more than first limit + (%)', cfg.chaseMaxPct)}
       ${f('bs-risk', 'Risk per trade ($)', (S.me.settings || {}).riskPerTrade ?? 200, 1)}
       ${f('bs-room', 'Min room/risk ratio', cfg.minRoomRatio)}${f('bs-noentry', 'No new entry within (days of earnings)', cfg.noEntryDays, 1)}</div>
-    <div class="field"><label for="bs-earn">Earnings dates, one per line: ticker, date, AMC (after close) or BMO (before open)</label><textarea id="bs-earn" placeholder="HUBB 2026-10-28 BMO">${esc(earnTxt)}</textarea></div>
     <p class="muted" style="font-size:.84rem;margin:0 0 10px">Risk per trade: the bot buys as many contracts as fit so that hitting the option stop loses about this amount. It is the same value as Settings → Trading plan → Planned risk per trade.</p>
     <button class="btn primary" id="bs-save">Save settings</button> <button class="btn" data-botrun="scan">Scan watchlist now</button> <button class="btn" data-botrun="monitor">Check exits now</button>
   </section>`;
@@ -1797,15 +1794,14 @@ async function botEvaluate() {
   S.botBusy = false; if (isBotRoute()) render();
 }
 async function botSaveSettings(quiet) {
-  const earnings = {}; ($('#bs-earn').value || '').split('\n').forEach(l => { const m = l.trim().split(/[\s,]+/); if (m.length >= 2 && /^\d{4}-\d{2}-\d{2}$/.test(m[1])) earnings[m[0].toUpperCase()] = m[1] + (m[2] && /^(amc|bmo)$/i.test(m[2]) ? ' ' + m[2].toUpperCase() : ' AMC'); });
   const v = id => $(id).value;
-  const body = { enabled: $('#bs-on').checked, autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked, aiCheck: $('#bs-ai').checked, aiAllowCaution: $('#bs-aicau').checked, aiBlockOnError: $('#bs-aierr').checked, aiExitReview: $('#bs-aiexit').checked, aiExitAutoClose: $('#bs-aiexitauto').checked, aiExitMinConf: v('#bs-aiexitconf'), aiExitHoldMinConf: v('#bs-aiholdconf'), aiExitHoldLossPct: v('#bs-aiholdloss'),
-    watchlist: v('#bs-watch').split(/[\s,]+/).filter(Boolean), dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
+  const body = { autoSubmit: $('#bs-auto').checked, requireAboveFlip: $('#bs-flip').checked, aiCheck: $('#bs-ai').checked, aiAllowCaution: $('#bs-aicau').checked, aiBlockOnError: $('#bs-aierr').checked, aiExitReview: $('#bs-aiexit').checked, aiExitAutoClose: $('#bs-aiexitauto').checked, aiExitMinConf: v('#bs-aiexitconf'), aiExitHoldMinConf: v('#bs-aiholdconf'), aiExitHoldLossPct: v('#bs-aiholdloss'),
+    dteMin: v('#bs-dtemin'), dteMax: v('#bs-dtemax'), deltaMin: v('#bs-dmin'), deltaMax: v('#bs-dmax'),
     minOi: v('#bs-oi'), maxSpreadPct: v('#bs-spread'), stopPct: v('#bs-stop'), targetPct: v('#bs-target'), timeStopDte: v('#bs-time'), maxPositions: v('#bs-max'),
     minGrowth30: v('#bs-g30'), invalidationOnClose: $('#bs-onclose').checked, trailAfterTarget: $('#bs-trail').checked, emergencyAtr: v('#bs-emerg'), trailPct: v('#bs-trailpct'),
     crossWindow: v('#bs-cross'), maxExtAtr: v('#bs-ext'), minRoomRatio: v('#bs-room'), noEntryDays: v('#bs-noentry'),
     flowAuto: $('#bf-on').checked, excludeEtfs: $('#bf-etf').checked, flowAskSide: $('#bf-ask').checked, flowSweeps: $('#bf-sweep').checked,
-    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), repeatEnabled: $('#bf-rep').checked, repeatDays: v('#bf-rdays'), repeatMinPremium: v('#bf-rprem'), repeatMinHits: v('#bf-rhits'), repeatMinMinutes: v('#bf-rmin'), repeatMinTotal: v('#bf-rtot'), putCheck: $('#bf-put').checked, putBlock: $('#bf-putb').checked, putMaxRatio: v('#bf-putr'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'), earnings,
+    flowMinPremium: v('#bf-prem'), flowMinDte: v('#bf-dmin'), flowMaxDte: v('#bf-dmax'), flowMinVolOi: v('#bf-voi'), flowCooldownMin: v('#bf-cool'), flowMaxEvals: v('#bf-evals'), repeatEnabled: $('#bf-rep').checked, repeatDays: v('#bf-rdays'), repeatMinPremium: v('#bf-rprem'), repeatMinHits: v('#bf-rhits'), repeatMinMinutes: v('#bf-rmin'), repeatMinTotal: v('#bf-rtot'), putCheck: $('#bf-put').checked, putBlock: $('#bf-putb').checked, putMaxRatio: v('#bf-putr'), chaseStep: v('#bs-cstep'), chaseSeconds: v('#bs-csec'), chaseMaxSteps: v('#bs-cmax'), chaseMaxPct: v('#bs-cpct'),
     strategy: v('#bs-strat'), spreadStopPct: v('#bs-sstop'), spreadShortDeltaMin: v('#bs-sdmin'), spreadShortDeltaMax: v('#bs-sdmax'),
     spreadMaxDebitPct: v('#bs-sdebit'), spreadTargetPct: v('#bs-starget'), diagLongDteMin: v('#bs-dldmin'), diagLongDteMax: v('#bs-dldmax'),
     diagLongDeltaMin: v('#bs-dlxmin'), diagLongDeltaMax: v('#bs-dlxmax'), diagShortDteMin: v('#bs-dsdmin'), diagShortDteMax: v('#bs-dsdmax'),

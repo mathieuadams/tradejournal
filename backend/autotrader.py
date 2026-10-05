@@ -368,14 +368,15 @@ def pick_roll_short(contracts, spot, p, cfg, after_exp):
 # ---------------- evaluation ----------------
 
 def earn_for(cfg, symbol):
-    """Earnings date used by the rules: one you entered (if not already past), else the one pulled automatically."""
+    """Earnings date used by the rules: the one pulled automatically from Unusual Whales; a date entered earlier is
+    only a fallback when nothing was pulled (and is ignored once past)."""
     today = now_ny().date().isoformat()
-    manual = (cfg.get("earnings") or {}).get(symbol)
-    if manual and parse_earn(manual)[0] >= today:
-        return manual, "entered"
     auto = (cfg.get("earningsAuto") or {}).get(symbol) or {}
     if auto.get("v") and parse_earn(auto["v"])[0] >= today:
         return auto["v"], "Unusual Whales"
+    manual = (cfg.get("earnings") or {}).get(symbol)
+    if manual and parse_earn(manual)[0] >= today:
+        return manual, "entered"
     return None, None
 
 

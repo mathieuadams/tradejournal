@@ -1161,11 +1161,11 @@ def test_auto_earnings():
     assert autotrader.refresh_earnings(SUB, ["HON"]) == [] and calls == ["HON", "SPY"]
     cfg = autotrader.settings(SUB)
     assert autotrader.earn_for(cfg, "HON") == (f"{soon} BMO", "Unusual Whales") and autotrader.earn_for(cfg, "SPY") == (None, None)
-    # a date you enter wins; a past one is ignored
+    # the pulled date wins over an old entered one; an entered date is only a fallback when nothing was pulled
     autotrader.set_earnings(SUB, "HON", (autotrader.now_ny() + dt.timedelta(days=20)).strftime("%Y-%m-%d") + " AMC")
-    assert autotrader.earn_for(autotrader.settings(SUB), "HON")[1] == "entered"
-    autotrader.set_earnings(SUB, "HON", "2020-01-01 AMC")
     assert autotrader.earn_for(autotrader.settings(SUB), "HON")[1] == "Unusual Whales"
+    autotrader.set_earnings(SUB, "SPY", (autotrader.now_ny() + dt.timedelta(days=20)).strftime("%Y-%m-%d") + " AMC")
+    assert autotrader.earn_for(autotrader.settings(SUB), "SPY")[1] == "entered"
     # saving bot settings keeps the pulled dates
     call("PUT", "/bot/settings", {"maxPositions": 6})
     assert autotrader.settings(SUB)["earningsAuto"]["HON"]["v"] == f"{soon} BMO"
