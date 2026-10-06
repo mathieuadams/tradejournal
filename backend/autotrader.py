@@ -68,7 +68,7 @@ DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40
             "flowWindowMin": 60,
             "repeatEnabled": True, "repeatDays": 5, "repeatMinPremium": 10000, "repeatMinHits": 4, "repeatMinTotal": 200000, "repeatMinMinutes": 3,
             # the other side: puts bought on the same ticker during the session
-            "putCheck": True, "putBlock": True, "putMaxRatio": 0.5}
+            "putCheck": True, "putBlock": False, "putMaxRatio": 0.5}
 
 STRATEGIES = ("long_call", "bull_call", "diagonal")
 SPREADS = ("bull_call", "diagonal")
@@ -720,7 +720,8 @@ def place(sub, bot_id, qty=None, limit=None, placed_by="manual", ai_inline=True,
         db.update(pk, f"BOT#{bot_id}", {"status": "proposed"})
         raise
     db.update(pk, f"BOT#{bot_id}", {"status": "submitted", "orderId": order.get("id"), "qty": q, "limit": lim,
-                                    "firstLimit": lim, "chaseSteps": 0, "submittedAt": iso(now_ny()), "placedBy": placed_by})
+                                    "firstLimit": lim, "chaseSteps": 0, "submittedAt": iso(now_ny()), "placedBy": placed_by,
+                                    "putWatch": _put_seed(rec)})
     origin = rec.get("origin") or {}
     why = f" | flow {origin.get('premium', 0) / 1000:.0f}K {'sweep' if origin.get('sweep') else ''}".rstrip() if origin.get("type") == "flow" else ""
     _notify(sub, f"Paper bot BUY {_desc(rec)} x{q} limit {lim:.2f} ({'auto' if placed_by != 'manual' else 'manual'}){why}", "entry")
@@ -1342,6 +1343,41 @@ def flow_checks(tf, cfg):
                             + (f"; largest put {top.get('contract')} {money(top.get('premium') or 0)}" if pp and top else ""),
                     ok, cfg["putBlock"]))
     return out
+
+
+def _put_seed(rec):
+    """Day-0 point of the put watch, from the flow looked up when the trade was evaluated."""
+    tf = rec.get("tickerFlow")
+    if not tf:
+        return []
+    t, w = tf["today"], tf["window"]
+    return [{"day": (rec.get("createdAt") or "")[:10], "at": rec.get("createdAt"), "todayPuts": t["puts"]["premium"],
+             "todayCalls": t["calls"]["premium"], "puts": w["puts"]["premium"], "calls": w["calls"]["premium"],
+             "ratio": tf.get("putRatio"), "bigPuts": w.get("bigPuts", 0), "putTop": tf.get("putTop"), "entry": True}]
+
+
+def put_watch(sub, rec, cfg=None):
+    """Put accumulation on a held ticker: today's calls vs puts bought and the look-back put/call ratio, saved once a
+    day on the position (putWatch). Alerts when puts pass the ratio or outweigh calls today. Returns the day's point."""
+    cfg = cfg or settings(sub)
+    tf = ticker_flow(sub, rec["symbol"], cfg)
+    if not tf:
+        return None
+    day = now_ny().strftime("%Y-%m-%d")
+    t, w = tf["today"], tf["window"]
+    pt = {"day": day, "at": iso(now_ny()), "todayPuts": t["puts"]["premium"], "todayCalls": t["calls"]["premium"],
+          "puts": w["puts"]["premium"], "calls": w["calls"]["premium"], "ratio": tf.get("putRatio"),
+          "bigPuts": w.get("bigPuts", 0), "putTop": tf.get("putTop")}
+    hist = [x for x in (rec.get("putWatch") or []) if x.get("day") != day] + [pt]
+    db.update(db.upk(sub), rec["SK"], {"putWatch": hist[-40:]})
+    rec["putWatch"] = hist[-40:]
+    heavy = (pt["ratio"] is not None and pt["ratio"] > cfg["putMaxRatio"]) or (pt["todayPuts"] > pt["todayCalls"] and pt["todayPuts"] > 0)
+    prev = hist[-2] if len(hist) > 1 else None
+    rising = prev and prev.get("ratio") is not None and pt["ratio"] is not None and pt["ratio"] > prev["ratio"] + 0.15
+    if heavy or rising:
+        _notify(sub, f"Paper bot {_desc(rec)}: puts piling in — today ${pt['todayPuts']:,.0f} puts vs ${pt['todayCalls']:,.0f} calls; "
+                     f"last {cfg['repeatDays']} days put/call {pt['ratio']}" + (f" (was {prev['ratio']})" if prev else ""), "ai")
+    return pt
 
 
 def flow_scan(sub, cfg=None):

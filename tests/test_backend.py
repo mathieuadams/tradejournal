@@ -773,11 +773,15 @@ def test_bull_call_spread():
     assert rep_line["ok"] and not rep_line["required"] and "4 smaller call buys" in rep_line["text"] and "2 contracts" in rep_line["text"], rep_line
     assert "today 3 for $180,000" in rep_line["text"] and "plus 1 buys over $100,000" in rep_line["text"]
     put_line = lambda r: next(c for c in r["checks"] if c["text"].startswith("Puts not piling in"))
-    assert put_line(r2)["ok"] and put_line(r2)["required"]
+    assert put_line(r2)["ok"] and not put_line(r2)["required"]          # a caution by default
     fl_feed += [mk("put", 300000, day, "11:00", "XYZ261120P00040000"), mk("put", 150000, "2026-01-02", "12:00", "XYZ261120P00045000")]
     r4 = autotrader.evaluate(SUB, "XYZ")
     pl = put_line(r4)
-    assert not pl["ok"] and "put/call 0.60" in pl["text"] and pl["text"] in r4["blocking"] and "largest put XYZ261120P00040000" in pl["text"], pl
+    assert not pl["ok"] and "put/call 0.60" in pl["text"] and pl["text"] in r4["warnings"] and pl["text"] not in r4["blocking"], pl
+    call("PUT", "/bot/settings", {"putBlock": True})                     # optional: block the buy
+    r4b = autotrader.evaluate(SUB, "XYZ")
+    assert put_line(r4b)["required"] and put_line(r4b)["text"] in r4b["blocking"] and "largest put XYZ261120P00040000" in put_line(r4b)["text"]
+    call("PUT", "/bot/settings", {"putBlock": False})
     fl_feed[:] = [mk("call", 500000, day, "10:30")]
     r5 = autotrader.evaluate(SUB, "XYZ")
     assert any(c["text"].startswith("Repeat buying: no smaller call buys") and not c["ok"] for c in r5["checks"])
@@ -1516,6 +1520,36 @@ def test_flow_rolling_window():
         assert code == 200 and b["state"]["alertsToday"] == 5 and b["state"]["uwOkAt"]
     finally:
         flowdata.alerts, autotrader.evaluate = saved
+
+
+def test_put_watch():
+    """Held positions get a daily put-accumulation point (seeded at entry from the evaluation), with an alert when puts pile in."""
+    import autotrader, flowdata, notify
+    STORE.clear()
+    pk = db.upk(SUB)
+    tf = lambda tp, tc, wp, wc: {"today": {"puts": {"premium": tp}, "calls": {"premium": tc}}, "window": {"puts": {"premium": wp}, "calls": {"premium": wc}, "bigPuts": 1},
+                                 "putRatio": round(wp / wc, 2) if wc else None}
+    rec = {"PK": pk, "SK": "BOT#20261005100000-ffffff", "id": "20261005100000-ffffff", "symbol": "MRVL", "status": "open",
+           "createdAt": "2026-10-01T10:00:00", "tickerFlow": tf(100, 900, 1000, 5000), "proposal": {"contract": "C", "exp": "2026-11-20", "strike": 260}}
+    seed = autotrader._put_seed(rec)
+    assert seed[0]["entry"] and seed[0]["ratio"] == 0.2 and seed[0]["day"] == "2026-10-01"
+    rec["putWatch"] = seed
+    db.put(rec)
+    sent = []
+    saved = (autotrader.ticker_flow, notify.send)
+    try:
+        notify.send = lambda sub, text, kind="order": sent.append(text)
+        autotrader.ticker_flow = lambda sub, sym, cfg: tf(800000, 600000, 4000000, 5000000)
+        pt = autotrader.put_watch(SUB, STORE[(pk, rec["SK"])])
+        r = STORE[(pk, rec["SK"])]
+        assert pt["ratio"] == 0.8 and len(r["putWatch"]) == 2 and sent and "puts piling in" in sent[0], (pt, sent)
+        sent.clear()
+        autotrader.ticker_flow = lambda sub, sym, cfg: tf(100000, 600000, 1000000, 5000000)
+        autotrader.put_watch(SUB, STORE[(pk, rec["SK"])])                 # same day: replaced, no alert
+        r = STORE[(pk, rec["SK"])]
+        assert len(r["putWatch"]) == 2 and r["putWatch"][-1]["ratio"] == 0.2 and not sent
+    finally:
+        autotrader.ticker_flow, notify.send = saved
 
 
 def test_analytics():

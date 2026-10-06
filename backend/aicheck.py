@@ -233,6 +233,8 @@ Judge from the charts whether the reason for the trade is still intact:
 - Momentum fading into resistance or the target, with overhead supply making the remaining reward small?
 - Time decay: with few days to expiration and no progress, holding is costly.
 - Overnight risk: gaps, an event, a weak close near the low of the day.
+- Options flow: put_flow_by_day shows puts vs calls bought at the ask on the ticker each day since entry (ratio = puts / calls
+  over the last trading days). Puts piling in, especially while price stalls, is a reason for caution.
 
 Close when the chart has turned against the trade or the remaining reward no longer justifies the overnight risk.
 Hold when the structure is intact, even if the position is down a little within the plan.
@@ -297,6 +299,7 @@ def _review_brief(sub, rec, ctx, cfg):
                      "pl_dollars": rec.get("lastPl"), "peak_option_price": rec.get("peakMark"), "days_held": days, "days_to_expiration": dte,
                      "contracts": rec.get("filledQty") or rec.get("qty"), "why_entered": rec.get("origin") or {"type": "manual"}},
         "recent_claude_views_on_this_ticker": _recent_claude(sub, rec),
+        "put_flow_by_day": [{k: x.get(k) for k in ("day", "todayPuts", "todayCalls", "ratio", "bigPuts")} for x in (rec.get("putWatch") or [])[-10:]],
         "chart_legend": "Candles green up / red down, volume at the bottom. Orange = 21 EMA, blue = 50-day SMA, teal = anchored VWAP "
                         "(daily only). Shaded bands = active fair value gaps. Gray NOW = current price, dashed red STOP = invalidation "
                         "level, dashed green TARGET = target, amber FLIP = gamma flip (at entry), blue/purple = call/put wall (at entry), "
@@ -311,6 +314,10 @@ def review(sub, rec, auto_close=True):
     cfg = autotrader.settings(sub)
     pk = db.upk(sub)
     ctx = {}
+    try:
+        autotrader.put_watch(sub, rec, cfg)            # today's put accumulation on the ticker, also shown to Claude
+    except Exception as e:
+        print("put watch failed", rec.get("symbol"), e)
     images = build_charts(rec, ctx)
     if not images:
         raise claude.Unavailable("No price data to draw the chart.")

@@ -1295,6 +1295,7 @@ function botResult(r) {
       ${r.rolls.map(x => `<tr><td>${esc(x.at.replace('T', ' ').slice(5, 16))}</td><td>${esc(x.from || '—')}</td><td>${esc(x.to)}</td><td class="r ${cls(x.credit)}">${x.credit >= 0 ? '+' : ''}${x.credit.toFixed(2)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${(r.marks || []).length > 1 ? `<h3 style="font-size:.95rem;margin:16px 0 6px">${p && (p.strategy === 'bull_call' || p.strategy === 'diagonal') ? 'Spread' : 'Option'} value since entry (every ~15 min)</h3>${markLine(r)}` : ''}
     ${tradePathPanel(r)}
+    ${putWatchPanel(r)}
     ${afterExitPanel(r)}
     ${shadowPanel(r)}
     ${aiPanel(r)}
@@ -1415,6 +1416,16 @@ function afterExitPanel(r) {
     <tr><td>Best / worst after the exit</td><td class="r">${v(a.bestPct, a.bestR)} / ${v(a.worstPct, a.worstR)}${a.closesOnly ? ' <span class="muted">(daily closes)</span>' : ''}</td></tr>
     <tr><td>Verdict so far (day ${a.days})</td><td class="r">${a.lastPct > 10 ? '<b class="loss">Closed too early</b>' : a.lastPct < -10 ? '<b class="gain">Good exit</b>' : 'About even'}${a.status === 'tracking' ? ' <span class="muted">(still being followed)</span>' : ''}</td></tr>
   </tbody></table></div>`;
+}
+function putWatchPanel(r) {
+  const pw = r.putWatch || [];
+  if (!pw.length) return '';
+  const lim = ((S.bot || {}).settings || {}).putMaxRatio ?? 0.5;
+  return `<h3 style="font-size:.95rem;margin:16px 0 6px">Put flow since entry <span class="muted" style="font-weight:400;font-size:.82rem">puts vs calls bought at the ask on ${esc(r.symbol)} · checked daily at 15:40 ET</span></h3>
+    <div class="tablewrap" style="border:0"><table><thead><tr><th>Day</th><th class="r">Puts today</th><th class="r">Calls today</th><th class="r">Put/call (look-back)</th></tr></thead><tbody>
+    ${pw.slice().reverse().map(x => { const hot = (x.ratio != null && x.ratio > lim) || (x.todayPuts > x.todayCalls && x.todayPuts > 0);
+      return `<tr><td>${esc(x.day)}${x.entry ? ' <span class="muted">(entry)</span>' : ''}</td><td class="r ${x.todayPuts > x.todayCalls ? 'loss' : ''}">${money(x.todayPuts || 0, false)}</td><td class="r">${money(x.todayCalls || 0, false)}</td><td class="r ${hot ? 'loss' : ''}">${x.ratio == null ? '—' : x.ratio.toFixed(2)}${hot ? ' ⚠' : ''}</td></tr>`; }).join('')}
+    </tbody></table></div><p class="muted" style="font-size:.8rem;margin:4px 0 0">⚠ = put/call above ${lim} or more puts than calls that day; you get an alert and Claude weighs it in the end-of-day review.</p>`;
 }
 function tradePathPanel(r) {
   if (!r.fillPrice || r.optMax == null) return '';
@@ -1657,7 +1668,7 @@ function vBot(mode) {
       <td class="r pos-pl ${cls(pl)}" data-l="P&L">${pl != null ? money(pl) + (plp != null ? ` <span style="font-weight:400">(${plp > 0 ? '+' : ''}${plp}%)</span>` : '') : '—'}</td>
       <td class="pos-sum">${i.filledQty || i.qty || ''} × ${i.fillPrice ? i.fillPrice.toFixed(2) : i.limit ? 'limit ' + i.limit.toFixed(2) : '—'} → ${now != null ? Number(now).toFixed(2) : '—'}</td>
       <td class="pos-note" title="${esc(i.exitReason || i.chaseNote || i.rollNote || '')}"><span class="ellipsis">${esc(i.exitReason || i.chaseNote || i.rollNote || (i.status === 'submitted' && i.chaseSteps ? `limit raised ${i.chaseSteps}× to ${i.limit.toFixed(2)}` : '')) || (i.trailing ? `<span class="gain">trailing from ${Number(i.peakMark || 0).toFixed(2)}</span>` : '') || (i.lastCheck ? `<span class="muted">updated ${esc(i.lastCheck.slice(11, 16))}</span>` : '')}</span></td>
-      <td class="r pos-act" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${['submitted', 'open'].includes(i.status) ? `<button class="btn" data-botclose="${i.id}">${i.status === 'submitted' ? 'Cancel' : 'Close'}</button>` : ''}</td></tr>`; };
+      <td class="r pos-act" style="white-space:nowrap">${i.status === 'submitted' ? `<button class="btn" data-botchase="${i.id}">Chase</button> ` : ''}${i.status === 'submitted' ? `<button class="btn" data-botclose="${i.id}">Cancel</button>` : ''}</td></tr>`; };
   const posTable = rows => `<p class="st-legend"><span><i class="st-dot g"></i>Open</span><span><i class="st-dot y"></i>Order working / closing</span><span><i class="st-dot n"></i>Closed</span></p><div class="tablewrap"><table class="pos"><thead><tr><th>Placed</th><th>Contract</th><th>Claude</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now / exit</th><th class="r">P&L</th><th>Note</th><th></th></tr></thead><tbody>${rows.map(posRow).join('')}</tbody></table></div>`;
   const evalRow = i => { const p = i.proposal || {};
     return `<tr data-botshow="${i.id}" style="cursor:pointer"><td>${esc((i.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(i.symbol)}</b>${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td><td><span class="verdict ${DEC_CLS[i.decision] || 'mid'}">${i.decision}</span></td>${aiCell(i)}${shadowCell(i)}<td>${esc(i.status)}</td><td title="${esc((i.blocking || []).join('; '))}"><span class="ellipsis">${esc((i.blocking || [])[0] || '')}</span></td><td><button class="btn" data-rescan="${esc(i.symbol)}">Rescan</button></td></tr>`; };
@@ -1747,7 +1758,7 @@ function botSettingsPanels() {
     <label style="display:block;margin-bottom:4px"><input type="checkbox" id="bf-put" ${cfg.putCheck !== false ? 'checked' : ''}> Check the puts bought on the ticker over the same look-back (Flow check)</label>
     <div class="form-grid" style="align-items:end">
       ${f('bf-putr', 'Max puts vs calls bought (0.5 = half)', cfg.putMaxRatio ?? 0.5, 0.05)}
-      <div class="field"><label><input type="checkbox" id="bf-putb" ${cfg.putBlock !== false ? 'checked' : ''}> Don't buy when puts are above that</label></div></div>
+      <div class="field"><label><input type="checkbox" id="bf-putb" ${cfg.putBlock ? 'checked' : ''}> Block the buy when puts are above that (otherwise a caution)</label></div></div>
     <p class="muted" style="font-size:.84rem;margin:0 0 8px">Only alerts above the min premium start an analysis. Each analysis then looks up everything bought at the ask on that ticker (any contract) today and over the look-back: smaller call buys, big call buys and puts. Repeat buying is a ✓ when the smaller buys reach all of these (or Unusual Whales flags repeated hits and the total is reached); it's information, passed to Claude and tracked in "Which flow is worth acting on". Puts above the ratio block the buy.</p>
     <p style="margin:0 0 8px"><button class="btn primary" data-botsave="1">Save</button> <span class="muted" style="font-size:.84rem">Bot settings also save automatically when you change a field.</span></p>
     <p class="muted" style="font-size:.84rem;margin:0">Orders are placed only when <b>Place paper orders automatically</b> (below) is also on. Calls only; the contract the bot buys is chosen by its own rules, not copied from the flow.</p></section>

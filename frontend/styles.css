@@ -355,3 +355,18 @@ table.pos td.pos-sum{display:none}
   table.evg tr td.evg-c{grid-column:2;grid-row:4;text-align:right}
   table.evg tr td.evg-c:has(.muted:only-child){display:none}
 }
+/* never wider than the screen: headers wrap, long words (option symbols, numbers) break */
+.cal-head{flex-wrap:wrap}
+.cal-head>*{min-width:0}
+.panel,section{min-width:0;overflow-wrap:anywhere}
+main{min-width:0}
+@media (max-width:760px){
+  .cal-head>span{flex-wrap:wrap;justify-content:flex-start}
+  .panel img,.panel svg{max-width:100%;height:auto}
+  .panel ul{padding-left:0}
+}
+@media (max-width:760px){
+  table.pvsa{table-layout:fixed;width:100%}
+  table.pvsa td{white-space:normal;vertical-align:top}
+  table.pvsa td:first-child{width:42%}
+}
