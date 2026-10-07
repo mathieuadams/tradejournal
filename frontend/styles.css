@@ -405,3 +405,4 @@ tr.sel td{background:var(--sunk)}
 .bgrp{display:grid;gap:8px}
 .bgrp-i{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
 .bgrp-h{display:grid;grid-template-columns:1fr auto;gap:2px 10px;cursor:pointer}
+.stale-box{margin:12px 0 4px;padding:10px 12px;border-radius:10px;background:color-mix(in srgb,#d4a106 12%,var(--surface));border:1px solid color-mix(in srgb,#d4a106 45%,var(--line));font-size:.9rem;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
