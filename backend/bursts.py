@@ -189,7 +189,14 @@ def replay(sub, restart=False, budget_s=420):
     bursts.sort(key=lambda b: (-(b["ratio"] or 0)))
     st.update(done=i, bursts=bursts[:800], base=base_acc, updatedAt=iso(now_ny()),
               status="done" if i >= len(uni) else "partial")
-    db.put(st)
+    for cap in (800, 500, 300, 150):          # a DynamoDB item holds 400 KB: keep the biggest clusters if it's too large
+        st["bursts"] = bursts[:cap]
+        try:
+            db.put(st)
+            break
+        except Exception as e:
+            if "size" not in str(e).lower():
+                raise
     db.put(norm)
     return {"status": st["status"], "done": i, "total": len(uni), "bursts": len(bursts)}
 
@@ -216,7 +223,13 @@ def _group(rows, key):
 def study_summary(st, c=None):
     if not st:
         return None
-    rows = st.get("bursts") or []
+    rows = [r for r in (st.get("bursts") or []) if isinstance(r, dict) and r.get("cp") is not None and r.get("n") is not None]
+    for r in rows:
+        for k in ("ratio", "move", "fwd1", "fwd3", "fwd5", "price", "callShare", "contracts", "tod", "maxPrint"):
+            r.setdefault(k, None)
+        r["callShare"] = r["callShare"] if r["callShare"] is not None else 1.0
+        r["contracts"] = r["contracts"] or 1
+        r["tod"] = r["tod"] or "midday"
     if c:                                     # re-sort with the current thresholds: no need to re-run the replay
         for r in rows:
             r["strict"] = strict(r, c)
@@ -320,12 +333,30 @@ def forward_update(sub):
 
 
 def page(sub, days=10):
-    """Everything the Bursts page shows."""
+    """Everything the Bursts page shows. Each part is computed on its own so one bad record can't break the page:
+    a failing part comes back with an error message instead."""
+    import traceback
     pk = db.upk(sub)
-    cut = (now_ny() - timedelta(days=days)).strftime("%Y%m%d")
-    evs = sorted([{k: v for k, v in e.items() if k not in ("PK",)} for e in db.q_prefix(pk, "BURST#") if e["SK"][6:14] >= cut],
-                 key=lambda e: e["SK"], reverse=True)
-    st = db.get(pk, "BURSTSTATE") or {}
-    return {"days": days, "events": evs[:300], "cfg": cfg_of(sub),
-            "live": {k: st.get(k) for k in ("lastRun", "lastNew", "today", "burstsToday")},
-            "study": study_summary(db.get(pk, "BURSTSTUDY"), cfg_of(sub))}
+    out = {"days": days, "events": [], "cfg": DEFAULTS, "live": {}, "study": None, "errors": []}
+    try:
+        out["cfg"] = cfg_of(sub)
+    except Exception as e:
+        out["errors"].append(f"settings: {e}")
+    try:
+        cut = (now_ny() - timedelta(days=days)).strftime("%Y%m%d")
+        evs = [{k: v for k, v in e.items() if k != "PK"} for e in db.q_prefix(pk, "BURST#") if (e.get("SK") or "")[6:14] >= cut]
+        out["events"] = sorted(evs, key=lambda e: e["SK"], reverse=True)[:300]
+    except Exception as e:
+        traceback.print_exc()
+        out["errors"].append(f"live bursts: {str(e)[:200]}")
+    try:
+        st = db.get(pk, "BURSTSTATE") or {}
+        out["live"] = {k: st.get(k) for k in ("lastRun", "lastNew", "today", "burstsToday")}
+    except Exception as e:
+        out["errors"].append(f"live status: {str(e)[:200]}")
+    try:
+        out["study"] = study_summary(db.get(pk, "BURSTSTUDY"), out["cfg"])
+    except Exception as e:
+        traceback.print_exc()
+        out["errors"].append(f"replay results: {type(e).__name__}: {str(e)[:200]}")
+    return out

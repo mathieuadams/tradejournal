@@ -1646,6 +1646,11 @@ def test_call_bursts():
         # after the close: forward results for live bursts
         closes[today] = 150.0
         assert bursts.forward_update(SUB)["updated"] in (0, 1)
+        # a bad record in the study doesn't break the page
+        STORE[(pk, "BURSTSTUDY")]["bursts"].append({"ticker": "BAD"})
+        STORE[(pk, "BURSTSTUDY")]["bursts"].append({"ticker": "OLD", "cp": 400000, "n": 7, "at": "2026-09-01T10:00", "date": "2026-09-01"})
+        code, pg3 = call("GET", "/bot/bursts")
+        assert code == 200 and not pg3["errors"] and pg3["study"]["all"]["n"] >= 1, pg3.get("errors")
         code, _ = call("POST", "/bot/bursts/replay", {"restart": True})
         assert code == 200 and STORE[(pk, "BURSTSTUDY")]["status"] == "starting"
     finally:

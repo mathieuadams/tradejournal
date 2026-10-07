@@ -1794,7 +1794,8 @@ function vBursts() {
     ${(st.top || []).length ? `<h3 style="font-size:.95rem;margin:14px 0 6px">Bursts found (your thresholds), biggest first</h3><ul class="shl">${st.top.map(burstLine).join('')}</ul>` : ''}`}
     ${st && st.updatedAt ? `<p class="muted" style="font-size:.8rem;margin:10px 0 0">${R === 'done' ? 'Finished' : 'Updated'} ${esc(st.updatedAt.replace('T', ' ').slice(5, 16))} ET${st.errors ? ` · ${st.errors} ticker${st.errors > 1 ? 's' : ''} skipped (data errors)` : ''}</p>` : ''}
   </section>`;
-  return head0 + live + study;
+  const errs = (d.errors || []).length ? `<div class="errbox" style="margin-bottom:12px">Part of this page couldn't load: ${d.errors.map(esc).join(' · ')}</div>` : '';
+  return head0 + errs + live + study;
 }
 function vBotSkipped() {
   return head('Skipped & what-if', 'What the trades the bot skipped would have done, what happened after its exits, and which flow is worth acting on', '')
