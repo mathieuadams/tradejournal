@@ -325,7 +325,6 @@ function renderDrawer() {
       <div class="chart-ctl"><div class="seg" role="group" aria-label="Timeframe">${[['5m', '5m'], ['15m', '15m'], ['1h', '1h'], ['4h', '4h'], ['1d', 'Daily']].map(([k, l]) => `<button data-tf="${k}" aria-pressed="${S.tf === k}">${l}</button>`).join('')}</div>
       <button class="btn" id="rp-play">Replay</button><input type="range" id="rp" min="1" aria-label="Replay position"></div></div>
     ${t.status === 'open' ? `<div class="coach" id="entry-note"><p class="loading" style="padding:0">Loading entry check…</p></div>` : ''}
-    <p style="margin:-8px 0 0"><a href="#gex" class="linkbtn" data-gexlink="${esc(t.underlying || t.sym)}">Options positioning for ${esc(t.underlying || t.sym)} →</a></p>
     <div class="coach review" id="review"><p class="loading" style="padding:0">Loading coach review…</p></div>
     ${t.status === 'closed' ? `<div class="panel" id="q-panel">${qPanel(t)}</div>` : ''}
     <div class="panel" id="ctx-panel">${ctxPanel(t)}</div>
@@ -1231,7 +1230,7 @@ async function loadEvals(page) {
   const t = evTicker(), mode = t ? `t:${t}` : 'group';
   const pg = page || (S.botEvals && S.botEvals.mode === mode && S.botEvals.page) || 1;
   try {
-    const r = await api(`/bot/evaluations?page=${pg}&size=20${t ? `&symbol=${encodeURIComponent(t)}` : `&group=ticker${S.evClaude ? '&claude=1' : ''}`}`);
+    const r = await api(`/bot/evaluations?page=${pg}&size=20${t ? `&symbol=${encodeURIComponent(t)}` : `&group=ticker${S.evClaude ? '&claude=1' : ''}${S.evQ ? `&q=${encodeURIComponent(S.evQ)}` : ''}`}`);
     S.botEvals = { ...r, mode };
     // on a ticker page, show its latest evaluation unless one of its evaluations is already open
     if (t && r.items.length && !(S.botRes && S.botRes.symbol === t)) S.botRes = r.items[0];
@@ -1262,11 +1261,66 @@ const STRAT_LBL = { long_call: 'Long call', bull_call: 'Bull call spread', diago
 const isSpread = p => !!(p && p.legs && (p.strategy === 'bull_call' || p.strategy === 'diagonal'));
 const legTxt = p => !p || !p.exp ? '' : p.strategy === 'bull_call' && p.shortStrike ? `${fmtExp(p.exp)} ${p.strike}/${p.shortStrike}c`
   : p.strategy === 'diagonal' ? `${fmtExp(p.exp)} ${p.strike}c / ${p.shortStrike ? `${fmtExp(p.shortExp)} ${p.shortStrike}c` : 'no short'}` : `${fmtExp(p.exp)} ${p.strike}c`;
+/* ---------- flow on the chart: when each options alert came in, and how big, against the price ---------- */
+S.fc = S.fc || {}; S.fcBusy = S.fcBusy || {};
+async function loadFlowChart(id) {
+  S.fcBusy[id] = true;
+  try { S.fc[id] = await api(`/bot/${id}/flowchart`); } catch (e) { S.fc[id] = { error: e.message }; }
+  S.fcBusy[id] = false;
+  if (isBotRoute()) render();
+}
+function fcSvg(d, id) {
+  const bars = d.bars || [], n = bars.length;
+  if (n < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
+  const narrow = window.innerWidth < 700, fs = narrow ? 17 : 12;
+  const W = narrow ? 560 : 960, H = narrow ? 470 : 340, L = 8, Rr = narrow ? 72 : 58, T = 16, B = H - (narrow ? 44 : 40);
+  const lo0 = Math.min(...bars.map(b => b.l)), hi0 = Math.max(...bars.map(b => b.h)), pad = (hi0 - lo0) * 0.12 || 1;
+  const lo = lo0 - pad, hi = hi0 + pad;
+  const X = i => L + (i + 0.5) * (W - L - Rr) / n, Y = v => T + (hi - v) / (hi - lo) * (B - T), bw = Math.max(1, (W - L - Rr) / n * 0.6);
+  const idx = {}; bars.forEach((b, i) => { idx[b.t] = i; });
+  const bucket = t => { const d0 = t.slice(0, 10), hm = t.slice(11, 16); let m = (+hm.slice(0, 2)) * 60 + (+hm.slice(3, 5)); m = Math.max(570, Math.min(m, 945)); m = 570 + Math.floor((m - 570) / 15) * 15;
+    return `${d0}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
+  const at = t => { const k = bucket(t); if (idx[k] != null) return idx[k]; let best = null; bars.forEach((b, i) => { if (b.t <= k) best = i; }); return best; };
+  let g = '';
+  for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4, y = Y(v); g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/><text x="${W - Rr + 6}" y="${y + 4}" font-size="${fs}" fill="var(--muted)">${v.toFixed(v < 20 ? 2 : 1)}</text>`; }
+  bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { const x = X(i) - (W - L - Rr) / n / 2;
+    g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${x + 3}" y="${B + 16}" font-size="${fs}" fill="var(--muted)">${b.t.slice(5, 10)}</text>`; } });
+  bars.forEach((b, i) => { const up = b.c >= b.o, c = up ? 'var(--gain)' : 'var(--loss)', x = X(i);
+    g += `<line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`; });
+  if (d.evaluatedAt) { const ei = at(d.evaluatedAt); if (ei != null) { const x = X(ei);
+    g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--coach,#5b5bd6)" stroke-width="2" stroke-dasharray="6 4"/><text x="${Math.min(x + 4, W - Rr - 70)}" y="${T + 12}" font-size="${fs}" font-weight="600" fill="var(--coach,#5b5bd6)">evaluated</text>`; } }
+  const stack = {};
+  (d.alerts || []).forEach((a, k) => { const i = at(a.t); if (i == null) return; const b = bars[i], call = a.type === 'call';
+    const key = `${i}${a.type}`; stack[key] = (stack[key] || 0) + 1;
+    const r = Math.min(13, 2.5 + Math.sqrt(a.premium / 100000) * 3.2);
+    const y = call ? Y(b.l) + 6 + r + (stack[key] - 1) * 5 : Y(b.h) - 6 - r - (stack[key] - 1) * 5;
+    const sel = S.fcSel && S.fcSel.id === id && S.fcSel.k === k;
+    g += `<circle data-fci="${id}|${k}" cx="${X(i)}" cy="${y}" r="${sel ? r + 3 : r}" fill="${call ? 'var(--gain)' : 'var(--loss)'}" fill-opacity="${a.big ? .75 : .38}" stroke="${a.big || sel ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(a.t.replace('T', ' ').slice(5))} · ${a.type.toUpperCase()} ${money(a.premium, false)} · ${esc(a.contract || '')}</title></circle>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="${esc(d.symbol)} 15-minute price with options alerts">${g}</svg>`;
+}
+function flowChartPanel(r) {
+  if (!r || !r.id || !r.createdAt) return '';
+  const d = S.fc[r.id];
+  if (!d && !S.fcBusy[r.id]) setTimeout(() => loadFlowChart(r.id), 0);
+  const head = `<h3 style="font-size:.95rem;margin:14px 0 6px">Flow on the chart <span class="muted" style="font-weight:400;font-size:.82rem">15-minute price · every option bought at the ask, from ${money((d && d.minPrint) || 10000, false)}</span></h3>`;
+  if (!d) return head + '<p class="loading" style="margin:0">Loading the chart and the alerts…</p>';
+  if (d.error) return head + `<p class="muted" style="margin:0">${esc(d.error)}</p>`;
+  const al = d.alerts || [], calls = al.filter(a => a.type === 'call'), puts = al.filter(a => a.type === 'put');
+  const sum = xs => xs.reduce((s2, a) => s2 + a.premium, 0);
+  const sel = S.fcSel && S.fcSel.id === r.id ? al[S.fcSel.k] : null;
+  const top = [...al].sort((a, b) => b.premium - a.premium).slice(0, 6);
+  return head + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
+    <p class="st-legend" style="margin:6px 0 4px"><span><i class="st-dot g"></i>Calls bought (${calls.length}, ${money(sum(calls), false)})</span><span><i class="st-dot" style="display:inline-block;background:var(--loss)"></i>Puts bought (${puts.length}, ${money(sum(puts), false)})</span><span>bigger dot = bigger premium · outlined = over ${money(d.bigPrint, false)}</span><span style="color:var(--coach,#5b5bd6)">┆ evaluated</span></p>
+    <p style="margin:2px 0 6px;font-size:.88rem;min-height:1.3em">${sel ? `<b>${esc(sel.t.replace('T', ' ').slice(5))} ET · ${sel.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sel.premium, false)}</b> · ${esc(sel.contract || '')}${sel.sweep ? ' · sweep' : ''}${sel.rule ? ` · ${esc(sel.rule)}` : ''}` : '<span class="muted">Tap a dot to see the alert.</span>'}</p>
+    ${top.length ? `<details><summary class="muted" style="cursor:pointer">Biggest prints</summary><ul style="list-style:none;padding:0;margin:6px 0 0;line-height:1.7;font-size:.88rem">${top.map(a => `<li><span class="${a.type === 'call' ? 'gain' : 'loss'}">${a.type.toUpperCase()}</span> <b>${money(a.premium, false)}</b> <span class="muted">${esc(a.t.replace('T', ' ').slice(5))} · ${esc(a.contract || '')}${a.sweep ? ' · sweep' : ''}</span></li>`).join('')}</ul></details>` : ''}
+    ${d.note ? `<p class="muted" style="font-size:.82rem">${esc(d.note)}</p>` : ''}`;
+}
 function botResult(r) {
   if (!r) return '';
   const p = r.proposal, groups = ['flow', 'chart', 'gamma', 'events', 'contract'], gl = { flow: 'Flow', chart: 'Chart', gamma: 'Gamma', events: 'Events', contract: 'Contract' };
   return `<section class="panel"><div class="cal-head"><h2>${esc(r.symbol)} <span class="verdict ${DEC_CLS[r.decision]}" style="margin-left:8px">${r.decision}</span></h2><span style="display:flex;gap:10px;align-items:center"><span class="muted" style="font-size:.85rem">${esc(r.createdAt.replace('T', ' ').slice(0, 16))} ET · ${esc(r.source)} data · price ${px(r.signals.price)}</span><button class="btn" data-resclose="1" aria-label="Close this detail">Close</button></span></div>
     ${r.origin && r.origin.type === 'flow' ? `<p style="margin:6px 0 0"><b>From unusual flow:</b> ${money(r.origin.premium, false)} in ${r.origin.alerts} alert${r.origin.alerts === 1 ? '' : 's'}${r.origin.sweep ? ', sweep' : ''}${r.origin.askPct != null ? `, ${r.origin.askPct}% at the ask` : ''}${r.origin.volOi != null ? `, vol/OI ${r.origin.volOi}` : ''}${r.origin.contract ? ` · flow contract ${esc(r.origin.contract)}` : ''}</p>` : ''}
+    ${flowChartPanel(r)}
     ${groups.map(gname => { const items = r.checks.filter(c => c.group === gname); return items.length ? `<h3 style="font-size:.95rem;margin:12px 0 4px">${gl[gname]}</h3><ul style="list-style:none;padding:0;margin:0;line-height:1.6">${items.map(c => `<li><b class="${c.ok ? 'gain' : c.required ? 'loss' : 'muted'}">${c.ok ? '✓' : c.required ? '✗' : '!'}</b> ${esc(c.text)}${!c.required ? ' <span class="muted">(warning only)</span>' : ''}</li>`).join('')}</ul>` : ''; }).join('')}
     ${r.blocking.length && r.decision !== 'BUY' ? `<p style="margin:12px 0 0"><b>Why not a buy:</b> ${r.blocking.map(esc).join('; ')}.</p>` : ''}
     ${p ? `<h3 style="font-size:.95rem;margin:16px 0 6px">Proposed order</h3>
@@ -1330,6 +1384,29 @@ async function runShadow() {
   const res = (S.shadowSum && S.shadowSum.run && S.shadowSum.run.result) || {};
   toast(res.error ? `Shadow tracking failed: ${res.error}` : `Shadow tracking updated (${res.tracked ?? 0} evaluations followed).`);
 }
+function shList() {
+  const L = S.shList;
+  if (!L || L.loading) return '<p class="loading" style="margin:8px 12px">Loading the skipped trades…</p>';
+  if (L.error) return `<div class="errbox" style="margin:8px 12px">${esc(L.error)}</div>`;
+  const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
+  return `<div><p class="muted" style="font-size:.82rem;margin:0 2px 6px">${L.n} skipped trade${L.n === 1 ? '' : 's'}, best result first · tap one to open it</p>
+    <ul class="shl">${L.items.map(x => `<li data-shopen="${x.id}"><span class="shl-a"><b>${esc(x.symbol)}</b> <span class="muted">${x.exp ? esc(fmtExp(x.exp)) + ' ' + x.strike + 'c' : ''}</span></span>
+      <span class="shl-r">${R(x.R)} <span class="${x.plPct > 0 ? 'gain' : x.plPct < 0 ? 'loss' : ''}">${sgn(x.plPct)}%</span></span>
+      <span class="shl-b muted">${esc((x.at || '').replace('T', ' ').slice(5, 16))} · ${esc(x.decision || '')}${x.claude ? ` · Claude ${esc(x.claude)}` : ''} · ${x.status === 'tracking' ? `still open (day ${x.days || 0})` : esc(x.exitReason || 'done')}</span></li>`).join('')}</ul></div>`;
+}
+async function openShadow(kind, key) {
+  if (S.shSel && S.shSel[kind] === key) { S.shSel = null; render(); return; }
+  S.shSel = { [kind]: key }; S.shList = { loading: true }; render();
+  try { S.shList = await api(`/bot/shadow/list?days=${S.shadowDays || 5}&${kind}=${encodeURIComponent(key)}`); }
+  catch (e) { S.shList = { error: e.message }; }
+  render();
+}
+async function openRecord(id) {
+  try {
+    const rec = await api(`/bot/${id}`);
+    S.botRes = rec; location.hash = `#botevals?t=${encodeURIComponent(rec.symbol)}`; window.scrollTo(0, 0);
+  } catch (e) { toast(e.message); }
+}
 function flowSummary() {
   const d = S.flowSum;
   if (!d || d.error || !d.n) return d && d.error ? `<section><h2>Which flow is worth acting on</h2><div class="errbox">${esc(d.error)}</div></section>` : '';
@@ -1352,7 +1429,7 @@ function shadowSummary() {
   if (!d) return `<section>${head}<p class="loading">Loading…</p></section>`;
   if (d.error) return `<section>${head}<div class="errbox">${esc(d.error)}</div></section>`;
   const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
-  const row = (label, g) => `<tr><td>${label}</td><td class="r">${g.n}${g.tracking ? ` <span class="muted">(${g.tracking} still open)</span>` : ''}</td><td class="r">${g.winPct == null ? '—' : g.winPct + '%'}</td><td class="r">${R(g.avgR)}</td><td class="r">${R(g.totalR)}</td></tr>`;
+  const row = (label, g, attr) => `<tr ${attr || ''} ${attr ? 'style="cursor:pointer"' : ''}><td class="shg-l">${label}${attr ? ' <span class="muted">›</span>' : ''}</td><td class="r" data-l="trades">${g.n}${g.tracking ? ` <span class="muted">(${g.tracking} still open)</span>` : ''}</td><td class="r" data-l="winners">${g.winPct == null ? '—' : g.winPct + '%'}</td><td class="r" data-l="avg">${R(g.avgR)}</td><td class="r" data-l="total">${R(g.totalR)}</td></tr>`;
   const th = first => `<thead><tr><th>${first}</th><th class="r">Trades</th><th class="r">Winners</th><th class="r">Avg R</th><th class="r">Total R</th></tr></thead>`;
   const sk = d.skipped, tk = d.taken;
   const rr = (d.run && d.run.result) || {};
@@ -1362,15 +1439,17 @@ function shadowSummary() {
     ${d.exits.map(g => `<tr><td>${esc(g.why)}</td><td class="r">${g.n}</td><td class="r">${R(g.day1R)}</td><td class="r">${R(g.day5R)}</td><td class="r">${R(g.day10R)}</td><td class="r">${R(g.bestR)}</td><td class="r">${g.earlyPct == null ? '—' : g.earlyPct + '%'}</td></tr>`).join('')}
     </tbody></table></div>` : '';
   if (!sk.n) return `<section>${head}<p class="muted">No skipped trade has a result yet in this period.${d.pending ? ` ${d.pending} evaluation${d.pending > 1 ? 's are' : ' is'} waiting to be followed: press <b>Update now</b>.` : ''} ${runTxt}.</p>${exits}</section>`;
-  const list = (title, xs) => xs.length ? `<h3 style="font-size:.95rem;margin:14px 0 6px">${title}</h3><ul style="list-style:none;padding:0;margin:0;line-height:1.7">${xs.map(x => `<li>${R(x.R)} <b>${esc(x.symbol)}</b> <span class="muted">${esc((x.at || '').replace('T', ' ').slice(5, 16))} · ${esc(x.decision)}${x.claude ? ` · Claude ${esc(x.claude)}` : ''} · ${esc(x.why)} · ${esc(x.exitReason || 'still open')}</span></li>`).join('')}</ul>` : '';
+  const list = (title, xs) => xs.length ? `<h3 style="font-size:.95rem;margin:14px 0 6px">${title}</h3><ul style="list-style:none;padding:0;margin:0;line-height:1.7">${xs.map(x => `<li data-shopen="${x.id}" style="cursor:pointer">${R(x.R)} <b>${esc(x.symbol)}</b> <span class="muted">${esc((x.at || '').replace('T', ' ').slice(5, 16))} · ${esc(x.decision)}${x.claude ? ` · Claude ${esc(x.claude)}` : ''} · ${esc(x.why)} · ${esc(x.exitReason || 'still open')}</span></li>`).join('')}</ul>` : '';
   return `<section>${head}
     <div class="strip" style="margin-bottom:12px">
       <div class="stat"><span>Skipped with a result</span><b>${sk.n}</b><span>${sk.done} finished · ${sk.tracking} still open${d.pending ? ` · ${d.pending} waiting` : ''}</span></div>
       <div class="stat"><span>If taken: avg R</span><b>${R(sk.avgR)}</b><span>${sk.winPct ?? '—'}% winners · total ${sk.totalR ?? '—'}R</span></div>
       <div class="stat"><span>Taken by the bot: avg R</span><b>${R(tk.avgR)}</b><span>${tk.n} trades · ${tk.winPct ?? '—'}% winners</span></div>
     </div>
-    <div class="tablewrap"><table>${th('Why it was skipped')}<tbody>${d.byReason.map(g => row(esc(g.why), g)).join('')}</tbody></table></div>
-    <div class="tablewrap" style="margin-top:10px"><table>${th("Claude's entry check")}<tbody>${d.byClaude.map(g => row(esc(g.verdict), g)).join('')}</tbody></table></div>
+    <div class="tablewrap"><table class="shg">${th('Why it was skipped')}<tbody>${d.byReason.map(g => row(esc(g.why), g, `data-shwhy="${esc(g.why)}"`)).join('')}</tbody></table></div>
+    ${S.shSel && S.shSel.why !== undefined ? `<div class="shbox"><div class="cal-head" style="margin:0 0 6px"><b>Skipped because: ${esc(S.shSel.why)}</b><button class="btn" data-shwhy="${esc(S.shSel.why)}">Close</button></div>${shList()}</div>` : ''}
+    <div class="tablewrap" style="margin-top:10px"><table class="shg">${th("Claude's entry check")}<tbody>${d.byClaude.map(g => row(esc(g.verdict), g, `data-shclaude="${esc(g.verdict)}"`)).join('')}</tbody></table></div>
+    ${S.shSel && S.shSel.claude !== undefined ? `<div class="shbox"><div class="cal-head" style="margin:0 0 6px"><b>Claude's entry check: ${esc(S.shSel.claude)}</b><button class="btn" data-shclaude="${esc(S.shSel.claude)}">Close</button></div>${shList()}</div>` : ''}
     ${list('Best skipped trades', d.best)}${list('Worst skipped trades', d.worst)}
     ${exits}
     <p class="muted" style="font-size:.82rem;margin:10px 0 0">${runTxt}. Skipped trades are followed for up to 20 trading days with the bot's exit rules, closed trades for 10 trading days after the exit, on daily bars (approximate). A positive avg R on a skip reason means that filter is removing winners; a positive R after an exit reason means those exits come too early.</p>
@@ -1710,13 +1789,14 @@ function vBot(mode) {
     const groups = ev2 ? ev2.items : [];
     return head('Evaluations', 'One row per ticker, latest evaluation first. Open a ticker for its full history and to re-evaluate it.', '')
       + feedStatus() + `<section style="margin-top:14px"><div class="cal-head"><h2>Tickers</h2><label style="font-size:.88rem"><input type="checkbox" id="ev-claude" ${S.evClaude ? 'checked' : ''}> Only ones Claude checked</label></div>
+      <div class="field" style="margin:0 0 10px;max-width:320px"><input id="ev-q" type="search" inputmode="search" autocapitalize="characters" placeholder="Search a ticker (e.g. PLTR)" value="${esc(S.evQ || '')}" aria-label="Search a ticker"></div>
       ${!ev2 ? '<p class="loading">Loading…</p>' : groups.length ? `<div class="tablewrap"><table class="evg"><thead><tr><th>Ticker</th><th class="r">Evaluations</th><th>Latest</th><th>Decision</th><th>Claude</th><th>Main reason</th></tr></thead><tbody>
         ${groups.map(g => { const l = g.latest || {}, p = l.proposal || {}, d = g.decisions || {};
           return `<tr data-evticker="${esc(g.symbol)}" style="cursor:pointer"><td class="evg-t"><b>${esc(g.symbol)}</b>${g.held ? ' <span class="verdict ok" style="font-size:.72rem">held</span>' : ''}${p.exp ? ` <span class="muted">${esc(legTxt(p))}</span>` : ''}</td>
             <td class="r evg-n">${g.count}${g.count > 1 ? ` <span class="muted" style="font-size:.8rem">${Object.entries(d).map(([k, n]) => `${n} ${k}`).join(' · ')}</span>` : ''}</td>
             <td class="evg-w">${esc((l.createdAt || '').replace('T', ' ').slice(5, 16))}</td><td class="evg-d"><span class="verdict ${DEC_CLS[l.decision] || 'mid'}">${l.decision}</span></td>${aiCell(l).replace('<td', '<td class="evg-c"')}
             <td class="evg-r" title="${esc((l.blocking || []).join('; '))}"><span class="ellipsis">${esc((l.blocking || [])[0] || '')}</span></td></tr>`; }).join('')}
-      </tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>`;
+      </tbody></table></div>${pager}` : `<div class="tablewrap"><p class="empty">${S.evQ ? `No evaluation matches “${esc(S.evQ)}”. <a href="#botevals?t=${encodeURIComponent(S.evQ)}">Evaluate ${esc(S.evQ)} now</a>` : S.evClaude ? "Claude hasn't checked any evaluation yet." : 'No evaluations yet.'}</p></div>`}</section>`;
   }
   return head('Paper bot', 'Trades the Alpaca paper account automatically from unusual options flow and manages every exit', '') + warn + `
   <section class="coach" style="padding:14px 18px"><div class="coach-who">${spark()} Status</div>
@@ -1930,7 +2010,7 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
     const t = evTicker(), mode = t ? `t:${t}` : 'group';
     if ((!S.botEvals || S.botEvals.mode !== mode) && S.evLoading !== mode) { S.evLoading = mode; loadEvals(1).finally(() => { S.evLoading = null; }); }
   }],
-  botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }], gex: [vGex, () => { loadMarketGamma(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+  botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
 const evTicker = () => route() === 'botevals' ? (hashParam('t') || '').toUpperCase() : '';
@@ -1950,13 +2030,17 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
   if (el.dataset.botsave) { botSaveSettings(); return; }
   if (el.dataset.evpage) { loadEvals(+el.dataset.evpage); return; }
   if (el.dataset.reeval) { reEvaluate(el.dataset.reeval); return; }
+  if (el.dataset.shwhy !== undefined) { openShadow('why', el.dataset.shwhy); return; }
+  if (el.dataset.shclaude !== undefined) { openShadow('claude', el.dataset.shclaude); return; }
+  if (el.dataset.shopen) { openRecord(el.dataset.shopen); return; }
+  if (el.dataset.fci) { const [id, k] = el.dataset.fci.split('|'); S.fcSel = { id, k: +k }; render(); return; }
   if (el.dataset.uwtest) {
     S.uwTesting = true; render();
     api('/bot/flow/test', { method: 'POST' }).then(r => toast(r.ok ? `Unusual Whales is live (${r.ms} ms): newest alert ${r.newestTicker || ''} ${r.newest ? r.newest.slice(11) + ' ET' : '—'}. With your filters: ${r.filtered20 ?? '?'} alerts in the last 20 min, ${r.filtered60 ?? '?'} in the last 60 min on ${r.filteredTickers ?? '?'} tickers${r.filteredNewest ? `, newest ${r.filteredNewest.slice(11)} ET` : ''}${r.filterError ? ` (filter check failed: ${r.filterError})` : ''}` : `Unusual Whales error: ${r.error}`))
@@ -2058,10 +2142,20 @@ document.addEventListener('input', e => {
   if (e.target.id === 'f-q') { tf.q = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (e.target.id === 'rp') { stopReplay(); replay.k = +e.target.value; drawChart(); }
 });
+let evQTimer = null;
+document.addEventListener('input', e => {
+  if (e.target.id !== 'ev-q') return;
+  clearTimeout(evQTimer);
+  const v = e.target.value.trim().toUpperCase();
+  evQTimer = setTimeout(async () => {
+    S.evQ = v; await loadEvals(1);
+    const i = $('#ev-q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  }, 350);
+});
 document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
-  if (id === 'sh-days') { S.shadowDays = +e.target.value; loadShadow(); return; }
+  if (id === 'sh-days') { S.shadowDays = +e.target.value; S.shSel = null; loadShadow(); return; }
   if (id === 'ev-claude') { S.evClaude = e.target.checked; loadEvals(1); return; }
   if (id === 'bs-strat') { $('#bs-bull').hidden = e.target.value !== 'bull_call'; $('#bs-diag').hidden = e.target.value !== 'diagonal'; return; }
   if (id === 'fl-auto') { S.flowAuto = e.target.checked; if (S.flowAuto && S.flow) loadFlow(); return; }

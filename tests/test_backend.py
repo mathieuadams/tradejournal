@@ -1283,6 +1283,10 @@ def test_shadow_tracking():
     code, sm = call("GET", "/bot/shadow/summary", q={"days": "35"})
     assert code == 200 and sm["skipped"]["n"] == 2 and sm["skipped"]["winPct"] == 50, sm
     whys = {g["why"]: g for g in sm["byReason"]}
+    code, li = call("GET", "/bot/shadow/list", q={"days": "35", "why": "Claude rejected"})
+    assert code == 200 and li["n"] == 1 and li["items"][0]["R"] == -1.0 and li["items"][0]["symbol"] == "XYZ", li
+    code, li = call("GET", "/bot/shadow/list", q={"days": "35", "claude": "not checked"})
+    assert li["n"] == 2
     assert "Claude rejected" in whys and whys["Claude rejected"]["avgR"] == -1.0
     assert "Up at least #% from the #-day low" in whys, list(whys)
     assert sm["best"][0]["symbol"] == "XYZ" and sm["best"][0]["R"] > 0
@@ -1450,6 +1454,8 @@ def test_evaluations_grouped_by_ticker():
             "status": "proposed", "createdAt": "2026-10-03T13:00:00"})
     code, g = call("GET", "/bot/evaluations", q={"group": "ticker"})
     assert g["items"][0]["symbol"] == "NBIS" and g["items"][0]["held"] is True
+    code, f = call("GET", "/bot/evaluations", q={"group": "ticker", "q": "lu"})
+    assert [x["symbol"] for x in f["items"]] == ["LUV"], f
 
 
 def test_feed_health():
@@ -1550,6 +1556,35 @@ def test_put_watch():
         assert len(r["putWatch"]) == 2 and r["putWatch"][-1]["ratio"] == 0.2 and not sent
     finally:
         autotrader.ticker_flow, notify.send = saved
+
+
+def test_flow_chart():
+    """An evaluation's chart: 15-minute bars over the last trading days plus every alert bought at the ask on the ticker."""
+    import autotrader, flowdata, charts, flowchart
+    STORE.clear()
+    pk = db.upk(SUB)
+    now = autotrader.now_ny()
+    day = now.strftime("%Y-%m-%d")
+    rid = "20261006144500-abcdef"
+    db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "PLTR", "decision": "WAIT", "createdAt": f"{day}T14:45:00",
+            "origin": {"type": "flow", "premium": 185499, "contract": "PLTR261113C00185000"}})
+    saved = (flowdata.alerts, charts._yahoo)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: [{"t": f"{day}T{h:02d}:{m:02d}:00", "o": 190, "h": 191, "l": 189, "c": 190.5, "v": 10}
+                                               for h in range(9, 17) for m in (0, 15, 30, 45)]
+        seen = {}
+        def fake(sub, min_premium, opt_type, *a, **k):
+            seen.update(min=min_premium, type=opt_type, ticker=a[4])
+            return {"alerts": [{"ticker": "PLTR", "type": "call", "premium": 185499, "contract": "PLTR261113C00185000", "atEt": f"{day} 14:44", "sweep": True},
+                               {"ticker": "PLTR", "type": "put", "premium": 40000, "contract": "PLTR261218P00140000", "atEt": f"{day} 10:05"}]}
+        flowdata.alerts = fake
+        code, d = call("GET", f"/bot/{rid}/flowchart")
+        assert code == 200 and d["symbol"] == "PLTR" and d["evaluatedAt"] == f"{day}T14:45", d
+        assert all("09:30" <= b["t"][11:16] < "16:00" for b in d["bars"]) and len(d["bars"]) == 26
+        assert [a["type"] for a in d["alerts"]] == ["put", "call"] and d["alerts"][1]["big"] and not d["alerts"][0]["big"]
+        assert seen == {"min": 10000, "type": "all", "ticker": "PLTR"} and d["trigger"]["contract"] == "PLTR261113C00185000"
+    finally:
+        flowdata.alerts, charts._yahoo = saved
 
 
 def test_analytics():

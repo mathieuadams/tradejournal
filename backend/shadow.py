@@ -320,7 +320,19 @@ def _stats(rows):
             "bestR": max(rs) if rs else None, "worstR": min(rs) if rs else None}
 
 
-def summary(sub, days=5):
+def skipped_list(sub, days=35, why=None, claude=None):
+    """The skipped trades behind one row of the summary (a skip reason or a Claude verdict), best R first."""
+    s = summary(sub, days, with_rows=True)
+    rows = s["rows"]
+    if why is not None:
+        rows = [x for x in rows if x["why"] == why]
+    if claude is not None:
+        rows = [x for x in rows if (x["claude"] or "not checked") == claude]
+    rows.sort(key=lambda x: (x["R"] is None, -(x["R"] or 0)))
+    return {"days": days, "why": why, "claude": claude, "n": len(rows), "items": rows}
+
+
+def summary(sub, days=5, with_rows=False):
     pk = db.upk(sub)
     cut = (now_ny() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
     all_recs = db.q_prefix(pk, "BOT#")
@@ -340,7 +352,9 @@ def summary(sub, days=5):
             continue
         skipped.append({"id": r["id"], "symbol": r.get("symbol"), "at": r.get("createdAt"), "decision": r.get("decision"),
                         "claude": (r.get("aiCheck") or {}).get("verdict"), "why": _why(r), "status": sh["status"],
-                        "plPct": sh["plPct"], "R": sh.get("R"), "exitReason": sh.get("exitReason"), "days": sh.get("days")})
+                        "plPct": sh["plPct"], "R": sh.get("R"), "exitReason": sh.get("exitReason"), "days": sh.get("days"),
+                        "contract": (r.get("proposal") or {}).get("contract"), "exp": (r.get("proposal") or {}).get("exp"),
+                        "strike": (r.get("proposal") or {}).get("strike"), "reason": (r.get("blocking") or [""])[0]})
     groups = {}
     for x in skipped:
         groups.setdefault(x["why"], []).append(x)
@@ -376,6 +390,7 @@ def summary(sub, days=5):
         "worst": sorted([x for x in skipped if x["R"] is not None], key=lambda x: x["R"])[:5],
         "run": {k: run.get(k) for k in ("status", "at", "result")},
         "exits": sorted([{"why": k, **_ex(v)} for k, v in ex.items()], key=lambda g: -g["n"]),
+        **({"rows": skipped} if with_rows else {}),
     }
 
 

@@ -265,7 +265,9 @@ def bot_evaluations(sub, claims, body, q):
         chunk = ev[(page - 1) * size: page * size]
         return {"page": page, "size": size, "total": total, "pages": max(1, -(-total // size)), "symbol": sym,
                 "items": [{**clean(r), "taken": bool(taken(r))} for r in chunk]}
-    ev = [r for r in allr if not taken(r) and (not claude_only or (r.get("aiCheck") or {}).get("verdict"))]
+    needle = (q.get("q") or "").strip().upper()
+    ev = [r for r in allr if not taken(r) and (not claude_only or (r.get("aiCheck") or {}).get("verdict"))
+          and (not needle or needle in (r.get("symbol") or ""))]
     if q.get("group") == "ticker":
         groups, order = {}, []
         for r in ev:                                   # newest first, so the first one seen is the latest
@@ -421,6 +423,16 @@ def bot_flow_summary(sub, claims, body, q):
     return shadow.flow_summary(sub, days)
 
 
+@route("GET", "/bot/shadow/list")
+def bot_shadow_list(sub, claims, body, q):
+    import shadow
+    try:
+        days = max(1, min(35, int(q.get("days") or 35)))
+    except ValueError:
+        days = 35
+    return shadow.skipped_list(sub, days, why=q.get("why"), claude=q.get("claude"))
+
+
 @route("GET", "/bot/shadow/summary")
 def bot_shadow_summary(sub, claims, body, q):
     import shadow
@@ -468,6 +480,12 @@ def bot_aireview(sub, claims, body, q, bid):
 def bot_reviewcharts(sub, claims, body, q, bid):
     import aicheck
     return aicheck.review_charts(sub, bid)
+
+
+@route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/flowchart")
+def bot_flowchart(sub, claims, body, q, bid):
+    import flowchart
+    return flowchart.build(sub, bid)
 
 
 @route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/charts")
