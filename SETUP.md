@@ -226,6 +226,10 @@ Every trading day at 15:40 ET Claude reviews each open bot position on fresh dai
 - **Repeat buyers and puts:** only alerts above the flow min premium ($100,000 by default) start an analysis. Each analysis then asks Unusual Whales for everything bought at the ask on that ticker, any contract, over the last 5 trading days (today included), from $10,000 up. Two **Flow** checks: *Repeat buying* (smaller call buys, number of contracts, different minutes, days, today vs the window; ✓ when 4+ smaller buys in 3+ different minutes total $200,000+, or Unusual Whales flags repeated hits with that total; information only) and *Puts not piling in* (puts vs calls bought over the window; above 0.5 blocks the buy). One Unusual Whales request per analysis. Settings → Unusual flow → Repeat buyers / The other side: puts.
 - **Which flow is worth acting on** (Paper bot page): every flow idea, taken (real result) or skipped (shadow result), grouped by premium, sweep, % at the ask, volume/OI, number of alerts, repeat prints, what started it, time of day, flow contract days to expiry and how far out of the money, in R.
 
+### Call bursts (tracking only)
+
+Paper bot → **Bursts**. A burst is a cluster of calls bought at the ask on one ticker within 30 minutes: $1M+ of call premium, 5x the ticker's normal 30-minute call premium, 8+ prints, 75%+ calls vs puts. Live: checked every minute with flow trading on (one Unusual Whales request per minute for all tickers); each burst is recorded with price move during the window (into weakness or chasing), time of day, contracts, and followed 1, 3 and 5 trading days later. **Run the 30-day replay** measures the same on the last 30 days for every ticker the bot evaluated (one Unusual Whales request per ticker, runs in parts of ~7 minutes), against a normal day on the same tickers, and by ingredient. Never traded.
+
 ## Step 8. Alerts for paper-bot orders (Amazon SNS)
 
 The bot publishes every order (buy, fill, exit order, position closed, cancel) to an Amazon SNS topic that the deploy creates.

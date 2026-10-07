@@ -1727,6 +1727,75 @@ async function loadFlow() {
   S.flowBusy = false; if (route() === 'gex') render();
 }
 function vBotEvals() { return vBot('evals'); }
+/* ---------- call bursts (tracking only) ---------- */
+async function loadBursts() {
+  S.burstsLoading = true;
+  try { S.bursts = await api(`/bot/bursts?days=${S.burstDays || 10}`); } catch (e) { S.bursts = { error: e.message }; }
+  S.burstsLoading = false;
+  const st = S.bursts && S.bursts.study;
+  if (st && ['starting', 'running', 'partial'].includes(st.status)) {
+    clearTimeout(S.burstPoll);
+    S.burstPoll = setTimeout(async () => {
+      if (route() !== 'botbursts') return;
+      if (S.bursts.study.status === 'partial' && !S.burstCont) {       // keep the replay going, part after part
+        S.burstCont = true;
+        try { await api('/bot/bursts/replay', { method: 'POST', body: {} }); } catch (e) {}
+        S.burstCont = false;
+      }
+      loadBursts();
+    }, 6000);
+  }
+  if (route() === 'botbursts') render();
+}
+const bpct = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}%</span>`;
+function burstLine(e) {
+  const tags = [e.move != null && e.move <= 0 ? 'into weakness' : e.move != null && e.move >= 1 ? 'chasing' : '', e.tod !== 'midday' ? `at the ${e.tod}` : '', e.contracts >= 5 ? `${e.contracts} contracts` : ''].filter(Boolean);
+  return `<li data-evticker="${esc(e.ticker)}">
+    <span class="shl-a"><b>${esc(e.ticker)}</b> <span class="muted">${esc((e.date || '').slice(5))} ${esc(e.start)}–${esc(e.end)}</span></span>
+    <span class="shl-r"><b>${money(e.cp, false)}</b>${e.ratio != null ? ` <span class="muted">${e.ratio}×</span>` : ''}</span>
+    <span class="shl-b muted">${e.n} call prints (avg ${money(Math.round(e.cp / Math.max(1, e.n)), false)}, largest ${money(e.maxPrint || 0, false)}) · ${Math.round(e.callShare * 100)}% calls · price ${e.move == null ? '—' : (e.move > 0 ? '+' : '') + e.move + '%'} during${tags.length ? ' · ' + esc(tags.join(' · ')) : ''}</span>
+    <span class="shl-b">${['fwd1', 'fwd3', 'fwd5'].map((k, i) => `<span class="muted">+${[1, 3, 5][i]}d</span> ${bpct(e[k])}`).join(' &nbsp; ')}</span></li>`;
+}
+function vBursts() {
+  const d = S.bursts;
+  const head0 = head('Call bursts', 'Tracking only: clusters of calls bought at the ask, much bigger than the ticker’s normal flow, within 30 minutes. Recorded and followed, never traded.', '');
+  if (!d) return head0 + '<p class="loading">Loading…</p>';
+  if (d.error) return head0 + `<div class="errbox">${esc(d.error)}</div>`;
+  const c = d.cfg || {}, lv = d.live || {}, st = d.study;
+  const today = nyTime(Date.now()).slice(0, 10);
+  const thr = `${money(c.burstMinPremium, false)}+ of calls in 30 min, ${c.burstMinRatio}× the ticker's normal, ${c.burstMinPrints}+ prints, ${Math.round(c.burstMinCallShare * 100)}%+ calls`;
+  const live = `<section class="panel"><h2>Live</h2>
+    <p style="margin:0 0 6px">${lv.lastRun ? `Last scan ${esc(lv.lastRun.replace('T', ' ').slice(5, 16))} ET · ${lv.today === today ? lv.burstsToday || 0 : 0} burst${(lv.burstsToday || 0) === 1 && lv.today === today ? '' : 's'} today` : 'Not running yet: live tracking runs every minute with flow trading on (9:35–15:50 ET).'}</p>
+    <p class="muted" style="font-size:.84rem;margin:0">A burst = ${esc(thr)}. One per ticker every ${c.burstCooldownMin} min. Results 1, 3 and 5 trading days later are filled in after each close.</p>
+    <details style="margin-top:8px" ${S.burstEdit ? 'open' : ''}><summary class="muted" style="cursor:pointer">Change what counts as a burst</summary>
+      <div class="form-grid" style="margin-top:8px;align-items:end">
+        <div class="field"><label for="bu-prem">Call premium in 30 min ($)</label><input id="bu-prem" type="number" step="50000" value="${c.burstMinPremium}"></div>
+        <div class="field"><label for="bu-n">Call prints in 30 min</label><input id="bu-n" type="number" step="1" value="${c.burstMinPrints}"></div>
+        <div class="field"><label for="bu-r">× the ticker's normal</label><input id="bu-r" type="number" step="0.5" value="${c.burstMinRatio}"></div>
+        <div class="field"><label for="bu-s">Min % calls (vs puts)</label><input id="bu-s" type="number" step="5" value="${Math.round(c.burstMinCallShare * 100)}"></div>
+        <div class="field"><button class="btn coachbtn" data-burstsave="1">Save</button></div></div>
+      <p class="muted" style="font-size:.8rem;margin:4px 0 0">Applies to live tracking from the next minute, and re-sorts the 30-day replay right away (clusters from $100k and 3 prints are kept, so lowering the thresholds works without running it again).</p></details>
+    ${(d.events || []).length ? `<ul class="shl" style="margin-top:10px">${d.events.map(burstLine).join('')}</ul>` : `<p class="muted" style="margin:10px 0 0">No burst in the last ${d.days} days yet.</p>`}</section>`;
+  const R = st && st.status;
+  const btn = `<button class="btn" data-burstrun="1" ${['starting', 'running', 'partial'].includes(R) ? 'disabled' : ''}>${!st ? 'Run the 30-day replay' : ['starting', 'running', 'partial'].includes(R) ? `Replaying… ${st.done || 0}/${st.total || '?'} tickers` : 'Run it again'}</button>`;
+  const grow = g => `<tr><td class="shg-l">${esc(g.label)}</td><td class="r" data-l="trades">${g.n}</td><td class="r" data-l="d1">${bpct(g.fwd1)}</td><td class="r" data-l="d3">${bpct(g.fwd3)}</td><td class="r" data-l="d5">${bpct(g.fwd5)}</td><td class="r" data-l="w5">${g.win5 == null ? '—' : g.win5 + '%'}</td></tr>`;
+  const gth = t => `<thead><tr><th>${esc(t)}</th><th class="r">Bursts</th><th class="r">+1 day</th><th class="r">+3 days</th><th class="r">+5 days</th><th class="r">Up after 5 days</th></tr></thead>`;
+  const card = (k, g, sub) => `<div class="stat"><span>${k}</span><b>${g ? bpct(g.fwd5) : '—'}</b><span>${sub}</span></div>`;
+  const study = `<section class="panel" style="margin-top:14px"><div class="cal-head"><h2>30-day replay</h2>${btn}</div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 10px">Replays the last 30 days of flow on every ticker the bot evaluated, finds the same clusters, and measures the stock 1, 3 and 5 trading days later against a normal day on the same tickers. A wider net (clusters from $100k and 3 prints, 1.5× normal) is included so the thresholds themselves can be judged.</p>
+    ${!st ? '' : !st.all ? `<p class="muted">${R === 'done' ? 'No cluster found.' : 'Working…'}${st.lastError ? ` Last error: ${esc(st.lastError)}` : ''}</p>` : `
+    <div class="strip" style="margin-bottom:12px">
+      ${card('Bursts (your thresholds): +5 days', st.strict, st.strict ? `${st.strict.n} bursts · +1d ${(st.strict.fwd1 ?? '—')}% · ${st.strict.win5 ?? '—'}% up` : 'none found')}
+      ${card('All clusters (wide net): +5 days', st.all, `${st.all.n} clusters · ${st.all.win5 ?? '—'}% up`)}
+      <div class="stat"><span>Normal day, same tickers: +5 days</span><b>${bpct(st.baseline.fwd5)}</b><span>+1d ${st.baseline.fwd1 ?? '—'}% · +3d ${st.baseline.fwd3 ?? '—'}%</span></div>
+    </div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 10px">The edge is the difference with the normal day. Small groups (under ~30) are noise.</p>
+    ${st.groups.map(g => `<div class="tablewrap" style="margin-top:10px"><table class="shg bst">${gth(g.title)}<tbody>${g.rows.map(grow).join('')}</tbody></table></div>`).join('')}
+    ${(st.top || []).length ? `<h3 style="font-size:.95rem;margin:14px 0 6px">Bursts found (your thresholds), biggest first</h3><ul class="shl">${st.top.map(burstLine).join('')}</ul>` : ''}`}
+    ${st && st.updatedAt ? `<p class="muted" style="font-size:.8rem;margin:10px 0 0">${R === 'done' ? 'Finished' : 'Updated'} ${esc(st.updatedAt.replace('T', ' ').slice(5, 16))} ET${st.errors ? ` · ${st.errors} ticker${st.errors > 1 ? 's' : ''} skipped (data errors)` : ''}</p>` : ''}
+  </section>`;
+  return head0 + live + study;
+}
 function vBotSkipped() {
   return head('Skipped & what-if', 'What the trades the bot skipped would have done, what happened after its exits, and which flow is worth acting on', '')
     + shadowSummary() + flowSummary();
@@ -1941,6 +2010,7 @@ async function refreshNow(quiet) {
     if (v === 'bot' || v === 'dashboard') { await loadBot(true); }
     if (v === 'botevals') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); }
     if (v === 'botskipped') { await loadShadow(); }
+    if (v === 'botbursts') { await loadBursts(); }
     else if (v === 'gex') { if (S.flow && !S.flowBusy && $('#fl-prem')) loadFlow(); loadMarketGamma(true); }
     else if (v === 'coach' || v === 'dashboard') { await loadNotes(true); }
     if (S.botRes && S.botRes.id && S.bot && S.bot.items) { const n = S.bot.items.find(i => i.id === S.botRes.id); if (n) S.botRes = { ...S.botRes, ...n }; }
@@ -1984,9 +2054,9 @@ setInterval(() => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botskipped', 'Skipped & what-if']],
+  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botskipped', 'Skipped & what-if'], ['botbursts', 'Bursts']],
 };
-const isBotRoute = () => ['bot', 'botevals', 'botskipped'].includes(route());
+const isBotRoute = () => ['bot', 'botevals', 'botskipped', 'botbursts'].includes(route());
 const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
@@ -2012,7 +2082,8 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
     const t = evTicker(), mode = t ? `t:${t}` : 'group';
     if ((!S.botEvals || S.botEvals.mode !== mode) && S.evLoading !== mode) { S.evLoading = mode; loadEvals(1).finally(() => { S.evLoading = null; }); }
   }],
-  botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+  botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }],
+  botbursts: [vBursts, () => { if (!S.bursts && !S.burstsLoading) loadBursts(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
 const evTicker = () => route() === 'botevals' ? (hashParam('t') || '').toUpperCase() : '';
@@ -2032,7 +2103,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2042,6 +2113,16 @@ document.addEventListener('click', e => {
   if (el.dataset.shwhy !== undefined) { openShadow('why', el.dataset.shwhy); return; }
   if (el.dataset.shclaude !== undefined) { openShadow('claude', el.dataset.shclaude); return; }
   if (el.dataset.shopen) { openRecord(el.dataset.shopen); return; }
+  if (el.dataset.burstsave) {
+    const body = { burstMinPremium: +$('#bu-prem').value, burstMinPrints: +$('#bu-n').value, burstMinRatio: +$('#bu-r').value, burstMinCallShare: (+$('#bu-s').value) / 100 };
+    S.burstEdit = true;
+    api('/bot/settings', { method: 'PUT', body }).then(st => { if (S.bot) S.bot.settings = st; toast('Saved'); loadBursts(); }).catch(err => toast(err.message));
+    return;
+  }
+  if (el.dataset.burstrun) {
+    api('/bot/bursts/replay', { method: 'POST', body: { restart: true } }).then(() => { toast('Replay started: it takes a few minutes. You can leave this page.'); loadBursts(); }).catch(err => toast(err.message));
+    return;
+  }
   if (el.dataset.fci) { const [id, k] = el.dataset.fci.split('|'); S.fcSel = { id, k: +k }; render(); return; }
   if (el.dataset.uwtest) {
     S.uwTesting = true; render();

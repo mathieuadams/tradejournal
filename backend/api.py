@@ -328,7 +328,10 @@ def bot_settings(sub, claims, body, q):
         "flowAuto": bool(body.get("flowAuto", cur["flowAuto"])), "flowMinPremium": num("flowMinPremium", 0, 1e9),
         "flowMinDte": int(num("flowMinDte", 0, 400)), "flowMaxDte": int(num("flowMaxDte", 0, 800)),
         "flowAskSide": bool(body.get("flowAskSide", cur["flowAskSide"])), "flowSweeps": bool(body.get("flowSweeps", cur["flowSweeps"])),
-        "flowMinVolOi": num("flowMinVolOi", 0, 1000), "flowWindowMin": int(num("flowWindowMin", 5, 240)), "excludeEtfs": bool(body.get("excludeEtfs", cur["excludeEtfs"])),
+        "flowMinVolOi": num("flowMinVolOi", 0, 1000), "flowWindowMin": int(num("flowWindowMin", 5, 240)),
+        "burstMinPremium": num("burstMinPremium", 10000, 1e8), "burstMinRatio": num("burstMinRatio", 1, 100),
+        "burstMinPrints": int(num("burstMinPrints", 2, 200)), "burstMinCallShare": num("burstMinCallShare", 0.5, 1),
+        "burstCooldownMin": int(num("burstCooldownMin", 15, 390)), "excludeEtfs": bool(body.get("excludeEtfs", cur["excludeEtfs"])),
         "flowCooldownMin": int(num("flowCooldownMin", 1, 1440)), "flowMaxEvals": int(num("flowMaxEvals", 1, 10)),
         "chaseStep": num("chaseStep", 0.05, 5), "chaseSeconds": int(num("chaseSeconds", 5, 60)),
         "chaseMaxSteps": int(num("chaseMaxSteps", 0, 20)), "chaseMaxPct": num("chaseMaxPct", 0, 50),
@@ -411,6 +414,31 @@ def bot_flow_test(sub, claims, body, q):
     except Exception as e:
         out["filterError"] = str(e)[:200]
     return out
+
+
+@route("GET", "/bot/bursts")
+def bot_bursts(sub, claims, body, q):
+    import bursts
+    try:
+        days = max(1, min(30, int(q.get("days") or 10)))
+    except ValueError:
+        days = 10
+    return bursts.page(sub, days)
+
+
+@route("POST", "/bot/bursts/replay")
+def bot_bursts_replay(sub, claims, body, q):
+    """Start (restart=true) or continue the 30-day burst replay in the bot function (a few minutes per part)."""
+    pk = db.upk(sub)
+    st = db.get(pk, "BURSTSTUDY") or {}
+    restart = bool(body.get("restart")) or st.get("status") not in ("partial",)
+    if restart:
+        db.put({"PK": pk, "SK": "BURSTSTUDY", "status": "starting", "startedAt": iso(now_ny()), "done": 0, "universe": [], "bursts": []})
+    else:
+        db.update(pk, "BURSTSTUDY", {"status": "running"})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "burstreplay", "restart": restart}))
+    return {"status": "running"}
 
 
 @route("GET", "/bot/flow/summary")

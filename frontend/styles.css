@@ -391,3 +391,14 @@ main{min-width:0}
 }
 tr.sel td{background:var(--sunk)}
 .shbox{scroll-margin-top:16px}
+@media (max-width:700px){
+  table.bst tr td[data-l="trades"]::after{content:" bursts"}
+  table.bst tr td[data-l="d1"]::before{content:"1d "}
+  table.bst tr td[data-l="d3"]::before{content:"3d "}
+  table.bst tr td[data-l="d5"]::before{content:"5d "}
+  table.bst tr td[data-l="w5"]{text-align:right}
+  table.bst tr td[data-l="w5"]::after{content:" up"}
+  table.shg.bst tr{display:flex;flex-wrap:wrap;gap:2px 12px}
+  table.shg.bst tr td.shg-l{flex-basis:100%}
+  table.shg.bst tr td[data-l="w5"]{margin-left:auto}
+}

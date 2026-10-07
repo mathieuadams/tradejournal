@@ -1587,6 +1587,71 @@ def test_flow_chart():
         flowdata.alerts, charts._yahoo = saved
 
 
+def test_call_bursts():
+    """Clusters of calls bought at the ask, far above the ticker's normal: found in a 30-day replay and live, followed
+    1/3/5 days later, never traded."""
+    import autotrader, flowdata, charts, bursts, datetime as dt
+    STORE.clear()
+    pk = db.upk(SUB)
+    now = autotrader.now_ny()
+    days = []
+    d = now.date() - dt.timedelta(days=12)
+    while len(days) < 8:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    burst_day = days[1]
+    # the bot evaluated VST in the last 30 days -> it's in the replay
+    db.put({"PK": pk, "SK": "BOT#20261001100000-aaaaaa", "id": "20261001100000-aaaaaa", "symbol": "VST", "status": "proposed",
+            "createdAt": f"{days[0]}T10:00:00"})
+    def mk(day, hm, prem, typ="call", c="VST261218C00140000", u=140.0):
+        return {"ticker": "VST", "type": typ, "premium": prem, "contract": c, "atEt": f"{day} {hm}", "underlying": u,
+                "at": f"{day}T{hm}:00Z", "id": f"{day}{hm}{prem}{c}"}
+    normal = [mk(dd, "11:00", 20000) for dd in days]                                   # quiet flow every day
+    burst = [mk(burst_day, f"15:{35 + i:02d}", 150000, c=f"VST261218C001{40 + i % 5}000", u=140.0 - i * 0.1) for i in range(10)]
+    flowdata_saved, yahoo_saved = flowdata.alerts, charts._yahoo
+    try:
+        flowdata.alerts = lambda sub, *a, **k: {"alerts": normal + burst + [mk(burst_day, "15:40", 50000, typ="put")]}
+        closes = {dd: 140.0 + i * 2 for i, dd in enumerate(days)}                      # rises after the burst
+        charts._yahoo = lambda sym, tf, s_, e: [{"t": f"{dd}T00:00:00", "o": c, "h": c, "l": c, "c": c} for dd, c in closes.items()]
+        out = bursts.replay(SUB, restart=True)
+        assert out["status"] == "done" and out["total"] == 1 and out["bursts"] >= 1, out
+        st = STORE[(pk, "BURSTSTUDY")]
+        b = next(x for x in st["bursts"] if x["strict"])
+        assert b["ticker"] == "VST" and b["date"] == burst_day and b["n"] >= 8 and b["cp"] >= 1_000_000 and b["ratio"] >= 5
+        # small prints stacking: 8 x $40k in 30 min = $320k counts with the default thresholds, and thresholds re-sort without a re-run
+        assert bursts.DEFAULTS["burstMinPremium"] == 250000
+        assert b["tod"] == "close" and b["move"] < 0 and b["callShare"] >= 0.75
+        assert b["fwd1"] == round((closes[days[2]] / b["price"] - 1) * 100, 2) and b["fwd5"] is not None
+        assert STORE[(pk, "BURSTBASE")]["tickers"]["VST"]["dailyCall"] > 0
+        code, pg = call("GET", "/bot/bursts")
+        assert code == 200 and pg["study"]["status"] == "done" and pg["study"]["strict"]["n"] >= 1 and pg["study"]["baseline"]["fwd1"] is not None
+        assert any(g["title"] == "Price during the window" for g in pg["study"]["groups"])
+        n0 = pg["study"]["strict"]["n"]
+        call("PUT", "/bot/settings", {"burstMinPremium": 5_000_000})
+        code, pg2 = call("GET", "/bot/bursts")
+        assert pg2["study"]["strict"] is None and pg2["study"]["all"]["n"] == pg["study"]["all"]["n"]
+        call("PUT", "/bot/settings", {"burstMinPremium": 250000})
+        # live: today's prints add up to a burst once; the same ticker isn't recorded again within the cooldown
+        today = now.strftime("%Y-%m-%d")
+        live = [mk(today, f"10:{10 + i:02d}", 150000, u=150 - i * 0.05) for i in range(9)]
+        flowdata.alerts = lambda sub, *a, **k: {"alerts": live}
+        r1 = bursts.live_scan(SUB)
+        assert r1["bursts"] == ["VST"], r1
+        evs = [v for (p_, s_), v in STORE.items() if s_.startswith("BURST#")]
+        assert len(evs) == 1 and evs[0]["ticker"] == "VST" and evs[0]["normalKnown"]
+        live.append(mk(today, "10:25", 900000))
+        r2 = bursts.live_scan(SUB)
+        assert r2["bursts"] == [] and r2["new"] == 1
+        # after the close: forward results for live bursts
+        closes[today] = 150.0
+        assert bursts.forward_update(SUB)["updated"] in (0, 1)
+        code, _ = call("POST", "/bot/bursts/replay", {"restart": True})
+        assert code == 200 and STORE[(pk, "BURSTSTUDY")]["status"] == "starting"
+    finally:
+        flowdata.alerts, charts._yahoo = flowdata_saved, yahoo_saved
+
+
 def test_analytics():
     base = dict(status="closed", setup="", tags=[], r=None, mfe=None, min=600, date="2026-09-21")
     ts = [dict(base, openTs=f"2026-09-21T10:0{i}:00", net=n) for i, n in enumerate([-100, -50, -80, 200, -60])]

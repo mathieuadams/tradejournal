@@ -66,6 +66,7 @@ DEFAULTS = {"enabled": False, "autoSubmit": False, "watchlist": [], "dteMin": 40
             "aiExitHoldMinConf": 50, "aiExitHoldLossPct": 25,
             # repeat buyers: many smaller prints on the same contract during the session
             "flowWindowMin": 60,
+            "burstMinPremium": 250000, "burstMinRatio": 4.0, "burstMinPrints": 6, "burstMinCallShare": 0.75, "burstCooldownMin": 120,
             "repeatEnabled": True, "repeatDays": 5, "repeatMinPremium": 10000, "repeatMinHits": 4, "repeatMinTotal": 200000, "repeatMinMinutes": 3,
             # the other side: puts bought on the same ticker during the session
             "putCheck": True, "putBlock": False, "putMaxRatio": 0.5}
@@ -1471,6 +1472,11 @@ def tick(sub):
         cfg = settings(sub)
         if cfg["flowAuto"] and market_open():
             out["flow"] = flow_scan(sub, cfg)
+            try:                                       # call bursts: tracked only, never traded
+                import bursts
+                out["bursts"] = bursts.live_scan(sub)
+            except Exception as e:
+                print("burst scan failed", e)
         return out
     finally:
         db.unlock(db.upk(sub), "BOTLOCK")
@@ -1501,11 +1507,19 @@ def handler(event, context_):
             elif job == "shadow":
                 import shadow
                 try:
+                    import bursts
+                    bursts.forward_update(sub)
+                except Exception as e:
+                    print("burst forward update failed", e)
+                try:
                     out[sub] = shadow.run(sub)
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "done", "at": iso(now_ny()), "result": out[sub]})
                 except Exception as e:
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "error", "at": iso(now_ny()), "result": {"error": str(e)[:200]}})
                     raise
+            elif job == "burstreplay":
+                import bursts
+                out[sub] = bursts.replay(sub, restart=bool(event.get("restart")))
             elif job in ("review", "aireview"):
                 import aicheck
                 out[sub] = aicheck.review_all(sub, only_id=event.get("id"), auto_close=(job == "review"))
