@@ -389,3 +389,5 @@ main{min-width:0}
   table.shg tr td[data-l="total"]{text-align:right}
   table.shg tr td[data-l="total"]::after{content:" total"}
 }
+tr.sel td{background:var(--sunk)}
+.shbox{scroll-margin-top:16px}

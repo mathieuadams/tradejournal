@@ -1397,9 +1397,11 @@ function shList() {
 async function openShadow(kind, key) {
   if (S.shSel && S.shSel[kind] === key) { S.shSel = null; render(); return; }
   S.shSel = { [kind]: key }; S.shList = { loading: true }; render();
+  const show = () => { const b = $('.shbox'); if (b) b.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  show();                                          // the list opens under the table: bring it into view
   try { S.shList = await api(`/bot/shadow/list?days=${S.shadowDays || 5}&${kind}=${encodeURIComponent(key)}`); }
   catch (e) { S.shList = { error: e.message }; }
-  render();
+  render(); show();
 }
 async function openRecord(id) {
   try {
@@ -1429,7 +1431,7 @@ function shadowSummary() {
   if (!d) return `<section>${head}<p class="loading">Loading…</p></section>`;
   if (d.error) return `<section>${head}<div class="errbox">${esc(d.error)}</div></section>`;
   const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
-  const row = (label, g, attr) => `<tr ${attr || ''} ${attr ? 'style="cursor:pointer"' : ''}><td class="shg-l">${label}${attr ? ' <span class="muted">›</span>' : ''}</td><td class="r" data-l="trades">${g.n}${g.tracking ? ` <span class="muted">(${g.tracking} still open)</span>` : ''}</td><td class="r" data-l="winners">${g.winPct == null ? '—' : g.winPct + '%'}</td><td class="r" data-l="avg">${R(g.avgR)}</td><td class="r" data-l="total">${R(g.totalR)}</td></tr>`;
+  const row = (label, g, attr) => `<tr ${attr || ''} ${attr ? 'style="cursor:pointer"' : ''} ${S.shSel && attr && ((S.shSel.why !== undefined && attr.includes(`data-shwhy="${esc(S.shSel.why)}"`)) || (S.shSel.claude !== undefined && attr.includes(`data-shclaude="${esc(S.shSel.claude)}"`))) ? 'class="sel" aria-current="true"' : ''}><td class="shg-l">${label}${attr ? ' <span class="muted">›</span>' : ''}</td><td class="r" data-l="trades">${g.n}${g.tracking ? ` <span class="muted">(${g.tracking} still open)</span>` : ''}</td><td class="r" data-l="winners">${g.winPct == null ? '—' : g.winPct + '%'}</td><td class="r" data-l="avg">${R(g.avgR)}</td><td class="r" data-l="total">${R(g.totalR)}</td></tr>`;
   const th = first => `<thead><tr><th>${first}</th><th class="r">Trades</th><th class="r">Winners</th><th class="r">Avg R</th><th class="r">Total R</th></tr></thead>`;
   const sk = d.skipped, tk = d.taken;
   const rr = (d.run && d.run.result) || {};
