@@ -257,7 +257,7 @@ def study_summary(st, c=None):
             {"title": "Contracts bought", "rows": order(["1 contract", "2–4 contracts", "5+ contracts"])(_group(rows, con_b))},
             {"title": "Calls vs puts in the window", "rows": order(["60–75% calls", "75–90% calls", "90%+ calls"])(_group(rows, share_b))},
         ],
-        "top": [r for r in rows if r["strict"]][:40],
+        "top": sorted([r for r in rows if r["strict"]], key=lambda r: -r["cp"])[:200],
     }
 
 
@@ -345,7 +345,7 @@ def page(sub, days=10):
     try:
         cut = (now_ny() - timedelta(days=days)).strftime("%Y%m%d")
         evs = [{k: v for k, v in e.items() if k != "PK"} for e in db.q_prefix(pk, "BURST#") if (e.get("SK") or "")[6:14] >= cut]
-        out["events"] = sorted(evs, key=lambda e: e["SK"], reverse=True)[:300]
+        out["events"] = sorted(evs, key=lambda e: -(e.get("cp") or 0))[:300]
     except Exception as e:
         traceback.print_exc()
         out["errors"].append(f"live bursts: {str(e)[:200]}")

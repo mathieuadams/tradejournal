@@ -402,3 +402,6 @@ tr.sel td{background:var(--sunk)}
   table.shg.bst tr td.shg-l{flex-basis:100%}
   table.shg.bst tr td[data-l="w5"]{margin-left:auto}
 }
+.bgrp{display:grid;gap:8px}
+.bgrp-i{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.bgrp-h{display:grid;grid-template-columns:1fr auto;gap:2px 10px;cursor:pointer}

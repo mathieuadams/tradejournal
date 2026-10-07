@@ -1756,6 +1756,23 @@ function burstLine(e) {
     <span class="shl-b muted">${e.n} call prints (avg ${money(Math.round(e.cp / Math.max(1, e.n)), false)}, largest ${money(e.maxPrint || 0, false)}) · ${Math.round(e.callShare * 100)}% calls · price ${e.move == null ? '—' : (e.move > 0 ? '+' : '') + e.move + '%'} during${tags.length ? ' · ' + esc(tags.join(' · ')) : ''}</span>
     <span class="shl-b">${['fwd1', 'fwd3', 'fwd5'].map((k, i) => `<span class="muted">+${[1, 3, 5][i]}d</span> ${bpct(e[k])}`).join(' &nbsp; ')}</span></li>`;
 }
+function burstGroups(evs, key) {
+  // one block per ticker, the ticker with the largest burst first; inside, largest burst first
+  const g = {};
+  (evs || []).forEach(e => { (g[e.ticker] = g[e.ticker] || []).push(e); });
+  const list = Object.entries(g).map(([t, xs]) => ({ t, xs: xs.sort((a, b) => b.cp - a.cp) }))
+    .sort((a, b) => b.xs[0].cp - a.xs[0].cp);
+  if (!list.length) return '';
+  return `<div class="bgrp">${list.map(({ t, xs }) => {
+    const tot = xs.reduce((s2, e) => s2 + e.cp, 0), top = xs[0];
+    const open = S.burstOpen && S.burstOpen[key + t];
+    return `<div class="bgrp-i"><div class="bgrp-h" data-burstgrp="${esc(key + t)}">
+        <span><b>${esc(t)}</b> <span class="muted">${xs.length} burst${xs.length > 1 ? 's' : ''} · ${money(tot, false)} total</span></span>
+        <span style="text-align:right"><b>${money(top.cp, false)}</b>${top.ratio != null ? ` <span class="muted">${top.ratio}×</span>` : ''} <span class="muted">${open ? '▾' : '▸'}</span></span>
+        <span class="muted" style="grid-column:1/3;font-size:.8rem">largest ${esc((top.date || '').slice(5))} ${esc(top.start)}–${esc(top.end)} · ${top.n} prints${top.move != null ? ` · price ${top.move > 0 ? '+' : ''}${top.move}% during` : ''}${top.fwd5 != null ? ` · +5d ${top.fwd5 > 0 ? '+' : ''}${top.fwd5}%` : top.fwd1 != null ? ` · +1d ${top.fwd1 > 0 ? '+' : ''}${top.fwd1}%` : ''}</span></div>
+      ${open ? `<ul class="shl" style="margin:6px 0 4px">${xs.map(burstLine).join('')}</ul><p style="margin:0 0 6px"><a href="#botevals?t=${encodeURIComponent(t)}" class="linkbtn">Open ${esc(t)} (evaluations and flow chart) ›</a></p>` : ''}</div>`;
+  }).join('')}</div>`;
+}
 function vBursts() {
   const d = S.bursts;
   const head0 = head('Call bursts', 'Tracking only: clusters of calls bought at the ask, much bigger than the ticker’s normal flow, within 30 minutes. Recorded and followed, never traded.', '');
@@ -1775,7 +1792,7 @@ function vBursts() {
         <div class="field"><label for="bu-s">Min % calls (vs puts)</label><input id="bu-s" type="number" step="5" value="${Math.round(c.burstMinCallShare * 100)}"></div>
         <div class="field"><button class="btn coachbtn" data-burstsave="1">Save</button></div></div>
       <p class="muted" style="font-size:.8rem;margin:4px 0 0">Applies to live tracking from the next minute, and re-sorts the 30-day replay right away (clusters from $100k and 3 prints are kept, so lowering the thresholds works without running it again).</p></details>
-    ${(d.events || []).length ? `<ul class="shl" style="margin-top:10px">${d.events.map(burstLine).join('')}</ul>` : `<p class="muted" style="margin:10px 0 0">No burst in the last ${d.days} days yet.</p>`}</section>`;
+    ${(d.events || []).length ? `<div style="margin-top:10px">${burstGroups(d.events, 'live:')}</div>` : `<p class="muted" style="margin:10px 0 0">No burst in the last ${d.days} days yet.</p>`}</section>`;
   const R = st && st.status;
   const btn = `<button class="btn" data-burstrun="1" ${['starting', 'running', 'partial'].includes(R) ? 'disabled' : ''}>${!st ? 'Run the 30-day replay' : ['starting', 'running', 'partial'].includes(R) ? `Replaying… ${st.done || 0}/${st.total || '?'} tickers` : 'Run it again'}</button>`;
   const grow = g => `<tr><td class="shg-l">${esc(g.label)}</td><td class="r" data-l="trades">${g.n}</td><td class="r" data-l="d1">${bpct(g.fwd1)}</td><td class="r" data-l="d3">${bpct(g.fwd3)}</td><td class="r" data-l="d5">${bpct(g.fwd5)}</td><td class="r" data-l="w5">${g.win5 == null ? '—' : g.win5 + '%'}</td></tr>`;
@@ -1791,7 +1808,7 @@ function vBursts() {
     </div>
     <p class="muted" style="font-size:.84rem;margin:0 0 10px">The edge is the difference with the normal day. Small groups (under ~30) are noise.</p>
     ${st.groups.map(g => `<div class="tablewrap" style="margin-top:10px"><table class="shg bst">${gth(g.title)}<tbody>${g.rows.map(grow).join('')}</tbody></table></div>`).join('')}
-    ${(st.top || []).length ? `<h3 style="font-size:.95rem;margin:14px 0 6px">Bursts found (your thresholds), biggest first</h3><ul class="shl">${st.top.map(burstLine).join('')}</ul>` : ''}`}
+    ${(st.top || []).length ? `<h3 style="font-size:.95rem;margin:14px 0 6px">Bursts found (your thresholds), by ticker, largest first</h3>${burstGroups(st.top, 'replay:')}` : ''}`}
     ${st && st.updatedAt ? `<p class="muted" style="font-size:.8rem;margin:10px 0 0">${R === 'done' ? 'Finished' : 'Updated'} ${esc(st.updatedAt.replace('T', ' ').slice(5, 16))} ET${st.errors ? ` · ${st.errors} ticker${st.errors > 1 ? 's' : ''} skipped (data errors)` : ''}</p>` : ''}
   </section>`;
   const errs = (d.errors || []).length ? `<div class="errbox" style="margin-bottom:12px">Part of this page couldn't load: ${d.errors.map(esc).join(' · ')}</div>` : '';
@@ -2104,7 +2121,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2114,6 +2131,7 @@ document.addEventListener('click', e => {
   if (el.dataset.shwhy !== undefined) { openShadow('why', el.dataset.shwhy); return; }
   if (el.dataset.shclaude !== undefined) { openShadow('claude', el.dataset.shclaude); return; }
   if (el.dataset.shopen) { openRecord(el.dataset.shopen); return; }
+  if (el.dataset.burstgrp) { S.burstOpen = S.burstOpen || {}; S.burstOpen[el.dataset.burstgrp] = !S.burstOpen[el.dataset.burstgrp]; render(); return; }
   if (el.dataset.burstsave) {
     const body = { burstMinPremium: +$('#bu-prem').value, burstMinPrints: +$('#bu-n').value, burstMinRatio: +$('#bu-r').value, burstMinCallShare: (+$('#bu-s').value) / 100 };
     S.burstEdit = true;
