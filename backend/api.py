@@ -429,6 +429,21 @@ def bot_explore(sub, claims, body, q):
     return explorer.explore(sub, days, conds[:8], bool(body.get("search")), min_n)
 
 
+@route("POST", "/bot/montecarlo")
+def bot_montecarlo(sub, claims, body, q):
+    import explorer
+    s = (db.get(db.upk(sub), "PROFILE") or {}).get("settings") or {}
+    try:
+        days = max(1, min(60, int(body.get("days") or 35)))
+        trades = int(body.get("trades") or 100)
+        risk = float(body.get("risk") or s.get("riskPerTrade") or 0) or None
+        account = float(body.get("account") or s.get("accountSize") or 0) or None
+    except (TypeError, ValueError):
+        raise BadRequest("Check the numbers.")
+    conds = body.get("conds") if isinstance(body.get("conds"), list) else []
+    return explorer.monte_carlo(sub, days, conds[:8], trades, 5000, risk, account)
+
+
 @route("GET", "/bot/bursts")
 def bot_bursts(sub, claims, body, q):
     import bursts

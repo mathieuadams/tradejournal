@@ -1830,6 +1830,65 @@ async function runExplore(search) {
   S.exBusy = null;
   if (route() === 'botexplore') render();
 }
+async function runMC() {
+  S.mcBusy = true; render();
+  const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? null : v; };
+  S.mcIn = { trades: num('#mc-n') || 100, risk: num('#mc-risk'), account: num('#mc-acct') };
+  try { S.mc = await api('/bot/montecarlo', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, ...S.mcIn } }); }
+  catch (e) { S.mc = { error: e.message }; }
+  S.mcBusy = false; if (route() === 'botexplore') render();
+}
+function mcFan(m) {
+  const f = m.fan, W = 600, H = 260, L = 46, Rr = 10, T = 10, B = 230;
+  const lo = Math.min(0, ...f.map(x => x.p5)), hi = Math.max(0, ...f.map(x => x.p95));
+  const X = t => L + t / m.trades * (W - L - Rr), Y = v => T + (hi - v) / ((hi - lo) || 1) * (B - T);
+  const band = (a, b2) => `M${f.map(x => `${X(x.trade)},${Y(x[a])}`).join('L')}L${[...f].reverse().map(x => `${X(x.trade)},${Y(x[b2])}`).join('L')}Z`;
+  let g = '';
+  for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4; g += `<line x1="${L}" x2="${W - Rr}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${Y(v) + 4}" font-size="12" text-anchor="end" fill="var(--muted)">${v.toFixed(0)}R</text>`; }
+  g += `<line x1="${L}" x2="${W - Rr}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--muted)" stroke-dasharray="4 3"/>`;
+  g += `<path d="${band('p5', 'p95')}" fill="var(--coach,#5b5bd6)" fill-opacity=".12"/><path d="${band('p25', 'p75')}" fill="var(--coach,#5b5bd6)" fill-opacity=".22"/>`;
+  g += `<path d="M${f.map(x => `${X(x.trade)},${Y(x.p50)}`).join('L')}" fill="none" stroke="var(--coach,#5b5bd6)" stroke-width="2.5"/>`;
+  g += `<text x="${W - Rr}" y="${B + 22}" font-size="12" text-anchor="end" fill="var(--muted)">${m.trades} trades</text><text x="${L}" y="${B + 22}" font-size="12" fill="var(--muted)">0</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="Simulated equity in R over the next trades">${g}</svg>`;
+}
+function mcHist(m) {
+  const h = m.hist, W = 600, H = 140, mx = Math.max(...h.counts), bw = (W - 20) / h.counts.length;
+  let g = '';
+  h.counts.forEach((c, i) => { const v0 = h.from + i * h.width, x = 10 + i * bw, hh = c / mx * 110;
+    g += `<rect x="${x + 1}" y="${120 - hh}" width="${bw - 2}" height="${hh}" fill="${v0 + h.width / 2 >= 0 ? 'var(--gain)' : 'var(--loss)'}" fill-opacity=".7"/>`; });
+  g += `<text x="10" y="136" font-size="12" fill="var(--muted)">${h.from.toFixed(0)}R</text><text x="${W - 10}" y="136" font-size="12" text-anchor="end" fill="var(--muted)">${(h.from + h.width * h.counts.length).toFixed(0)}R</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="Distribution of the total result">${g}</svg>`;
+}
+function mcPanel() {
+  const m = S.mc, i = S.mcIn || {};
+  const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 1)}R</span>`;
+  const form = `<div class="form-grid" style="align-items:end">
+      <div class="field"><label for="mc-n">Future trades to simulate</label><input id="mc-n" type="number" value="${i.trades || 100}" min="10" max="500"></div>
+      <div class="field"><label for="mc-risk">Risk per trade ($, 1R)</label><input id="mc-risk" type="number" value="${i.risk ?? ''}" placeholder="from your settings"></div>
+      <div class="field"><label for="mc-acct">Account size ($)</label><input id="mc-acct" type="number" value="${i.account ?? ''}" placeholder="from your settings"></div>
+      <div class="field"><button class="btn coachbtn" data-mcrun="1" ${S.mcBusy ? 'disabled' : ''}>${S.mcBusy ? 'Simulating…' : 'Run Monte Carlo'}</button></div></div>`;
+  let out = '';
+  if (m && m.error) out = `<p class="muted">${esc(m.error)}</p>`;
+  else if (m) {
+    const d = m.dollars;
+    out = `${m.note ? `<p class="muted" style="font-size:.84rem">${esc(m.note)}</p>` : ''}
+      <div class="strip" style="margin:10px 0">
+        <div class="stat"><span>After ${m.trades} trades (median)</span><b>${R(m.total.p50)}</b><span>5–95%: ${sgn(m.total.p5, 1)} to ${sgn(m.total.p95, 1)}R${d ? ` · ${money(d.p50)}` : ''}</span></div>
+        <div class="stat"><span>Chance of finishing up</span><b>${m.probPositive}%</b><span>from ${m.n} results · avg ${sgn(m.avgR, 2)}R · ${m.winPct}% winners</span></div>
+        <div class="stat"><span>Worst drop from a peak</span><b class="loss">${m.drawdown.p50}R</b><span>1 in 20 runs: ${m.drawdown.p95}R${d ? ` (${money(d.dd95)})` : ''}</span></div>
+        <div class="stat"><span>Longest losing streak</span><b>${m.losingStreak.p50}</b><span>1 in 20 runs: ${m.losingStreak.p95} in a row</span></div>
+      </div>
+      <h3 style="font-size:.95rem;margin:12px 0 4px">Equity in R over the next ${m.trades} trades <span class="muted" style="font-weight:400;font-size:.82rem">line = median · dark band = middle 50% · light band = 90% of runs</span></h3>
+      <div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${mcFan(m)}</div>
+      <h3 style="font-size:.95rem;margin:12px 0 4px">Where ${m.runs.toLocaleString()} runs ended</h3>
+      <div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${mcHist(m)}</div>
+      <p style="margin:10px 0 0;font-size:.9rem">${m.randomAsGood == null ? '' : `<b>Better than chance?</b> ${m.randomAsGood}% of random groups of ${m.n} ideas did at least as well (${m.randomAsGood <= 5 ? '<span class="gain">unlikely to be luck</span>' : m.randomAsGood <= 20 ? 'promising, not proven' : '<span class="loss">could easily be luck</span>'}).`}
+      ${d && d.halfAccountPct != null ? ` Chance of a drop of half the ${money(d.account, false)} account: <b>${d.halfAccountPct}%</b> at ${money(d.risk, false)} per trade.` : ''}</p>
+      <p class="muted" style="font-size:.8rem;margin:6px 0 0">Resamples these ideas' actual results ${m.runs.toLocaleString()} times. It assumes the future looks like this sample: market conditions change, so read it as a range, not a forecast.</p>`;
+  }
+  return `<section class="panel" style="margin-top:14px"><h2>Monte Carlo</h2>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Simulates the next trades by drawing from the results of the ideas matching your conditions above (${(S.exConds || []).length ? 'your filter' : 'all ideas'}).</p>${form}${out}</section>`;
+}
 function vExplore() {
   const d = S.ex;
   const h = head('Explorer', 'Combine any conditions and see how every matching idea did: the real result when the bot took it, the shadow result when it skipped it.', '');
@@ -1864,7 +1923,7 @@ function vExplore() {
   return h + `<section class="panel"><div class="cal-head"><h2>Conditions</h2><select id="ex-days">${[10, 20, 35, 60].map(n => `<option value="${n}" ${n === (S.exDays || 35) ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${chips || '<span class="muted">No condition: all ideas.</span>'}${chips ? ' <button class="btn" data-exclear="1">Clear</button>' : ''}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${fsel} ${picker}</div>
-    ${S.exBusy === 'filter' ? '<p class="loading" style="margin:8px 0 0">Filtering…</p>' : res + list}</section>` + search;
+    ${S.exBusy === 'filter' ? '<p class="loading" style="margin:8px 0 0">Filtering…</p>' : res + list}</section>` + mcPanel() + search;
 }
 function vBotSkipped() {
   return head('Skipped & what-if', 'What the trades the bot skipped would have done, what happened after its exits, and which flow is worth acting on', '')
@@ -2175,7 +2234,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2185,6 +2244,7 @@ document.addEventListener('click', e => {
   if (el.dataset.shwhy !== undefined) { openShadow('why', el.dataset.shwhy); return; }
   if (el.dataset.shclaude !== undefined) { openShadow('claude', el.dataset.shclaude); return; }
   if (el.dataset.shopen) { openRecord(el.dataset.shopen); return; }
+  if (el.dataset.mcrun) { runMC(); return; }
   if (el.dataset.exadd) {
     const f = (S.ex.features || []).find(x => x.key === S.exPick); if (!f) return;
     let c;

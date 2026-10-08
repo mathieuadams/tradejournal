@@ -1698,6 +1698,14 @@ def test_explorer():
     best = d["search"]["results"][0]
     assert best["avgR"] == 1.0 and best["n"] >= 10 and d["search"]["tested"] > 10, best
     assert any(c["key"] in ("callPut", "noBearFvg", "sweep") for c in best["conds"])
+    # Monte Carlo on the matching ideas, with a permutation test against random groups of all ideas
+    mc = explorer.monte_carlo(SUB, 35, [{"key": "callPut", "op": ">=", "value": 5}], trades=50, runs=1000, risk=200, account=20000, seed=1)
+    assert mc["n"] == 20 and mc["avgR"] == 1.0 and mc["total"]["p50"] == 50.0 and mc["probPositive"] == 100.0, mc
+    assert mc["randomAsGood"] == 0.0 and mc["dollars"]["p50"] == 10000 and len(mc["fan"]) >= 10 and sum(mc["hist"]["counts"]) == 1000
+    mc = explorer.monte_carlo(SUB, 35, [], trades=50, runs=1000, seed=2)
+    assert 0 < mc["probPositive"] <= 100 and mc["drawdown"]["p95"] <= mc["drawdown"]["p50"] <= 0 and mc["losingStreak"]["p95"] >= 1
+    code, r = call("POST", "/bot/montecarlo", {"conds": [{"key": "callPut", "op": ">=", "value": 99}]})
+    assert code == 200 and "error" in r
 
 
 def test_analytics():

@@ -238,3 +238,86 @@ def explore(sub, days=35, conds=None, do_search=False, min_n=15):
     if do_search:
         out["search"] = search(rs, min_n=min_n)
     return out
+
+
+# ---------------- Monte Carlo ----------------
+
+def monte_carlo(sub, days=35, conds=None, trades=100, runs=5000, risk=None, account=None, seed=None):
+    """Resample the R results of the matching ideas (with replacement) to simulate `trades` future trades, `runs` times.
+    Also a permutation test: how often does a random group of the same size, drawn from all ideas, do as well?"""
+    import random
+    rnd = random.Random(seed)
+    rs = rows(sub, days)
+    m = filter_rows(rs, [c for c in (conds or []) if c.get("key") in FEATURES])
+    done = [r["R"] for r in m if r["status"] == "done"]
+    note = None
+    sample = done
+    if len(done) < 15:
+        sample = [r["R"] for r in m]
+        note = f"Only {len(done)} finished ideas: open ideas are included at their current result."
+    if len(sample) < 5:
+        return {"error": f"Not enough ideas to simulate ({len(sample)}). Loosen the conditions or wait for more results."}
+    trades, runs = max(10, min(int(trades), 500)), max(500, min(int(runs), 10000))
+    totals, dds, streaks = [], [], []
+    marks = [i for i in range(0, trades + 1, max(1, trades // 50))]
+    if marks[-1] != trades:
+        marks.append(trades)
+    paths = [[] for _ in marks]
+    for _ in range(runs):
+        eq = peak = dd = 0.0
+        streak = worst = 0
+        mi = 0
+        if marks[0] == 0:
+            paths[0].append(0.0)
+            mi = 1
+        for i in range(1, trades + 1):
+            x = rnd.choice(sample)
+            eq += x
+            peak = max(peak, eq)
+            dd = min(dd, eq - peak)
+            streak = streak + 1 if x <= 0 else 0
+            worst = max(worst, streak)
+            if mi < len(marks) and marks[mi] == i:
+                paths[mi].append(eq)
+                mi += 1
+        totals.append(eq)
+        dds.append(dd)
+        streaks.append(worst)
+    q = lambda xs, p: sorted(xs)[min(len(xs) - 1, max(0, int(round(p / 100 * (len(xs) - 1)))))]
+    fan = [{"trade": t, "p5": round(q(v, 5), 2), "p25": round(q(v, 25), 2), "p50": round(q(v, 50), 2), "p75": round(q(v, 75), 2),
+            "p95": round(q(v, 95), 2)} for t, v in zip(marks, paths)]
+    lo, hi = min(totals), max(totals)
+    bins = 24
+    width = (hi - lo) / bins or 1
+    hist = [0] * bins
+    for t in totals:
+        hist[min(bins - 1, int((t - lo) / width))] += 1
+    # permutation test on the average R
+    allR = [r["R"] for r in rs if (r["status"] == "done" or note)]
+    obs = sum(sample) / len(sample)
+    perm = None
+    if len(allR) > len(sample) >= 5:
+        k, better = len(sample), 0
+        for _ in range(2000):
+            if sum(rnd.sample(allR, k)) / k >= obs:
+                better += 1
+        perm = round(better / 2000 * 100, 1)
+    out = {
+        "n": len(sample), "finished": len(done), "note": note, "trades": trades, "runs": runs, "avgR": round(obs, 3),
+        "winPct": round(sum(1 for x in sample if x > 0) / len(sample) * 100),
+        "total": {"p5": round(q(totals, 5), 1), "p50": round(q(totals, 50), 1), "p95": round(q(totals, 95), 1)},
+        "probPositive": round(sum(1 for t in totals if t > 0) / runs * 100, 1),
+        "drawdown": {"p50": round(q(dds, 50), 1), "p95": round(q(dds, 5), 1)},
+        "losingStreak": {"p50": q(streaks, 50), "p95": q(streaks, 95)},
+        "fan": fan, "hist": {"from": round(lo, 2), "width": round(width, 3), "counts": hist},
+        "randomAsGood": perm, "conds": [{**c, "text": describe(c)} for c in (conds or []) if c.get("key") in FEATURES],
+    }
+    if risk:
+        out["dollars"] = {"risk": risk, "p5": round(out["total"]["p5"] * risk), "p50": round(out["total"]["p50"] * risk),
+                          "p95": round(out["total"]["p95"] * risk), "dd50": round(out["drawdown"]["p50"] * risk),
+                          "dd95": round(out["drawdown"]["p95"] * risk)}
+        if account:
+            ruin_lvl = -0.5 * account / risk                  # losing half the account, in R
+            out["dollars"]["halfAccountPct"] = round(sum(1 for d in dds if d <= ruin_lvl) / runs * 100, 1)
+            out["dollars"]["account"] = account
+    return out
