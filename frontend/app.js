@@ -1681,7 +1681,7 @@ function botHome() {
       ${card('Max drawdown', hist.length > 1 ? `${dd.toFixed(1)}%` : '—', 'from the equity peak', hist.length > 1 && dd < 0 ? dd : null)}
     </div>
     ${hist.length > 1 ? `<section class="panel" style="margin-top:14px"><h2>Paper account equity</h2>${eqLine(hist)}</section>` : ''}
-    <p class="muted" style="font-size:.84rem;margin:8px 0 0">${evToday} evaluation${evToday === 1 ? '' : 's'} today · <a href="#botevals">Evaluations</a> · <a href="#botskipped">Skipped & what-if</a></p>
+    <p class="muted" style="font-size:.84rem;margin:8px 0 0">${evToday} evaluation${evToday === 1 ? '' : 's'} today · <a href="#botevals">Evaluations</a></p>
   </section>`;
 }
 function eqLine(hist) {
@@ -1997,7 +1997,7 @@ function vExplore() {
   return h + `<section class="panel"><div class="cal-head"><h2>Conditions</h2><select id="ex-days">${[10, 20, 35, 60].map(n => `<option value="${n}" ${n === (S.exDays || 35) ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${chips || '<span class="muted">No condition: all ideas.</span>'}${chips ? ` <button class="btn" data-exclear="1">Clear</button> <button class="btn coachbtn" data-exsave="1">Save as strategy${S.exExit ? ' (with the chosen exit)' : ''}</button>` : ''}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${fsel} ${picker}</div>
-    ${S.exBusy === 'filter' ? '<p class="loading" style="margin:8px 0 0">Filtering…</p>' : res + list}</section>` + eoPanel() + mcPanel() + search;
+    ${S.exBusy === 'filter' ? '<p class="loading" style="margin:8px 0 0">Filtering…</p>' : res + list}</section>` + eoPanel() + search;
 }
 function vBotSkipped() {
   return head('Skipped & what-if', 'What the trades the bot skipped would have done, what happened after its exits, and which flow is worth acting on', '')
@@ -2259,9 +2259,9 @@ setInterval(() => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botskipped', 'Skipped & what-if'], ['botbursts', 'Bursts'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
+  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
-const isBotRoute = () => ['bot', 'botevals', 'botskipped', 'botbursts', 'botexplore', 'botstrats'].includes(route());
+const isBotRoute = () => ['bot', 'botevals', 'botexplore', 'botstrats'].includes(route());
 const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
@@ -2287,8 +2287,6 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
     const t = evTicker(), mode = t ? `t:${t}` : 'group';
     if ((!S.botEvals || S.botEvals.mode !== mode) && S.evLoading !== mode) { S.evLoading = mode; loadEvals(1).finally(() => { S.evLoading = null; }); }
   }],
-  botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }],
-  botbursts: [vBursts, () => { if (!S.bursts && !S.burstsLoading) loadBursts(); }],
   botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }],
   botstrats: [vStrats, () => { if (!S.strats && !S.stratsBusy) loadStrats(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
