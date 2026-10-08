@@ -1903,7 +1903,7 @@ async function prepPaths() {
 }
 async function runExitOpt() {
   S.eoBusy = true; render();
-  try { S.eo = await api('/bot/exitopt', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, minN: S.exMinN || 15 } }); }
+  try { S.eo = await api('/bot/exitopt', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, minN: S.exMinN || 15, spreadMult: S.eoMult ?? 1 } }); }
   catch (e) { S.eo = { error: e.message }; }
   S.eoBusy = false; if (route() === 'botexplore') render();
 }
@@ -1914,12 +1914,14 @@ function eoPanel() {
   if (d && d.error) body = `<p class="muted">${esc(d.error)}</p>${/price path/.test(d.error) ? `<p><button class="btn coachbtn" data-eoprep="1" ${S.eoPrep ? 'disabled' : ''}>${S.eoPrep ? 'Saving the price paths… (1–3 min)' : 'Save the price paths now'}</button></p>` : ''}`;
   else if (d) {
     const row = (x, i) => `<li ${i != null ? `data-eouse="${i}"` : ''} class="${S.exExit && i != null && JSON.stringify(S.exExit) === JSON.stringify(x.params) ? 'sel' : ''}"><span class="shl-a">${esc(x.text)}</span><span class="shl-r">${R(x.avgR)}</span>
-      <span class="shl-b muted">${x.n} ideas · ${x.winPct}% winners · total ${x.totalR}R · held ${x.avgDays} days on average · older ${x.older ?? '—'}R / newer ${x.newer ?? '—'}R${x.holds ? ' · <b class="gain">better than now in both halves</b>' : ''}</span></li>`;
-    body = `<p style="margin:0 0 6px"><b>Your current exit rules</b></p><ul class="shl">${row(d.current, null)}</ul>
+      <span class="shl-b muted">${x.n} ideas · ${x.winPct}% winners · total ${x.totalR}R · held ${x.avgDays} days on average · older ${x.older ?? '—'}R / newer ${x.newer ?? '—'}R${x.holds ? ' · <b class="gain">better than now in both halves</b>' : ''}${x.tight ? ' · <b class="loss">stop under 2× the spread: fragile</b>' : ''}</span></li>`;
+    body = `<p class="muted" style="font-size:.84rem;margin:0 0 8px">Includes the bid/ask spread${d.spreadMult !== 1 ? ` ×${d.spreadMult}` : ''}: you pay up on entry and get the bid on exit (average spread ${d.avgSpread}% of the option price; known for ${d.spreadKnown} of ${d.n} ideas, 10% assumed for the rest).</p>
+      <p style="margin:0 0 6px"><b>Your current exit rules</b></p><ul class="shl">${row(d.current, null)}</ul>
       <p style="margin:12px 0 6px"><b>Best of ${d.tested} exit rule sets</b> <span class="muted">tap one to use it in a strategy</span></p><ul class="shl">${d.results.map(row).join('')}</ul>`;
   }
   return `<section class="panel" style="margin-top:14px"><div class="cal-head"><h2>Best exit</h2>
-    <button class="btn coachbtn" data-eorun="1" ${S.eoBusy ? 'disabled' : ''}>${S.eoBusy ? 'Replaying…' : 'Find the best exit for these ideas'}</button></div>
+    <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><label class="muted" style="font-size:.85rem">Spread cost <select id="eo-mult">${[[1, 'as quoted'], [1.5, '×1.5'], [2, '×2 (worst fills)'], [0, 'none']].map(([v, l]) => `<option value="${v}" ${(S.eoMult ?? 1) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <button class="btn coachbtn" data-eorun="1" ${S.eoBusy ? 'disabled' : ''}>${S.eoBusy ? 'Replaying…' : 'Find the best exit for these ideas'}</button></span></div>
     <p class="muted" style="font-size:.84rem;margin:0 0 8px">Replays every combination of stop (20–60%), target (none, +40% to +150%), sell vs. trail after the target (15/25/35%), maximum hold (5, 10 or 20 days) and the invalidation exit on each matching idea's stored daily option prices, and ranks them by average R. Risk is the stop, so a wider stop must earn more to rank higher.</p>${body}</section>`;
 }
 async function saveStrategy() {
@@ -2465,6 +2467,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
+  if (id === 'eo-mult') { S.eoMult = +e.target.value; if (S.eo) runExitOpt(); return; }
   if (id === 'ex-key') { S.exPick = e.target.value || null; render(); return; }
   if (id === 'ex-days') { S.exDays = +e.target.value; S.ex = null; runExplore(false); return; }
   if (id === 'sh-days') { S.shadowDays = +e.target.value; S.shSel = null; loadShadow(); return; }

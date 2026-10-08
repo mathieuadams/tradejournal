@@ -135,6 +135,8 @@ def rows(sub, days=35):
         f["_path"] = (r.get("shadow") or {}).get("path") or r.get("path")
         f["_entry"] = float(p.get("limit") or p.get("debit") or 0)
         f["_prop"] = {k: p.get(k) for k in ("exp", "underlyingStop", "underlyingTarget", "strategy", "width", "debit", "limit")}
+        cand = next((c for c in r.get("candidates") or [] if c.get("symbol") == p.get("contract")), None) or ((r.get("candidates") or [None])[0] or {})
+        f["_spread"] = cand.get("spreadPct")                     # bid/ask spread of the contract when evaluated, % of mid
         f.update(features_of(r, bursts))
         out.append(f)
     return out
@@ -361,7 +363,7 @@ def describe_exit(e):
     return " · ".join(parts)
 
 
-def best_exit(sub, days=35, conds=None, min_n=15, top=10):
+def best_exit(sub, days=35, conds=None, min_n=15, top=10, default_spread=10.0, spread_mult=1.0):
     """Replay every exit-rule combination on the stored price paths of the matching ideas; rank by average R."""
     import autotrader
     import shadow
@@ -373,8 +375,11 @@ def best_exit(sub, days=35, conds=None, min_n=15, top=10):
                          f"the 16:20 update: press Update now on Skipped & what-if, or loosen the conditions."}
     ideas.sort(key=lambda r: r["at"])
     half = len(ideas) // 2
+    sp = lambda r: (r.get("_spread") if r.get("_spread") is not None else default_spread) * spread_mult
+    avg_spread = round(sum(sp(r) for r in ideas) / len(ideas), 1)
     def run(params):
-        res = [shadow.sim_path(r["_path"], r["_entry"], r["_prop"], {**params, "timeStopDte": cfg["timeStopDte"]}) for r in ideas]
+        res = [shadow.sim_path(r["_path"], r["_entry"], r["_prop"],
+                               {**params, "timeStopDte": cfg["timeStopDte"], "halfSpread": sp(r) / 200}) for r in ideas]
         Rs = [x["R"] for x in res]
         a, b = Rs[:half], Rs[half:]
         return {"n": len(Rs), "avgR": round(sum(Rs) / len(Rs), 3), "winPct": round(sum(1 for x in Rs if x > 0) / len(Rs) * 100),
@@ -386,8 +391,9 @@ def best_exit(sub, days=35, conds=None, min_n=15, top=10):
     res = []
     for e in exit_grid():
         st = run(e)
-        res.append({"params": e, "text": describe_exit(e), **st,
+        res.append({"params": e, "text": describe_exit(e), **st, "tight": e["stop"] < 2 * avg_spread,
                     "holds": st["older"] is not None and st["newer"] is not None and st["older"] > current["older"] and st["newer"] > current["newer"]})
     res.sort(key=lambda x: (-x["avgR"], -x["n"]))
-    return {"n": len(ideas), "tested": len(res), "current": current, "results": res[:top],
+    return {"n": len(ideas), "tested": len(res), "current": current, "results": res[:top], "avgSpread": avg_spread,
+            "spreadKnown": sum(1 for r in ideas if r.get("_spread") is not None), "spreadMult": spread_mult,
             "conds": [{**c, "text": describe(c)} for c in (conds or []) if c.get("key") in FEATURES]}

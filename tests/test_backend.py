@@ -1743,6 +1743,11 @@ def test_best_exit_and_strategies():
     r = explorer.best_exit(SUB, 60, [{"key": "volOi", "op": ">=", "value": 3}], min_n=5)
     assert r["n"] == 10 and r["tested"] > 100 and r["results"][0]["avgR"] >= r["current"]["avgR"], (r["current"], r["results"][:2])
     best = r["results"][0]["params"]
+    # the bid/ask spread costs: the same rules do worse with a 20% spread than with none
+    r0 = explorer.best_exit(SUB, 60, [{"key": "volOi", "op": ">=", "value": 3}], min_n=5, spread_mult=0)
+    assert r["avgSpread"] == 10.0 and r0["current"]["avgR"] > r["current"]["avgR"]
+    r2 = explorer.best_exit(SUB, 60, [{"key": "volOi", "op": ">=", "value": 3}], min_n=5, spread_mult=2)
+    assert r2["current"]["avgR"] < r["current"]["avgR"] and any(x["tight"] for x in r2["results"] if x["params"]["stop"] < 40)
     assert best["target"] is None or best["target"] >= 100 or best["trail"], best          # the runner shouldn't be sold early
     code, e = call("POST", "/bot/exitopt", {"conds": [{"key": "volOi", "op": ">=", "value": 99}]})
     assert code == 200 and "error" in e

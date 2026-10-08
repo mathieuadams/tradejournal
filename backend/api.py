@@ -439,7 +439,11 @@ def bot_exitopt(sub, claims, body, q):
     except (TypeError, ValueError):
         days, min_n = 35, 15
     conds = body.get("conds") if isinstance(body.get("conds"), list) else []
-    return explorer.best_exit(sub, days, conds[:8], min_n)
+    try:
+        mult = max(0.0, min(3.0, float(body.get("spreadMult", 1))))
+    except (TypeError, ValueError):
+        mult = 1.0
+    return explorer.best_exit(sub, days, conds[:8], min_n, spread_mult=mult)
 
 
 @route("GET", "/bot/strategies")

@@ -143,12 +143,16 @@ def sim_path(path, entry, prop, params):
     best after the target, or None = sell at the target), maxDays (or None), invalidation (bool), stockTarget (bool),
     timeStopDte, earnings (date or None). Returns {R, plPct, exitReason, exitDate, exitPrice, days, done}."""
     stp, tgt, trail = params["stop"], params.get("target"), params.get("trail")
-    stop_px = entry * (1 - stp / 100)
+    hs = params.get("halfSpread") or 0.0      # half the bid/ask spread: paid on the way in, given up on the way out
+    raw_entry = entry
+    entry = raw_entry * (1 + hs)               # what you actually pay (toward the ask)
+    stop_px = entry * (1 - stp / 100)          # levels are on what you'd get (the bid)
     tgt_px = entry * (1 + tgt / 100) if tgt else None
     trailing, peak, note = False, 0.0, None
     exit_px = reason = exit_day = None
     last, n = None, 0
     for n, (d, hi, lo, cl, uh, ul, uc) in enumerate(path, 1):
+        hi, lo, cl = hi * (1 - hs), lo * (1 - hs), cl * (1 - hs)      # sell side: the bid
         last = cl
         if trailing:
             peak = max(peak, hi)
