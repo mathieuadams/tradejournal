@@ -1636,13 +1636,22 @@ def test_call_bursts():
         today = now.strftime("%Y-%m-%d")
         live = [mk(today, f"10:{10 + i:02d}", 150000, u=150 - i * 0.05) for i in range(9)]
         flowdata.alerts = lambda sub, *a, **k: {"alerts": live}
+        db.put({"PK": pk, "SK": "BURSTSTATE", "seen": ["x"] * 10, "lastEvent": {}})          # old-version state
+        db.put({"PK": pk, "SK": f"BURST#{today.replace('-', '')}0930-OLD", "ticker": "OLD", "date": today})
         r1 = bursts.live_scan(SUB)
         assert r1["bursts"] == ["VST"], r1
+        assert (pk, f"BURST#{today.replace('-', '')}0930-OLD") not in STORE and STORE[(pk, "BURSTSTATE")]["v"] == bursts.VERSION
         evs = [v for (p_, s_), v in STORE.items() if s_.startswith("BURST#")]
         assert len(evs) == 1 and evs[0]["ticker"] == "VST" and evs[0]["normalKnown"]
+        it = STORE[(pk, f"BURSTT#{today}#VST")]
+        cp0 = sum(b.get("cp", 0) for b in it["buckets"].values())
+        r_same = bursts.live_scan(SUB)                         # the same alerts again: nothing counted twice
+        assert r_same["new"] == 0 and sum(b.get("cp", 0) for b in STORE[(pk, f"BURSTT#{today}#VST")]["buckets"].values()) == cp0
+        STORE[(pk, "BURSTSTATE")]["lastAt"] = "2000-01-01T00:00:00Z"   # a run that never saved its progress
+        assert bursts.live_scan(SUB)["new"] == 0
         live.append(mk(today, "10:25", 900000))
         r2 = bursts.live_scan(SUB)
-        assert r2["bursts"] == [] and r2["new"] == 1
+        assert r2["bursts"] == [] and r2["new"] == 1          # cooldown: no second burst for VST
         # after the close: forward results for live bursts
         closes[today] = 150.0
         assert bursts.forward_update(SUB)["updated"] in (0, 1)
@@ -1655,6 +1664,40 @@ def test_call_bursts():
         assert code == 200 and STORE[(pk, "BURSTSTUDY")]["status"] == "starting"
     finally:
         flowdata.alerts, charts._yahoo = flowdata_saved, yahoo_saved
+
+
+def test_explorer():
+    """Every taken and skipped idea as features; combinations filter them; the search ranks combinations."""
+    import autotrader, explorer
+    STORE.clear()
+    pk = db.upk(SUB)
+    now = autotrader.now_ny()
+    def ev(i, R, cp_ratio, bear_ok, taken=False):
+        rid = f"2026100{1 + i % 6}10{i:04d}-abcdef"[:21]
+        rid = f"20261001{i:06d}-abcdef"
+        r = {"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": f"T{i % 7}", "decision": "WAIT", "status": "proposed",
+             "createdAt": (now - __import__("datetime").timedelta(days=10 - i % 10, hours=i % 5)).strftime("%Y-%m-%dT%H:%M:%S"),
+             "checks": [{"group": "chart", "text": "No active bear (negative) fair value gap", "ok": bear_ok, "required": True},
+                        {"group": "chart", "text": "Active bull fair value gap (1–2)", "ok": True, "required": True}],
+             "origin": {"type": "flow", "premium": 300000, "sweep": i % 2 == 0, "volOi": 2, "askPct": 90},
+             "tickerFlow": {"putRatio": 1 / cp_ratio, "window": {"calls": {"premium": 1e6}, "smallCalls": {"hits": i % 12}}},
+             "signals": {"extAtr": 0.8, "growth30": 12}, "shadow": {"status": "done", "R": R, "plPct": R * 40}}
+        if taken:
+            r.update(status="closed", orderId="o", fillPrice=2.0, realizedR=R)
+            r.pop("shadow")
+        db.put(r)
+    for i in range(40):
+        good = i % 2 == 0
+        ev(i, 1.0 if good else -0.6, 6 if good else 1.5, True if good else i % 4 == 1, taken=i % 10 == 0)
+    rs = explorer.rows(SUB, 35)
+    assert len(rs) == 40 and rs[0]["callPut"] in (6.0, 1.5) and sum(r["taken"] for r in rs) == 4
+    code, d = call("POST", "/bot/explore", {"conds": [{"key": "callPut", "op": ">=", "value": 5}, {"key": "noBearFvg", "value": True}]})
+    assert code == 200 and d["match"]["n"] == 20 and d["match"]["avgR"] == 1.0 and d["all"]["n"] == 40, d["match"]
+    assert d["conds"][0]["text"].startswith("Calls vs puts bought") and len(d["items"]) == 20
+    code, d = call("POST", "/bot/explore", {"search": True, "minN": 10})
+    best = d["search"]["results"][0]
+    assert best["avgR"] == 1.0 and best["n"] >= 10 and d["search"]["tested"] > 10, best
+    assert any(c["key"] in ("callPut", "noBearFvg", "sweep") for c in best["conds"])
 
 
 def test_analytics():

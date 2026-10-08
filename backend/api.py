@@ -416,6 +416,19 @@ def bot_flow_test(sub, claims, body, q):
     return out
 
 
+@route("POST", "/bot/explore")
+def bot_explore(sub, claims, body, q):
+    """Filter every evaluation (taken and skipped) by any combination of conditions; optionally search the best ones."""
+    import explorer
+    try:
+        days = max(1, min(60, int(body.get("days") or 35)))
+        min_n = max(5, min(200, int(body.get("minN") or 15)))
+    except (TypeError, ValueError):
+        days, min_n = 35, 15
+    conds = body.get("conds") if isinstance(body.get("conds"), list) else []
+    return explorer.explore(sub, days, conds[:8], bool(body.get("search")), min_n)
+
+
 @route("GET", "/bot/bursts")
 def bot_bursts(sub, claims, body, q):
     import bursts

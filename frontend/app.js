@@ -1818,6 +1818,54 @@ function vBursts() {
   const errs = (d.errors || []).length ? `<div class="errbox" style="margin-bottom:12px">Part of this page couldn't load: ${d.errors.map(esc).join(' · ')}</div>` : '';
   return head0 + errs + live + study;
 }
+/* ---------- explorer: mix and match conditions over every taken and skipped idea ---------- */
+S.exConds = S.exConds || [];
+async function runExplore(search) {
+  S.exBusy = search ? 'search' : 'filter'; render();
+  try {
+    const r = await api('/bot/explore', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, search, minN: S.exMinN || 15 } });
+    if (!search && S.ex && S.ex.search) r.search = S.ex.search;
+    S.ex = r;
+  } catch (e) { S.ex = { error: e.message }; }
+  S.exBusy = null;
+  if (route() === 'botexplore') render();
+}
+function vExplore() {
+  const d = S.ex;
+  const h = head('Explorer', 'Combine any conditions and see how every matching idea did: the real result when the bot took it, the shadow result when it skipped it.', '');
+  if (!d) return h + '<p class="loading">Loading…</p>';
+  if (d.error) return h + `<div class="errbox">${esc(d.error)}</div>`;
+  const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
+  const feats = d.features || [];
+  const fsel = `<select id="ex-key"><option value="">Add a condition…</option>${feats.filter(f => f.key !== 'taken' || true).map(f => `<option value="${f.key}" ${S.exPick === f.key ? 'selected' : ''}>${esc(f.label)}${f.known < (d.all.n || 0) ? ` (known for ${f.known})` : ''}</option>`).join('')}</select>`;
+  const pk = S.exPick && feats.find(f => f.key === S.exPick);
+  const picker = pk ? (pk.kind === 'bool'
+    ? `<select id="ex-val"><option value="1">Yes</option><option value="0">No</option></select>`
+    : `<select id="ex-op"><option value=">=">≥</option><option value="<=">≤</option></select><input id="ex-num" type="number" step="any" placeholder="value" style="width:8em">`) + ` <button class="btn" data-exadd="1">Add</button>` : '';
+  const chips = (d.conds || []).map((c, i) => `<span class="exchip">${esc(c.text)} <button aria-label="Remove" data-exdel="${i}">×</button></span>`).join('');
+  const m = d.match, a = d.all;
+  const cmp = (a.avgR != null && m.avgR != null) ? (m.avgR - a.avgR) : null;
+  const res = `<div class="strip" style="margin:12px 0">
+      <div class="stat"><span>Matching ideas</span><b>${m.n}</b><span>${m.done} finished · ${m.open} still open</span></div>
+      <div class="stat"><span>Avg result</span><b>${R(m.avgR)}</b><span>${m.winPct ?? '—'}% winners · total ${m.totalR ?? '—'}R</span></div>
+      <div class="stat"><span>All ideas (same period)</span><b>${R(a.avgR)}</b><span>${a.n} ideas · ${cmp != null ? `difference ${sgn(cmp, 2)}R` : ''}</span></div>
+    </div>
+    ${d.conds.length && m.n >= 4 ? `<p class="muted" style="font-size:.84rem;margin:0 0 8px">Older half ${R(d.older)} · newer half ${R(d.newer)} — ${d.older != null && d.newer != null && d.older > (a.avgR || 0) && d.newer > (a.avgR || 0) ? '<b class="gain">holds in both halves</b>' : 'not consistent across the period yet'}${m.n < 30 ? ' · fewer than 30 ideas: treat as a hint, not a result' : ''}</p>` : ''}`;
+  const list = (d.items || []).length ? `<details ${d.conds.length ? 'open' : ''}><summary class="muted" style="cursor:pointer">The ${d.items.length} matching ideas, best first</summary><ul class="shl" style="margin-top:8px">${d.items.slice(0, 80).map(x => `<li data-shopen="${x.id}"><span class="shl-a"><b>${esc(x.symbol)}</b> <span class="muted">${esc(x.at.replace('T', ' ').slice(5, 16))} · ${esc(x.decision || '')}${x.taken ? ' · taken' : ''}</span></span><span class="shl-r">${R(x.R)}${x.status !== 'done' ? ' <span class="muted">open</span>' : ''}</span></li>`).join('')}</ul></details>` : '';
+  const sr = d.search;
+  const search = `<section class="panel" style="margin-top:14px"><div class="cal-head"><h2>Best combinations</h2>
+      <span style="display:flex;gap:8px;align-items:center"><label class="muted" style="font-size:.85rem">at least <input id="ex-minn" type="number" value="${S.exMinN || 15}" min="5" style="width:4.5em"> ideas</label>
+      <button class="btn coachbtn" data-exsearch="1" ${S.exBusy ? 'disabled' : ''}>${S.exBusy === 'search' ? 'Searching…' : 'Find the best combinations'}</button></span></div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Tries every single condition, then pairs and triples of the most promising ones, and ranks them by average R. Only combinations with enough ideas are kept, and each one is checked on the older and the newer half of the period: one that holds in both is far less likely to be luck.</p>
+    ${!sr ? '' : !sr.results.length ? '<p class="muted">No combination has enough ideas yet. Lower the minimum or wait for more results.</p>' :
+      `<ul class="shl">${sr.results.map((x, i) => `<li data-exuse="${i}"><span class="shl-a">${esc(x.text)}</span><span class="shl-r">${R(x.avgR)}</span>
+        <span class="shl-b muted">${x.n} ideas (${x.open} open) · ${x.winPct}% winners · total ${x.totalR}R · older ${x.older ?? '—'}R / newer ${x.newer ?? '—'}R ${x.holds ? '· <b class="gain">holds in both halves</b>' : ''}</span></li>`).join('')}</ul>
+      <p class="muted" style="font-size:.8rem;margin:6px 0 0">${sr.tested} combinations tested against ${R(sr.baseline.avgR)} for all ideas. Tap one to load it above.</p>`}</section>`;
+  return h + `<section class="panel"><div class="cal-head"><h2>Conditions</h2><select id="ex-days">${[10, 20, 35, 60].map(n => `<option value="${n}" ${n === (S.exDays || 35) ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${chips || '<span class="muted">No condition: all ideas.</span>'}${chips ? ' <button class="btn" data-exclear="1">Clear</button>' : ''}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${fsel} ${picker}</div>
+    ${S.exBusy === 'filter' ? '<p class="loading" style="margin:8px 0 0">Filtering…</p>' : res + list}</section>` + search;
+}
 function vBotSkipped() {
   return head('Skipped & what-if', 'What the trades the bot skipped would have done, what happened after its exits, and which flow is worth acting on', '')
     + shadowSummary() + flowSummary();
@@ -2033,6 +2081,7 @@ async function refreshNow(quiet) {
     if (v === 'botevals') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); }
     if (v === 'botskipped') { await loadShadow(); }
     if (v === 'botbursts') { await loadBursts(); }
+    if (v === 'botexplore') { await runExplore(false); }
     else if (v === 'gex') { if (S.flow && !S.flowBusy && $('#fl-prem')) loadFlow(); loadMarketGamma(true); }
     else if (v === 'coach' || v === 'dashboard') { await loadNotes(true); }
     if (S.botRes && S.botRes.id && S.bot && S.bot.items) { const n = S.bot.items.find(i => i.id === S.botRes.id); if (n) S.botRes = { ...S.botRes, ...n }; }
@@ -2076,9 +2125,9 @@ setInterval(() => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botskipped', 'Skipped & what-if'], ['botbursts', 'Bursts']],
+  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botskipped', 'Skipped & what-if'], ['botbursts', 'Bursts'], ['botexplore', 'Explorer']],
 };
-const isBotRoute = () => ['bot', 'botevals', 'botskipped', 'botbursts'].includes(route());
+const isBotRoute = () => ['bot', 'botevals', 'botskipped', 'botbursts', 'botexplore'].includes(route());
 const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
@@ -2105,7 +2154,8 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
     if ((!S.botEvals || S.botEvals.mode !== mode) && S.evLoading !== mode) { S.evLoading = mode; loadEvals(1).finally(() => { S.evLoading = null; }); }
   }],
   botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }],
-  botbursts: [vBursts, () => { if (!S.bursts && !S.burstsLoading) loadBursts(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+  botbursts: [vBursts, () => { if (!S.bursts && !S.burstsLoading) loadBursts(); }],
+  botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
 const evTicker = () => route() === 'botevals' ? (hashParam('t') || '').toUpperCase() : '';
@@ -2125,7 +2175,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2135,6 +2185,17 @@ document.addEventListener('click', e => {
   if (el.dataset.shwhy !== undefined) { openShadow('why', el.dataset.shwhy); return; }
   if (el.dataset.shclaude !== undefined) { openShadow('claude', el.dataset.shclaude); return; }
   if (el.dataset.shopen) { openRecord(el.dataset.shopen); return; }
+  if (el.dataset.exadd) {
+    const f = (S.ex.features || []).find(x => x.key === S.exPick); if (!f) return;
+    let c;
+    if (f.kind === 'bool') c = { key: f.key, value: $('#ex-val').value === '1' };
+    else { const v = parseFloat($('#ex-num').value); if (isNaN(v)) { toast('Enter a value'); return; } c = { key: f.key, op: $('#ex-op').value, value: v }; }
+    S.exConds = [...S.exConds.filter(x => x.key !== c.key), c]; S.exPick = null; runExplore(false); return;
+  }
+  if (el.dataset.exdel !== undefined) { S.exConds.splice(+el.dataset.exdel, 1); runExplore(false); return; }
+  if (el.dataset.exclear) { S.exConds = []; runExplore(false); return; }
+  if (el.dataset.exsearch) { S.exMinN = +($('#ex-minn').value || 15); runExplore(true); return; }
+  if (el.dataset.exuse !== undefined) { const x = S.ex.search.results[+el.dataset.exuse]; S.exConds = x.conds.map(c => ({ ...c })); runExplore(false); window.scrollTo(0, 0); return; }
   if (el.dataset.burstgrp) { S.burstOpen = S.burstOpen || {}; S.burstOpen[el.dataset.burstgrp] = !S.burstOpen[el.dataset.burstgrp]; render(); return; }
   if (el.dataset.burstsave) {
     const body = { burstMinPremium: +$('#bu-prem').value, burstMinPrints: +$('#bu-n').value, burstMinRatio: +$('#bu-r').value, burstMinCallShare: (+$('#bu-s').value) / 100 };
@@ -2261,6 +2322,8 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const id = e.target.id;
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
+  if (id === 'ex-key') { S.exPick = e.target.value || null; render(); return; }
+  if (id === 'ex-days') { S.exDays = +e.target.value; S.ex = null; runExplore(false); return; }
   if (id === 'sh-days') { S.shadowDays = +e.target.value; S.shSel = null; loadShadow(); return; }
   if (id === 'ev-claude') { S.evClaude = e.target.checked; loadEvals(1); return; }
   if (id === 'bs-strat') { $('#bs-bull').hidden = e.target.value !== 'bull_call'; $('#bs-diag').hidden = e.target.value !== 'diagonal'; return; }

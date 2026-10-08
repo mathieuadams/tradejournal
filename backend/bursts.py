@@ -263,51 +263,79 @@ def study_summary(st, c=None):
 
 # ---------------- live tracking ----------------
 
-def live_scan(sub, c=None):
-    """Every minute: add new alerts to today's buckets, record a burst the first time a ticker qualifies."""
+ETFS = {"SPY", "QQQ", "IWM", "DIA", "TLT", "GLD", "SLV", "XLF", "XLE", "XLK", "SMH", "SOXL", "TQQQ", "SQQQ", "UVXY", "VXX",
+        "HYG", "EEM", "FXI", "KWEB", "ARKK", "XBI", "GDX", "USO", "IBIT", "ETHA", "TSLL", "NVDL", "SPXL", "SPXS", "SOXS"}
+VERSION = 2
+
+
+def _purge_today(pk, today):
+    """Remove today's live burst data (used once when the counting changed)."""
+    ymd = today.replace("-", "")
+    for it in db.q_prefix(pk, f"BURSTT#{today}#"):
+        db.delete(pk, it["SK"])
+    for it in db.q_prefix(pk, f"BURST#{ymd}"):
+        db.delete(pk, it["SK"])
+
+
+def live_scan(sub, c=None, budget_s=40):
+    """Every minute: add new alerts to today's per-ticker buckets and record a burst the first time a ticker qualifies.
+    Counting is idempotent: every ticker's record keeps the ids of the alerts already added, so reading the same alerts
+    again (overlapping pulls, a run cut short) never counts them twice. The cooldown is kept on the ticker's record too."""
     import flowdata
+    from util import ny_to_utc
     pk = db.upk(sub)
     c = c or cfg_of(sub)
-    st = db.get(pk, "BURSTSTATE") or {"PK": pk, "SK": "BURSTSTATE"}
-    since = st.get("lastAt") or (datetime.utcnow() - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    since = min(since, (datetime.utcnow() - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    res = flowdata.alerts(sub, 10000, "all", 0, 400, True, False, None, 0, 1, since_utc=since, exclude_etfs=True)
-    seen = list(st.get("seen") or [])
-    seen_set = set(seen)
-    key = lambda a: str(a.get("id") or f"{a.get('contract')}|{a.get('at')}|{a.get('premium')}")
-    new = [a for a in res.get("alerts") or [] if key(a) not in seen_set]
-    newest = max([a.get("at") or "" for a in new] + [st.get("lastAt") or ""])
     today = now_ny().strftime("%Y-%m-%d")
+    st = db.get(pk, "BURSTSTATE") or {"PK": pk, "SK": "BURSTSTATE"}
+    if st.get("v") != VERSION:                # earlier versions could count alerts twice: rebuild today from the open
+        _purge_today(pk, today)
+        st = {"PK": pk, "SK": "BURSTSTATE", "v": VERSION}
+    open_utc = ny_to_utc(datetime.strptime(today + " 09:30", "%Y-%m-%d %H:%M")).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = st.get("lastAt") if st.get("today") == today else open_utc
+    since = max(open_utc, min(since or open_utc, (datetime.utcnow() - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")))
+    res = flowdata.alerts(sub, 10000, "all", 0, 400, True, False, None, 0, 1, since_utc=since, exclude_etfs=False)
+    al = [a for a in res.get("alerts") or [] if (a.get("atEt") or "")[:10] == today and a.get("ticker") and a["ticker"] not in ETFS
+          and "etf" not in (a.get("issue_type") or "").lower()]
+    key = lambda a: str(a.get("id") or f"{a.get('contract')}|{a.get('at')}|{a.get('premium')}")
     by_t = {}
-    for a in new:
-        if (a.get("atEt") or "")[:10] == today:
-            by_t.setdefault(a["ticker"], []).append(a)
+    for a in al:
+        by_t.setdefault(a["ticker"], []).append(a)
     norm = (db.get(pk, "BURSTBASE") or {}).get("tickers") or {}
-    last_ev = dict(st.get("lastEvent") or {})
-    found = []
-    for sym, al in by_t.items():
-        it = db.get(pk, f"BURSTT#{today}#{sym}") or {"PK": pk, "SK": f"BURSTT#{today}#{sym}", "buckets": {}, "ttl": int(time.time()) + 3 * 86400}
+    t0, found, added = time.time(), [], 0
+    cool_cut = (now_ny() - timedelta(minutes=c["burstCooldownMin"])).strftime("%Y-%m-%dT%H:%M")
+    complete = True
+    for sym, xs in sorted(by_t.items(), key=lambda kv: -sum(a.get("premium") or 0 for a in kv[1])):
+        if time.time() - t0 > budget_s:       # out of time: don't move the start forward, the rest is done next minute
+            complete = False
+            break
+        it = db.get(pk, f"BURSTT#{today}#{sym}") or {"PK": pk, "SK": f"BURSTT#{today}#{sym}", "buckets": {}, "ids": []}
+        ids = set(it.get("ids") or [])
+        fresh = [a for a in xs if key(a) not in ids]
+        if not fresh:
+            continue
         bk = it["buckets"]
-        for a in al:
+        for a in sorted(fresh, key=lambda a: a.get("atEt") or ""):
             k = _bucket(a.get("atEt"))
             if k:
                 _add(bk.setdefault(k, {}), a)
-        db.put(it)
+            ids.add(key(a))
+        added += len(fresh)
+        it["ids"] = sorted(ids)[-6000:]
         base30 = (norm.get(sym) or {}).get("dailyCall", 0) / SLOTS_PER_DAY * 2 or None
         w = windows(bk, base30)[-1] if bk else None
-        if not w or not strict(w, c):
-            continue
-        if last_ev.get(sym) and last_ev[sym] > (now_ny() - timedelta(minutes=c["burstCooldownMin"])).strftime("%Y-%m-%dT%H:%M"):
-            continue
-        ev = {"PK": pk, "SK": f"BURST#{w['at'].replace('-', '').replace(':', '').replace('T', '')}-{sym}", "ticker": sym, **w,
-              "detectedAt": iso(now_ny()), "normalKnown": base30 is not None}
-        db.put(ev)
-        last_ev[sym] = w["at"]
-        found.append(sym)
-    st.update(lastAt=newest or since, seen=(seen + [key(a) for a in new])[-5000:], lastEvent=last_ev, lastRun=iso(now_ny()),
-              lastNew=len(new), today=today, burstsToday=(st.get("burstsToday", 0) if st.get("today") == today else 0) + len(found))
+        if w and strict(w, c) and not (it.get("lastEvent") and it["lastEvent"] > cool_cut):
+            db.put({"PK": pk, "SK": f"BURST#{w['at'].replace('-', '').replace(':', '').replace('T', '')}-{sym}", "ticker": sym, **w,
+                    "detectedAt": iso(now_ny()), "normalKnown": base30 is not None})
+            it["lastEvent"] = w["at"]
+            found.append(sym)
+        db.put(it)
+    newest = max([a.get("at") or "" for a in al] + [since]) if complete else since
+    st.update(v=VERSION, lastAt=newest, lastRun=iso(now_ny()), lastNew=added, today=today,
+              burstsToday=(st.get("burstsToday", 0) if st.get("today") == today else 0) + len(found))
+    st.pop("seen", None)
+    st.pop("lastEvent", None)
     db.put(st)
-    return {"new": len(new), "bursts": found}
+    return {"new": added, "bursts": found}
 
 
 def forward_update(sub):
