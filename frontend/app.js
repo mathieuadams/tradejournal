@@ -1890,6 +1890,17 @@ function mcPanel() {
     <p class="muted" style="font-size:.84rem;margin:0 0 8px">Simulates the next trades by drawing from the results of the ideas matching your conditions above (${(S.exConds || []).length ? 'your filter' : 'all ideas'}).</p>${form}${out}</section>`;
 }
 /* ---------- best exit + strategies ---------- */
+async function prepPaths() {
+  S.eoPrep = true; render();
+  let before = null;
+  try { before = ((await api('/bot/shadow/summary?days=5')).run || {}).at; await api('/bot/shadow/run', { method: 'POST' }); }
+  catch (e) { S.eoPrep = false; render(); toast(e.message); return; }
+  for (let i = 0; i < 60; i++) {
+    await sleep(5000);
+    try { const r = await api('/bot/shadow/summary?days=5'); if (r.run && r.run.status !== 'running' && r.run.at !== before) break; } catch (e) {}
+  }
+  S.eoPrep = false; S.shadowSum = null; await runExitOpt();
+}
 async function runExitOpt() {
   S.eoBusy = true; render();
   try { S.eo = await api('/bot/exitopt', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, minN: S.exMinN || 15 } }); }
@@ -1900,7 +1911,7 @@ function eoPanel() {
   const d = S.eo;
   const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
   let body = '';
-  if (d && d.error) body = `<p class="muted">${esc(d.error)}</p>`;
+  if (d && d.error) body = `<p class="muted">${esc(d.error)}</p>${/price path/.test(d.error) ? `<p><button class="btn coachbtn" data-eoprep="1" ${S.eoPrep ? 'disabled' : ''}>${S.eoPrep ? 'Saving the price paths… (1–3 min)' : 'Save the price paths now'}</button></p>` : ''}`;
   else if (d) {
     const row = (x, i) => `<li ${i != null ? `data-eouse="${i}"` : ''} class="${S.exExit && i != null && JSON.stringify(S.exExit) === JSON.stringify(x.params) ? 'sel' : ''}"><span class="shl-a">${esc(x.text)}</span><span class="shl-r">${R(x.avgR)}</span>
       <span class="shl-b muted">${x.n} ideas · ${x.winPct}% winners · total ${x.totalR}R · held ${x.avgDays} days on average · older ${x.older ?? '—'}R / newer ${x.newer ?? '—'}R${x.holds ? ' · <b class="gain">better than now in both halves</b>' : ''}</span></li>`;
@@ -2297,7 +2308,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-eorun],[data-eouse],[data-exsave],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2309,6 +2320,7 @@ document.addEventListener('click', e => {
   if (el.dataset.shopen) { openRecord(el.dataset.shopen); return; }
   if (el.dataset.mcrun) { runMC(); return; }
   if (el.dataset.eorun) { runExitOpt(); return; }
+  if (el.dataset.eoprep) { prepPaths(); return; }
   if (el.dataset.eouse !== undefined) { const x = S.eo.results[+el.dataset.eouse]; S.exExit = JSON.stringify(S.exExit) === JSON.stringify(x.params) ? null : x.params; render(); return; }
   if (el.dataset.exsave) { saveStrategy(); return; }
   if (el.dataset.stmode) { const [id, mode] = el.dataset.stmode.split('|');

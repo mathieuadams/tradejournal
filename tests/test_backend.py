@@ -1752,7 +1752,7 @@ def test_best_exit_and_strategies():
     assert code == 200 and st["mode"] == "watch" and st["exit"]["stop"] == best["stop"]
     code, bad = call("POST", "/bot/strategies", {"conds": [{"key": "claudeApprove", "value": True}]})
     assert code == 400
-    rec = {"id": "20261008100000-aaaaaa", "symbol": "NEW", "decision": "WAIT", "createdAt": autotrader.iso(now),
+    rec = {"id": "20261008100000-aaaaaa", "symbol": "NEW", "decision": "WAIT", "createdAt": autotrader.iso(now + dt.timedelta(minutes=5)),
            "origin": {"type": "flow", "premium": 400000, "volOi": 5}, "proposal": {"contract": "NEWC", "limit": 2.0},
            "checks": [{"group": "chart", "text": "Crossed above the 21 EMA in the last 10 days", "ok": False, "required": True}],
            "blocking": ["Crossed above the 21 EMA in the last 10 days"]}
