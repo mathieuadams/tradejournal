@@ -230,6 +230,12 @@ Every trading day at 15:40 ET Claude reviews each open bot position on fresh dai
 
 Paper bot → **Bursts**. A burst is a cluster of calls bought at the ask on one ticker within 30 minutes: $1M+ of call premium, 5x the ticker's normal 30-minute call premium, 8+ prints, 75%+ calls vs puts. Live: checked every minute with flow trading on (one Unusual Whales request per minute for all tickers); each burst is recorded with price move during the window (into weakness or chasing), time of day, contracts, and followed 1, 3 and 5 trading days later. **Run the 30-day replay** measures the same on the last 30 days for every ticker the bot evaluated (one Unusual Whales request per ticker, runs in parts of ~7 minutes), against a normal day on the same tickers, and by ingredient. Never traded.
 
+### Explorer, best exit and strategies
+
+- **Explorer:** combine conditions over every taken and skipped idea; Monte Carlo and the best-combination search run on the matching ideas.
+- **Best exit:** every idea keeps its 20-day daily option path (saved by the 16:20 update). The Explorer replays ~370 exit rule sets (stop, target, sell or trail after the target, max days, invalidation exit) on the matching ideas and ranks them by average R, next to your current rules.
+- **Strategies (Paper bot → Strategies):** save a combination (optionally with a chosen exit). *Watch* tags new evaluations that match and tracks them from the day saved (forward only). *Trade* turns a match into a BUY when only non-safety rules failed: a liquid contract, no earnings soon, puts not piling in, a size that fits your risk, a free slot and Claude's check still apply; the strategy's exit plan replaces the bot settings for that trade.
+
 ## Step 8. Alerts for paper-bot orders (Amazon SNS)
 
 The bot publishes every order (buy, fill, exit order, position closed, cancel) to an Amazon SNS topic that the deploy creates.

@@ -429,6 +429,43 @@ def bot_explore(sub, claims, body, q):
     return explorer.explore(sub, days, conds[:8], bool(body.get("search")), min_n)
 
 
+@route("POST", "/bot/exitopt")
+def bot_exitopt(sub, claims, body, q):
+    """Best exit rules for the ideas matching some conditions, replayed on their stored price paths."""
+    import explorer
+    try:
+        days = max(1, min(60, int(body.get("days") or 35)))
+        min_n = max(5, min(200, int(body.get("minN") or 15)))
+    except (TypeError, ValueError):
+        days, min_n = 35, 15
+    conds = body.get("conds") if isinstance(body.get("conds"), list) else []
+    return explorer.best_exit(sub, days, conds[:8], min_n)
+
+
+@route("GET", "/bot/strategies")
+def bot_strategies(sub, claims, body, q):
+    import strats
+    return {"items": strats.results(sub)}
+
+
+@route("POST", "/bot/strategies")
+def bot_strategy_create(sub, claims, body, q):
+    import strats
+    return strats.create(sub, body)
+
+
+@route("PUT", r"/bot/strategies/(?P<sid>[a-f0-9]{10})")
+def bot_strategy_update(sub, claims, body, q, sid):
+    import strats
+    return strats.update(sub, sid, body)
+
+
+@route("DELETE", r"/bot/strategies/(?P<sid>[a-f0-9]{10})")
+def bot_strategy_delete(sub, claims, body, q, sid):
+    import strats
+    return strats.delete(sub, sid)
+
+
 @route("POST", "/bot/montecarlo")
 def bot_montecarlo(sub, claims, body, q):
     import explorer

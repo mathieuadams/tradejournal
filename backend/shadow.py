@@ -18,6 +18,7 @@ import db
 from util import iso, now_ny
 
 DAYS = 20
+SIM_VERSION = 3          # 3: stores the daily path; evaluation-day closes only; the target starts the trailing stop
 TAKEN = ("submitting", "submitted", "open", "closing", "closed")
 DATA = "https://data.alpaca.markets/v1beta1/options/bars"
 
@@ -99,88 +100,132 @@ def candidates(recs, today):
                 dups.append((r, seen[key]))
             continue
         seen[key] = r["id"]
-        if (r.get("shadow") or {}).get("status") in ("done", "nodata"):
-            continue
+        sh = r.get("shadow") or {}
+        if sh.get("status") in ("done", "nodata") and sh.get("v") == SIM_VERSION:
+            continue                          # finished with the current rules (older results are redone once)
         todo.append(r)
     return todo, dups
 
 
-def simulate(rec, obars, ubars, cfg, earnings=None):
-    """Apply the bot's exit rules to the daily path after the evaluation day. Returns the shadow dict."""
-    import autotrader
+def build_path(rec, obars, ubars):
+    """Daily path after the evaluation: [[date, opt_high, opt_low, opt_close, stock_high, stock_low, stock_close], ...].
+    The evaluation day counts with its closes only (its high/low may be from before the evaluation). Spreads: closes only."""
     p = rec["proposal"]
-    entry = float(p.get("limit") or p.get("debit") or 0)
-    if entry <= 0:
-        return {"status": "nodata", "note": "no entry price", "updatedAt": iso(now_ny())}
     d0 = (rec.get("createdAt") or "")[:10]
     spread = bool(p.get("shortContract"))
     longb = {_day(b["t"]): b for b in obars.get(p["contract"], [])}
     shortb = {_day(b["t"]): b for b in obars.get(p.get("shortContract"), [])} if spread else {}
     ub = {_day(b["t"]): b for b in ubars}
     days = sorted(d for d in longb if d > d0 and (not spread or d in shortb))
-    # evaluated during the session: that day's close counts too (close only: its high/low may be from before the evaluation)
     if "09:30" <= (rec.get("createdAt") or "")[11:16] < "16:00" and d0 in longb and (not spread or d0 in shortb):
         days = [d0] + days
-    stp = autotrader.stop_pct(cfg, p)
-    tgt = autotrader.target_pct(cfg, p, entry)
-    stop_px = entry * (1 - stp / 100)
-    tgt_px = entry * (1 + tgt / 100) if tgt else None
-    out = {"entry": round(entry, 2), "stopPct": stp, "targetPct": tgt, "approx": True, "updatedAt": iso(now_ny())}
-    if not days:
-        stale = (now_ny().date() - datetime.strptime(d0, "%Y-%m-%d").date()).days > 8 if d0 else True
-        return {**out, "status": "nodata" if stale else "tracking", "days": 0,
-                "note": "no trading day since the evaluation yet" if not stale else "no trades in this contract"}
-    hi_all, lo_all, umax, umin = None, None, None, None
-    exit_px = exit_reason = exit_day = None
-    last = None
-    for n, d in enumerate(days[:DAYS], 1):
+    out = []
+    for d in days[:DAYS]:
         b = longb[d]
         if spread:
-            s = shortb[d]
-            cl = float(b["c"]) - float(s["c"])
-            hi = lo = cl                      # spread high/low per day isn't known from leg bars: closes only
+            cl = float(b["c"]) - float(shortb[d]["c"])
+            hi = lo = cl
         else:
             hi, lo, cl = float(b["h"]), float(b["l"]), float(b["c"])
+        u = ub.get(d)
+        uh, ul, uc = (float(u["h"]), float(u["l"]), float(u["c"])) if u else (None, None, None)
         if d == d0:
             hi = lo = cl
+            if u:
+                uh = ul = uc
+        r4 = lambda v: round(v, 4) if v is not None else None
+        out.append([d, r4(hi), r4(lo), r4(cl), r4(uh), r4(ul), r4(uc)])
+    return out
+
+
+def sim_path(path, entry, prop, params):
+    """Apply one set of exit rules to a stored path. params: stop (% loss), target (% gain or None), trail (% below the
+    best after the target, or None = sell at the target), maxDays (or None), invalidation (bool), stockTarget (bool),
+    timeStopDte, earnings (date or None). Returns {R, plPct, exitReason, exitDate, exitPrice, days, done}."""
+    stp, tgt, trail = params["stop"], params.get("target"), params.get("trail")
+    stop_px = entry * (1 - stp / 100)
+    tgt_px = entry * (1 + tgt / 100) if tgt else None
+    trailing, peak, note = False, 0.0, None
+    exit_px = reason = exit_day = None
+    last, n = None, 0
+    for n, (d, hi, lo, cl, uh, ul, uc) in enumerate(path, 1):
         last = cl
-        hi_all = hi if hi_all is None else max(hi_all, hi)
-        lo_all = lo if lo_all is None else min(lo_all, lo)
-        u = ub.get(d)
-        if u:
-            umax = u["h"] if umax is None else max(umax, u["h"])
-            umin = u["l"] if umin is None else min(umin, u["l"])
-        dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - datetime.strptime(d, "%Y-%m-%d").date()).days if p.get("exp") else 99
-        if lo <= stop_px:
-            exit_px, exit_reason = stop_px, f"option stop (-{stp:g}%)"
-        elif u and p.get("underlyingStop") and u["c"] < p["underlyingStop"]:
-            exit_px, exit_reason = cl, f"closed below invalidation {p['underlyingStop']}"
-        elif tgt_px and hi >= tgt_px:
-            exit_px, exit_reason = tgt_px, f"option target (+{tgt:.0f}%)"
-        elif u and p.get("underlyingTarget") and u["h"] >= p["underlyingTarget"]:
-            exit_px, exit_reason = cl, f"stock reached target {p['underlyingTarget']}"
-        elif dte <= cfg["timeStopDte"]:
-            exit_px, exit_reason = cl, f"time stop ({dte} days left)"
-        elif earnings and d >= (datetime.strptime(earnings, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d"):
-            exit_px, exit_reason = cl, "exit before earnings"
+        if trailing:
+            peak = max(peak, hi)
+        dte = (datetime.strptime(prop["exp"], "%Y-%m-%d").date() - datetime.strptime(d, "%Y-%m-%d").date()).days if prop.get("exp") else 99
+        if trailing and lo <= peak * (1 - trail / 100):
+            exit_px, reason = max(peak * (1 - trail / 100), lo), f"{note}, then trailing stop {trail:g}%"
+        elif lo <= stop_px:
+            exit_px, reason = stop_px, f"option stop (-{stp:g}%)"
+        elif params.get("invalidation", True) and uc is not None and prop.get("underlyingStop") and uc < prop["underlyingStop"]:
+            exit_px, reason = cl, f"closed below invalidation {prop['underlyingStop']}"
+        elif not trailing and ((tgt_px and hi >= tgt_px) or (params.get("stockTarget", True) and uh is not None
+                                                                and prop.get("underlyingTarget") and uh >= prop["underlyingTarget"])):
+            what = f"option target (+{tgt:g}%)" if tgt_px and hi >= tgt_px else f"stock reached target {prop['underlyingTarget']}"
+            if trail:
+                trailing, peak, note = True, max(hi, cl), what
+            else:
+                exit_px, reason = (tgt_px if tgt_px and hi >= tgt_px else cl), what
+        if exit_px is None:
+            if dte <= params.get("timeStopDte", 14):
+                exit_px, reason = cl, f"time stop ({dte} days left)"
+            elif params.get("maxDays") and n >= params["maxDays"]:
+                exit_px, reason = cl, f"held {n} days"
+            elif params.get("earnings") and d >= (datetime.strptime(params["earnings"], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d"):
+                exit_px, reason = cl, "exit before earnings"
         if exit_px is not None:
             exit_day = d
             break
-    tracked = days.index(exit_day) + 1 if exit_day else min(len(days), DAYS)
-    done = exit_px is not None or len(days) >= DAYS
+    done = exit_px is not None or len(path) >= DAYS
     if exit_px is None and done:
-        exit_px, exit_reason, exit_day = last, f"{DAYS} trading days, still open", days[DAYS - 1]
+        exit_px, reason, exit_day = last, f"{DAYS} trading days, still open", path[-1][0]
     px = exit_px if exit_px is not None else last
-    pl = (px / entry - 1) * 100
+    pl = (px / entry - 1) * 100 if px is not None else 0.0
+    return {"R": round(pl / stp, 2), "plPct": round(pl, 1), "exitReason": reason, "exitDate": exit_day,
+            "exitPrice": round(exit_px, 2) if exit_px is not None else None, "days": n, "done": done, "trailing": trailing and exit_px is None}
+
+
+def params_of(cfg, prop, entry, earnings=None):
+    """Exit rules in force for this idea: a strategy's exit plan if it has one, otherwise the bot settings."""
+    import autotrader
+    plan = prop.get("exitPlan") or {}
+    stp = plan.get("stop") or autotrader.stop_pct(cfg, prop)
+    tgt = plan["target"] if "target" in plan else autotrader.target_pct(cfg, prop, entry)
+    trail = plan["trail"] if "trail" in plan else (cfg.get("trailPct", 25) if cfg.get("trailAfterTarget") else None)
+    return {"stop": stp, "target": tgt, "trail": trail, "maxDays": plan.get("maxDays"),
+            "invalidation": plan.get("invalidation", True), "stockTarget": plan.get("stockTarget", True),
+            "timeStopDte": cfg["timeStopDte"], "earnings": earnings}
+
+
+def simulate(rec, obars, ubars, cfg, earnings=None):
+    """Apply the bot's exit rules to the daily path after the evaluation day. Returns the shadow dict (with the path,
+    so other exit rules can be replayed later without fetching prices again)."""
+    p = rec["proposal"]
+    entry = float(p.get("limit") or p.get("debit") or 0)
+    if entry <= 0:
+        return {"status": "nodata", "note": "no entry price", "updatedAt": iso(now_ny()), "v": SIM_VERSION}
+    d0 = (rec.get("createdAt") or "")[:10]
+    path = build_path(rec, obars, ubars)
+    prm = params_of(cfg, p, entry, earnings)
+    out = {"entry": round(entry, 2), "stopPct": prm["stop"], "targetPct": prm["target"], "approx": True,
+           "updatedAt": iso(now_ny()), "v": SIM_VERSION, "path": path}
+    if not path:
+        stale = (now_ny().date() - datetime.strptime(d0, "%Y-%m-%d").date()).days > 8 if d0 else True
+        return {**out, "status": "nodata" if stale else "tracking", "days": 0,
+                "note": "no trading day since the evaluation yet" if not stale else "no trades in this contract"}
+    r = sim_path(path, entry, p, prm)
+    hi_all, lo_all = max(x[1] for x in path), min(x[2] for x in path)
+    uh = [x[4] for x in path if x[4] is not None]
+    ul = [x[5] for x in path if x[5] is not None]
     out.update({
-        "status": "done" if done else "tracking", "days": tracked, "last": round(last, 2), "plPct": round(pl, 1),
-        "R": round(pl / stp, 2) if stp else None, "exitReason": exit_reason, "exitDate": exit_day,
+        "status": "done" if r["done"] else "tracking", "days": r["days"], "last": round(path[-1][3], 2), "plPct": r["plPct"],
+        "R": r["R"], "exitReason": r["reason"] if "reason" in r else r["exitReason"], "exitDate": r["exitDate"],
         "mfePct": round((hi_all / entry - 1) * 100, 1), "maePct": round((lo_all / entry - 1) * 100, 1),
-        "undMax": round(umax, 2) if umax is not None else None, "undMin": round(umin, 2) if umin is not None else None,
-        "closesOnly": spread,
+        "undMax": round(max(uh), 2) if uh else None, "undMin": round(min(ul), 2) if ul else None,
+        "closesOnly": bool(p.get("shortContract")), "trailing": r["trailing"],
     })
-    if exit_px is not None:
-        out["exitPrice"] = round(exit_px, 2)
+    if r["done"] and r["exitPrice"] is not None:
+        out["exitPrice"] = r["exitPrice"]
     return out
 
 
@@ -255,14 +300,18 @@ def run(sub):
     recs = db.q_prefix(pk, "BOT#")
     todo, dups = candidates(recs, today)
     exits = exits_to_follow(recs, today)
+    # taken trades too: the same 20-day path from the evaluation, so exit rules can be compared on every idea
+    cut = (today - timedelta(days=35)).isoformat()
+    paths = [r for r in recs if _taken(r) and (r.get("proposal") or {}).get("contract") and (r.get("createdAt") or "") >= cut
+             and len(r.get("path") or []) < DAYS]
     for r, of in dups:
         db.update(pk, r["SK"], {"shadow": {"status": "dup", "of": of, "updatedAt": iso(now_ny())}})
-    if not todo and not exits:
+    if not todo and not exits and not paths:
         return {"tracked": 0, "dups": len(dups), "exits": 0}
-    starts = [(r.get("createdAt") or today.isoformat())[:10] for r in todo] + \
+    starts = [(r.get("createdAt") or today.isoformat())[:10] for r in todo + paths] + \
              [(r.get("closedAt") or r.get("lastCheck") or today.isoformat())[:10] for r in exits]
     start = min(starts)
-    syms = [x for r in todo + exits for x in (r["proposal"]["contract"], r["proposal"].get("shortContract"))]
+    syms = [x for r in todo + exits + paths for x in (r["proposal"]["contract"], r["proposal"].get("shortContract"))]
     errors = []
     obars = option_bars(c, syms, start, errors)
     if errors:
@@ -286,6 +335,15 @@ def run(sub):
         n += 1
     for r in exits:
         db.update(pk, r["SK"], {"afterExit": after_exit(r, obars)})
+    for r in paths:
+        sym = r["symbol"]
+        if sym not in ucache:
+            try:
+                ucache[sym] = _yahoo(sym.replace(".", "-"), "1d", datetime.strptime(start, "%Y-%m-%d") - timedelta(days=3),
+                                     now_ny() + timedelta(hours=1)) or []
+            except Exception:
+                ucache[sym] = []
+        db.update(pk, r["SK"], {"path": build_path(r, obars, ucache[sym])})
     out = {"tracked": n, "dups": len(dups), "exits": len(exits)}
     if errors:
         out.update(errors=len(errors), firstError=errors[0])

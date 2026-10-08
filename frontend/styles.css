@@ -410,3 +410,5 @@ tr.sel td{background:var(--sunk)}
 .exchip button{border:0;background:none;cursor:pointer;font-size:1rem;color:var(--muted);padding:0 4px}
 #ex-key{max-width:100%;min-width:0}
 .panel select{max-width:100%}
+.seg{display:inline-flex;gap:4px;flex-wrap:wrap}
+.shl li.sel{border-color:var(--coach,#5b5bd6);box-shadow:0 0 0 1px var(--coach,#5b5bd6) inset}

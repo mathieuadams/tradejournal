@@ -1268,16 +1268,24 @@ def test_shadow_tracking():
     assert ae["status"] == "tracking" and ae["days"] == 6 and ae["day1Pct"] == round((3.2 / 3 - 1) * 100, 1), ae
     assert ae["day5R"] == round((3.2 + 4 * 0.3 - 3.0) * 2 * 100 / 320.0, 2) and ae["bestR"] > ae["day5R"] and ae.get("day10Pct") is None
     assert "XYZ261120C00120000" in seen["syms"]
-    assert "XYZ261120C00110000" not in seen["syms"] and seen["start"] == d0     # taken trade with no fill: not followed
+    assert seen["start"] == d0
+    assert "shadow" not in STORE[(pk, f"BOT#{taken}")] and "path" in STORE[(pk, f"BOT#{taken}")]   # taken: a path, no shadow result
     s1 = STORE[(pk, f"BOT#{skip}")]["shadow"]
-    assert s1["status"] == "done" and s1["exitReason"].startswith("option target") and s1["days"] == 2, s1
-    assert s1["plPct"] == round((5 * (1 + cfg["targetPct"] / 100) / 5 - 1) * 100, 1) and s1["mfePct"] == 90.0 and s1["maePct"] == -10.0
-    assert s1["R"] == round(s1["plPct"] / cfg["stopPct"], 2) and s1["undMax"] == 104
+    # like the bot, reaching the target starts a trailing stop instead of selling
+    assert s1["status"] == "tracking" and s1["trailing"] and s1["days"] == 2 and s1["plPct"] == 80.0, s1
+    assert s1["mfePct"] == 90.0 and s1["maePct"] == -10.0 and s1["R"] == round(80.0 / cfg["stopPct"], 2) and s1["undMax"] == 104
+    rt = {"id": "t", "symbol": "XYZ", "createdAt": f"{d0}T10:00:00", "proposal": {**prop, "contract": "TT"}}
+    trail_bars = {"TT": [bar(days[0], 5, 6, 5, 5.5), bar(days[1], 5.5, 10, 5.4, 9.5), bar(days[2], 9.5, 11, 7.9, 8.0)]}
+    sh = shadow.simulate(rt, trail_bars, ubars, cfg)
+    assert sh["status"] == "done" and "trailing stop" in sh["exitReason"] and sh["exitReason"].startswith("option target"), sh
+    assert sh["exitPrice"] == round(11 * (1 - cfg["trailPct"] / 100), 2)
+    sh = shadow.simulate(rt, trail_bars, ubars, {**cfg, "trailAfterTarget": False})
+    assert sh["exitReason"].startswith("option target") and sh["days"] == 2 and sh["plPct"] == float(cfg["targetPct"])
     s3 = STORE[(pk, f"BOT#{rej}")]["shadow"]
     assert s3["status"] == "done" and s3["exitReason"].startswith("option stop") and s3["R"] == -1.0 and s3["days"] == 1, s3
     assert STORE[(pk, f"BOT#{dup}")]["shadow"]["status"] == "dup" and "shadow" not in STORE[(pk, f"BOT#{taken}")]
     # finished ones aren't fetched again
-    assert shadow.run(SUB)["tracked"] == 0
+    assert shadow.run(SUB)["tracked"] == 1                          # only the one still trailing is followed again
     # summary of what the skipped trades would have done, by reason and by Claude verdict
     STORE[(pk, f"BOT#{skip}")]["blocking"] = ["Up at least 10% from the 30-day low (low 196.98 on 2026-09-14, now +8.6%)"]
     code, sm = call("GET", "/bot/shadow/summary", q={"days": "35"})
@@ -1706,6 +1714,77 @@ def test_explorer():
     assert 0 < mc["probPositive"] <= 100 and mc["drawdown"]["p95"] <= mc["drawdown"]["p50"] <= 0 and mc["losingStreak"]["p95"] >= 1
     code, r = call("POST", "/bot/montecarlo", {"conds": [{"key": "callPut", "op": ">=", "value": 99}]})
     assert code == 200 and "error" in r
+
+
+def test_best_exit_and_strategies():
+    """Exit rules replayed on stored paths; strategies saved from a combination tag new evaluations, and a 'trade'
+    strategy buys on a match when only non-safety rules failed, with its own exit plan."""
+    import autotrader, explorer, strats, shadow, datetime as dt
+    STORE.clear()
+    pk = db.upk(SUB)
+    now = autotrader.now_ny()
+    # paths: option runs +150% then falls back -> trailing / a high target beats "sell at +80%"? and a tight stop
+    def path(seq):
+        d0 = now.date() - dt.timedelta(days=30)
+        out = []
+        for i, (h, l, c) in enumerate(seq):
+            out.append([(d0 + dt.timedelta(days=i)).isoformat(), h, l, c, 100, 100, 100])
+        return out
+    up = path([(5, 5, 5), (6, 4.6, 5.8), (9, 5.6, 8.8), (12.5, 8.5, 12.2), (13, 10, 10.5), (11, 9, 9.5)])
+    dn = path([(5, 5, 5), (5.1, 4.2, 4.3), (4.4, 3.4, 3.5), (3.6, 2.4, 2.5), (2.6, 2.0, 2.1)])
+    for i in range(20):
+        rid = f"20261001{i:06d}-abcdef"
+        p = {"contract": f"C{i}", "exp": "2099-12-18", "limit": 5.0, "underlyingStop": 50, "underlyingTarget": 999}
+        db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": f"S{i}", "decision": "WAIT", "status": "proposed",
+                "createdAt": (now - dt.timedelta(days=30, hours=-i)).strftime("%Y-%m-%dT%H:%M:%S"), "proposal": p,
+                "origin": {"type": "flow", "premium": 300000, "volOi": 4 if i % 2 == 0 else 0.5},
+                "checks": [{"group": "chart", "text": "No active bear (negative) fair value gap", "ok": True, "required": True}],
+                "shadow": {"status": "done", "R": 0.1, "plPct": 4, "v": shadow.SIM_VERSION, "path": up if i % 2 == 0 else dn}})
+    r = explorer.best_exit(SUB, 60, [{"key": "volOi", "op": ">=", "value": 3}], min_n=5)
+    assert r["n"] == 10 and r["tested"] > 100 and r["results"][0]["avgR"] >= r["current"]["avgR"], (r["current"], r["results"][:2])
+    best = r["results"][0]["params"]
+    assert best["target"] is None or best["target"] >= 100 or best["trail"], best          # the runner shouldn't be sold early
+    code, e = call("POST", "/bot/exitopt", {"conds": [{"key": "volOi", "op": ">=", "value": 99}]})
+    assert code == 200 and "error" in e
+    # save a strategy (watch), then switch it to trade
+    code, st = call("POST", "/bot/strategies", {"conds": [{"key": "volOi", "op": ">=", "value": 3}], "name": "Opening flow",
+                                                "exit": best, "backtest": {"n": 10}})
+    assert code == 200 and st["mode"] == "watch" and st["exit"]["stop"] == best["stop"]
+    code, bad = call("POST", "/bot/strategies", {"conds": [{"key": "claudeApprove", "value": True}]})
+    assert code == 400
+    rec = {"id": "20261008100000-aaaaaa", "symbol": "NEW", "decision": "WAIT", "createdAt": autotrader.iso(now),
+           "origin": {"type": "flow", "premium": 400000, "volOi": 5}, "proposal": {"contract": "NEWC", "limit": 2.0},
+           "checks": [{"group": "chart", "text": "Crossed above the 21 EMA in the last 10 days", "ok": False, "required": True}],
+           "blocking": ["Crossed above the 21 EMA in the last 10 days"]}
+    strats.apply(SUB, rec)
+    assert rec["strategies"][0]["mode"] == "watch" and rec["decision"] == "WAIT" and "exitPlan" not in rec["proposal"]
+    call("PUT", f"/bot/strategies/{st['id']}", {"mode": "trade"})
+    rec2 = {**rec, "checks": list(rec["checks"]), "blocking": list(rec["blocking"]), "proposal": dict(rec["proposal"]), "strategies": None}
+    strats.apply(SUB, rec2)
+    assert rec2["decision"] == "BUY" and rec2["strategyBuy"] == st["id"] and rec2["proposal"]["exitPlan"]["stop"] == best["stop"], rec2
+    assert rec2["ruleDecision"] == "WAIT" and rec2["overridden"] and not rec2["blocking"]
+    # safety rules still block
+    rec3 = {**rec, "checks": [], "proposal": dict(rec["proposal"]), "blocking": ["Puts not piling in (last 5 trading days): ..."]}
+    strats.apply(SUB, rec3)
+    assert rec3["decision"] == "WAIT" and "not bought" in rec3["checks"][-1]["text"]
+    # forward results only count evaluations after the strategy was saved
+    db.put({"PK": pk, "SK": f"BOT#{rec2['id']}", **rec2, "shadow": {"status": "done", "R": 1.5, "plPct": 60}})
+    code, lst = call("GET", "/bot/strategies")
+    it = lst["items"][0]
+    assert it["forward"]["n"] == 1 and it["forward"]["avgR"] == 1.5 and it["conds"][0]["text"].startswith("Flow volume")
+    # an open trade with a strategy exit plan: its own stop (20%) closes it where the settings' 40% wouldn't
+    import alpaca
+    alpaca.creds = lambda sub: {"key": "k", "secret": "s", "env": "paper"}
+    autotrader._alp = lambda c, m, path, body=None: ({"qty": "1", "current_price": "1.5", "avg_entry_price": "2.0", "unrealized_plpc": "-0.25",
+                                                     "unrealized_pl": "-50", "market_value": "150"} if path.startswith("/v2/positions/") and m == "GET" else {"id": "x"})
+    autotrader._yahoo = lambda *a, **k: [{"t": "x", "o": 1, "h": 1, "l": 1, "c": 100.0, "v": 1}]
+    db.put({"PK": pk, "SK": "BOT#20261008110000-bbbbbb", "id": "20261008110000-bbbbbb", "symbol": "NEW", "status": "open", "fillPrice": 2.0,
+            "filledQty": 1, "filledAt": autotrader.iso(now), "proposal": {"contract": "NEWC", "exp": "2099-12-18", "strike": 100,
+            "underlyingStop": 50, "underlyingTarget": 999, "exitPlan": {"stop": 20, "target": None, "trail": None}}})
+    out = autotrader.monitor(SUB)
+    assert out["actions"] and "stop (-25%)" in out["actions"][0][1], out
+    code, _ = call("DELETE", f"/bot/strategies/{st['id']}")
+    assert code == 200 and strats.load(SUB) == []
 
 
 def test_analytics():

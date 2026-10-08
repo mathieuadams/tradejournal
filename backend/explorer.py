@@ -50,7 +50,7 @@ FEATURES = {
 }
 
 
-def _bursts_by_ticker(pk):
+def bursts_by_ticker(pk):
     """{ticker: [(date, 'HH:MM' window start)]} from live bursts and the 30-day replay."""
     out = {}
     for e in db.q_prefix(pk, "BURST#"):
@@ -61,6 +61,45 @@ def _bursts_by_ticker(pk):
         if r.get("strict") and r.get("ticker") and r.get("date"):
             out.setdefault(r["ticker"], []).append((r["date"], r.get("start") or "00:00"))
     return out
+
+
+def features_of(r, bursts):
+    """Every condition feature of one evaluation (known at evaluation time, except taken / Claude)."""
+    at = r.get("createdAt") or ""
+    f = {}
+    checks = r.get("checks") or []
+    for key, prefix, _ in CHECKS:
+        c = next((c for c in checks if (c.get("text") or "").startswith(prefix)), None)
+        f[key] = None if c is None else bool(c.get("ok"))
+    if f.get("aboveFlip") is None:
+        c = next((c for c in checks if c.get("group") == "gamma" and "flip" in (c.get("text") or "")), None)
+        f["aboveFlip"] = None if c is None else bool(c.get("ok"))
+    o = r.get("origin") or {}
+    tf = r.get("tickerFlow") or {}
+    sig = r.get("signals") or {}
+    pr = tf.get("putRatio")
+    calls = ((tf.get("window") or {}).get("calls") or {}).get("premium")
+    f.update(
+        decisionBuy=r.get("decision") == "BUY", taken=bool(r.get("orderId") or r.get("status") in TAKEN),
+        sweep=bool(o.get("sweep")) if o.get("type") == "flow" else None,
+        claudeApprove=None if not r.get("aiCheck") else r["aiCheck"].get("verdict") == "approve",
+        claudeReject=None if not r.get("aiCheck") else r["aiCheck"].get("verdict") == "reject",
+        callPut=None if not tf else (round(1 / pr, 2) if pr else (99.0 if calls else None)),
+        flowPremium=o.get("premium") if o.get("type") == "flow" else None,
+        volOi=o.get("volOi"), askPct=o.get("askPct"),
+        smallCalls=((tf.get("window") or {}).get("smallCalls") or {}).get("hits") if tf else None,
+        extAtr=sig.get("extAtr"), growth30=sig.get("growth30"),
+        hour=int(at[11:13]) if len(at) >= 13 else None,
+    )
+    bs = bursts.get(r.get("symbol")) or []
+    d0, hm = at[:10], at[11:16]
+    try:
+        prev = (datetime.strptime(d0, "%Y-%m-%d") - timedelta(days=4)).strftime("%Y-%m-%d")
+    except ValueError:
+        prev = d0
+    f["burstSameDay"] = any(d == d0 and s_ <= hm for d, s_ in bs)
+    f["burst2d"] = any(prev <= d < d0 for d, s_ in bs) or f["burstSameDay"]
+    return f
 
 
 def _result(r):
@@ -82,7 +121,7 @@ def _result(r):
 def rows(sub, days=35):
     pk = db.upk(sub)
     cut = (now_ny() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
-    bursts = _bursts_by_ticker(pk)
+    bursts = bursts_by_ticker(pk)
     out = []
     for r in db.q_prefix(pk, "BOT#"):
         at = r.get("createdAt") or ""
@@ -92,38 +131,11 @@ def rows(sub, days=35):
         if R is None:
             continue
         f = {"id": r["id"], "symbol": r.get("symbol"), "at": at, "R": R, "status": st, "decision": r.get("decision")}
-        checks = r.get("checks") or []
-        for key, prefix, _ in CHECKS:
-            c = next((c for c in checks if (c.get("text") or "").startswith(prefix)), None)
-            f[key] = None if c is None else bool(c.get("ok"))
-        if f.get("aboveFlip") is None:                       # "Price below the gamma flip" / "No gamma flip ... positive"
-            c = next((c for c in checks if c.get("group") == "gamma" and "flip" in (c.get("text") or "")), None)
-            f["aboveFlip"] = None if c is None else bool(c.get("ok"))
-        o = r.get("origin") or {}
-        tf = r.get("tickerFlow") or {}
-        sig = r.get("signals") or {}
-        pr = tf.get("putRatio")
-        calls = ((tf.get("window") or {}).get("calls") or {}).get("premium")
-        f.update(
-            decisionBuy=r.get("decision") == "BUY", taken=bool(r.get("orderId") or r.get("status") in TAKEN),
-            sweep=bool(o.get("sweep")) if o.get("type") == "flow" else None,
-            claudeApprove=None if not r.get("aiCheck") else r["aiCheck"].get("verdict") == "approve",
-            claudeReject=None if not r.get("aiCheck") else r["aiCheck"].get("verdict") == "reject",
-            callPut=None if not tf else (round(1 / pr, 2) if pr else (99.0 if calls else None)),
-            flowPremium=o.get("premium") if o.get("type") == "flow" else None,
-            volOi=o.get("volOi"), askPct=o.get("askPct"),
-            smallCalls=((tf.get("window") or {}).get("smallCalls") or {}).get("hits") if tf else None,
-            extAtr=sig.get("extAtr"), growth30=sig.get("growth30"),
-            hour=int(at[11:13]) if len(at) >= 13 else None,
-        )
-        bs = bursts.get(r.get("symbol")) or []
-        d0, hm = at[:10], at[11:16]
-        try:
-            prev2 = (datetime.strptime(d0, "%Y-%m-%d") - timedelta(days=4)).strftime("%Y-%m-%d")
-        except ValueError:
-            prev2 = d0
-        f["burstSameDay"] = any(d == d0 and s <= hm for d, s in bs)
-        f["burst2d"] = any(prev2 <= d < d0 for d, s in bs) or f["burstSameDay"]
+        p = r.get("proposal") or {}
+        f["_path"] = (r.get("shadow") or {}).get("path") or r.get("path")
+        f["_entry"] = float(p.get("limit") or p.get("debit") or 0)
+        f["_prop"] = {k: p.get(k) for k in ("exp", "underlyingStop", "underlyingTarget", "strategy", "width", "debit", "limit")}
+        f.update(features_of(r, bursts))
         out.append(f)
     return out
 
@@ -321,3 +333,61 @@ def monte_carlo(sub, days=35, conds=None, trades=100, runs=5000, risk=None, acco
             out["dollars"]["halfAccountPct"] = round(sum(1 for d in dds if d <= ruin_lvl) / runs * 100, 1)
             out["dollars"]["account"] = account
     return out
+
+
+# ---------------- best exit ----------------
+
+def exit_grid():
+    out = []
+    for stop in (20, 30, 40, 50, 60):
+        for target in (None, 40, 60, 80, 100, 150):
+            for trail in ((None,) if target is None else (None, 15, 25, 35)):
+                for max_days in (None, 5, 10):
+                    for inv in (True, False):
+                        out.append({"stop": stop, "target": target, "trail": trail, "maxDays": max_days, "invalidation": inv})
+    return out
+
+
+def describe_exit(e):
+    parts = [f"stop -{e['stop']:g}%"]
+    if e.get("target") is None:
+        parts.append("no target")
+    elif e.get("trail"):
+        parts.append(f"at +{e['target']:g}% trail {e['trail']:g}%")
+    else:
+        parts.append(f"sell at +{e['target']:g}%")
+    parts.append(f"max {e['maxDays']} days" if e.get("maxDays") else "hold up to 20 days")
+    parts.append("invalidation on" if e.get("invalidation", True) else "no invalidation exit")
+    return " · ".join(parts)
+
+
+def best_exit(sub, days=35, conds=None, min_n=15, top=10):
+    """Replay every exit-rule combination on the stored price paths of the matching ideas; rank by average R."""
+    import autotrader
+    import shadow
+    cfg = autotrader.settings(sub)
+    rs = filter_rows(rows(sub, days), [c for c in (conds or []) if c.get("key") in FEATURES])
+    ideas = [r for r in rs if r.get("_path") and r.get("_entry", 0) > 0]
+    if len(ideas) < min_n:
+        return {"error": f"Only {len(ideas)} matching ideas have a stored price path (need {min_n}). Paths are saved by "
+                         f"the 16:20 update: press Update now on Skipped & what-if, or loosen the conditions."}
+    ideas.sort(key=lambda r: r["at"])
+    half = len(ideas) // 2
+    def run(params):
+        res = [shadow.sim_path(r["_path"], r["_entry"], r["_prop"], {**params, "timeStopDte": cfg["timeStopDte"]}) for r in ideas]
+        Rs = [x["R"] for x in res]
+        a, b = Rs[:half], Rs[half:]
+        return {"n": len(Rs), "avgR": round(sum(Rs) / len(Rs), 3), "winPct": round(sum(1 for x in Rs if x > 0) / len(Rs) * 100),
+                "totalR": round(sum(Rs), 2), "older": round(sum(a) / len(a), 2) if a else None, "newer": round(sum(b) / len(b), 2) if b else None,
+                "avgDays": round(sum(x["days"] for x in res) / len(res), 1)}
+    cur_p = shadow.params_of(cfg, {}, 1.0)
+    current = {"params": {k: cur_p[k] for k in ("stop", "target", "trail", "maxDays", "invalidation")}, **run(cur_p)}
+    current["text"] = describe_exit(current["params"])
+    res = []
+    for e in exit_grid():
+        st = run(e)
+        res.append({"params": e, "text": describe_exit(e), **st,
+                    "holds": st["older"] is not None and st["newer"] is not None and st["older"] > current["older"] and st["newer"] > current["newer"]})
+    res.sort(key=lambda x: (-x["avgR"], -x["n"]))
+    return {"n": len(ideas), "tested": len(res), "current": current, "results": res[:top],
+            "conds": [{**c, "text": describe(c)} for c in (conds or []) if c.get("key") in FEATURES]}

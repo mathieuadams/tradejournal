@@ -1889,6 +1889,67 @@ function mcPanel() {
   return `<section class="panel" style="margin-top:14px"><h2>Monte Carlo</h2>
     <p class="muted" style="font-size:.84rem;margin:0 0 8px">Simulates the next trades by drawing from the results of the ideas matching your conditions above (${(S.exConds || []).length ? 'your filter' : 'all ideas'}).</p>${form}${out}</section>`;
 }
+/* ---------- best exit + strategies ---------- */
+async function runExitOpt() {
+  S.eoBusy = true; render();
+  try { S.eo = await api('/bot/exitopt', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, minN: S.exMinN || 15 } }); }
+  catch (e) { S.eo = { error: e.message }; }
+  S.eoBusy = false; if (route() === 'botexplore') render();
+}
+function eoPanel() {
+  const d = S.eo;
+  const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
+  let body = '';
+  if (d && d.error) body = `<p class="muted">${esc(d.error)}</p>`;
+  else if (d) {
+    const row = (x, i) => `<li ${i != null ? `data-eouse="${i}"` : ''} class="${S.exExit && i != null && JSON.stringify(S.exExit) === JSON.stringify(x.params) ? 'sel' : ''}"><span class="shl-a">${esc(x.text)}</span><span class="shl-r">${R(x.avgR)}</span>
+      <span class="shl-b muted">${x.n} ideas · ${x.winPct}% winners · total ${x.totalR}R · held ${x.avgDays} days on average · older ${x.older ?? '—'}R / newer ${x.newer ?? '—'}R${x.holds ? ' · <b class="gain">better than now in both halves</b>' : ''}</span></li>`;
+    body = `<p style="margin:0 0 6px"><b>Your current exit rules</b></p><ul class="shl">${row(d.current, null)}</ul>
+      <p style="margin:12px 0 6px"><b>Best of ${d.tested} exit rule sets</b> <span class="muted">tap one to use it in a strategy</span></p><ul class="shl">${d.results.map(row).join('')}</ul>`;
+  }
+  return `<section class="panel" style="margin-top:14px"><div class="cal-head"><h2>Best exit</h2>
+    <button class="btn coachbtn" data-eorun="1" ${S.eoBusy ? 'disabled' : ''}>${S.eoBusy ? 'Replaying…' : 'Find the best exit for these ideas'}</button></div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Replays every combination of stop (20–60%), target (none, +40% to +150%), sell vs. trail after the target (15/25/35%), maximum hold (5, 10 or 20 days) and the invalidation exit on each matching idea's stored daily option prices, and ranks them by average R. Risk is the stop, so a wider stop must earn more to rank higher.</p>${body}</section>`;
+}
+async function saveStrategy() {
+  const name = prompt('Name this strategy', (S.ex.conds || []).map(c => c.text).join(' + ').slice(0, 60));
+  if (name === null) return;
+  const m = S.ex.match;
+  try {
+    await api('/bot/strategies', { method: 'POST', body: { name, conds: S.exConds, mode: 'watch', exit: S.exExit || null,
+      backtest: { n: m.n, avgR: m.avgR, winPct: m.winPct, days: S.exDays || 35, at: nyTime(Date.now()) } } });
+    toast('Saved in Strategies (watching). Turn on Trade there when you trust it.'); S.strats = null;
+    location.hash = '#botstrats';
+  } catch (e) { toast(e.message); }
+}
+async function loadStrats() {
+  S.stratsBusy = true;
+  try { S.strats = await api('/bot/strategies'); } catch (e) { S.strats = { error: e.message }; }
+  S.stratsBusy = false; if (route() === 'botstrats') render();
+}
+function exitText(e) {
+  if (!e) return 'Bot settings';
+  return [`stop -${e.stop}%`, e.target == null ? 'no target' : e.trail ? `at +${e.target}% trail ${e.trail}%` : `sell at +${e.target}%`,
+    e.maxDays ? `max ${e.maxDays} days` : 'up to the time stop', e.invalidation === false ? 'no invalidation exit' : 'invalidation on'].join(' · ');
+}
+function vStrats() {
+  const h = head('Strategies', 'Combinations saved from the Explorer. Watch: new evaluations that match are tagged and followed. Trade: a match buys even if some standard rules failed (safety rules and Claude still apply).', '');
+  const d = S.strats;
+  if (!d) return h + '<p class="loading">Loading…</p>';
+  if (d.error) return h + `<div class="errbox">${esc(d.error)}</div>`;
+  if (!d.items.length) return h + '<section class="panel"><p class="muted" style="margin:0">No strategy yet. In the Explorer, combine conditions, optionally pick an exit in <b>Best exit</b>, then press <b>Save as strategy</b>.</p></section>';
+  const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
+  return h + d.items.map(x => { const f = x.forward, b = x.backtest || {};
+    return `<section class="panel" style="margin-bottom:12px"><div class="cal-head"><h2 style="font-size:1.05rem">${esc(x.name)}</h2>
+      <span class="seg">${['watch', 'trade', 'off'].map(m => `<button class="btn ${x.mode === m ? 'coachbtn' : ''}" data-stmode="${x.id}|${m}">${m === 'watch' ? 'Watch' : m === 'trade' ? 'Trade' : 'Off'}</button>`).join('')}</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">${x.conds.map(c => `<span class="exchip">${esc(c.text || (c.key + (c.op ? ' ' + c.op + ' ' + c.value : c.value === false ? ': no' : '')))}</span>`).join('')}</div>
+      <p class="muted" style="font-size:.86rem;margin:0 0 8px">Exit: ${esc(exitText(x.exit))} · saved ${esc((x.createdAt || '').slice(0, 10))}${b.n ? ` · backtest when saved: ${b.n} ideas, ${b.avgR > 0 ? '+' : ''}${b.avgR}R avg, ${b.winPct}% winners (last ${b.days} days)` : ''}</p>
+      <div class="strip"><div class="stat"><span>Since saved (forward only)</span><b>${R(f.avgR)}</b><span>${f.n} ideas · ${f.done} finished · ${f.winPct ?? '—'}% winners</span></div>
+        <div class="stat"><span>Total</span><b>${f.totalR == null ? '—' : sgn(f.totalR, 2) + 'R'}</b><span>${x.tagged} evaluation${x.tagged === 1 ? '' : 's'} tagged</span></div></div>
+      ${x.items.length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Latest matching ideas</summary><ul class="shl" style="margin-top:6px">${x.items.map(i => `<li data-shopen="${i.id}"><span class="shl-a"><b>${esc(i.symbol)}</b> <span class="muted">${esc(i.at.replace('T', ' ').slice(5, 16))}${i.taken ? ' · taken' : ''}</span></span><span class="shl-r">${R(i.R)}${i.status !== 'done' ? ' <span class="muted">open</span>' : ''}</span></li>`).join('')}</ul></details>` : '<p class="muted" style="font-size:.84rem;margin:8px 0 0">No new evaluation has matched yet.</p>'}
+      <p style="margin:10px 0 0"><button class="btn" data-stload="${x.id}">Open in Explorer</button> <button class="btn" data-stdel="${x.id}">Delete</button></p></section>`; }).join('')
+    + '<p class="muted" style="font-size:.82rem">In Trade mode the bot still needs a liquid contract, no earnings soon, puts not piling in, a position that fits your risk per trade, a free position slot, and Claude not rejecting the chart. A strategy with its own exit uses it instead of the bot settings for that trade.</p>';
+}
 function vExplore() {
   const d = S.ex;
   const h = head('Explorer', 'Combine any conditions and see how every matching idea did: the real result when the bot took it, the shadow result when it skipped it.', '');
@@ -1921,9 +1982,9 @@ function vExplore() {
         <span class="shl-b muted">${x.n} ideas (${x.open} open) · ${x.winPct}% winners · total ${x.totalR}R · older ${x.older ?? '—'}R / newer ${x.newer ?? '—'}R ${x.holds ? '· <b class="gain">holds in both halves</b>' : ''}</span></li>`).join('')}</ul>
       <p class="muted" style="font-size:.8rem;margin:6px 0 0">${sr.tested} combinations tested against ${R(sr.baseline.avgR)} for all ideas. Tap one to load it above.</p>`}</section>`;
   return h + `<section class="panel"><div class="cal-head"><h2>Conditions</h2><select id="ex-days">${[10, 20, 35, 60].map(n => `<option value="${n}" ${n === (S.exDays || 35) ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${chips || '<span class="muted">No condition: all ideas.</span>'}${chips ? ' <button class="btn" data-exclear="1">Clear</button>' : ''}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${chips || '<span class="muted">No condition: all ideas.</span>'}${chips ? ` <button class="btn" data-exclear="1">Clear</button> <button class="btn coachbtn" data-exsave="1">Save as strategy${S.exExit ? ' (with the chosen exit)' : ''}</button>` : ''}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${fsel} ${picker}</div>
-    ${S.exBusy === 'filter' ? '<p class="loading" style="margin:8px 0 0">Filtering…</p>' : res + list}</section>` + mcPanel() + search;
+    ${S.exBusy === 'filter' ? '<p class="loading" style="margin:8px 0 0">Filtering…</p>' : res + list}</section>` + eoPanel() + mcPanel() + search;
 }
 function vBotSkipped() {
   return head('Skipped & what-if', 'What the trades the bot skipped would have done, what happened after its exits, and which flow is worth acting on', '')
@@ -2141,6 +2202,7 @@ async function refreshNow(quiet) {
     if (v === 'botskipped') { await loadShadow(); }
     if (v === 'botbursts') { await loadBursts(); }
     if (v === 'botexplore') { await runExplore(false); }
+    if (v === 'botstrats') { await loadStrats(); }
     else if (v === 'gex') { if (S.flow && !S.flowBusy && $('#fl-prem')) loadFlow(); loadMarketGamma(true); }
     else if (v === 'coach' || v === 'dashboard') { await loadNotes(true); }
     if (S.botRes && S.botRes.id && S.bot && S.bot.items) { const n = S.bot.items.find(i => i.id === S.botRes.id); if (n) S.botRes = { ...S.botRes, ...n }; }
@@ -2184,9 +2246,9 @@ setInterval(() => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botskipped', 'Skipped & what-if'], ['botbursts', 'Bursts'], ['botexplore', 'Explorer']],
+  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botskipped', 'Skipped & what-if'], ['botbursts', 'Bursts'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
-const isBotRoute = () => ['bot', 'botevals', 'botskipped', 'botbursts', 'botexplore'].includes(route());
+const isBotRoute = () => ['bot', 'botevals', 'botskipped', 'botbursts', 'botexplore', 'botstrats'].includes(route());
 const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
@@ -2214,7 +2276,8 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
   }],
   botskipped: [vBotSkipped, () => { if (!S.shadowSum) loadShadow(); }],
   botbursts: [vBursts, () => { if (!S.bursts && !S.burstsLoading) loadBursts(); }],
-  botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
+  botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }],
+  botstrats: [vStrats, () => { if (!S.strats && !S.stratsBusy) loadStrats(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
 const evTicker = () => route() === 'botevals' ? (hashParam('t') || '').toUpperCase() : '';
@@ -2234,7 +2297,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-eorun],[data-eouse],[data-exsave],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2245,6 +2308,14 @@ document.addEventListener('click', e => {
   if (el.dataset.shclaude !== undefined) { openShadow('claude', el.dataset.shclaude); return; }
   if (el.dataset.shopen) { openRecord(el.dataset.shopen); return; }
   if (el.dataset.mcrun) { runMC(); return; }
+  if (el.dataset.eorun) { runExitOpt(); return; }
+  if (el.dataset.eouse !== undefined) { const x = S.eo.results[+el.dataset.eouse]; S.exExit = JSON.stringify(S.exExit) === JSON.stringify(x.params) ? null : x.params; render(); return; }
+  if (el.dataset.exsave) { saveStrategy(); return; }
+  if (el.dataset.stmode) { const [id, mode] = el.dataset.stmode.split('|');
+    if (mode === 'trade' && !confirm('Let this strategy place paper orders on its own matches?')) return;
+    api(`/bot/strategies/${id}`, { method: 'PUT', body: { mode } }).then(() => { toast(`Strategy: ${mode}`); loadStrats(); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.stdel) { if (!confirm('Delete this strategy?')) return; api(`/bot/strategies/${el.dataset.stdel}`, { method: 'DELETE' }).then(loadStrats).catch(err => toast(err.message)); return; }
+  if (el.dataset.stload) { const x = S.strats.items.find(i => i.id === el.dataset.stload); S.exConds = x.conds.map(c => ({ key: c.key, op: c.op, value: c.value })); S.exExit = x.exit || null; S.ex = null; location.hash = '#botexplore'; return; }
   if (el.dataset.exadd) {
     const f = (S.ex.features || []).find(x => x.key === S.exPick); if (!f) return;
     let c;
