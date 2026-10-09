@@ -1960,8 +1960,8 @@ function vStrats() {
     </div>
     <p style="margin:10px 0 0"><button class="btn primary" data-actsave="1">Apply</button></p>
     <p class="muted" style="font-size:.84rem;margin:8px 0 0">Now: <b>${esc(act.name || 'Bot rules')}</b> · stop <b>${act.stop ? '-' + act.stop + '%' : esc(defStop)}</b>.
-      ${act.id ? 'Only evaluations that match this strategy are bought, even if some standard chart rules failed (safety rules and Claude still apply). Other strategies only watch.' : 'The bot buys on its own rules; strategies set to Trade can also buy their matches.'}
-      The stop sizes each new trade and is locked into it when proposed; changing it later doesn't move the stop on open trades.</p></section>`;
+      ${act.id ? 'The bot trades this strategy and nothing else: every match is bought, no match is never bought. The bot\'s other rules (chart checks, earnings, puts, liquidity, size, Claude\'s check) are ignored, and only the strategy\'s exit closes the trade (its stop, target / trail, max days and invalidation if set). The bot still needs a call in your expiration / delta window and a free slot under Max positions.' : 'The bot buys on its own rules; strategies set to Trade can also buy their matches.'}
+      The stop is locked into each trade when proposed; changing it later doesn't move the stop on open trades.</p></section>`;
   if (!d.items.length) return h + picker + '<section class="panel"><p class="muted" style="margin:0">No strategy yet. In the Explorer, combine conditions, optionally pick an exit in <b>Best exit</b>, then press <b>Save as strategy</b>.</p></section>';
   const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
   return h + picker + d.items.map(x => { const f = x.forward, b = x.backtest || {};
@@ -1973,7 +1973,7 @@ function vStrats() {
         <div class="stat"><span>Total</span><b>${f.totalR == null ? '—' : sgn(f.totalR, 2) + 'R'}</b><span>${x.tagged} evaluation${x.tagged === 1 ? '' : 's'} tagged</span></div></div>
       ${x.items.length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">Latest matching ideas</summary><ul class="shl" style="margin-top:6px">${x.items.map(i => `<li data-shopen="${i.id}"><span class="shl-a"><b>${esc(i.symbol)}</b> <span class="muted">${esc(i.at.replace('T', ' ').slice(5, 16))}${i.taken ? ' · taken' : ''}</span></span><span class="shl-r">${R(i.R)}${i.status !== 'done' ? ' <span class="muted">open</span>' : ''}</span></li>`).join('')}</ul></details>` : '<p class="muted" style="font-size:.84rem;margin:8px 0 0">No new evaluation has matched yet.</p>'}
       <p style="margin:10px 0 0"><button class="btn" data-stload="${x.id}">Open in Explorer</button> <button class="btn" data-stdel="${x.id}">Delete</button></p></section>`; }).join('')
-    + '<p class="muted" style="font-size:.82rem">In Trade mode the bot still needs a liquid contract, no earnings soon, puts not piling in, a position that fits your risk per trade, a free position slot, and Claude not rejecting the chart. A strategy with its own exit uses it instead of the bot settings for that trade.</p>';
+    + '<p class="muted" style="font-size:.82rem">Trade mode (with Bot rules selected above): a match can buy even if chart rules failed, but liquidity, earnings, puts, size and Claude still apply. To trade a strategy alone with nothing on top, select it above.</p>';
 }
 function vExplore() {
   const d = S.ex;

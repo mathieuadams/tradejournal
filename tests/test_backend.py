@@ -1800,7 +1800,16 @@ def test_best_exit_and_strategies():
     rec5 = {**rec, "origin": {"type": "flow", "premium": 400000, "volOi": 1}, "decision": "BUY", "checks": [], "blocking": [],
             "proposal": {"contract": "X", "limit": 2.0}}
     strats.apply(SUB, rec5, autotrader.settings(SUB))
-    assert rec5["decision"] == "WAIT" and "active strategy" in rec5["blocking"][0] and rec5["proposal"]["exitPlan"]["stop"] == 25
+    assert rec5["decision"] == "SKIP" and "selected strategy" in rec5["blocking"][0] and "exitPlan" not in rec5["proposal"]
+    # a match buys even when safety rules / size failed, and nothing but its exit plan applies
+    rec7 = {**rec, "checks": [], "proposal": {"contract": "NEWC", "limit": 9.0, "qty": 0},
+            "blocking": ["Puts not piling in (last 5 trading days): ...", "No earnings in the next 7 days"]}
+    strats.apply(SUB, rec7, autotrader.settings(SUB))
+    assert rec7["decision"] == "BUY" and rec7["proposal"]["qty"] == 1 and rec7["proposal"]["strategyOnly"] == st["id"] and rec7["overridden"]
+    # no liquid contract: the closest call is used
+    rec8 = {**rec, "checks": [], "proposal": None, "altProposal": {"contract": "ALT", "limit": 1.0, "qty": 2}, "blocking": ["Liquid contract ..."]}
+    strats.apply(SUB, rec8, autotrader.settings(SUB))
+    assert rec8["decision"] == "BUY" and rec8["proposal"]["contract"] == "ALT" and "altProposal" not in rec8
     assert strats.effective_stop(SUB) == 25
     # back to the bot rules with the strategy/settings stop: a BUY stays a BUY
     code, a = call("PUT", "/bot/strategies/active", {"strategy": "", "stop": None})

@@ -331,7 +331,8 @@ def review(sub, rec, auto_close=True):
           "plPct": rec.get("lastPlPct"), "mark": rec.get("lastMark")}
     weak_hold = (rv["action"] == "hold" and rv["confidence"] < cfg["aiExitHoldMinConf"]
                  and (rec.get("lastPlPct") or 0) <= -cfg["aiExitHoldLossPct"])
-    will_close = (rv["action"] == "close" and rv["confidence"] >= cfg["aiExitMinConf"] or weak_hold) and auto_close and cfg["aiExitAutoClose"]
+    only = bool((rec.get("proposal") or {}).get("strategyOnly"))     # selected strategy: only its own exit closes it
+    will_close = (rv["action"] == "close" and rv["confidence"] >= cfg["aiExitMinConf"] or weak_hold) and auto_close and cfg["aiExitAutoClose"] and not only
     rv["closed"] = bool(will_close)
     rv["weakHold"] = bool(weak_hold)
     reviews = list(rec.get("aiReviews") or []) + [rv]

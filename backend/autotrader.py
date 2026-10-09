@@ -570,6 +570,17 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
             decision = "SKIP" if decision == "BUY" else decision
             hard_fail.append(f"One contract risks ${per_contract_loss:.0f} at the {cfg['stopPct']}% stop, more than your ${risk_amt} risk per trade")
 
+    alt = None                                       # for a selected strategy: the closest call even if it failed liquidity
+    if not proposal and cands:
+        c0 = best or cands[0]
+        per_c = c0["mid"] * 100 * cfg["stopPct"] / 100
+        q = max(1, int((base.get("riskPerTrade") or 200) // per_c) if per_c else 1)
+        alt = {"strategy": "long_call", "contract": c0["symbol"], "underlying": symbol, "exp": c0["exp"], "strike": c0["strike"],
+               "qty": q, "limit": _tick(c0["mid"]), "cost": round(q * c0["mid"] * 100, 2),
+               "optionStop": round(c0["mid"] * (1 - cfg["stopPct"] / 100), 2),
+               "optionTarget": round(c0["mid"] * (1 + cfg["targetPct"] / 100), 2),
+               "underlyingStop": round(stop_lvl, 2), "underlyingTarget": round(target_lvl, 2), "underlyingAtr": sig["atr21"],
+               "riskAtStop": round(q * per_c, 2)}
     rec = {"id": now_ny().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6], "symbol": symbol, "createdAt": iso(now_ny()),
            "decision": decision, "checks": [{"group": grp, "text": t, "ok": ok, "required": hard} for (grp, t, ok, hard) in checks],
            "blocking": hard_fail, "warnings": soft_fail, "proposal": proposal, "candidates": cands, "strategy": strategy,
@@ -578,12 +589,14 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
                                  "problems": x["problems"]} for x in spreads],
            "signals": {k: sig.get(k) for k in ("price", "asOf", "ema21", "atr21", "extAtr", "crossAgo", "momentum", "momentumPrev", "growth30", "low30", "low30Date")},
            "gamma": {k: g.get(k) for k in ("gammaFlip", "callWall", "putWall", "netGex", "regime")},
-           "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}, "tickerFlow": tf}
+           "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}, "tickerFlow": tf,
+           "altProposal": alt}
     try:                                             # saved strategies: tag the evaluation, a 'trade' match can buy
         import strats
         strats.apply(sub, rec, cfg)
     except Exception as e:
         print("strategies failed", e)
+    rec.pop("altProposal", None)
     _carry_ai(sub, rec, cfg)
     db.put({"PK": db.upk(sub), "SK": f"BOT#{rec['id']}", **rec})
     return rec
@@ -723,7 +736,7 @@ def place(sub, bot_id, qty=None, limit=None, placed_by="manual", ai_inline=True,
         hit = next((x for x in legs if same(x.get("symbol")) and (x.get("side") == "buy" or o.get("order_class") == "mleg")), None)
         if hit:
             raise BadRequest(f"Alpaca already has an open order for {hit['symbol']}. Not placing a second order.")
-    ai_gate(sub, rec, settings(sub), ai_inline, override)
+    ai_gate(sub, rec, settings(sub), ai_inline, override or bool(rec.get("strategyOnly")))   # a selected strategy decides alone
     # 3) atomic claim so two clicks / two runs can't both submit
     if not db.claim(pk, f"BOT#{bot_id}", ["proposed"], "submitting"):
         raise BadRequest("This proposal is already being submitted.")
@@ -1077,6 +1090,7 @@ def monitor(sub):
         pl_pct = rec["lastPlPct"]
         stp, tgt = stop_pct(cfg, p), target_pct(cfg, p, rec.get("fillPrice"))
         plan = p.get("exitPlan") or {}                   # a strategy's own exit rules override the settings
+        only = bool(p.get("strategyOnly"))               # selected strategy: nothing but its own exit closes it
         trail_on, trail_pct, use_inv = cfg["trailAfterTarget"], cfg["trailPct"], True
         if plan:
             stp = plan.get("stop") or stp
@@ -1106,7 +1120,7 @@ def monitor(sub):
         peak = max(rec.get("peakMark") or 0, mark)
         trailing = rec.get("trailing") or False
         profit_exits = tgt is not None        # diagonal with no take-profit: only stops/invalidation/time close it
-        if not trailing and profit_exits and trail_on and (pl_pct >= tgt or (under is not None and under >= p["underlyingTarget"])):
+        if not trailing and profit_exits and trail_on and (pl_pct >= tgt or (not only and under is not None and under >= p["underlyingTarget"])):
             trailing = True
         if peak != rec.get("peakMark") or trailing != rec.get("trailing"):
             db.update(pk, rec["SK"], {"peakMark": peak, "trailing": trailing})
@@ -1114,24 +1128,24 @@ def monitor(sub):
             reason = f"{'spread' if is_spread(p) else 'option'} stop ({pl_pct:.0f}%)"
         elif use_inv and under is not None and under < p["underlyingStop"] and (not cfg["invalidationOnClose"] or near_close):
             reason = f"{rec['symbol']} {'closing' if cfg['invalidationOnClose'] else 'trading'} below invalidation {p['underlyingStop']} ({under:.2f})"
-        elif use_inv and under is not None and emergency is not None and under < emergency:
+        elif use_inv and not only and under is not None and emergency is not None and under < emergency:
             reason = f"{rec['symbol']} fell {cfg['emergencyAtr']} ATR below invalidation ({under:.2f} < {emergency:.2f})"
         elif trailing and trail_on:
             if peak and mark <= peak * (1 - trail_pct / 100):
                 reason = f"trailing stop: option {mark:.2f} is {trail_pct:.0f}% below its peak {peak:.2f} (target was reached)"
         elif profit_exits and pl_pct >= tgt:
             reason = f"{'spread' if is_spread(p) else 'option'} target (+{pl_pct:.0f}%)"
-        elif profit_exits and under is not None and under >= p["underlyingTarget"]:
+        elif profit_exits and not only and under is not None and under >= p["underlyingTarget"]:
             reason = f"{rec['symbol']} reached target {p['underlyingTarget']}"
         held = None
         if plan.get("maxDays") and rec.get("filledAt"):
             d_in = datetime.strptime(rec["filledAt"][:10], "%Y-%m-%d").date()
             held = sum(1 for k in range((now.date() - d_in).days + 1) if (d_in + timedelta(days=k)).weekday() < 5)
-        if not reason and dte <= cfg["timeStopDte"]:
+        if not reason and dte <= (0 if only else cfg["timeStopDte"]):
             reason = f"time stop ({dte} days to expiry)"
         elif not reason and held is not None and held >= plan["maxDays"] and near_close:
             reason = f"strategy exit: held {held} trading days (max {plan['maxDays']})"
-        elif not reason and due:
+        elif not reason and due and not only:
             reason = earn_reason
         if reason:
             close(sub, rec["id"], reason)

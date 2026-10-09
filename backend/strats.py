@@ -135,13 +135,8 @@ def apply(sub, rec, cfg=None):
         items = [s for s in load(sub) if s.get("mode") in ("watch", "trade")]
     f = explorer.features_of(rec, explorer.bursts_by_ticker(db.upk(sub))) if items else {}
     hits = [s for s in items if all(explorer._match(f, c) for c in s["conds"])]
-    if act and not any(s["id"] == act["id"] for s in hits):
-        if rec.get("decision") == "BUY":
-            rec["ruleDecision"] = "BUY"
-            rec["decision"] = "WAIT"
-            rec.setdefault("blocking", []).append(f"Not a match for the active strategy “{act['name']}”: only its matches are traded")
-        rec.setdefault("checks", []).append({"group": "strategy", "ok": False, "required": True,
-                                             "text": f"Active strategy “{act['name']}” not matched"})
+    if act:
+        return _apply_active(rec, cfg, act, act_stop, hits)
     _stop_plan(rec, cfg, act_stop)
     if not hits:
         return rec
@@ -164,6 +159,54 @@ def apply(sub, rec, cfg=None):
     for s in hits:
         if s is not trade:
             rec.setdefault("checks", []).append({"group": "strategy", "ok": True, "required": False, "text": f"Strategy “{s['name']}” matched (watching)"})
+    return rec
+
+
+def _apply_active(rec, cfg, act, act_stop, hits):
+    """A selected strategy decides alone: a match is bought whatever the bot's other rules said (chart, earnings,
+    puts, liquidity, size, Claude), and only the strategy's exit closes it. No match: not bought."""
+    rec["strategies"] = [{"id": s["id"], "name": s["name"], "mode": s["mode"]} for s in hits]
+    others = [s for s in hits if s["id"] != act["id"]]
+    for s in others:
+        rec.setdefault("checks", []).append({"group": "strategy", "ok": True, "required": False, "text": f"Strategy “{s['name']}” matched (watching)"})
+    if not any(s["id"] == act["id"] for s in hits):
+        rec["ruleDecision"] = rec.get("decision")
+        rec["decision"] = "SKIP"
+        rec["blocking"] = [f"Not a match for the selected strategy “{act['name']}”"]
+        rec.setdefault("checks", []).append({"group": "strategy", "ok": False, "required": True,
+                                             "text": f"Selected strategy “{act['name']}” not matched"})
+        rec.pop("altProposal", None)
+        return rec
+    p = rec.get("proposal") or rec.get("altProposal")
+    rec.pop("altProposal", None)
+    rec["ruleDecision"] = rec.get("decision")
+    rec["overridden"] = rec.get("blocking") or []
+    rec["strategyBuy"] = rec["strategyOnly"] = act["id"]
+    if not p:
+        rec["decision"] = "SKIP"
+        rec["blocking"] = ["No call contract to buy in the expiration / delta window"]
+        rec.setdefault("checks", []).append({"group": "strategy", "ok": False, "required": True,
+                                             "text": f"Selected strategy “{act['name']}” matched, but there is no contract to buy"})
+        return rec
+    if (p.get("qty") or 0) < 1:
+        p["qty"] = 1
+        price = p.get("debit") or p.get("limit") or 0
+        p["cost"] = round(price * 100, 2)
+    p["strategyOnly"] = act["id"]
+    plan = dict(act.get("exit") or {})
+    if not plan:
+        import autotrader
+        plan = {"stop": cfg.get("stopPct", 40) if cfg else 40, "target": autotrader.target_pct(cfg, p) if cfg else None,
+                "trail": (cfg.get("trailPct") if cfg.get("trailAfterTarget") else None) if cfg else None,
+                "maxDays": None, "invalidation": True}
+    if act_stop:
+        plan["stop"] = act_stop
+    p["exitPlan"] = plan
+    rec["proposal"] = p
+    rec["decision"] = "BUY"
+    rec["blocking"] = []
+    rec.setdefault("checks", []).append({"group": "strategy", "ok": True, "required": False,
+                                         "text": f"Selected strategy “{act['name']}” matched — buying on it (other bot rules ignored)"})
     return rec
 
 
