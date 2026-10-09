@@ -1,0 +1,3 @@
+"ClientAccountID","Symbol","DateTime","Buy/Sell","Quantity","TradePrice","IBCommission","Multiplier","TradeID"
+"U1234567","AMD","20260923;093512","BUY","200","161.25","-1.00","1","1001"
+"U1234567","AMD","20260923;101844","SELL","-200","162.10","-1.00","1","1002"
