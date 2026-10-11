@@ -1564,9 +1564,26 @@ def handler(event, context_):
                 except Exception as e:
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "error", "at": iso(now_ny()), "result": {"error": str(e)[:200]}})
                     raise
+            elif job == "wwfill":
+                import wallwatch
+                try:
+                    out[sub] = f = wallwatch.fill_walls(sub, budget_s=420)
+                    if not f["left"]:                    # every day stored: find the signals of the last 45 days
+                        out[sub]["signals"] = wallwatch.run(sub, days=45, budget_s=150)
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), "WWFILL") or {}), "PK": db.upk(sub), "SK": "WWFILL", "running": None,
+                            "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
             elif job == "wallwatch":
                 import wallwatch
                 try:
+                    if not event.get("days"):            # hourly: keep filling missing days a little at a time
+                        fl = db.get(db.upk(sub), "WWFILL") or {}
+                        if fl.get("left") and not fl.get("running"):
+                            try:
+                                wallwatch.fill_walls(sub, budget_s=120)
+                            except Exception as e:
+                                print("wall fill failed", e)
                     out[sub] = wallwatch.run(sub, days=int(event.get("days") or 3), budget_s=480)
                 except Exception as e:
                     db.put({**(db.get(db.upk(sub), "WWRUN") or {}), "PK": db.upk(sub), "SK": "WWRUN", "running": None,

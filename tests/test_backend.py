@@ -2013,6 +2013,19 @@ def test_wall_watch():
             flowdata.stored_walls = saved_sw
         assert st == 200 and c["symbol"] == "AAPL" and len(c["bars"]) == 7 and len(c["signals"]) == 2, c
         assert c["walls"][0]["flip"] == 102 and c["interval"] == 60
+        days = wallwatch._weekdays(5, wallwatch.now_ny().date())
+        past = [d_ for d_ in days if d_ != wallwatch.now_ny().strftime("%Y-%m-%d")]
+        db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[0]}", "data": {"callWall": 1, "putWall": 1, "flip": 1}})
+        db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[1]}", "data": None})                       # no data that day: done
+        db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[2]}", "data": {"callWall": 1, "putWall": 1, "noflip": True}})
+        todo, total = wallwatch.walls_todo(["AAPL"], 5)
+        assert total == 5 and (("AAPL", past[2]) in todo) and ("AAPL", past[0]) not in todo and ("AAPL", past[1]) not in todo
+        got = []
+        flowdata.gex_day = lambda key, sym, d, flip=True: got.append((sym, d)) or dict(w)
+        f = wallwatch.fill_walls(SUB, days=5, budget_s=30)
+        assert f["left"] == 0 and f["fetched"] == len(got) and len(got) == 3 * 5 - 2 - (5 - len(past)) * 3, (f, got)
+        st, r = call("GET", "/bot/wallwatch")
+        assert r["fill"]["left"] == 0 and r["fill"]["total"] == 15
     finally:
         charts._yahoo, flowdata.gex_day, flowdata._key = saved
 

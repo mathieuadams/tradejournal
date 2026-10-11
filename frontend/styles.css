@@ -415,7 +415,7 @@ tr.sel td{background:var(--sunk)}
 
 /* full-screen chart */
 .fcf{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column}
-.fcf-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--surface)}
+.fcf-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 64px 8px 12px;border-bottom:1px solid var(--line);background:var(--surface)}
 .fcf-body{flex:1;display:flex;min-height:0}
 .fcf-main{flex:1;min-width:0;padding:6px 8px;overflow:hidden;background:var(--surface)}
 .fcf-info{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.86rem;padding:6px 4px 0}

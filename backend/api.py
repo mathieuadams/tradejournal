@@ -440,6 +440,16 @@ def bot_wallwatch_chart(sub, claims, body, q):
     return wallwatch.chart(sub, (q or {}).get("t"))
 
 
+@route("POST", "/bot/wallwatch/walls")
+def bot_wallwatch_walls(sub, claims, body, q):
+    """Fetch every day's call wall, put wall and flip for every watchlist ticker (45 days), then find the signals."""
+    fill = db.get(db.upk(sub), "WWFILL") or {}
+    db.put({**fill, "PK": db.upk(sub), "SK": "WWFILL", "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwfill"}))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/wallwatch/run")
 def bot_wallwatch_run(sub, claims, body, q):
     """Check the watchlist now (days=3) or backfill the last `days` trading days (background job)."""

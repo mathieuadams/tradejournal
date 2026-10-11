@@ -1481,7 +1481,7 @@ function vChartWW() {
       ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow ? 'CW > flip > PW' : 'setup off'}</span>
       <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>` : ''}
       ${sel}${fcModeSeg()}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
-      ${sym ? fcLayerBar(id) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
+      ${sym ? fcLayerBar(id) : ''}${wwFillBtn()}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
   else if (!sym) main = '<p class="muted" style="padding:16px">The watchlist is empty.</p>';
@@ -2287,6 +2287,32 @@ async function loadWatch() {
   S.wwBusy = false;
   if (route() === 'botwatch' || route() === 'botchart') render();
 }
+function wwFillTxt() {
+  const f = (S.ww && S.ww.fill) || {};
+  if (f.running || S.wwFilling) return `<span class="muted" style="font-size:.82rem">getting walls… ${f.total ? `${f.total - (f.left ?? f.total)} / ${f.total} days` : ''}</span>`;
+  if (f.total && f.left) return `<span class="muted" style="font-size:.82rem">walls ${f.total - f.left} / ${f.total} days</span>`;
+  if (f.total && !f.left) return `<span class="muted" style="font-size:.82rem">all walls stored ${esc((f.at || '').slice(5, 16).replace('T', ' '))}</span>`;
+  return '';
+}
+const wwFillBtn = () => `<button class="btn coachbtn" data-wwfill="1" ${S.wwFilling ? 'disabled' : ''} style="font-size:.8rem;padding:2px 10px" title="Fetch the call wall, put wall and flip of the last 45 days for every ticker, then find the signals">${S.wwFilling ? 'Getting walls…' : 'Get all walls (45 days)'}</button> ${wwFillTxt()}`;
+async function wwFill() {
+  S.wwFilling = true; render();
+  try { await api('/bot/wallwatch/walls', { method: 'POST', body: {} }); toast('Getting the walls of every ticker — a few minutes'); }
+  catch (e) { toast(e.message); S.wwFilling = false; render(); return; }
+  let rounds = 0, idle = 0;
+  const poll = async () => {
+    await loadWatch();
+    const f = (S.ww && S.ww.fill) || {};
+    if (f.running) { idle = 0; return setTimeout(poll, 20000); }
+    if (f.left && rounds < 15 && !(f.errors || []).length) {           // the job stopped on time: start the next round
+      rounds++; try { await api('/bot/wallwatch/walls', { method: 'POST', body: {} }); } catch (e) {} return setTimeout(poll, 20000); }
+    if (!f.left && idle++ < 4 && !(S.ww.run || {}).bfAt) return setTimeout(poll, 20000);   // signals being found
+    S.wwFilling = false;
+    Object.keys(S.fc).filter(k => k.startsWith('ww-')).forEach(k => delete S.fc[k]);
+    render(); toast(f.left ? `${f.left} days still missing: press the button again` : 'All walls stored');
+  };
+  setTimeout(poll, 20000);
+}
 async function runWatch(days) {
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days } }); toast(days > 3 ? `Checking the last ${days} days in the background — a few minutes` : 'Checking every ticker now — about a minute'); }
   catch (e) { toast(e.message); return; }
@@ -2310,14 +2336,14 @@ function vWatch() {
     <div class="stat"><span>Average win / loss</span><b style="font-size:1.05rem">${pc(sm.avgWin)} / ${pc(sm.avgLoss)}</b><span>target ${pc(sm.avgTgt)} vs stop ${pc(sm.avgRisk == null ? null : -sm.avgRisk)} from entry</span></div></div>`;
   const runLine = `<p class="muted" style="font-size:.84rem;margin:0 0 12px">${run.at ? `Last check ${esc(t5(run.at))} · ${run.checked ?? 0} tickers` : 'Not checked yet'}${run.running ? ' · <b>checking…</b>' : ''}${run.bfAt ? ` · history: last ${run.bfDays} days${run.bfLeft ? ` (${run.bfLeft} tickers left: run again)` : ''}` : ''}${(run.errors || []).length ? ` · <span class="loss" title="${esc((run.errors || []).join('\n'))}">${run.errors.length} errors</span>` : ''}
     <button class="btn coachbtn" data-wwrun="3" style="font-size:.8rem;padding:2px 10px">Check now</button>
-    <button class="btn" data-wwrun="45" style="font-size:.8rem;padding:2px 10px">Check the last 45 days</button>
+    ${wwFillBtn()}
     <button class="btn" data-wwchart="${esc((cfg.tickers || [])[0] || '')}|" style="font-size:.8rem;padding:2px 10px">Open the charts</button>
     <label style="margin-left:6px"><input type="checkbox" id="ww-on" ${cfg.enabled ? 'checked' : ''}> every hour</label></p>`;
   const sigs = d.signals || [];
   const st = s => s.status === 'target' ? '<b class="gain">target</b>' : s.status === 'stop' ? '<b class="loss">stop</b>' : '<span style="color:var(--coach)">open</span>';
   const sigTable = `<section class="panel"><h2>Signals</h2>${sigs.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Candle</th><th class="r">Entry</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th class="r">Target</th><th class="r">Stop</th><th>Result</th><th class="r">Move</th><th class="r">R</th><th></th></tr></thead><tbody>
     ${sigs.map(s => `<tr><td><b>${esc(s.symbol)}</b></td><td>${esc(t5(s.at))}</td><td class="r">${(+s.entry).toFixed(2)}</td><td class="r">${s.pw}</td><td class="r">${s.flip}</td><td class="r">${s.cw}</td><td class="r">${pc(s.tgtPct, 1)}</td><td class="r">${pc(-s.riskPct, 1)}</td>
-      <td>${st(s)}${s.exitAt ? ` <span class="muted">${esc(t5(s.exitAt))}</span>` : s.lastAt ? ` <span class="muted">now ${(+s.last).toFixed(2)}</span>` : ''}</td><td class="r">${pc(s.pct)}</td><td class="r">${s.R == null ? '—' : (s.R > 0 ? '+' : '') + s.R}</td><td><button class="btn" data-wwchart="${esc(s.symbol)}|${esc(s.at)}" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No signal yet. Press <b>Check the last 45 days</b> to see how often it happened.</p>'}</section>`;
+      <td>${st(s)}${s.exitAt ? ` <span class="muted">${esc(t5(s.exitAt))}</span>` : s.lastAt ? ` <span class="muted">now ${(+s.last).toFixed(2)}</span>` : ''}</td><td class="r">${pc(s.pct)}</td><td class="r">${s.R == null ? '—' : (s.R > 0 ? '+' : '') + s.R}</td><td><button class="btn" data-wwchart="${esc(s.symbol)}|${esc(s.at)}" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No signal yet. Press <b>Get all walls (45 days)</b> to see how often it happened.</p>'}</section>`;
   const by = (d.byTicker || []).length ? `<section class="panel" style="margin-top:14px"><details><summary class="muted" style="cursor:pointer">By ticker (finished signals)</summary><div class="tablewrap"><table class="pos" style="font-size:.85rem;margin-top:8px"><thead><tr><th>Ticker</th><th class="r">Signals</th><th class="r">Targets</th><th class="r">Total move</th></tr></thead><tbody>
     ${d.byTicker.map(b => `<tr><td><b>${esc(b.symbol)}</b></td><td class="r">${b.n}</td><td class="r">${b.targets}</td><td class="r">${pc(b.total)}</td></tr>`).join('')}</tbody></table></div></details></section>` : '';
   const stMap = Object.fromEntries((d.status || []).map(x => [x.symbol, x]));
@@ -2689,7 +2715,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2744,6 +2770,7 @@ document.addEventListener('click', e => {
   if (el.dataset.fcfmode) { fcfSetMode(el.dataset.fcfmode); if (el.dataset.fcfmode === 'ww' && !S.ww) loadWatch(); else if (el.dataset.fcfmode === 'ev' && !S.tickers) loadTickers(); location.hash = '#botchart'; render(); return; }
   if (el.dataset.wwsel) { const [sym, at] = el.dataset.wwsel.split('|'); S.wwSel = { sym, at, zoom: true }; render(); return; }
   if (el.dataset.wwchart) { const [sym, at] = el.dataset.wwchart.split('|'); fcfSetMode('ww'); S.wwSel = at ? { sym, at, zoom: true } : null; location.hash = '#botchart?t=' + encodeURIComponent(sym); return; }
+  if (el.dataset.wwfill) { wwFill(); return; }
   if (el.dataset.wwrun) { runWatch(+el.dataset.wwrun); return; }
   if (el.dataset.wwsave) { api('/bot/wallwatch', { method: 'PUT', body: { tickers: $('#ww-list').value } }).then(r => { S.ww = r; toast('Saved'); render(); }).catch(err => toast(err.message)); return; }
   if (el.dataset.exsearch) { S.exMinN = +($('#ex-minn').value || 15); S.exGroup = ($('#ex-group') || {}).value || ''; S.exDepth = +(($('#ex-depth') || {}).value || 4); runExplore(true); return; }

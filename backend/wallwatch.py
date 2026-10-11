@@ -175,6 +175,66 @@ def run(sub, days=3, budget_s=500):
     return {"checked": len(rows), "errors": len(errors)}
 
 
+def _weekdays(n, today):
+    out, d = [], today
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d.strftime("%Y-%m-%d"))
+        d -= timedelta(days=1)
+    return sorted(out)
+
+
+def walls_todo(tickers, days=45):
+    """(ticker, date) pairs whose call wall / put wall / flip aren't stored yet. Days with no data (holidays) count as done."""
+    today = now_ny().date()
+    dates = _weekdays(days, today)
+    ts = today.strftime("%Y-%m-%d")
+    todo = []
+    for sym in tickers:
+        have = {}
+        for r in db.q_prefix("UWGEX2", f"{sym}#"):
+            have[r["SK"].split("#", 1)[1]] = r
+        for d in dates:
+            r = have.get(d)
+            data = (r or {}).get("data")
+            if d == ts:
+                continue                                # today: refreshed by the hourly check
+            if r and (data is None or (data.get("callWall") is not None and data.get("flip") is not None and not data.get("noflip"))):
+                continue
+            todo.append((sym, d))
+    return todo, len(dates) * len(tickers)
+
+
+def fill_walls(sub, days=45, budget_s=480):
+    """Fetch the walls and the flip of every day for every watchlist ticker (Unusual Whales), as many as the time allows."""
+    import flowdata
+    from concurrent.futures import ThreadPoolExecutor
+    t0 = time.time()
+    pk = db.upk(sub)
+    cfg = config(sub)
+    key = flowdata._key(sub)
+    todo, total = walls_todo(cfg["tickers"], days)
+    db.put({"PK": pk, "SK": "WWFILL", "running": iso(now_ny()), "total": total, "left": len(todo), "days": days,
+            "at": (db.get(pk, "WWFILL") or {}).get("at")})
+    done, errors = 0, []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for k in range(0, len(todo), 12):
+            if time.time() - t0 > budget_s:
+                break
+            futs = [(t, ex.submit(flowdata.gex_day, key, t[0], t[1], True)) for t in todo[k:k + 12]]
+            for t, f in futs:
+                try:
+                    f.result()
+                    done += 1
+                except Exception as e:
+                    errors.append(f"{t[0]} {t[1]}: {str(e)[:80]}")
+    left = max(0, len(todo) - done - len(errors))
+    out = {"PK": pk, "SK": "WWFILL", "running": None, "total": total, "left": left, "fetched": done, "days": days,
+           "errors": errors[:5], "at": iso(now_ny())}
+    db.put(out)
+    return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
 def view(sub):
     if not db.get(db.upk(sub), "WWCFG"):               # first visit: the default list, on (the hourly job finds it)
         save_config(sub, {})
@@ -197,7 +257,9 @@ def view(sub):
         b["n"] += 1
         b["targets"] += s["status"] == "target"
         b["total"] = round(b["total"] + s["pct"], 2)
+    fill = db.get(db.upk(sub), "WWFILL") or {}
     return {"config": cfg, "run": {k: run_.get(k) for k in ("at", "running", "checked", "errors", "bfLeft", "bfAt", "bfDays")},
+            "fill": {k: fill.get(k) for k in ("at", "running", "total", "left", "fetched", "errors")},
             "status": run_.get("status") or [], "signals": sigs[:500], "summary": summary,
             "byTicker": sorted(by.values(), key=lambda b: -b["total"])}
 
@@ -243,7 +305,7 @@ def chart(sub, sym, days=45):
     noflip = [d for d in dates if (stored.get(d) or {}).get("callWall") and not stored[d].get("flip")]
     if missing or noflip:
         note = (note + " · " if note else "") + (f"Walls missing for {len(missing)} of {len(dates)} days" if missing else "") \
-            + (f"{' · ' if missing else ''}flip missing for {len(noflip)} days" if noflip else "") + ": press Check the last 45 days on Wall watch."
+            + (f"{' · ' if missing else ''}flip missing for {len(noflip)} days" if noflip else "") + ": press Get all walls (45 days)."
     sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in db.q_prefix(db.upk(sub), f"WWSIG#{sym}#")]
     sigs.sort(key=lambda s: s["at"])
     last = next((stored.get(d) for d in reversed(dates) if (stored.get(d) or {}).get("callWall")), None)
