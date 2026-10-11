@@ -1694,6 +1694,8 @@ def test_call_bursts():
         call("PUT", "/bot/settings", {"burstMinPremium": 250000})
         # live: today's prints add up to a burst once; the same ticker isn't recorded again within the cooldown
         today = now.strftime("%Y-%m-%d")
+        import util as _util
+        bursts.now_ny = lambda: now.replace(hour=10, minute=30, second=0, microsecond=0)   # the cooldown doesn't depend on when the tests run
         live = [mk(today, f"10:{10 + i:02d}", 150000, u=150 - i * 0.05) for i in range(9)]
         flowdata.alerts = lambda sub, *a, **k: {"alerts": live}
         db.put({"PK": pk, "SK": "BURSTSTATE", "seen": ["x"] * 10, "lastEvent": {}})          # old-version state
@@ -1724,6 +1726,8 @@ def test_call_bursts():
         assert code == 200 and STORE[(pk, "BURSTSTUDY")]["status"] == "starting"
     finally:
         flowdata.alerts, charts._yahoo = flowdata_saved, yahoo_saved
+        import util as _util
+        bursts.now_ny = _util.now_ny
 
 
 def test_explorer():
