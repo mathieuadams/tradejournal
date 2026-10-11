@@ -1303,40 +1303,57 @@ function fcSetZoom(id, a, b, N) {
   render();
 }
 /* ---------- Wall strategy, replayed on the chart ----------
-   Entry: a green hourly candle whose low touches the put wall (within near %) and that closes above it, call premium
-   bought at the ask over the last flowHours beats puts and reaches minCall, and the call wall is at least room % above.
+   Watch: call premium bought at the ask over the last `hours` reaches minCall and beats puts -> the ticker is watched
+   for up to `watchDays` days. Entry while watched: a green hourly candle whose low touches the put wall (within ± near %)
+   and that closes above it, with the call wall at least room % above.
    Exit: target = the call wall (it moves up if the wall moves up); stop = an hourly close below the put wall of that moment. */
-S.wsP = (() => { const d0 = { near: 0.5, minCall: 100000, room: 3, hours: 6 }; try { const v = { ...d0, ...JSON.parse(localStorage.getItem('wsP2') || '{}') }; return v; } catch (e) { return d0; } })();
+S.wsP = (() => { const d0 = { near: 0.5, minCall: 100000, room: 3, hours: 6, watchDays: 10 }; try { const v = { ...d0, ...JSON.parse(localStorage.getItem('wsP2') || '{}') }; return v; } catch (e) { return d0; } })();
 function wsRun(d0) {
   const d = fcClean(d0), bars = d.bars, n = bars.length, P = S.wsP, iv = d.interval || 15;
-  if (n < 3) return [];
+  const trades = []; trades.watches = [];
+  if (n < 3) return trades;
   const ms = t => Date.parse(t.slice(0, 16) + ':00Z');
   const walls = (d.walls || []).slice().sort((a, b) => a.t < b.t ? -1 : 1);
-  let wk = -1, cur = null;
-  const wallAt = []; bars.forEach(b => { while (wk + 1 < walls.length && walls[wk + 1].t <= b.t) { wk++; if (walls[wk].callWall != null) cur = walls[wk]; } wallAt.push(cur); });
+  // walls in force at each bar: `today` is null on a day without data (no entry then); `known` keeps the last ones for exits
+  let wk = -1, today = null, known = null;
+  const wAt = [], kAt = [];
+  bars.forEach(b => { while (wk + 1 < walls.length && walls[wk + 1].t <= b.t) { wk++; const w = walls[wk];
+      if (w.callWall != null && w.putWall != null) { today = w; known = w; } else today = null; }
+    wAt.push(today); kAt.push(known); });
   const al = (d.alerts || []).map(a => ({ m: ms(a.t), call: a.type === 'call', p: a.premium })).sort((a, b) => a.m - b.m);
   const hourClose = b => iv >= 60 || b.t.slice(14, 16) === '15' || b.t.slice(11, 16) === '15:45';
-  const trades = []; let pos = null, lo = 0;
+  let pos = null, watch = null, lo = 0, dayN = 0;
   for (let i = 0; i < n; i++) {
-    const b = bars[i], w = wallAt[i];
-    if (!w || w.putWall == null || w.callWall == null) continue;
-    if (pos) {
-      const tgt = Math.max(pos.tgt0, w.callWall);                      // the target follows the call wall up
-      if (b.h >= tgt) { trades.push({ ...pos, iX: i, exit: tgt, why: 'target', tgt }); pos = null; continue; }
-      if (hourClose(b) && b.c < w.putWall) {                          // stop = the put wall of the moment (it follows the wall up and down)
-        trades.push({ ...pos, iX: i, exit: b.c, why: w.putWall > pos.pw ? 'trail' : 'stop', stop: w.putWall, tgt }); pos = null; continue; }
-      pos.tgtNow = tgt; pos.stop = w.putWall; continue;
-    }
-    if (!hourClose(b)) continue;
-    // entry candle: its low touches the put wall (within near %), it closes above the wall, and it's green
-    const room = (w.callWall - b.c) / b.c * 100;
-    if (b.l > w.putWall * (1 + P.near / 100) || b.c < w.putWall || b.c <= b.o || room < P.room) continue;
+    const b = bars[i];
+    if (i && b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) dayN++;
+    // flow over the last `hours`: the notification that starts watching a ticker
     const m = ms(b.t) + iv * 60000, from = m - P.hours * 3600000;
     while (lo < al.length && al[lo].m < from) lo++;
     let cp = 0, pp = 0; for (let k = lo; k < al.length && al[k].m <= m; k++) { if (al[k].call) cp += al[k].p; else pp += al[k].p; }
-    if (cp < P.minCall || cp <= pp) continue;
-    pos = { iE: i, entry: b.c, pw: w.putWall, stop: w.putWall, tgt0: w.callWall, tgtNow: w.callWall, cp, pp };
+    const flowOk = cp >= P.minCall && cp > pp;
+    if (pos) {
+      const w = kAt[i]; if (!w) continue;
+      const tgt = Math.max(pos.tgt0, w.callWall);                      // the target follows the call wall up
+      if (b.h >= tgt) { trades.push({ ...pos, iX: i, exit: tgt, why: 'target', tgt }); pos = null; continue; }
+      if (hourClose(b) && b.c < w.putWall) {                          // stop = the put wall of the moment (follows it up and down)
+        trades.push({ ...pos, iX: i, exit: b.c, why: w.putWall > pos.pw ? 'trail' : 'stop', stop: w.putWall, tgt }); pos = null; continue; }
+      pos.tgtNow = tgt; pos.stop = w.putWall; continue;
+    }
+    if (!watch) {
+      if (flowOk) watch = { iW: i, day0: dayN, cp, pp };                // call flow: start watching the ticker
+      continue;
+    }
+    if (dayN - watch.day0 > P.watchDays) { trades.watches.push({ ...watch, iEnd: i, result: 'expired' }); watch = flowOk ? { iW: i, day0: dayN, cp, pp } : null; continue; }
+    const w = wAt[i];
+    if (!w || !hourClose(b)) continue;
+    // entry: a green hourly candle whose low touches the put wall (within ± near %) and that closes above it, with room to the call wall
+    const room = (w.callWall - b.c) / b.c * 100, band = w.putWall * P.near / 100;
+    if (Math.abs(b.l - w.putWall) > band || b.c <= w.putWall || b.c <= b.o || room < P.room) continue;
+    trades.watches.push({ ...watch, iEnd: i, result: 'entered' });
+    pos = { iE: i, iW: watch.iW, entry: b.c, pw: w.putWall, stop: w.putWall, tgt0: w.callWall, tgtNow: w.callWall, cp: watch.cp, pp: watch.pp };
+    watch = null;
   }
+  if (watch) trades.watches.push({ ...watch, iEnd: n - 1, result: 'watching' });
   if (pos) trades.push({ ...pos, iX: null, exit: bars[n - 1].c, why: 'open', tgt: pos.tgtNow });
   trades.forEach(t => { t.pl = (t.exit / t.entry - 1) * 100; });
   return trades;
@@ -1344,12 +1361,13 @@ function wsRun(d0) {
 function wsSummary(tr) {
   const done = tr.filter(t => t.why !== 'open'), c = w => done.filter(t => t.why === w).length;
   const avg = done.length ? done.reduce((s2, t) => s2 + t.pl, 0) / done.length : null, won = done.filter(t => t.pl > 0).length;
-  return `Wall strategy: <b>${tr.length}</b> trade${tr.length === 1 ? '' : 's'}${done.length ? ` · ${c('target')} target · ${c('trail')} trailing stop · ${c('stop')} stop · ${won}/${done.length} winners · avg <b class="${avg >= 0 ? 'gain' : 'loss'}">${avg >= 0 ? '+' : ''}${avg.toFixed(1)}%</b> (stock move)` : ''}${tr.some(t => t.why === 'open') ? ' · 1 open' : ''}`;
+  const ws = tr.watches || [], watching = ws.some(x => x.result === 'watching');
+  return `Wall strategy: <b>${ws.length}</b> watch${ws.length === 1 ? '' : 'es'} from call flow → <b>${tr.length}</b> trade${tr.length === 1 ? '' : 's'}${watching ? ' · <b style="color:var(--coach)">watching now</b>' : ''}${done.length ? ` · ${c('target')} target · ${c('trail')} trailing stop · ${c('stop')} stop · ${won}/${done.length} winners · avg <b class="${avg >= 0 ? 'gain' : 'loss'}">${avg >= 0 ? '+' : ''}${avg.toFixed(1)}%</b> (stock move)` : ''}${tr.some(t => t.why === 'open') ? ' · 1 open' : ''}`;
 }
 function wsParamsBar() {
   const P = S.wsP, f = (k, l, step, w) => `<label class="muted" style="font-size:.78rem;display:inline-flex;gap:4px;align-items:center">${l}<input data-wsp="${k}" type="number" step="${step}" value="${P[k]}" style="width:${w}em;padding:1px 4px"></label>`;
   return `<details data-wsdet style="display:inline-block" ${S.wsOpen ? 'open' : ''}><summary class="muted" style="cursor:pointer;font-size:.8rem">strategy settings</summary><span style="display:inline-flex;flex-wrap:wrap;gap:8px;margin-left:6px">
-    ${f('near', 'low within % of put wall', 0.25, 3.5)}${f('room', 'min room to call wall %', 0.5, 3.5)}${f('minCall', 'min call $', 10000, 6)}${f('hours', 'flow window h', 1, 3)}</span></details>`;
+    ${f('near', 'low within % of put wall', 0.25, 3.5)}${f('room', 'min room to call wall %', 0.5, 3.5)}${f('minCall', 'min call $', 10000, 6)}${f('hours', 'flow window h', 1, 3)}${f('watchDays', 'watch for days', 1, 3)}</span></details>`;
 }
 document.addEventListener('toggle', e => { if (e.target.dataset && e.target.dataset.wsdet !== undefined) S.wsOpen = e.target.open; }, true);
 document.addEventListener('change', e => {
@@ -1447,8 +1465,16 @@ function fcSvg0(d, id, opts) {
       const sel = S.fcSelD && S.fcSelD.id === id && S.fcSelD.k === k;
       g += `<rect data-fcd="${id}|${k}" x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2" fill="var(--warn)" fill-opacity=".55" stroke="${sel || p0.premium >= 10e6 ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(p0.t.replace('T', ' ').slice(5))} · dark pool ${p0.size.toLocaleString('en-US')} sh at ${p0.price} · ${prem(p0.premium)}</title></rect>`; });
   }
-  if (LY.ws) {                              // Wall strategy trades: shaded holding period, entry ▲, exit ■
-    wsRun(d).forEach(t => {
+  if (LY.ws) {                              // Wall strategy: watch periods (after call flow), then trades
+    const wsr = wsRun(d);
+    (wsr.watches || []).forEach(wt => {
+      const a0 = wt.iW - za, b0 = wt.iEnd - za;
+      if (b0 < 0 || a0 > n - 1) return;
+      const xa = a0 >= 0 ? X(a0) : L, xb = b0 <= n - 1 ? X(b0) : W - Rr;
+      g += `<rect x="${xa}" y="${B - 6}" width="${Math.max(2, xb - xa)}" height="6" fill="var(--coach,#5b5bd6)" opacity="${wt.result === 'expired' ? .25 : .55}"><title>Watching from ${esc(bars[Math.max(0, a0)].t.replace('T', ' ').slice(5))}: calls ${money(wt.cp, false)} vs puts ${money(wt.pp, false)} · ${wt.result === 'entered' ? 'entry found' : wt.result === 'expired' ? `no entry within ${S.wsP.watchDays} days` : 'still watching'}</title></rect>`;
+      if (a0 >= 0) g += `<text x="${xa}" y="${B - 10}" font-size="${fs - 3}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">◉ watch</text>`;
+    });
+    wsr.forEach(t => {
       const a0 = t.iE - za, b0 = (t.iX == null ? all.length - 1 : t.iX) - za;
       if (b0 < 0 || a0 > n - 1) return;
       const xa = a0 >= 0 ? X(a0) : L, xb = b0 <= n - 1 ? X(b0) : W - Rr, win = t.pl > 0, open = t.why === 'open';
