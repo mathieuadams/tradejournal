@@ -1307,8 +1307,8 @@ function fcSetZoom(id, a, b, N) {
    flowHours beats puts and reaches minCall, and the call wall is at least roomPct above.
    Exit: target = the call wall of the day (it moves up if the wall moves up); stop = an hourly close below the put wall. */
 S.wsP = (() => { const d0 = { near: 3, minCall: 100000, room: 3, hours: 6 }; try { return { ...d0, ...JSON.parse(localStorage.getItem('wsP') || '{}') }; } catch (e) { return d0; } })();
-function wsRun(d) {
-  const bars = d.bars || [], n = bars.length, P = S.wsP, iv = d.interval || 15;
+function wsRun(d0) {
+  const d = fcClean(d0), bars = d.bars, n = bars.length, P = S.wsP, iv = d.interval || 15;
   if (n < 3) return [];
   const ms = t => Date.parse(t.slice(0, 16) + ':00Z');
   const walls = (d.walls || []).slice().sort((a, b) => a.t < b.t ? -1 : 1);
@@ -1357,10 +1357,16 @@ document.addEventListener('change', e => {
   S.wsP = { ...S.wsP, [k]: v }; try { localStorage.setItem('wsP', JSON.stringify(S.wsP)); } catch (err) {}
   render();
 });
+function fcClean(d) {                       // drop malformed rows so one bad record can't break the chart
+  const ok = x => x && typeof x.t === 'string' && x.t.length >= 16;
+  const bars = (d.bars || []).filter(b => ok(b) && isFinite(b.o) && isFinite(b.h) && isFinite(b.l) && isFinite(b.c)).sort((a, b) => a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
+  return { ...d, bars, alerts: (d.alerts || []).filter(ok), walls: (d.walls || []).filter(ok), evals: (d.evals || []).filter(ok) };
+}
 function fcSvg(d, id, opts) {
-  try { return fcSvg0(d, id, opts); } catch (e) {
+  try { return fcSvg0(fcClean(d), id, opts); } catch (e) {
     console.error('flow chart', e); S.fcZoom[fcKey(id)] = null;
-    return `<p class="muted" style="margin:0">The chart couldn't be drawn (${esc(e.message)}). <button class="btn" data-fczoom="${esc(id)}|reset">Reset the view</button></p>`;
+    const where = ((e.stack || '').split('\n')[1] || '').trim().slice(0, 120);
+    return `<p class="muted" style="margin:0">The chart couldn't be drawn (${esc(e.message)}${where ? ` — ${esc(where)}` : ''}). <button class="btn" data-fczoom="${esc(id)}|reset">Reset the view</button></p>`;
   }
 }
 function fcSvg0(d, id, opts) {
