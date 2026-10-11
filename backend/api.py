@@ -619,6 +619,12 @@ def bot_reviewcharts(sub, claims, body, q, bid):
     return aicheck.review_charts(sub, bid)
 
 
+@route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/darkpool")
+def bot_darkpool(sub, claims, body, q, bid):
+    import flowchart
+    return flowchart.darkpool(sub, bid, int((q or {}).get("days") or 5), (q or {}).get("min"))
+
+
 @route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/flowchart")
 def bot_flowchart(sub, claims, body, q, bid):
     import flowchart

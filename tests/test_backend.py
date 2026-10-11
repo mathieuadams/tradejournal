@@ -1631,6 +1631,15 @@ def test_flow_chart():
             n1 = len(calls)
             call("GET", f"/bot/{rid}/flowchart", q={"days": "45"})
             assert len(calls) == n1, "past days and today (within the hour) come from the cache"
+            # dark pool: prints by day (UTC -> ET), cancelled dropped, top price levels by premium
+            def fake_dp(key, path, params=None):
+                calls.append((path, params["date"]))
+                return {"data": [{"executed_at": f"{params['date']}T14:31:05Z", "price": "190.10", "size": 20000, "premium": "3802000", "canceled": False},
+                                 {"executed_at": f"{params['date']}T15:00:00Z", "price": "185.00", "size": 50000, "premium": "9250000", "canceled": True}]}
+            flowdata._uw = fake_dp
+            code, dp = call("GET", f"/bot/{rid}/darkpool", q={"days": "5"})
+            assert code == 200 and dp["prints"] and all(p_["price"] == 190.1 for p_ in dp["prints"]), dp
+            assert dp["prints"][0]["t"][11:] == "10:31" and dp["levels"][0]["price"] == 190.1 and dp["minPremium"] == 500000
         finally:
             flowdata._uw, flowdata._key = saved_uw
     finally:

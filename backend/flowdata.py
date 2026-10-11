@@ -392,3 +392,68 @@ def gex_history(sub, ticker, dates):
             except Exception as e:
                 err = str(e)[:160]
     return sorted(rows, key=lambda r: r["date"]), err
+
+
+# ---------- dark pool prints (Unusual Whales /api/darkpool/{ticker}, one request per market date, cached per day) ----------
+
+def darkpool_day(key, ticker, date, min_premium):
+    import time as _t
+    from util import utc_to_ny
+    ck = f"{ticker}#{date}#{int(min_premium)}"
+    hit = db.get("UWDP", ck)
+    today = now_ny().strftime("%Y-%m-%d")
+    if hit and (date < today or _t.time() - hit.get("at", 0) < 900):
+        return hit.get("prints") or []
+    s = _uw(key, f"/api/darkpool/{urllib.parse.quote(ticker)}", {"date": date, "min_premium": int(min_premium), "limit": 500,
+                                                                  "order_by": "premium", "cancellation_status": "hide_cancelled"}) or {}
+    raw = s.get("data") if isinstance(s, dict) else s
+    out = []
+    for r in raw or []:
+        if not isinstance(r, dict) or r.get("canceled"):
+            continue
+        px_, sz, prem = _num(r.get("price")), _num(r.get("size")), _num(r.get("premium"))
+        at = str(r.get("executed_at") or "")[:19]
+        if not px_ or not at:
+            continue
+        try:
+            t = utc_to_ny(datetime.strptime(at, "%Y-%m-%dT%H:%M:%S")).strftime("%Y-%m-%dT%H:%M")
+        except ValueError:
+            continue
+        out.append({"t": t, "price": round(px_, 4), "size": int(sz or 0), "premium": round(prem or (px_ * (sz or 0)))})
+    try:
+        db.put({"PK": "UWDP", "SK": ck, "at": int(_t.time()), "prints": out})
+    except Exception as e:          # an oversized day: keep the biggest
+        try:
+            db.put({"PK": "UWDP", "SK": ck, "at": int(_t.time()), "prints": sorted(out, key=lambda x: -x["premium"])[:150]})
+        except Exception:
+            print("darkpool cache skipped", e)
+    return out
+
+
+def darkpool(sub, ticker, dates, min_premium=1_000_000):
+    """Dark pool prints at or above min_premium for each date, plus the price levels where the most premium traded."""
+    from concurrent.futures import ThreadPoolExecutor
+    key = _key(sub)
+    prints, err = [], None
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futs = [ex.submit(darkpool_day, key, ticker, d, min_premium) for d in dates]
+        for f in futs:
+            try:
+                prints += f.result()
+            except Exception as e:
+                err = str(e)[:160]
+    prints.sort(key=lambda x: x["t"])
+    levels = {}
+    if prints:
+        ps = sorted(p["price"] for p in prints)
+        step = max(0.01, round(ps[len(ps) // 2] * 0.0025, 2))          # bucket ~0.25% of price
+        for p in prints:
+            b = round(round(p["price"] / step) * step, 2)
+            lv = levels.setdefault(b, {"price": b, "premium": 0, "prints": 0, "_pw": 0.0})
+            lv["premium"] += p["premium"]
+            lv["prints"] += 1
+            lv["_pw"] += p["price"] * p["premium"]
+    for lv in levels.values():          # the level sits at the premium-weighted price of its prints
+        lv["price"] = round(lv.pop("_pw") / lv["premium"], 2) if lv["premium"] else lv["price"]
+    top = sorted(levels.values(), key=lambda x: -x["premium"])[:5]
+    return {"prints": prints, "levels": top, "minPremium": min_premium, "error": err}

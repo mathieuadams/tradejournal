@@ -114,3 +114,27 @@ def build(sub, bot_id, days=5):
             "bars": bars, "alerts": alerts, "minPrint": cfg["repeatMinPremium"], "bigPrint": cfg["flowMinPremium"],
             "trigger": {"contract": o.get("contract"), "premium": o.get("topPremium") or o.get("premium")} if o.get("type") == "flow" else None,
             "note": note}
+
+
+def darkpool(sub, bot_id, days=5, min_premium=None):
+    import flowdata
+    rec = db.get(db.upk(sub), f"BOT#{bot_id}")
+    if not rec:
+        raise NotFound("Not found.")
+    days = 45 if int(days or 5) > 10 else 5
+    today = now_ny().date()
+    if days > 10:
+        first, last = _trading_days_back(today, days), today
+    else:
+        ev_day = datetime.strptime((rec.get("createdAt") or "")[:10], "%Y-%m-%d").date() if rec.get("createdAt") else today
+        first = _trading_days_back(min(ev_day, today), days)
+        last = min(today, ev_day + timedelta(days=14))
+    dates, d = [], first
+    while d <= last:
+        if d.weekday() < 5:
+            dates.append(d.isoformat())
+        d += timedelta(days=1)
+    mp = float(min_premium) if min_premium else (2_000_000 if days > 10 else 500_000)
+    out = flowdata.darkpool(sub, rec["symbol"], dates, mp)
+    out["symbol"] = rec["symbol"]
+    return out
