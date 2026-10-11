@@ -443,10 +443,12 @@ def bot_wallwatch_chart(sub, claims, body, q):
 @route("POST", "/bot/wallwatch/walls")
 def bot_wallwatch_walls(sub, claims, body, q):
     """Fetch every day's call wall, put wall and flip for every watchlist ticker (45 days), then find the signals."""
-    fill = db.get(db.upk(sub), "WWFILL") or {}
-    db.put({**fill, "PK": db.upk(sub), "SK": "WWFILL", "running": iso(now_ny())})
+    t = ((body or {}).get("t") or "").upper().replace("/", ".")[:10]
+    sk = f"WWFILL#{t}" if t else "WWFILL"
+    fill = db.get(db.upk(sub), sk) or {}
+    db.put({**fill, "PK": db.upk(sub), "SK": sk, "running": iso(now_ny())})
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
-                     Payload=json.dumps({"sub": sub, "job": "wwfill"}))
+                     Payload=json.dumps({"sub": sub, "job": "wwfill", **({"t": t} if t else {})}))
     return {"status": "running"}
 
 

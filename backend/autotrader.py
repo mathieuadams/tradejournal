@@ -1567,11 +1567,15 @@ def handler(event, context_):
             elif job == "wwfill":
                 import wallwatch
                 try:
+                    if event.get("t"):                   # one ticker: its walls, then its signals
+                        out[sub] = wallwatch.fill_walls(sub, budget_s=540, ticker=event["t"])
+                        continue
                     out[sub] = f = wallwatch.fill_walls(sub, budget_s=420)
                     if not f["left"]:                    # every day stored: find the signals of the last 45 days
                         out[sub]["signals"] = wallwatch.run(sub, days=45, budget_s=150)
                 except Exception as e:
-                    db.put({**(db.get(db.upk(sub), "WWFILL") or {}), "PK": db.upk(sub), "SK": "WWFILL", "running": None,
+                    sk_ = f"WWFILL#{event['t']}" if event.get("t") else "WWFILL"
+                    db.put({**(db.get(db.upk(sub), sk_) or {}), "PK": db.upk(sub), "SK": sk_, "running": None,
                             "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
             elif job == "wallwatch":

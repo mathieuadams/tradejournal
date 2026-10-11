@@ -1481,7 +1481,7 @@ function vChartWW() {
       ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow ? 'CW > flip > PW' : 'setup off'}</span>
       <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>` : ''}
       ${sel}${fcModeSeg()}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
-      ${sym ? fcLayerBar(id) : ''}${wwFillBtn()}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
+      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
   else if (!sym) main = '<p class="muted" style="padding:16px">The watchlist is empty.</p>';
@@ -2313,6 +2313,29 @@ async function wwFill() {
   };
   setTimeout(poll, 20000);
 }
+S.wwTk = S.wwTk || {};
+function wwTkBtn(sym, d) {
+  const f = (d && d.fill) || {}, busy = S.wwTk[sym] || f.running, miss = d ? (d.missingDays || 0) + (d.noflipDays || 0) : null;
+  return `<button class="btn ${miss ? 'coachbtn' : ''}" data-wwtk="${esc(sym)}" ${busy ? 'disabled' : ''} style="font-size:.8rem;padding:2px 10px" title="Fetch the put wall, call wall and flip of the last 45 days for ${esc(sym)}, then find its signals">${busy ? 'Getting walls…' : 'Get walls (45 days)'}</button>`
+    + (d && !busy ? ` <span class="muted" style="font-size:.8rem">${miss ? `${miss} day${miss === 1 ? '' : 's'} missing` : 'all days stored'}</span>` : '');
+}
+async function wwTkFill(sym) {
+  S.wwTk[sym] = true; render();
+  try { await api('/bot/wallwatch/walls', { method: 'POST', body: { t: sym } }); }
+  catch (e) { toast(e.message); S.wwTk[sym] = false; render(); return; }
+  let n = 0;
+  const poll = async () => {
+    n++;
+    const k = fcKey('ww-' + sym);
+    try { S.fc[k] = await api('/bot/wallwatch/chart?t=' + encodeURIComponent(sym)); } catch (e) {}
+    const f = (S.fc[k] && S.fc[k].fill) || {};
+    if (f.running && n < 40) { if (route() === 'botchart') render(); return setTimeout(poll, 8000); }
+    S.wwTk[sym] = false; S.ww = null; loadWatch();
+    toast(f.left ? `${sym}: ${f.left} days still missing — press again` : `${sym}: walls stored`);
+    if (route() === 'botchart') render();
+  };
+  setTimeout(poll, 8000);
+}
 async function runWatch(days) {
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days } }); toast(days > 3 ? `Checking the last ${days} days in the background — a few minutes` : 'Checking every ticker now — about a minute'); }
   catch (e) { toast(e.message); return; }
@@ -2715,7 +2738,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2770,6 +2793,7 @@ document.addEventListener('click', e => {
   if (el.dataset.fcfmode) { fcfSetMode(el.dataset.fcfmode); if (el.dataset.fcfmode === 'ww' && !S.ww) loadWatch(); else if (el.dataset.fcfmode === 'ev' && !S.tickers) loadTickers(); location.hash = '#botchart'; render(); return; }
   if (el.dataset.wwsel) { const [sym, at] = el.dataset.wwsel.split('|'); S.wwSel = { sym, at, zoom: true }; render(); return; }
   if (el.dataset.wwchart) { const [sym, at] = el.dataset.wwchart.split('|'); fcfSetMode('ww'); S.wwSel = at ? { sym, at, zoom: true } : null; location.hash = '#botchart?t=' + encodeURIComponent(sym); return; }
+  if (el.dataset.wwtk) { wwTkFill(el.dataset.wwtk); return; }
   if (el.dataset.wwfill) { wwFill(); return; }
   if (el.dataset.wwrun) { runWatch(+el.dataset.wwrun); return; }
   if (el.dataset.wwsave) { api('/bot/wallwatch', { method: 'PUT', body: { tickers: $('#ww-list').value } }).then(r => { S.ww = r; toast('Saved'); render(); }).catch(err => toast(err.message)); return; }

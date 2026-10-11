@@ -205,17 +205,18 @@ def walls_todo(tickers, days=45):
     return todo, len(dates) * len(tickers)
 
 
-def fill_walls(sub, days=45, budget_s=480):
-    """Fetch the walls and the flip of every day for every watchlist ticker (Unusual Whales), as many as the time allows."""
+def fill_walls(sub, days=45, budget_s=480, ticker=None):
+    """Fetch the walls and the flip of every day for every watchlist ticker (or one ticker), as many as the time allows."""
     import flowdata
     from concurrent.futures import ThreadPoolExecutor
     t0 = time.time()
     pk = db.upk(sub)
     cfg = config(sub)
     key = flowdata._key(sub)
-    todo, total = walls_todo(cfg["tickers"], days)
-    db.put({"PK": pk, "SK": "WWFILL", "running": iso(now_ny()), "total": total, "left": len(todo), "days": days,
-            "at": (db.get(pk, "WWFILL") or {}).get("at")})
+    sk = f"WWFILL#{ticker}" if ticker else "WWFILL"
+    todo, total = walls_todo([ticker] if ticker else cfg["tickers"], days)
+    db.put({"PK": pk, "SK": sk, "running": iso(now_ny()), "total": total, "left": len(todo), "days": days,
+            "at": (db.get(pk, sk) or {}).get("at")})
     done, errors = 0, []
     with ThreadPoolExecutor(max_workers=6) as ex:
         for k in range(0, len(todo), 12):
@@ -229,8 +230,13 @@ def fill_walls(sub, days=45, budget_s=480):
                 except Exception as e:
                     errors.append(f"{t[0]} {t[1]}: {str(e)[:80]}")
     left = max(0, len(todo) - done - len(errors))
-    out = {"PK": pk, "SK": "WWFILL", "running": None, "total": total, "left": left, "fetched": done, "days": days,
+    out = {"PK": pk, "SK": sk, "running": None, "total": total, "left": left, "fetched": done, "days": days,
            "errors": errors[:5], "at": iso(now_ny())}
+    if ticker and not left:                              # the ticker's signals over those days
+        try:
+            check_ticker(sub, key, ticker, days, now_ny().replace(tzinfo=None))
+        except Exception as e:
+            out["errors"] = (out["errors"] + [f"signals: {str(e)[:80]}"])[:5]
     db.put(out)
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
 
@@ -305,9 +311,11 @@ def chart(sub, sym, days=45):
     noflip = [d for d in dates if (stored.get(d) or {}).get("callWall") and not stored[d].get("flip")]
     if missing or noflip:
         note = (note + " · " if note else "") + (f"Walls missing for {len(missing)} of {len(dates)} days" if missing else "") \
-            + (f"{' · ' if missing else ''}flip missing for {len(noflip)} days" if noflip else "") + ": press Get all walls (45 days)."
+            + (f"{' · ' if missing else ''}flip missing for {len(noflip)} days" if noflip else "") + ": press Get walls (45 days)."
     sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in db.q_prefix(db.upk(sub), f"WWSIG#{sym}#")]
     sigs.sort(key=lambda s: s["at"])
     last = next((stored.get(d) for d in reversed(dates) if (stored.get(d) or {}).get("callWall")), None)
-    return {"symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": [], "evals": [],
+    fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
+    return {"fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+            "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": [], "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_ok(last)}

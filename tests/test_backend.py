@@ -2026,6 +2026,9 @@ def test_wall_watch():
         assert f["left"] == 0 and f["fetched"] == len(got) and len(got) == 3 * 5 - 2 - (5 - len(past)) * 3, (f, got)
         st, r = call("GET", "/bot/wallwatch")
         assert r["fill"]["left"] == 0 and r["fill"]["total"] == 15
+        got.clear()
+        f1 = wallwatch.fill_walls(SUB, days=5, budget_s=30, ticker="MSFT")
+        assert f1["total"] == 5 and all(t_ == "MSFT" for t_, _ in got) and db.get(db.upk(SUB), "WWFILL#MSFT")["left"] == 0
     finally:
         charts._yahoo, flowdata.gex_day, flowdata._key = saved
 
