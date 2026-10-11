@@ -1304,10 +1304,12 @@ function fcSetZoom(id, a, b, N) {
 }
 /* ---------- Wall strategy, replayed on the chart ----------
    Watch: call premium bought at the ask over the last `hours` reaches minCall and beats puts -> the ticker is watched
-   for up to `watchDays` days. Entry while watched: a green hourly candle whose low touches the put wall (within ± near %)
-   and that closes above it, with the call wall at least room % above.
-   Exit: target = the call wall (it moves up if the wall moves up); stop = an hourly close below the put wall of that moment. */
-S.wsP = (() => { const d0 = { near: 0.5, minCall: 100000, room: 3, hours: 6, watchDays: 10 }; try { const v = { ...d0, ...JSON.parse(localStorage.getItem('wsP2') || '{}') }; return v; } catch (e) { return d0; } })();
+   for up to `watchDays` days. Entry while watched: a green hourly candle whose low touches or dips through the put wall
+   (no more than near % above it) and that closes back above it; optional minimum room to the call wall.
+   Exit: target = the call wall of the moment when it is above the entry (it follows the wall up and down);
+   stop = an hourly close below the put wall of that moment; also out when the put wall drops below the entry's put wall
+   while no call wall is above the entry. */
+S.wsP = (() => { const d0 = { near: 0.5, minCall: 100000, room: 0, hours: 6, watchDays: 10 }; try { const v = { ...d0, ...JSON.parse(localStorage.getItem('wsP3') || '{}') }; return v; } catch (e) { return d0; } })();
 function wsRun(d0) {
   const d = fcClean(d0), bars = d.bars, n = bars.length, P = S.wsP, iv = d.interval || 15;
   const trades = []; trades.watches = [];
@@ -1333,10 +1335,13 @@ function wsRun(d0) {
     const flowOk = cp >= P.minCall && cp > pp;
     if (pos) {
       const w = kAt[i]; if (!w) continue;
-      const tgt = Math.max(pos.tgt0, w.callWall);                      // the target follows the call wall up
-      if (b.h >= tgt) { trades.push({ ...pos, iX: i, exit: tgt, why: 'target', tgt }); pos = null; continue; }
+      const tgt = w.callWall;                                           // the target is the call wall of the moment (up or down)
+      if (tgt > pos.entry && b.h >= tgt) {                              // only a call wall above the entry is a target
+        trades.push({ ...pos, iX: i, exit: b.o > tgt ? b.o : tgt, why: 'target', tgt }); pos = null; continue; }
       if (hourClose(b) && b.c < w.putWall) {                          // stop = the put wall of the moment (follows it up and down)
         trades.push({ ...pos, iX: i, exit: b.c, why: w.putWall > pos.pw ? 'trail' : 'stop', stop: w.putWall, tgt }); pos = null; continue; }
+      if (hourClose(b) && w.putWall < pos.pw && tgt <= pos.entry) {   // support moved lower and no call wall above: nothing left to hold for
+        trades.push({ ...pos, iX: i, exit: b.c, why: 'shift', stop: w.putWall, tgt }); pos = null; continue; }
       pos.tgtNow = tgt; pos.stop = w.putWall; continue;
     }
     if (!watch) {
@@ -1347,8 +1352,10 @@ function wsRun(d0) {
     const w = wAt[i];
     if (!w || !hourClose(b)) continue;
     // entry: a green hourly candle whose low touches the put wall (within ± near %) and that closes above it, with room to the call wall
-    const room = (w.callWall - b.c) / b.c * 100, band = w.putWall * P.near / 100;
-    if (Math.abs(b.l - w.putWall) > band || b.c <= w.putWall || b.c <= b.o || room < P.room) continue;
+    // the call wall must leave room above — unless both walls sit on the same strike (then the target waits for the call wall to move up)
+    const room = (w.callWall - b.c) / b.c * 100, band = w.putWall * P.near / 100, merged = Math.abs(w.callWall - w.putWall) <= band;
+    // the low touches or dips through the put wall (no lower than... any depth) and the candle closes back above it, green
+    if (b.l > w.putWall + band || b.c <= w.putWall || b.c <= b.o || (P.room > 0 && room < P.room && !merged)) continue;
     trades.watches.push({ ...watch, iEnd: i, result: 'entered' });
     pos = { iE: i, iW: watch.iW, entry: b.c, pw: w.putWall, stop: w.putWall, tgt0: w.callWall, tgtNow: w.callWall, cp: watch.cp, pp: watch.pp };
     watch = null;
@@ -1362,18 +1369,18 @@ function wsSummary(tr) {
   const done = tr.filter(t => t.why !== 'open'), c = w => done.filter(t => t.why === w).length;
   const avg = done.length ? done.reduce((s2, t) => s2 + t.pl, 0) / done.length : null, won = done.filter(t => t.pl > 0).length;
   const ws = tr.watches || [], watching = ws.some(x => x.result === 'watching');
-  return `Wall strategy: <b>${ws.length}</b> watch${ws.length === 1 ? '' : 'es'} from call flow → <b>${tr.length}</b> trade${tr.length === 1 ? '' : 's'}${watching ? ' · <b style="color:var(--coach)">watching now</b>' : ''}${done.length ? ` · ${c('target')} target · ${c('trail')} trailing stop · ${c('stop')} stop · ${won}/${done.length} winners · avg <b class="${avg >= 0 ? 'gain' : 'loss'}">${avg >= 0 ? '+' : ''}${avg.toFixed(1)}%</b> (stock move)` : ''}${tr.some(t => t.why === 'open') ? ' · 1 open' : ''}`;
+  return `Wall strategy: <b>${ws.length}</b> watch${ws.length === 1 ? '' : 'es'} from call flow → <b>${tr.length}</b> trade${tr.length === 1 ? '' : 's'}${watching ? ' · <b style="color:var(--coach)">watching now</b>' : ''}${done.length ? ` · ${c('target')} target · ${c('trail')} trailing stop · ${c('stop')} stop${c('shift') ? ` · ${c('shift')} walls shifted` : ''} · ${won}/${done.length} winners · avg <b class="${avg >= 0 ? 'gain' : 'loss'}">${avg >= 0 ? '+' : ''}${avg.toFixed(1)}%</b> (stock move)` : ''}${tr.some(t => t.why === 'open') ? ' · 1 open' : ''}`;
 }
 function wsParamsBar() {
   const P = S.wsP, f = (k, l, step, w) => `<label class="muted" style="font-size:.78rem;display:inline-flex;gap:4px;align-items:center">${l}<input data-wsp="${k}" type="number" step="${step}" value="${P[k]}" style="width:${w}em;padding:1px 4px"></label>`;
   return `<details data-wsdet style="display:inline-block" ${S.wsOpen ? 'open' : ''}><summary class="muted" style="cursor:pointer;font-size:.8rem">strategy settings</summary><span style="display:inline-flex;flex-wrap:wrap;gap:8px;margin-left:6px">
-    ${f('near', 'low within % of put wall', 0.25, 3.5)}${f('room', 'min room to call wall %', 0.5, 3.5)}${f('minCall', 'min call $', 10000, 6)}${f('hours', 'flow window h', 1, 3)}${f('watchDays', 'watch for days', 1, 3)}</span></details>`;
+    ${f('near', 'low within % above put wall', 0.25, 3.5)}${f('room', 'min room to call wall % (0 = any)', 0.5, 3.5)}${f('minCall', 'min call $', 10000, 6)}${f('hours', 'flow window h', 1, 3)}${f('watchDays', 'watch for days', 1, 3)}</span></details>`;
 }
 document.addEventListener('toggle', e => { if (e.target.dataset && e.target.dataset.wsdet !== undefined) S.wsOpen = e.target.open; }, true);
 document.addEventListener('change', e => {
   const k = e.target.dataset && e.target.dataset.wsp; if (!k) return;
   const v = +e.target.value; if (!isFinite(v) || v < 0) return;
-  S.wsP = { ...S.wsP, [k]: v }; try { localStorage.setItem('wsP2', JSON.stringify(S.wsP)); } catch (err) {}
+  S.wsP = { ...S.wsP, [k]: v }; try { localStorage.setItem('wsP3', JSON.stringify(S.wsP)); } catch (err) {}
   render();
 });
 function fcClean(d) {                       // drop malformed rows so one bad record can't break the chart
@@ -1416,8 +1423,11 @@ function fcSvg0(d, id, opts) {
   let dk = -1;
   bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (dk % every) return; const x = X(i) - (W - L - Rr) / n / 2;
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${x + 3}" y="${B + 16}" font-size="${fs}" fill="var(--muted)">${b.t.slice(5, 10)}</text>`; } });
+  const pf = v => v.toFixed(v < 20 ? 3 : 2);
   bars.forEach((b, i) => { const up = b.c >= b.o, c = up ? 'var(--gain)' : 'var(--loss)', x = X(i);
-    g += `<line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`; });
+    const tip = `<title>${esc(b.t.replace('T', ' ').slice(5))} ET · O ${pf(b.o)} H ${pf(b.h)} L ${pf(b.l)} C ${pf(b.c)} (${b.c >= b.o ? '+' : ''}${((b.c / b.o - 1) * 100).toFixed(2)}%)</title>`;
+    g += `<g><line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`
+      + `<rect x="${x - Math.max(bw, 4) / 2}" y="${Y(b.h)}" width="${Math.max(bw, 4)}" height="${Math.max(2, Y(b.l) - Y(b.h))}" fill="transparent">${tip}</rect></g>`; });
   if (d.evaluatedAt && !(LY.evals && (d.evals || []).length)) { const ei = at(d.evaluatedAt); if (ei != null) { const x = X(ei);
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--coach,#5b5bd6)" stroke-width="2" stroke-dasharray="6 4"/><text x="${Math.min(x + 4, W - Rr - 70)}" y="${T + 12}" font-size="${fs}" font-weight="600" fill="var(--coach,#5b5bd6)">evaluated</text>`; } }
   if (LY.evals && (d.evals || []).length) {   // every evaluation: a flag on top, colored by its decision
@@ -1485,7 +1495,7 @@ function fcSvg0(d, id, opts) {
         g += `<path d="M${xa},${y + 4} L${xa - 7},${y + 16} L${xa + 7},${y + 16} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1"><title>Entry ${bars[a0].t.replace('T', ' ').slice(5)} at ${t.entry.toFixed(2)} · put wall ${t.pw} · call wall ${t.tgt0} · calls ${money(t.cp, false)} vs puts ${money(t.pp, false)}</title></path>
           <text x="${xa}" y="${y + 28}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">IN</text>`; }
       if (!open && b0 <= n - 1 && t.exit >= lo && t.exit <= hi) { const y = Y(t.exit);
-        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${t.why === 'target' ? 'Target (call wall)' : t.why === 'trail' ? `Trailing stop: hourly close below the raised put wall ${t.stop}` : `Stop: hourly close below the put wall ${t.stop}`} ${bars[b0].t.replace('T', ' ').slice(5)} at ${t.exit.toFixed(2)} · ${t.pl >= 0 ? '+' : ''}${t.pl.toFixed(1)}%</title></rect>
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${t.why === 'shift' ? `Walls shifted: put wall dropped to ${t.stop} with no call wall above the entry` : t.why === 'target' ? 'Target (call wall)' : t.why === 'trail' ? `Trailing stop: hourly close below the raised put wall ${t.stop}` : `Stop: hourly close below the put wall ${t.stop}`} ${bars[b0].t.replace('T', ' ').slice(5)} at ${t.exit.toFixed(2)} · ${t.pl >= 0 ? '+' : ''}${t.pl.toFixed(1)}%</title></rect>
           <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${t.pl >= 0 ? '+' : ''}${t.pl.toFixed(1)}%</text>`; }
     });
   }
@@ -1511,6 +1521,8 @@ function fcSvg0(d, id, opts) {
   const yc = AY(cAcc[n - 1]), yp = AY(pAcc[n - 1]), clash = Math.abs(yc - yp) < fs;
   g += `<text x="${W - Rr + 6}" y="${(clash && yc >= yp ? yc + fs : yc) + 4}" font-size="${fs}" fill="var(--gain)">${km(cAcc[n - 1])}</text><text x="${W - Rr + 6}" y="${(clash && yp > yc ? yp + fs : yp) + 4}" font-size="${fs}" fill="var(--loss)">${km(pAcc[n - 1])}</text>`;
   }
+  g += `<line class="fc-xh" x1="0" x2="0" y1="${T}" y2="${AB}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" style="display:none;pointer-events:none"/>
+    <text class="fc-ohlc" x="${L + 4}" y="${T + 13}" font-size="${fs}" fill="var(--ink)" paint-order="stroke" stroke="var(--surface)" stroke-width="4" style="pointer-events:none"></text>`;
   g += `<rect class="fcz-sel" x="0" y="${T}" width="0" height="${AB - T}" fill="var(--coach,#5b5bd6)" fill-opacity=".12" stroke="var(--coach,#5b5bd6)" stroke-width="1" style="display:none;pointer-events:none"/>`;
   return `<svg viewBox="0 0 ${W} ${H}" data-fcz="${esc(id)}" data-l="${L}" data-pw="${W - L - Rr}" data-a="${za}" data-n="${n}" data-all="${all.length}" data-vw="${W}" style="${full ? `width:${W}px;height:${H}px` : 'width:100%;height:auto'};display:block;touch-action:pan-y;cursor:crosshair;user-select:none" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
 }
@@ -2872,6 +2884,19 @@ $('#signin').addEventListener('click', () => Auth.login());
     drag = { svg, x0: vx(svg, ev), moved: false };
   });
   document.addEventListener('pointermove', ev => {
+    const hsvg = ev.target.closest && ev.target.closest('svg[data-fcz]');
+    document.querySelectorAll('svg[data-fcz] .fc-xh').forEach(l => { if (!hsvg || !hsvg.contains(l)) l.style.display = 'none'; });
+    if (hsvg) {                                  // OHLC of the candle under the pointer
+      const f = info(hsvg), d = S.fc[fcKey(f.id)], bars = d ? fcClean(d).bars : [];
+      const x = vx(hsvg, ev), i = barAt(f, x), b = bars[i], txt = hsvg.querySelector('.fc-ohlc'), xh = hsvg.querySelector('.fc-xh');
+      if (b && txt && isFinite(x)) {
+        const pf = v => v.toFixed(v < 20 ? 3 : 2), ch = (b.c / b.o - 1) * 100;
+        txt.textContent = `${b.t.replace('T', ' ').slice(5)}  O ${pf(b.o)}  H ${pf(b.h)}  L ${pf(b.l)}  C ${pf(b.c)}  ${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%`;
+        txt.setAttribute('fill', b.c >= b.o ? 'var(--gain)' : 'var(--loss)');
+        const cx = f.L + (i - f.a + 0.5) * f.pw / f.n;
+        if (xh) { xh.setAttribute('x1', cx); xh.setAttribute('x2', cx); xh.style.display = ''; }
+      }
+    }
     if (!drag) return;
     const x = vx(drag.svg, ev), sel = drag.svg.querySelector('.fcz-sel');
     if (Math.abs(x - drag.x0) > 6) drag.moved = true;
