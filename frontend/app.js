@@ -1273,8 +1273,8 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { return { flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; } catch (e) { return { flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { return { evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)];
   return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
@@ -1340,6 +1340,15 @@ function fcSvg0(d, id, opts) {
     g += `<line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`; });
   if (d.evaluatedAt) { const ei = at(d.evaluatedAt); if (ei != null) { const x = X(ei);
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--coach,#5b5bd6)" stroke-width="2" stroke-dasharray="6 4"/><text x="${Math.min(x + 4, W - Rr - 70)}" y="${T + 12}" font-size="${fs}" font-weight="600" fill="var(--coach,#5b5bd6)">evaluated</text>`; } }
+  if (LY.evals && (d.evals || []).length) {   // every evaluation: a flag on top, colored by its decision
+    const ecol = e => e.taken ? 'var(--coach,#5b5bd6)' : e.decision === 'BUY' ? 'var(--gain)' : e.decision === 'SKIP' ? 'var(--loss)' : 'var(--warn)';
+    const seen = {};
+    d.evals.forEach((e, k) => { const i = at(e.t); if (i == null) return; const x = X(i);
+      seen[i] = (seen[i] || 0) + 1; const yy = T + 2 + (seen[i] - 1) * 9;
+      const sel = S.fcSelE && S.fcSelE.id === id && S.fcSelE.k === k;
+      g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="${ecol(e)}" stroke-width="1" stroke-dasharray="1 4" opacity=".55"/>
+        <path data-fce="${id}|${k}" d="M${x - 5},${yy} L${x + 5},${yy} L${x},${yy + 8} Z" fill="${ecol(e)}" stroke="${sel ? 'var(--ink)' : 'none'}" stroke-width="1.5" style="cursor:pointer"><title>${esc(e.t.replace('T', ' ').slice(5))} ET · ${esc(e.decision || '')}${e.taken ? ' · traded' : ''}${e.why ? ' · ' + esc(e.why) : ''}</title></path>`; });
+  }
   if (walls.length) {                       // gamma walls as step lines: each value holds until the next snapshot
     const t0 = bars[0].t, segs = walls.map((w, k) => { const i0 = w.t <= t0 ? 0 : at(w.t), nx = walls[k + 1];
       return { w, x0: i0 == null ? null : (w.t <= t0 ? L : X(i0)), x1: !nx || bucket(nx.t) > lastT ? W - Rr : (at(nx.t) == null ? null : X(at(nx.t))) }; }).filter(sg => sg.x0 != null && sg.x1 != null && sg.x1 > sg.x0 - 1);
@@ -1440,6 +1449,7 @@ function vChartFull() {
       ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b class="loss">put ${w.putWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b></span>` : ''}
       ${cur.contract ? `<span>Proposed: <b>${esc(fmtExp(cur.exp))} ${cur.strike}c</b> at ${cur.limit != null ? (+cur.limit).toFixed(2) : '—'}</span>` : ''}
       <span>${sa ? `<b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}` : '<span class="muted">Tap a dot to see the alert · drag or scroll on the chart to zoom · ↑ ↓ to change ticker</span>'}</span>
+      ${(() => { const e = S.fcSelE && S.fcSelE.id === cur.id ? (d.evals || [])[S.fcSelE.k] : null; return e ? `<span><b>Evaluated ${esc(e.t.replace('T', ' ').slice(5))} ET</b> · <span class="verdict ${DEC_CLS[e.decision] || 'mid'}" style="font-size:.75rem;padding:1px 7px">${esc(e.decision || '')}</span>${e.taken ? ' · <b>traded</b>' : ''}${e.why ? ` · <span class="muted">${esc(e.why)}</span>` : ''} · <a href="#botevals?t=${encodeURIComponent(sym)}" data-evload="${e.id}">open it</a></span>` : `<span class="muted">${(d.evals || []).length} evaluation${(d.evals || []).length === 1 ? '' : 's'} in this period</span>`; })()}
       ${dsel ? `<span><b style="color:var(--warn)">DARK POOL</b> ${esc(dsel.t.replace('T', ' ').slice(5))} ET · ${dsel.size.toLocaleString('en-US')} sh at ${dsel.price} · <b>${money(dsel.premium, false)}</b></span>` : ''}
       ${S.fcLayers.dark && dpd && !dpd.error && (dpd.levels || []).length ? `<span>Dark pool levels: ${dpd.levels.slice(0, 3).map(l => `<b style="color:var(--warn)">${l.price}</b> ${money(l.premium, false)}`).join(' · ')}</span>` : ''}
       ${d.wallNote && S.fcLayers.walls ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
@@ -1494,6 +1504,7 @@ function flowChartPanel(r) {
   const lbar = `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px">${fcLayerBar(r.id)}</div>`;
   const dsel = S.fcSelD && S.fcSelD.id === r.id && S.fcDp[fcKey(r.id)] ? (S.fcDp[fcKey(r.id)].prints || [])[S.fcSelD.k] : null;
   return head + zbar + lbar + wline + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
+    ${(() => { const e = S.fcSelE && S.fcSelE.id === r.id ? (d.evals || [])[S.fcSelE.k] : null; return e ? `<p style="margin:6px 0 0;font-size:.88rem"><b>Evaluated ${esc(e.t.replace('T', ' ').slice(5))} ET</b> · <span class="verdict ${DEC_CLS[e.decision] || 'mid'}" style="font-size:.75rem;padding:1px 7px">${esc(e.decision || '')}</span>${e.taken ? ' · <b>traded</b>' : ''}${e.price ? ` · at ${px(e.price)}` : ''}${e.why ? ` · <span class="muted">${esc(e.why)}</span>` : ''}${e.id !== r.id ? ` · <a href="#" data-evload="${e.id}">open it</a>` : ' · <span class="muted">this one</span>'}</p>` : ''; })()}
     ${dsel ? `<p style="margin:6px 0 0;font-size:.88rem"><b style="color:var(--warn)">DARK POOL</b> <b>${esc(dsel.t.replace('T', ' ').slice(5))} ET · ${dsel.size.toLocaleString('en-US')} shares at ${dsel.price} · ${money(dsel.premium, false)}</b></p>` : ''}
     <p class="st-legend" style="margin:6px 0 4px"><span><i class="st-dot g"></i>Calls bought (${calls.length}, ${money(sum(calls), false)})</span><span><i class="st-dot" style="display:inline-block;background:var(--loss)"></i>Puts bought (${puts.length}, ${money(sum(puts), false)})</span><span>bigger dot = bigger premium · outlined = over ${money(d.bigPrint, false)}</span><span style="color:var(--coach,#5b5bd6)">┆ evaluated</span>${(d.walls || []).length ? `<span><b class="gain">- -</b> call wall · <b class="loss">- -</b> put wall · <b style="color:var(--coach,#5b5bd6)">···</b> gamma flip (steps = how they moved)</span>` : ''}</p>
     ${d.wallsNow ? `<p class="muted" style="font-size:.84rem;margin:0 0 4px">Latest walls (${esc(d.wallsNow.source || '')}): call wall <b>${d.wallsNow.callWall}</b> · put wall <b>${d.wallsNow.putWall}</b> · flip <b>${d.wallsNow.flip ?? '—'}</b>. ${d.wallSource === 'uw' ? 'Each step is one day\'s open interest, so you can see the walls move as positions are opened and closed.' : 'Open interest updates once a day, so the walls mostly move overnight.' + ((d.walls || []).length < 2 ? ' History builds from each evaluation and each time this chart is opened.' : '')} The lower panel adds up the premium bought at the ask: calls (green) vs puts (red).</p>` : ''}
@@ -2512,7 +2523,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-fclayer],[data-fcd],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2530,6 +2541,8 @@ document.addEventListener('click', e => {
   if (el.dataset.fclayer) { const k = el.dataset.fclayer; S.fcLayers = { ...S.fcLayers, [k]: !S.fcLayers[k] };
     try { localStorage.setItem('fcLayers', JSON.stringify(S.fcLayers)); } catch (err) {}
     render(); return; }
+  if (el.dataset.evload) { e.preventDefault(); api(`/bot/${el.dataset.evload}`).then(it => { S.botRes = it; S.fcSelE = null; if (route() !== 'botevals') location.hash = `#botevals?t=${encodeURIComponent(it.symbol)}`; else { render(); window.scrollTo(0, 0); } }).catch(err => toast(err.message)); return; }
+  if (el.dataset.fce) { const [id, k] = el.dataset.fce.split('|'); S.fcSelE = { id, k: +k }; render(); return; }
   if (el.dataset.fcd) { const [id, k] = el.dataset.fcd.split('|'); S.fcSelD = { id, k: +k }; render(); return; }
   if (el.dataset.fczoom) { const [id, k] = el.dataset.fczoom.split('|'), d = S.fc[fcKey(id)], N = ((d && d.bars) || []).length; if (N < 2) return;
     const [a, b] = fcRange(id, N), span = b - a, mid = (a + b) / 2;

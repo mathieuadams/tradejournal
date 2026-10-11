@@ -108,8 +108,17 @@ def build(sub, bot_id, days=5):
         if wl and all(wl[-1].get(k) == w.get(k) for k in ("callWall", "putWall", "flip")) and w["src"] != "now":
             continue                              # unchanged: the step line already covers it
         wl.append(w)
+    evals = []                                   # every evaluation of the ticker in the period
+    for r in db.q_prefix(db.upk(sub), "BOT#"):
+        at = (r.get("createdAt") or "")[:16]
+        if r.get("symbol") != sym or not at or at[:10] < first.isoformat() or at[:10] > last.isoformat():
+            continue
+        evals.append({"t": at, "id": r.get("id"), "decision": r.get("decision"),
+                      "taken": bool(r.get("orderId") or r.get("status") in ("submitted", "open", "closing", "closed")),
+                      "why": ((r.get("blocking") or [""])[0] or "")[:140], "price": (r.get("signals") or {}).get("price")})
+    evals.sort(key=lambda e: e["t"])
     o = rec.get("origin") or {}
-    return {"walls": wl, "wallsNow": now_w, "wallNote": wnote, "wallSource": wsrc, "wallInfo": winfo, "days": days, "interval": 60 if long_view else 15,
+    return {"evals": evals, "walls": wl, "wallsNow": now_w, "wallNote": wnote, "wallSource": wsrc, "wallInfo": winfo, "days": days, "interval": 60 if long_view else 15,
             "symbol": sym, "evaluatedAt": ev_at.replace(" ", "T"), "from": first.isoformat(), "to": last.isoformat(),
             "bars": bars, "alerts": alerts, "minPrint": cfg["repeatMinPremium"], "bigPrint": cfg["flowMinPremium"],
             "trigger": {"contract": o.get("contract"), "premium": o.get("topPremium") or o.get("premium")} if o.get("type") == "flow" else None,
