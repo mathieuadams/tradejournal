@@ -1290,23 +1290,23 @@ function fcNeedDark(id) { const k = fcKey(id); if (S.fcLayers.dark && !S.fcDp[k]
 function fcRange(id, N) {             // visible bars [a, b] for this chart (zoom)
   const z = S.fcZoom[fcKey(id)];
   if (!z || !isFinite(z[0]) || !isFinite(z[1]) || N < 3 || z[0] > N - 3 || z[1] - z[0] < 2) { if (z) S.fcZoom[fcKey(id)] = null; return [0, Math.max(0, N - 1)]; }
-  const a = Math.max(0, Math.min(z[0], N - 2)), b = Math.min(N - 1, Math.max(z[1], a + 1));
+  const a = Math.max(0, Math.min(Math.round(z[0]), N - 2)), b = Math.min(N - 1, Math.max(Math.round(z[1]), a + 1));
   return [a, b];
 }
 function fcSetZoom(id, a, b, N) {
   if (!isFinite(a) || !isFinite(b) || !(N > 2)) return;   // a drag on a chart that was redrawn meanwhile: ignore
-  const span = Math.min(N - 1, Math.max(8, b - a));     // never fewer than 8 bars
-  a = Math.round(a); b = Math.round(a + span);
+  const span = Math.round(Math.min(N - 1, Math.max(8, b - a)));     // never fewer than 8 bars; whole bars only
+  a = Math.round(a); b = a + span;
   if (b > N - 1) { b = N - 1; a = Math.max(0, b - span); }
   if (a < 0) { a = 0; b = Math.min(N - 1, span); }
   S.fcZoom[fcKey(id)] = a <= 0 && b >= N - 1 ? null : [a, b];
   render();
 }
 /* ---------- Wall strategy, replayed on the chart ----------
-   Entry: an hourly close at or just above the put wall (within nearPct), call premium bought at the ask over the last
-   flowHours beats puts and reaches minCall, and the call wall is at least roomPct above.
-   Exit: target = the call wall of the day (it moves up if the wall moves up); stop = an hourly close below the put wall. */
-S.wsP = (() => { const d0 = { near: 3, minCall: 100000, room: 3, hours: 6 }; try { return { ...d0, ...JSON.parse(localStorage.getItem('wsP') || '{}') }; } catch (e) { return d0; } })();
+   Entry: a green hourly candle whose low touches the put wall (within near %) and that closes above it, call premium
+   bought at the ask over the last flowHours beats puts and reaches minCall, and the call wall is at least room % above.
+   Exit: target = the call wall (it moves up if the wall moves up); stop = an hourly close below the put wall of that moment. */
+S.wsP = (() => { const d0 = { near: 0.5, minCall: 100000, room: 3, hours: 6 }; try { const v = { ...d0, ...JSON.parse(localStorage.getItem('wsP2') || '{}') }; return v; } catch (e) { return d0; } })();
 function wsRun(d0) {
   const d = fcClean(d0), bars = d.bars, n = bars.length, P = S.wsP, iv = d.interval || 15;
   if (n < 3) return [];
@@ -1323,13 +1323,14 @@ function wsRun(d0) {
     if (pos) {
       const tgt = Math.max(pos.tgt0, w.callWall);                      // the target follows the call wall up
       if (b.h >= tgt) { trades.push({ ...pos, iX: i, exit: tgt, why: 'target', tgt }); pos = null; continue; }
-      if (hourClose(b) && b.c < pos.stop) { trades.push({ ...pos, iX: i, exit: b.c, why: pos.stop > pos.pw ? 'trail' : 'stop', tgt }); pos = null; continue; }
-      if (w.putWall > pos.stop && b.c >= w.putWall) pos.stop = w.putWall;   // the put wall moved up under price: the stop follows it
-      pos.tgtNow = tgt; continue;
+      if (hourClose(b) && b.c < w.putWall) {                          // stop = the put wall of the moment (it follows the wall up and down)
+        trades.push({ ...pos, iX: i, exit: b.c, why: w.putWall > pos.pw ? 'trail' : 'stop', stop: w.putWall, tgt }); pos = null; continue; }
+      pos.tgtNow = tgt; pos.stop = w.putWall; continue;
     }
     if (!hourClose(b)) continue;
-    const dist = (b.c - w.putWall) / w.putWall * 100, room = (w.callWall - b.c) / b.c * 100;
-    if (dist < 0 || dist > P.near || room < P.room) continue;
+    // entry candle: its low touches the put wall (within near %), it closes above the wall, and it's green
+    const room = (w.callWall - b.c) / b.c * 100;
+    if (b.l > w.putWall * (1 + P.near / 100) || b.c < w.putWall || b.c <= b.o || room < P.room) continue;
     const m = ms(b.t) + iv * 60000, from = m - P.hours * 3600000;
     while (lo < al.length && al[lo].m < from) lo++;
     let cp = 0, pp = 0; for (let k = lo; k < al.length && al[k].m <= m; k++) { if (al[k].call) cp += al[k].p; else pp += al[k].p; }
@@ -1348,13 +1349,13 @@ function wsSummary(tr) {
 function wsParamsBar() {
   const P = S.wsP, f = (k, l, step, w) => `<label class="muted" style="font-size:.78rem;display:inline-flex;gap:4px;align-items:center">${l}<input data-wsp="${k}" type="number" step="${step}" value="${P[k]}" style="width:${w}em;padding:1px 4px"></label>`;
   return `<details data-wsdet style="display:inline-block" ${S.wsOpen ? 'open' : ''}><summary class="muted" style="cursor:pointer;font-size:.8rem">strategy settings</summary><span style="display:inline-flex;flex-wrap:wrap;gap:8px;margin-left:6px">
-    ${f('near', 'within % above put wall', 0.5, 3.5)}${f('room', 'min room to call wall %', 0.5, 3.5)}${f('minCall', 'min call $', 10000, 6)}${f('hours', 'flow window h', 1, 3)}</span></details>`;
+    ${f('near', 'low within % of put wall', 0.25, 3.5)}${f('room', 'min room to call wall %', 0.5, 3.5)}${f('minCall', 'min call $', 10000, 6)}${f('hours', 'flow window h', 1, 3)}</span></details>`;
 }
 document.addEventListener('toggle', e => { if (e.target.dataset && e.target.dataset.wsdet !== undefined) S.wsOpen = e.target.open; }, true);
 document.addEventListener('change', e => {
   const k = e.target.dataset && e.target.dataset.wsp; if (!k) return;
   const v = +e.target.value; if (!isFinite(v) || v < 0) return;
-  S.wsP = { ...S.wsP, [k]: v }; try { localStorage.setItem('wsP', JSON.stringify(S.wsP)); } catch (err) {}
+  S.wsP = { ...S.wsP, [k]: v }; try { localStorage.setItem('wsP2', JSON.stringify(S.wsP)); } catch (err) {}
   render();
 });
 function fcClean(d) {                       // drop malformed rows so one bad record can't break the chart
