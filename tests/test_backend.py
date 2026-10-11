@@ -1936,6 +1936,42 @@ def test_walls_store_and_explorer():
         flowdata._uw, flowdata._key = saved
 
 
+def test_explorer_many_features_and_deep_search():
+    import explorer
+    rec = {"createdAt": "2026-10-06T10:15:00", "symbol": "AAA", "decision": "BUY",
+           "signals": {"price": 105, "ema21": 100, "atr21": 2.1, "crossAgo": 4, "momentum": 0.5, "momentumPrev": 0.2, "low30Date": "2026-09-26"},
+           "gamma": {"gammaFlip": 100, "callWall": 115, "putWall": 102, "netGex": 5},
+           "proposal": {"contract": "C1", "underlyingStop": 100, "underlyingTarget": 115},
+           "candidates": [{"symbol": "C1", "dte": 30, "delta": 0.55, "iv": 0.45, "spreadPct": 2.0, "oi": 900, "strike": 110}],
+           "events": [], "origin": {"type": "flow", "alerts": 3, "topPremium": 400000, "optPrice": 2.5, "rule": "RepeatedHits"},
+           "tickerFlow": {"window": {"calls": {"premium": 1000, "days": 3, "contracts": 5}, "bigCalls": {"hits": 2}, "bigPuts": 0},
+                          "today": {"calls": {"premium": 600}, "puts": {"premium": 100}}, "repeatQualifies": True}}
+    f = explorer.features_of(rec, {})
+    assert f["emaDist"] == 5.0 and f["flipDist"] == 5.0 and f["posGex"] is True
+    assert f["roomRatio"] == 2.0 and f["iv"] == 45.0 and f["dte"] == 30 and f["low30Age"] == 10
+    assert f["repeatRule"] is True and f["todayShare"] == 60.0 and f["callsOverPutsToday"] is True
+    assert f["weekday"] == 2 and f["minsOpen"] == 45
+    assert all(k in explorer.CAT_OF for k in explorer.FEATURES), [k for k in explorer.FEATURES if k not in explorer.CAT_OF]
+    w = explorer.wall_features(rec, {"2026-10-02": {"putWall": 98, "callWall": 112}, "2026-10-05": {"putWall": 100, "callWall": 112},
+                                     "2026-10-06": {"putWall": 104, "callWall": 112}})
+    assert w["pwUp2"] is True and w["pwChg"] == 4.0 and w["atPw"] is True and w["wallWidth"] == 7.69
+    # deep search: only rows with all 5 flags win
+    import random
+    random.seed(1)
+    rs = []
+    for i in range(400):
+        r = {"id": str(i), "at": f"2026-09-{1 + i % 28:02d}T10:00:00", "status": "done"}
+        flags = [random.random() < 0.6 for _ in range(5)]
+        for k, v in zip(("aboveEma", "momUp", "sweep", "putsOk", "posGex"), flags):
+            r[k] = v
+        r["R"] = 2.0 if all(flags) else -0.5
+        rs.append(r)
+    out = explorer.search(rs, min_n=10, max_depth=5)
+    best = out["results"][0]
+    assert best["avgR"] == 2.0 and best["size"] == 5, best
+    assert explorer.search(rs, min_n=10, max_depth=3)["results"][0]["size"] <= 3
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

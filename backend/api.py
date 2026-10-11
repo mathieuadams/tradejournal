@@ -466,10 +466,11 @@ def bot_explore(sub, claims, body, q):
     try:
         days = max(1, min(60, int(body.get("days") or 35)))
         min_n = max(5, min(200, int(body.get("minN") or 15)))
+        depth = max(1, min(6, int(body.get("depth") or 3)))
     except (TypeError, ValueError):
-        days, min_n = 35, 15
+        days, min_n, depth = 35, 15, 3
     conds = body.get("conds") if isinstance(body.get("conds"), list) else []
-    return explorer.explore(sub, days, conds[:8], bool(body.get("search")), min_n, body.get("group") or None)
+    return explorer.explore(sub, days, conds[:25], bool(body.get("search")), min_n, body.get("group") or None, depth)
 
 
 @route("POST", "/bot/exitopt")
@@ -486,7 +487,7 @@ def bot_exitopt(sub, claims, body, q):
         mult = max(0.0, min(3.0, float(body.get("spreadMult", 1))))
     except (TypeError, ValueError):
         mult = 1.0
-    return explorer.best_exit(sub, days, conds[:8], min_n, spread_mult=mult)
+    return explorer.best_exit(sub, days, conds[:25], min_n, spread_mult=mult)
 
 
 @route("GET", "/bot/strategies")
@@ -531,7 +532,7 @@ def bot_montecarlo(sub, claims, body, q):
     except (TypeError, ValueError):
         raise BadRequest("Check the numbers.")
     conds = body.get("conds") if isinstance(body.get("conds"), list) else []
-    return explorer.monte_carlo(sub, days, conds[:8], trades, 5000, risk, account)
+    return explorer.monte_carlo(sub, days, conds[:25], trades, 5000, risk, account)
 
 
 @route("GET", "/bot/bursts")

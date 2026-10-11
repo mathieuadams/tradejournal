@@ -1310,77 +1310,151 @@ function fcSetZoom(id, a, b, N) {
    Exit: target = the call wall of the moment when it is above the entry (it follows the wall up and down);
    stop = an hourly close below the put wall of that moment; also out when the put wall drops below the entry's put wall
    while no call wall is above the entry. */
-S.wsP = (() => { const d0 = { near: 0.5, minCall: 100000, room: 0, hours: 6, watchDays: 10 }; try { const v = { ...d0, ...JSON.parse(localStorage.getItem('wsP3') || '{}') }; return v; } catch (e) { return d0; } })();
-function wsRun(d0) {
-  const d = fcClean(d0), bars = d.bars, n = bars.length, P = S.wsP, iv = d.interval || 15;
-  const trades = []; trades.watches = [];
+const WS_RULES0 = { fast: 0, fastAtr: 1.5, chase: 0, rr: 0, early: 0, noOpex: 0, broken: 0, stopMode: 'wall', lowBuf: 0.1, scale: 0, scaleAt: 0.5, tgtBuf: 0, reject: 0 };
+S.wsP = (() => { const d0 = { near: 0.5, minCall: 100000, room: 0, hours: 6, watchDays: 10, ...WS_RULES0 }; try { const v = { ...d0, ...JSON.parse(localStorage.getItem('wsP3') || '{}') }; return v; } catch (e) { return d0; } })();
+function wsNoTradeDay(day) {                // monthly options expiration (3rd Friday, incl. triple witching) and VIX expiration
+  const [y, m] = day.split('-').map(Number);
+  const third = (yy, mm) => { const d1 = new Date(Date.UTC(yy, mm - 1, 1)); const f = 1 + ((5 - d1.getUTCDay() + 7) % 7); return new Date(Date.UTC(yy, mm - 1, f + 14)); };
+  const iso = d => d.toISOString().slice(0, 10);
+  if (iso(third(y, m)) === day) return 'options expiration';
+  for (const [yy, mm] of [[y, m], [m === 12 ? y + 1 : y, m === 12 ? 1 : m + 1]]) {
+    const v = third(yy, mm); v.setUTCDate(v.getUTCDate() - 30);                  // VIX: Wednesday 30 days before next month's 3rd Friday
+    if (iso(v) === day) return 'VIX expiration';
+  }
+  return null;
+}
+function wsRun(d0, Pover) {
+  const d = fcClean(d0), bars = d.bars, n = bars.length, P = Pover || S.wsP, iv = d.interval || 15;
+  const trades = []; trades.watches = []; trades.skips = {};
+  const skip = k => { trades.skips[k] = (trades.skips[k] || 0) + 1; };
   if (n < 3) return trades;
   const ms = t => Date.parse(t.slice(0, 16) + ':00Z');
   const walls = (d.walls || []).slice().sort((a, b) => a.t < b.t ? -1 : 1);
-  // walls in force at each bar: `today` is null on a day without data (no entry then); `known` keeps the last ones for exits
   let wk = -1, today = null, known = null;
   const wAt = [], kAt = [];
   bars.forEach(b => { while (wk + 1 < walls.length && walls[wk + 1].t <= b.t) { wk++; const w = walls[wk];
       if (w.callWall != null && w.putWall != null) { today = w; known = w; } else today = null; }
     wAt.push(today); kAt.push(known); });
+  // ATR (14 bars), scaled to one hour
+  const atr = []; let tr0 = 0;
+  bars.forEach((b, i) => { const pc = i ? bars[i - 1].c : b.o, tr = Math.max(b.h - b.l, Math.abs(b.h - pc), Math.abs(b.l - pc));
+    tr0 = i < 14 ? (tr0 * i + tr) / (i + 1) : (tr0 * 13 + tr) / 14; atr.push(tr0 * (iv < 60 ? Math.sqrt(60 / iv) : 1)); });
+  const look = Math.max(1, Math.round(180 / iv));
+  const fastAt = i => { let hh = -Infinity; for (let k = Math.max(0, i - look); k < i; k++) hh = Math.max(hh, bars[k].h); return hh - bars[i].l > P.fastAtr * atr[i]; };
   const al = (d.alerts || []).map(a => ({ m: ms(a.t), call: a.type === 'call', p: a.premium })).sort((a, b) => a.m - b.m);
   const hourClose = b => iv >= 60 || b.t.slice(14, 16) === '15' || b.t.slice(11, 16) === '15:45';
+  const close = (pos, i, px, why, extra) => { trades.push({ ...pos, iX: i, exit: px, why, ...extra }); };
   let pos = null, watch = null, lo = 0, dayN = 0;
   for (let i = 0; i < n; i++) {
     const b = bars[i];
     if (i && b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) dayN++;
-    // flow over the last `hours`: the notification that starts watching a ticker
     const m = ms(b.t) + iv * 60000, from = m - P.hours * 3600000;
     while (lo < al.length && al[lo].m < from) lo++;
     let cp = 0, pp = 0; for (let k = lo; k < al.length && al[k].m <= m; k++) { if (al[k].call) cp += al[k].p; else pp += al[k].p; }
     const flowOk = cp >= P.minCall && cp > pp;
     if (pos) {
       const w = kAt[i]; if (!w) continue;
-      const tgt = w.callWall;                                           // the target is the call wall of the moment (up or down)
-      if (tgt > pos.entry && b.h >= tgt) {                              // only a call wall above the entry is a target
-        trades.push({ ...pos, iX: i, exit: b.o > tgt ? b.o : tgt, why: 'target', tgt }); pos = null; continue; }
-      if (hourClose(b) && b.c < w.putWall) {                          // stop = the put wall of the moment (follows it up and down)
-        trades.push({ ...pos, iX: i, exit: b.c, why: w.putWall > pos.pw ? 'trail' : 'stop', stop: w.putWall, tgt }); pos = null; continue; }
-      if (hourClose(b) && w.putWall < pos.pw && tgt <= pos.entry) {   // support moved lower and no call wall above: nothing left to hold for
-        trades.push({ ...pos, iX: i, exit: b.c, why: 'shift', stop: w.putWall, tgt }); pos = null; continue; }
-      pos.tgtNow = tgt; pos.stop = w.putWall; continue;
+      const cwNow = w.callWall, tgt = cwNow * (1 - (P.tgtBuf || 0) / 100);
+      const hard = pos.scaled != null ? Math.max(pos.hard || -Infinity, pos.entry) : pos.hard;   // after the first half: stop at breakeven
+      if (hard != null && b.l <= hard) {                                // intrabar stop: the low of the failed reaction (or breakeven)
+        close(pos, i, Math.min(b.o, hard), pos.scaled != null && hard >= pos.entry ? 'be' : 'lowstop', { stop: hard, tgt }); pos = null; continue; }
+      if (P.scale && pos.scaled == null && cwNow > pos.entry) {
+        const sp = pos.entry + (tgt - pos.entry) * P.scaleAt;
+        if (b.h >= sp && sp < tgt) pos.scaled = Math.max(sp, b.o > sp ? b.o : sp);
+      }
+      if (tgt > pos.entry && b.h >= tgt) {
+        close(pos, i, b.o > tgt ? b.o : tgt, 'target', { tgt }); pos = null; continue; }
+      if (P.reject && hourClose(b) && cwNow > pos.entry && b.h >= cwNow * 0.995 && b.c < b.o) {   // tagged the call wall and closed red
+        close(pos, i, b.c, 'reject', { tgt }); pos = null; continue; }
+      if (P.stopMode !== 'low' && hourClose(b) && b.c < w.putWall) {
+        close(pos, i, b.c, w.putWall > pos.pw ? 'trail' : 'stop', { stop: w.putWall, tgt }); pos = null; continue; }
+      if (hourClose(b) && w.putWall < pos.pw && cwNow <= pos.entry) {
+        close(pos, i, b.c, 'shift', { stop: w.putWall, tgt }); pos = null; continue; }
+      pos.tgtNow = tgt; pos.stop = P.stopMode === 'low' ? pos.hard : w.putWall; continue;
     }
     if (!watch) {
-      if (flowOk) watch = { iW: i, day0: dayN, cp, pp };                // call flow: start watching the ticker
+      if (flowOk) watch = { iW: i, day0: dayN, cp, pp };
       continue;
     }
     if (dayN - watch.day0 > P.watchDays) { trades.watches.push({ ...watch, iEnd: i, result: 'expired' }); watch = flowOk ? { iW: i, day0: dayN, cp, pp } : null; continue; }
     const w = wAt[i];
     if (!w || !hourClose(b)) continue;
-    // entry: a green hourly candle whose low touches the put wall (within ± near %) and that closes above it, with room to the call wall
-    if (w.callWall <= w.putWall) continue;                              // no entry while the call wall is at or below the put wall
-    const room = (w.callWall - b.c) / b.c * 100, band = w.putWall * P.near / 100, merged = false;
-    // the low touches or dips through the put wall (no lower than... any depth) and the candle closes back above it, green
-    if (b.l > w.putWall + band || b.c <= w.putWall || b.c <= b.o || (P.room > 0 && room < P.room && !merged)) continue;
+    // broken wall: 2 hourly closes in a row below the put wall -> stop trading that level until a new put wall forms
+    if (b.c < w.putWall) { watch.below = (watch.below || 0) + 1; watch.lowSince = Math.min(watch.lowSince ?? Infinity, b.l); } else watch.below = 0;
+    if (P.broken && watch.below >= 2) { watch.deadPw = w.putWall; watch.armed = null; }
+    if (P.broken && watch.deadPw != null && w.putWall === watch.deadPw) { if (b.l <= w.putWall * (1 + P.near / 100)) skip('broken wall'); continue; }
+    const fast = P.fast ? fastAt(i) : false;
+    if (P.fast && fast && b.c < w.putWall) { watch.armed = { pw: w.putWall, low: b.l }; continue; }   // fast break: wait for the reclaim
+    if (watch.armed) watch.armed.low = Math.min(watch.armed.low, b.l);
+    if (w.callWall <= w.putWall) continue;
+    const band = w.putWall * P.near / 100, green = b.c > b.o;
+    let kind = null;
+    if (P.fast && watch.armed && b.c > w.putWall && green) kind = 'reclaim';
+    else if (!(b.l > w.putWall + band || b.c <= w.putWall || !green)) kind = 'touch';
+    if (!kind) continue;
+    if (kind === 'touch' && P.fast && fast) { skip('fast approach: waiting for a reclaim'); continue; }
+    const room = (w.callWall - b.c) / b.c * 100;
+    if (P.room > 0 && room < P.room) { skip('room'); continue; }
+    const rLow = kind === 'reclaim' ? watch.armed.low : Math.min(b.l, w.putWall);
+    const hard = P.stopMode === 'wall' ? null : rLow * (1 - (P.lowBuf || 0) / 100);
+    const stopRef = hard != null ? hard : w.putWall;
+    if (P.chase > 0 && b.c - w.putWall > P.chase * atr[i]) { skip('too far above the put wall'); continue; }
+    if (P.rr > 0) { const risk = b.c - stopRef, rew = w.callWall * (1 - (P.tgtBuf || 0) / 100) - b.c;
+      if (risk <= 0 || rew / risk < P.rr) { skip('reward / risk'); continue; } }
+    const endMin = +b.t.slice(11, 13) * 60 + +b.t.slice(14, 16) + Math.min(iv, 60);
+    if (P.early && endMin > 690) { skip('after the first 2 hours'); continue; }
+    if (P.noOpex && wsNoTradeDay(b.t.slice(0, 10))) { skip(wsNoTradeDay(b.t.slice(0, 10))); continue; }
     trades.watches.push({ ...watch, iEnd: i, result: 'entered' });
-    pos = { iE: i, iW: watch.iW, entry: b.c, pw: w.putWall, stop: w.putWall, tgt0: w.callWall, tgtNow: w.callWall, cp: watch.cp, pp: watch.pp };
+    pos = { iE: i, iW: watch.iW, entry: b.c, pw: w.putWall, stop: stopRef, hard, kind, tgt0: w.callWall, tgtNow: w.callWall, cp: watch.cp, pp: watch.pp };
     watch = null;
   }
   if (watch) trades.watches.push({ ...watch, iEnd: n - 1, result: 'watching' });
   if (pos) trades.push({ ...pos, iX: null, exit: bars[n - 1].c, why: 'open', tgt: pos.tgtNow });
-  trades.forEach(t => { t.pl = (t.exit / t.entry - 1) * 100; });
+  trades.forEach(t => { const ex = t.scaled != null ? (t.scaled + t.exit) / 2 : t.exit; t.pl = (ex / t.entry - 1) * 100;
+    t.risk = t.stop && t.entry > t.stop ? (t.entry - t.stop) / t.entry * 100 : null; t.R = t.risk ? t.pl / t.risk : null; });
   return trades;
 }
-function wsSummary(tr) {
-  const done = tr.filter(t => t.why !== 'open'), c = w => done.filter(t => t.why === w).length;
-  const avg = done.length ? done.reduce((s2, t) => s2 + t.pl, 0) / done.length : null, won = done.filter(t => t.pl > 0).length;
+const WS_WHY = { target: 'target', trail: 'trailing stop', stop: 'stop', shift: 'walls shifted', lowstop: 'stop below the reaction low', be: 'breakeven after half', reject: 'rejected at the call wall' };
+function wsStats(tr) {
+  const done = tr.filter(t => t.why !== 'open');
+  const avg = done.length ? done.reduce((s2, t) => s2 + t.pl, 0) / done.length : null;
+  return { n: tr.length, done: done.length, won: done.filter(t => t.pl > 0).length, avg, tot: done.reduce((s2, t) => s2 + t.pl, 0) };
+}
+function wsChanged() { return Object.keys(WS_RULES0).some(k => k !== 'fastAtr' && k !== 'lowBuf' && k !== 'scaleAt' && S.wsP[k] !== WS_RULES0[k]); }
+function wsSummary(tr, d) {
+  const done = tr.filter(t => t.why !== 'open'), st = wsStats(tr);
   const ws = tr.watches || [], watching = ws.some(x => x.result === 'watching');
-  return `Wall strategy: <b>${ws.length}</b> watch${ws.length === 1 ? '' : 'es'} from call flow → <b>${tr.length}</b> trade${tr.length === 1 ? '' : 's'}${watching ? ' · <b style="color:var(--coach)">watching now</b>' : ''}${done.length ? ` · ${c('target')} target · ${c('trail')} trailing stop · ${c('stop')} stop${c('shift') ? ` · ${c('shift')} walls shifted` : ''} · ${won}/${done.length} winners · avg <b class="${avg >= 0 ? 'gain' : 'loss'}">${avg >= 0 ? '+' : ''}${avg.toFixed(1)}%</b> (stock move)` : ''}${tr.some(t => t.why === 'open') ? ' · 1 open' : ''}`;
+  const pc = v => v == null ? '—' : `<b class="${v >= 0 ? 'gain' : 'loss'}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</b>`;
+  const why = Object.keys(WS_WHY).map(k => [k, done.filter(t => t.why === k).length]).filter(x => x[1]).map(([k, c]) => `${c} ${WS_WHY[k]}`).join(' · ');
+  const sk = Object.entries(tr.skips || {}).map(([k, c]) => `${c} ${k}`).join(', ');
+  let cmp = '';
+  if (d && wsChanged()) { const o = wsStats(wsRun(d, { ...S.wsP, ...WS_RULES0 }));
+    cmp = ` <span class="exchip" title="Same chart with the original rules">original rules: ${o.n} trades · ${o.won}/${o.done} winners · avg ${pc(o.avg)} · total ${pc(o.tot)}</span>`; }
+  return `Wall strategy: <b>${ws.length}</b> watch${ws.length === 1 ? '' : 'es'} → <b>${tr.length}</b> trade${tr.length === 1 ? '' : 's'}${watching ? ' · <b style="color:var(--coach)">watching now</b>' : ''}${done.length ? ` · ${why} · ${st.won}/${done.length} winners · avg ${pc(st.avg)} · total ${pc(st.tot)} (stock move)` : ''}${tr.some(t => t.why === 'open') ? ' · 1 open' : ''}${sk ? ` <span class="muted">· skipped: ${esc(sk)}</span>` : ''}${cmp}`;
 }
 function wsParamsBar() {
-  const P = S.wsP, f = (k, l, step, w) => `<label class="muted" style="font-size:.78rem;display:inline-flex;gap:4px;align-items:center">${l}<input data-wsp="${k}" type="number" step="${step}" value="${P[k]}" style="width:${w}em;padding:1px 4px"></label>`;
-  return `<details data-wsdet style="display:inline-block" ${S.wsOpen ? 'open' : ''}><summary class="muted" style="cursor:pointer;font-size:.8rem">strategy settings</summary><span style="display:inline-flex;flex-wrap:wrap;gap:8px;margin-left:6px">
-    ${f('near', 'low within % above put wall', 0.25, 3.5)}${f('room', 'min room to call wall % (0 = any)', 0.5, 3.5)}${f('minCall', 'min call $', 10000, 6)}${f('hours', 'flow window h', 1, 3)}${f('watchDays', 'watch for days', 1, 3)}</span></details>`;
+  const P = S.wsP, lab = 'class="muted" style="font-size:.78rem;display:inline-flex;gap:4px;align-items:center"';
+  const f = (k, l, step, w) => `<label ${lab}>${l}<input data-wsp="${k}" type="number" step="${step}" value="${P[k]}" style="width:${w}em;padding:1px 4px"></label>`;
+  const cb = (k, l, tip) => `<label ${lab} title="${esc(tip)}"><input data-wsp="${k}" type="checkbox" ${P[k] ? 'checked' : ''}>${l}</label>`;
+  const box = (t, body) => `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:4px 8px"><b style="font-size:.78rem">${t}</b>${body}</span>`;
+  return `<details data-wsdet style="display:inline-block" ${S.wsOpen ? 'open' : ''}><summary class="muted" style="cursor:pointer;font-size:.8rem">strategy settings${wsChanged() ? ' <b style="color:var(--coach)">· new rules on</b>' : ''}</summary><span style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 0">
+    ${box('Watch', f('minCall', 'min call $', 10000, 6) + f('hours', 'flow window h', 1, 3) + f('watchDays', 'watch for days', 1, 3))}
+    ${box('Entry', f('near', 'low within % above put wall', 0.25, 3.5) + f('room', 'min room to call wall %', 0.5, 3.5)
+      + cb('fast', 'fast drop → wait for reclaim', 'If the last 3 hours dropped more than N hourly ATRs into the put wall, skip the touch; buy the first green hourly close back above the put wall after a close below it.') + f('fastAtr', 'fast = drop > ATR ×', 0.25, 3)
+      + f('chase', 'max ATR above put wall (0 = off)', 0.25, 3) + f('rr', 'min reward/risk (0 = off)', 0.5, 3)
+      + cb('early', 'first 2 hours only', 'Entries only on candles ending by 11:30 ET.') + cb('noOpex', 'skip OPEX / VIX exp days', 'No entry on the 3rd Friday (monthly options expiration, triple witching) or VIX expiration day.')
+      + cb('broken', 'broken wall = done', 'After 2 hourly closes below the put wall, no entry at that level until a new put wall forms.'))}
+    ${box('Exit', `<label ${lab}>stop<select data-wsp="stopMode" style="padding:1px 4px"><option value="wall" ${P.stopMode === 'wall' ? 'selected' : ''}>hourly close below put wall</option><option value="low" ${P.stopMode === 'low' ? 'selected' : ''}>below the reaction low</option><option value="both" ${P.stopMode === 'both' ? 'selected' : ''}>both (first hit)</option></select></label>`
+      + f('lowBuf', 'buffer % under low', 0.05, 3)
+      + cb('scale', 'sell half on the way, rest to breakeven', 'Half is sold at the chosen fraction of the way to the target, then the stop on the rest moves to the entry.') + f('scaleAt', 'half at fraction of the way', 0.1, 3)
+      + f('tgtBuf', 'sell % below call wall', 0.1, 3) + cb('reject', 'exit on red candle at call wall', 'Hourly candle reaches within 0.5% of the call wall and closes red: sell.'))}
+    <button class="btn" data-wsreset="1" style="font-size:.75rem;padding:1px 8px">original rules</button></span></details>`;
 }
 document.addEventListener('toggle', e => { if (e.target.dataset && e.target.dataset.wsdet !== undefined) S.wsOpen = e.target.open; }, true);
 document.addEventListener('change', e => {
   const k = e.target.dataset && e.target.dataset.wsp; if (!k) return;
-  const v = +e.target.value; if (!isFinite(v) || v < 0) return;
+  const v = e.target.type === 'checkbox' ? (e.target.checked ? 1 : 0) : e.target.tagName === 'SELECT' ? e.target.value : +e.target.value;
+  if (typeof v === 'number' && (!isFinite(v) || v < 0)) return;
   S.wsP = { ...S.wsP, [k]: v }; try { localStorage.setItem('wsP3', JSON.stringify(S.wsP)); } catch (err) {}
   render();
 });
@@ -1515,9 +1589,12 @@ function fcSvg0(d, id, opts) {
       if (t.entry >= lo && t.entry <= hi && t.exit >= lo && t.exit <= hi) g += `<line x1="${xa}" y1="${Y(t.entry)}" x2="${xb}" y2="${Y(t.exit)}" stroke="${col}" stroke-width="1.5" stroke-dasharray="4 3"/>`;
       if (a0 >= 0 && t.entry >= lo && t.entry <= hi) { const y = Y(t.entry);
         g += `<path d="M${xa},${y + 4} L${xa - 7},${y + 16} L${xa + 7},${y + 16} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1"><title>Entry ${bars[a0].t.replace('T', ' ').slice(5)} at ${t.entry.toFixed(2)} · put wall ${t.pw} · call wall ${t.tgt0} · calls ${money(t.cp, false)} vs puts ${money(t.pp, false)}</title></path>
-          <text x="${xa}" y="${y + 28}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">IN</text>`; }
+          <text x="${xa}" y="${y + 28}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${t.kind === 'reclaim' ? 'RECLAIM' : 'IN'}</text>`;
+        if (t.hard != null && t.hard >= lo && t.hard <= hi) g += `<line x1="${xa}" x2="${xb}" y1="${Y(t.hard)}" y2="${Y(t.hard)}" stroke="var(--loss)" stroke-width="1" stroke-dasharray="2 2" opacity=".8"><title>Stop below the reaction low ${t.hard.toFixed(2)}</title></line>`; }
+      if (t.scaled != null && t.scaled >= lo && t.scaled <= hi) { let ih = t.iE; for (let k = t.iE + 1; k <= (t.iX ?? all.length - 1); k++) if (all[k] && all[k].h >= t.scaled) { ih = k; break; }
+        const xh = ih - za; if (xh >= 0 && xh <= n - 1) g += `<circle cx="${X(xh)}" cy="${Y(t.scaled)}" r="5" fill="var(--gain)" stroke="var(--surface)" stroke-width="1.5"><title>Half sold at ${t.scaled.toFixed(2)}, stop on the rest moved to the entry</title></circle><text x="${X(xh) + 7}" y="${Y(t.scaled) - 6}" font-size="${fs - 3}" font-weight="700" fill="var(--gain)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">½</text>`; }
       if (!open && b0 <= n - 1 && t.exit >= lo && t.exit <= hi) { const y = Y(t.exit);
-        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${t.why === 'shift' ? `Walls shifted: put wall dropped to ${t.stop} with no call wall above the entry` : t.why === 'target' ? 'Target (call wall)' : t.why === 'trail' ? `Trailing stop: hourly close below the raised put wall ${t.stop}` : `Stop: hourly close below the put wall ${t.stop}`} ${bars[b0].t.replace('T', ' ').slice(5)} at ${t.exit.toFixed(2)} · ${t.pl >= 0 ? '+' : ''}${t.pl.toFixed(1)}%</title></rect>
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${t.why === 'shift' ? `Walls shifted: put wall dropped to ${t.stop} with no call wall above the entry` : t.why === 'target' ? 'Target (call wall)' : t.why === 'lowstop' ? `Stop below the reaction low ${Number(t.stop).toFixed(2)}` : t.why === 'be' ? 'Rest stopped at breakeven after selling half' : t.why === 'reject' ? 'Red hourly candle at the call wall' : t.why === 'trail' ? `Trailing stop: hourly close below the raised put wall ${t.stop}` : `Stop: hourly close below the put wall ${t.stop}`} ${bars[b0].t.replace('T', ' ').slice(5)} at ${t.exit.toFixed(2)} · ${t.pl >= 0 ? '+' : ''}${t.pl.toFixed(1)}%</title></rect>
           <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${t.pl >= 0 ? '+' : ''}${t.pl.toFixed(1)}%</text>`; }
     });
   }
@@ -1597,7 +1674,7 @@ function vChartFull() {
     const sa = S.fcSel && S.fcSel.id === cur.id ? al[S.fcSel.k] : null, w = d.wallsNow, dpd = S.fcDp[fcKey(cur.id)];
     const dsel = S.fcSelD && S.fcSelD.id === cur.id && dpd ? (dpd.prints || [])[S.fcSelD.k] : null;
     main = fcSvg(d, cur.id, { W, H }) + `<div class="fcf-info">
-      ${S.fcLayers.ws ? `<span>${wsSummary(wsRun(d))} ${wsParamsBar()}</span>` : ''}
+      ${S.fcLayers.ws ? `<span>${wsSummary(wsRun(d), d)} ${wsParamsBar()}</span>` : ''}
       <span><b class="gain">Calls</b> ${calls.length} · ${money(sum(calls), false)} &nbsp; <b class="loss">Puts</b> ${puts.length} · ${money(sum(puts), false)}</span>
       ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b class="loss">put ${w.putWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b></span>` : ''}
       ${(() => { const tr = d.trade; if (!tr || !tr.at) return ''; const r = tr.R;
@@ -1661,7 +1738,7 @@ function flowChartPanel(r) {
     : nW ? `Gamma walls: ${nW} reading${nW === 1 ? '' : 's'} from the bot.` : '<b>No gamma walls for this period.</b>'} ${d.wallNote ? esc(d.wallNote) : ''}</p>`;
   fcNeedDark(r.id);
   const lbar = `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px">${fcLayerBar(r.id)}</div>`
-    + (S.fcLayers.ws ? `<p style="font-size:.84rem;margin:0 0 6px">${wsSummary(wsRun(d))} ${wsParamsBar()}</p>` : '');
+    + (S.fcLayers.ws ? `<p style="font-size:.84rem;margin:0 0 6px">${wsSummary(wsRun(d), d)} ${wsParamsBar()}</p>` : '');
   const dsel = S.fcSelD && S.fcSelD.id === r.id && S.fcDp[fcKey(r.id)] ? (S.fcDp[fcKey(r.id)].prints || [])[S.fcSelD.k] : null;
   return head + zbar + lbar + wline + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
     ${(() => { const e = S.fcSelE && S.fcSelE.id === r.id ? (d.evals || [])[S.fcSelE.k] : null; return e ? `<p style="margin:6px 0 0;font-size:.88rem"><b>Evaluated ${esc(e.t.replace('T', ' ').slice(5))} ET</b> · <span class="verdict ${DEC_CLS[e.decision] || 'mid'}" style="font-size:.75rem;padding:1px 7px">${esc(e.decision || '')}</span>${e.taken ? ' · <b>traded</b>' : ''}${e.price ? ` · at ${px(e.price)}` : ''}${e.why ? ` · <span class="muted">${esc(e.why)}</span>` : ''}${e.id !== r.id ? ` · <a href="#" data-evload="${e.id}">open it</a>` : ' · <span class="muted">this one</span>'}</p>` : ''; })()}
@@ -2181,7 +2258,7 @@ S.exConds = S.exConds || [];
 async function runExplore(search) {
   S.exBusy = search ? 'search' : 'filter'; render();
   try {
-    const r = await api('/bot/explore', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, search, minN: S.exMinN || 15, group: S.exGroup || '' } });
+    const r = await api('/bot/explore', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, search, minN: S.exMinN || 15, group: S.exGroup || '', depth: S.exDepth || 4 } });
     if (!search && S.ex && S.ex.search) r.search = S.ex.search;
     S.ex = r;
   } catch (e) { S.ex = { error: e.message }; }
@@ -2340,7 +2417,9 @@ function vExplore() {
   if (d.error) return h + `<div class="errbox">${esc(d.error)}</div>`;
   const R = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${sgn(v, 2)}R</span>`;
   const feats = d.features || [];
-  const fsel = `<select id="ex-key"><option value="">Add a condition…</option>${feats.filter(f => f.key !== 'taken' || true).map(f => `<option value="${f.key}" ${S.exPick === f.key ? 'selected' : ''}>${esc(f.label)}${f.known < (d.all.n || 0) ? ` (known for ${f.known})` : ''}</option>`).join('')}</select>`;
+  const fopt = f => `<option value="${f.key}" ${S.exPick === f.key ? 'selected' : ''}>${esc(f.label)}${f.known < (d.all.n || 0) ? ` (known for ${f.known})` : ''}</option>`;
+  const cats = d.cats || [...new Set(feats.map(f => f.cat || 'Other'))];
+  const fsel = `<select id="ex-key" style="max-width:100%"><option value="">Add a condition… (${feats.length} available)</option>${cats.map(c => { const fs = feats.filter(f => (f.cat || 'Other') === c); return fs.length ? `<optgroup label="${esc(c)}">${fs.map(fopt).join('')}</optgroup>` : ''; }).join('')}${feats.filter(f => !cats.includes(f.cat || 'Other')).map(fopt).join('')}</select>`;
   const pk = S.exPick && feats.find(f => f.key === S.exPick);
   const picker = pk ? (pk.kind === 'bool'
     ? `<select id="ex-val"><option value="1">Yes</option><option value="0">No</option></select>`
@@ -2360,9 +2439,10 @@ function vExplore() {
   const sr = d.search;
   const search = `<section class="panel" style="margin-top:14px"><div class="cal-head"><h2>Best combinations</h2>
       <span style="display:flex;gap:8px;align-items:center"><label class="muted" style="font-size:.85rem">at least <input id="ex-minn" type="number" value="${S.exMinN || 15}" min="5" style="width:4.5em"> ideas</label>
-      <select id="ex-group" aria-label="Conditions to combine">${[['', 'All conditions'], ['wallsflow', 'Gamma walls + options volume'], ['walls', 'Gamma walls only'], ['flow', 'Options volume / flow only']].map(([v, l]) => `<option value="${v}" ${(S.exGroup || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select id="ex-group" aria-label="Conditions to combine">${[['', 'All conditions'], ['wallsflow', 'Gamma walls + options volume'], ['walls', 'Gamma walls only'], ['gamma', 'All gamma (walls, flip, net GEX)'], ['flow', 'Options volume / flow only'], ['trend', 'Price & trend only'], ['trendflow', 'Price & trend + options volume']].map(([v, l]) => `<option value="${v}" ${(S.exGroup || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select id="ex-depth" aria-label="Conditions per combination">${[2, 3, 4, 5, 6].map(n => `<option value="${n}" ${(S.exDepth || 4) === n ? 'selected' : ''}>up to ${n} conditions</option>`).join('')}</select>
       <button class="btn coachbtn" data-exsearch="1" ${S.exBusy ? 'disabled' : ''}>${S.exBusy === 'search' ? 'Searching…' : 'Find the best combinations'}</button></span></div>
-    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Tries every single condition, then pairs and triples of the most promising ones, and ranks them by average R. Only combinations with enough ideas are kept, and each one is checked on the older and the newer half of the period: one that holds in both is far less likely to be luck.</p>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Tries every single condition, every pair of the 60 most promising ones, then keeps extending the best combinations one condition at a time up to the chosen size, and ranks them by average R. More conditions = fewer ideas each: keep the minimum high enough to trust the result. Only combinations with enough ideas are kept, and each one is checked on the older and the newer half of the period: one that holds in both is far less likely to be luck.</p>
     ${!sr ? '' : !sr.results.length ? `<p class="muted">No combination has enough ideas yet.${sr.group && sr.group !== 'flow' && d.walls && d.walls.known < (sr.minN || 15) ? ` Gamma walls are known for only ${d.walls.known} ideas: press <b>Store walls for every ticker</b> above, then search again in a few minutes.` : ' Lower the minimum or wait for more results.'}</p>` :
       `<ul class="shl">${sr.results.map((x, i) => `<li data-exuse="${i}"><span class="shl-a">${esc(x.text)}</span><span class="shl-r">${R(x.avgR)}</span>
         <span class="shl-b muted">${x.n} ideas (${x.open} open) · ${x.winPct}% winners · total ${x.totalR}R · older ${x.older ?? '—'}R / newer ${x.newer ?? '—'}R ${x.holds ? '· <b class="gain">holds in both halves</b>' : ''}</span></li>`).join('')}</ul>
@@ -2688,7 +2768,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-wsreset],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2740,7 +2820,8 @@ document.addEventListener('click', e => {
   }
   if (el.dataset.exdel !== undefined) { S.exConds.splice(+el.dataset.exdel, 1); runExplore(false); return; }
   if (el.dataset.exclear) { S.exConds = []; runExplore(false); return; }
-  if (el.dataset.exsearch) { S.exMinN = +($('#ex-minn').value || 15); S.exGroup = ($('#ex-group') || {}).value || ''; runExplore(true); return; }
+  if (el.dataset.wsreset) { S.wsP = { ...S.wsP, ...WS_RULES0 }; try { localStorage.setItem('wsP3', JSON.stringify(S.wsP)); } catch (err) {} render(); return; }
+  if (el.dataset.exsearch) { S.exMinN = +($('#ex-minn').value || 15); S.exGroup = ($('#ex-group') || {}).value || ''; S.exDepth = +(($('#ex-depth') || {}).value || 4); runExplore(true); return; }
   if (el.dataset.exuse !== undefined) { const x = S.ex.search.results[+el.dataset.exuse]; S.exConds = x.conds.map(c => ({ ...c })); runExplore(false); window.scrollTo(0, 0); return; }
   if (el.dataset.burstgrp) { S.burstOpen = S.burstOpen || {}; S.burstOpen[el.dataset.burstgrp] = !S.burstOpen[el.dataset.burstgrp]; render(); return; }
   if (el.dataset.burstsave) {
