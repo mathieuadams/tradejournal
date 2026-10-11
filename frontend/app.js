@@ -1271,9 +1271,25 @@ async function loadFlowChart(id) {
   S.fcBusy[k] = false;
   if (isBotRoute()) render();
 }
+S.fcZoom = S.fcZoom || {};
+function fcRange(id, N) {             // visible bars [a, b] for this chart (zoom)
+  const z = S.fcZoom[fcKey(id)];
+  if (!z) return [0, N - 1];
+  const a = Math.max(0, Math.min(z[0], N - 2)), b = Math.min(N - 1, Math.max(z[1], a + 1));
+  return [a, b];
+}
+function fcSetZoom(id, a, b, N) {
+  const span = Math.max(8, b - a);                     // never fewer than 8 bars
+  a = Math.round(a); b = Math.round(a + span);
+  if (b > N - 1) { b = N - 1; a = Math.max(0, b - span); }
+  if (a < 0) { a = 0; b = Math.min(N - 1, span); }
+  S.fcZoom[fcKey(id)] = a <= 0 && b >= N - 1 ? null : [a, b];
+  render();
+}
 function fcSvg(d, id) {
-  const bars = d.bars || [], n = bars.length;
-  if (n < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
+  const all = d.bars || [];
+  if (all.length < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
+  const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
   const narrow = window.innerWidth < 700, fs = narrow ? 17 : 12;
   const W = narrow ? 560 : 960, PH = narrow ? 470 : 340, AH = narrow ? 150 : 110, L = 8, Rr = narrow ? 72 : 58, T = 16, B = PH - (narrow ? 44 : 40);
   const H = PH + AH + 10, AT = PH + 6, AB = PH + AH - 6, iv = d.interval || 15;
@@ -1287,7 +1303,8 @@ function fcSvg(d, id) {
   const idx = {}; bars.forEach((b, i) => { idx[b.t] = i; });
   const bucket = t => { const d0 = t.slice(0, 10), hm = t.slice(11, 16); let m = (+hm.slice(0, 2)) * 60 + (+hm.slice(3, 5)); m = Math.max(570, Math.min(m, 960 - iv)); m = 570 + Math.floor((m - 570) / iv) * iv;
     return `${d0}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
-  const at = t => { const k = bucket(t); if (idx[k] != null) return idx[k]; let best = null; bars.forEach((b, i) => { if (b.t <= k) best = i; }); return best; };
+  const lastT = bars[n - 1].t;
+  const at = t => { const k = bucket(t); if (idx[k] != null) return idx[k]; if (k > lastT) return null; let best = null; bars.forEach((b, i) => { if (b.t <= k) best = i; }); return best; };
   let g = '';
   for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4, y = Y(v); g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/><text x="${W - Rr + 6}" y="${y + 4}" font-size="${fs}" fill="var(--muted)">${v.toFixed(v < 20 ? 2 : 1)}</text>`; }
   const nDays = new Set(bars.map(b => b.t.slice(0, 10))).size, every = nDays > 30 ? (narrow ? 10 : 5) : nDays > 12 ? 3 : 1;
@@ -1300,7 +1317,7 @@ function fcSvg(d, id) {
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--coach,#5b5bd6)" stroke-width="2" stroke-dasharray="6 4"/><text x="${Math.min(x + 4, W - Rr - 70)}" y="${T + 12}" font-size="${fs}" font-weight="600" fill="var(--coach,#5b5bd6)">evaluated</text>`; } }
   if (walls.length) {                       // gamma walls as step lines: each value holds until the next snapshot
     const t0 = bars[0].t, segs = walls.map((w, k) => { const i0 = w.t <= t0 ? 0 : at(w.t), nx = walls[k + 1];
-      return { w, x0: i0 == null ? null : (w.t <= t0 ? L : X(i0)), x1: nx ? (at(nx.t) == null ? null : X(at(nx.t))) : W - Rr }; }).filter(sg => sg.x0 != null && sg.x1 != null && sg.x1 > sg.x0 - 1);
+      return { w, x0: i0 == null ? null : (w.t <= t0 ? L : X(i0)), x1: !nx || bucket(nx.t) > lastT ? W - Rr : (at(nx.t) == null ? null : X(at(nx.t))) }; }).filter(sg => sg.x0 != null && sg.x1 != null && sg.x1 > sg.x0 - 1);
     const lines = [['callWall', 'var(--gain)', '7 4', 'Call wall'], ['putWall', 'var(--loss)', '7 4', 'Put wall'], ['flip', 'var(--coach,#5b5bd6)', '2 3', 'Flip']];
     lines.forEach(([key, col, dash, name]) => {
       let prev = null;
@@ -1310,7 +1327,7 @@ function fcSvg(d, id) {
         if (prev && Math.abs(prev.y - y) > 0.5) g += `<line x1="${sg.x0}" x2="${sg.x0}" y1="${prev.y}" y2="${y}" stroke="${col}" stroke-width="1.5" stroke-dasharray="${dash}" opacity=".7"/>`;
         g += `<line x1="${sg.x0}" x2="${sg.x1}" y1="${y}" y2="${y}" stroke="${col}" stroke-width="2" stroke-dasharray="${dash}" opacity=".85"><title>${name} ${v} · from ${esc(sg.w.t.replace('T', ' ').slice(5))}</title></line>`;
         prev = { y }; });
-      const lw = walls[walls.length - 1][key];
+      const vis = segs.filter(sg => sg.w[key] != null), lw = vis.length ? vis[vis.length - 1].w[key] : null;
       if (lw == null) return;
       if (near(lw)) g += `<text x="${W - Rr - 4}" y="${Y(lw) - 4}" text-anchor="end" font-size="${fs}" font-weight="600" fill="${col}">${name} ${lw}</text>`;
       else g += `<text x="${W - Rr - 4}" y="${lw > hi ? T + 12 + (key === 'flip' ? fs + 2 : 0) : B - 4 - (key === 'flip' ? fs + 2 : 0)}" text-anchor="end" font-size="${fs}" font-weight="600" fill="${col}">${name} ${lw} ${lw > hi ? '↑' : '↓'}</text>`;
@@ -1336,7 +1353,8 @@ function fcSvg(d, id) {
   const km = v => v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${Math.round(v / 1e3)}k`;
   const yc = AY(cAcc[n - 1]), yp = AY(pAcc[n - 1]), clash = Math.abs(yc - yp) < fs;
   g += `<text x="${W - Rr + 6}" y="${(clash && yc >= yp ? yc + fs : yc) + 4}" font-size="${fs}" fill="var(--gain)">${km(cAcc[n - 1])}</text><text x="${W - Rr + 6}" y="${(clash && yp > yc ? yp + fs : yp) + 4}" font-size="${fs}" fill="var(--loss)">${km(pAcc[n - 1])}</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
+  g += `<rect class="fcz-sel" x="0" y="${T}" width="0" height="${AB - T}" fill="var(--coach,#5b5bd6)" fill-opacity=".12" stroke="var(--coach,#5b5bd6)" stroke-width="1" style="display:none;pointer-events:none"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" data-fcz="${esc(id)}" data-l="${L}" data-pw="${W - L - Rr}" data-a="${za}" data-n="${n}" data-all="${all.length}" data-vw="${W}" style="width:100%;height:auto;display:block;touch-action:pan-y;cursor:crosshair;user-select:none" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
 }
 function flowChartPanel(r) {
   if (!r || !r.id || !r.createdAt) return '';
@@ -1350,7 +1368,11 @@ function flowChartPanel(r) {
   const sum = xs => xs.reduce((s2, a) => s2 + a.premium, 0);
   const sel = S.fcSel && S.fcSel.id === r.id ? al[S.fcSel.k] : null;
   const top = [...al].sort((a, b) => b.premium - a.premium).slice(0, 6);
-  return head + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
+  const N = (d.bars || []).length, [za, zb] = N > 1 ? fcRange(r.id, N) : [0, 0], zoomed = N > 1 && (za > 0 || zb < N - 1);
+  const zb_ = (k, l, t) => `<button class="btn" data-fczoom="${r.id}|${k}" title="${t}" style="font-size:.85rem;padding:2px 10px">${l}</button>`;
+  const zbar = N > 1 ? `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px">${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zoomed ? zb_('reset', 'Reset', 'Show everything') : ''}
+    <span class="muted" style="font-size:.8rem">${zoomed ? `${esc(d.bars[za].t.replace('T', ' ').slice(5))} → ${esc(d.bars[zb].t.replace('T', ' ').slice(5))} · ` : ''}drag across the chart to zoom on a period${window.innerWidth >= 700 ? ', or scroll on it' : ''}</span></div>` : '';
+  return head + zbar + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
     <p class="st-legend" style="margin:6px 0 4px"><span><i class="st-dot g"></i>Calls bought (${calls.length}, ${money(sum(calls), false)})</span><span><i class="st-dot" style="display:inline-block;background:var(--loss)"></i>Puts bought (${puts.length}, ${money(sum(puts), false)})</span><span>bigger dot = bigger premium · outlined = over ${money(d.bigPrint, false)}</span><span style="color:var(--coach,#5b5bd6)">┆ evaluated</span>${(d.walls || []).length ? `<span><b class="gain">- -</b> call wall · <b class="loss">- -</b> put wall · <b style="color:var(--coach,#5b5bd6)">···</b> gamma flip (steps = how they moved)</span>` : ''}</p>
     ${d.wallsNow ? `<p class="muted" style="font-size:.84rem;margin:0 0 4px">Latest walls (${esc(d.wallsNow.source || '')}): call wall <b>${d.wallsNow.callWall}</b> · put wall <b>${d.wallsNow.putWall}</b> · flip <b>${d.wallsNow.flip ?? '—'}</b>. ${d.wallSource === 'uw' ? 'Each step is one day\'s open interest, so you can see the walls move as positions are opened and closed.' : 'Open interest updates once a day, so the walls mostly move overnight.' + ((d.walls || []).length < 2 ? ' History builds from each evaluation and each time this chart is opened.' : '')} The lower panel adds up the premium bought at the ask: calls (green) vs puts (red).</p>` : ''}
     ${d.wallNote ? `<p class="muted" style="font-size:.82rem;margin:0 0 4px">${esc(d.wallNote)}</p>` : ''}
@@ -2363,7 +2385,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2378,6 +2400,14 @@ document.addEventListener('click', e => {
   if (el.dataset.eoprep) { prepPaths(); return; }
   if (el.dataset.eouse !== undefined) { const x = S.eo.results[+el.dataset.eouse]; S.exExit = JSON.stringify(S.exExit) === JSON.stringify(x.params) ? null : x.params; render(); return; }
   if (el.dataset.exsave) { saveStrategy(); return; }
+  if (el.dataset.fczoom) { const [id, k] = el.dataset.fczoom.split('|'), d = S.fc[fcKey(id)], N = ((d && d.bars) || []).length; if (N < 2) return;
+    const [a, b] = fcRange(id, N), span = b - a, mid = (a + b) / 2;
+    if (k === 'reset') { S.fcZoom[fcKey(id)] = null; render(); }
+    else if (k === 'in') fcSetZoom(id, mid - span / 4, mid + span / 4, N);
+    else if (k === 'out') fcSetZoom(id, mid - span, mid + span, N);
+    else if (k === 'left') fcSetZoom(id, a - span / 3, b - span / 3, N);
+    else if (k === 'right') fcSetZoom(id, a + span / 3, b + span / 3, N);
+    return; }
   if (el.dataset.fcdays) { S.fcDays = +el.dataset.fcdays; S.fcSel = null; render(); return; }
   if (el.dataset.actsave) { const strategy = document.getElementById('act-strat').value, stop = document.getElementById('act-stop').value;
     api('/bot/strategies/active', { method: 'PUT', body: { strategy, stop: stop ? +stop : null } })
@@ -2570,4 +2600,42 @@ $('#signin').addEventListener('click', () => Auth.login());
     } catch (e) { toast(e.message); }
   }
   try { await reload(); } catch (e) { $('#view').innerHTML = `<div class="errbox">${esc(e.message)}</div>`; }
+})();
+
+/* ---------- flow chart zoom: drag across a period, or scroll ---------- */
+(() => {
+  let drag = null, suppress = false;
+  document.addEventListener('click', ev => { if (suppress && ev.target.closest && ev.target.closest('svg[data-fcz]')) { ev.stopPropagation(); ev.preventDefault(); } }, true);
+  const info = svg => { const r = svg.getBoundingClientRect(), k = (+svg.dataset.vw) / r.width;
+    return { r, k, L: +svg.dataset.l, pw: +svg.dataset.pw, a: +svg.dataset.a, n: +svg.dataset.n, all: +svg.dataset.all, id: svg.dataset.fcz }; };
+  const vx = (svg, ev) => { const f = info(svg); return (ev.clientX - f.r.left) * f.k; };
+  const barAt = (f, x) => f.a + Math.max(0, Math.min(f.n - 1, Math.floor((x - f.L) / (f.pw / f.n))));
+  document.addEventListener('pointerdown', ev => {
+    const svg = ev.target.closest && ev.target.closest('svg[data-fcz]');
+    if (!svg || ev.button > 0) return;
+    drag = { svg, x0: vx(svg, ev), moved: false };
+  });
+  document.addEventListener('pointermove', ev => {
+    if (!drag) return;
+    const x = vx(drag.svg, ev), sel = drag.svg.querySelector('.fcz-sel');
+    if (Math.abs(x - drag.x0) > 6) drag.moved = true;
+    if (sel && drag.moved) { sel.style.display = ''; sel.setAttribute('x', Math.min(x, drag.x0)); sel.setAttribute('width', Math.abs(x - drag.x0)); }
+  });
+  document.addEventListener('pointerup', ev => {
+    if (!drag) return;
+    const d0 = drag; drag = null;
+    if (!d0.moved) return;
+    suppress = true; setTimeout(() => { suppress = false; }, 50);      // a drag that ends on a dot doesn't select it
+    const f = info(d0.svg), x = vx(d0.svg, ev);
+    const a = barAt(f, Math.min(x, d0.x0)), b = barAt(f, Math.max(x, d0.x0));
+    if (b - a >= 2) fcSetZoom(f.id, a, b, f.all);
+    else { const sel = d0.svg.querySelector('.fcz-sel'); if (sel) sel.style.display = 'none'; }
+  });
+  document.addEventListener('wheel', ev => {
+    const svg = ev.target.closest && ev.target.closest('svg[data-fcz]');
+    if (!svg || Math.abs(ev.deltaY) < Math.abs(ev.deltaX)) return;
+    ev.preventDefault();
+    const f = info(svg), c = barAt(f, vx(svg, ev)), a = f.a, b = f.a + f.n - 1, z = ev.deltaY < 0 ? 0.8 : 1.25;
+    fcSetZoom(f.id, c - (c - a) * z, c - (c - a) * z + (b - a) * z, f.all);
+  }, { passive: false });
 })();
