@@ -1593,7 +1593,7 @@ def test_flow_chart():
         assert seen == {"min": 10000, "type": "all", "ticker": "PLTR"} and d["trigger"]["contract"] == "PLTR261113C00185000"
         # gamma walls: from earlier evaluations, stored snapshots and now, as steps (unchanged values collapsed)
         import gex
-        for k in [k for k in STORE if k[0] in ("GEXHIST", "CACHE")]:
+        for k in [k for k in STORE if k[0] in ("GEXHIST", "CACHE", "UWGEX2")]:
             STORE.pop(k)
         db.put({"PK": pk, "SK": "BOT#20261006100000-aaaaaa", "id": "20261006100000-aaaaaa", "symbol": "PLTR", "createdAt": f"{day}T10:00:00",
                 "gamma": {"callWall": 200, "putWall": 180, "gammaFlip": 188}})
@@ -1888,6 +1888,48 @@ def test_analytics():
     ts[2]["tags"] = ["Revenge"]
     L = analytics.leaks(ts)
     assert L["leaks"][0]["label"] == "Revenge trades" and L["leaks"][0]["dollars"] == -80
+
+
+def test_walls_store_and_explorer():
+    """Walls by day: largest call / put gamma strikes; stored for every evaluated ticker; explorer features."""
+    import flowdata, explorer, autotrader, datetime as dt
+    STORE.clear()
+    assert flowdata.walls_from_strikes([[90, 50, -10], [100, 900, -2000], [110, 300, -5], [120, 100, 0]]) == (100, 100)
+    assert flowdata.walls_from_strikes([[90, 5000, -10], [100, 0, -2000]]) == (90, 100)        # call wall below the put wall
+    pk = db.upk(SUB)
+    now = autotrader.now_ny()
+    day = now.date()
+    while day.weekday() >= 5:
+        day -= dt.timedelta(days=1)
+    rid = day.strftime("%Y%m%d") + "100000-abcdef"
+    db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "XYZ", "createdAt": f"{day.isoformat()}T10:00:00", "decision": "WAIT",
+            "signals": {"price": 102.0}, "shadow": {"status": "done", "R": 1.0}})
+    calls = []
+    def fake(key, path, params=None):
+        calls.append((path, params["date"]))
+        if path.endswith("gex-levels"):
+            return {"data": {"gamma_flip": "101"}}
+        pw = 100 if params["date"] == day.isoformat() else 95
+        return {"data": [{"strike": str(pw), "call_gex": "10", "put_gex": "-900"}, {"strike": "110", "call_gex": "800", "put_gex": "-1"},
+                         {"strike": "90", "call_gex": "50", "put_gex": "-3"}]}
+    saved = (flowdata._uw, flowdata._key)
+    flowdata._uw, flowdata._key = fake, (lambda sub: "k")
+    try:
+        r = flowdata.walls_backfill(SUB, days=10, budget_s=60)
+        assert r["tickers"] == 1 and r["stored"] >= 5 and r["left"] == 0, r
+        assert not any(p_.endswith("gex-levels") for p_, _ in calls), "the backfill skips the flip"
+        st = flowdata.stored_walls("XYZ")
+        assert st[day.isoformat()] == {"callWall": 110, "putWall": 100, "flip": None}
+        n0 = len(calls)
+        assert flowdata.walls_backfill(SUB, days=10)["missing"] == 0 and len(calls) == n0      # nothing fetched twice
+        w = flowdata.gex_day("k", "XYZ", day.isoformat())                                    # the chart wants the flip: added once
+        assert w["flip"] == 101.0 and flowdata.stored_walls("XYZ")[day.isoformat()]["flip"] == 101.0
+        ex = explorer.explore(SUB, 10, [{"key": "pwUp", "value": True}])
+        row = explorer.rows(SUB, 10)[0]
+        assert row["pwDist"] == 2.0 and row["cwRoom"] == 7.84 and row["betweenWalls"] and row["pwUp"] and row["risingFloor"] and row["cwAbovePw"], row
+        assert ex["match"]["n"] == 1 and ex["walls"]["known"] == 1
+    finally:
+        flowdata._uw, flowdata._key = saved
 
 
 if __name__ == "__main__":

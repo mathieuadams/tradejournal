@@ -337,19 +337,39 @@ def _pick(r, *names):
     return None
 
 
-def gex_day(key, ticker, date):
-    """Call wall (strike with the most call gamma), put wall (most put gamma) and gamma flip for one market date,
-    from that day's open interest across all expirations. Past days are stored for good; today is refreshed hourly;
-    a day with no data is retried after 6 hours."""
+def walls_from_strikes(strikes):
+    """Call wall = strike with the most call gamma; put wall = strike with the most put gamma (anywhere: the call wall
+    can end up below the put wall). strikes: [[strike, call_gex, put_gex], ...]"""
+    if not strikes:
+        return None, None
+    cw = max(strikes, key=lambda r: r[1] or 0)
+    pw = max(strikes, key=lambda r: abs(r[2] or 0))
+    return (cw[0] if (cw[1] or 0) > 0 else None), (pw[0] if pw[2] else None)
+
+
+def gex_day(key, ticker, date, flip=True):
+    """Walls for one market date from that day's open interest across all expirations (Unusual Whales greek exposure
+    by strike). The strikes are stored too, so the walls can be recomputed. Past days are kept for good; today is
+    refreshed hourly; a day with no data is retried after 6 hours. flip=False skips the extra gamma-levels request."""
     import time as _t
     ck = f"{ticker}#{date}"
-    hit = db.get("UWGEX", ck)
+    hit = db.get("UWGEX2", ck)
     today = now_ny().strftime("%Y-%m-%d")
     if hit:
         age = _t.time() - hit.get("at", 0)
-        if hit.get("data") and (date < today or age < 3600):
-            return hit["data"]
-        if not hit.get("data") and age < 6 * 3600:
+        data = hit.get("data")
+        fresh = data and (date < today or age < 3600)
+        if fresh and (not flip or not data.get("noflip")):
+            return data
+        if fresh and flip and data.get("noflip"):          # stored by the backfill without the flip: add it
+            data = {**data, "flip": _flip(key, ticker, date)}
+            data.pop("noflip", None)
+            try:
+                db.put({"PK": "UWGEX2", "SK": ck, "at": hit.get("at", int(_t.time())), "data": data})
+            except Exception:
+                pass
+            return data
+        if not data and age < 6 * 3600:
             return None
     s = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/greek-exposure/strike", {"date": date}) or {}
     raw = s.get("data") if isinstance(s, dict) else s
@@ -358,26 +378,86 @@ def gex_day(key, ticker, date):
     if rows:
         cg = lambda r: _pick(r, "call_gex", "call_gamma", "call_gamma_oi") or 0
         pg = lambda r: _pick(r, "put_gex", "put_gamma", "put_gamma_oi") or 0
-        cw, pw = max(rows, key=cg), min(rows, key=lambda r: -abs(pg(r)))
-        flip = None
-        try:
-            lv = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/gex-levels", {"date": date, "source": "oi"}) or {}
-            lv = lv.get("data", lv) if isinstance(lv, dict) else {}
-            if isinstance(lv, list):
-                lv = lv[0] if lv else {}
-            flip = _num(lv.get("gamma_flip"))
-        except Exception as e:
-            print("gex levels failed", ticker, date, e)
-        if cg(cw) or pg(pw):
-            out = {"date": date, "callWall": _num(cw["strike"]), "putWall": _num(pw["strike"]),
-                   "flip": round(flip, 2) if flip else None,
+        strikes = sorted(([_num(r["strike"]), round(cg(r)), round(pg(r))] for r in rows), key=lambda x: -(abs(x[1]) + abs(x[2])))[:120]
+        strikes.sort(key=lambda x: x[0])
+        cw, pw = walls_from_strikes(strikes)
+        if cw is not None or pw is not None:
+            out = {"date": date, "callWall": cw, "putWall": pw, "strikes": strikes,
                    "callGex": round(sum(cg(r) for r in rows)), "putGex": round(sum(pg(r) for r in rows))}
+            if flip:
+                out["flip"] = _flip(key, ticker, date)
+            else:
+                out["noflip"] = True
     elif raw is not None and not isinstance(raw, list):
         print("greek exposure: unexpected shape", ticker, date, str(s)[:300])
     try:
-        db.put({"PK": "UWGEX", "SK": ck, "at": int(_t.time()), "data": out})
-    except Exception:
-        pass
+        db.put({"PK": "UWGEX2", "SK": ck, "at": int(_t.time()), "data": out})
+    except Exception as e:
+        print("walls cache skipped", e)
+    return out
+
+
+def _flip(key, ticker, date):
+    try:
+        lv = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/gex-levels", {"date": date, "source": "oi"}) or {}
+        lv = lv.get("data", lv) if isinstance(lv, dict) else {}
+        if isinstance(lv, list):
+            lv = lv[0] if lv else {}
+        f = _num(lv.get("gamma_flip"))
+        return round(f, 2) if f else None
+    except Exception as e:
+        print("gex levels failed", ticker, date, e)
+        return None
+
+
+def stored_walls(ticker):
+    """Every stored day of walls for a ticker: {date: {callWall, putWall, flip}}."""
+    out = {}
+    for r in db.q_prefix("UWGEX2", f"{ticker}#"):
+        d = r.get("data")
+        if d and d.get("date"):
+            out[d["date"]] = {k: d.get(k) for k in ("callWall", "putWall", "flip")}
+    return out
+
+
+def walls_backfill(sub, days=45, budget_s=480):
+    """Store the walls of every day for every ticker the bot evaluated in the last `days` days (from 5 trading days
+    before its first evaluation to today). Resumes where it stopped: days already stored are skipped."""
+    import time as _t
+    from datetime import timedelta
+    from concurrent.futures import ThreadPoolExecutor
+    t0 = _t.time()
+    key = _key(sub)
+    today = now_ny().date()
+    cut = (now_ny() - timedelta(days=days)).strftime("%Y-%m-%d")
+    first = {}
+    for r in db.q_prefix(db.upk(sub), "BOT#"):
+        sym, at = r.get("symbol"), (r.get("createdAt") or "")[:10]
+        if sym and at >= cut:
+            first[sym] = min(first.get(sym, at), at)
+    todo = []
+    for sym, f0 in sorted(first.items()):
+        have = set(stored_walls(sym))
+        d = datetime.strptime(f0, "%Y-%m-%d").date() - timedelta(days=7)
+        while d <= today:
+            ds = d.isoformat()
+            if d.weekday() < 5 and ds not in have:
+                todo.append((sym, ds))
+            d += timedelta(days=1)
+    done, errors = 0, 0
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for i in range(0, len(todo), 8):
+            if _t.time() - t0 > budget_s:
+                break
+            for f in [ex.submit(gex_day, key, s_, d_, False) for s_, d_ in todo[i:i + 8]]:
+                try:
+                    f.result()
+                    done += 1
+                except Exception:
+                    errors += 1
+    out = {"tickers": len(first), "missing": len(todo), "stored": done, "errors": errors, "left": max(0, len(todo) - done - errors),
+           "at": now_ny().strftime("%Y-%m-%dT%H:%M")}
+    db.put({"PK": db.upk(sub), "SK": "WALLSRUN", **out})
     return out
 
 

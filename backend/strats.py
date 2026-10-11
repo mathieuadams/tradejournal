@@ -134,6 +134,8 @@ def apply(sub, rec, cfg=None):
     else:
         items = [s for s in load(sub) if s.get("mode") in ("watch", "trade")]
     f = explorer.features_of(rec, explorer.bursts_by_ticker(db.upk(sub))) if items else {}
+    if items and any(c.get("key") in explorer.WALL_KEYS for s_ in items for c in s_["conds"]):
+        f.update(_wall_features_now(sub, rec))
     hits = [s for s in items if all(explorer._match(f, c) for c in s["conds"])]
     if act:
         return _apply_active(rec, cfg, act, act_stop, hits)
@@ -160,6 +162,33 @@ def apply(sub, rec, cfg=None):
         if s is not trade:
             rec.setdefault("checks", []).append({"group": "strategy", "ok": True, "required": False, "text": f"Strategy “{s['name']}” matched (watching)"})
     return rec
+
+
+def _wall_features_now(sub, rec):
+    """Wall features for a new evaluation: today's and the previous days' walls (stored, fetched if missing)."""
+    import explorer
+    import flowdata
+    from datetime import timedelta
+    sym = rec.get("symbol")
+    try:
+        stored = flowdata.stored_walls(sym)
+        d = now_ny().date()
+        need = []
+        while len(need) < 3:                       # today and the two trading days before
+            if d.weekday() < 5:
+                need.append(d.isoformat())
+            d -= timedelta(days=1)
+        if any(x not in stored for x in need):
+            key = flowdata._key(sub)
+            for x in need:
+                if x not in stored:
+                    w = flowdata.gex_day(key, sym, x, False)
+                    if w:
+                        stored[x] = {k: w.get(k) for k in ("callWall", "putWall", "flip")}
+        return explorer.wall_features(rec, stored)
+    except Exception as e:
+        print("wall features failed", sym, e)
+        return {}
 
 
 def _apply_active(rec, cfg, act, act_stop, hits):

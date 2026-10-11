@@ -47,7 +47,47 @@ FEATURES = {
     "extAtr": ("ATR above the 21 EMA", "num", [("<=", 0.5), ("<=", 1.0), ("<=", 1.5), (">=", 1.5)]),
     "growth30": ("% up from the 30-day low", "num", [(">=", 5), (">=", 10), (">=", 20), ("<=", 5)]),
     "hour": ("Hour of the evaluation (ET)", "num", [("<=", 10), (">=", 14)]),
+    # gamma walls of the evaluation day (stored by day from Unusual Whales greek exposure)
+    "cwAbovePw": ("Call wall above the put wall", "bool", None),
+    "pwDist": ("% above the put wall", "num", [("<=", 1), ("<=", 2), ("<=", 5), (">=", 5)]),
+    "cwRoom": ("% room to the call wall", "num", [(">=", 3), (">=", 5), (">=", 10), ("<=", 0)]),
+    "betweenWalls": ("Price between the put wall and the call wall", "bool", None),
+    "pwUp": ("Put wall moved up since the day before", "bool", None),
+    "pwDown": ("Put wall moved down since the day before", "bool", None),
+    "cwUp": ("Call wall moved up since the day before", "bool", None),
+    "cwDown": ("Call wall moved down since the day before", "bool", None),
+    "risingFloor": ("Put wall up, call wall flat or up", "bool", None),
 }
+WALL_KEYS = ("cwAbovePw", "pwDist", "cwRoom", "betweenWalls", "pwUp", "pwDown", "cwUp", "cwDown", "risingFloor")
+
+
+def wall_features(r, stored):
+    """Wall features of one evaluation from the stored walls of its ticker ({date: walls})."""
+    out = {k: None for k in WALL_KEYS}
+    d0, price = (r.get("createdAt") or "")[:10], (r.get("signals") or {}).get("price")
+    days = sorted(d for d in stored if d <= d0)
+    if not days or not price:
+        return out
+    w = stored[days[-1]]
+    if (datetime.strptime(d0, "%Y-%m-%d") - datetime.strptime(days[-1], "%Y-%m-%d")).days > 5:
+        return out                                   # too old to describe that day
+    pw, cw = w.get("putWall"), w.get("callWall")
+    if pw:
+        out["pwDist"] = round((price - pw) / pw * 100, 2)
+    if cw:
+        out["cwRoom"] = round((cw - price) / price * 100, 2)
+    if pw and cw:
+        out["betweenWalls"] = pw <= price <= cw
+        out["cwAbovePw"] = cw > pw
+    if len(days) >= 2:
+        p0 = stored[days[-2]]
+        if pw and p0.get("putWall"):
+            out["pwUp"], out["pwDown"] = pw > p0["putWall"], pw < p0["putWall"]
+        if cw and p0.get("callWall"):
+            out["cwUp"], out["cwDown"] = cw > p0["callWall"], cw < p0["callWall"]
+        if out["pwUp"] is not None and out["cwDown"] is not None:
+            out["risingFloor"] = out["pwUp"] and not out["cwDown"]
+    return out
 
 
 def bursts_by_ticker(pk):
@@ -122,7 +162,8 @@ def rows(sub, days=35):
     pk = db.upk(sub)
     cut = (now_ny() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
     bursts = bursts_by_ticker(pk)
-    out = []
+    out, walls = [], {}
+    import flowdata
     for r in db.q_prefix(pk, "BOT#"):
         at = r.get("createdAt") or ""
         if at < cut or (r.get("shadow") or {}).get("status") == "dup":
@@ -138,6 +179,13 @@ def rows(sub, days=35):
         cand = next((c for c in r.get("candidates") or [] if c.get("symbol") == p.get("contract")), None) or ((r.get("candidates") or [None])[0] or {})
         f["_spread"] = cand.get("spreadPct")                     # bid/ask spread of the contract when evaluated, % of mid
         f.update(features_of(r, bursts))
+        sym = r.get("symbol")
+        if sym and sym not in walls:
+            try:
+                walls[sym] = flowdata.stored_walls(sym)
+            except Exception:
+                walls[sym] = {}
+        f.update(wall_features(r, walls.get(sym) or {}))
         out.append(f)
     return out
 
@@ -251,6 +299,9 @@ def explore(sub, days=35, conds=None, do_search=False, min_n=15):
                            key=lambda r: -r["R"])[:200]}
     if do_search:
         out["search"] = search(rs, min_n=min_n)
+    run = db.get(db.upk(sub), "WALLSRUN") or {}
+    out["walls"] = {"known": sum(1 for r in rs if r.get("pwDist") is not None), "of": len(rs),
+                    **{k: run.get(k) for k in ("at", "running", "stored", "left", "tickers", "errors")}}
     return out
 
 

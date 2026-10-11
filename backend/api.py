@@ -421,6 +421,15 @@ def bot_shadow_run(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("POST", "/bot/walls/backfill")
+def bot_walls_backfill(sub, claims, body, q):
+    """Store the call / put walls of every day for every evaluated ticker (runs in the background)."""
+    db.put({**(db.get(db.upk(sub), "WALLSRUN") or {}), "PK": db.upk(sub), "SK": "WALLSRUN", "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "walls"}))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/flow/test")
 def bot_flow_test(sub, claims, body, q):
     """Is the Unusual Whales feed alive (one request, no filters: the newest alerts), and how many alerts pass your

@@ -1305,7 +1305,8 @@ function fcSetZoom(id, a, b, N) {
 /* ---------- Wall strategy, replayed on the chart ----------
    Watch: call premium bought at the ask over the last `hours` reaches minCall and beats puts -> the ticker is watched
    for up to `watchDays` days. Entry while watched: a green hourly candle whose low touches or dips through the put wall
-   (no more than near % above it) and that closes back above it; optional minimum room to the call wall.
+   (no more than near % above it) and that closes back above it, with the call wall above the put wall; optional
+   minimum room to the call wall.
    Exit: target = the call wall of the moment when it is above the entry (it follows the wall up and down);
    stop = an hourly close below the put wall of that moment; also out when the put wall drops below the entry's put wall
    while no call wall is above the entry. */
@@ -1352,8 +1353,8 @@ function wsRun(d0) {
     const w = wAt[i];
     if (!w || !hourClose(b)) continue;
     // entry: a green hourly candle whose low touches the put wall (within ± near %) and that closes above it, with room to the call wall
-    // the call wall must leave room above — unless both walls sit on the same strike (then the target waits for the call wall to move up)
-    const room = (w.callWall - b.c) / b.c * 100, band = w.putWall * P.near / 100, merged = Math.abs(w.callWall - w.putWall) <= band;
+    if (w.callWall <= w.putWall) continue;                              // no entry while the call wall is at or below the put wall
+    const room = (w.callWall - b.c) / b.c * 100, band = w.putWall * P.near / 100, merged = false;
     // the low touches or dips through the put wall (no lower than... any depth) and the candle closes back above it, green
     if (b.l > w.putWall + band || b.c <= w.putWall || b.c <= b.o || (P.room > 0 && room < P.room && !merged)) continue;
     trades.watches.push({ ...watch, iEnd: i, result: 'entered' });
@@ -2330,6 +2331,8 @@ function vExplore() {
   return h + `<section class="panel"><div class="cal-head"><h2>Conditions</h2><select id="ex-days">${[10, 20, 35, 60].map(n => `<option value="${n}" ${n === (S.exDays || 35) ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${chips || '<span class="muted">No condition: all ideas.</span>'}${chips ? ` <button class="btn" data-exclear="1">Clear</button> <button class="btn coachbtn" data-exsave="1">Save as strategy${S.exExit ? ' (with the chosen exit)' : ''}</button>` : ''}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${fsel} ${picker}</div>
+    ${d.walls ? `<p class="muted" style="font-size:.82rem;margin:8px 0 0">Gamma walls (put wall / call wall by day) known for <b>${d.walls.known}</b> of ${d.walls.of} ideas${d.walls.at ? ` · last stored ${esc(d.walls.at.replace('T', ' ').slice(5))}${d.walls.left ? ` (${d.walls.left} days still to fetch)` : ''}` : ''}.
+      <button class="btn" data-wallsfill="1" style="font-size:.78rem;padding:1px 8px">Store walls for every ticker</button></p>` : ''}
     ${S.exBusy === 'filter' ? '<p class="loading" style="margin:8px 0 0">Filtering…</p>' : res + list}</section>` + eoPanel() + search;
 }
 function vBotSkipped() {
@@ -2646,7 +2649,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2665,6 +2668,7 @@ document.addEventListener('click', e => {
     try { localStorage.setItem('fcLayers', JSON.stringify(S.fcLayers)); } catch (err) {}
     render(); return; }
   if (el.dataset.evload) { e.preventDefault(); api(`/bot/${el.dataset.evload}`).then(it => { S.botRes = it; S.fcSelE = null; if (route() !== 'botevals') location.hash = `#botevals?t=${encodeURIComponent(it.symbol)}`; else { render(); window.scrollTo(0, 0); } }).catch(err => toast(err.message)); return; }
+  if (el.dataset.wallsfill) { el.disabled = true; api('/bot/walls/backfill', { method: 'POST' }).then(() => toast('Storing the walls in the background (a few minutes for many tickers). Refresh the Explorer later.')).catch(err => { el.disabled = false; toast(err.message); }); return; }
   if (el.dataset.fcreload) { const id = el.dataset.fcreload; delete S.fc[fcKey(id)]; loadFlowChart(id); render(); return; }
   if (el.dataset.fce) { const [id, k] = el.dataset.fce.split('|'); S.fcSelE = { id, k: +k }; render(); return; }
   if (el.dataset.fcd) { const [id, k] = el.dataset.fcd.split('|'); S.fcSelD = { id, k: +k }; render(); return; }

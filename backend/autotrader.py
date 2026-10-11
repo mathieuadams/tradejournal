@@ -1551,12 +1551,20 @@ def handler(event, context_):
                     bursts.forward_update(sub)
                 except Exception as e:
                     print("burst forward update failed", e)
+                try:                                     # store today's walls for every evaluated ticker
+                    import flowdata
+                    flowdata.walls_backfill(sub, budget_s=150)
+                except Exception as e:
+                    print("walls backfill failed", e)
                 try:
                     out[sub] = shadow.run(sub)
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "done", "at": iso(now_ny()), "result": out[sub]})
                 except Exception as e:
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "error", "at": iso(now_ny()), "result": {"error": str(e)[:200]}})
                     raise
+            elif job == "walls":
+                import flowdata
+                out[sub] = flowdata.walls_backfill(sub, budget_s=500)
             elif job == "burstreplay":
                 import bursts
                 out[sub] = bursts.replay(sub, restart=bool(event.get("restart")))
