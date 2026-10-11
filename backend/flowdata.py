@@ -325,21 +325,36 @@ def _num(x):
         return None
 
 
+def _pick(r, *names):
+    for n in names:
+        v = _num(r.get(n))
+        if v is not None:
+            return v
+    return None
+
+
 def gex_day(key, ticker, date):
     """Call wall (strike with the most call gamma), put wall (most put gamma) and gamma flip for one market date,
-    from that day's open interest across all expirations. Past days are stored for good; today is refreshed hourly."""
+    from that day's open interest across all expirations. Past days are stored for good; today is refreshed hourly;
+    a day with no data is retried after 6 hours."""
     import time as _t
     ck = f"{ticker}#{date}"
     hit = db.get("UWGEX", ck)
     today = now_ny().strftime("%Y-%m-%d")
-    if hit and (date < today or hit.get("at", 0) > _t.time() - 3600):
-        return hit.get("data")
+    if hit:
+        age = _t.time() - hit.get("at", 0)
+        if hit.get("data") and (date < today or age < 3600):
+            return hit["data"]
+        if not hit.get("data") and age < 6 * 3600:
+            return None
     s = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/greek-exposure/strike", {"date": date}) or {}
-    rows = [r for r in (s.get("data") if isinstance(s, dict) else s) or [] if _num(r.get("strike")) is not None]
+    raw = s.get("data") if isinstance(s, dict) else s
+    rows = [r for r in raw or [] if isinstance(r, dict) and _num(r.get("strike")) is not None]
     out = None
     if rows:
-        cw = max(rows, key=lambda r: _num(r.get("call_gex")) or 0)
-        pw = min(rows, key=lambda r: _num(r.get("put_gex")) or 0)
+        cg = lambda r: _pick(r, "call_gex", "call_gamma", "call_gamma_oi") or 0
+        pg = lambda r: _pick(r, "put_gex", "put_gamma", "put_gamma_oi") or 0
+        cw, pw = max(rows, key=cg), min(rows, key=lambda r: -abs(pg(r)))
         flip = None
         try:
             lv = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/gex-levels", {"date": date, "source": "oi"}) or {}
@@ -349,10 +364,12 @@ def gex_day(key, ticker, date):
             flip = _num(lv.get("gamma_flip"))
         except Exception as e:
             print("gex levels failed", ticker, date, e)
-        out = {"date": date, "callWall": _num(cw["strike"]), "putWall": _num(pw["strike"]),
-               "flip": round(flip, 2) if flip else None,
-               "callGex": round(sum(_num(r.get("call_gex")) or 0 for r in rows)),
-               "putGex": round(sum(_num(r.get("put_gex")) or 0 for r in rows))}
+        if cg(cw) or pg(pw):
+            out = {"date": date, "callWall": _num(cw["strike"]), "putWall": _num(pw["strike"]),
+                   "flip": round(flip, 2) if flip else None,
+                   "callGex": round(sum(cg(r) for r in rows)), "putGex": round(sum(pg(r) for r in rows))}
+    elif raw is not None and not isinstance(raw, list):
+        print("greek exposure: unexpected shape", ticker, date, str(s)[:300])
     try:
         db.put({"PK": "UWGEX", "SK": ck, "at": int(_t.time()), "data": out})
     except Exception:

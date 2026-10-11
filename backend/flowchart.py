@@ -61,7 +61,7 @@ def build(sub, bot_id, days=5):
     if len(alerts) > cap:                     # keep the biggest prints
         keep = set(id(a) for a in sorted(alerts, key=lambda a: -a["premium"])[:cap])
         alerts = [a for a in alerts if id(a) in keep]
-    walls, now_w, wnote, wsrc = [], None, None, "snapshots"
+    walls, now_w, wnote, wsrc, winfo = [], None, None, "snapshots", None
     uw_ok = False
     try:                                         # day-by-day walls from each day's open interest (Unusual Whales)
         dates, d = [], first
@@ -70,6 +70,7 @@ def build(sub, bot_id, days=5):
                 dates.append(d.isoformat())
             d += timedelta(days=1)
         hist, uerr = flowdata.gex_history(sub, sym, dates)
+        winfo = {"days": len(hist), "of": len(dates), "error": uerr}
         if hist:
             uw_ok, wsrc = True, "uw"
             walls = [{"t": f"{h['date']}T09:30", "callWall": h["callWall"], "putWall": h["putWall"], "flip": h["flip"], "src": "uw",
@@ -77,10 +78,11 @@ def build(sub, bot_id, days=5):
             lh = hist[-1]
             now_w = {"t": f"{lh['date']}T09:30", "callWall": lh["callWall"], "putWall": lh["putWall"], "flip": lh["flip"],
                      "source": "Unusual Whales, all expirations, open interest of " + lh["date"]}
-        if uerr and not hist:
-            wnote = f"Day-by-day walls unavailable ({uerr}); showing the bot's own readings."
+        if not hist:
+            wnote = (f"Unusual Whales gave no day-by-day walls for {sym}" + (f" ({uerr})" if uerr else "")
+                     + "; showing the bot's own readings (evaluations and chart openings).")
     except Exception as e:
-        wnote = f"Day-by-day walls unavailable ({str(e)[:120]}); showing the bot's own readings."
+        wnote = f"Day-by-day walls unavailable ({str(e)[:120]}); showing the bot's own readings (evaluations and chart openings)."
     if not uw_ok:
         try:
             import gex
@@ -107,7 +109,7 @@ def build(sub, bot_id, days=5):
             continue                              # unchanged: the step line already covers it
         wl.append(w)
     o = rec.get("origin") or {}
-    return {"walls": wl, "wallsNow": now_w, "wallNote": wnote, "wallSource": wsrc, "days": days, "interval": 60 if long_view else 15,
+    return {"walls": wl, "wallsNow": now_w, "wallNote": wnote, "wallSource": wsrc, "wallInfo": winfo, "days": days, "interval": 60 if long_view else 15,
             "symbol": sym, "evaluatedAt": ev_at.replace(" ", "T"), "from": first.isoformat(), "to": last.isoformat(),
             "bars": bars, "alerts": alerts, "minPrint": cfg["repeatMinPremium"], "bigPrint": cfg["flowMinPremium"],
             "trigger": {"contract": o.get("contract"), "premium": o.get("topPremium") or o.get("premium")} if o.get("type") == "flow" else None,
