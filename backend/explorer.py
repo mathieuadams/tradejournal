@@ -47,6 +47,11 @@ FEATURES = {
     "extAtr": ("ATR above the 21 EMA", "num", [("<=", 0.5), ("<=", 1.0), ("<=", 1.5), (">=", 1.5)]),
     "growth30": ("% up from the 30-day low", "num", [(">=", 5), (">=", 10), (">=", 20), ("<=", 5)]),
     "hour": ("Hour of the evaluation (ET)", "num", [("<=", 10), (">=", 14)]),
+    # options volume on the ticker (alerts bought at the ask)
+    "callPrem5d": ("Call premium bought on the ticker, last 5 days ($)", "num", [(">=", 1_000_000), (">=", 5_000_000), (">=", 15_000_000)]),
+    "putPrem5d": ("Put premium bought on the ticker, last 5 days ($)", "num", [("<=", 1_000_000), (">=", 5_000_000)]),
+    "callPremToday": ("Call premium bought on the ticker that day ($)", "num", [(">=", 500_000), (">=", 2_000_000)]),
+    "callHits5d": ("Call alerts on the ticker, last 5 days", "num", [(">=", 20), (">=", 50)]),
     # gamma walls of the evaluation day (stored by day from Unusual Whales greek exposure)
     "cwAbovePw": ("Call wall above the put wall", "bool", None),
     "pwDist": ("% above the put wall", "num", [("<=", 1), ("<=", 2), ("<=", 5), (">=", 5)]),
@@ -58,6 +63,9 @@ FEATURES = {
     "cwDown": ("Call wall moved down since the day before", "bool", None),
     "risingFloor": ("Put wall up, call wall flat or up", "bool", None),
 }
+FLOW_KEYS = ("callPut", "flowPremium", "volOi", "askPct", "smallCalls", "sweep", "repeatBuy", "putsOk", "burstSameDay", "burst2d",
+             "callPrem5d", "putPrem5d", "callPremToday", "callHits5d")
+GROUPS = {"walls": ("Gamma walls", None), "flow": ("Options volume / flow", None), "wallsflow": ("Gamma walls + options volume", None)}
 WALL_KEYS = ("cwAbovePw", "pwDist", "cwRoom", "betweenWalls", "pwUp", "pwDown", "cwUp", "cwDown", "risingFloor")
 
 
@@ -129,6 +137,10 @@ def features_of(r, bursts):
         volOi=o.get("volOi"), askPct=o.get("askPct"),
         smallCalls=((tf.get("window") or {}).get("smallCalls") or {}).get("hits") if tf else None,
         extAtr=sig.get("extAtr"), growth30=sig.get("growth30"),
+        callPrem5d=(((tf.get("window") or {}).get("calls") or {}).get("premium")) if tf else None,
+        putPrem5d=(((tf.get("window") or {}).get("puts") or {}).get("premium")) if tf else None,
+        callPremToday=(((tf.get("today") or {}).get("calls") or {}).get("premium")) if tf else None,
+        callHits5d=(((tf.get("window") or {}).get("calls") or {}).get("hits")) if tf else None,
         hour=int(at[11:13]) if len(at) >= 13 else None,
     )
     bs = bursts.get(r.get("symbol")) or []
@@ -246,21 +258,39 @@ def candidates():
     return out
 
 
-def search(rs, min_n=15, max_depth=3, top=25):
-    """Best single conditions, pairs and triples by average R (at least min_n ideas), with the half-split check."""
+def _group_keys(group):
+    if group == "walls":
+        return set(WALL_KEYS), set(WALL_KEYS)                       # (allowed, required)
+    if group == "flow":
+        return set(FLOW_KEYS), set(FLOW_KEYS)
+    if group == "wallsflow":
+        return set(WALL_KEYS) | set(FLOW_KEYS), set(WALL_KEYS)
+    return None, None
+
+
+def search(rs, min_n=15, max_depth=3, top=25, group=None):
+    """Best single conditions, pairs and triples by average R (at least min_n ideas), with the half-split check.
+    group: only combinations made of that group's conditions ('walls', 'flow', or 'wallsflow' = walls + flow, at least one wall)."""
     base = stats(rs)
+    allowed, required = _group_keys(group)
     singles = []
     for c in candidates():
+        if allowed and c["key"] not in allowed:
+            continue
         m = filter_rows(rs, [c])
         if len(m) >= min_n:
             singles.append((c, m))
     singles.sort(key=lambda x: -(stats(x[1])["avgR"] or -9))
     pool = singles[:30]                          # combine only the 30 most promising single conditions
-    found = [([c], m) for c, m in singles]
+    if required:                                 # keep the group's own conditions in the pool even if weaker alone
+        pool += [x for x in singles[30:] if x[0]["key"] in required][:15]
+    found = [([c], m) for c, m in singles if not required or c["key"] in required]
     for depth in range(2, max_depth + 1):
         for combo in itertools.combinations(pool, depth):
             keys = [c["key"] for c, _ in combo]
             if len(set(keys)) < len(keys):       # one condition per feature
+                continue
+            if required and not any(k in required for k in keys):
                 continue
             ids = set(r["id"] for r in combo[0][1])
             for _, m in combo[1:]:
@@ -284,10 +314,11 @@ def search(rs, min_n=15, max_depth=3, top=25):
         uniq.append(x)
         if len(uniq) >= top:
             break
-    return {"baseline": base, "results": uniq, "minN": min_n, "tested": len(found)}
+    return {"baseline": base, "results": uniq, "minN": min_n, "tested": len(found), "group": group,
+            "known": {k: sum(1 for r in rs if r.get(k) is not None) for k in (required or ())}}
 
 
-def explore(sub, days=35, conds=None, do_search=False, min_n=15):
+def explore(sub, days=35, conds=None, do_search=False, min_n=15, group=None):
     rs = rows(sub, days)
     conds = [c for c in (conds or []) if c.get("key") in FEATURES]
     m = filter_rows(rs, conds)
@@ -298,7 +329,7 @@ def explore(sub, days=35, conds=None, do_search=False, min_n=15):
            "items": sorted([{k: r[k] for k in ("id", "symbol", "at", "R", "status", "decision", "taken")} for r in m],
                            key=lambda r: -r["R"])[:200]}
     if do_search:
-        out["search"] = search(rs, min_n=min_n)
+        out["search"] = search(rs, min_n=min_n, group=group if group in GROUPS else None)
     run = db.get(db.upk(sub), "WALLSRUN") or {}
     out["walls"] = {"known": sum(1 for r in rs if r.get("pwDist") is not None), "of": len(rs),
                     **{k: run.get(k) for k in ("at", "running", "stored", "left", "tickers", "errors")}}

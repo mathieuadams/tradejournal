@@ -469,7 +469,7 @@ def bot_explore(sub, claims, body, q):
     except (TypeError, ValueError):
         days, min_n = 35, 15
     conds = body.get("conds") if isinstance(body.get("conds"), list) else []
-    return explorer.explore(sub, days, conds[:8], bool(body.get("search")), min_n)
+    return explorer.explore(sub, days, conds[:8], bool(body.get("search")), min_n, body.get("group") or None)
 
 
 @route("POST", "/bot/exitopt")

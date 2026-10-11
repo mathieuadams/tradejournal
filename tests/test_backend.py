@@ -1928,6 +1928,9 @@ def test_walls_store_and_explorer():
         row = explorer.rows(SUB, 10)[0]
         assert row["pwDist"] == 2.0 and row["cwRoom"] == 7.84 and row["betweenWalls"] and row["pwUp"] and row["risingFloor"] and row["cwAbovePw"], row
         assert ex["match"]["n"] == 1 and ex["walls"]["known"] == 1
+        sr = explorer.search(explorer.rows(SUB, 10), min_n=1, group="wallsflow")
+        assert sr["results"] and all(any(c["key"] in explorer.WALL_KEYS for c in x["conds"]) for x in sr["results"])
+        assert all(c["key"] in explorer.WALL_KEYS or c["key"] in explorer.FLOW_KEYS for x in sr["results"] for c in x["conds"])
     finally:
         flowdata._uw, flowdata._key = saved
 

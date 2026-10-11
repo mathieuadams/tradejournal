@@ -2145,7 +2145,7 @@ S.exConds = S.exConds || [];
 async function runExplore(search) {
   S.exBusy = search ? 'search' : 'filter'; render();
   try {
-    const r = await api('/bot/explore', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, search, minN: S.exMinN || 15 } });
+    const r = await api('/bot/explore', { method: 'POST', body: { days: S.exDays || 35, conds: S.exConds, search, minN: S.exMinN || 15, group: S.exGroup || '' } });
     if (!search && S.ex && S.ex.search) r.search = S.ex.search;
     S.ex = r;
   } catch (e) { S.ex = { error: e.message }; }
@@ -2322,9 +2322,10 @@ function vExplore() {
   const sr = d.search;
   const search = `<section class="panel" style="margin-top:14px"><div class="cal-head"><h2>Best combinations</h2>
       <span style="display:flex;gap:8px;align-items:center"><label class="muted" style="font-size:.85rem">at least <input id="ex-minn" type="number" value="${S.exMinN || 15}" min="5" style="width:4.5em"> ideas</label>
+      <select id="ex-group" aria-label="Conditions to combine">${[['', 'All conditions'], ['wallsflow', 'Gamma walls + options volume'], ['walls', 'Gamma walls only'], ['flow', 'Options volume / flow only']].map(([v, l]) => `<option value="${v}" ${(S.exGroup || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <button class="btn coachbtn" data-exsearch="1" ${S.exBusy ? 'disabled' : ''}>${S.exBusy === 'search' ? 'Searching…' : 'Find the best combinations'}</button></span></div>
     <p class="muted" style="font-size:.84rem;margin:0 0 8px">Tries every single condition, then pairs and triples of the most promising ones, and ranks them by average R. Only combinations with enough ideas are kept, and each one is checked on the older and the newer half of the period: one that holds in both is far less likely to be luck.</p>
-    ${!sr ? '' : !sr.results.length ? '<p class="muted">No combination has enough ideas yet. Lower the minimum or wait for more results.</p>' :
+    ${!sr ? '' : !sr.results.length ? `<p class="muted">No combination has enough ideas yet.${sr.group && sr.group !== 'flow' && d.walls && d.walls.known < (sr.minN || 15) ? ` Gamma walls are known for only ${d.walls.known} ideas: press <b>Store walls for every ticker</b> above, then search again in a few minutes.` : ' Lower the minimum or wait for more results.'}</p>` :
       `<ul class="shl">${sr.results.map((x, i) => `<li data-exuse="${i}"><span class="shl-a">${esc(x.text)}</span><span class="shl-r">${R(x.avgR)}</span>
         <span class="shl-b muted">${x.n} ideas (${x.open} open) · ${x.winPct}% winners · total ${x.totalR}R · older ${x.older ?? '—'}R / newer ${x.newer ?? '—'}R ${x.holds ? '· <b class="gain">holds in both halves</b>' : ''}</span></li>`).join('')}</ul>
       <p class="muted" style="font-size:.8rem;margin:6px 0 0">${sr.tested} combinations tested against ${R(sr.baseline.avgR)} for all ideas. Tap one to load it above.</p>`}</section>`;
@@ -2698,7 +2699,7 @@ document.addEventListener('click', e => {
   }
   if (el.dataset.exdel !== undefined) { S.exConds.splice(+el.dataset.exdel, 1); runExplore(false); return; }
   if (el.dataset.exclear) { S.exConds = []; runExplore(false); return; }
-  if (el.dataset.exsearch) { S.exMinN = +($('#ex-minn').value || 15); runExplore(true); return; }
+  if (el.dataset.exsearch) { S.exMinN = +($('#ex-minn').value || 15); S.exGroup = ($('#ex-group') || {}).value || ''; runExplore(true); return; }
   if (el.dataset.exuse !== undefined) { const x = S.ex.search.results[+el.dataset.exuse]; S.exConds = x.conds.map(c => ({ ...c })); runExplore(false); window.scrollTo(0, 0); return; }
   if (el.dataset.burstgrp) { S.burstOpen = S.burstOpen || {}; S.burstOpen[el.dataset.burstgrp] = !S.burstOpen[el.dataset.burstgrp]; render(); return; }
   if (el.dataset.burstsave) {
