@@ -596,7 +596,7 @@ def bot_reviewcharts(sub, claims, body, q, bid):
 @route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/flowchart")
 def bot_flowchart(sub, claims, body, q, bid):
     import flowchart
-    return flowchart.build(sub, bid)
+    return flowchart.build(sub, bid, int((q or {}).get("days") or 5))
 
 
 @route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/charts")

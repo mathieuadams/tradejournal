@@ -1607,6 +1607,29 @@ def test_flow_chart():
             gex.walls_now = saved_w
         assert [(w["t"][11:], w["callWall"], w["src"]) for w in d["walls"]] == [("10:00", 200, "evaluation"), ("12:30", 195, "snapshot"), ("15:00", 195, "now")], d["walls"]
         assert d["wallsNow"]["putWall"] == 185
+        # 45-day view: walls day by day from Unusual Whales greek exposure (each day's open interest), cached per day
+        import datetime as dt
+        calls = []
+        def fake_uw(key, path, params=None):
+            calls.append((path, params["date"]))
+            dd = params["date"]
+            if path.endswith("/gex-levels"):
+                return {"data": {"gamma_flip": "188.5"}}
+            cw = "200" if dd < (now - dt.timedelta(days=10)).strftime("%Y-%m-%d") else "210"
+            return {"data": [{"strike": "180", "call_gex": "10", "put_gex": "-900"}, {"strike": cw, "call_gex": "5000", "put_gex": "-5"},
+                             {"strike": "190", "call_gex": "300", "put_gex": "-100"}]}
+        saved_uw = (flowdata._uw, flowdata._key)
+        flowdata._uw, flowdata._key = fake_uw, (lambda sub: "k")
+        try:
+            code, d = call("GET", f"/bot/{rid}/flowchart", q={"days": "45"})
+            assert code == 200 and d["days"] == 45 and d["interval"] == 60 and d["wallSource"] == "uw", d.get("wallNote")
+            assert [w["callWall"] for w in d["walls"]] == [200, 210] and d["walls"][0]["putWall"] == 180 and d["walls"][0]["flip"] == 188.5
+            assert d["wallsNow"]["callWall"] == 210 and "Unusual Whales" in d["wallsNow"]["source"]
+            n1 = len(calls)
+            call("GET", f"/bot/{rid}/flowchart", q={"days": "45"})
+            assert len(calls) == n1, "past days and today (within the hour) come from the cache"
+        finally:
+            flowdata._uw, flowdata._key = saved_uw
     finally:
         flowdata.alerts, charts._yahoo = saved
 

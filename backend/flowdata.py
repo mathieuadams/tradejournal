@@ -298,3 +298,80 @@ def ping(sub):
             at = str(newest["created_at"])[:16]
     return {"alerts": len(rows), "tickers": len({a.get("ticker") for a in rows}), "newest": at,
             "newestTicker": (newest or {}).get("ticker")}
+
+
+# ---------- gamma walls by day (Unusual Whales greek exposure, from each day's open interest) ----------
+
+def _uw(key, path, params=None):
+    url = "https://api.unusualwhales.com" + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 422):
+            return None
+        if e.code in (401, 403):
+            raise BadRequest("Unusual Whales: this plan doesn't include historical greek exposure.")
+        raise Unavailable(f"Unusual Whales returned an error ({e.code}).")
+    except urllib.error.URLError as e:
+        raise Unavailable(f"Unusual Whales couldn't be reached: {e.reason}")
+
+
+def _num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def gex_day(key, ticker, date):
+    """Call wall (strike with the most call gamma), put wall (most put gamma) and gamma flip for one market date,
+    from that day's open interest across all expirations. Past days are stored for good; today is refreshed hourly."""
+    import time as _t
+    ck = f"{ticker}#{date}"
+    hit = db.get("UWGEX", ck)
+    today = now_ny().strftime("%Y-%m-%d")
+    if hit and (date < today or hit.get("at", 0) > _t.time() - 3600):
+        return hit.get("data")
+    s = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/greek-exposure/strike", {"date": date}) or {}
+    rows = [r for r in (s.get("data") if isinstance(s, dict) else s) or [] if _num(r.get("strike")) is not None]
+    out = None
+    if rows:
+        cw = max(rows, key=lambda r: _num(r.get("call_gex")) or 0)
+        pw = min(rows, key=lambda r: _num(r.get("put_gex")) or 0)
+        flip = None
+        try:
+            lv = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/gex-levels", {"date": date, "source": "oi"}) or {}
+            lv = lv.get("data", lv) if isinstance(lv, dict) else {}
+            if isinstance(lv, list):
+                lv = lv[0] if lv else {}
+            flip = _num(lv.get("gamma_flip"))
+        except Exception as e:
+            print("gex levels failed", ticker, date, e)
+        out = {"date": date, "callWall": _num(cw["strike"]), "putWall": _num(pw["strike"]),
+               "flip": round(flip, 2) if flip else None,
+               "callGex": round(sum(_num(r.get("call_gex")) or 0 for r in rows)),
+               "putGex": round(sum(_num(r.get("put_gex")) or 0 for r in rows))}
+    try:
+        db.put({"PK": "UWGEX", "SK": ck, "at": int(_t.time()), "data": out})
+    except Exception:
+        pass
+    return out
+
+
+def gex_history(sub, ticker, dates):
+    """Walls for each market date (fetched in parallel, cached per day). Returns (rows, error or None)."""
+    from concurrent.futures import ThreadPoolExecutor
+    key = _key(sub)
+    rows, err = [], None
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futs = {d: ex.submit(gex_day, key, ticker, d) for d in dates}
+        for d, f in futs.items():
+            try:
+                r = f.result()
+                if r:
+                    rows.append(r)
+            except Exception as e:
+                err = str(e)[:160]
+    return sorted(rows, key=lambda r: r["date"]), err

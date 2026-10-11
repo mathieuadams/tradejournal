@@ -1263,17 +1263,20 @@ const legTxt = p => !p || !p.exp ? '' : p.strategy === 'bull_call' && p.shortStr
   : p.strategy === 'diagonal' ? `${fmtExp(p.exp)} ${p.strike}c / ${p.shortStrike ? `${fmtExp(p.shortExp)} ${p.shortStrike}c` : 'no short'}` : `${fmtExp(p.exp)} ${p.strike}c`;
 /* ---------- flow on the chart: when each options alert came in, and how big, against the price ---------- */
 S.fc = S.fc || {}; S.fcBusy = S.fcBusy || {};
+const fcKey = id => `${id}|${S.fcDays || 5}`;
 async function loadFlowChart(id) {
-  S.fcBusy[id] = true;
-  try { S.fc[id] = await api(`/bot/${id}/flowchart`); } catch (e) { S.fc[id] = { error: e.message }; }
-  S.fcBusy[id] = false;
+  const k = fcKey(id), days = S.fcDays || 5;
+  S.fcBusy[k] = true;
+  try { S.fc[k] = await api(`/bot/${id}/flowchart?days=${days}`); } catch (e) { S.fc[k] = { error: e.message }; }
+  S.fcBusy[k] = false;
   if (isBotRoute()) render();
 }
 function fcSvg(d, id) {
   const bars = d.bars || [], n = bars.length;
   if (n < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const narrow = window.innerWidth < 700, fs = narrow ? 17 : 12;
-  const W = narrow ? 560 : 960, H = narrow ? 470 : 340, L = 8, Rr = narrow ? 72 : 58, T = 16, B = H - (narrow ? 44 : 40);
+  const W = narrow ? 560 : 960, PH = narrow ? 470 : 340, AH = narrow ? 150 : 110, L = 8, Rr = narrow ? 72 : 58, T = 16, B = PH - (narrow ? 44 : 40);
+  const H = PH + AH + 10, AT = PH + 6, AB = PH + AH - 6, iv = d.interval || 15;
   const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
   const walls = (d.walls || []).filter(w => w.callWall != null);
   const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
@@ -1282,12 +1285,14 @@ function fcSvg(d, id) {
   const lo = lo0 - pad, hi = hi0 + pad;
   const X = i => L + (i + 0.5) * (W - L - Rr) / n, Y = v => T + (hi - v) / (hi - lo) * (B - T), bw = Math.max(1, (W - L - Rr) / n * 0.6);
   const idx = {}; bars.forEach((b, i) => { idx[b.t] = i; });
-  const bucket = t => { const d0 = t.slice(0, 10), hm = t.slice(11, 16); let m = (+hm.slice(0, 2)) * 60 + (+hm.slice(3, 5)); m = Math.max(570, Math.min(m, 945)); m = 570 + Math.floor((m - 570) / 15) * 15;
+  const bucket = t => { const d0 = t.slice(0, 10), hm = t.slice(11, 16); let m = (+hm.slice(0, 2)) * 60 + (+hm.slice(3, 5)); m = Math.max(570, Math.min(m, 960 - iv)); m = 570 + Math.floor((m - 570) / iv) * iv;
     return `${d0}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
   const at = t => { const k = bucket(t); if (idx[k] != null) return idx[k]; let best = null; bars.forEach((b, i) => { if (b.t <= k) best = i; }); return best; };
   let g = '';
   for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4, y = Y(v); g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/><text x="${W - Rr + 6}" y="${y + 4}" font-size="${fs}" fill="var(--muted)">${v.toFixed(v < 20 ? 2 : 1)}</text>`; }
-  bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { const x = X(i) - (W - L - Rr) / n / 2;
+  const nDays = new Set(bars.map(b => b.t.slice(0, 10))).size, every = nDays > 30 ? (narrow ? 10 : 5) : nDays > 12 ? 3 : 1;
+  let dk = -1;
+  bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (dk % every) return; const x = X(i) - (W - L - Rr) / n / 2;
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${x + 3}" y="${B + 16}" font-size="${fs}" fill="var(--muted)">${b.t.slice(5, 10)}</text>`; } });
   bars.forEach((b, i) => { const up = b.c >= b.o, c = up ? 'var(--gain)' : 'var(--loss)', x = X(i);
     g += `<line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`; });
@@ -1318,13 +1323,27 @@ function fcSvg(d, id) {
     const y = call ? Y(b.l) + 6 + r + (stack[key] - 1) * 5 : Y(b.h) - 6 - r - (stack[key] - 1) * 5;
     const sel = S.fcSel && S.fcSel.id === id && S.fcSel.k === k;
     g += `<circle data-fci="${id}|${k}" cx="${X(i)}" cy="${y}" r="${sel ? r + 3 : r}" fill="${call ? 'var(--gain)' : 'var(--loss)'}" fill-opacity="${a.big ? .75 : .38}" stroke="${a.big || sel ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(a.t.replace('T', ' ').slice(5))} · ${a.type.toUpperCase()} ${money(a.premium, false)} · ${esc(a.contract || '')}</title></circle>`; });
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="${esc(d.symbol)} 15-minute price with options alerts">${g}</svg>`;
+  // accumulation: running total of call and put premium bought at the ask, bar by bar
+  const cAcc = new Array(n).fill(0), pAcc = new Array(n).fill(0);
+  (d.alerts || []).forEach(a => { const i = at(a.t); if (i == null) return; (a.type === 'call' ? cAcc : pAcc)[i] += a.premium; });
+  for (let i = 1; i < n; i++) { cAcc[i] += cAcc[i - 1]; pAcc[i] += pAcc[i - 1]; }
+  const amax = Math.max(1, cAcc[n - 1], pAcc[n - 1]), AY = v => AB - v / amax * (AB - AT - 14);
+  g += `<line x1="${L}" x2="${W - Rr}" y1="${AB}" y2="${AB}" stroke="var(--line)"/><text x="${L + 2}" y="${AT + 10}" font-size="${fs}" fill="var(--muted)">Premium bought at the ask, running total</text>`;
+  dk = -1;
+  bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (!i || dk % every) return; const x = X(i) - (W - L - Rr) / n / 2; g += `<line x1="${x}" x2="${x}" y1="${AT}" y2="${AB}" stroke="var(--line)" stroke-dasharray="2 3"/>`; } });
+  const path = arr => arr.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${AY(v).toFixed(1)}`).join('');
+  g += `<path d="${path(cAcc)}" fill="none" stroke="var(--gain)" stroke-width="2"/><path d="${path(pAcc)}" fill="none" stroke="var(--loss)" stroke-width="2"/>`;
+  const km = v => v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${Math.round(v / 1e3)}k`;
+  const yc = AY(cAcc[n - 1]), yp = AY(pAcc[n - 1]), clash = Math.abs(yc - yp) < fs;
+  g += `<text x="${W - Rr + 6}" y="${(clash && yc >= yp ? yc + fs : yc) + 4}" font-size="${fs}" fill="var(--gain)">${km(cAcc[n - 1])}</text><text x="${W - Rr + 6}" y="${(clash && yp > yc ? yp + fs : yp) + 4}" font-size="${fs}" fill="var(--loss)">${km(pAcc[n - 1])}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
 }
 function flowChartPanel(r) {
   if (!r || !r.id || !r.createdAt) return '';
-  const d = S.fc[r.id];
-  if (!d && !S.fcBusy[r.id]) setTimeout(() => loadFlowChart(r.id), 0);
-  const head = `<h3 style="font-size:.95rem;margin:14px 0 6px">Flow on the chart <span class="muted" style="font-weight:400;font-size:.82rem">15-minute price · every option bought at the ask, from ${money((d && d.minPrint) || 10000, false)}</span></h3>`;
+  const days = S.fcDays || 5, d = S.fc[fcKey(r.id)];
+  if (!d && !S.fcBusy[fcKey(r.id)]) setTimeout(() => loadFlowChart(r.id), 0);
+  const seg = `<span class="seg" style="margin-left:8px">${[[5, '5 days · 15 min'], [45, '45 days · 1 hour']].map(([v, l]) => `<button class="btn ${days === v ? 'coachbtn' : ''}" data-fcdays="${v}" style="font-size:.8rem;padding:2px 8px">${l}</button>`).join('')}</span>`;
+  const head = `<h3 style="font-size:.95rem;margin:14px 0 6px;display:flex;flex-wrap:wrap;align-items:center;gap:4px">Flow on the chart <span class="muted" style="font-weight:400;font-size:.82rem">${days > 10 ? 'hourly' : '15-minute'} price · every option bought at the ask, from ${money((d && d.minPrint) || 10000, false)}</span>${seg}</h3>`;
   if (!d) return head + '<p class="loading" style="margin:0">Loading the chart and the alerts…</p>';
   if (d.error) return head + `<p class="muted" style="margin:0">${esc(d.error)}</p>`;
   const al = d.alerts || [], calls = al.filter(a => a.type === 'call'), puts = al.filter(a => a.type === 'put');
@@ -1333,7 +1352,7 @@ function flowChartPanel(r) {
   const top = [...al].sort((a, b) => b.premium - a.premium).slice(0, 6);
   return head + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
     <p class="st-legend" style="margin:6px 0 4px"><span><i class="st-dot g"></i>Calls bought (${calls.length}, ${money(sum(calls), false)})</span><span><i class="st-dot" style="display:inline-block;background:var(--loss)"></i>Puts bought (${puts.length}, ${money(sum(puts), false)})</span><span>bigger dot = bigger premium · outlined = over ${money(d.bigPrint, false)}</span><span style="color:var(--coach,#5b5bd6)">┆ evaluated</span>${(d.walls || []).length ? `<span><b class="gain">- -</b> call wall · <b class="loss">- -</b> put wall · <b style="color:var(--coach,#5b5bd6)">···</b> gamma flip (steps = how they moved)</span>` : ''}</p>
-    ${d.wallsNow ? `<p class="muted" style="font-size:.84rem;margin:0 0 4px">Gamma now (options expiring in 45 days, ${esc(d.wallsNow.source || '')} ${esc(d.wallsNow.t.replace('T', ' ').slice(5))} ET): call wall <b>${d.wallsNow.callWall}</b> · put wall <b>${d.wallsNow.putWall}</b> · flip <b>${d.wallsNow.flip ?? '—'}</b>. Open interest updates once a day, so the walls mostly move overnight. ${(d.walls || []).length < 2 ? 'History builds from each evaluation and each time this chart is opened.' : ''}</p>` : ''}
+    ${d.wallsNow ? `<p class="muted" style="font-size:.84rem;margin:0 0 4px">Latest walls (${esc(d.wallsNow.source || '')}): call wall <b>${d.wallsNow.callWall}</b> · put wall <b>${d.wallsNow.putWall}</b> · flip <b>${d.wallsNow.flip ?? '—'}</b>. ${d.wallSource === 'uw' ? 'Each step is one day\'s open interest, so you can see the walls move as positions are opened and closed.' : 'Open interest updates once a day, so the walls mostly move overnight.' + ((d.walls || []).length < 2 ? ' History builds from each evaluation and each time this chart is opened.' : '')} The lower panel adds up the premium bought at the ask: calls (green) vs puts (red).</p>` : ''}
     ${d.wallNote ? `<p class="muted" style="font-size:.82rem;margin:0 0 4px">${esc(d.wallNote)}</p>` : ''}
     <p style="margin:2px 0 6px;font-size:.88rem;min-height:1.3em">${sel ? `<b>${esc(sel.t.replace('T', ' ').slice(5))} ET · ${sel.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sel.premium, false)}</b> · ${esc(sel.contract || '')}${sel.sweep ? ' · sweep' : ''}${sel.rule ? ` · ${esc(sel.rule)}` : ''}` : '<span class="muted">Tap a dot to see the alert.</span>'}</p>
     ${top.length ? `<details><summary class="muted" style="cursor:pointer">Biggest prints</summary><ul style="list-style:none;padding:0;margin:6px 0 0;line-height:1.7;font-size:.88rem">${top.map(a => `<li><span class="${a.type === 'call' ? 'gain' : 'loss'}">${a.type.toUpperCase()}</span> <b>${money(a.premium, false)}</b> <span class="muted">${esc(a.t.replace('T', ' ').slice(5))} · ${esc(a.contract || '')}${a.sweep ? ' · sweep' : ''}</span></li>`).join('')}</ul></details>` : ''}
@@ -2344,7 +2363,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2359,6 +2378,7 @@ document.addEventListener('click', e => {
   if (el.dataset.eoprep) { prepPaths(); return; }
   if (el.dataset.eouse !== undefined) { const x = S.eo.results[+el.dataset.eouse]; S.exExit = JSON.stringify(S.exExit) === JSON.stringify(x.params) ? null : x.params; render(); return; }
   if (el.dataset.exsave) { saveStrategy(); return; }
+  if (el.dataset.fcdays) { S.fcDays = +el.dataset.fcdays; S.fcSel = null; render(); return; }
   if (el.dataset.actsave) { const strategy = document.getElementById('act-strat').value, stop = document.getElementById('act-stop').value;
     api('/bot/strategies/active', { method: 'PUT', body: { strategy, stop: stop ? +stop : null } })
       .then(r => { toast(`Bot now trades: ${r.name}${r.stop ? ` · stop -${r.stop}%` : ''}`); if (S.bot) S.bot.active = r; loadStrats(); }).catch(err => toast(err.message)); return; }
