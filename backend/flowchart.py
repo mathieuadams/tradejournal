@@ -55,8 +55,31 @@ def build(sub, bot_id, days=5):
     if len(alerts) > 400:                     # keep the biggest prints
         keep = set(id(a) for a in sorted(alerts, key=lambda a: -a["premium"])[:400])
         alerts = [a for a in alerts if id(a) in keep]
+    walls, now_w, wnote = [], None, None
+    try:
+        import gex
+        since = first.isoformat()
+        for r in db.q_prefix(db.upk(sub), "BOT#"):           # every evaluation of the ticker recorded the walls then
+            if r.get("symbol") == sym and (r.get("createdAt") or "") >= since and (r.get("gamma") or {}).get("callWall") is not None:
+                gm = r["gamma"]
+                walls.append({"t": r["createdAt"][:16], "callWall": gm.get("callWall"), "putWall": gm.get("putWall"),
+                              "flip": gm.get("gammaFlip"), "src": "evaluation"})
+        walls += gex.wall_history(sym, since)
+        if last >= today:
+            now_w = gex.walls_now(sub, sym)
+            walls.append({**{k: now_w[k] for k in ("t", "callWall", "putWall", "flip")}, "src": "now"})
+    except Exception as e:
+        wnote = f"Gamma walls unavailable: {str(e)[:120]}"
+    seen, wl = set(), []
+    for w in sorted(walls, key=lambda w: w["t"]):
+        if w["t"] in seen or w.get("callWall") is None:
+            continue
+        seen.add(w["t"])
+        if wl and (wl[-1]["callWall"], wl[-1]["putWall"], wl[-1]["flip"]) == (w["callWall"], w["putWall"], w["flip"]) and w["src"] != "now":
+            continue                              # unchanged: the step line already covers it
+        wl.append(w)
     o = rec.get("origin") or {}
-    return {"symbol": sym, "evaluatedAt": ev_at.replace(" ", "T"), "from": first.isoformat(), "to": last.isoformat(),
+    return {"walls": wl, "wallsNow": now_w, "wallNote": wnote,"symbol": sym, "evaluatedAt": ev_at.replace(" ", "T"), "from": first.isoformat(), "to": last.isoformat(),
             "bars": bars, "alerts": alerts, "minPrint": cfg["repeatMinPremium"], "bigPrint": cfg["flowMinPremium"],
             "trigger": {"contract": o.get("contract"), "premium": o.get("topPremium") or o.get("premium")} if o.get("type") == "flow" else None,
             "note": note}

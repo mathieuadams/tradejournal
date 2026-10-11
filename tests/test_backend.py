@@ -1591,6 +1591,22 @@ def test_flow_chart():
         assert all("09:30" <= b["t"][11:16] < "16:00" for b in d["bars"]) and len(d["bars"]) == 26
         assert [a["type"] for a in d["alerts"]] == ["put", "call"] and d["alerts"][1]["big"] and not d["alerts"][0]["big"]
         assert seen == {"min": 10000, "type": "all", "ticker": "PLTR"} and d["trigger"]["contract"] == "PLTR261113C00185000"
+        # gamma walls: from earlier evaluations, stored snapshots and now, as steps (unchanged values collapsed)
+        import gex
+        for k in [k for k in STORE if k[0] in ("GEXHIST", "CACHE")]:
+            STORE.pop(k)
+        db.put({"PK": pk, "SK": "BOT#20261006100000-aaaaaa", "id": "20261006100000-aaaaaa", "symbol": "PLTR", "createdAt": f"{day}T10:00:00",
+                "gamma": {"callWall": 200, "putWall": 180, "gammaFlip": 188}})
+        db.put({"PK": "GEXHIST", "SK": f"PLTR#{day}T11:00", "t": f"{day}T11:00", "callWall": 200, "putWall": 180, "flip": 188})
+        db.put({"PK": "GEXHIST", "SK": f"PLTR#{day}T12:30", "t": f"{day}T12:30", "callWall": 195, "putWall": 185, "flip": 189})
+        saved_w = gex.walls_now
+        gex.walls_now = lambda sub, sym: {"t": f"{day}T15:00", "callWall": 195, "putWall": 185, "flip": 189, "spot": 190, "source": "test"}
+        try:
+            code, d = call("GET", f"/bot/{rid}/flowchart")
+        finally:
+            gex.walls_now = saved_w
+        assert [(w["t"][11:], w["callWall"], w["src"]) for w in d["walls"]] == [("10:00", 200, "evaluation"), ("12:30", 195, "snapshot"), ("15:00", 195, "now")], d["walls"]
+        assert d["wallsNow"]["putWall"] == 185
     finally:
         flowdata.alerts, charts._yahoo = saved
 

@@ -454,6 +454,7 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
     spot = chain["spot"] or sig["price"]
     near = [c for c in chain["contracts"] if c["exp"] <= (now_ny() + timedelta(days=45)).strftime("%Y-%m-%d")]
     g = gex.compute(near or chain["contracts"], spot)
+    gex.record_walls(symbol, g, spot)
     em = gex.expected_moves(chain["contracts"], spot, limit=16)
     em_list = em["byExpiration"]
     events = iv_events(em_list)

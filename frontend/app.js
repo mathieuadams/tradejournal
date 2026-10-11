@@ -1274,7 +1274,11 @@ function fcSvg(d, id) {
   if (n < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const narrow = window.innerWidth < 700, fs = narrow ? 17 : 12;
   const W = narrow ? 560 : 960, H = narrow ? 470 : 340, L = 8, Rr = narrow ? 72 : 58, T = 16, B = H - (narrow ? 44 : 40);
-  const lo0 = Math.min(...bars.map(b => b.l)), hi0 = Math.max(...bars.map(b => b.h)), pad = (hi0 - lo0) * 0.12 || 1;
+  const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
+  const walls = (d.walls || []).filter(w => w.callWall != null);
+  const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
+  const wv = walls.flatMap(w => [w.callWall, w.putWall, w.flip]).filter(near);
+  const lo0 = Math.min(pl0, ...wv), hi0 = Math.max(ph0, ...wv), pad = (hi0 - lo0) * 0.08 || 1;
   const lo = lo0 - pad, hi = hi0 + pad;
   const X = i => L + (i + 0.5) * (W - L - Rr) / n, Y = v => T + (hi - v) / (hi - lo) * (B - T), bw = Math.max(1, (W - L - Rr) / n * 0.6);
   const idx = {}; bars.forEach((b, i) => { idx[b.t] = i; });
@@ -1289,6 +1293,24 @@ function fcSvg(d, id) {
     g += `<line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`; });
   if (d.evaluatedAt) { const ei = at(d.evaluatedAt); if (ei != null) { const x = X(ei);
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--coach,#5b5bd6)" stroke-width="2" stroke-dasharray="6 4"/><text x="${Math.min(x + 4, W - Rr - 70)}" y="${T + 12}" font-size="${fs}" font-weight="600" fill="var(--coach,#5b5bd6)">evaluated</text>`; } }
+  if (walls.length) {                       // gamma walls as step lines: each value holds until the next snapshot
+    const t0 = bars[0].t, segs = walls.map((w, k) => { const i0 = w.t <= t0 ? 0 : at(w.t), nx = walls[k + 1];
+      return { w, x0: i0 == null ? null : (w.t <= t0 ? L : X(i0)), x1: nx ? (at(nx.t) == null ? null : X(at(nx.t))) : W - Rr }; }).filter(sg => sg.x0 != null && sg.x1 != null && sg.x1 > sg.x0 - 1);
+    const lines = [['callWall', 'var(--gain)', '7 4', 'Call wall'], ['putWall', 'var(--loss)', '7 4', 'Put wall'], ['flip', 'var(--coach,#5b5bd6)', '2 3', 'Flip']];
+    lines.forEach(([key, col, dash, name]) => {
+      let prev = null;
+      segs.forEach(sg => { const v = sg.w[key]; if (v == null) return;
+        if (!near(v)) { prev = null; return; }
+        const y = Y(v);
+        if (prev && Math.abs(prev.y - y) > 0.5) g += `<line x1="${sg.x0}" x2="${sg.x0}" y1="${prev.y}" y2="${y}" stroke="${col}" stroke-width="1.5" stroke-dasharray="${dash}" opacity=".7"/>`;
+        g += `<line x1="${sg.x0}" x2="${sg.x1}" y1="${y}" y2="${y}" stroke="${col}" stroke-width="2" stroke-dasharray="${dash}" opacity=".85"><title>${name} ${v} · from ${esc(sg.w.t.replace('T', ' ').slice(5))}</title></line>`;
+        prev = { y }; });
+      const lw = walls[walls.length - 1][key];
+      if (lw == null) return;
+      if (near(lw)) g += `<text x="${W - Rr - 4}" y="${Y(lw) - 4}" text-anchor="end" font-size="${fs}" font-weight="600" fill="${col}">${name} ${lw}</text>`;
+      else g += `<text x="${W - Rr - 4}" y="${lw > hi ? T + 12 + (key === 'flip' ? fs + 2 : 0) : B - 4 - (key === 'flip' ? fs + 2 : 0)}" text-anchor="end" font-size="${fs}" font-weight="600" fill="${col}">${name} ${lw} ${lw > hi ? '↑' : '↓'}</text>`;
+    });
+  }
   const stack = {};
   (d.alerts || []).forEach((a, k) => { const i = at(a.t); if (i == null) return; const b = bars[i], call = a.type === 'call';
     const key = `${i}${a.type}`; stack[key] = (stack[key] || 0) + 1;
@@ -1310,7 +1332,9 @@ function flowChartPanel(r) {
   const sel = S.fcSel && S.fcSel.id === r.id ? al[S.fcSel.k] : null;
   const top = [...al].sort((a, b) => b.premium - a.premium).slice(0, 6);
   return head + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
-    <p class="st-legend" style="margin:6px 0 4px"><span><i class="st-dot g"></i>Calls bought (${calls.length}, ${money(sum(calls), false)})</span><span><i class="st-dot" style="display:inline-block;background:var(--loss)"></i>Puts bought (${puts.length}, ${money(sum(puts), false)})</span><span>bigger dot = bigger premium · outlined = over ${money(d.bigPrint, false)}</span><span style="color:var(--coach,#5b5bd6)">┆ evaluated</span></p>
+    <p class="st-legend" style="margin:6px 0 4px"><span><i class="st-dot g"></i>Calls bought (${calls.length}, ${money(sum(calls), false)})</span><span><i class="st-dot" style="display:inline-block;background:var(--loss)"></i>Puts bought (${puts.length}, ${money(sum(puts), false)})</span><span>bigger dot = bigger premium · outlined = over ${money(d.bigPrint, false)}</span><span style="color:var(--coach,#5b5bd6)">┆ evaluated</span>${(d.walls || []).length ? `<span><b class="gain">- -</b> call wall · <b class="loss">- -</b> put wall · <b style="color:var(--coach,#5b5bd6)">···</b> gamma flip (steps = how they moved)</span>` : ''}</p>
+    ${d.wallsNow ? `<p class="muted" style="font-size:.84rem;margin:0 0 4px">Gamma now (options expiring in 45 days, ${esc(d.wallsNow.source || '')} ${esc(d.wallsNow.t.replace('T', ' ').slice(5))} ET): call wall <b>${d.wallsNow.callWall}</b> · put wall <b>${d.wallsNow.putWall}</b> · flip <b>${d.wallsNow.flip ?? '—'}</b>. Open interest updates once a day, so the walls mostly move overnight. ${(d.walls || []).length < 2 ? 'History builds from each evaluation and each time this chart is opened.' : ''}</p>` : ''}
+    ${d.wallNote ? `<p class="muted" style="font-size:.82rem;margin:0 0 4px">${esc(d.wallNote)}</p>` : ''}
     <p style="margin:2px 0 6px;font-size:.88rem;min-height:1.3em">${sel ? `<b>${esc(sel.t.replace('T', ' ').slice(5))} ET · ${sel.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sel.premium, false)}</b> · ${esc(sel.contract || '')}${sel.sweep ? ' · sweep' : ''}${sel.rule ? ` · ${esc(sel.rule)}` : ''}` : '<span class="muted">Tap a dot to see the alert.</span>'}</p>
     ${top.length ? `<details><summary class="muted" style="cursor:pointer">Biggest prints</summary><ul style="list-style:none;padding:0;margin:6px 0 0;line-height:1.7;font-size:.88rem">${top.map(a => `<li><span class="${a.type === 'call' ? 'gain' : 'loss'}">${a.type.toUpperCase()}</span> <b>${money(a.premium, false)}</b> <span class="muted">${esc(a.t.replace('T', ' ').slice(5))} · ${esc(a.contract || '')}${a.sweep ? ' · sweep' : ''}</span></li>`).join('')}</ul></details>` : ''}
     ${d.note ? `<p class="muted" style="font-size:.82rem">${esc(d.note)}</p>` : ''}`;
