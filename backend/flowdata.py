@@ -302,13 +302,17 @@ def ping(sub):
 
 # ---------- gamma walls by day (Unusual Whales greek exposure, from each day's open interest) ----------
 
-def _uw(key, path, params=None):
+def _uw(key, path, params=None, attempts=4):
+    import time as _t
     url = "https://api.unusualwhales.com" + path + ("?" + urllib.parse.urlencode(params) if params else "")
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
+        if e.code == 429 and attempts > 1:          # rate limited: wait and try again
+            _t.sleep(1.5 * (5 - attempts))
+            return _uw(key, path, params, attempts - 1)
         if e.code in (404, 422):
             return None
         if e.code in (401, 403):
@@ -382,7 +386,7 @@ def gex_history(sub, ticker, dates):
     from concurrent.futures import ThreadPoolExecutor
     key = _key(sub)
     rows, err = [], None
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:          # gentle on the Unusual Whales rate limit
         futs = {d: ex.submit(gex_day, key, ticker, d) for d in dates}
         for d, f in futs.items():
             try:
@@ -435,7 +439,7 @@ def darkpool(sub, ticker, dates, min_premium=1_000_000):
     from concurrent.futures import ThreadPoolExecutor
     key = _key(sub)
     prints, err = [], None
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         futs = [ex.submit(darkpool_day, key, ticker, d, min_premium) for d in dates]
         for f in futs:
             try:

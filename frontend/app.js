@@ -1319,7 +1319,7 @@ function fcSvg0(d, id, opts) {
   const L = 8, Rr = narrow ? 72 : full ? 64 : 58, T = 16, B = PH - (narrow ? 44 : 40);
   const H = PH + (AH ? AH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
   const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
-  const walls = LY.walls ? (d.walls || []).filter(w => w.callWall != null) : [];
+  const walls = LY.walls ? (d.walls || []).filter(w => w.callWall != null || w.src === 'gap') : [];
   const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
   const wv = walls.flatMap(w => [w.callWall, w.putWall, w.flip]).concat(dp && !dp.error ? (dp.levels || []).map(l => l.price) : []).filter(near);
   const lo0 = Math.min(pl0, ...wv), hi0 = Math.max(ph0, ...wv), pad = (hi0 - lo0) * 0.08 || 1;
@@ -1355,7 +1355,7 @@ function fcSvg0(d, id, opts) {
     const lines = [['callWall', 'var(--gain)', '7 4', 'Call wall'], ['putWall', 'var(--loss)', '7 4', 'Put wall'], ['flip', 'var(--coach,#5b5bd6)', '2 3', 'Flip']];
     lines.forEach(([key, col, dash, name]) => {
       let prev = null;
-      segs.forEach(sg => { const v = sg.w[key]; if (v == null) return;
+      segs.forEach(sg => { const v = sg.w[key]; if (v == null) { prev = null; return; }
         if (!near(v)) { prev = null; return; }
         const y = Y(v);
         if (prev && Math.abs(prev.y - y) > 0.5) g += `<line x1="${sg.x0}" x2="${sg.x0}" y1="${prev.y}" y2="${y}" stroke="${col}" stroke-width="1.5" stroke-dasharray="${dash}" opacity=".7"/>`;
@@ -1498,7 +1498,7 @@ function flowChartPanel(r) {
   const zbar = N > 1 ? `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px">${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zoomed ? zb_('reset', 'Reset', 'Show everything') : ''}
     <span class="muted" style="font-size:.8rem">${zoomed && d.bars[za] && d.bars[zb] ? `${esc(d.bars[za].t.replace('T', ' ').slice(5))} → ${esc(d.bars[zb].t.replace('T', ' ').slice(5))} · ` : ''}drag across the chart to zoom on a period${window.innerWidth >= 700 ? ', or scroll on it' : ''}</span></div>` : '';
   const wi = d.wallInfo, nW = (d.walls || []).length;
-  const wline = `<p class="muted" style="font-size:.82rem;margin:0 0 6px">${d.wallSource === 'uw' && wi ? `Gamma walls: ${wi.days} of ${wi.of} days from Unusual Whales${wi.days < wi.of ? ' (days without data keep the previous walls)' : ''}.`
+  const wline = `<p class="muted" style="font-size:.82rem;margin:0 0 6px">${d.wallSource === 'uw' && wi ? `Gamma walls: ${wi.days} of ${wi.of} days from Unusual Whales${wi.days < wi.of ? ` — missing ${(wi.missing || []).map(x => x.slice(5)).slice(0, 8).join(', ')}${(wi.missing || []).length > 8 ? '…' : ''} (shown as gaps) <button class="btn" data-fcreload="${r.id}" style="font-size:.78rem;padding:1px 8px">Retry</button>` : ''}.`
     : nW ? `Gamma walls: ${nW} reading${nW === 1 ? '' : 's'} from the bot.` : '<b>No gamma walls for this period.</b>'} ${d.wallNote ? esc(d.wallNote) : ''}</p>`;
   fcNeedDark(r.id);
   const lbar = `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px">${fcLayerBar(r.id)}</div>`;
@@ -2523,7 +2523,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2542,6 +2542,7 @@ document.addEventListener('click', e => {
     try { localStorage.setItem('fcLayers', JSON.stringify(S.fcLayers)); } catch (err) {}
     render(); return; }
   if (el.dataset.evload) { e.preventDefault(); api(`/bot/${el.dataset.evload}`).then(it => { S.botRes = it; S.fcSelE = null; if (route() !== 'botevals') location.hash = `#botevals?t=${encodeURIComponent(it.symbol)}`; else { render(); window.scrollTo(0, 0); } }).catch(err => toast(err.message)); return; }
+  if (el.dataset.fcreload) { const id = el.dataset.fcreload; delete S.fc[fcKey(id)]; loadFlowChart(id); render(); return; }
   if (el.dataset.fce) { const [id, k] = el.dataset.fce.split('|'); S.fcSelE = { id, k: +k }; render(); return; }
   if (el.dataset.fcd) { const [id, k] = el.dataset.fcd.split('|'); S.fcSelD = { id, k: +k }; render(); return; }
   if (el.dataset.fczoom) { const [id, k] = el.dataset.fczoom.split('|'), d = S.fc[fcKey(id)], N = ((d && d.bars) || []).length; if (N < 2) return;

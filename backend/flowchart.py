@@ -75,6 +75,10 @@ def build(sub, bot_id, days=5):
             uw_ok, wsrc = True, "uw"
             walls = [{"t": f"{h['date']}T09:30", "callWall": h.get("callWall"), "putWall": h.get("putWall"), "flip": h.get("flip"), "src": "uw",
                       "callGex": h.get("callGex"), "putGex": h.get("putGex")} for h in hist]
+            got = {h["date"] for h in hist}       # a day without data is a gap, not the previous day's walls
+            walls += [{"t": f"{dd}T09:30", "callWall": None, "putWall": None, "flip": None, "src": "gap"}
+                      for dd in dates if dd not in got and dd >= hist[0]["date"]]
+            winfo["missing"] = [dd for dd in dates if dd not in got]
             lh = hist[-1]
             now_w = {"t": f"{lh['date']}T09:30", "callWall": lh.get("callWall"), "putWall": lh.get("putWall"), "flip": lh.get("flip"),
                      "source": "Unusual Whales, all expirations, open interest of " + lh["date"]}
@@ -102,7 +106,7 @@ def build(sub, bot_id, days=5):
         now_w = {**now_w, "source": f"options expiring in 45 days, {now_w.get('source') or ''} {now_w['t'].replace('T', ' ')[5:]} ET"}
     seen, wl = set(), []
     for w in sorted(walls, key=lambda w: w["t"]):
-        if w["t"] in seen or w.get("callWall") is None:
+        if w["t"] in seen or (w.get("callWall") is None and w.get("src") != "gap"):
             continue
         seen.add(w["t"])
         if wl and all(wl[-1].get(k) == w.get(k) for k in ("callWall", "putWall", "flip")) and w["src"] != "now":
