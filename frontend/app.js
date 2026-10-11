@@ -1274,12 +1274,13 @@ async function loadFlowChart(id) {
 S.fcZoom = S.fcZoom || {};
 function fcRange(id, N) {             // visible bars [a, b] for this chart (zoom)
   const z = S.fcZoom[fcKey(id)];
-  if (!z) return [0, N - 1];
+  if (!z || !isFinite(z[0]) || !isFinite(z[1]) || N < 3 || z[0] > N - 3 || z[1] - z[0] < 2) { if (z) S.fcZoom[fcKey(id)] = null; return [0, Math.max(0, N - 1)]; }
   const a = Math.max(0, Math.min(z[0], N - 2)), b = Math.min(N - 1, Math.max(z[1], a + 1));
   return [a, b];
 }
 function fcSetZoom(id, a, b, N) {
-  const span = Math.max(8, b - a);                     // never fewer than 8 bars
+  if (!isFinite(a) || !isFinite(b) || !(N > 2)) return;   // a drag on a chart that was redrawn meanwhile: ignore
+  const span = Math.min(N - 1, Math.max(8, b - a));     // never fewer than 8 bars
   a = Math.round(a); b = Math.round(a + span);
   if (b > N - 1) { b = N - 1; a = Math.max(0, b - span); }
   if (a < 0) { a = 0; b = Math.min(N - 1, span); }
@@ -1287,6 +1288,12 @@ function fcSetZoom(id, a, b, N) {
   render();
 }
 function fcSvg(d, id) {
+  try { return fcSvg0(d, id); } catch (e) {
+    console.error('flow chart', e); S.fcZoom[fcKey(id)] = null;
+    return `<p class="muted" style="margin:0">The chart couldn't be drawn (${esc(e.message)}). <button class="btn" data-fczoom="${esc(id)}|reset">Reset the view</button></p>`;
+  }
+}
+function fcSvg0(d, id) {
   const all = d.bars || [];
   if (all.length < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
@@ -1371,7 +1378,7 @@ function flowChartPanel(r) {
   const N = (d.bars || []).length, [za, zb] = N > 1 ? fcRange(r.id, N) : [0, 0], zoomed = N > 1 && (za > 0 || zb < N - 1);
   const zb_ = (k, l, t) => `<button class="btn" data-fczoom="${r.id}|${k}" title="${t}" style="font-size:.85rem;padding:2px 10px">${l}</button>`;
   const zbar = N > 1 ? `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px">${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zoomed ? zb_('reset', 'Reset', 'Show everything') : ''}
-    <span class="muted" style="font-size:.8rem">${zoomed ? `${esc(d.bars[za].t.replace('T', ' ').slice(5))} → ${esc(d.bars[zb].t.replace('T', ' ').slice(5))} · ` : ''}drag across the chart to zoom on a period${window.innerWidth >= 700 ? ', or scroll on it' : ''}</span></div>` : '';
+    <span class="muted" style="font-size:.8rem">${zoomed && d.bars[za] && d.bars[zb] ? `${esc(d.bars[za].t.replace('T', ' ').slice(5))} → ${esc(d.bars[zb].t.replace('T', ' ').slice(5))} · ` : ''}drag across the chart to zoom on a period${window.innerWidth >= 700 ? ', or scroll on it' : ''}</span></div>` : '';
   return head + zbar + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
     <p class="st-legend" style="margin:6px 0 4px"><span><i class="st-dot g"></i>Calls bought (${calls.length}, ${money(sum(calls), false)})</span><span><i class="st-dot" style="display:inline-block;background:var(--loss)"></i>Puts bought (${puts.length}, ${money(sum(puts), false)})</span><span>bigger dot = bigger premium · outlined = over ${money(d.bigPrint, false)}</span><span style="color:var(--coach,#5b5bd6)">┆ evaluated</span>${(d.walls || []).length ? `<span><b class="gain">- -</b> call wall · <b class="loss">- -</b> put wall · <b style="color:var(--coach,#5b5bd6)">···</b> gamma flip (steps = how they moved)</span>` : ''}</p>
     ${d.wallsNow ? `<p class="muted" style="font-size:.84rem;margin:0 0 4px">Latest walls (${esc(d.wallsNow.source || '')}): call wall <b>${d.wallsNow.callWall}</b> · put wall <b>${d.wallsNow.putWall}</b> · flip <b>${d.wallsNow.flip ?? '—'}</b>. ${d.wallSource === 'uw' ? 'Each step is one day\'s open interest, so you can see the walls move as positions are opened and closed.' : 'Open interest updates once a day, so the walls mostly move overnight.' + ((d.walls || []).length < 2 ? ' History builds from each evaluation and each time this chart is opened.' : '')} The lower panel adds up the premium bought at the ask: calls (green) vs puts (red).</p>` : ''}
@@ -2606,7 +2613,7 @@ $('#signin').addEventListener('click', () => Auth.login());
 (() => {
   let drag = null, suppress = false;
   document.addEventListener('click', ev => { if (suppress && ev.target.closest && ev.target.closest('svg[data-fcz]')) { ev.stopPropagation(); ev.preventDefault(); } }, true);
-  const info = svg => { const r = svg.getBoundingClientRect(), k = (+svg.dataset.vw) / r.width;
+  const info = svg => { const r = svg.getBoundingClientRect(), k = r.width ? (+svg.dataset.vw) / r.width : NaN;
     return { r, k, L: +svg.dataset.l, pw: +svg.dataset.pw, a: +svg.dataset.a, n: +svg.dataset.n, all: +svg.dataset.all, id: svg.dataset.fcz }; };
   const vx = (svg, ev) => { const f = info(svg); return (ev.clientX - f.r.left) * f.k; };
   const barAt = (f, x) => f.a + Math.max(0, Math.min(f.n - 1, Math.floor((x - f.L) / (f.pw / f.n))));
