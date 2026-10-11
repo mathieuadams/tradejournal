@@ -434,6 +434,12 @@ def bot_wallwatch_save(sub, claims, body, q):
     return wallwatch.view(sub)
 
 
+@route("GET", "/bot/wallwatch/chart")
+def bot_wallwatch_chart(sub, claims, body, q):
+    import wallwatch
+    return wallwatch.chart(sub, (q or {}).get("t"))
+
+
 @route("POST", "/bot/wallwatch/run")
 def bot_wallwatch_run(sub, claims, body, q):
     """Check the watchlist now (days=3) or backfill the last `days` trading days (background job)."""

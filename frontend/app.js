@@ -1273,11 +1273,11 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { const v = { sig: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
-  const dp = S.fcDp[fcKey(id)];
-  return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
+  const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
+  return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? ['sig', 'walls'].includes(k) : k !== 'sig').map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
@@ -1286,7 +1286,7 @@ async function loadDarkPool(id) {
   S.fcDpBusy[k] = false;
   if (isBotRoute()) render();
 }
-function fcNeedDark(id) { const k = fcKey(id); if (S.fcLayers.dark && !S.fcDp[k] && !S.fcDpBusy[k]) setTimeout(() => loadDarkPool(id), 0); }
+function fcNeedDark(id) { const k = fcKey(id); if (String(id).startsWith('ww-')) return; if (S.fcLayers.dark && !S.fcDp[k] && !S.fcDpBusy[k]) setTimeout(() => loadDarkPool(id), 0); }
 function fcRange(id, N) {             // visible bars [a, b] for this chart (zoom)
   const z = S.fcZoom[fcKey(id)];
   if (!z || !isFinite(z[0]) || !isFinite(z[1]) || N < 3 || z[0] > N - 3 || z[1] - z[0] < 2) { if (z) S.fcZoom[fcKey(id)] = null; return [0, Math.max(0, N - 1)]; }
@@ -1320,7 +1320,7 @@ function fcSvg0(d, id, opts) {
   const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
   const LY = S.fcLayers, dp = LY.dark ? S.fcDp[fcKey(id)] : null;
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
-  const AH = !LY.acc ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
+  const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
   const W = full ? opts.W : narrow ? 560 : 960, PH = full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340;
   const L = 8, Rr = narrow ? 72 : full ? 64 : 58, T = 16, B = PH - (narrow ? 44 : 40);
   const H = PH + (AH ? AH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
@@ -1395,6 +1395,25 @@ function fcSvg0(d, id, opts) {
       const sel = S.fcSelD && S.fcSelD.id === id && S.fcSelD.k === k;
       g += `<rect data-fcd="${id}|${k}" x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2" fill="var(--warn)" fill-opacity=".55" stroke="${sel || p0.premium >= 10e6 ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(p0.t.replace('T', ' ').slice(5))} · dark pool ${p0.size.toLocaleString('en-US')} sh at ${p0.price} · ${prem(p0.premium)}</title></rect>`; });
   }
+  if (LY.sig !== false && (d.signals || []).length) {   // Wall watch: entry, target (call wall), stop (put wall), exit
+    d.signals.forEach((sg, k) => {
+      const i0 = at(sg.at); let i1 = sg.exitAt ? at(sg.exitAt) : n - 1;
+      if (sg.exitAt && i1 == null && sg.exitAt > lastT) i1 = n - 1;
+      if (i0 == null && !(sg.exitAt && sg.exitAt >= bars[0].t && sg.at < bars[0].t)) return;
+      const a0 = i0 == null ? 0 : i0, b0 = i1 == null ? a0 : i1, xa = i0 == null ? L : X(a0), xb = X(b0);
+      const col = sg.status === 'target' ? 'var(--gain)' : sg.status === 'stop' ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
+      const sel = S.wwSel && S.wwSel.sym === d.symbol && S.wwSel.at === sg.at;
+      g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity="${sel ? .12 : .06}"/>`;
+      [[sg.target, 'var(--gain)', 'target'], [sg.pw, 'var(--loss)', 'stop']].forEach(([v, c, nm]) => { if (v == null || v < lo || v > hi) return;
+        g += `<line x1="${xa}" x2="${xb}" y1="${Y(v)}" y2="${Y(v)}" stroke="${c}" stroke-width="2" opacity=".85"><title>${nm} ${v}</title></line>`; });
+      if (i0 != null && sg.entry >= lo && sg.entry <= hi) { const y = Y(sg.entry);
+        g += `<path data-wwsel="${esc(d.symbol)}|${esc(sg.at)}" d="M${xa},${y + 5} L${xa - 8},${y + 18} L${xa + 8},${y + 18} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"><title>Signal ${esc(sg.at.replace('T', ' ').slice(5))} · entry ${(+sg.entry).toFixed(2)} · put wall ${sg.pw} · flip ${sg.flip} · call wall ${sg.cw}</title></path>
+          <text x="${xa}" y="${y + 31}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">IN</text>`; }
+      if (sg.status !== 'open' && i1 != null && sg.exit >= lo && sg.exit <= hi) { const y = Y(sg.exit);
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'target' ? 'Target: call wall' : 'Stop: hourly close below the put wall'} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
+          <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.pct >= 0 ? '+' : ''}${sg.pct}%</text>`; }
+    });
+  }
   const stack = {};
   (LY.flow ? d.alerts || [] : []).forEach((a, k) => { const i = at(a.t); if (i == null) return; const b = bars[i], call = a.type === 'call';
     const key = `${i}${a.type}`; stack[key] = (stack[key] || 0) + 1;
@@ -1429,12 +1448,68 @@ async function loadTickers() {
   S.tkBusy = false;
   if (route() === 'botchart') render();
 }
+S.fcfMode = (() => { try { return localStorage.getItem('fcfMode') || 'ev'; } catch (e) { return 'ev'; } })();
+function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
+function wwTickers() { return ((S.ww && S.ww.config && S.ww.config.tickers) || []); }
+async function loadWwChart(sym) {
+  const k = fcKey('ww-' + sym); S.fcBusy[k] = true;
+  try { S.fc[k] = await api('/bot/wallwatch/chart?t=' + encodeURIComponent(sym)); } catch (e) { S.fc[k] = { error: e.message }; }
+  S.fcBusy[k] = false; if (route() === 'botchart') render();
+}
+const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+function vChartWW() {
+  const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), sym = list.includes(t0) ? t0 : (list[0] || t0), id = 'ww-' + sym;
+  if (!S.ww && !S.wwBusy) setTimeout(loadWatch, 0);
+  const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
+  const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
+  const k = fcKey(id), d = sym ? S.fc[k] : null;
+  if (sym && !d && !S.fcBusy[k]) setTimeout(() => loadWwChart(sym), 0);
+  const sigs = (d && d.signals) || [];
+  const selK = S.wwSel && S.wwSel.sym === sym ? sigs.findIndex(x => x.at === S.wwSel.at) : -1;
+  if (d && !d.error && S.wwSel && S.wwSel.sym === sym && S.wwSel.zoom) {        // zoom on the chosen signal
+    S.wwSel.zoom = false;
+    const sg = selK >= 0 ? sigs[selK] : null, bs = fcClean(d).bars, ix = t => { let q = -1; bs.forEach((b0, i) => { if (b0.t <= t) q = i; }); return q; };
+    if (sg) { const a0 = ix(sg.at), b0 = sg.exitAt ? ix(sg.exitAt) : bs.length - 1; if (a0 >= 0) { const pad = Math.max(12, Math.round((b0 - a0) * 0.4)); S.fcZoom[k] = [Math.max(0, a0 - pad), Math.min(bs.length - 1, Math.max(b0, a0 + 6) + pad)]; } }
+  }
+  const allSig = (S.ww && S.ww.signals) || [], bySym = {};
+  allSig.forEach(x => { const b = bySym[x.symbol] = bySym[x.symbol] || { n: 0, t: 0, open: 0, tot: 0 }; b.n++; if (x.status === 'target') b.t++; if (x.status === 'open') b.open++; else b.tot += x.pct; });
+  const stMap = Object.fromEntries(((S.ww && S.ww.status) || []).map(x => [x.symbol, x]));
+  const zb_ = (q, l, t) => sym ? `<button class="btn" data-fczoom="${id}|${q}" title="${t}" style="padding:3px 10px">${l}</button>` : '';
+  const sel = narrow ? `<select id="fcf-sel" aria-label="Ticker">${list.map(x => `<option value="${esc(x)}" ${x === sym ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>` : '';
+  const done = sigs.filter(x => x.status !== 'open'), hit = done.filter(x => x.status === 'target').length;
+  const headBar = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>
+      ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow ? 'CW > flip > PW' : 'setup off'}</span>
+      <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>` : ''}
+      ${sel}${fcModeSeg()}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
+      ${sym ? fcLayerBar(id) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
+  let main;
+  if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
+  else if (!sym) main = '<p class="muted" style="padding:16px">The watchlist is empty.</p>';
+  else if (!d) main = '<p class="loading" style="padding:16px">Loading the chart and the walls…</p>';
+  else if (d.error) main = `<div class="errbox" style="margin:16px">${esc(d.error)}</div>`;
+  else {
+    const w = d.wallsNow, pc = v => `<b class="${v >= 0 ? 'gain' : 'loss'}">${v >= 0 ? '+' : ''}${v}%</b>`;
+    main = fcSvg(d, id, { W, H, noAcc: true }) + `<div class="fcf-info">
+      ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b> · <b class="loss">put ${w.putWall}</b></span>` : ''}
+      <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
+      <span class="muted">Triangle = entry · green line = target (call wall) · red line = stop (put wall) · square = exit · ↑ ↓ ticker</span>
+      ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
+  }
+  const side = narrow ? '' : `<aside class="fcf-side"><input id="fcf-q" type="search" placeholder="Filter tickers" value="${esc(S.fcfQ || '')}" aria-label="Filter tickers">
+      <ul class="fcf-list">${list.map(x => { const b = bySym[x] || { n: 0, t: 0, open: 0, tot: 0 }, st = stMap[x] || {};
+        return `<li data-sym="${esc(x)}" ${S.fcfQ && !x.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x)}" ${x === sym ? 'aria-current="true"' : ''}>
+        <span><b>${esc(x)}</b>${b.open ? ' <span class="exchip" style="font-size:.7rem">open</span>' : ''}<br><span class="muted" style="font-size:.75rem">${b.n} signal${b.n === 1 ? '' : 's'}${b.n ? ` · ${b.t} target` : ''}</span></span>
+        <span style="text-align:right">${st.setup ? '<span class="verdict ok" style="font-size:.72rem;padding:1px 7px">setup</span>' : ''}<br><span style="font-size:.75rem" class="${b.tot > 0 ? 'gain' : b.tot < 0 ? 'loss' : 'muted'}">${b.n - b.open ? (b.tot >= 0 ? '+' : '') + b.tot.toFixed(1) + '%' : ''}</span></span></a></li>`; }).join('')}</ul></aside>`;
+  return `<div class="fcf">${headBar}<div class="fcf-body"><div class="fcf-main">${main}</div>${side}</div></div>`;
+}
 function fcfSymbol() {
+  if (S.fcfMode === 'ww') { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return l.includes(t) ? t : (l[0] || t); }
   const items = (S.tickers && S.tickers.items) || [];
   const t = (hashParam('t') || '').toUpperCase();
   return items.find(x => x.symbol === t) ? t : (items[0] && items[0].symbol) || t;
 }
 function vChartFull() {
+  if (S.fcfMode === 'ww') return vChartWW();
   const L = S.tickers, items = (L && L.items) || [], sym = fcfSymbol(), cur0 = items.find(x => x.symbol === sym), evId = hashParam('id');
   const cur = cur0 && evId ? { ...cur0, id: evId } : cur0;      // a specific evaluation (backtest replay) or the latest one
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
@@ -1457,7 +1532,7 @@ function vChartFull() {
   const headBar = `<div class="fcf-head">
       <b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>${cur ? `<span class="verdict ${DEC_CLS[cur.decision] || 'mid'}">${esc(cur.decision || '')}</span>
       <span class="muted" style="font-size:.85rem">evaluated ${esc((cur.at || '').replace('T', ' ').slice(5, 16))} ET${cur.price ? ` at ${px(cur.price)}` : ''}</span>` : ''}
-      ${sel}${seg}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
+      ${sel}${fcModeSeg()}${seg}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
       ${nav}${cur ? fcLayerBar(cur.id) : ''}
       <span style="flex:1"></span>${cur ? `<a class="btn" href="#botevals?t=${encodeURIComponent(sym)}">Evaluation</a>` : ''}<a class="btn" href="${back}" aria-label="Close full screen">✕</a></div>`;
   let main;
@@ -1498,7 +1573,7 @@ function vChartFull() {
   });
   document.addEventListener('keydown', e => {
     if (route() !== 'botchart' || /INPUT|SELECT|TEXTAREA/.test((e.target.tagName || ''))) return;
-    if (e.key === 'Escape') { const s2 = fcfSymbol(); location.hash = `#botevals${s2 ? '?t=' + encodeURIComponent(s2) : ''}`; return; }
+    if (e.key === 'Escape') { if (S.fcfMode === 'ww') { location.hash = '#botwatch'; return; } const s2 = fcfSymbol(); location.hash = `#botevals${s2 ? '?t=' + encodeURIComponent(s2) : ''}`; return; }
     if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && (S.replay || []).length) {      // replay: next / previous idea
       const id = hashParam('id'), i = S.replay.findIndex(x => x.id === id), nx = S.replay[i + (e.key === 'ArrowRight' ? 1 : -1)];
       if (i >= 0 && nx) { e.preventDefault(); location.hash = `#botchart?t=${encodeURIComponent(nx.symbol)}&id=${nx.id}`; }
@@ -1506,7 +1581,7 @@ function vChartFull() {
     }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     const lis = [...document.querySelectorAll('.fcf-list li:not([hidden])')].map(li => li.dataset.sym);
-    const list = lis.length ? lis : ((S.tickers && S.tickers.items) || []).map(x => x.symbol);
+    const list = lis.length ? lis : S.fcfMode === 'ww' ? wwTickers() : ((S.tickers && S.tickers.items) || []).map(x => x.symbol);
     const i = list.indexOf(fcfSymbol()); if (!list.length) return;
     e.preventDefault();
     const nx = list[Math.max(0, Math.min(list.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
@@ -2207,8 +2282,10 @@ function vStrats() {
 }
 /* ---------- Wall watch: CW > flip > PW + green hourly candle crossing the put wall ---------- */
 async function loadWatch() {
+  if (S.wwBusy) return; S.wwBusy = true;
   try { S.ww = await api('/bot/wallwatch'); } catch (e) { S.ww = { error: e.message }; }
-  if (route() === 'botwatch') render();
+  S.wwBusy = false;
+  if (route() === 'botwatch' || route() === 'botchart') render();
 }
 async function runWatch(days) {
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days } }); toast(days > 3 ? `Checking the last ${days} days in the background — a few minutes` : 'Checking every ticker now — about a minute'); }
@@ -2234,17 +2311,18 @@ function vWatch() {
   const runLine = `<p class="muted" style="font-size:.84rem;margin:0 0 12px">${run.at ? `Last check ${esc(t5(run.at))} · ${run.checked ?? 0} tickers` : 'Not checked yet'}${run.running ? ' · <b>checking…</b>' : ''}${run.bfAt ? ` · history: last ${run.bfDays} days${run.bfLeft ? ` (${run.bfLeft} tickers left: run again)` : ''}` : ''}${(run.errors || []).length ? ` · <span class="loss" title="${esc((run.errors || []).join('\n'))}">${run.errors.length} errors</span>` : ''}
     <button class="btn coachbtn" data-wwrun="3" style="font-size:.8rem;padding:2px 10px">Check now</button>
     <button class="btn" data-wwrun="45" style="font-size:.8rem;padding:2px 10px">Check the last 45 days</button>
+    <button class="btn" data-wwchart="${esc((cfg.tickers || [])[0] || '')}|" style="font-size:.8rem;padding:2px 10px">Open the charts</button>
     <label style="margin-left:6px"><input type="checkbox" id="ww-on" ${cfg.enabled ? 'checked' : ''}> every hour</label></p>`;
   const sigs = d.signals || [];
   const st = s => s.status === 'target' ? '<b class="gain">target</b>' : s.status === 'stop' ? '<b class="loss">stop</b>' : '<span style="color:var(--coach)">open</span>';
-  const sigTable = `<section class="panel"><h2>Signals</h2>${sigs.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Candle</th><th class="r">Entry</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th class="r">Target</th><th class="r">Stop</th><th>Result</th><th class="r">Move</th><th class="r">R</th></tr></thead><tbody>
+  const sigTable = `<section class="panel"><h2>Signals</h2>${sigs.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Candle</th><th class="r">Entry</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th class="r">Target</th><th class="r">Stop</th><th>Result</th><th class="r">Move</th><th class="r">R</th><th></th></tr></thead><tbody>
     ${sigs.map(s => `<tr><td><b>${esc(s.symbol)}</b></td><td>${esc(t5(s.at))}</td><td class="r">${(+s.entry).toFixed(2)}</td><td class="r">${s.pw}</td><td class="r">${s.flip}</td><td class="r">${s.cw}</td><td class="r">${pc(s.tgtPct, 1)}</td><td class="r">${pc(-s.riskPct, 1)}</td>
-      <td>${st(s)}${s.exitAt ? ` <span class="muted">${esc(t5(s.exitAt))}</span>` : s.lastAt ? ` <span class="muted">now ${(+s.last).toFixed(2)}</span>` : ''}</td><td class="r">${pc(s.pct)}</td><td class="r">${s.R == null ? '—' : (s.R > 0 ? '+' : '') + s.R}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No signal yet. Press <b>Check the last 45 days</b> to see how often it happened.</p>'}</section>`;
+      <td>${st(s)}${s.exitAt ? ` <span class="muted">${esc(t5(s.exitAt))}</span>` : s.lastAt ? ` <span class="muted">now ${(+s.last).toFixed(2)}</span>` : ''}</td><td class="r">${pc(s.pct)}</td><td class="r">${s.R == null ? '—' : (s.R > 0 ? '+' : '') + s.R}</td><td><button class="btn" data-wwchart="${esc(s.symbol)}|${esc(s.at)}" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No signal yet. Press <b>Check the last 45 days</b> to see how often it happened.</p>'}</section>`;
   const by = (d.byTicker || []).length ? `<section class="panel" style="margin-top:14px"><details><summary class="muted" style="cursor:pointer">By ticker (finished signals)</summary><div class="tablewrap"><table class="pos" style="font-size:.85rem;margin-top:8px"><thead><tr><th>Ticker</th><th class="r">Signals</th><th class="r">Targets</th><th class="r">Total move</th></tr></thead><tbody>
     ${d.byTicker.map(b => `<tr><td><b>${esc(b.symbol)}</b></td><td class="r">${b.n}</td><td class="r">${b.targets}</td><td class="r">${pc(b.total)}</td></tr>`).join('')}</tbody></table></div></details></section>` : '';
   const stMap = Object.fromEntries((d.status || []).map(x => [x.symbol, x]));
-  const now = `<section class="panel" style="margin-top:14px"><h2>Now</h2><div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th class="r">Last close</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th>CW > flip > PW</th><th class="r">Candle</th></tr></thead><tbody>
-    ${(cfg.tickers || []).map(t => { const x = stMap[t] || {}, w = x.walls || {}; return `<tr><td><b>${esc(t)}</b></td><td class="r">${x.price != null ? (+x.price).toFixed(2) : '—'}</td><td class="r">${w.putWall ?? '—'}</td><td class="r">${w.flip ?? '—'}</td><td class="r">${w.callWall ?? '—'}</td><td>${x.walls ? (x.setup ? '<b class="gain">yes</b>' : '<span class="muted">no</span>') : '<span class="muted">no walls</span>'}</td><td class="r muted">${esc(t5(x.barAt))}</td></tr>`; }).join('')}</tbody></table></div>
+  const now = `<section class="panel" style="margin-top:14px"><h2>Now</h2><div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th class="r">Last close</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th>CW > flip > PW</th><th class="r">Candle</th><th></th></tr></thead><tbody>
+    ${(cfg.tickers || []).map(t => { const x = stMap[t] || {}, w = x.walls || {}; return `<tr><td><b>${esc(t)}</b></td><td class="r">${x.price != null ? (+x.price).toFixed(2) : '—'}</td><td class="r">${w.putWall ?? '—'}</td><td class="r">${w.flip ?? '—'}</td><td class="r">${w.callWall ?? '—'}</td><td>${x.walls ? (x.setup ? '<b class="gain">yes</b>' : '<span class="muted">no</span>') : '<span class="muted">no walls</span>'}</td><td class="r muted">${esc(t5(x.barAt))}</td><td><button class="btn" data-wwchart="${esc(t)}|" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`; }).join('')}</tbody></table></div>
     <details style="margin-top:10px"><summary class="muted" style="cursor:pointer">Edit the list (${(cfg.tickers || []).length} tickers)</summary>
       <textarea id="ww-list" rows="5" style="width:100%;margin-top:6px">${esc((cfg.tickers || []).join(' '))}</textarea>
       <button class="btn" data-wwsave="1">Save the list</button></details></section>`;
@@ -2507,7 +2585,8 @@ async function refreshNow(quiet) {
     await reload();
     if (v === 'bot' || v === 'dashboard') { await loadBot(true); }
     if (v === 'botevals') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); }
-    if (v === 'botchart') { const c = ((S.tickers && S.tickers.items) || []).find(x => x.symbol === fcfSymbol()); if (c) { delete S.fc[fcKey(c.id)]; delete S.fcDp[fcKey(c.id)]; } await loadTickers(); }
+    if (v === 'botchart' && S.fcfMode === 'ww') { delete S.fc[fcKey('ww-' + fcfSymbol())]; await loadWatch(); }
+    else if (v === 'botchart') { const c = ((S.tickers && S.tickers.items) || []).find(x => x.symbol === fcfSymbol()); if (c) { delete S.fc[fcKey(c.id)]; delete S.fcDp[fcKey(c.id)]; } await loadTickers(); }
     if (v === 'botskipped') { await loadShadow(); }
     if (v === 'botbursts') { await loadBursts(); }
     if (v === 'botexplore') { await runExplore(false); }
@@ -2610,7 +2689,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2662,6 +2741,9 @@ document.addEventListener('click', e => {
   }
   if (el.dataset.exdel !== undefined) { S.exConds.splice(+el.dataset.exdel, 1); runExplore(false); return; }
   if (el.dataset.exclear) { S.exConds = []; runExplore(false); return; }
+  if (el.dataset.fcfmode) { fcfSetMode(el.dataset.fcfmode); if (el.dataset.fcfmode === 'ww' && !S.ww) loadWatch(); else if (el.dataset.fcfmode === 'ev' && !S.tickers) loadTickers(); location.hash = '#botchart'; render(); return; }
+  if (el.dataset.wwsel) { const [sym, at] = el.dataset.wwsel.split('|'); S.wwSel = { sym, at, zoom: true }; render(); return; }
+  if (el.dataset.wwchart) { const [sym, at] = el.dataset.wwchart.split('|'); fcfSetMode('ww'); S.wwSel = at ? { sym, at, zoom: true } : null; location.hash = '#botchart?t=' + encodeURIComponent(sym); return; }
   if (el.dataset.wwrun) { runWatch(+el.dataset.wwrun); return; }
   if (el.dataset.wwsave) { api('/bot/wallwatch', { method: 'PUT', body: { tickers: $('#ww-list').value } }).then(r => { S.ww = r; toast('Saved'); render(); }).catch(err => toast(err.message)); return; }
   if (el.dataset.exsearch) { S.exMinN = +($('#ex-minn').value || 15); S.exGroup = ($('#ex-group') || {}).value || ''; S.exDepth = +(($('#ex-depth') || {}).value || 4); runExplore(true); return; }

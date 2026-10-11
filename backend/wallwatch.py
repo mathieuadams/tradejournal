@@ -200,3 +200,52 @@ def view(sub):
     return {"config": cfg, "run": {k: run_.get(k) for k in ("at", "running", "checked", "errors", "bfLeft", "bfAt", "bfDays")},
             "status": run_.get("status") or [], "signals": sigs[:500], "summary": summary,
             "byTicker": sorted(by.values(), key=lambda b: -b["total"])}
+
+
+def chart(sub, sym, days=45):
+    """Hourly chart of a watchlist ticker: candles, walls + flip by day, and its signals."""
+    import flowdata
+    from charts import _yahoo
+    sym = (sym or "").upper().replace("/", ".")
+    if not sym:
+        from util import BadRequest
+        raise BadRequest("Pick a ticker.")
+    now = now_ny().replace(tzinfo=None)
+    start = (now - timedelta(days=int(days * 1.5) + 5)).replace(hour=0, minute=0, second=0, microsecond=0)
+    bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
+    bars = [{"t": b["t"][:16], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v")}
+            for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    dates = sorted({b["t"][:10] for b in bars})[-days:]
+    bars = [b for b in bars if dates and b["t"][:10] >= dates[0]]
+    stored = flowdata.stored_walls(sym)
+    today = now.strftime("%Y-%m-%d")
+    note = None
+    if dates and dates[-1] == today:
+        try:
+            w = flowdata.gex_day(flowdata._key(sub), sym, today, True)
+            if w:
+                stored[today] = {k: w.get(k) for k in ("callWall", "putWall", "flip")}
+        except Exception as e:
+            note = f"Today's walls unavailable: {str(e)[:100]}"
+    walls, prev = [], None
+    for d in dates:
+        w = stored.get(d)
+        if not w or w.get("callWall") is None:
+            walls.append({"t": f"{d}T09:30", "callWall": None, "putWall": None, "flip": None, "src": "gap"})
+            prev = None
+            continue
+        cur = {"t": f"{d}T09:30", "callWall": w.get("callWall"), "putWall": w.get("putWall"), "flip": w.get("flip"), "src": "uw"}
+        if prev and all(prev.get(k) == cur.get(k) for k in ("callWall", "putWall", "flip")):
+            continue
+        walls.append(cur)
+        prev = cur
+    missing = [d for d in dates if not (stored.get(d) or {}).get("callWall")]
+    noflip = [d for d in dates if (stored.get(d) or {}).get("callWall") and not stored[d].get("flip")]
+    if missing or noflip:
+        note = (note + " · " if note else "") + (f"Walls missing for {len(missing)} of {len(dates)} days" if missing else "") \
+            + (f"{' · ' if missing else ''}flip missing for {len(noflip)} days" if noflip else "") + ": press Check the last 45 days on Wall watch."
+    sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in db.q_prefix(db.upk(sub), f"WWSIG#{sym}#")]
+    sigs.sort(key=lambda s: s["at"])
+    last = next((stored.get(d) for d in reversed(dates) if (stored.get(d) or {}).get("callWall")), None)
+    return {"symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": [], "evals": [],
+            "interval": 60, "days": days, "wallNote": note, "setupNow": setup_ok(last)}
