@@ -1972,6 +1972,43 @@ def test_explorer_many_features_and_deep_search():
     assert explorer.search(rs, min_n=10, max_depth=3)["results"][0]["size"] <= 3
 
 
+def test_wall_watch():
+    """CW > flip > PW + green hourly candle crossing the put wall; target = call wall, stop = hourly close below the put wall."""
+    import wallwatch, flowdata, charts, datetime as dt
+    STORE.clear()
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 101, "h": 101.5, "l": 100.5, "c": 101},
+            {"t": "2026-10-05T10:30", "o": 99.5, "h": 101, "l": 99, "c": 100.8},      # green, crosses the put wall -> signal
+            {"t": "2026-10-05T11:30", "o": 100.8, "h": 104, "l": 100.2, "c": 103.5},
+            {"t": "2026-10-05T12:30", "o": 99.8, "h": 100.9, "l": 99.5, "c": 100.4},  # would be a signal but one is open
+            {"t": "2026-10-06T09:30", "o": 104, "h": 110.5, "l": 103, "c": 109},       # target
+            {"t": "2026-10-06T10:30", "o": 101, "h": 101.2, "l": 99.6, "c": 101.1},    # new signal
+            {"t": "2026-10-06T11:30", "o": 101, "h": 101.2, "l": 99.0, "c": 99.4}]     # close below the put wall -> stop
+    sigs = wallwatch.detect(bars, {"2026-10-05": w, "2026-10-06": w})
+    assert [s["status"] for s in sigs] == ["target", "stop"], sigs
+    assert sigs[0]["exit"] == 110 and sigs[0]["pct"] == round((110 / 100.8 - 1) * 100, 2) and sigs[1]["exit"] == 99.4
+    assert not wallwatch.detect(bars, {"2026-10-05": {"callWall": 110, "flip": 99, "putWall": 100}})      # flip under the put wall
+    now = dt.datetime(2026, 10, 5, 11, 10)
+    assert [b["t"][11:16] for b in wallwatch.finished(bars[:3], now)] == ["09:30"]                       # 10:30 candle not over
+    saved = (charts._yahoo, flowdata.gex_day, flowdata._key)
+    charts._yahoo = lambda sym, tf, a, b: [dict(x) for x in bars]
+    flowdata.gex_day = lambda key, sym, d, flip=True: dict(w)
+    flowdata._key = lambda sub: "k"
+    try:
+        st, r = call("GET", "/bot/wallwatch")
+        assert st == 200 and "SPY" in r["config"]["tickers"] and r["config"]["enabled"]
+        st, r = call("PUT", "/bot/wallwatch", {"tickers": "aapl, brk/b msft"})
+        assert r["config"]["tickers"] == ["AAPL", "BRK.B", "MSFT"]
+        out = wallwatch.run(SUB, days=45)
+        assert out["checked"] == 3, out
+        st, r = call("GET", "/bot/wallwatch")
+        sm = r["summary"]
+        assert sm["signals"] == 6 and sm["closed"] == 6 and sm["targets"] == 3 and sm["hitPct"] == 50, sm
+        assert len(r["status"]) == 3 and r["status"][0]["setup"] is True
+    finally:
+        charts._yahoo, flowdata.gex_day, flowdata._key = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

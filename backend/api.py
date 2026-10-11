@@ -421,6 +421,32 @@ def bot_shadow_run(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("GET", "/bot/wallwatch")
+def bot_wallwatch(sub, claims, body, q):
+    import wallwatch
+    return wallwatch.view(sub)
+
+
+@route("PUT", "/bot/wallwatch")
+def bot_wallwatch_save(sub, claims, body, q):
+    import wallwatch
+    wallwatch.save_config(sub, body or {})
+    return wallwatch.view(sub)
+
+
+@route("POST", "/bot/wallwatch/run")
+def bot_wallwatch_run(sub, claims, body, q):
+    """Check the watchlist now (days=3) or backfill the last `days` trading days (background job)."""
+    try:
+        days = max(3, min(60, int((body or {}).get("days") or 3)))
+    except (TypeError, ValueError):
+        days = 3
+    db.put({**(db.get(db.upk(sub), "WWRUN") or {}), "PK": db.upk(sub), "SK": "WWRUN", "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wallwatch", "days": days}))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/walls/backfill")
 def bot_walls_backfill(sub, claims, body, q):
     """Store the call / put walls of every day for every evaluated ticker (runs in the background)."""

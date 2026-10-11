@@ -410,6 +410,12 @@ Resources:
             ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "tick"}'
+        WallWatch:          # after each hourly candle: CW > flip > PW + green candle crossing the put wall
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(2,32 10-16 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "wallwatch"}'
         ShadowTracking:     # after the close: what the evaluations the bot didn't take would have done
           Type: ScheduleV2
           Properties:

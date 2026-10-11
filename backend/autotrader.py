@@ -1532,6 +1532,8 @@ def handler(event, context_):
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed", "closed"))})
     elif job == "review":  # end of day: users with open bot positions
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
+    elif job == "wallwatch":   # every hour: users with the wall watchlist on
+        subs = [p["PK"][5:] for p in db.scan_sk("WWCFG") if p.get("enabled", True)]
     elif job == "tick":   # every minute: users with open bot trades or flow trading on
         flow_users = {p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("flowAuto")}
         subs = sorted(flow_users | {r["PK"][5:] for r in db.scan_prefix("BOT#", ("submitted", "open", "closing"))})
@@ -1561,6 +1563,14 @@ def handler(event, context_):
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "done", "at": iso(now_ny()), "result": out[sub]})
                 except Exception as e:
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "error", "at": iso(now_ny()), "result": {"error": str(e)[:200]}})
+                    raise
+            elif job == "wallwatch":
+                import wallwatch
+                try:
+                    out[sub] = wallwatch.run(sub, days=int(event.get("days") or 3), budget_s=480)
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), "WWRUN") or {}), "PK": db.upk(sub), "SK": "WWRUN", "running": None,
+                            "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
             elif job == "walls":
                 import flowdata
