@@ -121,8 +121,19 @@ def build(sub, bot_id, days=5):
                       "taken": bool(r.get("orderId") or r.get("status") in ("submitted", "open", "closing", "closed")),
                       "why": ((r.get("blocking") or [""])[0] or "")[:140], "price": (r.get("signals") or {}).get("price")})
     evals.sort(key=lambda e: e["t"])
+    p_, sh = rec.get("proposal") or {}, rec.get("shadow") or {}
+    taken = bool(rec.get("orderId") or rec.get("status") in ("submitted", "open", "closing", "closed"))
+    trade = {"at": ev_at.replace(" ", "T"), "price": (rec.get("signals") or {}).get("price"), "taken": taken,
+             "stop": p_.get("underlyingStop"), "target": p_.get("underlyingTarget"),
+             "contract": f"{p_.get('exp') or ''} {p_.get('strike') or ''}c".strip(), "entryOpt": rec.get("fillPrice") or sh.get("entry") or p_.get("limit")}
+    if taken:
+        trade.update(exitAt=(rec.get("closedAt") or "")[:16] or None, R=rec.get("realizedR"), reason=rec.get("exitReason"),
+                     status="done" if rec.get("status") == "closed" else "open", exitOpt=rec.get("exitPrice") or rec.get("lastMark"))
+    elif sh.get("status") in ("done", "tracking"):
+        trade.update(exitAt=(sh.get("exitDate") or "")[:10] or None, R=sh.get("R"), reason=sh.get("exitReason"), plPct=sh.get("plPct"),
+                     status=sh.get("status"), exitOpt=sh.get("exitPrice") or sh.get("last"))
     o = rec.get("origin") or {}
-    return {"evals": evals, "walls": wl, "wallsNow": now_w, "wallNote": wnote, "wallSource": wsrc, "wallInfo": winfo, "days": days, "interval": 60 if long_view else 15,
+    return {"trade": trade, "evals": evals, "walls": wl, "wallsNow": now_w, "wallNote": wnote, "wallSource": wsrc, "wallInfo": winfo, "days": days, "interval": 60 if long_view else 15,
             "symbol": sym, "evaluatedAt": ev_at.replace(" ", "T"), "from": first.isoformat(), "to": last.isoformat(),
             "bars": bars, "alerts": alerts, "minPrint": cfg["repeatMinPremium"], "bigPrint": cfg["flowMinPremium"],
             "trigger": {"contract": o.get("contract"), "premium": o.get("topPremium") or o.get("premium")} if o.get("type") == "flow" else None,

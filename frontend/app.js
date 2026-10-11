@@ -1271,10 +1271,10 @@ async function loadFlowChart(id) {
   S.fcBusy[k] = false;
   if (isBotRoute()) render();
 }
-S.fcZoom = S.fcZoom || {};
+S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { return { evals: true, flow: true, walls: true, dark: false, acc: true, ws: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true, ws: true }; } })();
-const FC_LAYERS = [['ws', 'Wall strategy'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { return { bt: true, evals: true, flow: true, walls: true, dark: false, acc: true, ws: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true, ws: true }; } })();
+const FC_LAYERS = [['bt', 'Backtest'], ['ws', 'Wall strategy'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)];
   return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
@@ -1409,7 +1409,8 @@ function fcSvg0(d, id, opts) {
   const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
   const walls = LY.walls ? (d.walls || []).filter(w => w.callWall != null || w.src === 'gap') : [];
   const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
-  const wv = walls.flatMap(w => [w.callWall, w.putWall, w.flip]).concat(dp && !dp.error ? (dp.levels || []).map(l => l.price) : []).filter(near);
+  const wv = walls.flatMap(w => [w.callWall, w.putWall, w.flip]).concat(dp && !dp.error ? (dp.levels || []).map(l => l.price) : [])
+    .concat(LY.bt && d.trade ? [d.trade.stop, d.trade.target] : []).filter(near);
   const lo0 = Math.min(pl0, ...wv), hi0 = Math.max(ph0, ...wv), pad = (hi0 - lo0) * 0.08 || 1;
   const lo = lo0 - pad, hi = hi0 + pad;
   const X = i => L + (i + 0.5) * (W - L - Rr) / n, Y = v => T + (hi - v) / (hi - lo) * (B - T), bw = Math.max(1, (W - L - Rr) / n * 0.6);
@@ -1476,6 +1477,26 @@ function fcSvg0(d, id, opts) {
       const sel = S.fcSelD && S.fcSelD.id === id && S.fcSelD.k === k;
       g += `<rect data-fcd="${id}|${k}" x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2" fill="var(--warn)" fill-opacity=".55" stroke="${sel || p0.premium >= 10e6 ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(p0.t.replace('T', ' ').slice(5))} · dark pool ${p0.size.toLocaleString('en-US')} sh at ${p0.price} · ${prem(p0.premium)}</title></rect>`; });
   }
+  const tr = d.trade;
+  if (LY.bt && tr && tr.at) {                // the evaluation's own trade: real if taken, otherwise its shadow (backtest)
+    const ei = at(tr.at), dayEnd = tr.exitAt && tr.exitAt.length === 10 ? `${tr.exitAt}T15:59` : tr.exitAt;
+    let xi = tr.exitAt ? at(dayEnd) : null;
+    if (tr.exitAt && xi == null && bucket(dayEnd) > lastT) xi = n - 1;
+    const done = tr.status === 'done', col = tr.R == null ? 'var(--coach,#5b5bd6)' : tr.R >= 0 ? 'var(--gain)' : 'var(--loss)';
+    if (ei != null) {
+      const xa = X(ei), xb = xi != null ? X(xi) : W - Rr;
+      g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity=".06"/>`;
+      [['stop', 'var(--loss)', 'stop'], ['target', 'var(--gain)', 'target']].forEach(([k, c, nm]) => { const v = tr[k]; if (v == null || v < lo || v > hi) return;
+        g += `<line x1="${xa}" x2="${xb}" y1="${Y(v)}" y2="${Y(v)}" stroke="${c}" stroke-width="2" opacity=".8"><title>${tr.taken ? 'Trade' : 'Backtest'} ${nm}: ${v}</title></line>
+          <text x="${xa + 4}" y="${Y(v) - 4}" font-size="${fs - 2}" font-weight="700" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${nm} ${v}</text>`; });
+      const ey = tr.price && tr.price >= lo && tr.price <= hi ? Y(tr.price) : Y(bars[ei].c);
+      g += `<circle cx="${xa}" cy="${ey}" r="7" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="2"><title>${tr.taken ? 'Bought' : 'Backtest entry'} ${esc(tr.at.replace('T', ' ').slice(5))} · ${esc(tr.contract)} at ${tr.entryOpt ?? '—'} · stock ${tr.price ?? '—'}</title></circle>
+        <text x="${xa + 9}" y="${ey + 4}" font-size="${fs - 1}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${tr.taken ? 'BUY' : 'ENTRY'}</text>`;
+      if (xi != null && done) { const yb = Y(bars[xi].c);
+        g += `<rect x="${xb - 7}" y="${yb - 7}" width="14" height="14" fill="${col}" stroke="var(--surface)" stroke-width="2"><title>Exit ${esc(tr.exitAt)} · ${esc(tr.reason || '')} · option ${tr.exitOpt ?? '—'} · ${tr.R != null ? (tr.R >= 0 ? '+' : '') + tr.R + 'R' : ''}</title></rect>
+          <text x="${xb + 10}" y="${yb + 4}" font-size="${fs}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${tr.R != null ? (tr.R >= 0 ? '+' : '') + tr.R + 'R' : 'EXIT'}</text>`; }
+    }
+  }
   if (LY.ws) {                              // Wall strategy: watch periods (after call flow), then trades
     const wsr = wsRun(d);
     (wsr.watches || []).forEach(wt => {
@@ -1540,12 +1561,21 @@ function fcfSymbol() {
   return items.find(x => x.symbol === t) ? t : (items[0] && items[0].symbol) || t;
 }
 function vChartFull() {
-  const L = S.tickers, items = (L && L.items) || [], sym = fcfSymbol(), cur = items.find(x => x.symbol === sym);
+  const L = S.tickers, items = (L && L.items) || [], sym = fcfSymbol(), cur0 = items.find(x => x.symbol === sym), evId = hashParam('id');
+  const cur = cur0 && evId ? { ...cur0, id: evId } : cur0;      // a specific evaluation (backtest replay) or the latest one
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
   const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
   const days = S.fcDays || 5, d = cur ? S.fc[fcKey(cur.id)] : null;
   if (cur && !d && !S.fcBusy[fcKey(cur.id)]) setTimeout(() => loadFlowChart(cur.id), 0);
   if (cur) fcNeedDark(cur.id);
+  if (cur && d && !d.error && evId && !S.fcAutoZ[fcKey(cur.id)]) {        // replay: zoom around the trade the first time
+    S.fcAutoZ[fcKey(cur.id)] = true;
+    const bs = fcClean(d).bars, tr = d.trade || {}, ix = t => { let k = -1; bs.forEach((b0, i) => { if (b0.t <= t) k = i; }); return k; };
+    const a0 = ix((tr.at || '').slice(0, 16)), b0 = tr.exitAt ? ix(tr.exitAt.length === 10 ? tr.exitAt + 'T15:59' : tr.exitAt) : bs.length - 1;
+    if (a0 >= 0) { const pad = Math.max(10, Math.round((b0 - a0) * 0.3)); S.fcZoom[fcKey(cur.id)] = [Math.max(0, a0 - pad), Math.min(bs.length - 1, Math.max(b0, a0 + 8) + pad)]; }
+  }
+  const rl = S.replay || [], ri = cur ? rl.findIndex(x => x.id === cur.id) : -1;
+  const nav = ri >= 0 ? `<span class="seg"><a class="btn" href="${ri > 0 ? `#botchart?t=${encodeURIComponent(rl[ri - 1].symbol)}&id=${rl[ri - 1].id}` : '#'}" ${ri > 0 ? '' : 'aria-disabled="true" style="opacity:.4;pointer-events:none"'}>◀ prev idea</a><span class="btn" style="cursor:default">Idea ${ri + 1} of ${rl.length}</span><a class="btn" href="${ri < rl.length - 1 ? `#botchart?t=${encodeURIComponent(rl[ri + 1].symbol)}&id=${rl[ri + 1].id}` : '#'}" ${ri < rl.length - 1 ? '' : 'aria-disabled="true" style="opacity:.4;pointer-events:none"'}>next idea ▶</a></span>` : '';
   const back = `#botevals${sym ? '?t=' + encodeURIComponent(sym) : ''}`;
   const zb_ = (k, l, t) => cur ? `<button class="btn" data-fczoom="${cur.id}|${k}" title="${t}" style="padding:3px 10px">${l}</button>` : '';
   const seg = `<span class="seg">${[[5, '5D · 15m'], [45, '45D · 1h']].map(([v, l]) => `<button class="btn ${days === v ? 'coachbtn' : ''}" data-fcdays="${v}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
@@ -1554,7 +1584,7 @@ function vChartFull() {
       <b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>${cur ? `<span class="verdict ${DEC_CLS[cur.decision] || 'mid'}">${esc(cur.decision || '')}</span>
       <span class="muted" style="font-size:.85rem">evaluated ${esc((cur.at || '').replace('T', ' ').slice(5, 16))} ET${cur.price ? ` at ${px(cur.price)}` : ''}</span>` : ''}
       ${sel}${seg}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
-      ${cur ? fcLayerBar(cur.id) : ''}
+      ${nav}${cur ? fcLayerBar(cur.id) : ''}
       <span style="flex:1"></span>${cur ? `<a class="btn" href="#botevals?t=${encodeURIComponent(sym)}">Evaluation</a>` : ''}<a class="btn" href="${back}" aria-label="Close full screen">✕</a></div>`;
   let main;
   if (!L) main = '<p class="loading" style="padding:16px">Loading tickers…</p>';
@@ -1570,7 +1600,8 @@ function vChartFull() {
       ${S.fcLayers.ws ? `<span>${wsSummary(wsRun(d))} ${wsParamsBar()}</span>` : ''}
       <span><b class="gain">Calls</b> ${calls.length} · ${money(sum(calls), false)} &nbsp; <b class="loss">Puts</b> ${puts.length} · ${money(sum(puts), false)}</span>
       ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b class="loss">put ${w.putWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b></span>` : ''}
-      ${cur.contract ? `<span>Proposed: <b>${esc(fmtExp(cur.exp))} ${cur.strike}c</b> at ${cur.limit != null ? (+cur.limit).toFixed(2) : '—'}</span>` : ''}
+      ${(() => { const tr = d.trade; if (!tr || !tr.at) return ''; const r = tr.R;
+        return `<span><b>${tr.taken ? 'Trade' : 'Backtest'}</b> ${esc(tr.at.replace('T', ' ').slice(5))} · ${esc(tr.contract)} at ${tr.entryOpt ?? '—'} · stop ${tr.stop ?? '—'} / target ${tr.target ?? '—'} · ${tr.status === 'done' ? `exit ${esc(tr.exitAt || '')} (${esc(tr.reason || '')}) <b class="${r >= 0 ? 'gain' : 'loss'}">${r >= 0 ? '+' : ''}${r}R</b>` : tr.status ? `<b>still open</b>${r != null ? ` ${r >= 0 ? '+' : ''}${r}R so far` : ''}` : 'no result yet'}</span>`; })()}
       <span>${sa ? `<b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}` : '<span class="muted">Tap a dot to see the alert · drag or scroll on the chart to zoom · ↑ ↓ to change ticker</span>'}</span>
       ${(() => { const e = S.fcSelE && S.fcSelE.id === cur.id ? (d.evals || [])[S.fcSelE.k] : null; return e ? `<span><b>Evaluated ${esc(e.t.replace('T', ' ').slice(5))} ET</b> · <span class="verdict ${DEC_CLS[e.decision] || 'mid'}" style="font-size:.75rem;padding:1px 7px">${esc(e.decision || '')}</span>${e.taken ? ' · <b>traded</b>' : ''}${e.why ? ` · <span class="muted">${esc(e.why)}</span>` : ''} · <a href="#botevals?t=${encodeURIComponent(sym)}" data-evload="${e.id}">open it</a></span>` : `<span class="muted">${(d.evals || []).length} evaluation${(d.evals || []).length === 1 ? '' : 's'} in this period</span>`; })()}
       ${dsel ? `<span><b style="color:var(--warn)">DARK POOL</b> ${esc(dsel.t.replace('T', ' ').slice(5))} ET · ${dsel.size.toLocaleString('en-US')} sh at ${dsel.price} · <b>${money(dsel.premium, false)}</b></span>` : ''}
@@ -1595,6 +1626,11 @@ function vChartFull() {
   document.addEventListener('keydown', e => {
     if (route() !== 'botchart' || /INPUT|SELECT|TEXTAREA/.test((e.target.tagName || ''))) return;
     if (e.key === 'Escape') { const s2 = fcfSymbol(); location.hash = `#botevals${s2 ? '?t=' + encodeURIComponent(s2) : ''}`; return; }
+    if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && (S.replay || []).length) {      // replay: next / previous idea
+      const id = hashParam('id'), i = S.replay.findIndex(x => x.id === id), nx = S.replay[i + (e.key === 'ArrowRight' ? 1 : -1)];
+      if (i >= 0 && nx) { e.preventDefault(); location.hash = `#botchart?t=${encodeURIComponent(nx.symbol)}&id=${nx.id}`; }
+      return;
+    }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     const lis = [...document.querySelectorAll('.fcf-list li:not([hidden])')].map(li => li.dataset.sym);
     const list = lis.length ? lis : ((S.tickers && S.tickers.items) || []).map(x => x.symbol);
@@ -2318,7 +2354,9 @@ function vExplore() {
       <div class="stat"><span>All ideas (same period)</span><b>${R(a.avgR)}</b><span>${a.n} ideas · ${cmp != null ? `difference ${sgn(cmp, 2)}R` : ''}</span></div>
     </div>
     ${d.conds.length && m.n >= 4 ? `<p class="muted" style="font-size:.84rem;margin:0 0 8px">Older half ${R(d.older)} · newer half ${R(d.newer)} — ${d.older != null && d.newer != null && d.older > (a.avgR || 0) && d.newer > (a.avgR || 0) ? '<b class="gain">holds in both halves</b>' : 'not consistent across the period yet'}${m.n < 30 ? ' · fewer than 30 ideas: treat as a hint, not a result' : ''}</p>` : ''}`;
-  const list = (d.items || []).length ? `<details ${d.conds.length ? 'open' : ''}><summary class="muted" style="cursor:pointer">The ${d.items.length} matching ideas, best first</summary><ul class="shl" style="margin-top:8px">${d.items.slice(0, 80).map(x => `<li data-shopen="${x.id}"><span class="shl-a"><b>${esc(x.symbol)}</b> <span class="muted">${esc(x.at.replace('T', ' ').slice(5, 16))} · ${esc(x.decision || '')}${x.taken ? ' · taken' : ''}</span></span><span class="shl-r">${R(x.R)}${x.status !== 'done' ? ' <span class="muted">open</span>' : ''}</span></li>`).join('')}</ul></details>` : '';
+  const list = (d.items || []).length ? `<details ${d.conds.length ? 'open' : ''}><summary class="muted" style="cursor:pointer">The ${d.items.length} matching ideas, best first</summary>
+    <p style="margin:8px 0"><button class="btn coachbtn" data-replay="0">▶ Replay them on the chart</button> <span class="muted" style="font-size:.82rem">each idea's entry, stop, target and exit drawn on the chart, one after the other</span></p>
+    <ul class="shl" style="margin-top:8px">${d.items.slice(0, 80).map((x, i) => `<li data-shopen="${x.id}"><span class="shl-a"><b>${esc(x.symbol)}</b> <span class="muted">${esc(x.at.replace('T', ' ').slice(5, 16))} · ${esc(x.decision || '')}${x.taken ? ' · taken' : ''}</span></span><span class="shl-r">${R(x.R)}${x.status !== 'done' ? ' <span class="muted">open</span>' : ''} <button class="btn" data-replay="${i}" style="font-size:.75rem;padding:1px 7px" title="See it on the chart">chart</button></span></li>`).join('')}</ul></details>` : '';
   const sr = d.search;
   const search = `<section class="panel" style="margin-top:14px"><div class="cal-head"><h2>Best combinations</h2>
       <span style="display:flex;gap:8px;align-items:center"><label class="muted" style="font-size:.85rem">at least <input id="ex-minn" type="number" value="${S.exMinN || 15}" min="5" style="width:4.5em"> ideas</label>
@@ -2650,7 +2688,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2669,6 +2707,9 @@ document.addEventListener('click', e => {
     try { localStorage.setItem('fcLayers', JSON.stringify(S.fcLayers)); } catch (err) {}
     render(); return; }
   if (el.dataset.evload) { e.preventDefault(); api(`/bot/${el.dataset.evload}`).then(it => { S.botRes = it; S.fcSelE = null; if (route() !== 'botevals') location.hash = `#botevals?t=${encodeURIComponent(it.symbol)}`; else { render(); window.scrollTo(0, 0); } }).catch(err => toast(err.message)); return; }
+  if (el.dataset.replay !== undefined) { e.stopPropagation(); const its = (S.ex && S.ex.items) || []; const x = its[+el.dataset.replay]; if (!x) return;
+    S.replay = its.slice(0, 80).map(i => ({ id: i.id, symbol: i.symbol })); S.fcDays = 45;
+    location.hash = `#botchart?t=${encodeURIComponent(x.symbol)}&id=${x.id}`; return; }
   if (el.dataset.wallsfill) { el.disabled = true; api('/bot/walls/backfill', { method: 'POST' }).then(() => toast('Storing the walls in the background (a few minutes for many tickers). Refresh the Explorer later.')).catch(err => { el.disabled = false; toast(err.message); }); return; }
   if (el.dataset.fcreload) { const id = el.dataset.fcreload; delete S.fc[fcKey(id)]; loadFlowChart(id); render(); return; }
   if (el.dataset.fce) { const [id, k] = el.dataset.fce.split('|'); S.fcSelE = { id, k: +k }; render(); return; }
