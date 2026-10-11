@@ -1273,8 +1273,8 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { return { evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { return { evals: true, flow: true, walls: true, dark: false, acc: true, ws: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true, ws: true }; } })();
+const FC_LAYERS = [['ws', 'Wall strategy'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)];
   return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
@@ -1302,6 +1302,61 @@ function fcSetZoom(id, a, b, N) {
   S.fcZoom[fcKey(id)] = a <= 0 && b >= N - 1 ? null : [a, b];
   render();
 }
+/* ---------- Wall strategy, replayed on the chart ----------
+   Entry: an hourly close at or just above the put wall (within nearPct), call premium bought at the ask over the last
+   flowHours beats puts and reaches minCall, and the call wall is at least roomPct above.
+   Exit: target = the call wall of the day (it moves up if the wall moves up); stop = an hourly close below the put wall. */
+S.wsP = (() => { const d0 = { near: 3, minCall: 100000, room: 3, hours: 6 }; try { return { ...d0, ...JSON.parse(localStorage.getItem('wsP') || '{}') }; } catch (e) { return d0; } })();
+function wsRun(d) {
+  const bars = d.bars || [], n = bars.length, P = S.wsP, iv = d.interval || 15;
+  if (n < 3) return [];
+  const ms = t => Date.parse(t.slice(0, 16) + ':00Z');
+  const walls = (d.walls || []).slice().sort((a, b) => a.t < b.t ? -1 : 1);
+  let wk = -1, cur = null;
+  const wallAt = []; bars.forEach(b => { while (wk + 1 < walls.length && walls[wk + 1].t <= b.t) { wk++; if (walls[wk].callWall != null) cur = walls[wk]; } wallAt.push(cur); });
+  const al = (d.alerts || []).map(a => ({ m: ms(a.t), call: a.type === 'call', p: a.premium })).sort((a, b) => a.m - b.m);
+  const hourClose = b => iv >= 60 || b.t.slice(14, 16) === '15' || b.t.slice(11, 16) === '15:45';
+  const trades = []; let pos = null, lo = 0;
+  for (let i = 0; i < n; i++) {
+    const b = bars[i], w = wallAt[i];
+    if (!w || w.putWall == null || w.callWall == null) continue;
+    if (pos) {
+      const tgt = Math.max(pos.tgt0, w.callWall);                      // the target follows the call wall up
+      if (b.h >= tgt) { trades.push({ ...pos, iX: i, exit: tgt, why: 'target', tgt }); pos = null; continue; }
+      if (hourClose(b) && b.c < pos.stop) { trades.push({ ...pos, iX: i, exit: b.c, why: pos.stop > pos.pw ? 'trail' : 'stop', tgt }); pos = null; continue; }
+      if (w.putWall > pos.stop && b.c >= w.putWall) pos.stop = w.putWall;   // the put wall moved up under price: the stop follows it
+      pos.tgtNow = tgt; continue;
+    }
+    if (!hourClose(b)) continue;
+    const dist = (b.c - w.putWall) / w.putWall * 100, room = (w.callWall - b.c) / b.c * 100;
+    if (dist < 0 || dist > P.near || room < P.room) continue;
+    const m = ms(b.t) + iv * 60000, from = m - P.hours * 3600000;
+    while (lo < al.length && al[lo].m < from) lo++;
+    let cp = 0, pp = 0; for (let k = lo; k < al.length && al[k].m <= m; k++) { if (al[k].call) cp += al[k].p; else pp += al[k].p; }
+    if (cp < P.minCall || cp <= pp) continue;
+    pos = { iE: i, entry: b.c, pw: w.putWall, stop: w.putWall, tgt0: w.callWall, tgtNow: w.callWall, cp, pp };
+  }
+  if (pos) trades.push({ ...pos, iX: null, exit: bars[n - 1].c, why: 'open', tgt: pos.tgtNow });
+  trades.forEach(t => { t.pl = (t.exit / t.entry - 1) * 100; });
+  return trades;
+}
+function wsSummary(tr) {
+  const done = tr.filter(t => t.why !== 'open'), c = w => done.filter(t => t.why === w).length;
+  const avg = done.length ? done.reduce((s2, t) => s2 + t.pl, 0) / done.length : null, won = done.filter(t => t.pl > 0).length;
+  return `Wall strategy: <b>${tr.length}</b> trade${tr.length === 1 ? '' : 's'}${done.length ? ` · ${c('target')} target · ${c('trail')} trailing stop · ${c('stop')} stop · ${won}/${done.length} winners · avg <b class="${avg >= 0 ? 'gain' : 'loss'}">${avg >= 0 ? '+' : ''}${avg.toFixed(1)}%</b> (stock move)` : ''}${tr.some(t => t.why === 'open') ? ' · 1 open' : ''}`;
+}
+function wsParamsBar() {
+  const P = S.wsP, f = (k, l, step, w) => `<label class="muted" style="font-size:.78rem;display:inline-flex;gap:4px;align-items:center">${l}<input data-wsp="${k}" type="number" step="${step}" value="${P[k]}" style="width:${w}em;padding:1px 4px"></label>`;
+  return `<details data-wsdet style="display:inline-block" ${S.wsOpen ? 'open' : ''}><summary class="muted" style="cursor:pointer;font-size:.8rem">strategy settings</summary><span style="display:inline-flex;flex-wrap:wrap;gap:8px;margin-left:6px">
+    ${f('near', 'within % above put wall', 0.5, 3.5)}${f('room', 'min room to call wall %', 0.5, 3.5)}${f('minCall', 'min call $', 10000, 6)}${f('hours', 'flow window h', 1, 3)}</span></details>`;
+}
+document.addEventListener('toggle', e => { if (e.target.dataset && e.target.dataset.wsdet !== undefined) S.wsOpen = e.target.open; }, true);
+document.addEventListener('change', e => {
+  const k = e.target.dataset && e.target.dataset.wsp; if (!k) return;
+  const v = +e.target.value; if (!isFinite(v) || v < 0) return;
+  S.wsP = { ...S.wsP, [k]: v }; try { localStorage.setItem('wsP', JSON.stringify(S.wsP)); } catch (err) {}
+  render();
+});
 function fcSvg(d, id, opts) {
   try { return fcSvg0(d, id, opts); } catch (e) {
     console.error('flow chart', e); S.fcZoom[fcKey(id)] = null;
@@ -1385,6 +1440,22 @@ function fcSvg0(d, id, opts) {
       const sel = S.fcSelD && S.fcSelD.id === id && S.fcSelD.k === k;
       g += `<rect data-fcd="${id}|${k}" x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2" fill="var(--warn)" fill-opacity=".55" stroke="${sel || p0.premium >= 10e6 ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(p0.t.replace('T', ' ').slice(5))} · dark pool ${p0.size.toLocaleString('en-US')} sh at ${p0.price} · ${prem(p0.premium)}</title></rect>`; });
   }
+  if (LY.ws) {                              // Wall strategy trades: shaded holding period, entry ▲, exit ■
+    wsRun(d).forEach(t => {
+      const a0 = t.iE - za, b0 = (t.iX == null ? all.length - 1 : t.iX) - za;
+      if (b0 < 0 || a0 > n - 1) return;
+      const xa = a0 >= 0 ? X(a0) : L, xb = b0 <= n - 1 ? X(b0) : W - Rr, win = t.pl > 0, open = t.why === 'open';
+      const col = open ? 'var(--coach,#5b5bd6)' : win ? 'var(--gain)' : 'var(--loss)';
+      g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity=".07"/>`;
+      if (t.entry >= lo && t.entry <= hi && t.exit >= lo && t.exit <= hi) g += `<line x1="${xa}" y1="${Y(t.entry)}" x2="${xb}" y2="${Y(t.exit)}" stroke="${col}" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+      if (a0 >= 0 && t.entry >= lo && t.entry <= hi) { const y = Y(t.entry);
+        g += `<path d="M${xa},${y + 4} L${xa - 7},${y + 16} L${xa + 7},${y + 16} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1"><title>Entry ${bars[a0].t.replace('T', ' ').slice(5)} at ${t.entry.toFixed(2)} · put wall ${t.pw} · call wall ${t.tgt0} · calls ${money(t.cp, false)} vs puts ${money(t.pp, false)}</title></path>
+          <text x="${xa}" y="${y + 28}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">IN</text>`; }
+      if (!open && b0 <= n - 1 && t.exit >= lo && t.exit <= hi) { const y = Y(t.exit);
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${t.why === 'target' ? 'Target (call wall)' : t.why === 'trail' ? `Trailing stop: hourly close below the raised put wall ${t.stop}` : `Stop: hourly close below the put wall ${t.stop}`} ${bars[b0].t.replace('T', ' ').slice(5)} at ${t.exit.toFixed(2)} · ${t.pl >= 0 ? '+' : ''}${t.pl.toFixed(1)}%</title></rect>
+          <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${t.pl >= 0 ? '+' : ''}${t.pl.toFixed(1)}%</text>`; }
+    });
+  }
   const stack = {};
   (LY.flow ? d.alerts || [] : []).forEach((a, k) => { const i = at(a.t); if (i == null) return; const b = bars[i], call = a.type === 'call';
     const key = `${i}${a.type}`; stack[key] = (stack[key] || 0) + 1;
@@ -1450,6 +1521,7 @@ function vChartFull() {
     const sa = S.fcSel && S.fcSel.id === cur.id ? al[S.fcSel.k] : null, w = d.wallsNow, dpd = S.fcDp[fcKey(cur.id)];
     const dsel = S.fcSelD && S.fcSelD.id === cur.id && dpd ? (dpd.prints || [])[S.fcSelD.k] : null;
     main = fcSvg(d, cur.id, { W, H }) + `<div class="fcf-info">
+      ${S.fcLayers.ws ? `<span>${wsSummary(wsRun(d))} ${wsParamsBar()}</span>` : ''}
       <span><b class="gain">Calls</b> ${calls.length} · ${money(sum(calls), false)} &nbsp; <b class="loss">Puts</b> ${puts.length} · ${money(sum(puts), false)}</span>
       ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b class="loss">put ${w.putWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b></span>` : ''}
       ${cur.contract ? `<span>Proposed: <b>${esc(fmtExp(cur.exp))} ${cur.strike}c</b> at ${cur.limit != null ? (+cur.limit).toFixed(2) : '—'}</span>` : ''}
@@ -1506,7 +1578,8 @@ function flowChartPanel(r) {
   const wline = `<p class="muted" style="font-size:.82rem;margin:0 0 6px">${d.wallSource === 'uw' && wi ? `Gamma walls: ${wi.days} of ${wi.of} days from Unusual Whales${wi.days < wi.of ? ` — missing ${(wi.missing || []).map(x => x.slice(5)).slice(0, 8).join(', ')}${(wi.missing || []).length > 8 ? '…' : ''} (shown as gaps) <button class="btn" data-fcreload="${r.id}" style="font-size:.78rem;padding:1px 8px">Retry</button>` : ''}.`
     : nW ? `Gamma walls: ${nW} reading${nW === 1 ? '' : 's'} from the bot.` : '<b>No gamma walls for this period.</b>'} ${d.wallNote ? esc(d.wallNote) : ''}</p>`;
   fcNeedDark(r.id);
-  const lbar = `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px">${fcLayerBar(r.id)}</div>`;
+  const lbar = `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 6px">${fcLayerBar(r.id)}</div>`
+    + (S.fcLayers.ws ? `<p style="font-size:.84rem;margin:0 0 6px">${wsSummary(wsRun(d))} ${wsParamsBar()}</p>` : '');
   const dsel = S.fcSelD && S.fcSelD.id === r.id && S.fcDp[fcKey(r.id)] ? (S.fcDp[fcKey(r.id)].prints || [])[S.fcSelD.k] : null;
   return head + zbar + lbar + wline + `<div style="border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)">${fcSvg(d, r.id)}</div>
     ${(() => { const e = S.fcSelE && S.fcSelE.id === r.id ? (d.evals || [])[S.fcSelE.k] : null; return e ? `<p style="margin:6px 0 0;font-size:.88rem"><b>Evaluated ${esc(e.t.replace('T', ' ').slice(5))} ET</b> · <span class="verdict ${DEC_CLS[e.decision] || 'mid'}" style="font-size:.75rem;padding:1px 7px">${esc(e.decision || '')}</span>${e.taken ? ' · <b>traded</b>' : ''}${e.price ? ` · at ${px(e.price)}` : ''}${e.why ? ` · <span class="muted">${esc(e.why)}</span>` : ''}${e.id !== r.id ? ` · <a href="#" data-evload="${e.id}">open it</a>` : ' · <span class="muted">this one</span>'}</p>` : ''; })()}
