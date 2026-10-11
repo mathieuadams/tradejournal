@@ -1613,8 +1613,8 @@ def test_flow_chart():
         def fake_uw(key, path, params=None):
             calls.append((path, params["date"]))
             dd = params["date"]
-            if path.endswith("/gex-levels"):
-                return {"data": {"gamma_flip": "188.5"}}
+            if path.endswith("/gex-levels"):          # some days have no flip (stored without the field)
+                return {"data": {"gamma_flip": "188.5" if dd.endswith(("0", "2", "4", "6", "8")) else None}}
             cw = "200" if dd < (now - dt.timedelta(days=10)).strftime("%Y-%m-%d") else "210"
             return {"data": [{"strike": "180", "call_gex": "10", "put_gex": "-900"}, {"strike": cw, "call_gex": "5000", "put_gex": "-5"},
                              {"strike": "190", "call_gex": "300", "put_gex": "-100"}]}
@@ -1623,7 +1623,8 @@ def test_flow_chart():
         try:
             code, d = call("GET", f"/bot/{rid}/flowchart", q={"days": "45"})
             assert code == 200 and d["days"] == 45 and d["interval"] == 60 and d["wallSource"] == "uw", d.get("wallNote")
-            assert [w["callWall"] for w in d["walls"]] == [200, 210] and d["walls"][0]["putWall"] == 180 and d["walls"][0]["flip"] == 188.5
+            cws = [w["callWall"] for w in d["walls"]]
+            assert sorted(set(cws)) == [200, 210] and cws == sorted(cws) and d["walls"][0]["putWall"] == 180 and d["walls"][0].get("flip") in (188.5, None) and d["wallSource"] == "uw"
             assert d["wallsNow"]["callWall"] == 210 and "Unusual Whales" in d["wallsNow"]["source"]
             n1 = len(calls)
             call("GET", f"/bot/{rid}/flowchart", q={"days": "45"})

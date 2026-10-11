@@ -73,10 +73,10 @@ def build(sub, bot_id, days=5):
         winfo = {"days": len(hist), "of": len(dates), "error": uerr}
         if hist:
             uw_ok, wsrc = True, "uw"
-            walls = [{"t": f"{h['date']}T09:30", "callWall": h["callWall"], "putWall": h["putWall"], "flip": h["flip"], "src": "uw",
+            walls = [{"t": f"{h['date']}T09:30", "callWall": h.get("callWall"), "putWall": h.get("putWall"), "flip": h.get("flip"), "src": "uw",
                       "callGex": h.get("callGex"), "putGex": h.get("putGex")} for h in hist]
             lh = hist[-1]
-            now_w = {"t": f"{lh['date']}T09:30", "callWall": lh["callWall"], "putWall": lh["putWall"], "flip": lh["flip"],
+            now_w = {"t": f"{lh['date']}T09:30", "callWall": lh.get("callWall"), "putWall": lh.get("putWall"), "flip": lh.get("flip"),
                      "source": "Unusual Whales, all expirations, open interest of " + lh["date"]}
         if not hist:
             wnote = (f"Unusual Whales gave no day-by-day walls for {sym}" + (f" ({uerr})" if uerr else "")
@@ -95,7 +95,7 @@ def build(sub, bot_id, days=5):
             walls += gex.wall_history(sym, since)
             if last >= today:
                 now_w = gex.walls_now(sub, sym)
-                walls.append({**{k: now_w[k] for k in ("t", "callWall", "putWall", "flip")}, "src": "now"})
+                walls.append({**{k: now_w.get(k) for k in ("t", "callWall", "putWall", "flip")}, "src": "now"})
         except Exception as e:
             wnote = f"Gamma walls unavailable: {str(e)[:120]}"
     if now_w and wsrc == "snapshots":
@@ -105,7 +105,7 @@ def build(sub, bot_id, days=5):
         if w["t"] in seen or w.get("callWall") is None:
             continue
         seen.add(w["t"])
-        if wl and (wl[-1]["callWall"], wl[-1]["putWall"], wl[-1]["flip"]) == (w["callWall"], w["putWall"], w["flip"]) and w["src"] != "now":
+        if wl and all(wl[-1].get(k) == w.get(k) for k in ("callWall", "putWall", "flip")) and w["src"] != "now":
             continue                              # unchanged: the step line already covers it
         wl.append(w)
     o = rec.get("origin") or {}
