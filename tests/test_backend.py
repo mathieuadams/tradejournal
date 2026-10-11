@@ -1607,6 +1607,8 @@ def test_flow_chart():
             gex.walls_now = saved_w
         assert [(w["t"][11:], w["callWall"], w["src"]) for w in d["walls"]] == [("10:00", 200, "evaluation"), ("12:30", 195, "snapshot"), ("15:00", 195, "now")], d["walls"]
         assert d["wallsNow"]["putWall"] == 185
+        code, tk = call("GET", "/bot/tickers")
+        assert code == 200 and tk["items"][0]["symbol"] == "PLTR" and tk["items"][0]["count"] == 2 and tk["items"][0]["id"] == rid
         # 45-day view: walls day by day from Unusual Whales greek exposure (each day's open interest), cached per day
         import datetime as dt
         calls = []

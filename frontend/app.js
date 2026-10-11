@@ -1287,18 +1287,19 @@ function fcSetZoom(id, a, b, N) {
   S.fcZoom[fcKey(id)] = a <= 0 && b >= N - 1 ? null : [a, b];
   render();
 }
-function fcSvg(d, id) {
-  try { return fcSvg0(d, id); } catch (e) {
+function fcSvg(d, id, opts) {
+  try { return fcSvg0(d, id, opts); } catch (e) {
     console.error('flow chart', e); S.fcZoom[fcKey(id)] = null;
     return `<p class="muted" style="margin:0">The chart couldn't be drawn (${esc(e.message)}). <button class="btn" data-fczoom="${esc(id)}|reset">Reset the view</button></p>`;
   }
 }
-function fcSvg0(d, id) {
+function fcSvg0(d, id, opts) {
   const all = d.bars || [];
   if (all.length < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
-  const narrow = window.innerWidth < 700, fs = narrow ? 17 : 12;
-  const W = narrow ? 560 : 960, PH = narrow ? 470 : 340, AH = narrow ? 150 : 110, L = 8, Rr = narrow ? 72 : 58, T = 16, B = PH - (narrow ? 44 : 40);
+  const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
+  const W = full ? opts.W : narrow ? 560 : 960, AH = full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110, PH = full ? opts.H - AH - 10 : narrow ? 470 : 340;
+  const L = 8, Rr = narrow ? 72 : full ? 64 : 58, T = 16, B = PH - (narrow ? 44 : 40);
   const H = PH + AH + 10, AT = PH + 6, AB = PH + AH - 6, iv = d.interval || 15;
   const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
   const walls = (d.walls || []).filter(w => w.callWall != null);
@@ -1314,7 +1315,7 @@ function fcSvg0(d, id) {
   const at = t => { const k = bucket(t); if (idx[k] != null) return idx[k]; if (k > lastT) return null; let best = null; bars.forEach((b, i) => { if (b.t <= k) best = i; }); return best; };
   let g = '';
   for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4, y = Y(v); g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/><text x="${W - Rr + 6}" y="${y + 4}" font-size="${fs}" fill="var(--muted)">${v.toFixed(v < 20 ? 2 : 1)}</text>`; }
-  const nDays = new Set(bars.map(b => b.t.slice(0, 10))).size, every = nDays > 30 ? (narrow ? 10 : 5) : nDays > 12 ? 3 : 1;
+  const nDays = new Set(bars.map(b => b.t.slice(0, 10))).size, every = Math.max(1, Math.ceil(fs * 4.5 / ((W - L - Rr) / Math.max(1, nDays))));
   let dk = -1;
   bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (dk % every) return; const x = X(i) - (W - L - Rr) / n / 2;
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${x + 3}" y="${B + 16}" font-size="${fs}" fill="var(--muted)">${b.t.slice(5, 10)}</text>`; } });
@@ -1336,8 +1337,9 @@ function fcSvg0(d, id) {
         prev = { y }; });
       const vis = segs.filter(sg => sg.w[key] != null), lw = vis.length ? vis[vis.length - 1].w[key] : null;
       if (lw == null) return;
-      if (near(lw)) g += `<text x="${W - Rr - 4}" y="${Y(lw) - 4}" text-anchor="end" font-size="${fs}" font-weight="600" fill="${col}">${name} ${lw}</text>`;
-      else g += `<text x="${W - Rr - 4}" y="${lw > hi ? T + 12 + (key === 'flip' ? fs + 2 : 0) : B - 4 - (key === 'flip' ? fs + 2 : 0)}" text-anchor="end" font-size="${fs}" font-weight="600" fill="${col}">${name} ${lw} ${lw > hi ? '↑' : '↓'}</text>`;
+      const halo = 'paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round"';
+      if (near(lw)) g += `<text x="${W - Rr - 4}" y="${Y(lw) - 4}" text-anchor="end" font-size="${fs}" font-weight="600" fill="${col}" ${halo}>${name} ${lw}</text>`;
+      else g += `<text x="${W - Rr - 4}" y="${lw > hi ? T + 12 + (key === 'flip' ? fs + 2 : 0) : B - 4 - (key === 'flip' ? fs + 2 : 0)}" text-anchor="end" font-size="${fs}" font-weight="600" fill="${col}" ${halo}>${name} ${lw} ${lw > hi ? '↑' : '↓'}</text>`;
     });
   }
   const stack = {};
@@ -1361,14 +1363,84 @@ function fcSvg0(d, id) {
   const yc = AY(cAcc[n - 1]), yp = AY(pAcc[n - 1]), clash = Math.abs(yc - yp) < fs;
   g += `<text x="${W - Rr + 6}" y="${(clash && yc >= yp ? yc + fs : yc) + 4}" font-size="${fs}" fill="var(--gain)">${km(cAcc[n - 1])}</text><text x="${W - Rr + 6}" y="${(clash && yp > yc ? yp + fs : yp) + 4}" font-size="${fs}" fill="var(--loss)">${km(pAcc[n - 1])}</text>`;
   g += `<rect class="fcz-sel" x="0" y="${T}" width="0" height="${AB - T}" fill="var(--coach,#5b5bd6)" fill-opacity=".12" stroke="var(--coach,#5b5bd6)" stroke-width="1" style="display:none;pointer-events:none"/>`;
-  return `<svg viewBox="0 0 ${W} ${H}" data-fcz="${esc(id)}" data-l="${L}" data-pw="${W - L - Rr}" data-a="${za}" data-n="${n}" data-all="${all.length}" data-vw="${W}" style="width:100%;height:auto;display:block;touch-action:pan-y;cursor:crosshair;user-select:none" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" data-fcz="${esc(id)}" data-l="${L}" data-pw="${W - L - Rr}" data-a="${za}" data-n="${n}" data-all="${all.length}" data-vw="${W}" style="${full ? `width:${W}px;height:${H}px` : 'width:100%;height:auto'};display:block;touch-action:pan-y;cursor:crosshair;user-select:none" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
 }
+/* ---------- full-screen chart: one ticker at a time, every evaluated ticker on the right ---------- */
+async function loadTickers() {
+  S.tkBusy = true;
+  try { S.tickers = await api('/bot/tickers'); } catch (e) { S.tickers = { error: e.message }; }
+  S.tkBusy = false;
+  if (route() === 'botchart') render();
+}
+function fcfSymbol() {
+  const items = (S.tickers && S.tickers.items) || [];
+  const t = (hashParam('t') || '').toUpperCase();
+  return items.find(x => x.symbol === t) ? t : (items[0] && items[0].symbol) || t;
+}
+function vChartFull() {
+  const L = S.tickers, items = (L && L.items) || [], sym = fcfSymbol(), cur = items.find(x => x.symbol === sym);
+  const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = narrow ? 104 : 58, infoH = narrow ? 96 : 64;
+  const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
+  const days = S.fcDays || 5, d = cur ? S.fc[fcKey(cur.id)] : null;
+  if (cur && !d && !S.fcBusy[fcKey(cur.id)]) setTimeout(() => loadFlowChart(cur.id), 0);
+  const back = `#botevals${sym ? '?t=' + encodeURIComponent(sym) : ''}`;
+  const zb_ = (k, l, t) => cur ? `<button class="btn" data-fczoom="${cur.id}|${k}" title="${t}" style="padding:3px 10px">${l}</button>` : '';
+  const seg = `<span class="seg">${[[5, '5D · 15m'], [45, '45D · 1h']].map(([v, l]) => `<button class="btn ${days === v ? 'coachbtn' : ''}" data-fcdays="${v}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+  const sel = narrow ? `<select id="fcf-sel" aria-label="Ticker">${items.map(x => `<option value="${esc(x.symbol)}" ${x.symbol === sym ? 'selected' : ''}>${esc(x.symbol)} · ${esc(x.decision || '')}</option>`).join('')}</select>` : '';
+  const headBar = `<div class="fcf-head">
+      <b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>${cur ? `<span class="verdict ${DEC_CLS[cur.decision] || 'mid'}">${esc(cur.decision || '')}</span>
+      <span class="muted" style="font-size:.85rem">evaluated ${esc((cur.at || '').replace('T', ' ').slice(5, 16))} ET${cur.price ? ` at ${px(cur.price)}` : ''}</span>` : ''}
+      ${sel}${seg}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
+      <span style="flex:1"></span>${cur ? `<a class="btn" href="#botevals?t=${encodeURIComponent(sym)}">Evaluation</a>` : ''}<a class="btn" href="${back}" aria-label="Close full screen">✕</a></div>`;
+  let main;
+  if (!L) main = '<p class="loading" style="padding:16px">Loading tickers…</p>';
+  else if (L.error) main = `<div class="errbox" style="margin:16px">${esc(L.error)}</div>`;
+  else if (!cur) main = '<p class="muted" style="padding:16px">No evaluated ticker yet.</p>';
+  else if (!d) main = '<p class="loading" style="padding:16px">Loading the chart, the alerts and the gamma walls…</p>';
+  else if (d.error) main = `<div class="errbox" style="margin:16px">${esc(d.error)}</div>`;
+  else {
+    const al = d.alerts || [], sum = xs => xs.reduce((s2, a) => s2 + a.premium, 0), calls = al.filter(a => a.type === 'call'), puts = al.filter(a => a.type === 'put');
+    const sa = S.fcSel && S.fcSel.id === cur.id ? al[S.fcSel.k] : null, w = d.wallsNow;
+    main = fcSvg(d, cur.id, { W, H }) + `<div class="fcf-info">
+      <span><b class="gain">Calls</b> ${calls.length} · ${money(sum(calls), false)} &nbsp; <b class="loss">Puts</b> ${puts.length} · ${money(sum(puts), false)}</span>
+      ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b class="loss">put ${w.putWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b></span>` : ''}
+      ${cur.contract ? `<span>Proposed: <b>${esc(fmtExp(cur.exp))} ${cur.strike}c</b> at ${cur.limit != null ? (+cur.limit).toFixed(2) : '—'}</span>` : ''}
+      <span>${sa ? `<b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}` : '<span class="muted">Tap a dot to see the alert · drag or scroll on the chart to zoom · ↑ ↓ to change ticker</span>'}</span>
+      ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
+  }
+  const side = narrow ? '' : `<aside class="fcf-side"><input id="fcf-q" type="search" placeholder="Filter tickers" value="${esc(S.fcfQ || '')}" aria-label="Filter tickers">
+      <ul class="fcf-list">${items.map(x => `<li data-sym="${esc(x.symbol)}" ${S.fcfQ && !x.symbol.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x.symbol)}" ${x.symbol === sym ? 'aria-current="true"' : ''}>
+        <span><b>${esc(x.symbol)}</b>${x.held ? ' <span class="exchip" style="font-size:.7rem">held</span>' : ''}<br><span class="muted" style="font-size:.75rem">${esc((x.at || '').slice(5, 10))} · ${x.count} eval${x.count === 1 ? '' : 's'}</span></span>
+        <span style="text-align:right"><span class="verdict ${DEC_CLS[x.decision] || 'mid'}" style="font-size:.72rem;padding:1px 7px">${esc(x.decision || '')}</span><br><span class="muted" style="font-size:.75rem">${x.price ? px(x.price) : ''}</span></span></a></li>`).join('')}</ul></aside>`;
+  return `<div class="fcf">${headBar}<div class="fcf-body"><div class="fcf-main">${main}</div>${side}</div></div>`;
+}
+(() => {
+  let rt = null;
+  window.addEventListener('resize', () => { if (route() !== 'botchart') return; clearTimeout(rt); rt = setTimeout(render, 150); });
+  document.addEventListener('change', e => { if (e.target.id === 'fcf-sel') location.hash = '#botchart?t=' + encodeURIComponent(e.target.value); });
+  document.addEventListener('input', e => {
+    if (e.target.id !== 'fcf-q') return;
+    S.fcfQ = e.target.value.trim(); const q = S.fcfQ.toUpperCase();
+    document.querySelectorAll('.fcf-list li').forEach(li => { li.hidden = !!q && !li.dataset.sym.includes(q); });
+  });
+  document.addEventListener('keydown', e => {
+    if (route() !== 'botchart' || /INPUT|SELECT|TEXTAREA/.test((e.target.tagName || ''))) return;
+    if (e.key === 'Escape') { const s2 = fcfSymbol(); location.hash = `#botevals${s2 ? '?t=' + encodeURIComponent(s2) : ''}`; return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const lis = [...document.querySelectorAll('.fcf-list li:not([hidden])')].map(li => li.dataset.sym);
+    const list = lis.length ? lis : ((S.tickers && S.tickers.items) || []).map(x => x.symbol);
+    const i = list.indexOf(fcfSymbol()); if (!list.length) return;
+    e.preventDefault();
+    const nx = list[Math.max(0, Math.min(list.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    if (nx) location.hash = '#botchart?t=' + encodeURIComponent(nx);
+  });
+})();
 function flowChartPanel(r) {
   if (!r || !r.id || !r.createdAt) return '';
   const days = S.fcDays || 5, d = S.fc[fcKey(r.id)];
   if (!d && !S.fcBusy[fcKey(r.id)]) setTimeout(() => loadFlowChart(r.id), 0);
   const seg = `<span class="seg" style="margin-left:8px">${[[5, '5 days · 15 min'], [45, '45 days · 1 hour']].map(([v, l]) => `<button class="btn ${days === v ? 'coachbtn' : ''}" data-fcdays="${v}" style="font-size:.8rem;padding:2px 8px">${l}</button>`).join('')}</span>`;
-  const head = `<h3 style="font-size:.95rem;margin:14px 0 6px;display:flex;flex-wrap:wrap;align-items:center;gap:4px">Flow on the chart <span class="muted" style="font-weight:400;font-size:.82rem">${days > 10 ? 'hourly' : '15-minute'} price · every option bought at the ask, from ${money((d && d.minPrint) || 10000, false)}</span>${seg}</h3>`;
+  const head = `<h3 style="font-size:.95rem;margin:14px 0 6px;display:flex;flex-wrap:wrap;align-items:center;gap:4px">Flow on the chart <span class="muted" style="font-weight:400;font-size:.82rem">${days > 10 ? 'hourly' : '15-minute'} price · every option bought at the ask, from ${money((d && d.minPrint) || 10000, false)}</span>${seg}<a class="btn" href="#botchart?t=${encodeURIComponent(r.symbol)}" style="font-size:.8rem;padding:2px 10px;margin-left:4px">⛶ Full screen</a></h3>`;
   if (!d) return head + '<p class="loading" style="margin:0">Loading the chart and the alerts…</p>';
   if (d.error) return head + `<p class="muted" style="margin:0">${esc(d.error)}</p>`;
   const al = d.alerts || [], calls = al.filter(a => a.type === 'call'), puts = al.filter(a => a.type === 'put');
@@ -2299,6 +2371,7 @@ async function refreshNow(quiet) {
     await reload();
     if (v === 'bot' || v === 'dashboard') { await loadBot(true); }
     if (v === 'botevals') { await loadBot(true); await loadEvals(S.botEvals ? S.botEvals.page : 1); }
+    if (v === 'botchart') { const c = ((S.tickers && S.tickers.items) || []).find(x => x.symbol === fcfSymbol()); if (c) delete S.fc[fcKey(c.id)]; await loadTickers(); }
     if (v === 'botskipped') { await loadShadow(); }
     if (v === 'botbursts') { await loadBursts(); }
     if (v === 'botexplore') { await runExplore(false); }
@@ -2346,9 +2419,9 @@ setInterval(() => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
+  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
-const isBotRoute = () => ['bot', 'botevals', 'botexplore', 'botstrats'].includes(route());
+const isBotRoute = () => ['bot', 'botevals', 'botchart', 'botexplore', 'botstrats'].includes(route());
 const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
@@ -2375,6 +2448,7 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
     if ((!S.botEvals || S.botEvals.mode !== mode) && S.evLoading !== mode) { S.evLoading = mode; loadEvals(1).finally(() => { S.evLoading = null; }); }
   }],
   botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }],
+  botchart: [vChartFull, () => { if (!S.tickers && !S.tkBusy) loadTickers(); }],
   botstrats: [vStrats, () => { if (!S.strats && !S.stratsBusy) loadStrats(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);

@@ -254,6 +254,32 @@ def _active(sub):
         return None
 
 
+@route("GET", "/bot/tickers")
+def bot_tickers(sub, claims, body, q):
+    """Every ticker the bot has evaluated, newest first: the latest evaluation's id, time, decision, price and walls."""
+    seen, out = {}, []
+    held = set()
+    for r in db.q_prefix(db.upk(sub), "BOT#", desc=True):
+        sym = r.get("symbol")
+        if r.get("status") in ("submitting", "submitted", "open", "closing"):
+            held.add(sym)
+        if not sym:
+            continue
+        if sym in seen:
+            seen[sym]["count"] += 1
+            continue
+        g = r.get("gamma") or {}
+        seen[sym] = row = {"symbol": sym, "id": r.get("id"), "at": r.get("createdAt"), "decision": r.get("decision"), "count": 1,
+                           "status": r.get("status"), "price": (r.get("signals") or {}).get("price"),
+                           "callWall": g.get("callWall"), "putWall": g.get("putWall"), "flip": g.get("gammaFlip"),
+                           "contract": (r.get("proposal") or {}).get("contract"), "limit": (r.get("proposal") or {}).get("limit"),
+                           "exp": (r.get("proposal") or {}).get("exp"), "strike": (r.get("proposal") or {}).get("strike")}
+        out.append(row)
+    for row in out:
+        row["held"] = row["symbol"] in held
+    return {"items": out}
+
+
 @route("GET", "/bot/evaluations")
 def bot_evaluations(sub, claims, body, q):
     """Evaluations newest first, 20 per page.
