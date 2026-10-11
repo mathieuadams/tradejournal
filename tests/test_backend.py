@@ -2007,10 +2007,15 @@ def test_wall_watch():
         assert len(r["status"]) == 3 and r["status"][0]["setup"] is True
         saved_sw = flowdata.stored_walls
         flowdata.stored_walls = lambda sym: {"2026-10-05": dict(w), "2026-10-06": dict(w)}
+        saved_al = flowdata.alerts
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "AAPL", "atEt": "2026-10-05 10:45", "type": "call", "premium": 300000},
+                                                       {"ticker": "AAPL", "atEt": "2026-10-06 11:00", "type": "put", "premium": 200000},
+                                                       {"ticker": "MSFT", "atEt": "2026-10-06 11:00", "type": "put", "premium": 200000}]}
         try:
             st, c = call("GET", "/bot/wallwatch/chart", q={"t": "AAPL"})
         finally:
-            flowdata.stored_walls = saved_sw
+            flowdata.stored_walls, flowdata.alerts = saved_sw, saved_al
+        assert [a["type"] for a in c["alerts"]] == ["call", "put"], c["alerts"]
         assert st == 200 and c["symbol"] == "AAPL" and len(c["bars"]) == 7 and len(c["signals"]) == 2, c
         assert c["walls"][0]["flip"] == 102 and c["interval"] == 60
         days = wallwatch._weekdays(5, wallwatch.now_ny().date())

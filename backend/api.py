@@ -437,7 +437,7 @@ def bot_wallwatch_save(sub, claims, body, q):
 @route("GET", "/bot/wallwatch/chart")
 def bot_wallwatch_chart(sub, claims, body, q):
     import wallwatch
-    return wallwatch.chart(sub, (q or {}).get("t"))
+    return wallwatch.chart(sub, (q or {}).get("t"), flow=(q or {}).get("flow") != "0")
 
 
 @route("POST", "/bot/wallwatch/walls")

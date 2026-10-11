@@ -270,8 +270,30 @@ def view(sub):
             "byTicker": sorted(by.values(), key=lambda b: -b["total"])}
 
 
-def chart(sub, sym, days=45):
-    """Hourly chart of a watchlist ticker: candles, walls + flip by day, and its signals."""
+def flow_alerts(sub, sym, first, last):
+    """Calls and puts bought at the ask on the ticker (Unusual Whales alerts), biggest 800 kept."""
+    import autotrader
+    import flowdata
+    cfg = autotrader.settings(sub)
+    out = []
+    nd = (now_ny().date() - datetime.strptime(first, "%Y-%m-%d").date()).days + 1
+    res = flowdata.alerts(sub, cfg["repeatMinPremium"], "all", 0, 400, True, False, sym, 0, min(nd, 70), exclude_etfs=False)
+    for a in res.get("alerts") or []:
+        at = (a.get("atEt") or "").replace(" ", "T")[:16]
+        if (a.get("ticker") or "").upper() != sym or not at or at[:10] < first or at[:10] > last:
+            continue
+        out.append({"t": at, "premium": round(a.get("premium") or 0), "type": "put" if a.get("type") == "put" else "call",
+                    "contract": a.get("contract"), "big": (a.get("premium") or 0) >= cfg["flowMinPremium"],
+                    "sweep": bool(a.get("sweep")), "rule": a.get("rule")})
+    out.sort(key=lambda a: a["t"])
+    if len(out) > 800:
+        keep = set(id(a) for a in sorted(out, key=lambda a: -a["premium"])[:800])
+        out = [a for a in out if id(a) in keep]
+    return out
+
+
+def chart(sub, sym, days=45, flow=True):
+    """Hourly chart of a watchlist ticker: candles, walls + flip by day, its signals, and the call / put flow."""
     import flowdata
     from charts import _yahoo
     sym = (sym or "").upper().replace("/", ".")
@@ -315,7 +337,13 @@ def chart(sub, sym, days=45):
     sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in db.q_prefix(db.upk(sub), f"WWSIG#{sym}#")]
     sigs.sort(key=lambda s: s["at"])
     last = next((stored.get(d) for d in reversed(dates) if (stored.get(d) or {}).get("callWall")), None)
+    alerts, flow_note = [], None
+    if flow and dates:
+        try:
+            alerts = flow_alerts(sub, sym, dates[0], dates[-1])
+        except Exception as e:
+            flow_note = f"Options flow unavailable: {str(e)[:120]}"
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
     return {"fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
-            "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": [], "evals": [],
+            "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_ok(last)}
