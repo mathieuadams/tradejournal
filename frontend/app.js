@@ -1338,16 +1338,21 @@ function fcSvg0(d, id, opts) {
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${x + 3}" y="${B + 16}" font-size="${fs}" fill="var(--muted)">${b.t.slice(5, 10)}</text>`; } });
   bars.forEach((b, i) => { const up = b.c >= b.o, c = up ? 'var(--gain)' : 'var(--loss)', x = X(i);
     g += `<line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`; });
-  if (d.evaluatedAt) { const ei = at(d.evaluatedAt); if (ei != null) { const x = X(ei);
+  if (d.evaluatedAt && !(LY.evals && (d.evals || []).length)) { const ei = at(d.evaluatedAt); if (ei != null) { const x = X(ei);
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--coach,#5b5bd6)" stroke-width="2" stroke-dasharray="6 4"/><text x="${Math.min(x + 4, W - Rr - 70)}" y="${T + 12}" font-size="${fs}" font-weight="600" fill="var(--coach,#5b5bd6)">evaluated</text>`; } }
   if (LY.evals && (d.evals || []).length) {   // every evaluation: a flag on top, colored by its decision
     const ecol = e => e.taken ? 'var(--coach,#5b5bd6)' : e.decision === 'BUY' ? 'var(--gain)' : e.decision === 'SKIP' ? 'var(--loss)' : 'var(--warn)';
-    const seen = {};
+    const seen = {}, lastLblX = [];
     d.evals.forEach((e, k) => { const i = at(e.t); if (i == null) return; const x = X(i);
       seen[i] = (seen[i] || 0) + 1; const yy = T + 2 + (seen[i] - 1) * 9;
-      const sel = S.fcSelE && S.fcSelE.id === id && S.fcSelE.k === k;
-      g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="${ecol(e)}" stroke-width="1" stroke-dasharray="1 4" opacity=".55"/>
-        <path data-fce="${id}|${k}" d="M${x - 5},${yy} L${x + 5},${yy} L${x},${yy + 8} Z" fill="${ecol(e)}" stroke="${sel ? 'var(--ink)' : 'none'}" stroke-width="1.5" style="cursor:pointer"><title>${esc(e.t.replace('T', ' ').slice(5))} ET · ${esc(e.decision || '')}${e.taken ? ' · traded' : ''}${e.why ? ' · ' + esc(e.why) : ''}</title></path>`; });
+      const sel = S.fcSelE && S.fcSelE.id === id && S.fcSelE.k === k, isCur = e.id === id;
+      g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="${ecol(e)}" stroke-width="${isCur || sel ? 2 : 1.3}" stroke-dasharray="5 4" opacity="${isCur || sel ? .9 : .6}"/>
+        <path data-fce="${id}|${k}" d="M${x - 6},${yy} L${x + 6},${yy} L${x},${yy + 10} Z" fill="${ecol(e)}" stroke="${sel ? 'var(--ink)' : 'none'}" stroke-width="1.5" style="cursor:pointer"><title>${esc(e.t.replace('T', ' ').slice(5))} ET · ${esc(e.decision || '')}${e.taken ? ' · traded' : ''}${e.why ? ' · ' + esc(e.why) : ''}</title></path>`;
+      // time label under the price area, staggered so close evaluations don't overlap
+      let row = 0; while (lastLblX[row] != null && x - lastLblX[row] < fs * 5.2) row++;
+      lastLblX[row] = x;
+      const ly = B - 6 - row * (fs + 3);
+      g += `<text data-fce="${id}|${k}" x="${x + 3}" y="${ly}" font-size="${fs - 2}" font-weight="${isCur ? 700 : 600}" fill="${ecol(e)}" paint-order="stroke" stroke="var(--surface)" stroke-width="3" style="cursor:pointer">${esc(e.t.slice(5, 10).replace('-', '/'))} ${esc(e.t.slice(11, 16))}${e.decision ? ' ' + esc(e.decision[0]) : ''}</text>`; });
   }
   if (walls.length) {                       // gamma walls as step lines: each value holds until the next snapshot
     const t0 = bars[0].t, segs = walls.map((w, k) => { const i0 = w.t <= t0 ? 0 : at(w.t), nx = walls[k + 1];
