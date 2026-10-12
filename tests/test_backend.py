@@ -2231,6 +2231,22 @@ def test_wall_watch_retest():
     assert wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, alerts=al)[0]
     af = wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True}, alerts=al)[0]
     assert af and af[0]["at"] == "2026-10-06T09:30" and af[0]["levelName"] == "flip" and af[0]["level"] == 106   # waits for the flip
+    # earnings within 10 days: no entry; 11+ days away: entry
+    assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=al, earnings="2026-10-14")[0]
+    assert wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=al, earnings="2026-10-20")[0]
+    # daily close under the flip: out at the last candle of the day (entry above the flip)
+    fx = [{"t": "2026-10-05T14:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+          {"t": "2026-10-05T15:30", "o": 104.6, "h": 105.2, "l": 104.2, "c": 104.8},     # green, back to the flip 104.5: entry
+          {"t": "2026-10-06T14:30", "o": 104.8, "h": 105, "l": 104.3, "c": 104.6},
+          {"t": "2026-10-06T15:30", "o": 104.6, "h": 104.7, "l": 104.1, "c": 104.2}]      # day closes under the flip 104.5
+    fw3 = {"callWall": 110, "flip": 104.5, "putWall": 100}
+    fxs = wallwatch.detect_retest(fx, {"2026-10-05": fw3, "2026-10-06": fw3}, cfg={"trailAtr": 0, "stopAtr": 1},
+                                  alerts=[{"t": "2026-10-05T14:45", "c": 1, "p": 900000}], datr={"next": 1.0})[0]
+    assert fxs and fxs[0]["status"] == "flip" and fxs[0]["exit"] == 104.2 and fxs[0]["aboveFlipAtEntry"], fxs
+    assert fxs[0]["alt"]["flipExit"] is False and fxs[0]["alt"]["status"] == "open"
+    assert wallwatch.detect_retest(fx, {"2026-10-05": fw3, "2026-10-06": fw3}, cfg={"flipExit": False, "trailAtr": 0, "stopAtr": 1},
+                                   alerts=[{"t": "2026-10-05T14:45", "c": 1, "p": 900000}], datr={"next": 1.0})[0][0]["status"] == "open"
+    assert wallwatch._flip_chg({"2026-10-05": {"flip": 100}, "2026-10-06": {"flip": 98}}, "2026-10-06") == -2.0
     # alert too small: never armed
     assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=[al[1]])[0]
     # support broken before the retest: the watch ends

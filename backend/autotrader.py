@@ -1210,6 +1210,15 @@ def _wallwatch_exit(sub, rec, p):
     dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
     if last["l"] <= stop:
         return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
+    now = now_ny()
+    if ww.get("flipExit") and ww.get("aboveFlipAtEntry") and now.hour * 60 + now.minute >= 15 * 60 + 50:
+        try:                                           # closing under today's gamma flip: out before the bell
+            import flowdata
+            fl = (flowdata.stored_walls(rec["symbol"]).get(now.strftime("%Y-%m-%d")) or {}).get("flip")
+            if fl and last["c"] < float(fl):
+                return f"closing under the gamma flip {fl} ({last['c']:.2f})"
+        except Exception as e:
+            print("flip exit check failed", rec.get("symbol"), e)
     if p.get("underlyingTarget") and last["h"] >= float(p["underlyingTarget"]):
         return f"call wall {p['underlyingTarget']} reached ({last['h']:.2f})"
     if dte <= 0:

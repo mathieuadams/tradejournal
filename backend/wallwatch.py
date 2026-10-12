@@ -22,7 +22,8 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
 
 
 PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5, "mergedSetup": True,
-          "retestSetup": True, "retestMin": 500000, "retestDays": 5, "aboveFlip": False, "retestZone": 0.25}   # tgtBuf: % under the call wall
+          "retestSetup": True, "retestMin": 500000, "retestDays": 5, "aboveFlip": False, "retestZone": 0.25,
+          "flipExit": True, "earnDays": 10}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -44,7 +45,7 @@ def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
-            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}")
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}")
 
 
 def save_config(sub, body):
@@ -63,7 +64,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20)):
+    for k, lo_, hi_ in (("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
@@ -75,7 +76,7 @@ def save_config(sub, body):
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
             except (TypeError, ValueError):
                 pass
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip"):
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit"):
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -229,11 +230,50 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
+def _step(s, b, walls, k_trail, flip_exit, is_last):
+    """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip."""
+    if b["l"] <= s["stop"]:
+        s.update(status="trail" if s["stop"] > s["stop0"] else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
+        return
+    if s.get("target") and b["h"] >= s["target"]:
+        s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
+        return
+    fl = (walls.get(b["t"][:10]) or {}).get("flip")
+    if flip_exit and is_last and s.get("aboveFlipAtEntry") and fl and b["c"] < float(fl):
+        s.update(status="flip", exitAt=b["t"][:16], exit=b["c"])          # the day closed under the gamma flip
+        return
+    s["last"], s["lastAt"] = b["c"], b["t"][:16]
+    s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
+    s["mae"] = min(s.get("mae", s["entry"]), b["l"])
+    if k_trail > 0:
+        lvl = round(s["mfe"] - k_trail * s["atr"], 4)
+        if lvl > s["stop"]:
+            s["stop"] = lvl
+            s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], lvl])
+
+
+def _result(s):
+    ex = s.get("exit") if s["status"] != "open" else s["last"]
+    pct = round((ex / s["entry"] - 1) * 100, 2)
+    risk = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
+    return pct, (round(pct / risk, 2) if risk > 0 else None)
+
+
+def _flip_chg(walls, day):
+    """% change of the flip from the previous stored day (None when unknown)."""
+    days = sorted(d for d in walls if d < day and (walls[d] or {}).get("flip"))
+    cur = (walls.get(day) or {}).get("flip")
+    if not days or not cur:
+        return None
+    prev = float(walls[days[-1]]["flip"])
+    return round((float(cur) - prev) / prev * 100, 2) if prev else None
+
+
 def sig_sk(sym, s):
     return f"WWSIG#{sym}#{s['at']}" + ("#R" if s.get("kind") == "retest" else "")
 
 
-def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
+def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None):
     """Flow retest: a call alert of at least retestMin arms the ticker (a new alert re-arms it). The support is the highest
     of put wall / call wall / flip at or under the price at the close of the alert's candle. From that candle on, within
     retestDays trading days: a green hourly candle whose low reaches the support (within 0.3%) and that closes above it
@@ -243,6 +283,12 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
     vmin, ndays = float(P.get("retestMin") or 500000), int(P.get("retestDays") or 5)
     zone_atr = float(P.get("retestZone") if P.get("retestZone") is not None else 0.25)
+    flip_exit, earn_days = bool(P.get("flipExit", True)), int(P.get("earnDays") if P.get("earnDays") is not None else 10)
+    earn_d = None
+    try:
+        earn_d = datetime.strptime(str(earnings)[:10], "%Y-%m-%d") if earnings else None
+    except ValueError:
+        earn_d = None
     ver = version(P)
     atr = atr14(bars)
     big = sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
@@ -258,21 +304,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
                 arm = big[ai]
             ai += 1
         if open_:
-            s = open_
-            if b["l"] <= s["stop"]:
-                s.update(status="trail" if s["stop"] > s["stop0"] else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
-            elif s.get("target") and b["h"] >= s["target"]:
-                s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
-            else:
-                s["last"], s["lastAt"] = b["c"], b["t"][:16]
-                s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
-                s["mae"] = min(s.get("mae", s["entry"]), b["l"])
-                if k_trail > 0:
-                    lvl = round(s["mfe"] - k_trail * s["atr"], 4)
-                    if lvl > s["stop"]:
-                        s["stop"] = lvl
-                        s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], lvl])
-            if s["status"] != "open":
+            _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day))
+            if open_["status"] != "open":
                 open_ = None
             continue
         w = walls.get(day) or {}
@@ -306,6 +339,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
         if b["c"] > b["o"] and b["l"] <= lvl + zone:
             if P.get("aboveFlip") and not (w.get("flip") and b["c"] > float(w["flip"])):
                 continue                               # only above the gamma flip (positive gamma): wait for another candle
+            if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
+                continue                               # earnings within the next N days: no entry
             if start and day < start:
                 watch = None
                 continue
@@ -317,15 +352,23 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
                  "armPremium": watch["armPremium"], "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
                  "flip": float(w["flip"]) if w.get("flip") else None, "cw": cw, "target": tgt, "atr": round(a_, 4),
                  "stop": st, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
-                 "last": b["c"], "lastAt": b["t"][:16]}
+                 "last": b["c"], "lastAt": b["t"][:16], "i0": i,
+                 "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day)}
             sigs.append(s)
             open_, watch = s, None
     for s in sigs:
-        ex = s.get("exit") if s["status"] != "open" else s["last"]
-        s["pct"] = round((ex / s["entry"] - 1) * 100, 2)
+        s["pct"], s["R"] = _result(s)
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
-        s["R"] = round(s["pct"] / s["riskPct"], 2) if s["riskPct"] > 0 else None
+        i0 = s.pop("i0")                               # the same entry with the other choice for the daily flip exit
+        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae")}
+        alt.update(status="open", stop=s["stop0"], last=s["entry"], lastAt=s["at"])
+        for j in range(i0 + 1, len(bars)):
+            _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]))
+            if alt["status"] != "open":
+                break
+        ap, ar = _result(alt)
+        s["alt"] = {"flipExit": not flip_exit, "status": alt["status"], "pct": ap, "R": ar}
     if watch:
         watch.pop("_d", None)
     return sigs, watch
@@ -375,7 +418,13 @@ def check_ticker(sub, key, sym, days, now, since=None):
     if cfg.get("retestSetup", True):
         try:
             rb = [b for b in bars if not pre or b["t"][:10] >= pre[0]] if pre else [b for b in bars if b["t"][:10] >= first]
-            rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1))
+            earn = None
+            try:
+                import autotrader
+                earn = autotrader.parse_earn(autotrader.earn_for(autotrader.settings(sub), sym)[0])[0]
+            except Exception as e:
+                print("earnings lookup failed", sym, e)
+            rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn)
             sigs += rs
         except Exception as e:
             print("retest failed", sym, e)
@@ -413,6 +462,11 @@ def run(sub, days=3, budget_s=500):
     prev = db.get(db.upk(sub), "WWRUN") or {}
     done_bf = set(prev.get("bfDone") or []) if days > 3 else set()
     todo = [t for t in cfg["tickers"] if t not in done_bf]
+    try:                                                # next earnings dates (Unusual Whales, at most every 12 h)
+        import autotrader
+        autotrader.refresh_earnings(sub, todo)
+    except Exception as e:
+        print("earnings refresh failed", e)
     since, ver = {}, version(cfg)
     for s in db.q_prefix(db.upk(sub), "WWSIG#"):
         if s.get("symbol") and (s.get("status") == "open" or s.get("v") != ver):   # open, or made with other settings
@@ -513,7 +567,8 @@ def enter(sub, sym, sg):
         if not p:
             raise ValueError("no call contract in the expiration / delta window")
         ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]),
-              "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"])}
+              "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
+              "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry"))}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
         db.update(pk, f"BOT#{rec['id']}", {"proposal": p, "decision": "BUY", "strategyOnly": "wallwatch", "wallwatch": ww})
@@ -623,7 +678,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None):
 
 
 def summarize(sigs):
-    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail")]
+    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail", "flip")]
     hit = [s for s in done if s["status"] == "target"]
     avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None
     summary = {"signals": len(sigs), "open": len(sigs) - len(done), "closed": len(done), "targets": len(hit),
@@ -646,7 +701,7 @@ def view(sub):
             and (not FLOW_ONLY or s.get("kind") == "retest")]
     summary = summarize(sigs)
     by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip", "merged", "retest")}
-    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail")]
+    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail", "flip")]
     by = {}
     for s in done:
         b = by.setdefault(s["symbol"], {"symbol": s["symbol"], "n": 0, "targets": 0, "total": 0.0})
@@ -988,7 +1043,7 @@ def flow_study(sub, budget_s=480):
 
 def flow_table(sigs):
     """Results of the finished signals with and without each flow condition."""
-    fin = [x for x in sigs if x.get("status") in ("target", "stop", "trail") and x.get("flow")]
+    fin = [x for x in sigs if x.get("status") in ("target", "stop", "trail", "flip") and x.get("flow")]
     rows = []
     base = summarize(fin)
     for name, fn in FLOW_BUCKETS:
@@ -1006,7 +1061,7 @@ def flow_table(sigs):
 
 def retest_table(sigs):
     """Flow retest signals split by the support used, the size of the call alert and the wait before the retest."""
-    fin = [x for x in sigs if x.get("kind") == "retest" and x.get("status") in ("target", "stop", "trail")]
+    fin = [x for x in sigs if x.get("kind") == "retest" and x.get("status") in ("target", "stop", "trail", "flip")]
 
     def wait_h(x):
         try:
@@ -1023,6 +1078,8 @@ def retest_table(sigs):
         ("Retest within 1 day of the alert", lambda x: (wait_h(x) or 0) <= 24),
         ("Retest after 1 – 3 days", lambda x: 24 < (wait_h(x) or 0) <= 72),
         ("Retest after 3+ days", lambda x: (wait_h(x) or 0) > 72),
+        ("Flip went down vs the day before", lambda x: x.get("flipChg") is not None and x["flipChg"] < 0),
+        ("Flip flat or up vs the day before", lambda x: x.get("flipChg") is not None and x["flipChg"] >= 0),
         ("Entry above the gamma flip", lambda x: x.get("flip") is not None and x["entry"] > x["flip"]),
         ("Entry below the gamma flip", lambda x: x.get("flip") is not None and x["entry"] <= x["flip"]),
         ("Call wall target above the entry", lambda x: bool(x.get("target"))),
@@ -1035,6 +1092,15 @@ def retest_table(sigs):
         rows.append({"name": name, "n": len(yes), "hitPct": sm.get("hitPct"), "avgPct": sm.get("avgPct"), "avgR": sm.get("avgR"),
                      "totalPct": sm.get("totalPct"), "winPct": round(sum(1 for x in yes if x["pct"] > 0) / len(yes) * 100) if yes else None})
     base = summarize(fin) if fin else {}
+    # the same entries with the other choice for the daily flip exit (computed with each signal)
+    alts = [x["alt"] for x in fin if x.get("alt") and x["alt"].get("status") in ("target", "stop", "trail", "flip")]
+    cmp_ = None
+    if alts:
+        avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None
+        cmp_ = {"flipExit": alts[0]["flipExit"], "n": len(alts), "avgPct": avg([a["pct"] for a in alts]),
+                "avgR": avg([a["R"] for a in alts if a.get("R") is not None]), "totalPct": round(sum(a["pct"] for a in alts), 2),
+                "winPct": round(sum(1 for a in alts if a["pct"] > 0) / len(alts) * 100),
+                "flipExits": sum(1 for x in fin if x["status"] == "flip")}
     return {"base": {"n": len(fin), "hitPct": base.get("hitPct"), "avgPct": base.get("avgPct"), "avgR": base.get("avgR"),
                      "totalPct": base.get("totalPct"), "winPct": round(sum(1 for x in fin if x["pct"] > 0) / len(fin) * 100) if fin else None},
-            "rows": rows}
+            "rows": rows, "exitCompare": cmp_}
