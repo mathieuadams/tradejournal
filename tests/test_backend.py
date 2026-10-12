@@ -2069,6 +2069,12 @@ def test_wall_watch():
                                        ["2026-10-14", "2026-10-19"])
         assert ser == [{"t": "2026-10-14T09:30", "exp": "2026-10-16", "maxPain": 105.0}, {"t": "2026-10-19T09:30", "exp": "2026-11-20", "maxPain": 92.0}]
         assert wallwatch.monthly_exps("2026-09-01", "2026-11-30") == ["2026-09-18", "2026-10-16", "2026-11-20"]
+        saved_dp = flowdata.darkpool
+        seen_dp = []
+        flowdata.darkpool = lambda sub, sym, dates, mp: seen_dp.append((sym, len(dates), mp)) or {"prints": [], "levels": [], "minPremium": mp}
+        st, dpr = call("GET", "/bot/wallwatch/darkpool", q={"t": "brk/b", "min": "5000000"})
+        flowdata.darkpool = saved_dp
+        assert st == 200 and dpr["symbol"] == "BRK.B" and seen_dp == [("BRK.B", 45, 5000000.0)], (dpr, seen_dp)
     finally:
         charts._yahoo, flowdata.gex_day, flowdata._key = saved
 

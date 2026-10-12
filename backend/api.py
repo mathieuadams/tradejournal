@@ -440,6 +440,13 @@ def bot_wallwatch_chart(sub, claims, body, q):
     return wallwatch.chart(sub, (q or {}).get("t"), flow=(q or {}).get("flow") != "0")
 
 
+@route("GET", "/bot/wallwatch/darkpool")
+def bot_wallwatch_darkpool(sub, claims, body, q):
+    import wallwatch
+    q = q or {}
+    return wallwatch.darkpool(sub, q.get("t"), q.get("min"))
+
+
 @route("POST", "/bot/wallwatch/walls")
 def bot_wallwatch_walls(sub, claims, body, q):
     """Fetch every day's call wall, put wall and flip for every watchlist ticker (45 days), then find the signals."""

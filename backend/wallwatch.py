@@ -559,3 +559,13 @@ def chart(sub, sym, days=45, flow=True):
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain),
             "maxPainMissing": sum(1 for d in dates if d != today and d not in mpd)}
+
+
+def darkpool(sub, sym, min_premium=None, days=45):
+    """Dark pool prints of the last `days` trading days at or above min_premium (default $2M), plus the top levels."""
+    import flowdata
+    sym = (sym or "").upper().replace("/", ".")
+    mp = float(min_premium) if min_premium else 2_000_000
+    out = flowdata.darkpool(sub, sym, _weekdays(days, now_ny().date()), max(100_000, mp))
+    out["symbol"] = sym
+    return out
