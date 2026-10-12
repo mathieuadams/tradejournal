@@ -2003,6 +2003,16 @@ def test_wall_watch():
     fs = wallwatch.detect(bars, {"2026-10-05": fw, "2026-10-06": fw})
     assert fs and fs[0]["kind"] == "flip" and fs[0]["level"] == 100 and fs[0]["stop0"] == round(100 - 0.5 * fs[0]["atr"], 4)
     assert not wallwatch.detect(bars, {"2026-10-05": fw, "2026-10-06": fw}, cfg={"flipSetup": False})
+    mw = {"callWall": 100, "flip": 102, "putWall": 100}                                                   # PW = CW < flip
+    assert wallwatch.setup_kind(mw) == "merged"
+    mb = [{"t": "2026-10-05T09:30", "o": 101, "h": 101.5, "l": 100.5, "c": 101},
+          {"t": "2026-10-05T10:30", "o": 99.5, "h": 101, "l": 99, "c": 100.8},                             # crosses the merged wall
+          {"t": "2026-10-05T11:30", "o": 100.8, "h": 120, "l": 100.2, "c": 119},                           # no target: still open
+          {"t": "2026-10-06T09:30", "o": 119, "h": 119.5, "l": 105.5, "c": 106},
+          {"t": "2026-10-06T10:30", "o": 106, "h": 106.5, "l": 104.0, "c": 104.2}]                         # under the raised stop
+    ms = wallwatch.detect(mb, {"2026-10-05": mw, "2026-10-06": {"callWall": 105, "flip": 106, "putWall": 105}})
+    assert ms[0]["kind"] == "merged" and ms[0]["target"] is None and ms[0]["status"] == "trail", ms
+    assert ms[0]["stop"] == round(105 - 0.5 * ms[0]["atr"], 4) and ms[0]["exit"] == ms[0]["stop"] and ms[0]["tgtPct"] is None
     daily = [{"t": f"2026-08-{d:02d}", "o": 100, "h": 102, "l": 98, "c": 100} for d in range(1, 31)] + \
             [{"t": f"2026-09-{d:02d}", "o": 100, "h": 104, "l": 96, "c": 100} for d in range(1, 31)]
     da = wallwatch.daily_atr(daily)

@@ -1190,7 +1190,18 @@ def _wallwatch_exit(sub, rec, p):
     stop = float(p["underlyingStop"])
     peak = max([float(rec.get("wwPeak") or 0)] + [b["h"] for b in bars[:-1]])
     upd["wwPeak"] = round(peak, 4)
-    if ww.get("trailAtr") and ww.get("atr") and peak:
+    if ww.get("kind") == "merged":                   # merged walls: the stop follows today's call wall (up only)
+        try:
+            import flowdata
+            w = flowdata.stored_walls(rec["symbol"]).get(now_ny().strftime("%Y-%m-%d")) or {}
+            if w.get("callWall") and ww.get("atr"):
+                lvl = round(float(w["callWall"]) - float(ww.get("stopAtr") or 0.5) * float(ww["atr"]), 4)
+                if lvl > stop:
+                    stop = lvl
+                    upd["proposal"] = {**p, "underlyingStop": stop}
+        except Exception as e:
+            print("merged trail failed", rec.get("symbol"), e)
+    elif ww.get("trailAtr") and ww.get("atr") and peak:
         lvl = round(peak - float(ww["trailAtr"]) * float(ww["atr"]), 4)
         if lvl > stop:
             stop = lvl
@@ -1199,7 +1210,7 @@ def _wallwatch_exit(sub, rec, p):
     dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
     if last["l"] <= stop:
         return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
-    if last["h"] >= float(p["underlyingTarget"]):
+    if p.get("underlyingTarget") and last["h"] >= float(p["underlyingTarget"]):
         return f"call wall {p['underlyingTarget']} reached ({last['h']:.2f})"
     if dte <= 0:
         return f"time stop ({dte} days to expiry)"

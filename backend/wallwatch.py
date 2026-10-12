@@ -21,7 +21,7 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
            "STX", "TSLA", "TSM", "WDC", "WMT", "XOM"]
 
 
-PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5}   # tgtBuf: % under the call wall
+PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5, "mergedSetup": True}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -36,7 +36,8 @@ def config(sub):
 
 def version(cfg):
     """Signals made with other settings are recomputed."""
-    return f"6|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}|{float(cfg.get('tgtBuf', 0.5)):g}"
+    return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
+            f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}")
 
 
 def save_config(sub, body):
@@ -61,7 +62,7 @@ def save_config(sub, body):
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
             except (TypeError, ValueError):
                 pass
-    for k in ("pwSetup", "flipSetup", "autoAdd", "trade"):
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "autoAdd", "trade"):
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -103,11 +104,14 @@ def setup_ok(w):
 
 
 def setup_kind(w):
-    """'pw' when call wall > flip > put wall, 'flip' when call wall > put wall > flip, else None."""
+    """'pw' when call wall > flip > put wall, 'flip' when call wall > put wall > flip,
+    'merged' when the put wall and the call wall are the same strike and the flip is above it, else None."""
     cw, fl, pw = (w or {}).get("callWall"), (w or {}).get("flip"), (w or {}).get("putWall")
     if not (cw and fl and pw):
         return None
     cw, fl, pw = float(cw), float(fl), float(pw)
+    if abs(cw - pw) <= cw * 0.0005 and fl > cw:
+        return "merged"
     return "pw" if cw > fl > pw else "flip" if cw > pw > fl else None
 
 
@@ -151,22 +155,29 @@ def detect(bars, walls, start=None, cfg=None, datr=None):
     walls: {date: {callWall, flip, putWall}}; start: first date where signals can start; cfg: stop / trail / setups."""
     P = {**PARAMS, **(cfg or {})}
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
-    kinds = {k for k, on in (("pw", P["pwSetup"]), ("flip", P["flipSetup"])) if on}
+    kinds = {k for k, on in (("pw", P["pwSetup"]), ("flip", P["flipSetup"]), ("merged", P.get("mergedSetup", True))) if on}
     ver = version(P)
     sigs, open_ = [], None
     atr = atr14(bars)                                  # fallback when the 30-day daily ATR isn't available
     for i, b in enumerate(bars):
         if open_:                                      # follow the open signal first
             s = open_
+            if s["kind"] == "merged":                  # merged walls: the stop follows the call wall of each new day, up only
+                wd = walls.get(b["t"][:10]) or {}
+                if wd.get("callWall") and b["t"][:10] > s["at"][:10]:
+                    lvl = round(float(wd["callWall"]) - k_stop * s["atr"], 4)
+                    if lvl > s["stop"]:
+                        s["stop"] = lvl
+                        s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], lvl])
             if b["l"] <= s["stop"]:                    # stop order (first stop, or trailed up)
                 s.update(status="trail" if s["stop"] > s["stop0"] else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
-            elif b["h"] >= s["target"]:
+            elif s.get("target") and b["h"] >= s["target"]:
                 s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
             else:
                 s["last"], s["lastAt"] = b["c"], b["t"][:16]
                 s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
                 s["mae"] = min(s.get("mae", s["entry"]), b["l"])
-                if k_trail > 0:                        # trailing stop: k x entry ATR under the highest high
+                if k_trail > 0 and s["kind"] != "merged":   # trailing stop: k x entry ATR under the highest high
                     lvl = round(s["mfe"] - k_trail * s["atr"], 4)
                     if lvl > s["stop"]:
                         s["stop"] = lvl
@@ -181,12 +192,12 @@ def detect(bars, walls, start=None, cfg=None, datr=None):
         if kind not in kinds:
             continue
         pw, cw, fl = float(w["putWall"]), float(w["callWall"]), float(w["flip"])
-        lvl = pw if kind == "pw" else fl                # the level the green candle has to cross
+        lvl = pw if kind == "pw" else fl if kind == "flip" else cw   # the level the green candle has to cross
         if b["c"] > b["o"] and b["l"] <= lvl < b["c"]:
             a_ = (_atr_on(datr, b["t"][:10]) if datr else None) or atr[i]
             st = round(lvl - k_stop * a_, 4)
             s = {"at": b["t"][:16], "kind": kind, "level": lvl, "entry": b["c"], "pw": pw, "flip": fl, "cw": cw,
-                 "target": round(cw * (1 - buf / 100), 4),
+                 "target": None if kind == "merged" else round(cw * (1 - buf / 100), 4),   # merged: no target, the stop trails
                  "atr": round(a_, 4), "stop": st, "stop0": st, "v": ver,
                  "o": b["o"], "h": b["h"], "l": b["l"], "status": "open", "last": b["c"], "lastAt": b["t"][:16]}
             sigs.append(s)
@@ -194,7 +205,7 @@ def detect(bars, walls, start=None, cfg=None, datr=None):
     for s in sigs:
         ex = s.get("exit") if s["status"] != "open" else s["last"]
         s["pct"] = round((ex / s["entry"] - 1) * 100, 2)
-        s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2)
+        s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         s["R"] = round(s["pct"] / s["riskPct"], 2) if s["riskPct"] > 0 else None
     return sigs
@@ -370,8 +381,8 @@ def enter(sub, sym, sg):
         if not p:
             raise ValueError("no call contract in the expiration / delta window")
         ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]),
-              "target": sg["target"], "level": sg.get("level"), "entry": sg["entry"]}
-        p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg["target"],
+              "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"])}
+        p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
         db.update(pk, f"BOT#{rec['id']}", {"proposal": p, "decision": "BUY", "strategyOnly": "wallwatch", "wallwatch": ww})
         db.update(pk, sk, {"botId": rec["id"]})
@@ -489,7 +500,7 @@ def summarize(sigs):
                "avgWin": avg([s["pct"] for s in hit]), "avgLoss": avg([s["pct"] for s in done if s["status"] == "stop"]), "trails": sum(1 for s in done if s["status"] == "trail"),
                "avgTrail": avg([s["pct"] for s in done if s["status"] == "trail"]),
                "totalPct": round(sum(s["pct"] for s in done), 2) if done else None,
-               "avgTgt": avg([s["tgtPct"] for s in sigs]), "avgRisk": avg([s["riskPct"] for s in sigs])}
+               "avgTgt": avg([s["tgtPct"] for s in sigs if s.get("tgtPct") is not None]), "avgRisk": avg([s["riskPct"] for s in sigs])}
     return summary
 
 
@@ -501,7 +512,7 @@ def view(sub):
     sigs = sorted(db.q_prefix(db.upk(sub), "WWSIG#"), key=lambda s: s.get("at") or "", reverse=True)
     sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in sigs if s.get("symbol") in cfg["tickers"]]
     summary = summarize(sigs)
-    by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip")}
+    by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip", "merged")}
     done = [s for s in sigs if s.get("status") in ("target", "stop", "trail")]
     by = {}
     for s in done:
