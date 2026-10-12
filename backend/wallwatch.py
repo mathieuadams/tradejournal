@@ -22,7 +22,7 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
 
 
 PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5, "mergedSetup": True,
-          "retestSetup": True, "retestMin": 500000, "retestDays": 5}   # tgtBuf: % under the call wall
+          "retestSetup": True, "retestMin": 500000, "retestDays": 5, "aboveFlip": False}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -44,7 +44,7 @@ def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
-            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r3")
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r3|{int(bool(cfg.get('aboveFlip', False)))}")
 
 
 def save_config(sub, body):
@@ -75,7 +75,7 @@ def save_config(sub, body):
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
             except (TypeError, ValueError):
                 pass
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade"):
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip"):
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -297,6 +297,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
             continue
         # entry: from the candle of the alert on, a green candle whose low reaches the support and that closes above it
         if b["c"] > b["o"] and b["l"] <= lvl * (1 + RETEST_NEAR / 100) and b["c"] > lvl:
+            if P.get("aboveFlip") and not (w.get("flip") and b["c"] > float(w["flip"])):
+                continue                               # only above the gamma flip (positive gamma): wait for another candle
             if start and day < start:
                 watch = None
                 continue
@@ -1000,6 +1002,8 @@ def retest_table(sigs):
         ("Retest within 1 day of the alert", lambda x: (wait_h(x) or 0) <= 24),
         ("Retest after 1 – 3 days", lambda x: 24 < (wait_h(x) or 0) <= 72),
         ("Retest after 3+ days", lambda x: (wait_h(x) or 0) > 72),
+        ("Entry above the gamma flip", lambda x: x.get("flip") is not None and x["entry"] > x["flip"]),
+        ("Entry below the gamma flip", lambda x: x.get("flip") is not None and x["entry"] <= x["flip"]),
         ("Call wall target above the entry", lambda x: bool(x.get("target"))),
         ("No target (trailing only)", lambda x: not x.get("target")),
     ]

@@ -2372,6 +2372,7 @@ function wwParams(compact) {
     <label ${lab} title="Every minute, tickers with unusual call flow (your bot's flow filters) join the list"><input type="checkbox" id="ww-auto" ${c.autoAdd !== false ? 'checked' : ''}>add flow tickers</label>
     <label ${lab} title="Buy a call on Alpaca paper when a signal fires (contract picked by the bot, limit chased up until filled)"><input type="checkbox" id="ww-trade" ${c.trade !== false ? 'checked' : ''}>trade signals</label>
     <label ${lab} title="A call alert of at least this size arms the ticker; the support is the highest put wall / call wall / flip under the price; then wait for a green candle retesting it"><input type="hidden" id="ww-rt" value="1">Flow retest: call alert ≥ $<input id="ww-rtmin" type="number" step="100" min="50" value="${Math.round((c.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K, wait<input id="ww-rtdays" type="number" step="1" min="1" value="${c.retestDays ?? 5}" style="width:3em;padding:1px 4px">days</label>
+    <label ${lab} title="Only enter when the entry candle closes above the gamma flip (positive gamma: dealers dampen moves, supports hold better)"><input type="checkbox" id="ww-af" ${c.aboveFlip ? 'checked' : ''}>only above the flip</label>
     <label ${lab} title="Stop = the level crossed (put wall or flip) − this × the 30-day ATR">stop −<input id="ww-stop" type="number" step="0.1" min="0" value="${c.stopAtr ?? 0.5}" style="width:3.6em;padding:1px 4px">ATR</label>
     <label ${lab} title="Target = call wall − this % (sell just under the wall, where price often stalls). 0 = exactly at the call wall">target −<input id="ww-tbuf" type="number" step="0.1" min="0" value="${c.tgtBuf ?? 0.5}" style="width:3.6em;padding:1px 4px">% under CW</label>
     <label ${lab} title="Trailing stop = highest high since entry − this × the 30-day ATR. 0 = no trailing">trail<input id="ww-trail" type="number" step="0.25" min="0" value="${c.trailAtr ?? 1}" style="width:3.6em;padding:1px 4px">ATR</label>
@@ -2379,7 +2380,7 @@ function wwParams(compact) {
 }
 async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
-  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked,  retestSetup: true,
+  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked,  retestSetup: true, aboveFlip: !!($('#ww-af') || {}).checked,
     retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf') };
   try { S.ww = await api('/bot/wallwatch', { method: 'PUT', body }); } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}

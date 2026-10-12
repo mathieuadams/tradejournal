@@ -2224,6 +2224,10 @@ def test_wall_watch_retest():
     # a red candle at the support is not an entry
     red = bars[:2] + [{"t": "2026-10-05T11:30", "o": 103.2, "h": 103.4, "l": 102.1, "c": 102.5}]
     assert not wallwatch.detect_retest(red, {"2026-10-05": w}, alerts=al)[0]
+    # only above the flip: the retest of a put wall under the flip is skipped
+    fw2 = {"callWall": 110, "flip": 106, "putWall": 102}
+    assert wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, alerts=al)[0]
+    assert not wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True}, alerts=al)[0]
     # alert too small: never armed
     assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=[al[1]])[0]
     # support broken before the retest: the watch ends
