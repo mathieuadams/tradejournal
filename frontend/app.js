@@ -1404,13 +1404,13 @@ function fcSvg0(d, id, opts) {
       const col = sg.status === 'target' ? 'var(--gain)' : sg.status === 'stop' ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
       const sel = S.wwSel && S.wwSel.sym === d.symbol && S.wwSel.at === sg.at;
       g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity="${sel ? .12 : .06}"/>`;
-      [[sg.target, 'var(--gain)', 'target'], [sg.pw, 'var(--loss)', 'stop']].forEach(([v, c, nm]) => { if (v == null || v < lo || v > hi) return;
+      [[sg.target, 'var(--gain)', 'target'], [sg.stop ?? sg.pw, 'var(--loss)', 'stop']].forEach(([v, c, nm]) => { if (v == null || v < lo || v > hi) return;
         g += `<line x1="${xa}" x2="${xb}" y1="${Y(v)}" y2="${Y(v)}" stroke="${c}" stroke-width="2" opacity=".85"><title>${nm} ${v}</title></line>`; });
       if (i0 != null && sg.entry >= lo && sg.entry <= hi) { const y = Y(sg.entry);
         g += `<path data-wwsel="${esc(d.symbol)}|${esc(sg.at)}" d="M${xa},${y + 5} L${xa - 8},${y + 18} L${xa + 8},${y + 18} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"><title>Signal ${esc(sg.at.replace('T', ' ').slice(5))} · entry ${(+sg.entry).toFixed(2)} · put wall ${sg.pw} · flip ${sg.flip} · call wall ${sg.cw}</title></path>
           <text x="${xa}" y="${y + 31}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">IN</text>`; }
       if (sg.status !== 'open' && i1 != null && sg.exit >= lo && sg.exit <= hi) { const y = Y(sg.exit);
-        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'target' ? 'Target: call wall' : 'Stop: hourly close below the put wall'} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'target' ? 'Target: call wall' : `Stop: put wall − 0.5 ATR (${sg.stop ?? sg.pw})`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
           <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.pct >= 0 ? '+' : ''}${sg.pct}%</text>`; }
     });
   }
@@ -1497,7 +1497,7 @@ function vChartWW() {
           + (sa ? `<span><b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}</span>` : '')
           + (d.note ? `<span class="muted">${esc(d.note)}</span>` : ''); })()}
       <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
-      <span class="muted">Triangle = entry · green line = target (call wall) · red line = stop (put wall) · square = exit · ↑ ↓ ticker</span>
+      <span class="muted">Triangle = entry · green line = target (call wall) · red line = stop (put wall − 0.5 ATR) · square = exit · ↑ ↓ ticker</span>
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
   const side = narrow ? '' : `<aside class="fcf-side"><input id="fcf-q" type="search" placeholder="Filter tickers" value="${esc(S.fcfQ || '')}" aria-label="Filter tickers">
@@ -2350,7 +2350,7 @@ async function runWatch(days) {
   setTimeout(tick, 30000);
 }
 function vWatch() {
-  const h = head('Wall watch', 'Every hour, on each ticker of the list: call wall > gamma flip > put wall, and a green hourly candle that crosses the put wall (low at or under it, close above it). Target: the call wall. Stop: an hourly close below the put wall. Signals are recorded and followed, not traded.', '');
+  const h = head('Wall watch', 'Every hour, on each ticker of the list: call wall > gamma flip > put wall, and a green hourly candle that crosses the put wall (low at or under it, close above it). Target: the call wall. Stop: put wall − 0.5 × the hourly ATR, fixed at the entry. Signals are recorded and followed, not traded.', '');
   const d = S.ww;
   if (!d) return h + '<p class="loading">Loading…</p>';
   if (d.error) return h + `<div class="errbox">${esc(d.error)}</div>`;
@@ -2370,7 +2370,7 @@ function vWatch() {
   const sigs = d.signals || [];
   const st = s => s.status === 'target' ? '<b class="gain">target</b>' : s.status === 'stop' ? '<b class="loss">stop</b>' : '<span style="color:var(--coach)">open</span>';
   const sigTable = `<section class="panel"><h2>Signals</h2>${sigs.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Candle</th><th class="r">Entry</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th class="r">Target</th><th class="r">Stop</th><th>Result</th><th class="r">Move</th><th class="r">R</th><th></th></tr></thead><tbody>
-    ${sigs.map(s => `<tr><td><b>${esc(s.symbol)}</b></td><td>${esc(t5(s.at))}</td><td class="r">${(+s.entry).toFixed(2)}</td><td class="r">${s.pw}</td><td class="r">${s.flip}</td><td class="r">${s.cw}</td><td class="r">${pc(s.tgtPct, 1)}</td><td class="r">${pc(-s.riskPct, 1)}</td>
+    ${sigs.map(s => `<tr><td><b>${esc(s.symbol)}</b></td><td>${esc(t5(s.at))}</td><td class="r">${(+s.entry).toFixed(2)}</td><td class="r">${s.pw}</td><td class="r">${s.flip}</td><td class="r">${s.cw}</td><td class="r">${pc(s.tgtPct, 1)}</td><td class="r" title="${s.stop != null ? `stop ${s.stop} (put wall − 0.5 × ATR ${s.atr})` : 'old rule: hourly close below the put wall'}">${pc(-s.riskPct, 1)}</td>
       <td>${st(s)}${s.exitAt ? ` <span class="muted">${esc(t5(s.exitAt))}</span>` : s.lastAt ? ` <span class="muted">now ${(+s.last).toFixed(2)}</span>` : ''}</td><td class="r">${pc(s.pct)}</td><td class="r">${s.R == null ? '—' : (s.R > 0 ? '+' : '') + s.R}</td><td><button class="btn" data-wwchart="${esc(s.symbol)}|${esc(s.at)}" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No signal yet. Press <b>Get all walls (45 days)</b> to see how often it happened.</p>'}</section>`;
   const by = (d.byTicker || []).length ? `<section class="panel" style="margin-top:14px"><details><summary class="muted" style="cursor:pointer">By ticker (finished signals)</summary><div class="tablewrap"><table class="pos" style="font-size:.85rem;margin-top:8px"><thead><tr><th>Ticker</th><th class="r">Signals</th><th class="r">Targets</th><th class="r">Total move</th></tr></thead><tbody>
     ${d.byTicker.map(b => `<tr><td><b>${esc(b.symbol)}</b></td><td class="r">${b.n}</td><td class="r">${b.targets}</td><td class="r">${pc(b.total)}</td></tr>`).join('')}</tbody></table></div></details></section>` : '';

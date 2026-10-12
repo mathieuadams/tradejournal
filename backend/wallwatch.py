@@ -3,7 +3,7 @@
 Setup (on each finished hourly candle):
   call wall > gamma flip > put wall   (walls and flip of the day, Unusual Whales, from that day's open interest)
   green candle (close > open) whose low is at or below the put wall and whose close is above it (it crosses the put wall)
-Trade: entry = that candle's close, target = the call wall of that day, stop = an hourly close below that put wall.
+Trade: entry = that candle's close, target = the call wall of that day, stop = put wall - 0.5 hourly ATR (fixed, hit intrabar).
 One open signal per ticker at a time. Nothing is traded: signals are only recorded and followed.
 
 Items: WWCFG (tickers, enabled), WWSIG#<ticker>#<bar time> (signals), WWRUN (last run)."""
@@ -58,16 +58,31 @@ def setup_ok(w):
     return bool(cw and fl and pw and cw > fl > pw)
 
 
-def detect(bars, walls):
-    """Signals and their outcome. bars: finished hourly candles; walls: {date: {callWall, flip, putWall}}."""
+STOP_ATR = 0.5      # stop = put wall - 0.5 x the hourly ATR at the signal, fixed for the trade
+
+
+def atr14(bars):
+    out, tr0 = [], 0.0
+    for i, b in enumerate(bars):
+        pc = bars[i - 1]["c"] if i else b["o"]
+        tr = max(b["h"] - b["l"], abs(b["h"] - pc), abs(b["l"] - pc))
+        tr0 = (tr0 * i + tr) / (i + 1) if i < 14 else (tr0 * 13 + tr) / 14
+        out.append(tr0)
+    return out
+
+
+def detect(bars, walls, start=None):
+    """Signals and their outcome. bars: finished hourly candles (earlier ones warm up the ATR);
+    walls: {date: {callWall, flip, putWall}}; start: first date where signals can start."""
     sigs, open_ = [], None
+    atr = atr14(bars)
     for i, b in enumerate(bars):
         if open_:                                      # follow the open signal first
             s = open_
-            if b["h"] >= s["target"]:
+            if b["l"] <= s["stop"]:                    # fixed stop under the put wall (stop order)
+                s.update(status="stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
+            elif b["h"] >= s["target"]:
                 s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
-            elif b["c"] < s["pw"]:
-                s.update(status="stop", exitAt=b["t"][:16], exit=b["c"])
             else:
                 s["last"], s["lastAt"] = b["c"], b["t"][:16]
                 s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
@@ -75,12 +90,16 @@ def detect(bars, walls):
             if s["status"] != "open":
                 open_ = None
             continue
+        if start and b["t"][:10] < start:
+            continue
         w = walls.get(b["t"][:10])
         if not setup_ok(w):
             continue
         pw, cw = float(w["putWall"]), float(w["callWall"])
         if b["c"] > b["o"] and b["l"] <= pw < b["c"]:
+            a_ = atr[i]
             s = {"at": b["t"][:16], "entry": b["c"], "pw": pw, "flip": float(w["flip"]), "cw": cw, "target": cw,
+                 "atr": round(a_, 4), "stop": round(pw - STOP_ATR * a_, 4),
                  "o": b["o"], "h": b["h"], "l": b["l"], "status": "open", "last": b["c"], "lastAt": b["t"][:16]}
             sigs.append(s)
             open_ = s
@@ -88,7 +107,7 @@ def detect(bars, walls):
         ex = s.get("exit") if s["status"] != "open" else s["last"]
         s["pct"] = round((ex / s["entry"] - 1) * 100, 2)
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2)
-        s["riskPct"] = round((s["entry"] - s["pw"]) / s["entry"] * 100, 2)
+        s["riskPct"] = round((s["entry"] - s["stop"]) / s["entry"] * 100, 2)
         s["R"] = round(s["pct"] / s["riskPct"], 2) if s["riskPct"] > 0 else None
     return sigs
 
@@ -121,10 +140,13 @@ def check_ticker(sub, key, sym, days, now, since=None):
     if since:
         first = min(first, since)
     dates = [d for d in dates if d >= first]
-    bars = [b for b in bars if b["t"][:10] >= first]
     walls = _walls(key, sym, dates, now.strftime("%Y-%m-%d"))
-    sigs = detect(bars, walls)
+    sigs = detect(bars, walls, first)                  # earlier candles only warm up the ATR
+    bars = [b for b in bars if b["t"][:10] >= first]
     pk = db.upk(sub)
+    for old in db.q_prefix(pk, f"WWSIG#{sym}#"):       # recomputed from `first` on: replace what was there
+        if (old.get("at") or "") >= first:
+            db.delete(pk, old["SK"])
     for s in sigs:
         db.put({"PK": pk, "SK": f"WWSIG#{sym}#{s['at']}", "symbol": sym, **s})
     last = bars[-1] if bars else None
@@ -147,7 +169,7 @@ def run(sub, days=3, budget_s=500):
     todo = [t for t in cfg["tickers"] if t not in done_bf]
     since = {}
     for s in db.q_prefix(db.upk(sub), "WWSIG#"):
-        if s.get("status") == "open" and s.get("symbol"):
+        if s.get("symbol") and (s.get("status") == "open" or s.get("stop") is None):   # open, or made with the old stop rule
             since[s["symbol"]] = min(since.get(s["symbol"], "9"), s["at"][:10])
     with ThreadPoolExecutor(max_workers=4) as ex:
         for k in range(0, len(todo), 8):
