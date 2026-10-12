@@ -624,7 +624,7 @@ def summarize(sigs):
                "avgWin": avg([s["pct"] for s in hit]), "avgLoss": avg([s["pct"] for s in done if s["status"] == "stop"]), "trails": sum(1 for s in done if s["status"] == "trail"),
                "avgTrail": avg([s["pct"] for s in done if s["status"] == "trail"]),
                "totalPct": round(sum(s["pct"] for s in done), 2) if done else None,
-               "avgTgt": avg([s["tgtPct"] for s in sigs if s.get("tgtPct") is not None]), "avgRisk": avg([s["riskPct"] for s in sigs])}
+               "avgTgt": avg([s["tgtPct"] for s in sigs if s.get("tgtPct") is not None]), "avgRisk": avg([s["riskPct"] for s in sigs if s.get("riskPct") is not None])}
     return summary
 
 
@@ -646,7 +646,20 @@ def view(sub):
         b["targets"] += s["status"] == "target"
         b["total"] = round(b["total"] + s["pct"], 2)
     fill = db.get(db.upk(sub), "WWFILL") or {}
-    return {"config": cfg, "run": {k: run_.get(k) for k in ("at", "running", "checked", "errors", "bfLeft", "bfAt", "bfDays")},
+    positions = []
+    for r in db.q_prefix(db.upk(sub), "BOT#"):           # every open (or working) paper position of the bot
+        if r.get("status") not in ("submitting", "submitted", "open", "closing"):
+            continue
+        p = r.get("proposal") or {}
+        positions.append({"id": r.get("id"), "symbol": r.get("symbol"), "status": r.get("status"), "contract": p.get("contract"),
+                          "exp": p.get("exp"), "strike": p.get("strike"), "qty": r.get("filledQty") or r.get("qty"),
+                          "fill": r.get("fillPrice"), "limit": r.get("limit"), "mark": r.get("lastMark"), "pl": r.get("lastPl"),
+                          "plPct": r.get("lastPlPct"), "under": r.get("lastUnderlying"), "stop": p.get("underlyingStop"),
+                          "target": p.get("underlyingTarget"), "at": (r.get("filledAt") or r.get("submittedAt") or "")[:16],
+                          "wallwatch": bool(r.get("wallwatch") or p.get("wallwatch")),
+                          "kind": (p.get("wallwatch") or {}).get("kind")})
+    positions.sort(key=lambda x: x["at"], reverse=True)
+    return {"positions": positions, "config": cfg, "run": {k: run_.get(k) for k in ("at", "running", "checked", "errors", "bfLeft", "bfAt", "bfDays")},
             "fill": {k: fill.get(k) for k in ("at", "running", "total", "left", "fetched", "errors")},
             "status": run_.get("status") or [], "signals": sigs[:500], "summary": summary, "byKind": by_kind,
             "byTicker": sorted(by.values(), key=lambda b: -b["total"]),

@@ -1493,7 +1493,8 @@ async function loadWwChart(sym) {
 }
 const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
-  const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), sym = list.includes(t0) ? t0 : (list[0] || t0), id = 'ww-' + sym;
+  const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
+  const sym = list.includes(t0) || held.includes(t0) ? t0 : (list[0] || t0), id = 'ww-' + sym;
   if (!S.ww && !S.wwBusy) setTimeout(loadWatch, 0);
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
   const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
@@ -1547,6 +1548,12 @@ function vChartWW() {
   }
   const added = ((S.ww && S.ww.config && S.ww.config.added) || {});
   const side = narrow ? '' : `<aside class="fcf-side"><form id="ww-addf" style="display:flex;gap:6px;margin-bottom:6px"><input id="ww-add" placeholder="Add ticker" style="flex:1;min-width:0" aria-label="Add a ticker"><button class="btn" type="submit" style="padding:2px 10px">Add</button></form>
+      ${(() => { const ps = (S.ww && S.ww.positions) || []; if (!ps.length) return '';
+        return `<div class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin:6px 2px 4px">Current positions (${ps.length})</div>
+        <ul class="fcf-list" style="margin-bottom:8px;border-bottom:2px solid var(--line)">${ps.map(p0 => `<li data-sym="${esc(p0.symbol)}"><a href="#botchart?t=${encodeURIComponent(p0.symbol)}" ${p0.symbol === sym ? 'aria-current="true"' : ''}>
+          <span><b>${esc(p0.symbol)}</b> <span class="muted" style="font-size:.75rem">${p0.strike ? esc(String(p0.strike)) + 'C' : ''} ${esc((p0.exp || '').slice(5))}</span><br><span class="muted" style="font-size:.75rem">${p0.qty ?? ''}× @${p0.fill ?? p0.limit ?? '—'}${p0.status !== 'open' ? ' · ' + esc(p0.status) : ''}</span></span>
+          <span style="text-align:right"><b class="${(p0.plPct || 0) >= 0 ? 'gain' : 'loss'}" style="font-size:.85rem">${p0.plPct != null ? (p0.plPct >= 0 ? '+' : '') + p0.plPct + '%' : '—'}</b><br><span class="muted" style="font-size:.72rem">${p0.pl != null ? money(p0.pl) : ''}</span></span></a></li>`).join('')}</ul>
+        <div class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin:2px 2px 4px">Watchlist (${list.length})</div>`; })()}
       <input id="fcf-q" type="search" placeholder="Filter tickers" value="${esc(S.fcfQ || '')}" aria-label="Filter tickers">
       <ul class="fcf-list">${list.map(x => { const b = bySym[x] || { n: 0, t: 0, open: 0, tot: 0 }, st = stMap[x] || {}, ad = added[x];
         return `<li data-sym="${esc(x)}" ${S.fcfQ && !x.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x)}" ${x === sym ? 'aria-current="true"' : ''}>
@@ -1555,7 +1562,7 @@ function vChartWW() {
   return `<div class="fcf">${headBar}<div class="fcf-body"><div class="fcf-main">${main}</div>${side}</div></div>`;
 }
 function fcfSymbol() {
-  if (S.fcfMode === 'ww') { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return l.includes(t) ? t : (l[0] || t); }
+  if (S.fcfMode === 'ww') { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(), hd = ((S.ww && S.ww.positions) || []).map(x => x.symbol); return l.includes(t) || hd.includes(t) ? t : (l[0] || t); }
   const items = (S.tickers && S.tickers.items) || [];
   const t = (hashParam('t') || '').toUpperCase();
   return items.find(x => x.symbol === t) ? t : (items[0] && items[0].symbol) || t;
@@ -2473,7 +2480,12 @@ function vWatch() {
     <p class="muted" style="font-size:.84rem;margin:0 0 8px">Finished flow retest signals split by the support that was retested, the size of the call alert that armed them and how long the retest took. Green rows beat all signals (with at least 5 signals).</p>
     ${rb.n ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Group</th><th class="r">Signals</th><th class="r">Call wall reached</th><th class="r">Winners</th><th class="r">Avg</th><th class="r">Avg R</th><th class="r">Total</th></tr></thead><tbody>
       ${rrow({ ...rb, name: 'All flow retest signals' })}${(rsd.rows || []).map(rrow).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No finished flow retest signal yet. Press <b>Get all walls (45 days)</b> to build the history.</p>'}</section>`;
-  return h + runLine + stats + kinds + rtBox + flowBox + sigTable + by + now;
+  const ps = d.positions || [];
+  const posBox = `<section class="panel" style="margin:0 0 14px"><h2>Current positions</h2>${ps.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Contract</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Now</th><th class="r">P&L</th><th class="r">Stock</th><th class="r">Stop</th><th class="r">Target</th><th>Status</th><th></th></tr></thead><tbody>
+    ${ps.map(p0 => `<tr><td><b>${esc(p0.symbol)}</b>${p0.wallwatch ? ` <span class="exchip">${p0.kind === 'retest' ? 'retest' : 'wall watch'}</span>` : ''}</td><td>${p0.strike ? esc(String(p0.strike)) + 'C ' : ''}${esc(p0.exp || '')}</td><td class="r">${p0.qty ?? ''}</td><td class="r">${p0.fill ?? (p0.limit ? 'limit ' + p0.limit : '—')}</td><td class="r">${p0.mark ?? '—'}</td>
+      <td class="r ${(p0.pl || 0) >= 0 ? 'gain' : 'loss'}">${p0.pl != null ? money(p0.pl) : '—'}${p0.plPct != null ? ` (${p0.plPct >= 0 ? '+' : ''}${p0.plPct}%)` : ''}</td><td class="r">${p0.under != null ? (+p0.under).toFixed(2) : '—'}</td><td class="r">${p0.stop ?? '—'}</td><td class="r">${p0.target ?? '<span class="muted">trail</span>'}</td><td>${esc(p0.status)}</td>
+      <td><button class="btn" data-wwchart="${esc(p0.symbol)}|" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No open position.</p>'}</section>`;
+  return h + runLine + posBox + stats + kinds + rtBox + flowBox + sigTable + by + now;
 }
 function vExplore() {
   const d = S.ex;

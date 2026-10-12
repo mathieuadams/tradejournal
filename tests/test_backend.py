@@ -2144,6 +2144,8 @@ def test_wall_watch_live():
         bars5[-1].update(l=104, h=110.5)
         rec = db.get(pk, rec["SK"])
         assert "call wall" in autotrader._wallwatch_exit(SUB, rec, rec["proposal"])
+        st_, vv = call("GET", "/bot/wallwatch")
+        assert any(x["symbol"] == "ZZZ" and x["status"] == "open" and x["wallwatch"] for x in vv["positions"]), vv["positions"]
         tr = wallwatch.trades_for(SUB, "ZZZ")
         assert tr and tr[0]["contract"] == "ZZZ261120C00105000" and tr[0]["under"] == 100.8
         hb = [{"t": "2026-10-12T09:30", "o": 101, "h": 101.5, "l": 100.5, "c": 101},
