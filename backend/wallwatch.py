@@ -44,7 +44,7 @@ def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
-            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r2")
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r3")
 
 
 def save_config(sub, body):
@@ -88,7 +88,8 @@ def save_config(sub, body):
         t = str(body["add"]).strip().upper().replace("/", ".")[:10]
         if t and t not in cur["tickers"]:
             cur["tickers"] = cur["tickers"] + [t]
-            cur["added"] = {**cur.get("added", {}), t: {"at": iso(now_ny()), "by": "you"}}
+            cur["added"] = {**cur.get("added", {}), t: {"at": iso(now_ny()), "by": body.get("addedBy") or "you",
+                                                       **({"premium": round(body["premium"])} if body.get("premium") else {})}}
     if body.get("remove"):
         t = str(body["remove"]).strip().upper()
         cur["tickers"] = [x for x in cur["tickers"] if x != t]
@@ -233,11 +234,10 @@ def sig_sk(sym, s):
 
 
 def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
-    """Flow retest: a call alert of at least retestMin arms the ticker. The support is the highest of put wall / call wall
-    / flip under the price when it was armed. Price first has to close at least 0.5 ATR above the support (move away);
-    then, within retestDays trading days: a green hourly candle (open at / above the support, low back to it within 0.3%,
-    close above it) is the entry. An hourly close under the stop before the
-    retest ends the watch. Target: the call wall of the day if it's above the entry (minus the buffer), else trailing only.
+    """Flow retest: a call alert of at least retestMin arms the ticker (a new alert re-arms it). The support is the highest
+    of put wall / call wall / flip at or under the price at the close of the alert's candle. From that candle on, within
+    retestDays trading days: a green hourly candle whose low reaches the support (within 0.3%) and that closes above it
+    is the entry. An hourly close under the stop before the entry ends the watch. Target: the call wall of the day if it's above the entry (minus the buffer), else trailing only.
     Returns (signals, current watch or None)."""
     P = {**PARAMS, **(cfg or {})}
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
@@ -275,14 +275,13 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
                 open_ = None
             continue
         w = walls.get(day) or {}
-        if arm and not watch:                          # call flow: find the support under the price
+        if arm:                                        # call flow (new or again): the support is the level at / under price
             lv = [(float(w[k]), n) for k, n in (("putWall", "put wall"), ("callWall", "call wall"), ("flip", "flip")) if w.get(k)]
-            under = [x for x in lv if x[0] < b["c"]]
+            under = [x for x in lv if x[0] <= b["c"] * (1 + RETEST_NEAR / 100)]
             if under:
-                lvl, name = max(under)
-                watch = {"armedAt": arm["t"], "armPremium": arm["p"], "level": lvl, "levelName": name, "day0": day, "days": 0,
-                         "since": b["t"][:16], "away": b["c"] >= lvl + RETEST_AWAY * a_}
-            continue
+                lvl0, name = max(under)
+                watch = {"armedAt": arm["t"], "armPremium": arm["p"], "level": lvl0, "levelName": name, "day0": day, "days": 0,
+                         "since": b["t"][:16]}
         if not watch:
             continue
         if day != watch.get("_d"):
@@ -296,13 +295,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
         if b["c"] < lvl - k_stop * a_:                 # support broken before the retest
             watch = None
             continue
-        if not watch["away"]:                          # price has to move away from the support before a retest counts
-            if b["c"] >= lvl + RETEST_AWAY * a_:
-                watch["away"] = True
-            continue
-        green = b["c"] > b["o"]
-        if green and b["l"] <= lvl * (1 + RETEST_NEAR / 100) and b["c"] > lvl and b["o"] >= lvl * (1 - RETEST_NEAR / 100) \
-                and b["t"][:16] > watch["since"]:
+        # entry: from the candle of the alert on, a green candle whose low reaches the support and that closes above it
+        if b["c"] > b["o"] and b["l"] <= lvl * (1 + RETEST_NEAR / 100) and b["c"] > lvl:
             if start and day < start:
                 watch = None
                 continue

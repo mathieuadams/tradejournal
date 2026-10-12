@@ -2212,9 +2212,15 @@ def test_wall_watch_retest():
     assert len(sg) == 1 and sg[0]["kind"] == "retest" and sg[0]["level"] == 102 and sg[0]["levelName"] == "flip", sg
     assert sg[0]["armedAt"] == "2026-10-05T10:00" and sg[0]["status"] == "target" and sg[0]["target"] == 109.45 and watch is None
     assert wallwatch.sig_sk("AAA", sg[0]).endswith("#R")
-    # no move away from the support first: the next candle touching it is not a retest
-    flat = [{"t": "2026-10-05T09:30", "o": 102.3, "h": 102.6, "l": 102.1, "c": 102.4}] + bars[2:]
-    assert not wallwatch.detect_retest(flat, {"2026-10-05": w, "2026-10-06": w}, alerts=al, datr={"next": 2.0})[0]
+    # the alert arrives while price sits on the support: the alert candle itself is the entry when it is green and holds
+    flat = [{"t": "2026-10-05T09:30", "o": 102.0, "h": 102.6, "l": 101.9, "c": 102.4}] + bars[2:]
+    fs = wallwatch.detect_retest(flat, {"2026-10-05": w, "2026-10-06": w}, alerts=al, datr={"next": 2.0})[0]
+    assert fs and fs[0]["at"] == "2026-10-05T09:30" and fs[0]["levelName"] == "flip"
+    # alert on a red candle at the support, entry on the next green candle that holds it
+    rc = [{"t": "2026-10-05T09:30", "o": 103.0, "h": 103.1, "l": 102.0, "c": 102.2},
+          {"t": "2026-10-05T10:30", "o": 102.2, "h": 102.9, "l": 101.95, "c": 102.7}]
+    rs_ = wallwatch.detect_retest(rc, {"2026-10-05": w}, alerts=al, datr={"next": 2.0})[0]
+    assert rs_ and rs_[0]["at"] == "2026-10-05T10:30"
     # a red candle at the support is not an entry
     red = bars[:2] + [{"t": "2026-10-05T11:30", "o": 103.2, "h": 103.4, "l": 102.1, "c": 102.5}]
     assert not wallwatch.detect_retest(red, {"2026-10-05": w}, alerts=al)[0]
@@ -2238,6 +2244,35 @@ def test_wall_watch_retest():
     rows = {r["name"]: r for r in v["retestStudy"]["rows"]}
     assert v["retestStudy"]["base"]["n"] == 1 and rows["Support: flip"]["n"] == 1 and rows["Call alert $500K – $1M"]["n"] == 1
     assert rows["Retest within 1 day of the alert"]["n"] == 1 and rows["Support: put wall"]["n"] == 0
+
+
+def test_flow_scan_watch_only():
+    """Wall watch trading: flow tickers are evaluated, marked WATCH and put on the list; nothing is bought."""
+    import autotrader, flowdata, wallwatch
+    STORE.clear()
+    pk = db.upk(SUB)
+    call("GET", "/bot/wallwatch")
+    saved = (flowdata.alerts, autotrader.evaluate, autotrader.place)
+    placed = []
+    try:
+        from datetime import datetime as _dt
+        now = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "QQQZ", "premium": 700000, "at": now, "sweep": True, "contract": "X"}]}
+        def fake_eval(sub, sym, source=None):
+            assert source.get("watchOnly")
+            rec = {"id": "20261012100000-aaaaaa", "symbol": sym, "decision": "SKIP", "blocking": ["chart"], "status": "proposed"}
+            db.put({"PK": pk, "SK": f"BOT#{rec['id']}", **rec})
+            return rec
+        autotrader.evaluate = fake_eval
+        autotrader.place = lambda *a, **k: placed.append(a)
+        out = autotrader.flow_scan(SUB, buy=False)
+        rec = db.get(pk, "BOT#20261012100000-aaaaaa")
+        assert out["evaluated"][0]["decision"] == "WATCH" and rec["decision"] == "WATCH" and rec["ruleDecision"] == "SKIP"
+        assert rec["blocking"][0].startswith("On the Wall watch list") and not placed
+        cfg = wallwatch.config(SUB)
+        assert "QQQZ" in cfg["tickers"] and cfg["added"]["QQQZ"]["by"] == "flow" and cfg["added"]["QQQZ"]["premium"] == 700000
+    finally:
+        flowdata.alerts, autotrader.evaluate, autotrader.place = saved
 
 
 if __name__ == "__main__":

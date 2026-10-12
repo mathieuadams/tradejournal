@@ -1256,7 +1256,7 @@ async function loadBot(force) {
   if (S.broker === undefined) { try { S.broker = await api('/broker/alpaca'); } catch (e) { S.broker = { connected: false }; } }
   if (isBotRoute() || route() === 'dashboard') render();
 }
-const DEC_CLS = { BUY: 'ok', WAIT: 'mid', SKIP: 'bad' };
+const DEC_CLS = { BUY: 'ok', WAIT: 'mid', SKIP: 'bad', WATCH: 'mid' };
 const STRAT_LBL = { long_call: 'Long call', bull_call: 'Bull call spread', diagonal: 'Diagonal' };
 const isSpread = p => !!(p && p.legs && (p.strategy === 'bull_call' || p.strategy === 'diagonal'));
 const legTxt = p => !p || !p.exp ? '' : p.strategy === 'bull_call' && p.shortStrike ? `${fmtExp(p.exp)} ${p.strike}/${p.shortStrike}c`

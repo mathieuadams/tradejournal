@@ -592,7 +592,7 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
            "gamma": {k: g.get(k) for k in ("gammaFlip", "callWall", "putWall", "netGex", "regime")},
            "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}, "tickerFlow": tf,
            "altProposal": alt}
-    ww = (source or {}).get("type") == "wallwatch"
+    ww = (source or {}).get("type") == "wallwatch" or bool((source or {}).get("watchOnly"))
     if not ww:
         try:                                         # saved strategies: tag the evaluation, a 'trade' match can buy
             import strats
@@ -1476,8 +1476,10 @@ def put_watch(sub, rec, cfg=None):
     return pt
 
 
-def flow_scan(sub, cfg=None):
-    """Pull new unusual-flow alerts, evaluate the tickers and trade the ones that pass every rule."""
+def flow_scan(sub, cfg=None, buy=True):
+    """Pull new unusual-flow alerts, evaluate the tickers and trade the ones that pass every rule.
+    buy=False (wall watch trading): the tickers are evaluated and put on the wall watch list; the trade comes later,
+    from a wall watch entry signal."""
     import flowdata
     cfg = cfg or settings(sub)
     pk = db.upk(sub)
@@ -1530,13 +1532,25 @@ def flow_scan(sub, cfg=None):
                   "rule": top.get("rule"), "underlying": top.get("underlying"), "optPrice": top.get("price"),
                   "topPremium": round(top.get("premium") or 0)}
         try:
-            rec = evaluate(sub, sym, source=origin)
+            rec = evaluate(sub, sym, source={**origin, "watchOnly": True} if not buy else origin)
         except Exception as e:
             done.append({"symbol": sym, "error": str(e)[:120]})
             evaluated[sym] = iso(now_ny())
             continue
         evaluated[sym] = iso(now_ny())
         item = {"symbol": sym, "decision": rec["decision"]}
+        if not buy:                                    # wall watch: evaluated, then on the list until an entry signal
+            try:
+                import wallwatch
+                wallwatch.save_config(sub, {"add": sym, "addedBy": "flow", "premium": origin.get("premium")})
+            except Exception as e:
+                print("wallwatch add failed", sym, e)
+            note = "On the Wall watch list: waiting for the flow retest entry"
+            db.update(pk, f"BOT#{rec['id']}", {"ruleDecision": rec["decision"], "decision": "WATCH",
+                                               "blocking": [note] + list(rec.get("blocking") or [])})
+            item.update(decision="WATCH", watch=True)
+            done.append(item)
+            continue
         if cfg["autoSubmit"] and rec["decision"] == "BUY" and open_n < cfg["maxPositions"]:
             try:
                 place(sub, rec["id"], placed_by="auto-flow")
@@ -1575,7 +1589,8 @@ def tick(sub):
             except Exception as e:
                 print("wallwatch flow add failed", e)
         if wwc and wwc.get("enabled", True) and wwc.get("trade") and db.get(db.upk(sub), "WWCFG"):
-            pass                                       # wall watch trades the flow (through its signals): no direct flow buys
+            if market_open():                          # flow tickers are evaluated and put on the list; no direct buys
+                out["flow"] = flow_scan(sub, cfg, buy=False)
         elif cfg["flowAuto"] and market_open():
             out["flow"] = flow_scan(sub, cfg)
             try:                                       # call bursts: tracked only, never traded
