@@ -592,12 +592,15 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
            "gamma": {k: g.get(k) for k in ("gammaFlip", "callWall", "putWall", "netGex", "regime")},
            "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}, "tickerFlow": tf,
            "altProposal": alt}
-    try:                                             # saved strategies: tag the evaluation, a 'trade' match can buy
-        import strats
-        strats.apply(sub, rec, cfg)
-    except Exception as e:
-        print("strategies failed", e)
-    rec.pop("altProposal", None)
+    ww = (source or {}).get("type") == "wallwatch"
+    if not ww:
+        try:                                         # saved strategies: tag the evaluation, a 'trade' match can buy
+            import strats
+            strats.apply(sub, rec, cfg)
+        except Exception as e:
+            print("strategies failed", e)
+    if not ww:                                       # a wall watch signal buys even when liquidity failed: keep the closest call
+        rec.pop("altProposal", None)
     _carry_ai(sub, rec, cfg)
     db.put({"PK": db.upk(sub), "SK": f"BOT#{rec['id']}", **rec})
     return rec
@@ -1088,6 +1091,16 @@ def monitor(sub):
             close(sub, rec["id"], reason)
             actions.append((rec["symbol"], reason))
             continue
+        if p.get("wallwatch"):                           # wall watch trade: its own stop / trailing stop / call wall target
+            try:
+                reason = _wallwatch_exit(sub, rec, p)
+            except Exception as e:
+                reason = None
+                print("wallwatch exit check failed", rec.get("symbol"), e)
+            if reason:
+                close(sub, rec["id"], reason)
+                actions.append((rec["symbol"], reason))
+            continue
         pl_pct = rec["lastPlPct"]
         stp, tgt = stop_pct(cfg, p), target_pct(cfg, p, rec.get("fillPrice"))
         plan = p.get("exitPlan") or {}                   # a strategy's own exit rules override the settings
@@ -1160,6 +1173,37 @@ def monitor(sub):
             if note:
                 actions.append((rec["symbol"], note))
     return {"actions": actions}
+
+
+def _wallwatch_exit(sub, rec, p):
+    """Stock-based exit of a wall watch trade, checked every minute on 5-minute candles since the fill:
+    stop = level - N x 30-day ATR, raised to (highest high since the fill - trail x ATR); target = the call wall."""
+    ww = p["wallwatch"]
+    pk = db.upk(sub)
+    since = (rec.get("filledAt") or rec.get("submittedAt") or "")[:16]
+    bars = _yahoo(rec["symbol"].replace(".", "-"), "5m", now_ny() - timedelta(days=5), now_ny() + timedelta(hours=1)) or []
+    bars = [b for b in bars if b["t"][:16] >= since and "09:30" <= b["t"][11:16] < "16:00"]
+    if not bars:
+        return None
+    last = bars[-1]
+    upd = {"lastUnderlying": last["c"]}
+    stop = float(p["underlyingStop"])
+    peak = max([float(rec.get("wwPeak") or 0)] + [b["h"] for b in bars[:-1]])
+    upd["wwPeak"] = round(peak, 4)
+    if ww.get("trailAtr") and ww.get("atr") and peak:
+        lvl = round(peak - float(ww["trailAtr"]) * float(ww["atr"]), 4)
+        if lvl > stop:
+            stop = lvl
+            upd["proposal"] = {**p, "underlyingStop": stop}
+    db.update(pk, rec["SK"], upd)
+    dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
+    if last["l"] <= stop:
+        return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
+    if last["h"] >= float(p["underlyingTarget"]):
+        return f"call wall {p['underlyingTarget']} reached ({last['h']:.2f})"
+    if dte <= 0:
+        return f"time stop ({dte} days to expiry)"
+    return None
 
 
 # ---------------- diagonal: keep shorting against the long call ----------------
@@ -1510,7 +1554,18 @@ def tick(sub):
     try:
         out = {"monitor": monitor(sub)}
         cfg = settings(sub)
-        if cfg["flowAuto"] and market_open():
+        wwc = None
+        if market_open():
+            try:                                       # wall watch: tickers with unusual call flow join the list
+                import wallwatch
+                wwc = wallwatch.config(sub)
+                if db.get(db.upk(sub), "WWCFG") and wwc.get("enabled", True):
+                    out["wallwatch"] = wallwatch.flow_add(sub, wwc)
+            except Exception as e:
+                print("wallwatch flow add failed", e)
+        if wwc and wwc.get("enabled", True) and wwc.get("trade") and db.get(db.upk(sub), "WWCFG"):
+            pass                                       # wall watch trades the flow (through its signals): no direct flow buys
+        elif cfg["flowAuto"] and market_open():
             out["flow"] = flow_scan(sub, cfg)
             try:                                       # call bursts: tracked only, never traded
                 import bursts
@@ -1536,6 +1591,7 @@ def handler(event, context_):
         subs = [p["PK"][5:] for p in db.scan_sk("WWCFG") if p.get("enabled", True)]
     elif job == "tick":   # every minute: users with open bot trades or flow trading on
         flow_users = {p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("flowAuto")}
+        flow_users |= {p["PK"][5:] for p in db.scan_sk("WWCFG") if p.get("enabled", True) and p.get("autoAdd", True)}
         subs = sorted(flow_users | {r["PK"][5:] for r in db.scan_prefix("BOT#", ("submitted", "open", "closing"))})
     else:                 # exits are always managed for every open bot position, schedule on or off
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("submitted", "open", "closing"))})

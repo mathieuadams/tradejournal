@@ -2079,6 +2079,67 @@ def test_wall_watch():
         charts._yahoo, flowdata.gex_day, flowdata._key = saved
 
 
+def test_wall_watch_live():
+    """Flow tickers join the list; a fresh signal buys a call (paper) with the signal's stop / target; the exit trails."""
+    import wallwatch, flowdata, autotrader, charts, datetime as dt
+    STORE.clear()
+    pk = db.upk(SUB)
+    call("GET", "/bot/wallwatch")
+    saved = (flowdata.alerts, autotrader.evaluate, autotrader.place, autotrader.chase, autotrader._yahoo)
+    try:
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "ZZZ", "premium": 600000}, {"ticker": "AAPL", "premium": 1}]}
+        r = wallwatch.flow_add(SUB)
+        cfg = wallwatch.config(SUB)
+        assert r["added"] == ["ZZZ"] and "ZZZ" in cfg["tickers"] and cfg["added"]["ZZZ"]["by"] == "flow"
+        st, v = call("PUT", "/bot/wallwatch", {"add": "pypl"})
+        assert "PYPL" in v["config"]["tickers"] and v["config"]["added"]["PYPL"]["by"] == "you"
+        calls = []
+        def fake_eval(sub, sym, source=None):
+            rec = {"id": "20261012113200-abcdef", "symbol": sym, "decision": "SKIP", "status": "proposed", "proposal": None,
+                   "altProposal": {"contract": "ZZZ261120C00105000", "exp": "2026-11-20", "strike": 105, "qty": 0, "limit": 2.0}}
+            db.put({"PK": pk, "SK": f"BOT#{rec['id']}", **rec})
+            calls.append(("eval", source["type"]))
+            return rec
+        autotrader.evaluate = fake_eval
+        autotrader.place = lambda sub, bid, **k: calls.append(("place", k.get("placed_by"), k.get("override")))
+        autotrader.chase = lambda sub, bid: calls.append(("chase",)) or {"status": "open"}
+        sg = {"at": "2026-10-12T10:30", "kind": "pw", "level": 100, "entry": 100.8, "stop": 99.0, "stop0": 99.0, "atr": 3.6, "target": 110}
+        db.put({"PK": pk, "SK": f"WWSIG#ZZZ#{sg['at']}", "symbol": "ZZZ", **sg})
+        out = wallwatch.enter(SUB, "ZZZ", sg)
+        assert out["botId"] == "20261012113200-abcdef" and [c[0] for c in calls] == ["eval", "place", "chase"], (out, calls)
+        assert calls[1] == ("place", "auto-wallwatch", True)
+        rec = db.get(pk, "BOT#20261012113200-abcdef")
+        p = rec["proposal"]
+        assert p["qty"] == 1 and p["underlyingStop"] == 99.0 and p["underlyingTarget"] == 110 and p["wallwatch"]["trailAtr"] == 1.0
+        assert db.get(pk, f"WWSIG#ZZZ#{sg['at']}")["botId"] == rec["id"]
+        # exit: trailing stop from 5-minute candles after the fill
+        db.update(pk, rec["SK"], {"status": "open", "filledAt": "2026-10-12T11:31:00", "fillPrice": 2.0, "filledQty": 1})
+        rec = db.get(pk, rec["SK"])
+        bars5 = [{"t": "2026-10-12T11:35", "o": 101, "h": 106, "l": 100.5, "c": 105},
+                 {"t": "2026-10-12T11:40", "o": 105, "h": 105.2, "l": 102.0, "c": 102.2}]
+        autotrader._yahoo = lambda *a, **k: [dict(b) for b in bars5]
+        reason = autotrader._wallwatch_exit(SUB, rec, rec["proposal"])
+        assert reason and reason.startswith("trailing stop") and db.get(pk, rec["SK"])["proposal"]["underlyingStop"] == round(106 - 3.6, 4), reason
+        bars5[-1].update(l=104, h=110.5)
+        rec = db.get(pk, rec["SK"])
+        assert "call wall" in autotrader._wallwatch_exit(SUB, rec, rec["proposal"])
+        tr = wallwatch.trades_for(SUB, "ZZZ")
+        assert tr and tr[0]["contract"] == "ZZZ261120C00105000" and tr[0]["under"] == 100.8
+        hb = [{"t": "2026-10-12T09:30", "o": 101, "h": 101.5, "l": 100.5, "c": 101},
+              {"t": "2026-10-12T10:30", "o": 99.5, "h": 101, "l": 99, "c": 100.8}]
+        saved2 = (charts._yahoo, flowdata.gex_day)
+        charts._yahoo = lambda sym, tf, a, b: [dict(x) for x in hb] if tf == "1h" else []
+        flowdata.gex_day = lambda key, sym, d, flip=True: {"callWall": 110, "flip": 102, "putWall": 100}
+        try:
+            fresh = wallwatch.check_ticker(SUB, "k", "QQQ", 3, dt.datetime(2026, 10, 12, 11, 32))
+            stale = wallwatch.check_ticker(SUB, "k", "SPY", 3, dt.datetime(2026, 10, 12, 13, 5))
+        finally:
+            charts._yahoo, flowdata.gex_day = saved2
+        assert len(fresh["_enter"]) == 1 and fresh["_enter"][0]["at"] == "2026-10-12T10:30" and not stale["_enter"]
+    finally:
+        flowdata.alerts, autotrader.evaluate, autotrader.place, autotrader.chase, autotrader._yahoo = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

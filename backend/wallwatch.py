@@ -22,12 +22,15 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
 
 
 PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True}
+OPTS = {"autoAdd": True, "trade": True}        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
 def config(sub):
     c = db.get(db.upk(sub), "WWCFG") or {}
     out = {"tickers": c.get("tickers") or DEFAULT, "enabled": c.get("enabled", True)}
     out.update({k: c.get(k, v) for k, v in PARAMS.items()})
+    out.update({k: c.get(k, v) for k, v in OPTS.items()})
+    out["added"] = c.get("added") or {}                 # {ticker: {"at", "by", "premium"}} for tickers added from the flow
     return out
 
 
@@ -58,9 +61,17 @@ def save_config(sub, body):
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
             except (TypeError, ValueError):
                 pass
-    for k in ("pwSetup", "flipSetup"):
+    for k in ("pwSetup", "flipSetup", "autoAdd", "trade"):
         if k in body:
             cur[k] = bool(body[k])
+    if body.get("add"):                                  # add one ticker
+        t = str(body["add"]).strip().upper().replace("/", ".")[:10]
+        if t and t not in cur["tickers"]:
+            cur["tickers"] = cur["tickers"] + [t]
+            cur["added"] = {**cur.get("added", {}), t: {"at": iso(now_ny()), "by": "you"}}
+    if body.get("remove"):
+        t = str(body["remove"]).strip().upper()
+        cur["tickers"] = [x for x in cur["tickers"] if x != t]
     from decimal import Decimal
     db.put({"PK": db.upk(sub), "SK": "WWCFG", **{k: Decimal(str(v)) if isinstance(v, float) else v for k, v in cur.items()}})
     if version(cur) != before:                          # new settings: the 45-day history is recomputed from scratch
@@ -221,15 +232,23 @@ def check_ticker(sub, key, sym, days, now, since=None):
     sigs = detect(bars, walls, first, config(sub), datr)
     bars = [b for b in bars if b["t"][:10] >= first]
     pk = db.upk(sub)
+    keep = {}
     for old in db.q_prefix(pk, f"WWSIG#{sym}#"):       # recomputed from `first` on: replace what was there
         if (old.get("at") or "") >= first:
+            keep[old["at"]] = {k: old[k] for k in ("botId", "tradeError") if old.get(k)}
             db.delete(pk, old["SK"])
+    enter = []
+    last_end = _bar_end(bars[-1]["t"]) if bars else None
     for s in sigs:
+        s.update(keep.get(s["at"], {}))
         db.put({"PK": pk, "SK": f"WWSIG#{sym}#{s['at']}", "symbol": sym, **s})
+        fresh = last_end and s["at"] == bars[-1]["t"][:16] and (now - last_end) <= timedelta(minutes=45)
+        if fresh and s["status"] == "open" and not s.get("botId") and not s.get("tradeError"):
+            enter.append(s)
     last = bars[-1] if bars else None
     w = walls.get(last["t"][:10]) if last else None
     return {"symbol": sym, "price": last["c"] if last else None, "barAt": last["t"][:16] if last else None, "walls": w,
-            "setup": setup_kind(w), "signals": len(sigs), "daysWithWalls": len(walls), "days": len(dates)}
+            "setup": setup_kind(w), "signals": len(sigs), "daysWithWalls": len(walls), "days": len(dates), "_enter": enter}
 
 
 def run(sub, days=3, budget_s=500):
@@ -260,6 +279,19 @@ def run(sub, days=3, budget_s=500):
                         done_bf.add(t)
                 except Exception as e:
                     errors.append(f"{t}: {str(e)[:100]}")
+    entries = []
+    try:
+        import autotrader
+        mkt = autotrader.market_open()
+    except Exception:
+        mkt = False
+    for r in rows:
+        if not mkt:                                     # no entry after the close (the 15:30 candle ends at 16:00)
+            r.pop("_enter", None)
+            continue
+        for sg in r.pop("_enter", []) or []:
+            if cfg.get("trade") and time.time() - t0 < budget_s + 60:
+                entries.append(enter(sub, r["symbol"], sg))
     status = {r["symbol"]: r for r in (prev.get("status") or [])}
     for r in rows:
         status[r["symbol"]] = r
@@ -271,7 +303,84 @@ def run(sub, days=3, budget_s=500):
     else:
         out.update({k: prev.get(k) for k in ("bfDone", "bfLeft", "bfAt", "bfDays")})
     db.put(out)
-    return {"checked": len(rows), "errors": len(errors)}
+    return {"checked": len(rows), "errors": len(errors), "entries": entries}
+
+
+# ---------------- live: add flow tickers, buy the signals ----------------
+
+def flow_add(sub, cfg=None):
+    """Every minute: tickers with new unusual call flow (the bot's flow filters) are added to the watchlist."""
+    import autotrader
+    import flowdata
+    cfg = cfg or config(sub)
+    if not cfg.get("enabled", True) or not cfg.get("autoAdd", True):
+        return {"skipped": "off"}
+    bc = autotrader.settings(sub)
+    since = (datetime.utcnow() - timedelta(minutes=bc["flowWindowMin"])).strftime("%Y-%m-%dT%H:%M:%SZ")
+    res = flowdata.alerts(sub, bc["flowMinPremium"], "call", bc["flowMinDte"], bc["flowMaxDte"], bc["flowAskSide"],
+                          bc["flowSweeps"], None, bc["flowMinVolOi"], 1, since_utc=since, exclude_etfs=bc["excludeEtfs"])
+    prem = {}
+    for a in res.get("alerts") or []:
+        t = (a.get("ticker") or "").upper().replace("/", ".")
+        if t:
+            prem[t] = prem.get(t, 0) + (a.get("premium") or 0)
+    new = [t for t in sorted(prem, key=lambda t: -prem[t]) if t not in cfg["tickers"]]
+    if new:
+        cur = db.get(db.upk(sub), "WWCFG") or {"PK": db.upk(sub), "SK": "WWCFG"}
+        tickers = list(cur.get("tickers") or cfg["tickers"])
+        added = dict(cur.get("added") or {})
+        for t in new[:20]:
+            if t not in tickers and len(tickers) < 300:
+                tickers.append(t)
+                added[t] = {"at": iso(now_ny()), "by": "flow", "premium": round(prem[t])}
+        db.update(db.upk(sub), "WWCFG", {"tickers": tickers, "added": added})
+    return {"alerts": len(res.get("alerts") or []), "added": new[:20]}
+
+
+def enter(sub, sym, sg):
+    """Buy a call for a fresh signal (Alpaca paper): the bot picks the contract, the signal sets the stop and the target,
+    then the limit is chased up until filled. The trade is then managed by the wall watch exit only."""
+    import autotrader
+    pk = db.upk(sub)
+    sk = f"WWSIG#{sym}#{sg['at']}"
+    cfg = config(sub)
+    try:
+        rec = autotrader.evaluate(sub, sym, source={"type": "wallwatch", "kind": sg.get("kind"), "signalAt": sg["at"],
+                                                    "level": sg.get("level"), "entry": sg["entry"]})
+        p = rec.get("proposal") or rec.get("altProposal")
+        if not p:
+            raise ValueError("no call contract in the expiration / delta window")
+        ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]),
+              "target": sg["target"], "level": sg.get("level"), "entry": sg["entry"]}
+        p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg["target"],
+             "strategyOnly": "wallwatch", "wallwatch": ww}
+        db.update(pk, f"BOT#{rec['id']}", {"proposal": p, "decision": "BUY", "strategyOnly": "wallwatch", "wallwatch": ww})
+        db.update(pk, sk, {"botId": rec["id"]})
+        autotrader.place(sub, rec["id"], placed_by="auto-wallwatch", ai_inline=False, override=True)
+        out = autotrader.chase(sub, rec["id"]) or {}
+        return {"symbol": sym, "botId": rec["id"], "status": out.get("status"), "contract": p.get("contract")}
+    except Exception as e:
+        db.update(pk, sk, {"tradeError": str(e)[:160]})
+        return {"symbol": sym, "error": str(e)[:160]}
+
+
+def trades_for(sub, sym):
+    """The real (paper) trades of a ticker placed from wall watch signals, for the chart."""
+    out = []
+    for r in db.q_prefix(db.upk(sub), "BOT#"):
+        if r.get("symbol") != sym or not (r.get("wallwatch") or (r.get("placedBy") or "") == "auto-wallwatch"):
+            continue
+        p = r.get("proposal") or {}
+        out.append({"id": r.get("id"), "signalAt": (r.get("wallwatch") or {}).get("signalAt"), "contract": p.get("contract"),
+                    "exp": p.get("exp"), "strike": p.get("strike"), "qty": r.get("filledQty") or r.get("qty"),
+                    "at": (r.get("filledAt") or r.get("submittedAt") or r.get("createdAt") or "")[:16],
+                    "fill": r.get("fillPrice"), "limit": r.get("limit"), "status": r.get("status"),
+                    "under": (r.get("wallwatch") or {}).get("entry"), "stop": p.get("underlyingStop"), "target": p.get("underlyingTarget"),
+                    "exitAt": (r.get("closedAt") or "")[:16] or None, "exit": r.get("exitPrice"), "exitReason": r.get("exitReason"),
+                    "pl": r.get("realizedPl") if r.get("status") == "closed" else r.get("lastPl"),
+                    "plPct": r.get("realizedPct") if r.get("status") == "closed" else r.get("lastPlPct"),
+                    "underExit": r.get("lastUnderlying")})
+    return sorted(out, key=lambda x: x["at"])
 
 
 def _weekdays(n, today):
@@ -557,7 +666,8 @@ def chart(sub, sym, days=45, flow=True):
     return {"fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
-            "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain),
+            "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),
+            "added": (config(sub).get("added") or {}).get(sym),
             "maxPainMissing": sum(1 for d in dates if d != today and d not in mpd)}
 
 
