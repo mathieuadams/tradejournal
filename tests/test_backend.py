@@ -2212,6 +2212,12 @@ def test_wall_watch_retest():
     assert len(sg) == 1 and sg[0]["kind"] == "retest" and sg[0]["level"] == 102 and sg[0]["levelName"] == "flip", sg
     assert sg[0]["armedAt"] == "2026-10-05T10:00" and sg[0]["status"] == "target" and sg[0]["target"] == 109.45 and watch is None
     assert wallwatch.sig_sk("AAA", sg[0]).endswith("#R")
+    # no move away from the support first: the next candle touching it is not a retest
+    flat = [{"t": "2026-10-05T09:30", "o": 102.3, "h": 102.6, "l": 102.1, "c": 102.4}] + bars[2:]
+    assert not wallwatch.detect_retest(flat, {"2026-10-05": w, "2026-10-06": w}, alerts=al, datr={"next": 2.0})[0]
+    # a red candle at the support is not an entry
+    red = bars[:2] + [{"t": "2026-10-05T11:30", "o": 103.2, "h": 103.4, "l": 102.1, "c": 102.5}]
+    assert not wallwatch.detect_retest(red, {"2026-10-05": w}, alerts=al)[0]
     # alert too small: never armed
     assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=[al[1]])[0]
     # support broken before the retest: the watch ends

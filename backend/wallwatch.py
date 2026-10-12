@@ -44,7 +44,7 @@ def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
-            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}")
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r2")
 
 
 def save_config(sub, body):
@@ -225,6 +225,7 @@ def detect(bars, walls, start=None, cfg=None, datr=None):
 
 
 RETEST_NEAR = 0.3     # % above the support level that counts as a retest
+RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
 def sig_sk(sym, s):
@@ -233,8 +234,9 @@ def sig_sk(sym, s):
 
 def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
     """Flow retest: a call alert of at least retestMin arms the ticker. The support is the highest of put wall / call wall
-    / flip under the price when it was armed. Then, within retestDays trading days: a green hourly candle whose low
-    comes back to the support (within 0.3%) and closes above it is the entry. An hourly close under the stop before the
+    / flip under the price when it was armed. Price first has to close at least 0.5 ATR above the support (move away);
+    then, within retestDays trading days: a green hourly candle (open at / above the support, low back to it within 0.3%,
+    close above it) is the entry. An hourly close under the stop before the
     retest ends the watch. Target: the call wall of the day if it's above the entry (minus the buffer), else trailing only.
     Returns (signals, current watch or None)."""
     P = {**PARAMS, **(cfg or {})}
@@ -279,7 +281,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
             if under:
                 lvl, name = max(under)
                 watch = {"armedAt": arm["t"], "armPremium": arm["p"], "level": lvl, "levelName": name, "day0": day, "days": 0,
-                         "since": b["t"][:16]}
+                         "since": b["t"][:16], "away": b["c"] >= lvl + RETEST_AWAY * a_}
             continue
         if not watch:
             continue
@@ -294,7 +296,13 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
         if b["c"] < lvl - k_stop * a_:                 # support broken before the retest
             watch = None
             continue
-        if b["c"] > b["o"] and b["l"] <= lvl * (1 + RETEST_NEAR / 100) and b["c"] > lvl and b["t"][:16] > watch["since"]:
+        if not watch["away"]:                          # price has to move away from the support before a retest counts
+            if b["c"] >= lvl + RETEST_AWAY * a_:
+                watch["away"] = True
+            continue
+        green = b["c"] > b["o"]
+        if green and b["l"] <= lvl * (1 + RETEST_NEAR / 100) and b["c"] > lvl and b["o"] >= lvl * (1 - RETEST_NEAR / 100) \
+                and b["t"][:16] > watch["since"]:
             if start and day < start:
                 watch = None
                 continue
