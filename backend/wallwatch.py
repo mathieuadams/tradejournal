@@ -692,6 +692,7 @@ def darkpool(sub, sym, min_pct=None, days=45):
     prints = [p for p in out.get("prints") or [] if not min_sh or p["size"] >= min_sh]
     buy = sum(p["premium"] for p in prints if p.get("side") == "buy")
     sell = sum(p["premium"] for p in prints if p.get("side") == "sell")
-    return {"symbol": sym, "prints": prints, "levels": flowdata.dp_levels(prints), "minPremium": round(dollars),
+    return {"symbol": sym, "prints": prints, "levels": flowdata.dp_levels(prints), "profile": flowdata.dp_levels(prints, 400),
+            "minPremium": round(dollars),
             "minPct": pct, "adv": round(adv) if adv else None, "minShares": round(min_sh) if min_sh else None,
             "buy": buy, "sell": sell, "error": out.get("error")}

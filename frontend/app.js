@@ -1387,17 +1387,11 @@ function fcSvg0(d, id, opts) {
   }
   if (dp && !dp.error) {                    // dark pool: the price levels with the most premium, then each big print
     const prem = v => v >= 1e9 ? `$${(v / 1e9).toFixed(1)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(0)}M` : `$${Math.round(v / 1e3)}k`;
-    const sideCol = (b, s_) => b > s_ * 1.5 ? 'var(--gain)' : s_ > b * 1.5 ? 'var(--loss)' : 'var(--warn)';
-    (dp.levels || []).forEach((lv, j) => { if (!near(lv.price)) return; const y = Y(lv.price), c = sideCol(lv.buy || 0, lv.sell || 0);
-      const split = (lv.buy || lv.sell) ? ` · bought ${prem(lv.buy || 0)} / sold ${prem(lv.sell || 0)}` : '';
+    (dp.levels || []).forEach((lv, j) => { if (!near(lv.price)) return; const y = Y(lv.price), c = 'var(--warn)';
+      const split = ` · ${lv.prints} prints`;
       g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="${j === 0 ? 3 : 2}" opacity="${j === 0 ? .55 : .35}"><title>Dark pool level ${lv.price}: ${prem(lv.premium)} in ${lv.prints} prints${split}</title></line>
         <text x="${L + 4}" y="${y - 4}" font-size="${fs - 1}" font-weight="600" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round">DP ${lv.price} · ${prem(lv.premium)}${split}</text>`; });
-    const sq = {};
-    (dp.prints || []).forEach((p0, k) => { const i = at(p0.t); if (i == null || p0.price < lo || p0.price > hi) return;
-      const key = `${i}|${Math.round(Y(p0.price))}`; sq[key] = (sq[key] || 0) + 1;
-      const r = Math.min(11, 2.5 + Math.sqrt(p0.premium / 1e6) * 1.6), x = X(i) + (sq[key] - 1) * 3, y = Y(p0.price);
-      const sel = S.fcSelD && S.fcSelD.id === id && S.fcSelD.k === k;
-      g += `<rect data-fcd="${id}|${k}" x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2" fill="${p0.side === 'buy' ? 'var(--gain)' : p0.side === 'sell' ? 'var(--loss)' : 'var(--warn)'}" fill-opacity=".55" stroke="${sel || p0.premium >= 10e6 ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(p0.t.replace('T', ' ').slice(5))} · dark pool ${p0.size.toLocaleString('en-US')} sh at ${p0.price} · ${prem(p0.premium)} · ${p0.side === 'buy' ? 'at / above the ask (bought)' : p0.side === 'sell' ? 'at / below the bid (sold)' : 'side unknown'}</title></rect>`; });
+    // only the 5 levels with the most dark pool money are drawn (no single prints)
   }
   if (LY.mp !== false && ((d.expirations || []).length || (d.maxPain || []).length)) {   // monthly expirations + max pain
     const mpc = 'var(--warn,#d97706)', bwH = (W - L - Rr) / n / 2;
@@ -1536,7 +1530,7 @@ function vChartWW() {
         if (dpd.error && !(dpd.prints || []).length) return `<span class="muted">Dark pool: ${esc(dpd.error)}</span>`;
         const ds = S.fcSelD && S.fcSelD.id === id ? (dpd.prints || [])[S.fcSelD.k] : null;
         const vol = dpd.adv ? ` (${dpd.minPct}% of ${(dpd.adv / 1e6).toFixed(1)}M sh/day = ${Math.round(dpd.minShares).toLocaleString('en-US')} sh)` : '';
-        const bs = (dpd.buy || dpd.sell) ? ` · <b class="gain">bought ${money(dpd.buy || 0, false)}</b> / <b class="loss">sold ${money(dpd.sell || 0, false)}</b>` : '';
+        const bs = '';
         return `<span>Dark pool ${(dpd.prints || []).length} prints ≥ ${money(dpd.minPremium, false)}${vol}${bs}${(dpd.levels || []).length ? ` · levels ${dpd.levels.slice(0, 3).map(l => `<b style="color:var(--warn)">${l.price}</b> ${money(l.premium, false)}`).join(' · ')}` : ''}</span>`
           + (ds ? `<span><b style="color:var(--warn)">DARK POOL</b> ${esc(ds.t.replace('T', ' ').slice(5))} ET · ${ds.size.toLocaleString('en-US')} sh at ${ds.price} · <b>${money(ds.premium, false)}</b></span>` : ''); })()}
       ${(() => { const al = d.alerts || [], sm = xs => xs.reduce((a, x) => a + x.premium, 0), c = al.filter(a => a.type === 'call'), p_ = al.filter(a => a.type === 'put');
