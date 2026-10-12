@@ -1411,10 +1411,10 @@ function fcSvg0(d, id, opts) {
         g += `<line x1="${s0}" x2="${Math.max(s0, e0)}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--loss)" stroke-width="2" opacity=".85"><title>${q ? 'trailing stop' : 'stop'} ${v}</title></line>`;
         if (nx && nx[1] >= lo && nx[1] <= hi) g += `<line x1="${e0}" x2="${e0}" y1="${Y(v)}" y2="${Y(nx[1])}" stroke="var(--loss)" stroke-width="1" opacity=".6"/>`; });
       if (i0 != null && sg.entry >= lo && sg.entry <= hi) { const y = Y(sg.entry);
-        g += `<path data-wwsel="${esc(d.symbol)}|${esc(sg.at)}" d="M${xa},${y + 5} L${xa - 8},${y + 18} L${xa + 8},${y + 18} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"><title>Signal ${esc(sg.at.replace('T', ' ').slice(5))} · entry ${(+sg.entry).toFixed(2)} · put wall ${sg.pw} · flip ${sg.flip} · call wall ${sg.cw}</title></path>
-          <text x="${xa}" y="${y + 31}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">IN</text>`; }
+        g += `<path data-wwsel="${esc(d.symbol)}|${esc(sg.at)}" d="M${xa},${y + 5} L${xa - 8},${y + 18} L${xa + 8},${y + 18} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"><title>${sg.kind === 'flip' ? 'Flip setup' : 'PW setup'} ${esc(sg.at.replace('T', ' ').slice(5))} · entry ${(+sg.entry).toFixed(2)} · put wall ${sg.pw} · flip ${sg.flip} · call wall ${sg.cw}</title></path>
+          <text x="${xa}" y="${y + 31}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.kind === 'flip' ? 'FLIP' : 'IN'}</text>`; }
       if (sg.status !== 'open' && i1 != null && sg.exit >= lo && sg.exit <= hi) { const y = Y(sg.exit);
-        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (highest high − first risk)` : `Stop: put wall − 0.5 ATR (${sg.stop ?? sg.pw})`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (highest high − N × 30-day ATR)` : `Stop (${sg.kind === 'flip' ? 'flip' : 'put wall'} − N × 30-day ATR) ${sg.stop ?? sg.pw}`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
           <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.pct >= 0 ? '+' : ''}${sg.pct}%</text>`; }
     });
   }
@@ -1482,10 +1482,10 @@ function vChartWW() {
   const sel = narrow ? `<select id="fcf-sel" aria-label="Ticker">${list.map(x => `<option value="${esc(x)}" ${x === sym ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>` : '';
   const done = sigs.filter(x => x.status !== 'open'), hit = done.filter(x => x.status === 'target').length;
   const headBar = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>
-      ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow ? 'CW > flip > PW' : 'setup off'}</span>
+      ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow === 'flip' ? 'CW > PW > flip' : d.setupNow ? 'CW > flip > PW' : 'no setup'}</span>
       <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>` : ''}
       ${sel}${fcModeSeg()}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
-      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
+      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.ww ? wwParams(true) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
   else if (!sym) main = '<p class="muted" style="padding:16px">The watchlist is empty.</p>';
@@ -1501,7 +1501,7 @@ function vChartWW() {
           + (sa ? `<span><b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}</span>` : '')
           + (d.note ? `<span class="muted">${esc(d.note)}</span>` : ''); })()}
       <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
-      <span class="muted">Triangle = entry · green line = target (call wall) · red line = stop, trailing under the highest high · square = exit · ↑ ↓ ticker</span>
+      <span class="muted">IN = PW setup, FLIP = flip setup · green line = target (call wall) · red line = stop, trailing under the highest high · square = exit · ↑ ↓ ticker</span>
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
   const side = narrow ? '' : `<aside class="fcf-side"><input id="fcf-q" type="search" placeholder="Filter tickers" value="${esc(S.fcfQ || '')}" aria-label="Filter tickers">
@@ -2323,6 +2323,24 @@ async function wwFill() {
   setTimeout(poll, 20000);
 }
 S.wwTk = S.wwTk || {};
+function wwParams(compact) {
+  const c = (S.ww && S.ww.config) || {}, lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
+  return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center${compact ? '' : ';border:1px solid var(--line);border-radius:8px;padding:6px 10px'}">
+    <label ${lab}><input type="checkbox" id="ww-pw" ${c.pwSetup !== false ? 'checked' : ''}>PW setup</label>
+    <label ${lab}><input type="checkbox" id="ww-fl" ${c.flipSetup !== false ? 'checked' : ''}>Flip setup</label>
+    <label ${lab} title="Stop = the level crossed (put wall or flip) − this × the 30-day ATR">stop −<input id="ww-stop" type="number" step="0.1" min="0" value="${c.stopAtr ?? 0.5}" style="width:3.6em;padding:1px 4px">ATR</label>
+    <label ${lab} title="Trailing stop = highest high since entry − this × the 30-day ATR. 0 = no trailing">trail<input id="ww-trail" type="number" step="0.25" min="0" value="${c.trailAtr ?? 1}" style="width:3.6em;padding:1px 4px">ATR</label>
+    <button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 9px">Apply</button></span>`;
+}
+async function wwSaveParams(where) {
+  const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
+  const body = { pwSetup: !!($('#ww-pw') || {}).checked, flipSetup: !!($('#ww-fl') || {}).checked, stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail') };
+  try { S.ww = await api('/bot/wallwatch', { method: 'PUT', body }); } catch (e) { toast(e.message); return; }
+  try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
+  if (where === 'chart') { wwTkFill(fcfSymbol()); toast('Recomputing this chart now, every ticker in the background'); }
+  else { toast('Recomputing every ticker with the new settings — about a minute'); runWatchPoll(); }
+  render();
+}
 function wwTkBtn(sym, d) {
   const f = (d && d.fill) || {}, busy = S.wwTk[sym] || f.running, miss = d ? (d.missingDays || 0) + (d.noflipDays || 0) : null;
   return `<button class="btn ${miss ? 'coachbtn' : ''}" data-wwtk="${esc(sym)}" ${busy ? 'disabled' : ''} style="font-size:.8rem;padding:2px 10px" title="Fetch the put wall, call wall and flip of the last 45 days for ${esc(sym)}, then find its signals">${busy ? 'Getting walls…' : 'Get walls (45 days)'}</button>`
@@ -2345,6 +2363,10 @@ async function wwTkFill(sym) {
   };
   setTimeout(poll, 8000);
 }
+function runWatchPoll() {
+  let n = 0; const tick = async () => { n++; S.ww = null; await loadWatch(); if (S.ww && S.ww.run && S.ww.run.running && n < 12 && route() === 'botwatch') setTimeout(tick, 30000); };
+  setTimeout(tick, 30000);
+}
 async function runWatch(days) {
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days } }); toast(days > 3 ? `Checking the last ${days} days in the background — a few minutes` : 'Checking every ticker now — about a minute'); }
   catch (e) { toast(e.message); return; }
@@ -2354,7 +2376,7 @@ async function runWatch(days) {
   setTimeout(tick, 30000);
 }
 function vWatch() {
-  const h = head('Wall watch', 'Every hour, on each ticker of the list: call wall > gamma flip > put wall, and a green hourly candle that crosses the put wall (low at or under it, close above it). Target: the call wall. Stop: put wall − 0.5 × the hourly ATR, then a trailing stop kept at that same distance under the highest high since entry (never down). Signals are recorded and followed, not traded.', '');
+  const h = head('Wall watch', 'Every hour, on each ticker of the list. PW setup: call wall > flip > put wall and a green hourly candle crossing the put wall (low at or under it, close above it). Flip setup: call wall > put wall > flip and a green hourly candle crossing the flip (the flip acts as support). Target: the call wall. Stop: the level crossed − N × the 30-day ATR, then a trailing stop N × ATR under the highest high (never down). Signals are recorded and followed, not traded.', '');
   const d = S.ww;
   if (!d) return h + '<p class="loading">Loading…</p>';
   if (d.error) return h + `<div class="errbox">${esc(d.error)}</div>`;
@@ -2373,18 +2395,21 @@ function vWatch() {
     <label style="margin-left:6px"><input type="checkbox" id="ww-on" ${cfg.enabled ? 'checked' : ''}> every hour</label></p>`;
   const sigs = d.signals || [];
   const st = s => s.status === 'target' ? '<b class="gain">target</b>' : s.status === 'stop' ? '<b class="loss">stop</b>' : s.status === 'trail' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">trailing stop</b>` : '<span style="color:var(--coach)">open</span>';
-  const sigTable = `<section class="panel"><h2>Signals</h2>${sigs.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Candle</th><th class="r">Entry</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th class="r">Target</th><th class="r">Stop</th><th>Result</th><th class="r">Move</th><th class="r">R</th><th></th></tr></thead><tbody>
-    ${sigs.map(s => `<tr><td><b>${esc(s.symbol)}</b></td><td>${esc(t5(s.at))}</td><td class="r">${(+s.entry).toFixed(2)}</td><td class="r">${s.pw}</td><td class="r">${s.flip}</td><td class="r">${s.cw}</td><td class="r">${pc(s.tgtPct, 1)}</td><td class="r" title="${s.stop != null ? `stop ${s.stop} (put wall − 0.5 × ATR ${s.atr})` : 'old rule: hourly close below the put wall'}">${pc(-s.riskPct, 1)}</td>
+  const sigTable = `<section class="panel"><h2>Signals</h2>${sigs.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Setup</th><th>Candle</th><th class="r">Entry</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th class="r">Target</th><th class="r">Stop</th><th>Result</th><th class="r">Move</th><th class="r">R</th><th></th></tr></thead><tbody>
+    ${sigs.map(s => `<tr><td><b>${esc(s.symbol)}</b></td><td>${s.kind === 'flip' ? '<span class="exchip">Flip</span>' : '<span class="exchip">PW</span>'}</td><td>${esc(t5(s.at))}</td><td class="r">${(+s.entry).toFixed(2)}</td><td class="r">${s.pw}</td><td class="r">${s.flip}</td><td class="r">${s.cw}</td><td class="r">${pc(s.tgtPct, 1)}</td><td class="r" title="${s.stop0 != null ? `first stop ${s.stop0} (${s.kind === 'flip' ? 'flip' : 'put wall'} − N × 30-day ATR ${s.atr})${s.stop > s.stop0 ? ` · trailed to ${s.stop}` : ''}` : ''}">${pc(-s.riskPct, 1)}</td>
       <td>${st(s)}${s.exitAt ? ` <span class="muted">${esc(t5(s.exitAt))}</span>` : s.lastAt ? ` <span class="muted">now ${(+s.last).toFixed(2)}</span>` : ''}</td><td class="r">${pc(s.pct)}</td><td class="r">${s.R == null ? '—' : (s.R > 0 ? '+' : '') + s.R}</td><td><button class="btn" data-wwchart="${esc(s.symbol)}|${esc(s.at)}" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No signal yet. Press <b>Get all walls (45 days)</b> to see how often it happened.</p>'}</section>`;
   const by = (d.byTicker || []).length ? `<section class="panel" style="margin-top:14px"><details><summary class="muted" style="cursor:pointer">By ticker (finished signals)</summary><div class="tablewrap"><table class="pos" style="font-size:.85rem;margin-top:8px"><thead><tr><th>Ticker</th><th class="r">Signals</th><th class="r">Targets</th><th class="r">Total move</th></tr></thead><tbody>
     ${d.byTicker.map(b => `<tr><td><b>${esc(b.symbol)}</b></td><td class="r">${b.n}</td><td class="r">${b.targets}</td><td class="r">${pc(b.total)}</td></tr>`).join('')}</tbody></table></div></details></section>` : '';
   const stMap = Object.fromEntries((d.status || []).map(x => [x.symbol, x]));
-  const now = `<section class="panel" style="margin-top:14px"><h2>Now</h2><div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th class="r">Last close</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th>CW > flip > PW</th><th class="r">Candle</th><th></th></tr></thead><tbody>
-    ${(cfg.tickers || []).map(t => { const x = stMap[t] || {}, w = x.walls || {}; return `<tr><td><b>${esc(t)}</b></td><td class="r">${x.price != null ? (+x.price).toFixed(2) : '—'}</td><td class="r">${w.putWall ?? '—'}</td><td class="r">${w.flip ?? '—'}</td><td class="r">${w.callWall ?? '—'}</td><td>${x.walls ? (x.setup ? '<b class="gain">yes</b>' : '<span class="muted">no</span>') : '<span class="muted">no walls</span>'}</td><td class="r muted">${esc(t5(x.barAt))}</td><td><button class="btn" data-wwchart="${esc(t)}|" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`; }).join('')}</tbody></table></div>
+  const now = `<section class="panel" style="margin-top:14px"><h2>Now</h2><div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th class="r">Last close</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th>Setup now</th><th class="r">Candle</th><th></th></tr></thead><tbody>
+    ${(cfg.tickers || []).map(t => { const x = stMap[t] || {}, w = x.walls || {}; return `<tr><td><b>${esc(t)}</b></td><td class="r">${x.price != null ? (+x.price).toFixed(2) : '—'}</td><td class="r">${w.putWall ?? '—'}</td><td class="r">${w.flip ?? '—'}</td><td class="r">${w.callWall ?? '—'}</td><td>${x.walls ? (x.setup === 'flip' ? '<b class="gain">CW > PW > flip</b>' : x.setup ? '<b class="gain">CW > flip > PW</b>' : '<span class="muted">no</span>') : '<span class="muted">no walls</span>'}</td><td class="r muted">${esc(t5(x.barAt))}</td><td><button class="btn" data-wwchart="${esc(t)}|" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`; }).join('')}</tbody></table></div>
     <details style="margin-top:10px"><summary class="muted" style="cursor:pointer">Edit the list (${(cfg.tickers || []).length} tickers)</summary>
       <textarea id="ww-list" rows="5" style="width:100%;margin-top:6px">${esc((cfg.tickers || []).join(' '))}</textarea>
       <button class="btn" data-wwsave="1">Save the list</button></details></section>`;
-  return h + runLine + stats + sigTable + by + now;
+  const bk = d.byKind || {}, kRow = (k, l) => { const x = bk[k] || {}; return `<tr><td><b>${l}</b></td><td class="r">${x.signals || 0}</td><td class="r">${x.closed || 0}</td><td class="r">${x.hitPct ?? '—'}%</td><td class="r">${pc(x.avgPct)}</td><td class="r">${x.avgR == null ? '—' : (x.avgR > 0 ? '+' : '') + x.avgR + 'R'}</td><td class="r">${pc(x.totalPct)}</td></tr>`; };
+  const kinds = `<section class="panel" style="margin:0 0 14px"><div class="cal-head"><h2>Settings & setups</h2>${wwParams(false)}</div>
+    <div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Setup</th><th class="r">Signals</th><th class="r">Finished</th><th class="r">Call wall reached</th><th class="r">Avg</th><th class="r">Avg R</th><th class="r">Total</th></tr></thead><tbody>${kRow('pw', 'PW: CW > flip > PW, cross the put wall')}${kRow('flip', 'Flip: CW > PW > flip, cross the flip')}</tbody></table></div></section>`;
+  return h + runLine + stats + kinds + sigTable + by + now;
 }
 function vExplore() {
   const d = S.ex;
@@ -2747,7 +2772,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2802,6 +2827,7 @@ document.addEventListener('click', e => {
   if (el.dataset.fcfmode) { fcfSetMode(el.dataset.fcfmode); if (el.dataset.fcfmode === 'ww' && !S.ww) loadWatch(); else if (el.dataset.fcfmode === 'ev' && !S.tickers) loadTickers(); location.hash = '#botchart'; render(); return; }
   if (el.dataset.wwsel) { const [sym, at] = el.dataset.wwsel.split('|'); S.wwSel = { sym, at, zoom: true }; render(); return; }
   if (el.dataset.wwchart) { const [sym, at] = el.dataset.wwchart.split('|'); fcfSetMode('ww'); S.wwSel = at ? { sym, at, zoom: true } : null; location.hash = '#botchart?t=' + encodeURIComponent(sym); return; }
+  if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
   if (el.dataset.wwtk) { wwTkFill(el.dataset.wwtk); return; }
   if (el.dataset.wwfill) { wwFill(); return; }
   if (el.dataset.wwrun) { runWatch(+el.dataset.wwrun); return; }

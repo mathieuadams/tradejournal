@@ -1,9 +1,11 @@
-"""Wall watchlist: one simple setup checked every hour on a fixed list of tickers.
+"""Wall watchlist: two simple setups checked every hour on a fixed list of tickers.
 
-Setup (on each finished hourly candle):
-  call wall > gamma flip > put wall   (walls and flip of the day, Unusual Whales, from that day's open interest)
-  green candle (close > open) whose low is at or below the put wall and whose close is above it (it crosses the put wall)
-Trade: entry = that candle's close, target = the call wall of that day, stop = put wall - 0.5 hourly ATR, hit intrabar; then a normal trailing stop: the same distance under the highest high since entry (never down).
+Setups (on each finished hourly candle; walls and flip of the day, Unusual Whales, from that day's open interest):
+  pw:   call wall > gamma flip > put wall, and a green candle crossing the put wall (low at or under it, close above it)
+  flip: call wall > put wall > gamma flip, and a green candle crossing the flip (the flip acts as support)
+Trade: entry = that candle's close, target = the call wall of that day,
+stop = the level crossed (put wall or flip) - stopAtr x the 30-day daily ATR, hit intrabar;
+trailing stop (trailAtr > 0): trailAtr x the entry ATR under the highest high since entry, never down.
 One open signal per ticker at a time. Nothing is traded: signals are only recorded and followed.
 
 Items: WWCFG (tickers, enabled), WWSIG#<ticker>#<bar time> (signals), WWRUN (last run)."""
@@ -19,9 +21,19 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
            "STX", "TSLA", "TSM", "WDC", "WMT", "XOM"]
 
 
+PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True}
+
+
 def config(sub):
     c = db.get(db.upk(sub), "WWCFG") or {}
-    return {"tickers": c.get("tickers") or DEFAULT, "enabled": c.get("enabled", True)}
+    out = {"tickers": c.get("tickers") or DEFAULT, "enabled": c.get("enabled", True)}
+    out.update({k: c.get(k, v) for k, v in PARAMS.items()})
+    return out
+
+
+def version(cfg):
+    """Signals made with other settings are recomputed."""
+    return f"5|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
 
 
 def save_config(sub, body):
@@ -39,7 +51,22 @@ def save_config(sub, body):
         cur["tickers"] = out[:150]
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
-    db.put({"PK": db.upk(sub), "SK": "WWCFG", **cur})
+    before = version(cur)
+    for k in ("stopAtr", "trailAtr"):
+        if k in body:
+            try:
+                cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
+            except (TypeError, ValueError):
+                pass
+    for k in ("pwSetup", "flipSetup"):
+        if k in body:
+            cur[k] = bool(body[k])
+    from decimal import Decimal
+    db.put({"PK": db.upk(sub), "SK": "WWCFG", **{k: Decimal(str(v)) if isinstance(v, float) else v for k, v in cur.items()}})
+    if version(cur) != before:                          # new settings: the 45-day history is recomputed from scratch
+        run_ = db.get(db.upk(sub), "WWRUN") or {}
+        if run_:
+            db.put({**run_, "bfDone": []})
     return cur
 
 
@@ -58,7 +85,13 @@ def setup_ok(w):
     return bool(cw and fl and pw and cw > fl > pw)
 
 
-STOP_ATR = 0.5      # stop = put wall - 0.5 x the hourly ATR at the signal, fixed for the trade
+def setup_kind(w):
+    """'pw' when call wall > flip > put wall, 'flip' when call wall > put wall > flip, else None."""
+    cw, fl, pw = (w or {}).get("callWall"), (w or {}).get("flip"), (w or {}).get("putWall")
+    if not (cw and fl and pw):
+        return None
+    cw, fl, pw = float(cw), float(fl), float(pw)
+    return "pw" if cw > fl > pw else "flip" if cw > pw > fl else None
 
 
 def atr14(bars):
@@ -71,11 +104,40 @@ def atr14(bars):
     return out
 
 
-def detect(bars, walls, start=None):
+ATR_DAYS = 30
+
+
+def daily_atr(daily, n=ATR_DAYS):
+    """{date: ATR} = average true range of the n trading days before that date (known at its open)."""
+    daily = sorted(daily, key=lambda b: b["t"])
+    trs, out = [], {}
+    for i, b in enumerate(daily):
+        d = b["t"][:10]
+        if len(trs) >= n:
+            out[d] = sum(trs[-n:]) / n
+        pc = daily[i - 1]["c"] if i else b["o"]
+        trs.append(max(b["h"] - b["l"], abs(b["h"] - pc), abs(b["l"] - pc)))
+    if trs and len(trs) >= n:                           # the next session (today when the last daily bar is yesterday)
+        out["next"] = sum(trs[-n:]) / n
+    return out
+
+
+def _atr_on(datr, day):
+    if day in datr:
+        return datr[day]
+    later = [d for d in datr if d != "next" and d > day]
+    return None if later else datr.get("next")
+
+
+def detect(bars, walls, start=None, cfg=None, datr=None):
     """Signals and their outcome. bars: finished hourly candles (earlier ones warm up the ATR);
-    walls: {date: {callWall, flip, putWall}}; start: first date where signals can start."""
+    walls: {date: {callWall, flip, putWall}}; start: first date where signals can start; cfg: stop / trail / setups."""
+    P = {**PARAMS, **(cfg or {})}
+    k_stop, k_trail = float(P["stopAtr"]), float(P["trailAtr"])
+    kinds = {k for k, on in (("pw", P["pwSetup"]), ("flip", P["flipSetup"])) if on}
+    ver = version(P)
     sigs, open_ = [], None
-    atr = atr14(bars)
+    atr = atr14(bars)                                  # fallback when the 30-day daily ATR isn't available
     for i, b in enumerate(bars):
         if open_:                                      # follow the open signal first
             s = open_
@@ -87,23 +149,27 @@ def detect(bars, walls, start=None):
                 s["last"], s["lastAt"] = b["c"], b["t"][:16]
                 s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
                 s["mae"] = min(s.get("mae", s["entry"]), b["l"])
-                lvl = round(s["mfe"] - (s["entry"] - s["stop0"]), 4)   # trailing stop: same distance under the highest high
-                if lvl > s["stop"]:
-                    s["stop"] = lvl
-                    s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], lvl])
+                if k_trail > 0:                        # trailing stop: k x entry ATR under the highest high
+                    lvl = round(s["mfe"] - k_trail * s["atr"], 4)
+                    if lvl > s["stop"]:
+                        s["stop"] = lvl
+                        s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], lvl])
             if s["status"] != "open":
                 open_ = None
             continue
         if start and b["t"][:10] < start:
             continue
         w = walls.get(b["t"][:10])
-        if not setup_ok(w):
+        kind = setup_kind(w)
+        if kind not in kinds:
             continue
-        pw, cw = float(w["putWall"]), float(w["callWall"])
-        if b["c"] > b["o"] and b["l"] <= pw < b["c"]:
-            a_ = atr[i]
-            s = {"at": b["t"][:16], "entry": b["c"], "pw": pw, "flip": float(w["flip"]), "cw": cw, "target": cw,
-                 "atr": round(a_, 4), "stop": round(pw - STOP_ATR * a_, 4), "stop0": round(pw - STOP_ATR * a_, 4), "v": 3,
+        pw, cw, fl = float(w["putWall"]), float(w["callWall"]), float(w["flip"])
+        lvl = pw if kind == "pw" else fl                # the level the green candle has to cross
+        if b["c"] > b["o"] and b["l"] <= lvl < b["c"]:
+            a_ = (_atr_on(datr, b["t"][:10]) if datr else None) or atr[i]
+            st = round(lvl - k_stop * a_, 4)
+            s = {"at": b["t"][:16], "kind": kind, "level": lvl, "entry": b["c"], "pw": pw, "flip": fl, "cw": cw, "target": cw,
+                 "atr": round(a_, 4), "stop": st, "stop0": st, "v": ver,
                  "o": b["o"], "h": b["h"], "l": b["l"], "status": "open", "last": b["c"], "lastAt": b["t"][:16]}
             sigs.append(s)
             open_ = s
@@ -145,7 +211,14 @@ def check_ticker(sub, key, sym, days, now, since=None):
         first = min(first, since)
     dates = [d for d in dates if d >= first]
     walls = _walls(key, sym, dates, now.strftime("%Y-%m-%d"))
-    sigs = detect(bars, walls, first)                  # earlier candles only warm up the ATR
+    try:                                               # 30-day ATR from daily candles
+        daily = _yahoo(sym.replace(".", "-"), "1d", start - timedelta(days=70), now + timedelta(days=1)) or []
+        daily = [b for b in daily if b["t"][:10] < now.strftime("%Y-%m-%d")]      # today's candle isn't finished
+        datr = daily_atr(daily)
+    except Exception as e:
+        print("wallwatch daily atr failed", sym, e)
+        datr = None
+    sigs = detect(bars, walls, first, config(sub), datr)
     bars = [b for b in bars if b["t"][:10] >= first]
     pk = db.upk(sub)
     for old in db.q_prefix(pk, f"WWSIG#{sym}#"):       # recomputed from `first` on: replace what was there
@@ -156,7 +229,7 @@ def check_ticker(sub, key, sym, days, now, since=None):
     last = bars[-1] if bars else None
     w = walls.get(last["t"][:10]) if last else None
     return {"symbol": sym, "price": last["c"] if last else None, "barAt": last["t"][:16] if last else None, "walls": w,
-            "setup": setup_ok(w), "signals": len(sigs), "daysWithWalls": len(walls), "days": len(dates)}
+            "setup": setup_kind(w), "signals": len(sigs), "daysWithWalls": len(walls), "days": len(dates)}
 
 
 def run(sub, days=3, budget_s=500):
@@ -171,9 +244,9 @@ def run(sub, days=3, budget_s=500):
     prev = db.get(db.upk(sub), "WWRUN") or {}
     done_bf = set(prev.get("bfDone") or []) if days > 3 else set()
     todo = [t for t in cfg["tickers"] if t not in done_bf]
-    since = {}
+    since, ver = {}, version(cfg)
     for s in db.q_prefix(db.upk(sub), "WWSIG#"):
-        if s.get("symbol") and (s.get("status") == "open" or s.get("v") != 3):   # open, or made with an older stop rule
+        if s.get("symbol") and (s.get("status") == "open" or s.get("v") != ver):   # open, or made with other settings
             since[s["symbol"]] = min(since.get(s["symbol"], "9"), s["at"][:10])
     with ThreadPoolExecutor(max_workers=4) as ex:
         for k in range(0, len(todo), 8):
@@ -267,13 +340,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None):
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
 
 
-def view(sub):
-    if not db.get(db.upk(sub), "WWCFG"):               # first visit: the default list, on (the hourly job finds it)
-        save_config(sub, {})
-    cfg = config(sub)
-    run_ = db.get(db.upk(sub), "WWRUN") or {}
-    sigs = sorted(db.q_prefix(db.upk(sub), "WWSIG#"), key=lambda s: s.get("at") or "", reverse=True)
-    sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in sigs if s.get("symbol") in cfg["tickers"]]
+def summarize(sigs):
     done = [s for s in sigs if s.get("status") in ("target", "stop", "trail")]
     hit = [s for s in done if s["status"] == "target"]
     avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None
@@ -284,6 +351,19 @@ def view(sub):
                "avgTrail": avg([s["pct"] for s in done if s["status"] == "trail"]),
                "totalPct": round(sum(s["pct"] for s in done), 2) if done else None,
                "avgTgt": avg([s["tgtPct"] for s in sigs]), "avgRisk": avg([s["riskPct"] for s in sigs])}
+    return summary
+
+
+def view(sub):
+    if not db.get(db.upk(sub), "WWCFG"):               # first visit: the default list, on (the hourly job finds it)
+        save_config(sub, {})
+    cfg = config(sub)
+    run_ = db.get(db.upk(sub), "WWRUN") or {}
+    sigs = sorted(db.q_prefix(db.upk(sub), "WWSIG#"), key=lambda s: s.get("at") or "", reverse=True)
+    sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in sigs if s.get("symbol") in cfg["tickers"]]
+    summary = summarize(sigs)
+    by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip")}
+    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail")]
     by = {}
     for s in done:
         b = by.setdefault(s["symbol"], {"symbol": s["symbol"], "n": 0, "targets": 0, "total": 0.0})
@@ -293,7 +373,7 @@ def view(sub):
     fill = db.get(db.upk(sub), "WWFILL") or {}
     return {"config": cfg, "run": {k: run_.get(k) for k in ("at", "running", "checked", "errors", "bfLeft", "bfAt", "bfDays")},
             "fill": {k: fill.get(k) for k in ("at", "running", "total", "left", "fetched", "errors")},
-            "status": run_.get("status") or [], "signals": sigs[:500], "summary": summary,
+            "status": run_.get("status") or [], "signals": sigs[:500], "summary": summary, "byKind": by_kind,
             "byTicker": sorted(by.values(), key=lambda b: -b["total"])}
 
 
@@ -373,4 +453,4 @@ def chart(sub, sym, days=45, flow=True):
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
     return {"fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
-            "interval": 60, "days": days, "wallNote": note, "setupNow": setup_ok(last)}
+            "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last)}

@@ -1989,14 +1989,25 @@ def test_wall_watch():
     assert sigs[0]["exit"] == 110 and sigs[0]["pct"] == round((110 / 100.8 - 1) * 100, 2)
     atr = wallwatch.atr14(bars)
     assert sigs[1]["stop"] == round(100 - 0.5 * atr[5], 4) and sigs[1]["exit"] == sigs[1]["stop"]
-    assert sigs[0]["stop"] == round(104 - (100.8 - sigs[0]["stop0"]), 4)    # trailed under the 11:30 high
+    assert sigs[0]["stop"] == round(104 - sigs[0]["atr"], 4) and sigs[0]["kind"] == "pw"    # trailed 1 ATR under the 11:30 high
     assert sigs[1]["riskPct"] == round((101.1 - sigs[1]["stop"]) / 101.1 * 100, 2)
-    assert not wallwatch.detect(bars, {"2026-10-05": {"callWall": 110, "flip": 99, "putWall": 100}})      # flip under the put wall
+    assert not wallwatch.detect(bars, {"2026-10-05": {"callWall": 110, "flip": 99, "putWall": 100}}, cfg={"flipSetup": False})   # flip under the put wall
     tb = bars[:3] + [{"t": "2026-10-06T09:30", "o": 104, "h": 106, "l": 103.8, "c": 105.5},
                      {"t": "2026-10-06T10:30", "o": 105.5, "h": 105.6, "l": 103, "c": 103.5}]       # under the trailed stop
     ts = wallwatch.detect(tb, {"2026-10-05": w, "2026-10-06": w})
-    risk = ts[0]["entry"] - ts[0]["stop0"]
-    assert ts[0]["status"] == "trail" and ts[0]["stop"] == round(106 - risk, 4) and ts[0]["exit"] == ts[0]["stop"], ts
+    assert ts[0]["status"] == "trail" and ts[0]["stop"] == round(106 - ts[0]["atr"], 4) and ts[0]["exit"] == ts[0]["stop"], ts
+    nt = wallwatch.detect(tb, {"2026-10-05": w, "2026-10-06": w}, cfg={"trailAtr": 0, "stopAtr": 1})      # no trailing
+    assert nt[0]["stop"] == nt[0]["stop0"] == round(100 - nt[0]["atr"], 4) and "stops" not in nt[0]
+    fw = {"callWall": 110, "flip": 100, "putWall": 102}                                                    # flip < PW < CW
+    fs = wallwatch.detect(bars, {"2026-10-05": fw, "2026-10-06": fw})
+    assert fs and fs[0]["kind"] == "flip" and fs[0]["level"] == 100 and fs[0]["stop0"] == round(100 - 0.5 * fs[0]["atr"], 4)
+    assert not wallwatch.detect(bars, {"2026-10-05": fw, "2026-10-06": fw}, cfg={"flipSetup": False})
+    daily = [{"t": f"2026-08-{d:02d}", "o": 100, "h": 102, "l": 98, "c": 100} for d in range(1, 31)] + \
+            [{"t": f"2026-09-{d:02d}", "o": 100, "h": 104, "l": 96, "c": 100} for d in range(1, 31)]
+    da = wallwatch.daily_atr(daily)
+    assert "2026-08-30" not in da and abs(da["2026-09-30"] - (4 + 29 * 8) / 30) < 1e-9 and abs(da["next"] - 8) < 1e-9
+    ds = wallwatch.detect(bars, {"2026-10-05": w, "2026-10-06": w}, datr={**da, "next": 4.0})
+    assert ds[0]["atr"] == 4.0 and ds[0]["stop0"] == 98.0          # put wall 100 - 0.5 x 30-day ATR 4
     assert ts[0]["pct"] > 0 and ts[0]["stops"][-1] == ["2026-10-06T09:30", ts[0]["stop"]]
     now = dt.datetime(2026, 10, 5, 11, 10)
     assert [b["t"][11:16] for b in wallwatch.finished(bars[:3], now)] == ["09:30"]                       # 10:30 candle not over
@@ -2007,14 +2018,15 @@ def test_wall_watch():
     try:
         st, r = call("GET", "/bot/wallwatch")
         assert st == 200 and "SPY" in r["config"]["tickers"] and r["config"]["enabled"]
-        st, r = call("PUT", "/bot/wallwatch", {"tickers": "aapl, brk/b msft"})
-        assert r["config"]["tickers"] == ["AAPL", "BRK.B", "MSFT"]
+        st, r = call("PUT", "/bot/wallwatch", {"tickers": "aapl, brk/b msft", "trailAtr": "1.5", "flipSetup": False})
+        assert r["config"]["tickers"] == ["AAPL", "BRK.B", "MSFT"] and r["config"]["trailAtr"] == 1.5 and r["config"]["flipSetup"] is False
+        call("PUT", "/bot/wallwatch", {"trailAtr": 1, "flipSetup": True})
         out = wallwatch.run(SUB, days=45)
         assert out["checked"] == 3, out
         st, r = call("GET", "/bot/wallwatch")
         sm = r["summary"]
         assert sm["signals"] == 6 and sm["closed"] == 6 and sm["targets"] == 3 and sm["hitPct"] == 50, sm
-        assert len(r["status"]) == 3 and r["status"][0]["setup"] is True
+        assert len(r["status"]) == 3 and r["status"][0]["setup"] == "pw"
         saved_sw = flowdata.stored_walls
         flowdata.stored_walls = lambda sym: {"2026-10-05": dict(w), "2026-10-06": dict(w)}
         saved_al = flowdata.alerts
