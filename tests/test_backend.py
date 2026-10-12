@@ -2310,6 +2310,13 @@ def test_flow_scan_watch_only():
         flowdata.alerts, autotrader.evaluate, autotrader.place = saved
 
 
+def test_wallwatch_skips_claude_review():
+    import aicheck
+    assert aicheck.is_wallwatch({"proposal": {"strategyOnly": "wallwatch"}})
+    assert aicheck.is_wallwatch({"proposal": {"wallwatch": {"stop": 1}}})
+    assert not aicheck.is_wallwatch({"proposal": {}})
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

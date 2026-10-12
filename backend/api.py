@@ -677,6 +677,9 @@ def bot_aireview(sub, claims, body, q, bid):
         raise NotFound("Not found.")
     if rec.get("status") != "open":
         raise BadRequest("Only open positions can be reviewed.")
+    import aicheck
+    if aicheck.is_wallwatch(rec):
+        raise BadRequest("Wall watch trades are managed only by the wall watch exits (stop, trail, call wall, flip close).")
     db.update(db.upk(sub), f"BOT#{bid}", {"aiReviewRunning": True, "aiReviewError": ""})
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
                      Payload=json.dumps({"sub": sub, "job": "aireview", "id": bid}))

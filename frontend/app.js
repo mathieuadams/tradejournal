@@ -1901,11 +1901,12 @@ function tradePathPanel(r) {
 
 /* ---------- Claude's chart check (final visual verification before an order) ---------- */
 const AI_CLS = { approve: 'ok', caution: 'mid', reject: 'bad' };
+const isWW = r => !!(r && r.proposal && (r.proposal.wallwatch || r.proposal.strategyOnly === 'wallwatch'));
 const aiCell = i => { const a = i.aiCheck && i.aiCheck.verdict ? i.aiCheck : null;
-  const rv = i.aiReview, rvb = rv ? ` <span class="verdict ${rv.action === 'close' ? 'bad' : 'ok'}" title="${esc(`End-of-day review ${(rv.at || '').slice(5, 16).replace('T', ' ')}: ${rv.summary}`)}">${rv.action === 'close' ? 'EOD CLOSE' : 'EOD HOLD'}</span>` : '';
+  const rv = isWW(i) ? null : i.aiReview, rvb = rv ? ` <span class="verdict ${rv.action === 'close' ? 'bad' : 'ok'}" title="${esc(`End-of-day review ${(rv.at || '').slice(5, 16).replace('T', ' ')}: ${rv.summary}`)}">${rv.action === 'close' ? 'EOD CLOSE' : 'EOD HOLD'}</span>` : '';
   if (a) return `<td title="${esc(a.summary || '')}"><span class="verdict ${AI_CLS[a.verdict] || 'mid'}">${esc(a.verdict.toUpperCase())}</span>${i.aiFrom ? ' <span class="muted" style="font-size:.78rem">carried</span>' : ''}${rvb}</td>`;
   if (rv) return `<td>${rvb}</td>`;
-  if (i.aiReviewError) return `<td title="${esc(i.aiReviewError)}"><span class="loss">EOD error</span></td>`;
+  if (i.aiReviewError && !isWW(i)) return `<td title="${esc(i.aiReviewError)}"><span class="loss">EOD error</span></td>`;
   if (i.aiRunning) return '<td><span class="muted">checking…</span></td>';
   if (i.aiError) return `<td title="${esc(i.aiError)}"><span class="loss">error</span></td>`;
   return '<td><span class="muted">—</span></td>'; };
@@ -1941,6 +1942,7 @@ function aiPanel(r) {
 }
 S.rvImgs = S.rvImgs || {}; S.rvImgBusy = S.rvImgBusy || {};
 function reviewPanel(r) {
+  if (isWW(r)) return '';
   if (!['open', 'closing', 'closed'].includes(r.status) || (!r.aiReview && r.status !== 'open')) return '';
   const rv = r.aiReview, busy = S.rvBusy === r.id || r.aiReviewRunning, hist = (r.aiReviews || []).slice(0, -1).reverse();
   const imgs = S.rvImgs[r.id];

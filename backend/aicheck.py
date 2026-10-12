@@ -350,6 +350,11 @@ def review(sub, rec, auto_close=True):
     return rv
 
 
+def is_wallwatch(rec):
+    p = (rec or {}).get("proposal") or {}
+    return bool(p.get("wallwatch")) or p.get("strategyOnly") == "wallwatch"
+
+
 def review_all(sub, only_id=None, auto_close=True):
     import autotrader
     cfg = autotrader.settings(sub)
@@ -360,6 +365,9 @@ def review_all(sub, only_id=None, auto_close=True):
     recs = [db.get(pk, f"BOT#{only_id}")] if only_id else db.q_prefix(pk, "BOT#")
     for rec in recs:
         if not rec or rec.get("status") != "open":
+            continue
+        if is_wallwatch(rec):          # wall watch trades: only the wall watch exits manage them
+            out.append({"symbol": rec["symbol"], "skipped": "wall watch trade"})
             continue
         try:
             rv = review(sub, rec, auto_close)
