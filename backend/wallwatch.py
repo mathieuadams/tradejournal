@@ -23,7 +23,7 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
 
 PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5, "mergedSetup": True,
           "retestSetup": True, "retestMin": 500000, "retestDays": 5, "aboveFlip": False, "retestZone": 0.25,
-          "flipExit": True, "earnDays": 10, "vwapDays": 10}   # tgtBuf: % under the call wall
+          "flipExit": True, "earnDays": 10, "vwapDays": 10, "cwRoom": 1.0}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -45,7 +45,7 @@ def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
-            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw1|v{int(cfg.get('vwapDays', 10))}")
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}")
 
 
 def save_config(sub, body):
@@ -70,7 +70,7 @@ def save_config(sub, body):
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
             except (TypeError, ValueError):
                 pass
-    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
@@ -304,7 +304,7 @@ def sig_sk(sym, s):
 
 def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None, vwap_map=None):
     """Flow retest: a call alert of at least retestMin arms the ticker (a new alert re-arms it). The support is the highest
-    of put wall / call wall / flip at or under the price at the close of the alert's candle. From that candle on, within
+    of put wall / flip at or under the price at the close of the alert's candle. From that candle on, within
     retestDays trading days: a green hourly candle whose low reaches the support (within 0.3%) and that closes above it
     is the entry. An hourly close under the stop before the entry ends the watch. Target: the call wall of the day if it's above the entry (minus the buffer), else trailing only.
     Returns (signals, current watch or None)."""
@@ -312,6 +312,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
     vmin, ndays = float(P.get("retestMin") or 500000), int(P.get("retestDays") or 5)
     zone_atr = float(P.get("retestZone") if P.get("retestZone") is not None else 0.25)
+    cw_room = float(P.get("cwRoom") if P.get("cwRoom") is not None else 1.0)
     flip_exit, earn_days = bool(P.get("flipExit", True)), int(P.get("earnDays") if P.get("earnDays") is not None else 10)
     earn_d = None
     try:
@@ -343,7 +344,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             continue
         w = walls.get(day) or {}
         if arm:                                        # call flow (new or again): the support is the level at / under price
-            lv = [(float(w[k]), n) for k, n in (("putWall", "put wall"), ("callWall", "call wall"), ("flip", "flip")) if w.get(k)]
+            lv = [(float(w[k]), n) for k, n in (("putWall", "put wall"), ("flip", "flip")) if w.get(k)]   # the call wall is the target, never the support
             under = [x for x in lv if x[0] <= b["c"] * (1 + RETEST_NEAR / 100)]
             if under:
                 lvl0, name = max(under)
@@ -361,8 +362,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         if b["c"] < watch["level"] - k_stop * a_:     # the support of the alert broken before any retest
             watch = None
             continue
-        # the support follows the price: the highest put wall / call wall / flip of the day under this candle's close
-        lv = [(float(w[k]), n) for k, n in (("putWall", "put wall"), ("callWall", "call wall"), ("flip", "flip")) if w.get(k)]
+        # the support follows the price: the highest put wall / flip of the day under this candle's close
+        lv = [(float(w[k]), n) for k, n in (("putWall", "put wall"), ("flip", "flip")) if w.get(k)]   # the call wall is the target, never the support
         under = [x for x in lv if x[0] < b["c"]]
         if not under:
             continue
@@ -377,6 +378,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             cw_ = float(w["callWall"]) if w.get("callWall") else None
             if cw_ and (b["o"] > cw_ or b["c"] > cw_):
                 continue                               # opening or closing above the call wall: no entry
+            if cw_ and cw_room and cw_ - b["c"] < cw_room * a_:
+                continue                               # too close under the call wall: not enough room to the target
             if start and day < start:
                 watch = None
                 continue

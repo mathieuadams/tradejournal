@@ -2397,6 +2397,7 @@ function wwParams(compact) {
     <label ${lab} title="Sell when the day closes under the gamma flip (only trades entered above it)"><input type="checkbox" id="ww-fx" ${c.flipExit !== false ? 'checked' : ''}>exit on a daily close under the flip</label>
     <label ${lab} title="No entry when earnings are within this many days">no entry within<input id="ww-earn" type="number" step="1" min="0" value="${c.earnDays ?? 10}" style="width:3.8em;padding:1px 4px">days of earnings</label>
     <label ${lab} title="A candle retests the support when its low comes within this × the 30-day ATR of it (at least 0.3%)">zone<input id="ww-zone" type="number" step="0.05" min="0" value="${c.retestZone ?? 0.25}" style="width:4.4em;padding:1px 4px">ATR</label>
+    <label ${lab} title="No entry when the close is less than this × the 30-day ATR under the call wall (the call wall is the target, never the support)">room to CW ≥<input id="ww-cwr" type="number" step="0.25" min="0" value="${c.cwRoom ?? 1}" style="width:4.4em;padding:1px 4px">ATR</label>
     <label ${lab} title="Only enter when the entry candle closes above the gamma flip (positive gamma: dealers dampen moves, supports hold better)"><input type="checkbox" id="ww-af" ${c.aboveFlip ? 'checked' : ''}>only above the flip</label>
     <label ${lab} title="Stop = the level crossed (put wall or flip) − this × the 30-day ATR">stop −<input id="ww-stop" type="number" step="0.1" min="0" value="${c.stopAtr ?? 0.5}" style="width:3.6em;padding:1px 4px">ATR</label>
     <label ${lab} title="Target = call wall − this % (sell just under the wall, where price often stalls). 0 = exactly at the call wall">target −<input id="ww-tbuf" type="number" step="0.1" min="0" value="${c.tgtBuf ?? 0.5}" style="width:3.6em;padding:1px 4px">% under CW</label>
@@ -2405,7 +2406,7 @@ function wwParams(compact) {
 }
 async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
-  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked,  retestSetup: true, retestZone: num('#ww-zone'), flipExit: !!($('#ww-fx') || {}).checked, vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), aboveFlip: !!($('#ww-af') || {}).checked,
+  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked,  retestSetup: true, retestZone: num('#ww-zone'), cwRoom: num('#ww-cwr'), flipExit: !!($('#ww-fx') || {}).checked, vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), aboveFlip: !!($('#ww-af') || {}).checked,
     retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf') };
   try { S.ww = await api('/bot/wallwatch', { method: 'PUT', body }); } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}

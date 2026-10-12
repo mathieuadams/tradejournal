@@ -2229,7 +2229,7 @@ def test_wall_watch_retest():
     # only above the flip: the retest of a put wall under the flip is skipped
     fw2 = {"callWall": 110, "flip": 106, "putWall": 102}
     assert wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, alerts=al)[0]
-    af = wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True}, alerts=al)[0]
+    af = wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True, "cwRoom": 0}, alerts=al)[0]
     assert af and af[0]["at"] == "2026-10-06T09:30" and af[0]["levelName"] == "flip" and af[0]["level"] == 106   # waits for the flip
     # earnings within 10 days: no entry; 11+ days away: entry
     assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=al, earnings="2026-10-14")[0]
@@ -2251,6 +2251,13 @@ def test_wall_watch_retest():
     w105 = {"callWall": 103.5, "flip": 102, "putWall": 100}
     nb = [bars[0], bars[1], {"t": "2026-10-05T11:30", "o": 102.6, "h": 104.0, "l": 102.1, "c": 103.8}]
     assert not wallwatch.detect_retest(nb, {"2026-10-05": w105}, alerts=al)[0]
+    # too close under the call wall (less than cwRoom x ATR): no entry
+    assert not wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True, "cwRoom": 1}, alerts=al, datr={"next": 2.0})[0]
+    assert wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, cfg={"cwRoom": 1}, alerts=al, datr={"next": 2.0})[0]
+    # the call wall is never the support: price above the call wall has no support to retest
+    cwb = [{"t": "2026-10-05T09:30", "o": 111, "h": 112, "l": 110.5, "c": 111.5},
+           {"t": "2026-10-05T10:30", "o": 110.2, "h": 111, "l": 110.0, "c": 110.8}]
+    assert not wallwatch.detect_retest(cwb, {"2026-10-05": w}, alerts=al, datr={"next": 2.0})[0]
     # VWAP restarts only on the highest volume of the last N trading days (not every opening candle)
     vb = []
     for dd in range(1, 6):
