@@ -32,7 +32,12 @@ def config(sub):
     out.update({k: c.get(k, v) for k, v in PARAMS.items()})
     out.update({k: c.get(k, v) for k, v in OPTS.items()})
     out["added"] = c.get("added") or {}                 # {ticker: {"at", "by", "premium"}} for tickers added from the flow
+    if FLOW_ONLY:                                       # only the flow retest setup is used for now
+        out.update(pwSetup=False, flipSetup=False, mergedSetup=False, retestSetup=True)
     return out
+
+
+FLOW_ONLY = True
 
 
 def version(cfg):
@@ -625,7 +630,8 @@ def view(sub):
     cfg = config(sub)
     run_ = db.get(db.upk(sub), "WWRUN") or {}
     sigs = sorted(db.q_prefix(db.upk(sub), "WWSIG#"), key=lambda s: s.get("at") or "", reverse=True)
-    sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in sigs if s.get("symbol") in cfg["tickers"]]
+    sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in sigs if s.get("symbol") in cfg["tickers"]
+            and (not FLOW_ONLY or s.get("kind") == "retest")]
     summary = summarize(sigs)
     by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip", "merged", "retest")}
     done = [s for s in sigs if s.get("status") in ("target", "stop", "trail")]
@@ -640,6 +646,7 @@ def view(sub):
             "fill": {k: fill.get(k) for k in ("at", "running", "total", "left", "fetched", "errors")},
             "status": run_.get("status") or [], "signals": sigs[:500], "summary": summary, "byKind": by_kind,
             "byTicker": sorted(by.values(), key=lambda b: -b["total"]),
+            "retestStudy": retest_table(sigs),
             "flowStudy": {**{k: (db.get(db.upk(sub), "WWFSTUDY") or {}).get(k) for k in ("at", "running", "tickers", "of", "errors")},
                           **flow_table(sigs)}}
 
@@ -792,7 +799,8 @@ def chart(sub, sym, days=45, flow=True):
     if missing or noflip:
         note = (note + " · " if note else "") + (f"Walls missing for {len(missing)} of {len(dates)} days" if missing else "") \
             + (f"{' · ' if missing else ''}flip missing for {len(noflip)} days" if noflip else "") + ": press Get walls (45 days)."
-    sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in db.q_prefix(db.upk(sub), f"WWSIG#{sym}#")]
+    sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in db.q_prefix(db.upk(sub), f"WWSIG#{sym}#")
+            if not FLOW_ONLY or s.get("kind") == "retest"]
     sigs.sort(key=lambda s: s["at"])
     last = next((stored.get(d) for d in reversed(dates) if (stored.get(d) or {}).get("callWall")), None)
     mpd = stored_maxpain(sym)
@@ -969,3 +977,37 @@ def flow_table(sigs):
     return {"base": {"n": len(fin), "hitPct": base["hitPct"], "avgPct": base["avgPct"], "avgR": base["avgR"], "totalPct": base["totalPct"],
                      "winPct": round(sum(1 for x in fin if x["pct"] > 0) / len(fin) * 100) if fin else None},
             "rows": rows, "withFlow": sum(1 for x in sigs if x.get("flow")), "signals": len(sigs)}
+
+
+def retest_table(sigs):
+    """Flow retest signals split by the support used, the size of the call alert and the wait before the retest."""
+    fin = [x for x in sigs if x.get("kind") == "retest" and x.get("status") in ("target", "stop", "trail")]
+
+    def wait_h(x):
+        try:
+            return (datetime.strptime(x["at"][:16], "%Y-%m-%dT%H:%M") - datetime.strptime(x["armedAt"][:16], "%Y-%m-%dT%H:%M")).total_seconds() / 3600
+        except (KeyError, ValueError, TypeError):
+            return None
+    groups = [
+        ("Support: put wall", lambda x: x.get("levelName") == "put wall"),
+        ("Support: call wall", lambda x: x.get("levelName") == "call wall"),
+        ("Support: flip", lambda x: x.get("levelName") == "flip"),
+        ("Call alert $500K – $1M", lambda x: (x.get("armPremium") or 0) < 1_000_000),
+        ("Call alert $1M – $5M", lambda x: 1_000_000 <= (x.get("armPremium") or 0) < 5_000_000),
+        ("Call alert ≥ $5M", lambda x: (x.get("armPremium") or 0) >= 5_000_000),
+        ("Retest within 1 day of the alert", lambda x: (wait_h(x) or 0) <= 24),
+        ("Retest after 1 – 3 days", lambda x: 24 < (wait_h(x) or 0) <= 72),
+        ("Retest after 3+ days", lambda x: (wait_h(x) or 0) > 72),
+        ("Call wall target above the entry", lambda x: bool(x.get("target"))),
+        ("No target (trailing only)", lambda x: not x.get("target")),
+    ]
+    rows = []
+    for name, fn in groups:
+        yes = [x for x in fin if fn(x)]
+        sm = summarize(yes) if yes else {}
+        rows.append({"name": name, "n": len(yes), "hitPct": sm.get("hitPct"), "avgPct": sm.get("avgPct"), "avgR": sm.get("avgR"),
+                     "totalPct": sm.get("totalPct"), "winPct": round(sum(1 for x in yes if x["pct"] > 0) / len(yes) * 100) if yes else None})
+    base = summarize(fin) if fin else {}
+    return {"base": {"n": len(fin), "hitPct": base.get("hitPct"), "avgPct": base.get("avgPct"), "avgR": base.get("avgR"),
+                     "totalPct": base.get("totalPct"), "winPct": round(sum(1 for x in fin if x["pct"] > 0) / len(fin) * 100) if fin else None},
+            "rows": rows}

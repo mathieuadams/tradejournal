@@ -2371,10 +2371,7 @@ function wwParams(compact) {
   return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center${compact ? '' : ';border:1px solid var(--line);border-radius:8px;padding:6px 10px'}">
     <label ${lab} title="Every minute, tickers with unusual call flow (your bot's flow filters) join the list"><input type="checkbox" id="ww-auto" ${c.autoAdd !== false ? 'checked' : ''}>add flow tickers</label>
     <label ${lab} title="Buy a call on Alpaca paper when a signal fires (contract picked by the bot, limit chased up until filled)"><input type="checkbox" id="ww-trade" ${c.trade !== false ? 'checked' : ''}>trade signals</label>
-    <label ${lab}><input type="checkbox" id="ww-pw" ${c.pwSetup !== false ? 'checked' : ''}>PW setup</label>
-    <label ${lab}><input type="checkbox" id="ww-fl" ${c.flipSetup !== false ? 'checked' : ''}>Flip setup</label>
-    <label ${lab} title="Put wall = call wall, flip above: a green candle crossing the merged wall. No target; the stop follows the call wall of each new day"><input type="checkbox" id="ww-mg" ${c.mergedSetup !== false ? 'checked' : ''}>Merged setup</label>
-    <label ${lab} title="A call alert of at least this size arms the ticker; the support is the highest put wall / call wall / flip under the price; then wait for a green candle retesting it"><input type="checkbox" id="ww-rt" ${c.retestSetup !== false ? 'checked' : ''}>Flow retest: call alert ≥ $<input id="ww-rtmin" type="number" step="100" min="50" value="${Math.round((c.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K, wait<input id="ww-rtdays" type="number" step="1" min="1" value="${c.retestDays ?? 5}" style="width:3em;padding:1px 4px">days</label>
+    <label ${lab} title="A call alert of at least this size arms the ticker; the support is the highest put wall / call wall / flip under the price; then wait for a green candle retesting it"><input type="hidden" id="ww-rt" value="1">Flow retest: call alert ≥ $<input id="ww-rtmin" type="number" step="100" min="50" value="${Math.round((c.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K, wait<input id="ww-rtdays" type="number" step="1" min="1" value="${c.retestDays ?? 5}" style="width:3em;padding:1px 4px">days</label>
     <label ${lab} title="Stop = the level crossed (put wall or flip) − this × the 30-day ATR">stop −<input id="ww-stop" type="number" step="0.1" min="0" value="${c.stopAtr ?? 0.5}" style="width:3.6em;padding:1px 4px">ATR</label>
     <label ${lab} title="Target = call wall − this % (sell just under the wall, where price often stalls). 0 = exactly at the call wall">target −<input id="ww-tbuf" type="number" step="0.1" min="0" value="${c.tgtBuf ?? 0.5}" style="width:3.6em;padding:1px 4px">% under CW</label>
     <label ${lab} title="Trailing stop = highest high since entry − this × the 30-day ATR. 0 = no trailing">trail<input id="ww-trail" type="number" step="0.25" min="0" value="${c.trailAtr ?? 1}" style="width:3.6em;padding:1px 4px">ATR</label>
@@ -2382,7 +2379,7 @@ function wwParams(compact) {
 }
 async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
-  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, pwSetup: !!($('#ww-pw') || {}).checked, flipSetup: !!($('#ww-fl') || {}).checked, mergedSetup: !!($('#ww-mg') || {}).checked, retestSetup: !!($('#ww-rt') || {}).checked,
+  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked,  retestSetup: true,
     retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf') };
   try { S.ww = await api('/bot/wallwatch', { method: 'PUT', body }); } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
@@ -2425,7 +2422,7 @@ async function runWatch(days) {
   setTimeout(tick, 30000);
 }
 function vWatch() {
-  const h = head('Wall watch', 'Every hour, on each ticker of the list. PW setup: call wall > flip > put wall and a green hourly candle crossing the put wall (low at or under it, close above it). Flip setup: call wall > put wall > flip and a green hourly candle crossing the flip (the flip acts as support). Merged setup: put wall = call wall below the flip and a green hourly candle crossing that wall; no target, the stop follows the call wall of each new day. Flow retest: a big call alert arms the ticker, the support is the highest put wall / call wall / flip under the price, then a green hourly candle retesting it is the entry. Target (PW / flip): the call wall. Stop: the level crossed − N × the 30-day ATR, then a trailing stop N × ATR under the highest high (never down). Signals are recorded and followed, not traded.', '');
+  const h = head('Wall watch', 'Flow retest: a call alert of at least the chosen size arms the ticker; the support is the highest put wall / call wall / flip under the price; within the chosen days, a green hourly candle whose low comes back to the support and closes above it is the entry. Stop: support − N × the 30-day ATR, then a trailing stop N × ATR under the highest high (never down). Target: the call wall when it is above the entry. Every minute, tickers with unusual call flow join the list.', '');
   const d = S.ww;
   if (!d) return h + '<p class="loading">Loading…</p>';
   if (d.error) return h + `<div class="errbox">${esc(d.error)}</div>`;
@@ -2456,8 +2453,8 @@ function vWatch() {
       <textarea id="ww-list" rows="5" style="width:100%;margin-top:6px">${esc((cfg.tickers || []).join(' '))}</textarea>
       <button class="btn" data-wwsave="1">Save the list</button></details></section>`;
   const bk = d.byKind || {}, kRow = (k, l) => { const x = bk[k] || {}; return `<tr><td><b>${l}</b></td><td class="r">${x.signals || 0}</td><td class="r">${x.closed || 0}</td><td class="r">${x.hitPct ?? '—'}%</td><td class="r">${pc(x.avgPct)}</td><td class="r">${x.avgR == null ? '—' : (x.avgR > 0 ? '+' : '') + x.avgR + 'R'}</td><td class="r">${pc(x.totalPct)}</td></tr>`; };
-  const kinds = `<section class="panel" style="margin:0 0 14px"><div class="cal-head"><h2>Settings & setups</h2>${wwParams(false)}</div>
-    <div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Setup</th><th class="r">Signals</th><th class="r">Finished</th><th class="r">Call wall reached</th><th class="r">Avg</th><th class="r">Avg R</th><th class="r">Total</th></tr></thead><tbody>${kRow('pw', 'PW: CW > flip > PW, cross the put wall')}${kRow('flip', 'Flip: CW > PW > flip, cross the flip')}${kRow('merged', 'Merged: PW = CW < flip, cross the wall, stop trails the call wall')}${kRow('retest', 'Flow retest: call alert, then a retest of the support under the price')}</tbody></table></div></section>`;
+  const kinds = `<section class="panel" style="margin:0 0 14px"><div class="cal-head"><h2>Settings</h2>${wwParams(false)}</div>
+    <div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Setup</th><th class="r">Signals</th><th class="r">Finished</th><th class="r">Call wall reached</th><th class="r">Avg</th><th class="r">Avg R</th><th class="r">Total</th></tr></thead><tbody>${kRow('retest', 'Flow retest: call alert, then a retest of the support under the price')}</tbody></table></div></section>`;
   const fsd = d.flowStudy || {}, base = fsd.base || {}, rule = cfg.flowRule;
   const fr = (x, i) => { const better = x.n >= 5 && base.avgPct != null && x.avgPct != null && x.avgPct > base.avgPct;
     return `<tr${better ? ' style="background:color-mix(in srgb, var(--gain) 9%, transparent)"' : ''}><td>${esc(x.name)}${i === rule ? ' <span class="exchip">trading filter</span>' : ''}</td><td class="r">${x.n}</td><td class="r">${x.n ? (x.hitPct ?? '—') + '%' : '—'}</td><td class="r">${x.n ? x.winPct + '%' : '—'}</td><td class="r">${pc(x.avgPct)}</td><td class="r">${x.avgR == null ? '—' : (x.avgR > 0 ? '+' : '') + x.avgR + 'R'}</td><td class="r">${pc(x.totalPct)}</td>
@@ -2468,7 +2465,14 @@ function vWatch() {
     ${base.n ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Condition before the signal</th><th class="r">Signals</th><th class="r">Call wall reached</th><th class="r">Winners</th><th class="r">Avg</th><th class="r">Avg R</th><th class="r">Total</th><th></th></tr></thead><tbody>
       ${fr({ ...base, name: 'All signals' }, null)}${(fsd.rows || []).map((x, i) => fr(x, i)).join('')}</tbody></table></div>
       <p class="muted" style="font-size:.8rem;margin:6px 0 0">${rule != null ? `Trading filter on: only signals with “${esc(((fsd.rows || [])[rule] || {}).name || '')}” are bought.` : 'No trading filter: every signal is bought.'} Few signals = a hint, not a proof.</p>` : '<p class="muted" style="margin:0">No finished signal matched with the flow yet.</p>'}</section>`;
-  return h + runLine + stats + kinds + flowBox + sigTable + by + now;
+  const rsd = d.retestStudy || {}, rb = rsd.base || {};
+  const rrow = x => { const better = x.n >= 5 && rb.avgPct != null && x.avgPct != null && x.avgPct > rb.avgPct;
+    return `<tr${better ? ' style="background:color-mix(in srgb, var(--gain) 9%, transparent)"' : ''}><td>${esc(x.name)}</td><td class="r">${x.n}</td><td class="r">${x.n ? (x.hitPct ?? '—') + '%' : '—'}</td><td class="r">${x.n ? x.winPct + '%' : '—'}</td><td class="r">${pc(x.avgPct)}</td><td class="r">${x.avgR == null ? '—' : (x.avgR > 0 ? '+' : '') + x.avgR + 'R'}</td><td class="r">${pc(x.totalPct)}</td></tr>`; };
+  const rtBox = `<section class="panel" style="margin:0 0 14px"><h2>Flow retest analysis</h2>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Finished flow retest signals split by the support that was retested, the size of the call alert that armed them and how long the retest took. Green rows beat all signals (with at least 5 signals).</p>
+    ${rb.n ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Group</th><th class="r">Signals</th><th class="r">Call wall reached</th><th class="r">Winners</th><th class="r">Avg</th><th class="r">Avg R</th><th class="r">Total</th></tr></thead><tbody>
+      ${rrow({ ...rb, name: 'All flow retest signals' })}${(rsd.rows || []).map(rrow).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No finished flow retest signal yet. Press <b>Get all walls (45 days)</b> to build the history.</p>'}</section>`;
+  return h + runLine + stats + kinds + rtBox + flowBox + sigTable + by + now;
 }
 function vExplore() {
   const d = S.ex;

@@ -1974,6 +1974,8 @@ def test_explorer_many_features_and_deep_search():
 
 def test_wall_watch():
     """CW > flip > PW + green hourly candle crossing the put wall; target = call wall, stop = put wall - 0.5 ATR (fixed)."""
+    import wallwatch as _ww
+    _ww.FLOW_ONLY = False
     import wallwatch, flowdata, charts, datetime as dt
     STORE.clear()
     w = {"callWall": 110, "flip": 102, "putWall": 100}
@@ -2098,6 +2100,8 @@ def test_wall_watch():
 
 def test_wall_watch_live():
     """Flow tickers join the list; a fresh signal buys a call (paper) with the signal's stop / target; the exit trails."""
+    import wallwatch as _ww
+    _ww.FLOW_ONLY = False
     import wallwatch, flowdata, autotrader, charts, datetime as dt
     STORE.clear()
     pk = db.upk(SUB)
@@ -2159,6 +2163,8 @@ def test_wall_watch_live():
 
 def test_wall_watch_flow_study():
     """Flow before each signal; results with and without each flow condition; the flow filter blocks a trade."""
+    import wallwatch as _ww
+    _ww.FLOW_ONLY = False
     import wallwatch, flowdata
     STORE.clear()
     pk = db.upk(SUB)
@@ -2214,6 +2220,18 @@ def test_wall_watch_retest():
     # still waiting for the retest: the watch is returned
     sg2, watch2 = wallwatch.detect_retest(bars[:2], {"2026-10-05": w}, alerts=al)
     assert not sg2 and watch2["level"] == 102 and watch2["levelName"] == "flip"
+    wallwatch.FLOW_ONLY = True
+    STORE.clear()
+    pk = db.upk(SUB)
+    call("GET", "/bot/wallwatch")
+    db.put({"PK": pk, "SK": "WWSIG#AAPL#2026-10-05T11:30#R", "symbol": "AAPL", **sg[0]})
+    db.put({"PK": pk, "SK": "WWSIG#AAPL#2026-10-01T11:30", "symbol": "AAPL", "kind": "pw", "at": "2026-10-01T11:30", "status": "stop",
+            "pct": -1, "R": -1, "riskPct": 1})
+    st, v = call("GET", "/bot/wallwatch")
+    assert v["summary"]["signals"] == 1 and v["config"]["pwSetup"] is False and v["config"]["retestSetup"] is True
+    rows = {r["name"]: r for r in v["retestStudy"]["rows"]}
+    assert v["retestStudy"]["base"]["n"] == 1 and rows["Support: flip"]["n"] == 1 and rows["Call alert $500K – $1M"]["n"] == 1
+    assert rows["Retest within 1 day of the alert"]["n"] == 1 and rows["Support: put wall"]["n"] == 0
 
 
 if __name__ == "__main__":
