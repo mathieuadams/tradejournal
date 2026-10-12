@@ -2045,6 +2045,11 @@ def test_wall_watch():
         db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[0]}", "data": {"callWall": 1, "putWall": 1, "flip": 1}})
         db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[1]}", "data": None})                       # no data that day: done
         db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[2]}", "data": {"callWall": 1, "putWall": 1, "noflip": True}})
+        db.put({"PK": "UWMP", "SK": f"AAPL#{past[0]}", "at": 0, "mp": {}})
+        db.put({"PK": "UWMP", "SK": f"AAPL#{past[1]}", "at": 0, "mp": {}})
+        saved_uw = flowdata._uw
+        flowdata._uw = lambda key, path, params=None, attempts=4: {"data": [{"expiry": "2026-10-16", "max_pain": "105"},
+                                                                             {"expiry": "2026-10-23", "max_pain": "99"}]}
         todo, total = wallwatch.walls_todo(["AAPL"], 5)
         assert total == 5 and (("AAPL", past[2]) in todo) and ("AAPL", past[0]) not in todo and ("AAPL", past[1]) not in todo
         got = []
@@ -2053,9 +2058,17 @@ def test_wall_watch():
         assert f["left"] == 0 and f["fetched"] == len(got) and len(got) == 3 * 5 - 2 - (5 - len(past)) * 3, (f, got)
         st, r = call("GET", "/bot/wallwatch")
         assert r["fill"]["left"] == 0 and r["fill"]["total"] == 15
+        mpd = wallwatch.stored_maxpain("MSFT")
+        assert mpd and all(v == {"2026-10-16": 105.0} or v == {} for v in mpd.values()), mpd
         got.clear()
         f1 = wallwatch.fill_walls(SUB, days=5, budget_s=30, ticker="MSFT")
         assert f1["total"] == 5 and all(t_ == "MSFT" for t_, _ in got) and db.get(db.upk(SUB), "WWFILL#MSFT")["left"] == 0
+        flowdata._uw = saved_uw
+        assert wallwatch.parse_max_pain({"data": {"2026-11-20": 50, "x": 1}}) == {"2026-11-20": 50.0}
+        ser = wallwatch.maxpain_series({"2026-10-14": {"2026-10-16": 105.0, "2026-11-20": 90.0}, "2026-10-19": {"2026-11-20": 92.0}},
+                                       ["2026-10-14", "2026-10-19"])
+        assert ser == [{"t": "2026-10-14T09:30", "exp": "2026-10-16", "maxPain": 105.0}, {"t": "2026-10-19T09:30", "exp": "2026-11-20", "maxPain": 92.0}]
+        assert wallwatch.monthly_exps("2026-09-01", "2026-11-30") == ["2026-09-18", "2026-10-16", "2026-11-20"]
     finally:
         charts._yahoo, flowdata.gex_day, flowdata._key = saved
 

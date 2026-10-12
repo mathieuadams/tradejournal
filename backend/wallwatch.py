@@ -293,15 +293,26 @@ def walls_todo(tickers, days=45):
         have = {}
         for r in db.q_prefix("UWGEX2", f"{sym}#"):
             have[r["SK"].split("#", 1)[1]] = r
+        mp = {r["SK"].split("#", 1)[1] for r in db.q_prefix("UWMP", f"{sym}#")}
         for d in dates:
             r = have.get(d)
             data = (r or {}).get("data")
             if d == ts:
                 continue                                # today: refreshed by the hourly check
-            if r and (data is None or (data.get("callWall") is not None and data.get("flip") is not None and not data.get("noflip"))):
+            if r and d in mp and (data is None or (data.get("callWall") is not None and data.get("flip") is not None and not data.get("noflip"))):
                 continue
             todo.append((sym, d))
     return todo, len(dates) * len(tickers)
+
+
+def _walls_and_mp(key, sym, d):
+    import flowdata
+    w = flowdata.gex_day(key, sym, d, True)
+    try:
+        maxpain_day(key, sym, d)
+    except Exception as e:
+        print("max pain failed", sym, d, e)
+    return w
 
 
 def fill_walls(sub, days=45, budget_s=480, ticker=None):
@@ -321,7 +332,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None):
         for k in range(0, len(todo), 12):
             if time.time() - t0 > budget_s:
                 break
-            futs = [(t, ex.submit(flowdata.gex_day, key, t[0], t[1], True)) for t in todo[k:k + 12]]
+            futs = [(t, ex.submit(_walls_and_mp, key, t[0], t[1])) for t in todo[k:k + 12]]
             for t, f in futs:
                 try:
                     f.result()
@@ -375,6 +386,90 @@ def view(sub):
             "fill": {k: fill.get(k) for k in ("at", "running", "total", "left", "fetched", "errors")},
             "status": run_.get("status") or [], "signals": sigs[:500], "summary": summary, "byKind": by_kind,
             "byTicker": sorted(by.values(), key=lambda b: -b["total"])}
+
+
+# ---------------- monthly expirations and max pain ----------------
+
+def monthly_exps(first, last):
+    """Monthly option expirations (3rd Friday, Thursday when the Friday is a market holiday is not modeled)."""
+    out = []
+    y, m = int(first[:4]), int(first[5:7])
+    while True:
+        d = datetime(y, m, 1)
+        d += timedelta(days=(4 - d.weekday()) % 7 + 14)
+        ds = d.strftime("%Y-%m-%d")
+        if ds > last:
+            break
+        if ds >= first:
+            out.append(ds)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def _is_monthly(exp):
+    try:
+        d = datetime.strptime(exp[:10], "%Y-%m-%d")
+    except ValueError:
+        return False
+    return 15 <= d.day <= 21 and d.weekday() in (3, 4)
+
+
+def parse_max_pain(raw):
+    """{expiry: max pain strike} from Unusual Whales' max-pain answer (list of rows or a dict by expiry)."""
+    import flowdata
+    data = raw.get("data", raw) if isinstance(raw, dict) else raw
+    out = {}
+    if isinstance(data, dict) and not any(k in data for k in ("expiry", "expiration")):
+        for k, v in data.items():
+            n = flowdata._num(v if not isinstance(v, dict) else (v.get("max_pain") or v.get("price")))
+            if n and len(str(k)) >= 10:
+                out[str(k)[:10]] = n
+        return out
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        exp = str(r.get("expiry") or r.get("expiration") or r.get("expires") or r.get("date") or "")[:10]
+        v = flowdata._pick(r, "max_pain", "maxPain", "max_pain_strike", "strike", "price")
+        if exp and v:
+            out[exp] = v
+    return out
+
+
+def maxpain_day(key, ticker, date):
+    """{monthly expiry: max pain} as of `date` (cached; past days kept for good, today refreshed hourly)."""
+    import flowdata
+    ck = f"{ticker}#{date}"
+    hit = db.get("UWMP", ck)
+    today = now_ny().strftime("%Y-%m-%d")
+    if hit and (date < today or time.time() - hit.get("at", 0) < 3600):
+        return hit.get("mp") or {}
+    raw = flowdata._uw(key, f"/api/stock/{ticker}/max-pain", {"date": date})
+    mp = {k: v for k, v in parse_max_pain(raw or {}).items() if _is_monthly(k) and k >= date}
+    from decimal import Decimal
+    try:
+        db.put({"PK": "UWMP", "SK": ck, "at": int(time.time()), "mp": {k: Decimal(str(round(v, 2))) for k, v in mp.items()}})
+    except Exception as e:
+        print("max pain cache failed", e)
+    return mp
+
+
+def stored_maxpain(ticker):
+    out = {}
+    for r in db.q_prefix("UWMP", f"{ticker}#"):
+        out[r["SK"].split("#", 1)[1]] = {k: float(v) for k, v in (r.get("mp") or {}).items()}
+    return out
+
+
+def maxpain_series(mp_by_day, dates):
+    """For each date: the next monthly expiration and its max pain as of that date."""
+    out = []
+    for d in dates:
+        mp = mp_by_day.get(d) or {}
+        nxt = min((e for e in mp if e >= d), default=None)
+        if nxt:
+            out.append({"t": f"{d}T09:30", "exp": nxt, "maxPain": mp[nxt]})
+    return out
 
 
 def flow_alerts(sub, sym, first, last):
@@ -444,6 +539,14 @@ def chart(sub, sym, days=45, flow=True):
     sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in db.q_prefix(db.upk(sub), f"WWSIG#{sym}#")]
     sigs.sort(key=lambda s: s["at"])
     last = next((stored.get(d) for d in reversed(dates) if (stored.get(d) or {}).get("callWall")), None)
+    mpd = stored_maxpain(sym)
+    if dates and dates[-1] == today:
+        try:
+            mpd[today] = maxpain_day(flowdata._key(sub), sym, today)
+        except Exception as e:
+            print("max pain today failed", sym, e)
+    maxpain = maxpain_series(mpd, dates)
+    exps = monthly_exps(dates[0], (datetime.strptime(dates[-1], "%Y-%m-%d") + timedelta(days=40)).strftime("%Y-%m-%d")) if dates else []
     alerts, flow_note = [], None
     if flow and dates:
         try:
@@ -453,4 +556,6 @@ def chart(sub, sym, days=45, flow=True):
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
     return {"fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
-            "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last)}
+            "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
+            "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain),
+            "maxPainMissing": sum(1 for d in dates if d != today and d not in mpd)}

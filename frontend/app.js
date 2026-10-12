@@ -1273,11 +1273,11 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { const v = { sig: true, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? ['sig', 'walls', 'flow', 'acc'].includes(k) : k !== 'sig').map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
+  return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? ['sig', 'mp', 'walls', 'flow', 'acc'].includes(k) : !['sig', 'mp'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
@@ -1328,6 +1328,7 @@ function fcSvg0(d, id, opts) {
   const walls = LY.walls ? (d.walls || []).filter(w => w.callWall != null || w.src === 'gap') : [];
   const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
   const wv = walls.flatMap(w => [w.callWall, w.putWall, w.flip]).concat(dp && !dp.error ? (dp.levels || []).map(l => l.price) : [])
+    .concat(LY.mp !== false ? (d.maxPain || []).map(m => m.maxPain) : [])
 .filter(near);
   const lo0 = Math.min(pl0, ...wv), hi0 = Math.max(ph0, ...wv), pad = (hi0 - lo0) * 0.08 || 1;
   const lo = lo0 - pad, hi = hi0 + pad;
@@ -1394,6 +1395,24 @@ function fcSvg0(d, id, opts) {
       const r = Math.min(11, 2.5 + Math.sqrt(p0.premium / 1e6) * 1.6), x = X(i) + (sq[key] - 1) * 3, y = Y(p0.price);
       const sel = S.fcSelD && S.fcSelD.id === id && S.fcSelD.k === k;
       g += `<rect data-fcd="${id}|${k}" x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2" fill="var(--warn)" fill-opacity=".55" stroke="${sel || p0.premium >= 10e6 ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(p0.t.replace('T', ' ').slice(5))} · dark pool ${p0.size.toLocaleString('en-US')} sh at ${p0.price} · ${prem(p0.premium)}</title></rect>`; });
+  }
+  if (LY.mp !== false && ((d.expirations || []).length || (d.maxPain || []).length)) {   // monthly expirations + max pain
+    const mpc = 'var(--warn,#d97706)', bwH = (W - L - Rr) / n / 2;
+    (d.expirations || []).forEach(e => { let i = null; bars.forEach((b, q) => { if (b.t.slice(0, 10) === e) i = q; });
+      if (i == null) { if (e > lastT.slice(0, 10) && e === (d.expirations || []).find(x => x > lastT.slice(0, 10)))
+          g += `<text x="${W - Rr - 4}" y="${B - 6}" text-anchor="end" font-size="${fs - 2}" font-weight="700" fill="${mpc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">next monthly exp ${e.slice(5)}</text>`;
+        return; }
+      const x = X(i) + bwH;
+      g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="${mpc}" stroke-width="1.5" stroke-dasharray="6 3" opacity=".8"><title>Monthly options expiration ${e}</title></line>
+        <text x="${x - 3}" y="${T + 12}" text-anchor="end" font-size="${fs - 2}" font-weight="700" fill="${mpc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">OPEX ${e.slice(5)}</text>`; });
+    const mps = d.maxPain || [];
+    mps.forEach((m, q) => { if (m.maxPain < lo || m.maxPain > hi) return;
+      const i0 = idx[m.t] ?? at(m.t); if (i0 == null) return;
+      const nx = mps[q + 1], i1 = nx ? (idx[nx.t] ?? at(nx.t)) : n;
+      const x0 = X(i0) - bwH, x1 = i1 == null ? W - Rr : i1 >= n ? X(n - 1) + bwH : X(i1) - bwH, y = Y(m.maxPain);
+      g += `<line x1="${x0}" x2="${x1}" y1="${y}" y2="${y}" stroke="${mpc}" stroke-width="2" stroke-dasharray="2 2"><title>Max pain ${m.maxPain} for the ${m.exp} expiration (as of ${m.t.slice(0, 10)})</title></line>`;
+      if (nx && nx.maxPain >= lo && nx.maxPain <= hi && i1 != null && i1 < n) g += `<line x1="${x1}" x2="${x1}" y1="${y}" y2="${Y(nx.maxPain)}" stroke="${mpc}" stroke-width="1" opacity=".5"/>`;
+      if (!nx) g += `<text x="${W - Rr - 4}" y="${y - 4}" text-anchor="end" font-size="${fs - 1}" font-weight="700" fill="${mpc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">Max pain ${m.maxPain} (${m.exp.slice(5)})</text>`; });
   }
   if (LY.sig !== false && (d.signals || []).length) {   // Wall watch: entry, target (call wall), stop (put wall), exit
     d.signals.forEach((sg, k) => {
@@ -1495,6 +1514,7 @@ function vChartWW() {
     const w = d.wallsNow, pc = v => `<b class="${v >= 0 ? 'gain' : 'loss'}">${v >= 0 ? '+' : ''}${v}%</b>`;
     main = fcSvg(d, id, { W, H }) + `<div class="fcf-info">
       ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b> · <b class="loss">put ${w.putWall}</b></span>` : ''}
+      ${(() => { const m = (d.maxPain || []).slice(-1)[0], nx = (d.expirations || []).find(e => e >= new Date().toISOString().slice(0, 10)); return m || nx ? `<span style="color:var(--warn,#d97706)"><b>${nx ? `Next monthly exp ${esc(nx)}` : ''}${m ? ` · max pain ${m.maxPain}${m.exp !== nx ? ` (${esc(m.exp)})` : ''}` : ''}</b></span>` : ''; })()}
       ${(() => { const al = d.alerts || [], sm = xs => xs.reduce((a, x) => a + x.premium, 0), c = al.filter(a => a.type === 'call'), p_ = al.filter(a => a.type === 'put');
         const sa = S.fcSel && S.fcSel.id === id ? al[S.fcSel.k] : null;
         return `<span><b class="gain">Calls</b> ${c.length} · ${money(sm(c), false)} &nbsp; <b class="loss">Puts</b> ${p_.length} · ${money(sm(p_), false)}</span>`
@@ -2342,8 +2362,8 @@ async function wwSaveParams(where) {
   render();
 }
 function wwTkBtn(sym, d) {
-  const f = (d && d.fill) || {}, busy = S.wwTk[sym] || f.running, miss = d ? (d.missingDays || 0) + (d.noflipDays || 0) : null;
-  return `<button class="btn ${miss ? 'coachbtn' : ''}" data-wwtk="${esc(sym)}" ${busy ? 'disabled' : ''} style="font-size:.8rem;padding:2px 10px" title="Fetch the put wall, call wall and flip of the last 45 days for ${esc(sym)}, then find its signals">${busy ? 'Getting walls…' : 'Get walls (45 days)'}</button>`
+  const f = (d && d.fill) || {}, busy = S.wwTk[sym] || f.running, miss = d ? Math.max((d.missingDays || 0) + (d.noflipDays || 0), d.maxPainMissing || 0) : null;
+  return `<button class="btn ${miss ? 'coachbtn' : ''}" data-wwtk="${esc(sym)}" ${busy ? 'disabled' : ''} style="font-size:.8rem;padding:2px 10px" title="Fetch the put wall, call wall, flip and max pain of the last 45 days for ${esc(sym)}, then find its signals">${busy ? 'Getting walls…' : 'Get walls (45 days)'}</button>`
     + (d && !busy ? ` <span class="muted" style="font-size:.8rem">${miss ? `${miss} day${miss === 1 ? '' : 's'} missing` : 'all days stored'}</span>` : '');
 }
 async function wwTkFill(sym) {
