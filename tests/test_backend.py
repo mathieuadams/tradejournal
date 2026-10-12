@@ -2229,7 +2229,8 @@ def test_wall_watch_retest():
     # only above the flip: the retest of a put wall under the flip is skipped
     fw2 = {"callWall": 110, "flip": 106, "putWall": 102}
     assert wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, alerts=al)[0]
-    assert not wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True}, alerts=al)[0]
+    af = wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True}, alerts=al)[0]
+    assert af and af[0]["at"] == "2026-10-06T09:30" and af[0]["levelName"] == "flip" and af[0]["level"] == 106   # waits for the flip
     # alert too small: never armed
     assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=[al[1]])[0]
     # support broken before the retest: the watch ends
