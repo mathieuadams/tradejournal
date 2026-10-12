@@ -1986,7 +1986,8 @@ def test_wall_watch():
             {"t": "2026-10-06T11:30", "o": 101, "h": 101.2, "l": 95.0, "c": 99.4}]     # through put wall - 0.5 ATR -> stop
     sigs = wallwatch.detect(bars, {"2026-10-05": w, "2026-10-06": w})
     assert [s["status"] for s in sigs] == ["target", "stop"], sigs
-    assert sigs[0]["exit"] == 110 and sigs[0]["pct"] == round((110 / 100.8 - 1) * 100, 2)
+    assert sigs[0]["target"] == 109.45 and sigs[0]["exit"] == 109.45 and sigs[0]["pct"] == round((109.45 / 100.8 - 1) * 100, 2)   # 0.5% under the call wall
+    assert wallwatch.detect(bars, {"2026-10-05": w, "2026-10-06": w}, cfg={"tgtBuf": 0})[0]["exit"] == 110
     atr = wallwatch.atr14(bars)
     assert sigs[1]["stop"] == round(100 - 0.5 * atr[5], 4) and sigs[1]["exit"] == sigs[1]["stop"]
     assert sigs[0]["stop"] == round(104 - sigs[0]["atr"], 4) and sigs[0]["kind"] == "pw"    # trailed 1 ATR under the 11:30 high

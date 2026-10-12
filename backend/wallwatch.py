@@ -21,7 +21,7 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
            "STX", "TSLA", "TSM", "WDC", "WMT", "XOM"]
 
 
-PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True}
+PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True}        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -36,7 +36,7 @@ def config(sub):
 
 def version(cfg):
     """Signals made with other settings are recomputed."""
-    return f"5|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
+    return f"6|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}|{float(cfg.get('tgtBuf', 0.5)):g}"
 
 
 def save_config(sub, body):
@@ -55,7 +55,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k in ("stopAtr", "trailAtr"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
@@ -144,7 +144,7 @@ def detect(bars, walls, start=None, cfg=None, datr=None):
     """Signals and their outcome. bars: finished hourly candles (earlier ones warm up the ATR);
     walls: {date: {callWall, flip, putWall}}; start: first date where signals can start; cfg: stop / trail / setups."""
     P = {**PARAMS, **(cfg or {})}
-    k_stop, k_trail = float(P["stopAtr"]), float(P["trailAtr"])
+    k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
     kinds = {k for k, on in (("pw", P["pwSetup"]), ("flip", P["flipSetup"])) if on}
     ver = version(P)
     sigs, open_ = [], None
@@ -179,7 +179,8 @@ def detect(bars, walls, start=None, cfg=None, datr=None):
         if b["c"] > b["o"] and b["l"] <= lvl < b["c"]:
             a_ = (_atr_on(datr, b["t"][:10]) if datr else None) or atr[i]
             st = round(lvl - k_stop * a_, 4)
-            s = {"at": b["t"][:16], "kind": kind, "level": lvl, "entry": b["c"], "pw": pw, "flip": fl, "cw": cw, "target": cw,
+            s = {"at": b["t"][:16], "kind": kind, "level": lvl, "entry": b["c"], "pw": pw, "flip": fl, "cw": cw,
+                 "target": round(cw * (1 - buf / 100), 4),
                  "atr": round(a_, 4), "stop": st, "stop0": st, "v": ver,
                  "o": b["o"], "h": b["h"], "l": b["l"], "status": "open", "last": b["c"], "lastAt": b["t"][:16]}
             sigs.append(s)

@@ -1436,7 +1436,7 @@ function fcSvg0(d, id, opts) {
       const col = sg.status === 'target' || (sg.status === 'trail' && sg.pct >= 0) ? 'var(--gain)' : sg.status === 'stop' || sg.status === 'trail' ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
       const sel = S.wwSel && S.wwSel.sym === d.symbol && S.wwSel.at === sg.at;
       g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity="${sel ? .12 : .06}"/>`;
-      if (sg.target >= lo && sg.target <= hi) g += `<line x1="${xa}" x2="${xb}" y1="${Y(sg.target)}" y2="${Y(sg.target)}" stroke="var(--gain)" stroke-width="2" opacity=".85"><title>target ${sg.target}</title></line>`;
+      if (sg.target >= lo && sg.target <= hi) g += `<line x1="${xa}" x2="${xb}" y1="${Y(sg.target)}" y2="${Y(sg.target)}" stroke="var(--gain)" stroke-width="2" opacity=".85"><title>target ${sg.target} (call wall ${sg.cw})</title></line>`;
       const steps = sg.stops || [[sg.at, sg.stop0 ?? sg.stop ?? sg.pw]];       // trailing stop: one segment per level
       steps.forEach(([t1, v], q) => { if (v == null || v < lo || v > hi) return;
         const s0 = Math.max(xa, at(t1) == null ? xa : X(at(t1)) - (q ? (W - L - Rr) / n / 2 : 0)), nx = steps[q + 1], e0 = nx && at(nx[0]) != null ? X(at(nx[0])) - (W - L - Rr) / n / 2 : xb;
@@ -2373,12 +2373,13 @@ function wwParams(compact) {
     <label ${lab}><input type="checkbox" id="ww-pw" ${c.pwSetup !== false ? 'checked' : ''}>PW setup</label>
     <label ${lab}><input type="checkbox" id="ww-fl" ${c.flipSetup !== false ? 'checked' : ''}>Flip setup</label>
     <label ${lab} title="Stop = the level crossed (put wall or flip) − this × the 30-day ATR">stop −<input id="ww-stop" type="number" step="0.1" min="0" value="${c.stopAtr ?? 0.5}" style="width:3.6em;padding:1px 4px">ATR</label>
+    <label ${lab} title="Target = call wall − this % (sell just under the wall, where price often stalls). 0 = exactly at the call wall">target −<input id="ww-tbuf" type="number" step="0.1" min="0" value="${c.tgtBuf ?? 0.5}" style="width:3.6em;padding:1px 4px">% under CW</label>
     <label ${lab} title="Trailing stop = highest high since entry − this × the 30-day ATR. 0 = no trailing">trail<input id="ww-trail" type="number" step="0.25" min="0" value="${c.trailAtr ?? 1}" style="width:3.6em;padding:1px 4px">ATR</label>
     <button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 9px">Apply</button></span>`;
 }
 async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
-  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, pwSetup: !!($('#ww-pw') || {}).checked, flipSetup: !!($('#ww-fl') || {}).checked, stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail') };
+  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, pwSetup: !!($('#ww-pw') || {}).checked, flipSetup: !!($('#ww-fl') || {}).checked, stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf') };
   try { S.ww = await api('/bot/wallwatch', { method: 'PUT', body }); } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
   if (where === 'chart') { wwTkFill(fcfSymbol()); toast('Recomputing this chart now, every ticker in the background'); }
