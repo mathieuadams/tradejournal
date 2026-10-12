@@ -483,7 +483,7 @@ def gex_history(sub, ticker, dates):
 def darkpool_day(key, ticker, date, min_premium):
     import time as _t
     from util import utc_to_ny
-    ck = f"{ticker}#{date}#{int(min_premium)}"
+    ck = f"{ticker}#{date}#{int(min_premium)}#2"          # v2: with the bid / ask at the print (buy or sell side)
     hit = db.get("UWDP", ck)
     today = now_ny().strftime("%Y-%m-%d")
     if hit and (date < today or _t.time() - hit.get("at", 0) < 900):
@@ -503,7 +503,11 @@ def darkpool_day(key, ticker, date, min_premium):
             t = utc_to_ny(datetime.strptime(at, "%Y-%m-%dT%H:%M:%S")).strftime("%Y-%m-%dT%H:%M")
         except ValueError:
             continue
-        out.append({"t": t, "price": round(px_, 4), "size": int(sz or 0), "premium": round(prem or (px_ * (sz or 0)))})
+        bid, ask = _num(r.get("nbbo_bid")), _num(r.get("nbbo_ask"))
+        side = None
+        if bid and ask and ask >= bid:              # at / above the ask: bought; at / below the bid: sold; between: unknown
+            side = "buy" if px_ >= ask else "sell" if px_ <= bid else ("buy" if px_ > (bid + ask) / 2 else "sell" if px_ < (bid + ask) / 2 else None)
+        out.append({"t": t, "price": round(px_, 4), "size": int(sz or 0), "premium": round(prem or (px_ * (sz or 0))), "side": side})
     try:
         db.put({"PK": "UWDP", "SK": ck, "at": int(_t.time()), "prints": out})
     except Exception as e:          # an oversized day: keep the biggest
@@ -527,17 +531,23 @@ def darkpool(sub, ticker, dates, min_premium=1_000_000):
             except Exception as e:
                 err = str(e)[:160]
     prints.sort(key=lambda x: x["t"])
+    return {"prints": prints, "levels": dp_levels(prints), "minPremium": min_premium, "error": err}
+
+
+def dp_levels(prints, top_n=5):
+    """Price levels where the most dark pool premium traded (bands of ~0.25% of price), with the bought / sold split."""
     levels = {}
     if prints:
         ps = sorted(p["price"] for p in prints)
         step = max(0.01, round(ps[len(ps) // 2] * 0.0025, 2))          # bucket ~0.25% of price
         for p in prints:
             b = round(round(p["price"] / step) * step, 2)
-            lv = levels.setdefault(b, {"price": b, "premium": 0, "prints": 0, "_pw": 0.0})
+            lv = levels.setdefault(b, {"price": b, "premium": 0, "prints": 0, "_pw": 0.0, "buy": 0, "sell": 0})
             lv["premium"] += p["premium"]
             lv["prints"] += 1
             lv["_pw"] += p["price"] * p["premium"]
+            if p.get("side") in ("buy", "sell"):
+                lv[p["side"]] += p["premium"]
     for lv in levels.values():          # the level sits at the premium-weighted price of its prints
         lv["price"] = round(lv.pop("_pw") / lv["premium"], 2) if lv["premium"] else lv["price"]
-    top = sorted(levels.values(), key=lambda x: -x["premium"])[:5]
-    return {"prints": prints, "levels": top, "minPremium": min_premium, "error": err}
+    return sorted(levels.values(), key=lambda x: -x["premium"])[:top_n]

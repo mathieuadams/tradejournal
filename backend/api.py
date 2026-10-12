@@ -444,7 +444,7 @@ def bot_wallwatch_chart(sub, claims, body, q):
 def bot_wallwatch_darkpool(sub, claims, body, q):
     import wallwatch
     q = q or {}
-    return wallwatch.darkpool(sub, q.get("t"), q.get("min"))
+    return wallwatch.darkpool(sub, q.get("t"), q.get("pct"))
 
 
 @route("POST", "/bot/wallwatch/walls")

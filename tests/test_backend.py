@@ -2070,12 +2070,18 @@ def test_wall_watch():
                                        ["2026-10-14", "2026-10-19"])
         assert ser == [{"t": "2026-10-14T09:30", "exp": "2026-10-16", "maxPain": 105.0}, {"t": "2026-10-19T09:30", "exp": "2026-11-20", "maxPain": 92.0}]
         assert wallwatch.monthly_exps("2026-09-01", "2026-11-30") == ["2026-09-18", "2026-10-16", "2026-11-20"]
-        saved_dp = flowdata.darkpool
+        saved_dp, saved_y = flowdata.darkpool, charts._yahoo
         seen_dp = []
-        flowdata.darkpool = lambda sub, sym, dates, mp: seen_dp.append((sym, len(dates), mp)) or {"prints": [], "levels": [], "minPremium": mp}
-        st, dpr = call("GET", "/bot/wallwatch/darkpool", q={"t": "brk/b", "min": "5000000"})
-        flowdata.darkpool = saved_dp
-        assert st == 200 and dpr["symbol"] == "BRK.B" and seen_dp == [("BRK.B", 45, 5000000.0)], (dpr, seen_dp)
+        charts._yahoo = lambda sym, tf, a, b: [{"t": f"2026-09-{d:02d}", "o": 100, "h": 101, "l": 99, "c": 100, "v": 1_000_000} for d in range(1, 31)]
+        pr = [{"t": "2026-10-05T10:00", "price": 100.0, "size": 4000, "premium": 400000, "side": "buy"},
+              {"t": "2026-10-05T11:00", "price": 101.0, "size": 6000, "premium": 606000, "side": "buy"},
+              {"t": "2026-10-06T11:00", "price": 99.0, "size": 9000, "premium": 891000, "side": "sell"}]
+        flowdata.darkpool = lambda sub, sym, dates, mp: seen_dp.append((sym, len(dates), mp)) or {"prints": pr, "levels": [], "minPremium": mp}
+        st, dpr = call("GET", "/bot/wallwatch/darkpool", q={"t": "brk/b", "pct": "0.5"})
+        flowdata.darkpool, charts._yahoo = saved_dp, saved_y
+        assert st == 200 and dpr["symbol"] == "BRK.B" and seen_dp == [("BRK.B", 45, 250000)], (dpr, seen_dp)
+        assert dpr["adv"] == 1_000_000 and dpr["minShares"] == 5000 and [p_["size"] for p_ in dpr["prints"]] == [6000, 9000]
+        assert dpr["buy"] == 606000 and dpr["sell"] == 891000 and dpr["levels"][0]["sell"] == 891000
     finally:
         charts._yahoo, flowdata.gex_day, flowdata._key = saved
 

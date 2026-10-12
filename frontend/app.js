@@ -1283,7 +1283,7 @@ async function loadDarkPool(id) {
   const k = fcKey(id);
   S.fcDpBusy[k] = true;
   const ww = String(id).startsWith('ww-');
-  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.slice(3))}&min=${(S.wwDpMin || 2) * 1e6}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
+  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.slice(3))}&pct=${S.wwDpPct ?? 0.25}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
   S.fcDpBusy[k] = false;
   if (isBotRoute()) render();
 }
@@ -1387,15 +1387,17 @@ function fcSvg0(d, id, opts) {
   }
   if (dp && !dp.error) {                    // dark pool: the price levels with the most premium, then each big print
     const prem = v => v >= 1e9 ? `$${(v / 1e9).toFixed(1)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(0)}M` : `$${Math.round(v / 1e3)}k`;
-    (dp.levels || []).forEach((lv, j) => { if (!near(lv.price)) return; const y = Y(lv.price);
-      g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="var(--warn)" stroke-width="${j === 0 ? 3 : 2}" opacity="${j === 0 ? .55 : .35}"><title>Dark pool level ${lv.price}: ${prem(lv.premium)} in ${lv.prints} prints</title></line>
-        <text x="${L + 4}" y="${y - 4}" font-size="${fs - 1}" font-weight="600" fill="var(--warn)" paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round">DP ${lv.price} · ${prem(lv.premium)}</text>`; });
+    const sideCol = (b, s_) => b > s_ * 1.5 ? 'var(--gain)' : s_ > b * 1.5 ? 'var(--loss)' : 'var(--warn)';
+    (dp.levels || []).forEach((lv, j) => { if (!near(lv.price)) return; const y = Y(lv.price), c = sideCol(lv.buy || 0, lv.sell || 0);
+      const split = (lv.buy || lv.sell) ? ` · bought ${prem(lv.buy || 0)} / sold ${prem(lv.sell || 0)}` : '';
+      g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="${j === 0 ? 3 : 2}" opacity="${j === 0 ? .55 : .35}"><title>Dark pool level ${lv.price}: ${prem(lv.premium)} in ${lv.prints} prints${split}</title></line>
+        <text x="${L + 4}" y="${y - 4}" font-size="${fs - 1}" font-weight="600" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round">DP ${lv.price} · ${prem(lv.premium)}${split}</text>`; });
     const sq = {};
     (dp.prints || []).forEach((p0, k) => { const i = at(p0.t); if (i == null || p0.price < lo || p0.price > hi) return;
       const key = `${i}|${Math.round(Y(p0.price))}`; sq[key] = (sq[key] || 0) + 1;
       const r = Math.min(11, 2.5 + Math.sqrt(p0.premium / 1e6) * 1.6), x = X(i) + (sq[key] - 1) * 3, y = Y(p0.price);
       const sel = S.fcSelD && S.fcSelD.id === id && S.fcSelD.k === k;
-      g += `<rect data-fcd="${id}|${k}" x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2" fill="var(--warn)" fill-opacity=".55" stroke="${sel || p0.premium >= 10e6 ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(p0.t.replace('T', ' ').slice(5))} · dark pool ${p0.size.toLocaleString('en-US')} sh at ${p0.price} · ${prem(p0.premium)}</title></rect>`; });
+      g += `<rect data-fcd="${id}|${k}" x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" rx="2" fill="${p0.side === 'buy' ? 'var(--gain)' : p0.side === 'sell' ? 'var(--loss)' : 'var(--warn)'}" fill-opacity=".55" stroke="${sel || p0.premium >= 10e6 ? 'var(--ink)' : 'none'}" stroke-width="${sel ? 2 : 1}" style="cursor:pointer"><title>${esc(p0.t.replace('T', ' ').slice(5))} · dark pool ${p0.size.toLocaleString('en-US')} sh at ${p0.price} · ${prem(p0.premium)} · ${p0.side === 'buy' ? 'at / above the ask (bought)' : p0.side === 'sell' ? 'at / below the bid (sold)' : 'side unknown'}</title></rect>`; });
   }
   if (LY.mp !== false && ((d.expirations || []).length || (d.maxPain || []).length)) {   // monthly expirations + max pain
     const mpc = 'var(--warn,#d97706)', bwH = (W - L - Rr) / n / 2;
@@ -1518,7 +1520,7 @@ function vChartWW() {
       ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow === 'flip' ? 'CW > PW > flip' : d.setupNow ? 'CW > flip > PW' : 'no setup'}</span>
       <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>` : ''}
       ${sel}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
-      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.fcLayers.dark ? `<label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="Dark pool prints at or above this size">dark pool ≥ $<input id="ww-dpmin" type="number" step="0.5" min="0.1" value="${S.wwDpMin || 2}" style="width:3.6em;padding:1px 4px">M</label>` : ''}${S.ww ? wwParams(true) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
+      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.fcLayers.dark ? `<label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="Dark pool prints of at least this % of the 30-day average daily volume">dark pool ≥<input id="ww-dpmin" type="number" step="0.05" min="0.01" value="${S.wwDpPct ?? 0.25}" style="width:4.6em;padding:1px 4px">% of avg daily volume</label>` : ''}${S.ww ? wwParams(true) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
   else if (!sym) main = '<p class="muted" style="padding:16px">The watchlist is empty.</p>';
@@ -1533,7 +1535,9 @@ function vChartWW() {
       ${(() => { const dpd = S.fcDp[k]; if (!S.fcLayers.dark || !dpd) return S.fcLayers.dark && S.fcDpBusy[k] ? '<span class="muted">loading dark pool…</span>' : '';
         if (dpd.error && !(dpd.prints || []).length) return `<span class="muted">Dark pool: ${esc(dpd.error)}</span>`;
         const ds = S.fcSelD && S.fcSelD.id === id ? (dpd.prints || [])[S.fcSelD.k] : null;
-        return `<span>Dark pool ${(dpd.prints || []).length} prints ≥ ${money(dpd.minPremium, false)}${(dpd.levels || []).length ? ` · levels ${dpd.levels.slice(0, 3).map(l => `<b style="color:var(--warn)">${l.price}</b> ${money(l.premium, false)}`).join(' · ')}` : ''}</span>`
+        const vol = dpd.adv ? ` (${dpd.minPct}% of ${(dpd.adv / 1e6).toFixed(1)}M sh/day = ${Math.round(dpd.minShares).toLocaleString('en-US')} sh)` : '';
+        const bs = (dpd.buy || dpd.sell) ? ` · <b class="gain">bought ${money(dpd.buy || 0, false)}</b> / <b class="loss">sold ${money(dpd.sell || 0, false)}</b>` : '';
+        return `<span>Dark pool ${(dpd.prints || []).length} prints ≥ ${money(dpd.minPremium, false)}${vol}${bs}${(dpd.levels || []).length ? ` · levels ${dpd.levels.slice(0, 3).map(l => `<b style="color:var(--warn)">${l.price}</b> ${money(l.premium, false)}`).join(' · ')}` : ''}</span>`
           + (ds ? `<span><b style="color:var(--warn)">DARK POOL</b> ${esc(ds.t.replace('T', ' ').slice(5))} ET · ${ds.size.toLocaleString('en-US')} sh at ${ds.price} · <b>${money(ds.premium, false)}</b></span>` : ''); })()}
       ${(() => { const al = d.alerts || [], sm = xs => xs.reduce((a, x) => a + x.premium, 0), c = al.filter(a => a.type === 'call'), p_ = al.filter(a => a.type === 'put');
         const sa = S.fcSel && S.fcSel.id === id ? al[S.fcSel.k] : null;
@@ -3013,7 +3017,7 @@ document.addEventListener('change', e => {
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (id === 'eo-mult') { S.eoMult = +e.target.value; if (S.eo) runExitOpt(); return; }
   if (id === 'ex-key') { S.exPick = e.target.value || null; render(); return; }
-  if (id === 'ww-dpmin') { const v = parseFloat(e.target.value); if (v > 0) { S.wwDpMin = v; Object.keys(S.fcDp).filter(x => x.startsWith('ww-')).forEach(x => delete S.fcDp[x]); render(); } return; }
+  if (id === 'ww-dpmin') { const v = parseFloat(e.target.value); if (v > 0) { S.wwDpPct = v; Object.keys(S.fcDp).filter(x => x.startsWith('ww-')).forEach(x => delete S.fcDp[x]); render(); } return; }
   if (id === 'ww-on') { api('/bot/wallwatch', { method: 'PUT', body: { enabled: e.target.checked } }).then(r => { S.ww = r; render(); }).catch(err => toast(err.message)); return; }
   if (id === 'ex-days') { S.exDays = +e.target.value; S.ex = null; runExplore(false); return; }
   if (id === 'sh-days') { S.shadowDays = +e.target.value; S.shSel = null; loadShadow(); return; }
