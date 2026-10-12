@@ -1980,7 +1980,7 @@ def test_wall_watch():
     bars = [{"t": "2026-10-05T09:30", "o": 101, "h": 101.5, "l": 100.5, "c": 101},
             {"t": "2026-10-05T10:30", "o": 99.5, "h": 101, "l": 99, "c": 100.8},      # green, crosses the put wall -> signal
             {"t": "2026-10-05T11:30", "o": 100.8, "h": 104, "l": 100.2, "c": 103.5},
-            {"t": "2026-10-05T12:30", "o": 99.8, "h": 100.9, "l": 99.5, "c": 100.4},  # would be a signal but one is open
+            {"t": "2026-10-05T12:30", "o": 103.5, "h": 103.9, "l": 102.6, "c": 103.2},  # above the trailed stop
             {"t": "2026-10-06T09:30", "o": 104, "h": 110.5, "l": 103, "c": 109},       # target
             {"t": "2026-10-06T10:30", "o": 101, "h": 101.2, "l": 99.6, "c": 101.1},    # new signal
             {"t": "2026-10-06T11:30", "o": 101, "h": 101.2, "l": 95.0, "c": 99.4}]     # through put wall - 0.5 ATR -> stop
@@ -1989,9 +1989,15 @@ def test_wall_watch():
     assert sigs[0]["exit"] == 110 and sigs[0]["pct"] == round((110 / 100.8 - 1) * 100, 2)
     atr = wallwatch.atr14(bars)
     assert sigs[1]["stop"] == round(100 - 0.5 * atr[5], 4) and sigs[1]["exit"] == sigs[1]["stop"]
-    assert sigs[0]["stop"] < 99.5          # the 12:30 dip under the put wall (low 99.5) didn't stop the first signal
+    assert sigs[0]["stop"] == round(104 - (100.8 - sigs[0]["stop0"]), 4)    # trailed under the 11:30 high
     assert sigs[1]["riskPct"] == round((101.1 - sigs[1]["stop"]) / 101.1 * 100, 2)
     assert not wallwatch.detect(bars, {"2026-10-05": {"callWall": 110, "flip": 99, "putWall": 100}})      # flip under the put wall
+    tb = bars[:3] + [{"t": "2026-10-06T09:30", "o": 104, "h": 106, "l": 103.8, "c": 105.5},
+                     {"t": "2026-10-06T10:30", "o": 105.5, "h": 105.6, "l": 103, "c": 103.5}]       # under the trailed stop
+    ts = wallwatch.detect(tb, {"2026-10-05": w, "2026-10-06": w})
+    risk = ts[0]["entry"] - ts[0]["stop0"]
+    assert ts[0]["status"] == "trail" and ts[0]["stop"] == round(106 - risk, 4) and ts[0]["exit"] == ts[0]["stop"], ts
+    assert ts[0]["pct"] > 0 and ts[0]["stops"][-1] == ["2026-10-06T09:30", ts[0]["stop"]]
     now = dt.datetime(2026, 10, 5, 11, 10)
     assert [b["t"][11:16] for b in wallwatch.finished(bars[:3], now)] == ["09:30"]                       # 10:30 candle not over
     saved = (charts._yahoo, flowdata.gex_day, flowdata._key)

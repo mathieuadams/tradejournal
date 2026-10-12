@@ -3,7 +3,7 @@
 Setup (on each finished hourly candle):
   call wall > gamma flip > put wall   (walls and flip of the day, Unusual Whales, from that day's open interest)
   green candle (close > open) whose low is at or below the put wall and whose close is above it (it crosses the put wall)
-Trade: entry = that candle's close, target = the call wall of that day, stop = put wall - 0.5 hourly ATR (fixed, hit intrabar).
+Trade: entry = that candle's close, target = the call wall of that day, stop = put wall - 0.5 hourly ATR, hit intrabar; then a normal trailing stop: the same distance under the highest high since entry (never down).
 One open signal per ticker at a time. Nothing is traded: signals are only recorded and followed.
 
 Items: WWCFG (tickers, enabled), WWSIG#<ticker>#<bar time> (signals), WWRUN (last run)."""
@@ -79,14 +79,18 @@ def detect(bars, walls, start=None):
     for i, b in enumerate(bars):
         if open_:                                      # follow the open signal first
             s = open_
-            if b["l"] <= s["stop"]:                    # fixed stop under the put wall (stop order)
-                s.update(status="stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
+            if b["l"] <= s["stop"]:                    # stop order (first stop, or trailed up)
+                s.update(status="trail" if s["stop"] > s["stop0"] else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
             elif b["h"] >= s["target"]:
                 s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
             else:
                 s["last"], s["lastAt"] = b["c"], b["t"][:16]
                 s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
                 s["mae"] = min(s.get("mae", s["entry"]), b["l"])
+                lvl = round(s["mfe"] - (s["entry"] - s["stop0"]), 4)   # trailing stop: same distance under the highest high
+                if lvl > s["stop"]:
+                    s["stop"] = lvl
+                    s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], lvl])
             if s["status"] != "open":
                 open_ = None
             continue
@@ -99,7 +103,7 @@ def detect(bars, walls, start=None):
         if b["c"] > b["o"] and b["l"] <= pw < b["c"]:
             a_ = atr[i]
             s = {"at": b["t"][:16], "entry": b["c"], "pw": pw, "flip": float(w["flip"]), "cw": cw, "target": cw,
-                 "atr": round(a_, 4), "stop": round(pw - STOP_ATR * a_, 4),
+                 "atr": round(a_, 4), "stop": round(pw - STOP_ATR * a_, 4), "stop0": round(pw - STOP_ATR * a_, 4), "v": 3,
                  "o": b["o"], "h": b["h"], "l": b["l"], "status": "open", "last": b["c"], "lastAt": b["t"][:16]}
             sigs.append(s)
             open_ = s
@@ -107,7 +111,7 @@ def detect(bars, walls, start=None):
         ex = s.get("exit") if s["status"] != "open" else s["last"]
         s["pct"] = round((ex / s["entry"] - 1) * 100, 2)
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2)
-        s["riskPct"] = round((s["entry"] - s["stop"]) / s["entry"] * 100, 2)
+        s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         s["R"] = round(s["pct"] / s["riskPct"], 2) if s["riskPct"] > 0 else None
     return sigs
 
@@ -169,7 +173,7 @@ def run(sub, days=3, budget_s=500):
     todo = [t for t in cfg["tickers"] if t not in done_bf]
     since = {}
     for s in db.q_prefix(db.upk(sub), "WWSIG#"):
-        if s.get("symbol") and (s.get("status") == "open" or s.get("stop") is None):   # open, or made with the old stop rule
+        if s.get("symbol") and (s.get("status") == "open" or s.get("v") != 3):   # open, or made with an older stop rule
             since[s["symbol"]] = min(since.get(s["symbol"], "9"), s["at"][:10])
     with ThreadPoolExecutor(max_workers=4) as ex:
         for k in range(0, len(todo), 8):
@@ -270,13 +274,14 @@ def view(sub):
     run_ = db.get(db.upk(sub), "WWRUN") or {}
     sigs = sorted(db.q_prefix(db.upk(sub), "WWSIG#"), key=lambda s: s.get("at") or "", reverse=True)
     sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in sigs if s.get("symbol") in cfg["tickers"]]
-    done = [s for s in sigs if s.get("status") in ("target", "stop")]
+    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail")]
     hit = [s for s in done if s["status"] == "target"]
     avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None
     summary = {"signals": len(sigs), "open": len(sigs) - len(done), "closed": len(done), "targets": len(hit),
                "hitPct": round(len(hit) / len(done) * 100) if done else None,
                "avgPct": avg([s["pct"] for s in done]), "avgR": avg([s["R"] for s in done if s.get("R") is not None]),
-               "avgWin": avg([s["pct"] for s in hit]), "avgLoss": avg([s["pct"] for s in done if s["status"] == "stop"]),
+               "avgWin": avg([s["pct"] for s in hit]), "avgLoss": avg([s["pct"] for s in done if s["status"] == "stop"]), "trails": sum(1 for s in done if s["status"] == "trail"),
+               "avgTrail": avg([s["pct"] for s in done if s["status"] == "trail"]),
                "totalPct": round(sum(s["pct"] for s in done), 2) if done else None,
                "avgTgt": avg([s["tgtPct"] for s in sigs]), "avgRisk": avg([s["riskPct"] for s in sigs])}
     by = {}
