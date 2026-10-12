@@ -2247,6 +2247,15 @@ def test_wall_watch_retest():
     assert wallwatch.detect_retest(fx, {"2026-10-05": fw3, "2026-10-06": fw3}, cfg={"flipExit": False, "trailAtr": 0, "stopAtr": 1},
                                    alerts=[{"t": "2026-10-05T14:45", "c": 1, "p": 900000}], datr={"next": 1.0})[0][0]["status"] == "open"
     assert wallwatch._flip_chg({"2026-10-05": {"flip": 100}, "2026-10-06": {"flip": 98}}, "2026-10-06") == -2.0
+    # the retest candle closing above the call wall: no entry
+    w105 = {"callWall": 103.5, "flip": 102, "putWall": 100}
+    nb = [bars[0], bars[1], {"t": "2026-10-05T11:30", "o": 102.6, "h": 104.0, "l": 102.1, "c": 103.8}]
+    assert not wallwatch.detect_retest(nb, {"2026-10-05": w105}, alerts=al)[0]
+    # VWAP restarts on a high-volume candle
+    vb = [{"t": f"2026-10-05T{9 + k}:30", "o": 10, "h": 11, "l": 9, "c": 10, "v": 100} for k in range(5)]
+    vb.append({"t": "2026-10-05T14:30", "o": 20, "h": 21, "l": 19, "c": 20, "v": 1000})
+    vv, resets = wallwatch.anchored_vwap(vb)
+    assert resets == [0, 5] and vv[4] == 10.0 and vv[5] == 20.0
     # alert too small: never armed
     assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=[al[1]])[0]
     # support broken before the retest: the watch ends

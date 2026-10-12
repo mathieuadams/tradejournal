@@ -1273,11 +1273,11 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { const v = { sig: true, vwap: true, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['vwap', 'VWAP'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? ['sig', 'mp', 'walls', 'flow', 'dark', 'acc'].includes(k) : !['sig', 'mp'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
+  return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? ['sig', 'vwap', 'mp', 'walls', 'flow', 'dark', 'acc'].includes(k) : !['sig', 'mp', 'vwap'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
@@ -1392,6 +1392,18 @@ function fcSvg0(d, id, opts) {
       g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="${j === 0 ? 3 : 2}" opacity="${j === 0 ? .55 : .35}"><title>Dark pool level ${lv.price}: ${prem(lv.premium)} in ${lv.prints} prints${split}</title></line>
         <text x="${L + 4}" y="${y - 4}" font-size="${fs - 1}" font-weight="600" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round">DP ${lv.price} · ${prem(lv.premium)}${split}</text>`; });
     // only the 5 levels with the most dark pool money are drawn (no single prints)
+  }
+  if (LY.vwap !== false && (d.vwap || []).length) {   // VWAP anchored at the last high-volume candle
+    const vc = '#0891b2', vm = {}; (d.vwap || []).forEach(x => { vm[x.t] = x.v; });
+    let path = '', prev = null;
+    bars.forEach((b, i) => { const v = vm[b.t]; if (v == null || v < lo || v > hi) { prev = null; return; }
+      const reset = (d.vwapResets || []).includes(b.t);
+      path += `${prev == null || reset ? 'M' : 'L'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`; prev = v; });
+    if (path) g += `<path d="${path}" fill="none" stroke="${vc}" stroke-width="1.8" opacity=".9"><title>VWAP (restarts on a candle with 2× the average volume)</title></path>`;
+    (d.vwapResets || []).forEach(t => { const i = idx[t]; if (i == null) return; const v = vm[t]; if (v == null || v < lo || v > hi) return;
+      g += `<circle cx="${X(i)}" cy="${Y(v)}" r="3.5" fill="${vc}" stroke="var(--surface)" stroke-width="1"><title>VWAP reset ${esc(t.replace('T', ' ').slice(5))}: high-volume candle</title></circle>`; });
+    const lastV = vm[bars[n - 1].t];
+    if (lastV != null && lastV >= lo && lastV <= hi) g += `<text x="${W - Rr - 4}" y="${Y(lastV) + 14}" text-anchor="end" font-size="${fs - 1}" font-weight="700" fill="${vc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">VWAP ${lastV.toFixed(2)}</text>`;
   }
   if (LY.mp !== false && ((d.expirations || []).length || (d.maxPain || []).length)) {   // monthly expirations + max pain
     const mpc = 'var(--warn,#d97706)', bwH = (W - L - Rr) / n / 2;
@@ -2433,7 +2445,7 @@ async function runWatch(days) {
   setTimeout(tick, 30000);
 }
 function vWatch() {
-  const h = head('Wall watch', 'Flow retest: a call alert of at least the chosen size arms the ticker; then, within the chosen days, the support is the highest put wall / call wall / flip under each candle’s close, and a green hourly candle whose low comes back to it (within the zone) and closes above it is the entry. Stop: support − N × the 30-day ATR, then a trailing stop N × ATR under the highest high (never down). Target: the call wall when it is above the entry. Every minute, tickers with unusual call flow join the list.', '');
+  const h = head('Wall watch', 'Flow retest: a call alert of at least the chosen size arms the ticker; then, within the chosen days, the support is the highest put wall / call wall / flip under each candle’s close, and a green hourly candle whose low comes back to it (within the zone) and closes above it is the entry. No entry when the candle opens or closes above the call wall. Stop: support − N × the 30-day ATR, then a trailing stop N × ATR under the highest high (never down). Target: the call wall when it is above the entry. Every minute, tickers with unusual call flow join the list.', '');
   const d = S.ww;
   if (!d) return h + '<p class="loading">Loading…</p>';
   if (d.error) return h + `<div class="errbox">${esc(d.error)}</div>`;

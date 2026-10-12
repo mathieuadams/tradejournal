@@ -45,7 +45,7 @@ def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
-            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}")
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw1")
 
 
 def save_config(sub, body):
@@ -259,6 +259,27 @@ def _result(s):
     return pct, (round(pct / risk, 2) if risk > 0 else None)
 
 
+VWAP_MULT, VWAP_N = 2.0, 20      # the VWAP restarts on an hourly candle with at least 2x the average volume of the last 20
+
+
+def anchored_vwap(bars, mult=VWAP_MULT, n=VWAP_N):
+    """VWAP anchored at the last high-volume candle (volume >= mult x the average of the previous n candles).
+    Returns (values per candle, indexes of the reset candles)."""
+    out, resets, pv, vv = [], [], 0.0, 0.0
+    for i, b in enumerate(bars):
+        v = float(b.get("v") or 0)
+        prev = [float(x.get("v") or 0) for x in bars[max(0, i - n):i]]
+        avg = sum(prev) / len(prev) if prev else 0
+        if i == 0 or (avg > 0 and v >= mult * avg):
+            pv, vv = 0.0, 0.0
+            resets.append(i)
+        tp = (b["h"] + b["l"] + b["c"]) / 3
+        pv += tp * v
+        vv += v
+        out.append(round(pv / vv, 4) if vv else round(tp, 4))
+    return out, resets
+
+
 def _flip_chg(walls, day):
     """% change of the flip from the previous stored day (None when unknown)."""
     days = sorted(d for d in walls if d < day and (walls[d] or {}).get("flip"))
@@ -291,6 +312,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         earn_d = None
     ver = version(P)
     atr = atr14(bars)
+    vwap, _ = anchored_vwap(bars)
     big = sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
     sigs, open_, watch, ai = [], None, None, 0
     for i, b in enumerate(bars):
@@ -341,6 +363,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 continue                               # only above the gamma flip (positive gamma): wait for another candle
             if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
                 continue                               # earnings within the next N days: no entry
+            cw_ = float(w["callWall"]) if w.get("callWall") else None
+            if cw_ and (b["o"] > cw_ or b["c"] > cw_):
+                continue                               # opening or closing above the call wall: no entry
             if start and day < start:
                 watch = None
                 continue
@@ -353,7 +378,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "flip": float(w["flip"]) if w.get("flip") else None, "cw": cw, "target": tgt, "atr": round(a_, 4),
                  "stop": st, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
                  "last": b["c"], "lastAt": b["t"][:16], "i0": i,
-                 "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day)}
+                 "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
+                 "vwap": vwap[i]}
             sigs.append(s)
             open_, watch = s, None
     for s in sigs:
@@ -897,8 +923,10 @@ def chart(sub, sym, days=45, flow=True):
             alerts = flow_alerts(sub, sym, dates[0], dates[-1])
         except Exception as e:
             flow_note = f"Options flow unavailable: {str(e)[:120]}"
+    vw, vres = anchored_vwap(bars)
+    vwap = [{"t": b["t"], "v": v} for b, v in zip(bars, vw)]
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
-    return {"fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    return {"vwap": vwap, "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),
@@ -1080,6 +1108,8 @@ def retest_table(sigs):
         ("Retest after 3+ days", lambda x: (wait_h(x) or 0) > 72),
         ("Flip went down vs the day before", lambda x: x.get("flipChg") is not None and x["flipChg"] < 0),
         ("Flip flat or up vs the day before", lambda x: x.get("flipChg") is not None and x["flipChg"] >= 0),
+        ("Entry above the VWAP (reset on high volume)", lambda x: x.get("vwap") is not None and x["entry"] > x["vwap"]),
+        ("Entry below the VWAP", lambda x: x.get("vwap") is not None and x["entry"] <= x["vwap"]),
         ("Entry above the gamma flip", lambda x: x.get("flip") is not None and x["entry"] > x["flip"]),
         ("Entry below the gamma flip", lambda x: x.get("flip") is not None and x["entry"] <= x["flip"]),
         ("Call wall target above the entry", lambda x: bool(x.get("target"))),
