@@ -21,7 +21,8 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
            "STX", "TSLA", "TSM", "WDC", "WMT", "XOM"]
 
 
-PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5, "mergedSetup": True}   # tgtBuf: % under the call wall
+PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5, "mergedSetup": True,
+          "retestSetup": True, "retestMin": 500000, "retestDays": 5}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -37,7 +38,8 @@ def config(sub):
 def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
-            f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}")
+            f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}")
 
 
 def save_config(sub, body):
@@ -56,13 +58,19 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
+    for k, lo_, hi_ in (("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20)):
+        if k in body:
+            try:
+                cur[k] = int(max(lo_, min(hi_, float(body[k]))))
+            except (TypeError, ValueError):
+                pass
     for k in ("stopAtr", "trailAtr", "tgtBuf"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
             except (TypeError, ValueError):
                 pass
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "autoAdd", "trade"):
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade"):
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -211,6 +219,101 @@ def detect(bars, walls, start=None, cfg=None, datr=None):
     return sigs
 
 
+RETEST_NEAR = 0.3     # % above the support level that counts as a retest
+
+
+def sig_sk(sym, s):
+    return f"WWSIG#{sym}#{s['at']}" + ("#R" if s.get("kind") == "retest" else "")
+
+
+def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None):
+    """Flow retest: a call alert of at least retestMin arms the ticker. The support is the highest of put wall / call wall
+    / flip under the price when it was armed. Then, within retestDays trading days: a green hourly candle whose low
+    comes back to the support (within 0.3%) and closes above it is the entry. An hourly close under the stop before the
+    retest ends the watch. Target: the call wall of the day if it's above the entry (minus the buffer), else trailing only.
+    Returns (signals, current watch or None)."""
+    P = {**PARAMS, **(cfg or {})}
+    k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
+    vmin, ndays = float(P.get("retestMin") or 500000), int(P.get("retestDays") or 5)
+    ver = version(P)
+    atr = atr14(bars)
+    big = sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
+    sigs, open_, watch, ai = [], None, None, 0
+    for i, b in enumerate(bars):
+        day = b["t"][:10]
+        a_ = (_atr_on(datr, day) if datr else None) or atr[i]
+        end = _bar_end(b["t"]).strftime("%Y-%m-%dT%H:%M")
+        arm = None
+        prev_end = _bar_end(bars[i - 1]["t"]).strftime("%Y-%m-%dT%H:%M") if i else (datetime.strptime(b["t"][:16], "%Y-%m-%dT%H:%M") - timedelta(hours=18)).strftime("%Y-%m-%dT%H:%M")
+        while ai < len(big) and big[ai]["t"] <= end:  # call alerts printed since the previous candle closed
+            if big[ai]["t"] > prev_end:
+                arm = big[ai]
+            ai += 1
+        if open_:
+            s = open_
+            if b["l"] <= s["stop"]:
+                s.update(status="trail" if s["stop"] > s["stop0"] else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
+            elif s.get("target") and b["h"] >= s["target"]:
+                s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
+            else:
+                s["last"], s["lastAt"] = b["c"], b["t"][:16]
+                s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
+                s["mae"] = min(s.get("mae", s["entry"]), b["l"])
+                if k_trail > 0:
+                    lvl = round(s["mfe"] - k_trail * s["atr"], 4)
+                    if lvl > s["stop"]:
+                        s["stop"] = lvl
+                        s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], lvl])
+            if s["status"] != "open":
+                open_ = None
+            continue
+        w = walls.get(day) or {}
+        if arm and not watch:                          # call flow: find the support under the price
+            lv = [(float(w[k]), n) for k, n in (("putWall", "put wall"), ("callWall", "call wall"), ("flip", "flip")) if w.get(k)]
+            under = [x for x in lv if x[0] < b["c"]]
+            if under:
+                lvl, name = max(under)
+                watch = {"armedAt": arm["t"], "armPremium": arm["p"], "level": lvl, "levelName": name, "day0": day, "days": 0,
+                         "since": b["t"][:16]}
+            continue
+        if not watch:
+            continue
+        if day != watch.get("_d"):
+            watch["_d"] = day
+            if day != watch["day0"]:
+                watch["days"] += 1
+        if watch["days"] > ndays:
+            watch = None
+            continue
+        lvl = watch["level"]
+        if b["c"] < lvl - k_stop * a_:                 # support broken before the retest
+            watch = None
+            continue
+        if b["c"] > b["o"] and b["l"] <= lvl * (1 + RETEST_NEAR / 100) and b["c"] > lvl and b["t"][:16] > watch["since"]:
+            if start and day < start:
+                watch = None
+                continue
+            cw = float(w["callWall"]) if w.get("callWall") else None
+            tgt = round(cw * (1 - buf / 100), 4) if cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
+            st = round(lvl - k_stop * a_, 4)
+            s = {"at": b["t"][:16], "kind": "retest", "level": lvl, "levelName": watch["levelName"], "armedAt": watch["armedAt"],
+                 "armPremium": watch["armPremium"], "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
+                 "flip": float(w["flip"]) if w.get("flip") else None, "cw": cw, "target": tgt, "atr": round(a_, 4),
+                 "stop": st, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
+                 "last": b["c"], "lastAt": b["t"][:16]}
+            sigs.append(s)
+            open_, watch = s, None
+    for s in sigs:
+        ex = s.get("exit") if s["status"] != "open" else s["last"]
+        s["pct"] = round((ex / s["entry"] - 1) * 100, 2)
+        s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
+        s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
+        s["R"] = round(s["pct"] / s["riskPct"], 2) if s["riskPct"] > 0 else None
+    if watch:
+        watch.pop("_d", None)
+    return sigs, watch
+
+
 def _walls(key, sym, dates, today):
     """{date: walls} for the dates; past days from the store (flip added when missing), today refreshed hourly."""
     import flowdata
@@ -238,8 +341,11 @@ def check_ticker(sub, key, sym, days, now, since=None):
     first = dates[-days] if len(dates) >= days else (dates[0] if dates else "9")
     if since:
         first = min(first, since)
+    cfg = config(sub)
+    all_dates = dates
     dates = [d for d in dates if d >= first]
-    walls = _walls(key, sym, dates, now.strftime("%Y-%m-%d"))
+    pre = [d for d in all_dates if d < first][-int(cfg.get("retestDays") or 5):] if cfg.get("retestSetup", True) else []
+    walls = _walls(key, sym, pre + dates, now.strftime("%Y-%m-%d"))
     try:                                               # 30-day ATR from daily candles
         daily = _yahoo(sym.replace(".", "-"), "1d", start - timedelta(days=70), now + timedelta(days=1)) or []
         daily = [b for b in daily if b["t"][:10] < now.strftime("%Y-%m-%d")]      # today's candle isn't finished
@@ -247,26 +353,35 @@ def check_ticker(sub, key, sym, days, now, since=None):
     except Exception as e:
         print("wallwatch daily atr failed", sym, e)
         datr = None
-    sigs = detect(bars, walls, first, config(sub), datr)
+    sigs = detect(bars, walls, first, cfg, datr)
+    watch = None
+    if cfg.get("retestSetup", True):
+        try:
+            rb = [b for b in bars if not pre or b["t"][:10] >= pre[0]] if pre else [b for b in bars if b["t"][:10] >= first]
+            rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1))
+            sigs += rs
+        except Exception as e:
+            print("retest failed", sym, e)
     bars = [b for b in bars if b["t"][:10] >= first]
     pk = db.upk(sub)
     keep = {}
     for old in db.q_prefix(pk, f"WWSIG#{sym}#"):       # recomputed from `first` on: replace what was there
         if (old.get("at") or "") >= first:
-            keep[old["at"]] = {k: old[k] for k in ("botId", "tradeError", "flow") if old.get(k)}
+            keep[old["SK"]] = {k: old[k] for k in ("botId", "tradeError", "flow") if old.get(k)}
             db.delete(pk, old["SK"])
     enter = []
     last_end = _bar_end(bars[-1]["t"]) if bars else None
     for s in sigs:
-        s.update(keep.get(s["at"], {}))
-        db.put({"PK": pk, "SK": f"WWSIG#{sym}#{s['at']}", "symbol": sym, **s})
+        s.update(keep.get(sig_sk(sym, s), {}))
+        db.put({"PK": pk, "SK": sig_sk(sym, s), "symbol": sym, **s})
         fresh = last_end and s["at"] == bars[-1]["t"][:16] and (now - last_end) <= timedelta(minutes=45)
         if fresh and s["status"] == "open" and not s.get("botId") and not s.get("tradeError"):
             enter.append(s)
     last = bars[-1] if bars else None
     w = walls.get(last["t"][:10]) if last else None
     return {"symbol": sym, "price": last["c"] if last else None, "barAt": last["t"][:16] if last else None, "walls": w,
-            "setup": setup_kind(w), "signals": len(sigs), "daysWithWalls": len(walls), "days": len(dates), "_enter": enter}
+            "setup": setup_kind(w), "signals": len(sigs), "daysWithWalls": len(walls), "days": len(dates), "_enter": enter,
+            "watch": watch}
 
 
 def run(sub, days=3, budget_s=500):
@@ -360,7 +475,7 @@ def enter(sub, sym, sg):
     then the limit is chased up until filled. The trade is then managed by the wall watch exit only."""
     import autotrader
     pk = db.upk(sub)
-    sk = f"WWSIG#{sym}#{sg['at']}"
+    sk = sig_sk(sym, sg)
     cfg = config(sub)
     rule = cfg.get("flowRule")
     if rule is not None and 0 <= int(rule) < len(FLOW_BUCKETS):
@@ -512,7 +627,7 @@ def view(sub):
     sigs = sorted(db.q_prefix(db.upk(sub), "WWSIG#"), key=lambda s: s.get("at") or "", reverse=True)
     sigs = [{k: v for k, v in s.items() if k not in ("PK", "SK")} for s in sigs if s.get("symbol") in cfg["tickers"]]
     summary = summarize(sigs)
-    by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip", "merged")}
+    by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip", "merged", "retest")}
     done = [s for s in sigs if s.get("status") in ("target", "stop", "trail")]
     by = {}
     for s in done:
@@ -743,16 +858,24 @@ def ticker_alerts(sub, sym, max_age_h=6):
     if hit and time.time() - hit.get("ts", 0) < max_age_h * 3600:
         return hit.get("alerts") or []
     bc = autotrader.settings(sub)
-    res = flowdata.alerts(sub, bc["repeatMinPremium"], "all", 0, 400, True, False, sym, 0, 70, exclude_etfs=False)
-    out = []
+    fresh_days = 2 if hit and time.time() - hit.get("full", 0) < 3 * 86400 else 70    # top up the last 2 days, full refetch every 3 days
+    res = flowdata.alerts(sub, bc["repeatMinPremium"], "all", 0, 400, True, False, sym, 0, fresh_days, exclude_etfs=False)
+    out = list(hit.get("alerts") or []) if fresh_days == 2 else []
     for a in res.get("alerts") or []:
         if (a.get("ticker") or "").upper() != sym or not a.get("atEt"):
             continue
         out.append({"t": a["atEt"].replace(" ", "T")[:16], "c": 0 if a.get("type") == "put" else 1,
                     "p": round(a.get("premium") or 0), "u": a.get("underlying")})
-    out.sort(key=lambda x: x["t"])
+    seen, uniq = set(), []
+    for a in sorted(out, key=lambda x: x["t"]):
+        k = (a["t"], a["c"], a["p"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(a)
+    out = uniq
     try:
-        db.put({"PK": pk, "SK": f"WWFLOW#{sym}", "ts": int(time.time()), "alerts": out[-3000:]})
+        db.put({"PK": pk, "SK": f"WWFLOW#{sym}", "ts": int(time.time()), "alerts": out[-3000:],
+                "full": int(time.time()) if fresh_days == 70 else hit.get("full", 0)})
     except Exception as e:
         print("flow cache failed", sym, e)
     return out

@@ -2193,6 +2193,29 @@ def test_wall_watch_flow_study():
         flowdata.alerts = saved
 
 
+def test_wall_watch_retest():
+    """Call flow arms the ticker; the support is the highest wall / flip under the price; a green retest candle enters."""
+    import wallwatch
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},       # big call alert inside: armed
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0},   # green, low back to the flip: entry
+            {"t": "2026-10-06T09:30", "o": 103, "h": 110, "l": 102.9, "c": 109}]          # target
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}, {"t": "2026-10-05T10:05", "c": 1, "p": 100000}]
+    sg, watch = wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=al)
+    assert len(sg) == 1 and sg[0]["kind"] == "retest" and sg[0]["level"] == 102 and sg[0]["levelName"] == "flip", sg
+    assert sg[0]["armedAt"] == "2026-10-05T10:00" and sg[0]["status"] == "target" and sg[0]["target"] == 109.45 and watch is None
+    assert wallwatch.sig_sk("AAA", sg[0]).endswith("#R")
+    # alert too small: never armed
+    assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=[al[1]])[0]
+    # support broken before the retest: the watch ends
+    broken = bars[:1] + [{"t": "2026-10-05T10:30", "o": 104, "h": 104, "l": 98, "c": 98.5}] + bars[2:]
+    assert not wallwatch.detect_retest(broken, {"2026-10-05": w, "2026-10-06": w}, alerts=al, datr={"next": 2.0})[0]
+    # still waiting for the retest: the watch is returned
+    sg2, watch2 = wallwatch.detect_retest(bars[:2], {"2026-10-05": w}, alerts=al)
+    assert not sg2 and watch2["level"] == 102 and watch2["levelName"] == "flip"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
