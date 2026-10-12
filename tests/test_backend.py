@@ -2147,6 +2147,42 @@ def test_wall_watch_live():
         flowdata.alerts, autotrader.evaluate, autotrader.place, autotrader.chase, autotrader._yahoo = saved
 
 
+def test_wall_watch_flow_study():
+    """Flow before each signal; results with and without each flow condition; the flow filter blocks a trade."""
+    import wallwatch, flowdata
+    STORE.clear()
+    pk = db.upk(SUB)
+    call("GET", "/bot/wallwatch")
+    sg = {"at": "2026-10-07T10:30", "level": 100, "pw": 100, "entry": 100.8}
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 2_000_000, "u": 100.5},     # 3 days before, near the level
+          {"t": "2026-10-07T09:45", "c": 1, "p": 600_000, "u": 101},
+          {"t": "2026-10-06T12:00", "c": 0, "p": 300_000, "u": 103},
+          {"t": "2026-10-07T12:00", "c": 1, "p": 9_000_000, "u": 102}]     # after the signal: ignored
+    f = wallwatch.flow_features(sg, al)
+    assert f["c3"] == 2_600_000 and f["p3"] == 300_000 and f["c1"] == 600_000 and f["big3"] == 2 and f["nearLevel"] == 2_600_000, f
+    assert f["lastCallH"] == 1.8
+    for i, (st, pct, fl) in enumerate([("target", 5.0, f), ("stop", -2.0, {**f, "c3": 0, "c1": 0, "big3": 0, "nearLevel": 0}),
+                                       ("stop", -1.0, f)]):
+        db.put({"PK": pk, "SK": f"WWSIG#AAPL#2026-10-0{i + 1}T10:30", "symbol": "AAPL", "at": f"2026-10-0{i + 1}T10:30",
+                "status": st, "pct": pct, "R": pct / 2, "tgtPct": 8, "riskPct": 2, "flow": fl})
+    st_, v = call("GET", "/bot/wallwatch")
+    fs = v["flowStudy"]
+    assert fs["base"]["n"] == 3 and fs["rows"][0]["name"].startswith("Any call flow") and fs["rows"][0]["n"] == 2
+    assert fs["rows"][0]["avgPct"] == 2.0 and fs["rows"][1]["n"] == 1 and fs["rows"][1]["avgPct"] == -2.0
+    saved = flowdata.alerts
+    flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "AAPL", "atEt": "2026-09-30 10:00", "type": "call", "premium": 50000}]}
+    try:
+        out = wallwatch.flow_study(SUB, budget_s=30)
+        assert out["tickers"] == 1 and db.get(pk, "WWSIG#AAPL#2026-10-01T10:30")["flow"]["c3"] == 50000
+        call("PUT", "/bot/wallwatch", {"flowRule": 3})                    # calls >= $5M in the 3 days before
+        sig = {"at": "2026-10-07T10:30", "level": 100, "entry": 100.8, "stop": 99, "stop0": 99, "atr": 2, "target": 110}
+        db.put({"PK": pk, "SK": "WWSIG#AAPL#2026-10-07T10:30", "symbol": "AAPL", **sig})
+        r = wallwatch.enter(SUB, "AAPL", sig)
+        assert r.get("skipped", "").startswith("Calls ≥ $5M") and "flow filter" in db.get(pk, "WWSIG#AAPL#2026-10-07T10:30")["tradeError"]
+    finally:
+        flowdata.alerts = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

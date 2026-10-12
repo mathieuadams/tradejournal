@@ -447,6 +447,15 @@ def bot_wallwatch_darkpool(sub, claims, body, q):
     return wallwatch.darkpool(sub, q.get("t"), q.get("pct"))
 
 
+@route("POST", "/bot/wallwatch/flowstudy")
+def bot_wallwatch_flowstudy(sub, claims, body, q):
+    """Match every signal with the options flow before it (background job)."""
+    db.put({**(db.get(db.upk(sub), "WWFSTUDY") or {}), "PK": db.upk(sub), "SK": "WWFSTUDY", "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwflowstudy"}))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/wallwatch/walls")
 def bot_wallwatch_walls(sub, claims, body, q):
     """Fetch every day's call wall, put wall and flip for every watchlist ticker (45 days), then find the signals."""

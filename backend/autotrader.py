@@ -1620,6 +1620,14 @@ def handler(event, context_):
                 except Exception as e:
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "error", "at": iso(now_ny()), "result": {"error": str(e)[:200]}})
                     raise
+            elif job == "wwflowstudy":
+                import wallwatch
+                try:
+                    out[sub] = wallwatch.flow_study(sub, budget_s=540)
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), "WWFSTUDY") or {}), "PK": db.upk(sub), "SK": "WWFSTUDY", "running": None,
+                            "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
             elif job == "wwfill":
                 import wallwatch
                 try:

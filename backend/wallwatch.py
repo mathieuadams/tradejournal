@@ -22,7 +22,7 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
 
 
 PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5}   # tgtBuf: % under the call wall
-OPTS = {"autoAdd": True, "trade": True}        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
+OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
 def config(sub):
@@ -64,6 +64,12 @@ def save_config(sub, body):
     for k in ("pwSetup", "flipSetup", "autoAdd", "trade"):
         if k in body:
             cur[k] = bool(body[k])
+    if "flowRule" in body:
+        try:
+            v = body["flowRule"]
+            cur["flowRule"] = None if v in (None, "", -1, "-1") else int(v)
+        except (TypeError, ValueError):
+            pass
     if body.get("add"):                                  # add one ticker
         t = str(body["add"]).strip().upper().replace("/", ".")[:10]
         if t and t not in cur["tickers"]:
@@ -236,7 +242,7 @@ def check_ticker(sub, key, sym, days, now, since=None):
     keep = {}
     for old in db.q_prefix(pk, f"WWSIG#{sym}#"):       # recomputed from `first` on: replace what was there
         if (old.get("at") or "") >= first:
-            keep[old["at"]] = {k: old[k] for k in ("botId", "tradeError") if old.get(k)}
+            keep[old["at"]] = {k: old[k] for k in ("botId", "tradeError", "flow") if old.get(k)}
             db.delete(pk, old["SK"])
     enter = []
     last_end = _bar_end(bars[-1]["t"]) if bars else None
@@ -345,6 +351,18 @@ def enter(sub, sym, sg):
     pk = db.upk(sub)
     sk = f"WWSIG#{sym}#{sg['at']}"
     cfg = config(sub)
+    rule = cfg.get("flowRule")
+    if rule is not None and 0 <= int(rule) < len(FLOW_BUCKETS):
+        try:
+            f = flow_features(sg, ticker_alerts(sub, sym, max_age_h=0))
+            db.update(pk, sk, {"flow": f})
+        except Exception as e:
+            f = None
+            print("flow check failed", sym, e)
+        name, fn = FLOW_BUCKETS[int(rule)]
+        if not f or not fn(f):
+            db.update(pk, sk, {"tradeError": f"flow filter not met: {name}"})
+            return {"symbol": sym, "skipped": name}
     try:
         rec = autotrader.evaluate(sub, sym, source={"type": "wallwatch", "kind": sg.get("kind"), "signalAt": sg["at"],
                                                     "level": sg.get("level"), "entry": sg["entry"]})
@@ -495,7 +513,9 @@ def view(sub):
     return {"config": cfg, "run": {k: run_.get(k) for k in ("at", "running", "checked", "errors", "bfLeft", "bfAt", "bfDays")},
             "fill": {k: fill.get(k) for k in ("at", "running", "total", "left", "fetched", "errors")},
             "status": run_.get("status") or [], "signals": sigs[:500], "summary": summary, "byKind": by_kind,
-            "byTicker": sorted(by.values(), key=lambda b: -b["total"])}
+            "byTicker": sorted(by.values(), key=lambda b: -b["total"]),
+            "flowStudy": {**{k: (db.get(db.upk(sub), "WWFSTUDY") or {}).get(k) for k in ("at", "running", "tickers", "of", "errors")},
+                          **flow_table(sigs)}}
 
 
 # ---------------- monthly expirations and max pain ----------------
@@ -696,3 +716,122 @@ def darkpool(sub, sym, min_pct=None, days=45):
             "minPremium": round(dollars),
             "minPct": pct, "adv": round(adv) if adv else None, "minShares": round(min_sh) if min_sh else None,
             "buy": buy, "sell": sell, "error": out.get("error")}
+
+
+# ---------------- options flow vs signals ----------------
+
+FLOW_DAYS = 3                # "recent" flow = the 3 trading days before the signal candle closed
+
+
+def ticker_alerts(sub, sym, max_age_h=6):
+    """Calls and puts bought at the ask on the ticker over ~70 days (Unusual Whales), cached a few hours."""
+    import autotrader
+    import flowdata
+    pk = db.upk(sub)
+    hit = db.get(pk, f"WWFLOW#{sym}")
+    if hit and time.time() - hit.get("ts", 0) < max_age_h * 3600:
+        return hit.get("alerts") or []
+    bc = autotrader.settings(sub)
+    res = flowdata.alerts(sub, bc["repeatMinPremium"], "all", 0, 400, True, False, sym, 0, 70, exclude_etfs=False)
+    out = []
+    for a in res.get("alerts") or []:
+        if (a.get("ticker") or "").upper() != sym or not a.get("atEt"):
+            continue
+        out.append({"t": a["atEt"].replace(" ", "T")[:16], "c": 0 if a.get("type") == "put" else 1,
+                    "p": round(a.get("premium") or 0), "u": a.get("underlying")})
+    out.sort(key=lambda x: x["t"])
+    try:
+        db.put({"PK": pk, "SK": f"WWFLOW#{sym}", "ts": int(time.time()), "alerts": out[-3000:]})
+    except Exception as e:
+        print("flow cache failed", sym, e)
+    return out
+
+
+def flow_features(sig, alerts, big=500_000):
+    """What the options flow looked like before a signal (only alerts printed before the signal candle closed)."""
+    end = _bar_end(sig["at"]).strftime("%Y-%m-%dT%H:%M")
+    d0 = datetime.strptime(sig["at"][:10], "%Y-%m-%d")
+    days, d = [], d0
+    while len(days) < FLOW_DAYS:
+        if d.weekday() < 5:
+            days.append(d.strftime("%Y-%m-%d"))
+        d -= timedelta(days=1)
+    start3, start1 = days[-1], (_bar_end(sig["at"]) - timedelta(hours=7)).strftime("%Y-%m-%dT%H:%M")
+    prior = [a for a in alerts if a["t"] < end]
+    w3 = [a for a in prior if a["t"][:10] >= start3]
+    w1 = [a for a in prior if a["t"] >= start1]
+    lvl = sig.get("level") or sig.get("pw")
+    c3 = sum(a["p"] for a in w3 if a["c"]); p3 = sum(a["p"] for a in w3 if not a["c"])
+    c1 = sum(a["p"] for a in w1 if a["c"]); p1 = sum(a["p"] for a in w1 if not a["c"])
+    near = sum(a["p"] for a in w3 if a["c"] and a.get("u") and lvl and abs(a["u"] - lvl) / lvl <= 0.01)
+    last = max((a["t"] for a in prior if a["c"] and a["p"] >= 100_000), default=None)
+    age = None
+    if last:
+        age = round((datetime.strptime(end, "%Y-%m-%dT%H:%M") - datetime.strptime(last, "%Y-%m-%dT%H:%M")).total_seconds() / 3600, 1)
+    return {"c3": c3, "p3": p3, "c1": c1, "p1": p1, "ratio3": round(c3 / p3, 2) if p3 else (99.0 if c3 else None),
+            "big3": sum(1 for a in w3 if a["c"] and a["p"] >= big), "nearLevel": near, "lastCallH": age}
+
+
+FLOW_BUCKETS = [
+    ("Any call flow in the 3 days before", lambda f: (f.get("c3") or 0) > 0),
+    ("No call flow in the 3 days before", lambda f: (f.get("c3") or 0) == 0),
+    ("Calls ≥ $1M in the 3 days before", lambda f: (f.get("c3") or 0) >= 1_000_000),
+    ("Calls ≥ $5M in the 3 days before", lambda f: (f.get("c3") or 0) >= 5_000_000),
+    ("Calls > puts (3 days)", lambda f: (f.get("c3") or 0) > (f.get("p3") or 0)),
+    ("Calls ≥ 2× puts (3 days)", lambda f: (f.get("c3") or 0) > 0 and (f.get("c3") or 0) >= 2 * (f.get("p3") or 0)),
+    ("Puts > calls (3 days)", lambda f: (f.get("p3") or 0) > (f.get("c3") or 0)),
+    ("Calls in the last 7 hours", lambda f: (f.get("c1") or 0) > 0),
+    ("Calls ≥ $1M in the last 7 hours", lambda f: (f.get("c1") or 0) >= 1_000_000),
+    ("A call alert ≥ $500K (3 days)", lambda f: (f.get("big3") or 0) >= 1),
+    ("3+ call alerts ≥ $500K (3 days)", lambda f: (f.get("big3") or 0) >= 3),
+    ("Calls bought while price was within 1% of the level", lambda f: (f.get("nearLevel") or 0) > 0),
+    ("Last big call alert < 24 h before", lambda f: f.get("lastCallH") is not None and f.get("lastCallH") < 24),
+]
+
+
+def flow_study(sub, budget_s=480):
+    """Attach the flow features to every signal of the watchlist, then compare the results with and without each
+    flow condition. Runs in the background (one Unusual Whales request per ticker, cached)."""
+    t0 = time.time()
+    pk = db.upk(sub)
+    cfg = config(sub)
+    sigs = [x for x in db.q_prefix(pk, "WWSIG#") if x.get("symbol") in cfg["tickers"]]
+    by = {}
+    for x in sigs:
+        by.setdefault(x["symbol"], []).append(x)
+    done, errors = 0, []
+    db.put({**(db.get(pk, "WWFSTUDY") or {}), "PK": pk, "SK": "WWFSTUDY", "running": iso(now_ny())})
+    for sym, xs in sorted(by.items()):
+        if time.time() - t0 > budget_s:
+            break
+        try:
+            al = ticker_alerts(sub, sym)
+        except Exception as e:
+            errors.append(f"{sym}: {str(e)[:80]}")
+            continue
+        for x in xs:
+            f = flow_features(x, al)
+            db.update(pk, x["SK"], {"flow": f})
+            x["flow"] = f
+        done += 1
+    out = {"PK": pk, "SK": "WWFSTUDY", "running": None, "at": iso(now_ny()), "tickers": done, "of": len(by), "errors": errors[:5]}
+    db.put(out)
+    return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
+def flow_table(sigs):
+    """Results of the finished signals with and without each flow condition."""
+    fin = [x for x in sigs if x.get("status") in ("target", "stop", "trail") and x.get("flow")]
+    rows = []
+    base = summarize(fin)
+    for name, fn in FLOW_BUCKETS:
+        yes = [x for x in fin if fn(x["flow"])]
+        if not yes:
+            rows.append({"name": name, "n": 0})
+            continue
+        sm = summarize(yes)
+        rows.append({"name": name, "n": len(yes), "hitPct": sm["hitPct"], "avgPct": sm["avgPct"], "avgR": sm["avgR"],
+                     "totalPct": sm["totalPct"], "winPct": round(sum(1 for x in yes if x["pct"] > 0) / len(yes) * 100)})
+    return {"base": {"n": len(fin), "hitPct": base["hitPct"], "avgPct": base["avgPct"], "avgR": base["avgR"], "totalPct": base["totalPct"],
+                     "winPct": round(sum(1 for x in fin if x["pct"] > 0) / len(fin) * 100) if fin else None},
+            "rows": rows, "withFlow": sum(1 for x in sigs if x.get("flow")), "signals": len(sigs)}
