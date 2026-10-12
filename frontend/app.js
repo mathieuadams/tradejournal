@@ -1399,9 +1399,9 @@ function fcSvg0(d, id, opts) {
     bars.forEach((b, i) => { const v = vm[b.t]; if (v == null || v < lo || v > hi) { prev = null; return; }
       const reset = (d.vwapResets || []).includes(b.t);
       path += `${prev == null || reset ? 'M' : 'L'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`; prev = v; });
-    if (path) g += `<path d="${path}" fill="none" stroke="${vc}" stroke-width="1.8" opacity=".9"><title>VWAP (restarts on a candle with 2× the average volume)</title></path>`;
+    if (path) g += `<path d="${path}" fill="none" stroke="${vc}" stroke-width="1.8" opacity=".9"><title>VWAP (restarts on the candle with the highest volume of the last days set in the settings)</title></path>`;
     (d.vwapResets || []).forEach(t => { const i = idx[t]; if (i == null) return; const v = vm[t]; if (v == null || v < lo || v > hi) return;
-      g += `<circle cx="${X(i)}" cy="${Y(v)}" r="3.5" fill="${vc}" stroke="var(--surface)" stroke-width="1"><title>VWAP reset ${esc(t.replace('T', ' ').slice(5))}: high-volume candle</title></circle>`; });
+      g += `<circle cx="${X(i)}" cy="${Y(v)}" r="3.5" fill="${vc}" stroke="var(--surface)" stroke-width="1"><title>VWAP reset ${esc(t.replace('T', ' ').slice(5))}: highest volume of the period</title></circle>`; });
     const lastV = vm[bars[n - 1].t];
     if (lastV != null && lastV >= lo && lastV <= hi) g += `<text x="${W - Rr - 4}" y="${Y(lastV) + 14}" text-anchor="end" font-size="${fs - 1}" font-weight="700" fill="${vc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">VWAP ${lastV.toFixed(2)}</text>`;
   }
@@ -2391,6 +2391,7 @@ function wwParams(compact) {
     <label ${lab} title="Every minute, tickers with unusual call flow (your bot's flow filters) join the list"><input type="checkbox" id="ww-auto" ${c.autoAdd !== false ? 'checked' : ''}>add flow tickers</label>
     <label ${lab} title="Buy a call on Alpaca paper when a signal fires (contract picked by the bot, limit chased up until filled)"><input type="checkbox" id="ww-trade" ${c.trade !== false ? 'checked' : ''}>trade signals</label>
     <label ${lab} title="A call alert of at least this size arms the ticker; the support is the highest put wall / call wall / flip under the price; then wait for a green candle retesting it"><input type="hidden" id="ww-rt" value="1">Flow retest: call alert ≥ $<input id="ww-rtmin" type="number" step="100" min="50" value="${Math.round((c.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K, wait<input id="ww-rtdays" type="number" step="1" min="1" value="${c.retestDays ?? 5}" style="width:3em;padding:1px 4px">days</label>
+    <label ${lab} title="The VWAP restarts on the hourly candle with the highest volume of this many trading days">VWAP resets on the top volume of<input id="ww-vwd" type="number" step="1" min="1" value="${c.vwapDays ?? 10}" style="width:3.6em;padding:1px 4px">days</label>
     <label ${lab} title="Sell when the day closes under the gamma flip (only trades entered above it)"><input type="checkbox" id="ww-fx" ${c.flipExit !== false ? 'checked' : ''}>exit on a daily close under the flip</label>
     <label ${lab} title="No entry when earnings are within this many days">no entry within<input id="ww-earn" type="number" step="1" min="0" value="${c.earnDays ?? 10}" style="width:3.8em;padding:1px 4px">days of earnings</label>
     <label ${lab} title="A candle retests the support when its low comes within this × the 30-day ATR of it (at least 0.3%)">zone<input id="ww-zone" type="number" step="0.05" min="0" value="${c.retestZone ?? 0.25}" style="width:4.4em;padding:1px 4px">ATR</label>
@@ -2402,7 +2403,7 @@ function wwParams(compact) {
 }
 async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
-  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked,  retestSetup: true, retestZone: num('#ww-zone'), flipExit: !!($('#ww-fx') || {}).checked, earnDays: num('#ww-earn'), aboveFlip: !!($('#ww-af') || {}).checked,
+  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked,  retestSetup: true, retestZone: num('#ww-zone'), flipExit: !!($('#ww-fx') || {}).checked, vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), aboveFlip: !!($('#ww-af') || {}).checked,
     retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf') };
   try { S.ww = await api('/bot/wallwatch', { method: 'PUT', body }); } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}

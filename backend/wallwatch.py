@@ -23,7 +23,7 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
 
 PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5, "mergedSetup": True,
           "retestSetup": True, "retestMin": 500000, "retestDays": 5, "aboveFlip": False, "retestZone": 0.25,
-          "flipExit": True, "earnDays": 10}   # tgtBuf: % under the call wall
+          "flipExit": True, "earnDays": 10, "vwapDays": 10}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -45,7 +45,7 @@ def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
-            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw1")
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw1|v{int(cfg.get('vwapDays', 10))}")
 
 
 def save_config(sub, body):
@@ -64,7 +64,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60)):
+    for k, lo_, hi_ in (("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
@@ -259,18 +259,26 @@ def _result(s):
     return pct, (round(pct / risk, 2) if risk > 0 else None)
 
 
-VWAP_MULT, VWAP_N = 2.0, 20      # the VWAP restarts on an hourly candle with at least 2x the average volume of the last 20
+VWAP_DAYS = 10     # the VWAP restarts on the hourly candle with the highest volume of the last 10 trading days
 
 
-def anchored_vwap(bars, mult=VWAP_MULT, n=VWAP_N):
-    """VWAP anchored at the last high-volume candle (volume >= mult x the average of the previous n candles).
+def anchored_vwap(bars, days=VWAP_DAYS):
+    """VWAP anchored at the last candle whose volume is the highest of the previous `days` trading days.
     Returns (values per candle, indexes of the reset candles)."""
     out, resets, pv, vv = [], [], 0.0, 0.0
+    day_of = [b["t"][:10] for b in bars]
     for i, b in enumerate(bars):
         v = float(b.get("v") or 0)
-        prev = [float(x.get("v") or 0) for x in bars[max(0, i - n):i]]
-        avg = sum(prev) / len(prev) if prev else 0
-        if i == 0 or (avg > 0 and v >= mult * avg):
+        seen, j, hi = set(), i - 1, 0.0
+        while j >= 0:                                  # candles of the previous `days` trading days (and earlier today)
+            if day_of[j] != day_of[i]:
+                seen.add(day_of[j])
+                if len(seen) > days:
+                    break
+            hi = max(hi, float(bars[j].get("v") or 0))
+            j -= 1
+        enough = len(seen) >= days                     # a full window is needed before a reset counts
+        if i == 0 or (enough and v > hi):
             pv, vv = 0.0, 0.0
             resets.append(i)
         tp = (b["h"] + b["l"] + b["c"]) / 3
@@ -294,7 +302,7 @@ def sig_sk(sym, s):
     return f"WWSIG#{sym}#{s['at']}" + ("#R" if s.get("kind") == "retest" else "")
 
 
-def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None):
+def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None, vwap_map=None):
     """Flow retest: a call alert of at least retestMin arms the ticker (a new alert re-arms it). The support is the highest
     of put wall / call wall / flip at or under the price at the close of the alert's candle. From that candle on, within
     retestDays trading days: a green hourly candle whose low reaches the support (within 0.3%) and that closes above it
@@ -312,7 +320,10 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         earn_d = None
     ver = version(P)
     atr = atr14(bars)
-    vwap, _ = anchored_vwap(bars)
+    if vwap_map:                                       # computed on a longer history by the caller
+        vwap = [vwap_map.get(b["t"][:16]) for b in bars]
+    else:
+        vwap, _ = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))
     big = sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
     sigs, open_, watch, ai = [], None, None, 0
     for i, b in enumerate(bars):
@@ -418,7 +429,7 @@ def _walls(key, sym, dates, today):
 def check_ticker(sub, key, sym, days, now, since=None):
     """since: date of the oldest open signal of the ticker (followed until it ends)."""
     from charts import _yahoo
-    start = (now - timedelta(days=int(days * 1.5) + 7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = (now - timedelta(days=int(days * 1.5) + 7 + 25)).replace(hour=0, minute=0, second=0, microsecond=0)  # + VWAP warm-up
     if since:
         start = min(start, datetime.strptime(since, "%Y-%m-%d") - timedelta(days=3))
     bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
@@ -450,7 +461,9 @@ def check_ticker(sub, key, sym, days, now, since=None):
                 earn = autotrader.parse_earn(autotrader.earn_for(autotrader.settings(sub), sym)[0])[0]
             except Exception as e:
                 print("earnings lookup failed", sym, e)
-            rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn)
+            vw_all, _ = anchored_vwap(bars, int(cfg.get("vwapDays") or VWAP_DAYS))
+            vmap = {b["t"][:16]: v for b, v in zip(bars, vw_all)}
+            rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap)
             sigs += rs
         except Exception as e:
             print("retest failed", sym, e)
@@ -872,10 +885,11 @@ def chart(sub, sym, days=45, flow=True):
         from util import BadRequest
         raise BadRequest("Pick a ticker.")
     now = now_ny().replace(tzinfo=None)
-    start = (now - timedelta(days=int(days * 1.5) + 5)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = (now - timedelta(days=int(days * 1.5) + 25)).replace(hour=0, minute=0, second=0, microsecond=0)   # + VWAP warm-up
     bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
     bars = [{"t": b["t"][:16], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v")}
             for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    bars_all = bars
     dates = sorted({b["t"][:10] for b in bars})[-days:]
     bars = [b for b in bars if dates and b["t"][:10] >= dates[0]]
     stored = flowdata.stored_walls(sym)
@@ -923,7 +937,9 @@ def chart(sub, sym, days=45, flow=True):
             alerts = flow_alerts(sub, sym, dates[0], dates[-1])
         except Exception as e:
             flow_note = f"Options flow unavailable: {str(e)[:120]}"
-    vw, vres = anchored_vwap(bars)
+    vw, vres = anchored_vwap(bars_all, int(config(sub).get("vwapDays") or VWAP_DAYS))
+    off = len(bars_all) - len(bars)
+    vw, vres = vw[off:], [i - off for i in vres if i - off >= 0]
     vwap = [{"t": b["t"], "v": v} for b, v in zip(bars, vw)]
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
     return {"vwap": vwap, "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),

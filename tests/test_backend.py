@@ -2251,11 +2251,14 @@ def test_wall_watch_retest():
     w105 = {"callWall": 103.5, "flip": 102, "putWall": 100}
     nb = [bars[0], bars[1], {"t": "2026-10-05T11:30", "o": 102.6, "h": 104.0, "l": 102.1, "c": 103.8}]
     assert not wallwatch.detect_retest(nb, {"2026-10-05": w105}, alerts=al)[0]
-    # VWAP restarts on a high-volume candle
-    vb = [{"t": f"2026-10-05T{9 + k}:30", "o": 10, "h": 11, "l": 9, "c": 10, "v": 100} for k in range(5)]
-    vb.append({"t": "2026-10-05T14:30", "o": 20, "h": 21, "l": 19, "c": 20, "v": 1000})
-    vv, resets = wallwatch.anchored_vwap(vb)
-    assert resets == [0, 5] and vv[4] == 10.0 and vv[5] == 20.0
+    # VWAP restarts only on the highest volume of the last N trading days (not every opening candle)
+    vb = []
+    for dd in range(1, 6):
+        for hh, vol in (("09:30", 500), ("10:30", 100), ("11:30", 100)):
+            vb.append({"t": f"2026-10-0{dd}T{hh}", "o": 10, "h": 11, "l": 9, "c": 10, "v": vol})
+    vb.append({"t": "2026-10-06T09:30", "o": 20, "h": 21, "l": 19, "c": 20, "v": 900})
+    vv, resets = wallwatch.anchored_vwap(vb, days=3)
+    assert resets == [0, 15] and vv[14] == 10.0 and vv[15] == 20.0, resets
     # alert too small: never armed
     assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=[al[1]])[0]
     # support broken before the retest: the watch ends
