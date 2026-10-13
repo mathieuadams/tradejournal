@@ -278,8 +278,8 @@ def _run0(sym, data, cfg, first):
                                       data["vmap"], data["emap"], data.get("extra"))
     out = []
     for s in sigs:
-        if s["status"] == "open" or s.get("R") is None:
-            continue
+        if s.get("R") is None:
+            continue                                   # still-open trades count at their last price (marked to market)
         cw = s.get("cw")
         out.append({"sym": sym, "at": s["at"], "R": s["R"], "pct": s["pct"], "exit": s["status"], "level": s.get("levelName"),
                     "prem": s.get("armPremium") or 0, "room": round((cw - s["entry"]) / s["atr"], 2) if cw and s.get("atr") else None,
@@ -300,7 +300,7 @@ def _stats(rows, mid):
     avg = lambda xs: round(sum(xs) / len(xs), 3) if xs else None
     wins = [x for x in rs if x > 0]
     loss = [x for x in rs if x <= 0]
-    return {"n": n, "win": round(len(wins) / n * 100, 1), "avgR": avg(rs), "totR": round(sum(rs), 1),
+    return {"n": n, "open": sum(1 for r in rows if r.get("exit") == "open"), "win": round(len(wins) / n * 100, 1), "avgR": avg(rs), "totR": round(sum(rs), 1),
             "avgWin": avg(wins), "avgLoss": avg(loss), "h1": avg(a), "h1n": len(a), "h2": avg(b), "h2n": len(b),
             "pf": round(sum(wins) / -sum(loss), 2) if loss and sum(loss) < 0 else None}
 

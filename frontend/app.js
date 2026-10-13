@@ -2549,7 +2549,7 @@ function wwRuleTester() {
     const up1 = x.h1 != null && ref.h1 != null && x.h1 > ref.h1, up2 = x.h2 != null && ref.h2 != null && x.h2 > ref.h2;
     return up1 && up2 && x.avgR > 0 ? '<b class="gain">helps in both halves</b>' : up1 || up2 ? '<span style="color:var(--warn)">one half only: noise?</span>' : '<span class="loss">doesn’t help</span>';
   };
-  const row = (x, label, ref) => `<tr><td>${esc(label || x.label)}</td><td class="r">${x.n || 0}</td><td class="r">${x.win ?? '—'}${x.win != null ? '%' : ''}</td><td class="r">${R(x.avgR)}</td><td class="r">${x.totR ?? '—'}</td>
+  const row = (x, label, ref) => `<tr><td>${esc(label || x.label)}</td><td class="r">${x.n || 0}${x.open ? `<br><span class="muted" style="font-size:.72rem" title="Trades no exit closed yet: counted at their last price">${x.open} still open</span>` : ''}</td><td class="r">${x.win ?? '—'}${x.win != null ? '%' : ''}</td><td class="r">${R(x.avgR)}</td><td class="r">${x.totR ?? '—'}</td>
     <td class="r">${R(x.h1)} <span class="muted" style="font-size:.75rem">${x.h1n ?? ''}</span></td><td class="r">${R(x.h2)} <span class="muted" style="font-size:.75rem">${x.h2n ?? ''}</span></td><td>${verdict(x, ref)}</td></tr>`;
   const thead = first => `<thead><tr><th>${first}</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">1st half</th><th class="r">2nd half</th><th></th></tr></thead>`;
   const oldest = Object.values(hs.oldest || {}).filter(Boolean).sort()[0];
