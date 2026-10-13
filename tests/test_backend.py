@@ -2398,7 +2398,10 @@ def test_rule_tester():
         charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else db_
         flowdata.stored_walls = lambda sym: {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
         backtest.stored_alerts = lambda sub_, sym: [{"t": f"{day}T10:00", "c": 1, "p": 900000} for day in days[::3]]
-        out = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5})
+        out = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5, "full": True})
+        quick = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5})
+        assert [r["key"] for r in quick["rules"]] == ["base", "mine"] and not quick["buckets"] and len(quick["exits"]) == 3
+        out = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5, "full": True})
         base = out["rules"][0]
         assert base["key"] == "base" and base["n"] > 5, base
         assert {r["key"] for r in out["rules"]} >= {"base", "greenOnly", "vwapOn", "emaOverVwap", "mine"}

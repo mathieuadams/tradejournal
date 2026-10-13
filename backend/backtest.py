@@ -337,7 +337,7 @@ EXITS = [  # label, exit settings on top of the fixed stop
 EXIT_KEYS = ("stopOn", "trailOn", "targetOn", "flipExit", "vwapExit", "emaExit", "trailAtr", "tgtBuf", "kcRide")
 
 
-def _ticker_data(sub, sym, days, cfg):
+def _ticker_data(sub, sym, days, cfg, full=True):
     import flowdata
     import wallwatch
     from charts import _yahoo
@@ -352,7 +352,8 @@ def _ticker_data(sub, sym, days, cfg):
     vw, _ = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))
     em = wallwatch._ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20))
     kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
-    return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym), "skew": stored_skew(sym), "dp": stored_darkpool(sym),
+    return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym),
+            "skew": stored_skew(sym) if full or cfg.get("skewOn") else {}, "dp": stored_darkpool(sym) if full else [],
             "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
             "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now),
                       "skewPct": skew_pct_map(stored_skew(sym), sorted({b["t"][:10] for b in bars}))}}
@@ -472,13 +473,15 @@ def rule_test(sub, params=None, budget_s=480):
     base = {**common, **OFF, "stopAtr": stop, "retestMin": vmin, **fixed}
     mine_entry = {k: cfg.get(k) for k in wallwatch.SWITCHES if k not in EXIT_KEYS}
     mine_entry.update(aboveFlip=cfg.get("aboveFlip"), earnOn=False)      # no earnings history: off in the test
+    full = bool(P.get("full"))
     variants = [("base", "Base: alert + retest of PW / flip", base)]
-    variants += [(k, f"+ {lab}", {**base, k: True}) for k, lab in RULES]
-    variants += [("pwOnly", "Support: put wall only", {**base, "useFlip": False}),
-                 ("flipOnly", "Support: flip only", {**base, "usePW": False})]
+    if full:                                           # every rule alone (slower); the default run is base vs your settings
+        variants += [(k, f"+ {lab}", {**base, k: True}) for k, lab in RULES]
+        variants += [("pwOnly", "Support: put wall only", {**base, "useFlip": False}),
+                     ("flipOnly", "Support: flip only", {**base, "usePW": False})]
     variants.append(("mine", "Your entry settings", {**base, **mine_entry}))
     exits = []
-    for lab, ex in EXITS:
+    for lab, ex in (EXITS if full else [x for x in EXITS if x[0] in ("Fixed: target N x risk or N days", "Your exits", "Your exits without Keltner ride")]):
         if str(ex).startswith("mine"):
             ex = {"fixR": 0, "maxDays": 0, **{k: cfg.get(k) for k in EXIT_KEYS},
                   **({"kcRide": True} if ex == "mine+ride" else {"kcRide": False} if ex == "mine-ride" else {})}
@@ -490,7 +493,7 @@ def rule_test(sub, params=None, budget_s=480):
     errors, used, first_bar, n_alerts = [], 0, None, 0
 
     def one(sym):
-        d = _ticker_data(sub, sym, days, cfg)
+        d = _ticker_data(sub, sym, days, cfg, full)
         if not d:
             return sym, None, None, None
         out = {k: _run(sym, d, c, first) for k, _, c in variants}
@@ -518,7 +521,7 @@ def rule_test(sub, params=None, budget_s=480):
     pool.shutdown(wait=False, cancel_futures=True)       # never wait past the budget (the function has 10 minutes)
     if used < len(tickers):
         errors.insert(0, f"Time limit: {used} of {len(tickers)} tickers tested. Run again for the rest of the cache to help, or test fewer days.")
-    base_rows = res["base"]
+    base_rows = res["base"] if full else []
     buckets = []
     for title, key, bs in BUCKETS:
         for lo, hi, lab in bs:
@@ -534,6 +537,8 @@ def rule_test(sub, params=None, budget_s=480):
                             **_stats([r for r in base_rows if r.get(key) == lab], mid)})
     for lab, f_ in (("First hour (09:30)", lambda r: r["hour"] == "09:30"), ("Later in the day", lambda r: r["hour"] != "09:30")):
         buckets.append({"group": "Entry candle", "label": lab, **_stats([r for r in base_rows if f_(r)], mid)})
+    if not full:
+        buckets = []                                   # splits only in the full analysis
     by_sym = {}
     for r in res["mine"]:
         by_sym.setdefault(r["sym"], []).append(r)

@@ -502,6 +502,7 @@ def bot_ruletest(sub, claims, body, q):
     import backtest
     b = body or {}
     params = {}
+    params["full"] = bool(b.get("full"))
     for k, lo, hi in (("days", 30, 500), ("stopAtr", 0.1, 5), ("fixR", 0, 10), ("maxDays", 0, 30)):
         if b.get(k) not in (None, ""):
             try:

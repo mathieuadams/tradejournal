@@ -620,7 +620,7 @@ def check_ticker(sub, key, sym, days, now, since=None):
             vmap = {b["t"][:16]: v for b, v in zip(bars, vw_all)}
             emap = {b["t"][:16]: v for b, v in zip(bars, _ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20)))}
             kmap = {b["t"][:16]: v for b, v in zip(bars, keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3)))}
-            spy = spy_trend(start, now)
+            spy = spy_trend(start, now) if cfg.get("spyUp") else {}      # only fetched when the rule is used
             skp = {}
             if cfg.get("skewOn"):
                 try:

@@ -1277,7 +1277,8 @@ S.fcLayers = (() => { try { const v = { sig: true, vwap: true, ema: true, kc: fa
 const FC_LAYERS = [['sig', 'Wall watch signals'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  return `<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? ['sig', 'vwap', 'ema', 'kc', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'].includes(k) : !['sig', 'mp', 'vwap', 'ema', 'kc', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
+  const wwLay = S.fcAllLayers ? ['sig', 'vwap', 'ema', 'kc', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'vwap', 'kc', 'walls', 'flow'];
+  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'mp', 'vwap', 'ema', 'kc', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
@@ -1319,7 +1320,8 @@ function fcSvg0(d, id, opts) {
   const all = d.bars || [];
   if (all.length < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
-  const LY = S.fcLayers, dp = LY.dark ? S.fcDp[fcKey(id)] : null;
+  const LY = id.startsWith('ww-') && !S.fcAllLayers ? { ...S.fcLayers, ema: false, orb: false, spy: false, mp: false, dark: false, acc: false } : S.fcLayers;
+  const dp = LY.dark ? S.fcDp[fcKey(id)] : null;
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
   const W = full ? opts.W : narrow ? 560 : 960, PH = full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340;
@@ -2449,6 +2451,7 @@ const WW_RULES = [
   ['kcRide', 'Exit', 'Keltner ride', 'A day closing above the upper Keltner band starts a ride: the call wall target and the other exits wait, and the trade is sold at the first daily close back under the upper band (the stop still applies). A target hit on a vertical candle waits for the day’s close.'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
+const WW_CORE = ['usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide'];   // the validated strategy
 const WW_DEF_ON = { aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false };
 S.wwSw = S.wwSw || null;
 function wwSwState() {
@@ -2467,7 +2470,9 @@ function wwParams(compact) {
       <button class="btn" data-wwsw="${k}" title="${esc(tip)} — click to turn ${onv ? 'off' : 'on'}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${onv ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${onv ? 'ON' : 'OFF'}</button>
       <span style="font-size:.8rem">${label}</span>${f ? ` ${inp(f[0], c[f[1]] ?? f[5], f[2], f[3])}<span class="muted" style="font-size:.75rem">${f[4]}</span>` : ''}</span>`;
   };
-  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g).map(chip).join('')}</div>`;
+  const shown = r => S.wwAllRules || WW_CORE.includes(r[0]) || sw[r[0]];
+  const hidden = WW_RULES.filter(r => !shown(r)).length;
+  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g && shown(r)).map(chip).join('')}</div>`;
   return `<div data-wwwhere="${compact ? 'chart' : 'page'}" style="display:flex;flex-direction:column;gap:6px${compact ? '' : ';border:1px solid var(--line);border-radius:8px;padding:8px 10px'}">
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Flow</b>
     <label ${lab} title="Every minute, tickers with unusual call flow (your bot's flow filters) join the list"><input type="checkbox" id="ww-auto" ${c.autoAdd !== false ? 'checked' : ''}>add flow tickers</label>
@@ -2479,6 +2484,7 @@ function wwParams(compact) {
     <label ${lab} title="Keltner channel: EMA of the close ± multiplier × EMA of the true range (hourly candles)">Keltner ${inp('ww-kcl', c.kcLen ?? 21, 1, 3.2)} × ${inp('ww-kcm', c.kcMult ?? 3, 0.5, 3)}</label></div>
     ${grp('Entry')}${grp('Exit')}
     <div><button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 12px">Apply</button>
+    <button class="btn" data-wwallrules style="font-size:.75rem;padding:1px 9px">${S.wwAllRules ? 'Hide unused rules' : `Show all rules (${hidden} hidden, all OFF)`}</button>
     <span class="muted" style="font-size:.75rem">ON/OFF saves by itself (a second after your last click); Apply saves the numbers. Signals are recomputed either way.</span></div></div>`;
 }
 async function wwSaveParams(where) {
@@ -2562,7 +2568,7 @@ function wwRuleTester() {
   const body = t.running ? '<p class="loading">Testing every rule on the history… (a few minutes)</p>' : !t.rules ? '<p class="muted">Load the history, then run the test.</p>' : `
     <p class="muted" style="margin:6px 0">${t.tickers} tickers · ${t.alerts} call alerts · ${esc(t.period.from)} → ${esc(t.period.to)} (halves split at ${esc(t.period.mid)}) · exit: stop ${t.params.stopAtr} ATR under the support, target ${t.params.fixR}R${t.params.maxDays ? `, or sold after ${t.params.maxDays} days` : ''}. Earnings aren’t tested (no history).</p>
     <div style="overflow-x:auto"><table class="pos" style="font-size:.85rem">${thead('Entry rules (each added alone to the base)')}<tbody>${(t.rules || []).map(x => row(x)).join('')}</tbody></table></div>
-    <div style="overflow-x:auto;margin-top:10px"><table class="pos" style="font-size:.85rem">${thead('Base split by')}<tbody>${Object.entries(groups).map(([g, bs]) => `<tr><td colspan="8" style="padding-top:8px"><b>${esc(g)}</b></td></tr>` + bs.map(b => row(b, b.label)).join('')).join('')}</tbody></table></div>
+    ${!(t.buckets || []).length ? '' : `<div style="overflow-x:auto;margin-top:10px"><table class="pos" style="font-size:.85rem">${thead('Base split by')}<tbody>${Object.entries(groups).map(([g, bs]) => `<tr><td colspan="8" style="padding-top:8px"><b>${esc(g)}</b></td></tr>` + bs.map(b => row(b, b.label)).join('')).join('')}</tbody></table></div>`}
     <div style="overflow-x:auto;margin-top:10px"><table class="pos" style="font-size:.85rem">${thead('Exits (on your entry settings)')}<tbody>${(t.exits || []).map(x => row(x, null, t.exits[0])).join('')}</tbody></table></div>
     ${(t.bySymbol || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">By ticker (your entry settings)</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.85rem">${thead('Ticker')}<tbody>${t.bySymbol.map(x => row(x, x.sym, { h1: 0, h2: 0 })).join('')}</tbody></table></div></details>` : ''}
     ${(t.errors || []).length ? `<p class="loss" style="font-size:.85rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
@@ -2583,6 +2589,7 @@ function wwRuleTester() {
       <b>History</b> ${num('rt-hdays', hs.days || 250, 10, 4.2)} trading days <button class="btn" data-rthist ${hs.running ? 'disabled' : ''}>Load history</button> ${hsTxt}</div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:.85rem;margin-top:6px">
       <b>Test</b> last ${num('rt-days', P.days || 250, 10, 4.2)} days · stop ${num('rt-stop', P.stopAtr ?? ((S.ww && S.ww.config && S.ww.config.stopAtr) || 0.5), 0.1, 3.6)} ATR · target ${num('rt-fixr', P.fixR ?? 2, 0.5, 3.4)} R · sell after ${num('rt-maxd', P.maxDays ?? 5, 1, 3)} days
+      <label style="display:inline-flex;gap:4px;align-items:center" title="Every rule added alone, every split (alert size, room, skew, dark pool, Keltner, opening range, SPY…) and every exit. Slower."><input type="checkbox" id="rt-full" ${P.full ? 'checked' : ''}>full analysis</label>
       <button class="btn coachbtn" data-rtrun ${t.running ? 'disabled' : ''}>Run the test</button>${t.at && !t.running ? ` <span class="muted">last run ${esc(t.at.slice(5, 16).replace('T', ' '))} · ${t.secs}s</span>` : ''}</div>
     ${body}
     <h3 style="font-size:.95rem;margin:16px 0 4px">Robustness check <button class="btn" data-rtrob ${rb.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${rb.at && !rb.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(rb.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
@@ -2632,7 +2639,7 @@ function wwIntraday() {
     ${body}</section>`;
 }
 function vWatch() {
-  const h = head('Wall watch', 'Flow retest: a call alert of at least the chosen size arms the ticker; then, within the chosen days, the support is the highest put wall / call wall / flip under each candle’s close, and a green hourly candle whose low comes back to it (within the zone) and closes above it is the entry. No entry when the candle opens or closes above the call wall. Stop: support − N × the 30-day ATR, then a trailing stop N × ATR under the highest high (never down). Target: the call wall when it is above the entry. Every minute, tickers with unusual call flow join the list.', '');
+  const h = head('Wall watch', 'Flow retest: a call alert of at least the chosen size arms the ticker; within the chosen days, a retest of the support under the price (the ON rules below decide which support and which candles qualify) is the entry. Exits: the ON exit rules below. Unused rules are hidden under “Show all rules”; other tools are at the bottom of the page.');
   const d = S.ww;
   if (!d) return h + '<p class="loading">Loading…</p>';
   if (d.error) return h + `<div class="errbox">${esc(d.error)}</div>`;
@@ -2688,7 +2695,8 @@ function vWatch() {
     ${ps.map(p0 => `<tr><td><b>${esc(p0.symbol)}</b>${p0.wallwatch ? ` <span class="exchip">${p0.kind === 'retest' ? 'retest' : 'wall watch'}</span>` : ''}</td><td>${p0.strike ? esc(String(p0.strike)) + 'C ' : ''}${esc(p0.exp || '')}</td><td class="r">${p0.qty ?? ''}</td><td class="r">${p0.fill ?? (p0.limit ? 'limit ' + p0.limit : '—')}</td><td class="r">${p0.mark ?? '—'}</td>
       <td class="r ${(p0.pl || 0) >= 0 ? 'gain' : 'loss'}">${p0.pl != null ? money(p0.pl) : '—'}${p0.plPct != null ? ` (${p0.plPct >= 0 ? '+' : ''}${p0.plPct}%)` : ''}</td><td class="r">${p0.under != null ? (+p0.under).toFixed(2) : '—'}</td><td class="r">${p0.stop ?? '—'}</td><td class="r">${p0.target ?? '<span class="muted">trail</span>'}</td><td>${esc(p0.status)}</td>
       <td><button class="btn" data-wwchart="${esc(p0.symbol)}|" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No open position.</p>'}</section>`;
-  return h + runLine + posBox + wwRuleTester() + wwIntraday() + stats + kinds + rtBox + flowBox + sigTable + by + now;
+  const more = `<details class="panel" style="margin:14px 0 0;padding:10px 14px" ${S.wwMoreOpen ? 'open' : ''} data-wwmore><summary class="muted" style="cursor:pointer">Other tools and studies (intraday gamma levels, flow studies, by ticker)</summary><div style="margin-top:10px">${wwIntraday()}${rtBox}${flowBox}${by}</div></details>`;
+  return h + runLine + posBox + kinds + stats + wwRuleTester() + sigTable + now + more;
 }
 function vExplore() {
   const d = S.ex;
@@ -3026,7 +3034,7 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
     if ((!S.botEvals || S.botEvals.mode !== mode) && S.evLoading !== mode) { S.evLoading = mode; loadEvals(1).finally(() => { S.evLoading = null; }); }
   }],
   botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }],
-  botwatch: [vWatch, () => { if (!S.ww) loadWatch(); if (!S.rt && !S.rtBusy) loadRuleTest(); if (!S.itd && !S.itdBusy) loadIntraday(); }],
+  botwatch: [vWatch, () => { if (!S.ww) loadWatch(); if (!S.rt && !S.rtBusy) loadRuleTest(); }],
   botchart: [vChartFull, () => { if (!S.tickers && !S.tkBusy) loadTickers();
     const h = document.querySelector('.fcf-head'), inf = document.querySelector('.fcf-info');      // fit the chart to what's left
     const hh = h ? h.offsetHeight : 0, ih = inf ? inf.offsetHeight + 8 : 0;
@@ -3051,7 +3059,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3118,6 +3126,13 @@ document.addEventListener('click', e => {
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
+  if (el.hasAttribute('data-wwallrules')) { S.wwAllRules = !S.wwAllRules; render(); return; }
+  if (el.hasAttribute('data-fcalllayers')) {
+    S.fcAllLayers = !S.fcAllLayers;
+    if (!S.fcAllLayers) ['ema', 'orb', 'spy', 'mp', 'dark', 'acc'].forEach(k => { S.fcLayers[k] = false; });   // hidden layers aren't drawn
+    try { localStorage.setItem('fcLayers', JSON.stringify(S.fcLayers)); } catch (e) {}
+    render(); return;
+  }
   if (el.hasAttribute('data-rtrob')) {
     api('/bot/wallwatch/robust', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250 } })
       .then(() => { S.rt = { ...(S.rt || {}), robust: { ...((S.rt || {}).robust || {}), running: 'now' } }; render(); setTimeout(loadRuleTest, 15000); }).catch(err => toast(err.message));
@@ -3137,7 +3152,7 @@ document.addEventListener('click', e => {
   }
   if (el.hasAttribute('data-rtrun')) {
     const v = id => { const x = parseFloat(($(id) || {}).value); return isNaN(x) ? undefined : x; };
-    const body = { days: v('#rt-days'), stopAtr: v('#rt-stop'), fixR: v('#rt-fixr'), maxDays: v('#rt-maxd') };
+    const body = { days: v('#rt-days'), stopAtr: v('#rt-stop'), fixR: v('#rt-fixr'), maxDays: v('#rt-maxd'), full: !!($('#rt-full') || {}).checked };
     api('/bot/wallwatch/ruletest', { method: 'POST', body }).then(() => { S.rt = { ...(S.rt || {}), test: { ...((S.rt || {}).test || {}), running: 'now' } }; render(); loadRuleTest(); }).catch(err => toast(err.message));
     return;
   }
@@ -3379,3 +3394,5 @@ $('#signin').addEventListener('click', () => Auth.login());
     fcSetZoom(f.id, c - (c - a) * z, c - (c - a) * z + (b - a) * z, f.all);
   }, { passive: false });
 })();
+
+document.addEventListener('toggle', e => { if (e.target && e.target.matches && e.target.matches('[data-wwmore]')) { S.wwMoreOpen = e.target.open; if (e.target.open && !S.itd && !S.itdBusy) loadIntraday(); } }, true);
