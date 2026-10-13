@@ -440,7 +440,17 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
     orb = orb_levels(bars)
     spy = extra.get("spy") or {}
-    skp = extra.get("skewPct") or {}                    # {date: percentile of the previous session's skew}
+    skp = extra.get("skewPct") or {}
+    misses = extra.get("misses")                        # optional list: candles at the support that didn't enter, and why
+    seen_miss = set()
+
+    def miss(b, why):
+        if misses is None or (start and b["t"][:10] < start):
+            return
+        k = (b["t"][:10], why)
+        if k not in seen_miss:                          # once per day and reason
+            seen_miss.add(k)
+            misses.append({"t": b["t"][:16], "r": why, "l": b["l"]})                    # {date: percentile of the previous session's skew}
     flip_exit, earn_days = bool(P.get("flipExit", True)), int(P.get("earnDays") if P.get("earnDays") is not None else 10)
     earn_d = None
     try:
@@ -480,6 +490,10 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 watch = {"armedAt": arm["t"], "armPremium": arm["p"], "level": lvl0, "levelName": name, "day0": day, "days": 0,
                          "since": b["t"][:16]}
         if not watch:
+            if misses is not None:                      # at a support without a recent call alert: say so
+                lv0 = [float(w[k]) for k, n in sup_keys if w.get(k)]
+                if any(b["l"] <= x + max(x * RETEST_NEAR / 100, zone_atr * a_) and b["c"] > x for x in lv0):
+                    miss(b, f"no call alert ≥ ${vmin / 1000:,.0f}K in the {ndays} days before")
             continue
         if day != watch.get("_d"):
             watch["_d"] = day
@@ -489,6 +503,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             watch = None
             continue
         if b["c"] < watch["level"] - k_stop * a_:     # the support of the alert broken before any retest
+            miss(b, f"closed under the {watch['levelName']} {watch['level']:g} − stop: watch cancelled, waiting for a new call alert")
             watch = None
             continue
         # the support follows the price: the highest put wall / flip of the day under this candle's close
@@ -499,29 +514,42 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         lvl, lname = max(under)
         zone = max(lvl * RETEST_NEAR / 100, zone_atr * a_)
         # entry: a green candle whose low comes back to the support (within the zone) and that closes above it
+        if b["l"] <= lvl + zone and b["c"] <= b["o"] and on("greenOnly"):
+            miss(b, "red candle (Green candle rule)")
         if (b["c"] > b["o"] or not on("greenOnly")) and b["l"] <= lvl + zone:
             if P.get("aboveFlip") and not (w.get("flip") and b["c"] > float(w["flip"])):
+                miss(b, f"close under the flip {w.get('flip')} (Above the flip rule)")
                 continue                               # only above the gamma flip (positive gamma): wait for another candle
             if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
+                miss(b, f"earnings {str(earnings)[:10]} within {earn_days} days")
                 continue                               # earnings within the next N days: no entry
             cw_ = float(w["callWall"]) if w.get("callWall") else None
             if on("vwapOn") and not (vwap[i] is not None and b["c"] > vwap[i]):
+                miss(b, f"close {b['c']:.2f} under the VWAP {vwap[i]:.2f}" if vwap[i] is not None else "no VWAP yet")
                 continue                               # rule on: the close must be above the VWAP
             if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
+                miss(b, "close under the EMA")
                 continue                               # rule on: the close must be above the EMA
             if on("emaOverVwap") and not (ema[i] is not None and vwap[i] is not None and ema[i] > vwap[i]):
+                miss(b, "EMA under the VWAP")
                 continue                               # rule on: the EMA must be above the VWAP
             if on("skewOn") and not (skp.get(day) is not None and 33.4 <= skp[day] < 66.7):
+                miss(b, "skew not normal")
                 continue                               # rule on: skew must be normal (middle third of its last 6 months)
             if on("spyUp") and spy.get(b["t"][:16]) == -1:
+                miss(b, "SPY trending down")
                 continue                               # rule on: SPY must be up over the last 6 sessions
             if on("kcNotExt") and not (kc[i] and b["c"] < kc[i][1]):
+                miss(b, "close above the upper Keltner band")
                 continue                               # rule on: the close must be under the upper Keltner band
             if on("orbAbove") and not (orb[i] and b["c"] > orb[i][0]):
+                miss(b, "close under the opening range high")
                 continue                               # rule on: the close must be above the opening range high
             if on("noAboveCW") and cw_ and (b["o"] > cw_ or b["c"] > cw_):
+                miss(b, "above the call wall")
                 continue                               # opening or closing above the call wall: no entry
             if cw_ and cw_room and cw_ - b["c"] < cw_room * a_:
+                miss(b, f"only {(cw_ - b['c']) / a_:.1f} ATR under the call wall {cw_:g} (Room to CW ≥ {cw_room:g})")
                 continue                               # too close under the call wall: not enough room to the target
             if start and day < start:
                 watch = None
@@ -630,8 +658,13 @@ def check_ticker(sub, key, sym, days, now, since=None):
                     skp = backtest.skew_pct_map(sk, sorted({b["t"][:10] for b in rb}))
                 except Exception as e:
                     print("skew failed", sym, e)
+            misses = []
             rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap, emap,
-                                      {"kc": kmap, "spy": spy, "skewPct": skp})
+                                      {"kc": kmap, "spy": spy, "skewPct": skp, "misses": misses})
+            try:
+                db.put({"PK": db.upk(sub), "SK": f"WWMISS#{sym}", "misses": misses[-400:], "v": version(cfg), "at": iso(now_ny())})
+            except Exception as e:
+                print("misses not stored", sym, e)
             sigs += rs
         except Exception as e:
             print("retest failed", sym, e)
@@ -1130,7 +1163,9 @@ def chart(sub, sym, days=45, flow=True):
     vw, vres = vw[off:], [i - off for i in vres if i - off >= 0]
     vwap = [{"t": b["t"], "v": v} for b, v in zip(bars, vw)]
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
-    return {"kc": kc, "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    mrec = db.get(db.upk(sub), f"WWMISS#{sym}") or {}
+    misses = [m for m in (mrec.get("misses") or []) if mrec.get("v") == cur_v and m["t"][:10] >= (dates[0] if dates else "")]
+    return {"misses": misses, "kc": kc, "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),

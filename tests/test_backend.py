@@ -2644,6 +2644,26 @@ def test_keltner_ride_exit():
         autotrader._yahoo = saved
 
 
+def test_retest_misses():
+    """Candles that reach the support without entering are listed with the rule that blocked them."""
+    import wallwatch
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0}]
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    m = []
+    sg = wallwatch.detect_retest(bars, {"2026-10-05": w}, cfg={"vwapOn": True}, alerts=al, datr={"next": 2.0},
+                                 vwap_map={b["t"]: 104.0 for b in bars}, extra={"misses": m})[0]
+    assert not sg and any("VWAP" in x["r"] for x in m), m
+    m2 = []
+    wallwatch.detect_retest(bars, {"2026-10-05": w}, alerts=[], datr={"next": 2.0}, extra={"misses": m2})
+    assert m2 and m2[0]["r"].startswith("no call alert"), m2
+    m3 = []
+    wallwatch.detect_retest(bars, {"2026-10-05": w}, cfg={"cwRoom": 5, "cwRoomOn": True}, alerts=al, datr={"next": 2.0}, extra={"misses": m3})
+    assert any("under the call wall" in x["r"] for x in m3), m3
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

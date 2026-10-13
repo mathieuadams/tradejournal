@@ -1475,6 +1475,13 @@ function fcSvg0(d, id, opts) {
           <text x="${x}" y="${y + 28}" text-anchor="middle" font-size="${fs - 2}" font-weight="800" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">SELL @${tr.exit ?? '—'}${tr.plPct != null ? ` ${tr.plPct >= 0 ? '+' : ''}${tr.plPct}%` : ''}</text>`; }
     });
   }
+  if (LY.sig !== false && (d.misses || []).length) {    // candles at the support that didn't enter: why
+    const byBar = {};
+    d.misses.forEach(m => { const i = idx[m.t]; if (i == null) return; (byBar[i] = byBar[i] || []).push(m); });
+    Object.entries(byBar).forEach(([i, ms]) => { const b = bars[+i], y = Math.min(B - 4, Y(b.l) + 11), x = X(+i);
+      const why = ms.map(m => m.r).join(' · '), alert = ms.every(m => m.r.startsWith('no call alert'));
+      g += `<g opacity="${alert ? .45 : .85}"><path d="M${x - 3.5},${y - 3.5}L${x + 3.5},${y + 3.5}M${x - 3.5},${y + 3.5}L${x + 3.5},${y - 3.5}" stroke="${alert ? 'var(--muted)' : '#d97706'}" stroke-width="1.8"/><circle cx="${x}" cy="${y}" r="7" fill="transparent"><title>${esc(`No entry ${b.t.replace('T', ' ').slice(5)}: ${why}`)}</title></circle></g>`; });
+  }
   if (LY.sig !== false && (d.signals || []).length) {   // Wall watch: entry, target (call wall), stop (put wall), exit
     d.signals.forEach((sg, k) => {
       const i0 = at(sg.at); let i1 = sg.exitAt ? at(sg.exitAt) : n - 1;
@@ -1595,7 +1602,7 @@ function vChartWW() {
           + (sa ? `<span><b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}</span>` : '')
           + (d.note ? `<span class="muted">${esc(d.note)}</span>` : ''); })()}
       <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
-      <span class="muted">IN = PW setup, FLIP = flip setup, MRG = merged walls, RT = flow retest · green line = target (call wall) · red line = stop, trailing under the highest high · square = exit · ↑ ↓ ticker</span>
+      <span class="muted">IN = PW setup, FLIP = flip setup, MRG = merged walls, RT = flow retest · green line = target (call wall) · red line = stop, trailing under the highest high · square = exit · × = reached the support but no entry (hover for the reason; grey = no call alert) · ↑ ↓ ticker</span>
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
   const added = ((S.ww && S.ww.config && S.ww.config.added) || {});
