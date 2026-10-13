@@ -320,7 +320,7 @@ RULES = [  # (switch, label)
 ]
 OFF = {"usePW": True, "useFlip": True, "greenOnly": False, "aboveFlip": False, "vwapOn": False, "emaOn": False,
        "emaOverVwap": False, "noAboveCW": False, "cwRoomOn": False, "earnOn": False,
-       "spyUp": False, "kcNotExt": False, "orbAbove": False, "skewOn": False, "kcRide": False,
+       "spyUp": False, "kcNotExt": False, "orbAbove": False, "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False,
        "stopOn": True, "trailOn": False, "targetOn": False, "flipExit": False, "vwapExit": False, "emaExit": False}
 EXITS = [  # label, exit settings on top of the fixed stop
     ("Fixed: target N x risk or N days", {}),
@@ -333,8 +333,11 @@ EXITS = [  # label, exit settings on top of the fixed stop
     ("Your exits", "mine"),
     ("Your exits + Keltner ride", "mine+ride"),
     ("Your exits without Keltner ride", "mine-ride"),
+    ("Your exits + back under CW", "mine+cw"),
+    ("Your exits + back under dark pool", "mine+dp"),
+    ("Your exits without the back-under exits", "mine-lost"),
 ]
-EXIT_KEYS = ("stopOn", "trailOn", "targetOn", "flipExit", "vwapExit", "emaExit", "trailAtr", "tgtBuf", "kcRide")
+EXIT_KEYS = ("stopOn", "trailOn", "targetOn", "flipExit", "vwapExit", "emaExit", "trailAtr", "tgtBuf", "kcRide", "cwLost", "dpLost")
 
 
 def _ticker_data(sub, sym, days, cfg, full=True):
@@ -352,11 +355,14 @@ def _ticker_data(sub, sym, days, cfg, full=True):
     vw, _ = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))
     em = wallwatch._ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20))
     kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
+    dp = stored_darkpool(sym)
+    days_ = sorted({b["t"][:10] for b in bars})
+    sk = stored_skew(sym) if full or cfg.get("skewOn") else {}
     return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym),
-            "skew": stored_skew(sym) if full or cfg.get("skewOn") else {}, "dp": stored_darkpool(sym) if full else [],
+            "skew": sk, "dp": dp,
             "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
-            "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now),
-                      "skewPct": skew_pct_map(stored_skew(sym), sorted({b["t"][:10] for b in bars}))}}
+            "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now) if full or cfg.get("spyUp") else {},
+                      "dpLevels": wallwatch.dp_level_map(dp, days_), "skewPct": skew_pct_map(sk, days_) if sk else {}}}
 
 
 def _run(sym, data, cfg, first):
@@ -481,10 +487,11 @@ def rule_test(sub, params=None, budget_s=480):
                      ("flipOnly", "Support: flip only", {**base, "usePW": False})]
     variants.append(("mine", "Your entry settings", {**base, **mine_entry}))
     exits = []
-    for lab, ex in (EXITS if full else [x for x in EXITS if x[0] in ("Fixed: target N x risk or N days", "Your exits", "Your exits without Keltner ride")]):
+    for lab, ex in (EXITS if full else [x for x in EXITS if str(x[1]).startswith("mine") or x[0].startswith("Fixed")]):
         if str(ex).startswith("mine"):
             ex = {"fixR": 0, "maxDays": 0, **{k: cfg.get(k) for k in EXIT_KEYS},
-                  **({"kcRide": True} if ex == "mine+ride" else {"kcRide": False} if ex == "mine-ride" else {})}
+                  **{"mine+ride": {"kcRide": True}, "mine-ride": {"kcRide": False}, "mine+cw": {"cwLost": True},
+                     "mine+dp": {"dpLost": True}, "mine-lost": {"cwLost": False, "dpLost": False}}.get(ex, {})}
         exits.append((lab, {**base, **mine_entry, **ex}))
     tickers = cfg["tickers"]
     db.put({"PK": pk, "SK": TEST_SK, **(db.get(pk, TEST_SK) or {}), "running": iso(now_ny()), "params": P})

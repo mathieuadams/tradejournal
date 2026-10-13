@@ -1211,6 +1211,10 @@ def _wallwatch_exit(sub, rec, p):
     if last["l"] <= stop:
         return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) or (ww.get('stopOn') is False and stop > 0) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
     now = now_ny()
+    if ww.get("cwLost") or ww.get("dpLost"):         # passed the call wall / a dark pool level, back under it at the close
+        r = _level_lost(sub, rec, ww, last, since, now)
+        if r:
+            return r
     if ww.get("kcRide"):                              # Keltner ride: don't sell a vertical move at the call wall
         r = _keltner_ride(sub, rec, p, ww, last, since, now, dte)
         if r is not False:
@@ -1244,6 +1248,47 @@ def _wallwatch_exit(sub, rec, p):
             print("vwap/ema exit check failed", rec.get("symbol"), e)
     if dte <= 0:
         return f"time stop ({dte} days to expiry)"
+    return None
+
+
+def _level_lost(sub, rec, ww, last, since, now):
+    """An hourly close above today's call wall or a top dark pool level (above the entry) marks it passed; from 15:50 a
+    close back under the highest passed level sells. Returns an exit reason or None."""
+    import flowdata
+    import wallwatch
+    pk = db.upk(sub)
+    today = now.strftime("%Y-%m-%d")
+    lv = []
+    try:
+        if ww.get("cwLost"):
+            cw = (flowdata.stored_walls(rec["symbol"]).get(today) or {}).get("callWall")
+            if cw:
+                lv.append(["call wall", float(cw)])
+        if ww.get("dpLost"):
+            cache = rec.get("wwDpLv") or {}
+            if cache.get("d") != today:                # the dark pool levels once a day
+                import backtest
+                pr = backtest.stored_darkpool(rec["symbol"]) or wallwatch.darkpool(sub, rec["symbol"], None, 66).get("prints") or []
+                cache = {"d": today, "lv": wallwatch.dp_level_map(pr, [today]).get(today) or []}
+                db.update(pk, rec["SK"], {"wwDpLv": cache})
+            entry = float(ww.get("entry") or 0)
+            lv += [["dark pool level", float(x)] for x in cache.get("lv") or [] if float(x) > entry]
+        hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=5), now + timedelta(hours=1)) or [],
+                                now.replace(tzinfo=None))
+    except Exception as e:
+        print("level lost check failed", rec.get("symbol"), e)
+        return None
+    passed = [list(x) for x in rec.get("wwPassed") or []]
+    if hb and hb[-1]["t"][:16] >= (since or "")[:13]:
+        hc = hb[-1]["c"]
+        new = [x for x in lv if hc > x[1] and x not in passed]
+        if new:
+            passed += new
+            db.update(pk, rec["SK"], {"wwPassed": passed})
+    if passed and now.hour * 60 + now.minute >= 15 * 60 + 50:
+        name, px = max(passed, key=lambda x: x[1])
+        if last["c"] < px:
+            return f"passed the {name} {px:g}, closing back under it ({last['c']:.2f})"
     return None
 
 

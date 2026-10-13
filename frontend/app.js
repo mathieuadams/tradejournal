@@ -1277,7 +1277,7 @@ S.fcLayers = (() => { try { const v = { sig: true, vwap: true, ema: true, kc: fa
 const FC_LAYERS = [['sig', 'Wall watch signals'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  const wwLay = S.fcAllLayers ? ['sig', 'vwap', 'ema', 'kc', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'vwap', 'kc', 'walls', 'flow'];
+  const wwLay = S.fcAllLayers ? ['sig', 'vwap', 'ema', 'kc', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'vwap', 'kc', 'walls', 'flow', 'dark'];
   return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'mp', 'vwap', 'ema', 'kc', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
@@ -1320,7 +1320,7 @@ function fcSvg0(d, id, opts) {
   const all = d.bars || [];
   if (all.length < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
-  const LY = id.startsWith('ww-') && !S.fcAllLayers ? { ...S.fcLayers, ema: false, orb: false, spy: false, mp: false, dark: false, acc: false } : S.fcLayers;
+  const LY = id.startsWith('ww-') && !S.fcAllLayers ? { ...S.fcLayers, ema: false, orb: false, spy: false, mp: false, acc: false } : S.fcLayers;
   const dp = LY.dark ? S.fcDp[fcKey(id)] : null;
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
@@ -1488,9 +1488,9 @@ function fcSvg0(d, id, opts) {
       if (sg.exitAt && i1 == null && sg.exitAt > lastT) i1 = n - 1;
       if (i0 == null && !(sg.exitAt && sg.exitAt >= bars[0].t && sg.at < bars[0].t)) return;
       const a0 = i0 == null ? 0 : i0, b0 = i1 == null ? a0 : i1, xa = i0 == null ? L : X(a0), xb = X(b0);
-      const col = sg.status === 'target' || (['trail', 'flip', 'vwap', 'ema', 'keltner'].includes(sg.status) && sg.pct >= 0) ? 'var(--gain)' : ['stop', 'trail', 'flip', 'vwap', 'ema', 'keltner'].includes(sg.status) ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
+      const col = sg.status === 'target' || (['trail', 'flip', 'vwap', 'ema', 'keltner', 'lost'].includes(sg.status) && sg.pct >= 0) ? 'var(--gain)' : ['stop', 'trail', 'flip', 'vwap', 'ema', 'keltner', 'lost'].includes(sg.status) ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
       const sel = S.wwSel && S.wwSel.sym === d.symbol && S.wwSel.at === sg.at;
-      const dl = (sg.dlog || []).map(([dd, c, ku, fl, rid]) => `${dd.slice(5)} close ${c}` + (ku != null ? ` · upper Keltner ${ku}${c > ku ? ' (above' + (rid ? ', riding)' : ' → ride starts)') : rid ? ' (under → ride ends)' : ''}` : '') + (fl != null ? ` · flip ${fl}${c < fl ? (sg.aboveFlipAtEntry ? ' (under)' : ' (under, but the trade was entered under the flip: no flip exit)') : ''}` : ''));
+      const dl = (sg.dlog || []).map(([dd, c, ku, fl, rid]) => `${dd.slice(5)} close ${c}` + (ku != null ? ` · upper Keltner ${ku}${c > ku ? ' (above)' : rid ? ' (under: ride ends)' : ''}` : '') + (fl != null ? ` · flip ${fl}${c < fl ? (sg.aboveFlipAtEntry ? ' (under)' : ' (under, but the trade was entered under the flip: no flip exit)') : ''}` : ''));
       const why = sg.status === 'open' ? `Open since ${sg.at.replace('T', ' ').slice(5)} · stop ${sg.stop}${sg.v && d.curV && sg.v !== d.curV ? ' · computed with older settings (press Get walls to recompute)' : ''}\nDaily closes:\n${dl.join('\n')}` : `${sg.status} ${(sg.exitAt || '').replace('T', ' ').slice(5)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%\nDaily closes:\n${dl.join('\n')}`;
       g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity="${sel ? .12 : .06}"><title>${esc(why)}</title></rect>`;
       if (sg.target != null && sg.target >= lo && sg.target <= hi) g += `<line x1="${xa}" x2="${xb}" y1="${Y(sg.target)}" y2="${Y(sg.target)}" stroke="var(--gain)" stroke-width="2" opacity=".85"><title>target ${sg.target} (call wall ${sg.cw})</title></line>`;
@@ -1506,7 +1506,7 @@ function fcSvg0(d, id, opts) {
         g += `<line x1="${xa2}" x2="${xa}" y1="${yl}" y2="${yl}" stroke="var(--coach,#5b5bd6)" stroke-width="1.5" stroke-dasharray="3 3"><title>Waiting for the retest of the ${esc(sg.levelName || 'level')} ${sg.level}</title></line>
           <text x="${xa2}" y="${yl - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">⚑ ${money(sg.armPremium || 0, false)} calls</text>`; } }
       if (sg.status !== 'open' && i1 != null && sg.exit >= lo && sg.exit <= hi) { const y = Y(sg.exit);
-        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'keltner' ? 'Keltner ride ended: daily close back under the upper band' : sg.status === 'vwap' ? 'Hourly close under the VWAP' : sg.status === 'ema' ? 'Hourly close under the EMA' : sg.status === 'flip' ? 'Day closed under the gamma flip' : sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (${sg.kind === 'merged' ? 'call wall of the day − N × ATR' : 'highest high − N × 30-day ATR'})` : `Stop (${sg.kind === 'flip' ? 'flip' : sg.kind === 'merged' ? 'merged wall' : 'put wall'} − N × 30-day ATR) ${sg.stop ?? sg.pw}`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'lost' ? `Passed the ${sg.lostLevel || 'level'}, the day closed back under it` : sg.status === 'keltner' ? 'Keltner ride ended: daily close back under the upper band' : sg.status === 'vwap' ? 'Hourly close under the VWAP' : sg.status === 'ema' ? 'Hourly close under the EMA' : sg.status === 'flip' ? 'Day closed under the gamma flip' : sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (${sg.kind === 'merged' ? 'call wall of the day − N × ATR' : 'highest high − N × 30-day ATR'})` : `Stop (${sg.kind === 'flip' ? 'flip' : sg.kind === 'merged' ? 'merged wall' : 'put wall'} − N × 30-day ATR) ${sg.stop ?? sg.pw}`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
           <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.pct >= 0 ? '+' : ''}${sg.pct}%</text>`; }
     });
   }
@@ -2458,10 +2458,12 @@ const WW_RULES = [
   ['flipExit', 'Exit', 'Close under flip', 'Sell when the day closes under the gamma flip (trades entered above it)'],
   ['vwapExit', 'Exit', 'Close under VWAP', 'Sell when an hourly candle closes under the anchored VWAP'],
   ['kcRide', 'Exit', 'Keltner ride', 'An hourly close above the upper Keltner band starts a ride: the call wall target and the other exits wait, and the trade is sold at the first daily close under the upper band, the same day included (the stop still applies).'],
+  ['cwLost', 'Exit', 'Back under CW', 'After an hourly close above the call wall, sell at the first daily close back under it'],
+  ['dpLost', 'Exit', 'Back under dark pool', 'After an hourly close above one of the top 5 dark pool levels (above your entry), sell at the first daily close back under the highest one passed'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
-const WW_CORE = ['usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide'];   // the validated strategy
-const WW_DEF_ON = { aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false };
+const WW_CORE = ['usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
+const WW_DEF_ON = { aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 function wwSwState() {
   const c = (S.ww && S.ww.config) || {};
@@ -2666,7 +2668,7 @@ function vWatch() {
     <button class="btn" data-wwchart="${esc((cfg.tickers || [])[0] || '')}|" style="font-size:.8rem;padding:2px 10px">Open the charts</button>
     <label style="margin-left:6px"><input type="checkbox" id="ww-on" ${cfg.enabled ? 'checked' : ''}> every hour</label></p>`;
   const sigs = d.signals || [];
-  const st = s => s.status === 'target' ? '<b class="gain">target</b>' : s.status === 'stop' ? '<b class="loss">stop</b>' : s.status === 'trail' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">trailing stop</b>` : s.status === 'flip' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the flip</b>` : s.status === 'vwap' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the VWAP</b>` : s.status === 'keltner' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">Keltner ride ended</b>` : s.status === 'ema' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the EMA</b>` : '<span style="color:var(--coach)">open</span>';
+  const st = s => s.status === 'target' ? '<b class="gain">target</b>' : s.status === 'stop' ? '<b class="loss">stop</b>' : s.status === 'trail' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">trailing stop</b>` : s.status === 'flip' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the flip</b>` : s.status === 'vwap' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the VWAP</b>` : s.status === 'keltner' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">Keltner ride ended</b>` : s.status === 'lost' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">back under the ${esc(s.lostLevel || 'level')}</b>` : s.status === 'ema' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the EMA</b>` : '<span style="color:var(--coach)">open</span>';
   const sigTable = `<section class="panel"><h2>Signals</h2>${sigs.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Setup</th><th>Candle</th><th class="r">Entry</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th class="r">Target</th><th class="r">Stop</th><th>Result</th><th class="r">Move</th><th class="r">R</th><th></th></tr></thead><tbody>
     ${sigs.map(s => `<tr><td><b>${esc(s.symbol)}</b></td><td>${s.kind === 'flip' ? '<span class="exchip">Flip</span>' : s.kind === 'merged' ? '<span class="exchip">Merged</span>' : s.kind === 'retest' ? `<span class="exchip" title="Armed ${esc((s.armedAt || '').replace('T', ' ').slice(5))} by a ${money(s.armPremium || 0, false)} call alert">Retest ${esc(s.levelName || '')}</span>` : '<span class="exchip">PW</span>'}</td><td>${esc(t5(s.at))}</td><td class="r">${(+s.entry).toFixed(2)}</td><td class="r">${s.pw}</td><td class="r">${s.flip}</td><td class="r">${s.cw}</td><td class="r">${s.tgtPct == null ? '<span class="muted">trail</span>' : pc(s.tgtPct, 1)}</td><td class="r" title="${s.stop0 != null ? `first stop ${s.stop0} (${s.kind === 'flip' ? 'flip' : 'put wall'} − N × 30-day ATR ${s.atr})${s.stop > s.stop0 ? ` · trailed to ${s.stop}` : ''}` : ''}">${pc(-s.riskPct, 1)}</td>
       <td>${s.botId ? '<span class="exchip" title="A call was bought on Alpaca paper">traded</span> ' : s.tradeError ? `<span class="exchip" title="${esc(s.tradeError)}">not traded</span> ` : ''}${st(s)}${s.exitAt ? ` <span class="muted">${esc(t5(s.exitAt))}</span>` : s.lastAt ? ` <span class="muted">now ${(+s.last).toFixed(2)}</span>` : ''}</td><td class="r">${pc(s.pct)}</td><td class="r">${s.R == null ? '—' : (s.R > 0 ? '+' : '') + s.R}</td><td><button class="btn" data-wwchart="${esc(s.symbol)}|${esc(s.at)}" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No signal yet. Press <b>Get all walls (45 days)</b> to see how often it happened.</p>'}</section>`;
@@ -3138,7 +3140,7 @@ document.addEventListener('click', e => {
   if (el.hasAttribute('data-wwallrules')) { S.wwAllRules = !S.wwAllRules; render(); return; }
   if (el.hasAttribute('data-fcalllayers')) {
     S.fcAllLayers = !S.fcAllLayers;
-    if (!S.fcAllLayers) ['ema', 'orb', 'spy', 'mp', 'dark', 'acc'].forEach(k => { S.fcLayers[k] = false; });   // hidden layers aren't drawn
+    if (!S.fcAllLayers) ['ema', 'orb', 'spy', 'mp', 'acc'].forEach(k => { S.fcLayers[k] = false; });   // hidden layers aren't drawn
     try { localStorage.setItem('fcLayers', JSON.stringify(S.fcLayers)); } catch (e) {}
     render(); return;
   }

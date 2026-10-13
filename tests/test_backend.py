@@ -2400,7 +2400,7 @@ def test_rule_tester():
         backtest.stored_alerts = lambda sub_, sym: [{"t": f"{day}T10:00", "c": 1, "p": 900000} for day in days[::3]]
         out = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5, "full": True})
         quick = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5})
-        assert [r["key"] for r in quick["rules"]] == ["base", "mine"] and not quick["buckets"] and len(quick["exits"]) == 3
+        assert [r["key"] for r in quick["rules"]] == ["base", "mine"] and not quick["buckets"] and len(quick["exits"]) == 7
         out = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5, "full": True})
         base = out["rules"][0]
         assert base["key"] == "base" and base["n"] > 5, base
@@ -2663,6 +2663,49 @@ def test_retest_misses():
     m3 = []
     wallwatch.detect_retest(bars, {"2026-10-05": w}, cfg={"cwRoom": 5, "cwRoomOn": True}, alerts=al, datr={"next": 2.0}, extra={"misses": m3})
     assert any("under the call wall" in x["r"] for x in m3), m3
+
+
+def test_back_under_level_exit():
+    """Passed the call wall / a dark pool level on an hourly close, the day closes back under it: sold at that close."""
+    import wallwatch
+    w = {"callWall": 106, "flip": 102, "putWall": 100}
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0}]          # entry
+    bars += [{"t": f"2026-10-05T{h}", "o": 103.5, "h": 104, "l": 103.4, "c": 103.8} for h in H[3:]]
+    path = [104.5, 105.5, 106.4, 106.8, 106.2, 105.6, 105.2]                                   # through the CW 106, back under
+    bars += [{"t": f"2026-10-06T{h}", "o": c - .2, "h": c + .3, "l": c - .4, "c": c} for h, c in zip(H, path)]
+    ws = {"2026-10-05": w, "2026-10-06": w}
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    base = {"targetOn": False, "trailOn": False, "flipExit": False}
+    a = wallwatch.detect_retest(bars, ws, cfg=base, alerts=al, datr={"next": 2.0})[0][0]
+    assert a["status"] == "open"
+    b = wallwatch.detect_retest(bars, ws, cfg={**base, "cwLost": True}, alerts=al, datr={"next": 2.0})[0][0]
+    assert b["status"] == "lost" and b["exitAt"] == "2026-10-06T15:30" and b["lostLevel"] == "call wall 106", b
+    c = wallwatch.detect_retest(bars, ws, cfg={**base, "dpLost": True}, alerts=al, datr={"next": 2.0},
+                                extra={"dpLevels": {"2026-10-06": [105.8, 99.0]}})[0][0]
+    assert c["status"] == "lost" and c["lostLevel"] == "dark pool level 105.8", c
+    pr = [{"t": f"2026-09-{d:02d}T10:00", "price": 105.8 + (d % 2) * 0.01, "premium": 5e8} for d in range(1, 29)]
+    m = wallwatch.dp_level_map(pr, ["2026-10-06"])
+    assert m["2026-10-06"] and abs(m["2026-10-06"][0] - 105.8) < 0.1
+    # live: an hourly close above the call wall is remembered; from 15:50 a close back under it sells
+    import autotrader, flowdata, db
+    import datetime as dt
+    saved = (autotrader._yahoo, flowdata.stored_walls)
+    try:
+        autotrader._yahoo = lambda *a_, **k: [{"t": "2026-10-06T10:30", "o": 106, "h": 106.6, "l": 105.9, "c": 106.4, "v": 1}]
+        flowdata.stored_walls = lambda sym: {"2026-10-06": {"callWall": 106}}
+        sub, rec = "lost-user", {"SK": "BOT#20261005000000-aaaaaa", "symbol": "AAA"}
+        db.put({"PK": db.upk(sub), **rec})
+        ww = {"cwLost": True, "entry": 103}
+        assert autotrader._level_lost(sub, rec, ww, {"c": 106.3}, "2026-10-05T11:30", dt.datetime(2026, 10, 6, 11, 40)) is None
+        rec = db.get(db.upk(sub), rec["SK"])
+        assert rec["wwPassed"] == [["call wall", 106.0]]
+        r = autotrader._level_lost(sub, rec, ww, {"c": 105.4}, "2026-10-05T11:30", dt.datetime(2026, 10, 6, 15, 52))
+        assert r and "call wall 106" in r
+    finally:
+        autotrader._yahoo, flowdata.stored_walls = saved
 
 
 if __name__ == "__main__":

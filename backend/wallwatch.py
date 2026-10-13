@@ -29,7 +29,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "vwapOn": False, "emaOn": False, "emaLen": 20, "stopOn": True, "trailOn": True, "targetOn": True,
           "vwapExit": False, "emaExit": False, "emaOverVwap": False,
           "spyUp": False, "kcNotExt": False, "orbAbove": False, "kcLen": 21, "kcMult": 3.0,
-          "skewOn": False, "kcRide": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -55,7 +55,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost")
 
 
 def save_config(sub, body):
@@ -240,7 +240,7 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
-def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None):
+def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None):
     """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
     Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held).
     kcRide (kcu = upper Keltner band of this candle): an hourly close above the upper band starts a ride -> the target,
@@ -257,6 +257,22 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None):
     if b["l"] <= s["stop"]:
         s.update(status="trail" if s.get("stops") else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
         return
+    if s.get("cwLost") or s.get("dpLost"):           # passed a level, then the day closes back under it: out
+        lv = []
+        cw_d = (walls.get(b["t"][:10]) or {}).get("callWall")
+        if s.get("cwLost") and cw_d:
+            lv.append(("call wall", float(cw_d)))
+        if s.get("dpLost") and dpl:
+            lv += [("dark pool level", float(x)) for x in dpl if float(x) > s["entry"]]
+        passed = s.setdefault("passed", [])
+        for name, px in lv:
+            if b["c"] > px and [name, px] not in passed:
+                passed.append([name, px])                 # an hourly close above the level
+        if is_last and passed:
+            name, px = max(passed, key=lambda x: x[1])
+            if b["c"] < px:
+                s.update(status="lost", exitAt=b["t"][:16], exit=b["c"], lostLevel=f"{name} {px:g}")
+                return
     ride_on = bool(s.get("kcRide")) and kcu is not None
     if ride_on and not s.get("riding") and b["c"] > kcu:
         s["riding"], s["rideAt"] = True, b["t"][:16]      # an hourly close above the upper Keltner band starts the ride
@@ -355,6 +371,23 @@ def _ema_series(xs, n):
     return out
 
 
+def dp_level_map(prints, dates, top_n=5, window_days=66):
+    """{date: [prices]}: the top dark pool levels of the ~2 months before each date (as drawn on the chart)."""
+    import bisect
+    import flowdata
+    if not prints:
+        return {}
+    prints = sorted(prints, key=lambda p: p["t"])
+    ts = [p["t"][:10] for p in prints]
+    out = {}
+    for d in dates:
+        d0 = (datetime.strptime(d, "%Y-%m-%d") - timedelta(days=window_days)).strftime("%Y-%m-%d")
+        win = prints[bisect.bisect_left(ts, d0):bisect.bisect_left(ts, d)]
+        if len(win) >= 5:
+            out[d] = [lv["price"] for lv in flowdata.dp_levels(win, top_n)]
+    return out
+
+
 def keltner(bars, n=21, mult=3.0):
     """Keltner channel: EMA(n) of the close +/- mult x EMA(n) of the true range. [(mid, upper, lower) or None]."""
     closes = [b["c"] for b in bars]
@@ -435,6 +468,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     orb = orb_levels(bars)
     spy = extra.get("spy") or {}
     skp = extra.get("skewPct") or {}
+    dplv = extra.get("dpLevels") or {}                  # {date: top dark pool level prices known before that day}
     misses = extra.get("misses")                        # optional list: candles at the support that didn't enter, and why
     seen_miss = set()
 
@@ -471,7 +505,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             ai += 1
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i],
-                  kcu=kc[i][1] if kc[i] else None)
+                  kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day))
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -560,6 +594,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
                  "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
                  "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
+                 "cwLost": on("cwLost"), "dpLost": on("dpLost"),
                  "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
             if P.get("fixR"):                          # backtest: fixed target at N x the risk
                 s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
@@ -572,13 +607,13 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         i0 = s.pop("i0")                               # the same entry with the other choice for the daily flip exit
-        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn", "riding", "rideAt", "tgtHit", "dlog")}
+        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn", "riding", "rideAt", "tgtHit", "dlog", "passed", "lostLevel")}
         if alt.get("maxDays"):
             alt["_dd"], alt["_dn"] = alt["at"][:10], 0
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
         for j in range(i0 + 1, len(bars)):
             _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j],
-                  kcu=kc[j][1] if kc[j] else None)
+                  kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]))
             if alt["status"] != "open":
                 break
         ap, ar = _result(alt)
@@ -653,8 +688,16 @@ def check_ticker(sub, key, sym, days, now, since=None):
                 except Exception as e:
                     print("skew failed", sym, e)
             misses = []
+            dpm = {}
+            if cfg.get("dpLost"):
+                try:
+                    import backtest
+                    pr = backtest.stored_darkpool(sym) or darkpool(sub, sym, None, 66).get("prints") or []
+                    dpm = dp_level_map(pr, sorted({b["t"][:10] for b in rb}))
+                except Exception as e:
+                    print("dark pool levels failed", sym, e)
             rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap, emap,
-                                      {"kc": kmap, "spy": spy, "skewPct": skp, "misses": misses})
+                                      {"kc": kmap, "spy": spy, "skewPct": skp, "misses": misses, "dpLevels": dpm})
             try:
                 db.put({"PK": db.upk(sub), "SK": f"WWMISS#{sym}", "misses": misses[-400:], "v": version(cfg), "at": iso(now_ny())})
             except Exception as e:
@@ -803,6 +846,7 @@ def enter(sub, sym, sg):
         ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]) if cfg.get("trailOn", True) else 0.0,
               "vwapExit": bool(cfg.get("vwapExit")), "emaExit": bool(cfg.get("emaExit")), "emaLen": int(cfg.get("emaLen") or 20),
               "kcRide": bool(cfg.get("kcRide")), "kcLen": int(cfg.get("kcLen") or 21), "kcMult": float(cfg.get("kcMult") or 3),
+              "cwLost": bool(cfg.get("cwLost")), "dpLost": bool(cfg.get("dpLost")),
               "vwapDays": int(cfg.get("vwapDays") or VWAP_DAYS),
               "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
