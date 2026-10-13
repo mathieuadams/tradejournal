@@ -2618,7 +2618,12 @@ def test_keltner_ride_exit():
     assert plain["status"] == "target" and plain["exit"] == 106, plain
     ride = wallwatch.detect_retest(bars, ws, cfg={**base, "kcRide": True}, alerts=al, datr={"next": 2.0}, extra={"kc": kc})[0][0]
     assert ride["status"] == "keltner" and ride["exitAt"] == "2026-10-08T15:30" and ride["exit"] > 106, ride
-    # live: target on a vertical candle waits; the day closing above the band starts the ride; a daily close under it sells
+    # same day: an hourly close above the band starts the ride, the day closes under it -> sold at that close
+    same = bars[:6] + [{"t": f"2026-10-06T{h}", "o": 104, "h": 104.6, "l": 103.9, "c": 104.4} for h in H]
+    k2 = {b["t"]: (b["c"] - 2, (b["c"] - 0.2) if b["t"] == "2026-10-06T11:30" else b["c"] + 0.3, b["c"] - 4) for b in same}
+    sd = wallwatch.detect_retest(same, ws, cfg={**base, "kcRide": True}, alerts=al, datr={"next": 2.0}, extra={"kc": k2})[0][0]
+    assert sd["status"] == "keltner" and sd["exitAt"] == "2026-10-06T15:30", sd
+    # live: an hourly close above the band starts the ride; from 15:50 a close under the band sells
     import autotrader, db
     import datetime as dt
     saved = autotrader._yahoo
@@ -2629,17 +2634,13 @@ def test_keltner_ride_exit():
         rec = {"SK": "BOT#20261005000000-abcdef", "symbol": "AAA"}
         db.put({"PK": db.upk(sub), **rec})
         p_ = {"underlyingTarget": 105.0}
-        up = wallwatch.keltner(wallwatch.finished(hb, dt.datetime(2026, 10, 6, 12)), 5, 0.1)[-1][1]
         mid = dt.datetime(2026, 10, 6, 12, 0)
-        assert autotrader._keltner_ride(sub, rec, p_, ww, {"h": 110, "c": up + 1}, "", mid, 10) is None          # vertical: wait
-        rec = db.get(db.upk(sub), rec["SK"])
-        assert rec.get("wwTgtHit")
-        late = dt.datetime(2026, 10, 6, 15, 52)
-        assert autotrader._keltner_ride(sub, rec, p_, ww, {"h": 110, "c": up + 1}, "", late, 10) is None          # ride starts
+        up = wallwatch.keltner(wallwatch.finished(hb, mid), 5, 0.1)[-1][1]
+        assert autotrader._keltner_ride(sub, rec, p_, ww, {"h": 110, "c": up + 1}, "2026-10-01T09:30", mid, 10) is None   # rising bars: ride
         rec = db.get(db.upk(sub), rec["SK"])
         assert rec.get("wwRide")
-        nxt = dt.datetime(2026, 10, 7, 15, 52)
-        assert "ride ended" in autotrader._keltner_ride(sub, rec, p_, ww, {"h": up, "c": up - 5}, "", nxt, 10)
+        late = dt.datetime(2026, 10, 6, 15, 52)
+        assert "ride ended" in autotrader._keltner_ride(sub, rec, p_, ww, {"h": up, "c": up - 5}, "2026-10-01T09:30", late, 10)
     finally:
         autotrader._yahoo = saved
 

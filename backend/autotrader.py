@@ -1248,8 +1248,9 @@ def _wallwatch_exit(sub, rec, p):
 
 
 def _keltner_ride(sub, rec, p, ww, last, since, now, dte):
-    """Returns an exit reason, None (hold: riding, or a target hit on a vertical candle waiting for the close),
-    or False (not riding: the normal exits apply). Upper band = the last finished hourly candle's Keltner band."""
+    """Keltner ride, live. An hourly close above the upper Keltner band (last finished hourly candle) starts the ride:
+    the target and the other exits wait, and the trade is sold at the first daily close under the band (checked from
+    15:50, the same day included). Returns an exit reason, None (hold) or False (not riding: the normal exits apply)."""
     import wallwatch
     pk = db.upk(sub)
     try:
@@ -1263,22 +1264,17 @@ def _keltner_ride(sub, rec, p, ww, last, since, now, dte):
         return False
     up, hc, ht = kc[-1][1], hb[-1]["c"], hb[-1]["t"][:16]
     late = now.hour * 60 + now.minute >= 15 * 60 + 50
-    if rec.get("wwRide"):
-        if late and now.strftime("%Y-%m-%d") > (rec.get("wwRideAt") or "")[:10] and last["c"] < up:
+    riding = bool(rec.get("wwRide"))
+    if not riding and ht >= (since or "")[:16] and hc > up:
+        db.update(pk, rec["SK"], {"wwRide": True, "wwRideAt": ht})       # an hourly close above the upper band: ride
+        riding = True
+    if riding:
+        if late and last["c"] < up:
             return f"Keltner ride ended: closing {last['c']:.2f} under the upper band {up:.2f}"
         return f"time stop ({dte} days to expiry)" if dte <= 0 else None
     tgt = p.get("underlyingTarget")
-    if late and last["c"] > up:                       # the day closes above the upper band: ride it from tomorrow
-        db.update(pk, rec["SK"], {"wwRide": True, "wwRideAt": now.strftime("%Y-%m-%dT%H:%M")})
-        return None
     if tgt and last["h"] >= float(tgt) and last["c"] > up:
-        if not rec.get("wwTgtHit"):
-            db.update(pk, rec["SK"], {"wwTgtHit": now.strftime("%Y-%m-%dT%H:%M")})
-        return None                                   # target on a vertical candle: wait for the close
-    if rec.get("wwTgtHit"):
-        if late and last["c"] <= up:
-            return f"call wall {tgt} reached on a vertical move; closing {last['c']:.2f} under the upper Keltner band {up:.2f}"
-        return None                                   # wait for the day's close
+        return None                                   # target on a vertical move: wait for the hourly close (ride or not)
     return False
 
 

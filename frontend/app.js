@@ -1490,7 +1490,9 @@ function fcSvg0(d, id, opts) {
       const a0 = i0 == null ? 0 : i0, b0 = i1 == null ? a0 : i1, xa = i0 == null ? L : X(a0), xb = X(b0);
       const col = sg.status === 'target' || (['trail', 'flip', 'vwap', 'ema', 'keltner'].includes(sg.status) && sg.pct >= 0) ? 'var(--gain)' : ['stop', 'trail', 'flip', 'vwap', 'ema', 'keltner'].includes(sg.status) ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
       const sel = S.wwSel && S.wwSel.sym === d.symbol && S.wwSel.at === sg.at;
-      g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity="${sel ? .12 : .06}"/>`;
+      const dl = (sg.dlog || []).map(([dd, c, ku, fl, rid]) => `${dd.slice(5)} close ${c}` + (ku != null ? ` · upper Keltner ${ku}${c > ku ? ' (above' + (rid ? ', riding)' : ' → ride starts)') : rid ? ' (under → ride ends)' : ''}` : '') + (fl != null ? ` · flip ${fl}${c < fl ? (sg.aboveFlipAtEntry ? ' (under)' : ' (under, but the trade was entered under the flip: no flip exit)') : ''}` : ''));
+      const why = sg.status === 'open' ? `Open since ${sg.at.replace('T', ' ').slice(5)} · stop ${sg.stop}${sg.v && d.curV && sg.v !== d.curV ? ' · computed with older settings (press Get walls to recompute)' : ''}\nDaily closes:\n${dl.join('\n')}` : `${sg.status} ${(sg.exitAt || '').replace('T', ' ').slice(5)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%\nDaily closes:\n${dl.join('\n')}`;
+      g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity="${sel ? .12 : .06}"><title>${esc(why)}</title></rect>`;
       if (sg.target != null && sg.target >= lo && sg.target <= hi) g += `<line x1="${xa}" x2="${xb}" y1="${Y(sg.target)}" y2="${Y(sg.target)}" stroke="var(--gain)" stroke-width="2" opacity=".85"><title>target ${sg.target} (call wall ${sg.cw})</title></line>`;
       const steps = sg.stops || [[sg.at, sg.stop0 ?? sg.stop ?? sg.pw]];       // trailing stop: one segment per level
       steps.forEach(([t1, v], q) => { if (v == null || v < lo || v > hi) return;
@@ -2455,7 +2457,7 @@ const WW_RULES = [
   ['targetOn', 'Exit', 'Call wall target', 'Sell at the call wall − this %', ['ww-tbuf', 'tgtBuf', 0.1, 3.4, '%', 0.5]],
   ['flipExit', 'Exit', 'Close under flip', 'Sell when the day closes under the gamma flip (trades entered above it)'],
   ['vwapExit', 'Exit', 'Close under VWAP', 'Sell when an hourly candle closes under the anchored VWAP'],
-  ['kcRide', 'Exit', 'Keltner ride', 'A day closing above the upper Keltner band starts a ride: the call wall target and the other exits wait, and the trade is sold at the first daily close back under the upper band (the stop still applies). A target hit on a vertical candle waits for the day’s close.'],
+  ['kcRide', 'Exit', 'Keltner ride', 'An hourly close above the upper Keltner band starts a ride: the call wall target and the other exits wait, and the trade is sold at the first daily close under the upper band, the same day included (the stop still applies).'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
 const WW_CORE = ['usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide'];   // the validated strategy
