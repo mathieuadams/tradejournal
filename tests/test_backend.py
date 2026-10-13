@@ -2368,6 +2368,50 @@ def test_wall_watch_rule_switches():
     assert wallwatch.detect_retest(bars, ws, cfg={"vwapOn": True}, alerts=al, datr={"next": 2.0}, vwap_map={b["t"][:16]: 102.5 for b in bars})[0]
 
 
+def test_rule_tester():
+    """History loader + rule tester on synthetic data: base, rules, buckets and exits all come back."""
+    import charts, flowdata, wallwatch, backtest
+    import datetime as dt
+    from util import now_ny
+    sub = "rt-user"
+    wallwatch.save_config(sub, {"tickers": ["AAA"]})
+    today = now_ny().date()
+    days = []
+    d = today - dt.timedelta(days=200)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    hb, px = [], 100.0
+    import math
+    for i, day in enumerate(days):
+        for h in ("09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"):
+            k = len(hb)
+            o = px
+            px = 100 + 4 * math.sin(k / 15.0)
+            hb.append({"t": f"{day}T{h}", "o": o, "h": max(o, px) + 0.3, "l": min(o, px) - 0.3, "c": px, "v": 1000 + (k % 7) * 10})
+    db_ = []
+    for day in days:
+        db_.append({"t": f"{day}T09:30", "o": 100, "h": 104, "l": 96, "c": 100, "v": 1e6})
+    saved = (charts._yahoo, flowdata.stored_walls, backtest.stored_alerts)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else db_
+        flowdata.stored_walls = lambda sym: {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
+        backtest.stored_alerts = lambda sub_, sym: [{"t": f"{day}T10:00", "c": 1, "p": 900000} for day in days[::3]]
+        out = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5})
+        base = out["rules"][0]
+        assert base["key"] == "base" and base["n"] > 5, base
+        assert {r["key"] for r in out["rules"]} >= {"base", "greenOnly", "vwapOn", "emaOverVwap", "mine"}
+        assert out["exits"][0]["n"] == out["rules"][-1]["n"]          # fixed exit on your entry = "Your entry settings"
+        assert any(b["group"] == "Call alert" and b["n"] for b in out["buckets"])
+        assert base["h1n"] + base["h2n"] == base["n"]
+        assert backtest.test_result(sub)["rules"][0]["n"] == base["n"]
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts = saved
+    st = backtest.start_history(sub, 120)
+    assert st["running"] and st["days"] == 120
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

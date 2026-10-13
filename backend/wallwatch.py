@@ -239,14 +239,24 @@ RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (af
 
 
 def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None):
-    """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip."""
+    """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
+    Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held)."""
+    if s.get("maxDays") and b["t"][:10] != s.get("_dd"):
+        s["_dd"] = b["t"][:10]
+        s["_dn"] = s.get("_dn", -1) + 1
     if b["l"] <= s["stop"]:
         s.update(status="trail" if s.get("stops") else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
         return
     if s.get("target") and b["h"] >= s["target"]:
         s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
         return
-    fl =(walls.get(b["t"][:10]) or {}).get("flip")
+    if s.get("fixT") and b["h"] >= s["fixT"]:
+        s.update(status="R", exitAt=b["t"][:16], exit=round(max(b["o"], s["fixT"]), 4))
+        return
+    if s.get("maxDays") and is_last and s.get("_dn", 0) >= int(s["maxDays"]):
+        s.update(status="time", exitAt=b["t"][:16], exit=b["c"])
+        return
+    fl = (walls.get(b["t"][:10]) or {}).get("flip")
     if flip_exit and is_last and s.get("aboveFlipAtEntry") and fl and b["c"] < float(fl):
         s.update(status="flip", exitAt=b["t"][:16], exit=b["c"])          # the day closed under the gamma flip
         return
@@ -434,6 +444,10 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
                  "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
                  "vwapExit": on("vwapExit"), "emaExit": on("emaExit")}
+            if P.get("fixR"):                          # backtest: fixed target at N x the risk
+                s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
+            if P.get("maxDays"):
+                s["maxDays"], s["_dd"], s["_dn"] = int(P["maxDays"]), day, 0
             sigs.append(s)
             open_, watch = s, None
     for s in sigs:
@@ -441,7 +455,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         i0 = s.pop("i0")                               # the same entry with the other choice for the daily flip exit
-        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae")}
+        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn")}
+        if alt.get("maxDays"):
+            alt["_dd"], alt["_dn"] = alt["at"][:10], 0
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
         for j in range(i0 + 1, len(bars)):
             _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j])
@@ -695,7 +711,7 @@ def _weekdays(n, today):
     return sorted(out)
 
 
-def walls_todo(tickers, days=45):
+def walls_todo(tickers, days=45, need_mp=True):
     """(ticker, date) pairs whose call wall / put wall / flip aren't stored yet. Days with no data (holidays) count as done."""
     today = now_ny().date()
     dates = _weekdays(days, today)
@@ -711,15 +727,17 @@ def walls_todo(tickers, days=45):
             data = (r or {}).get("data")
             if d == ts:
                 continue                                # today: refreshed by the hourly check
-            if r and d in mp and (data is None or (data.get("callWall") is not None and data.get("flip") is not None and not data.get("noflip"))):
+            if r and (d in mp or not need_mp) and (data is None or (data.get("callWall") is not None and data.get("flip") is not None and not data.get("noflip"))):
                 continue
             todo.append((sym, d))
     return todo, len(dates) * len(tickers)
 
 
-def _walls_and_mp(key, sym, d):
+def _walls_and_mp(key, sym, d, mp=True):
     import flowdata
     w = flowdata.gex_day(key, sym, d, True)
+    if not mp:
+        return w
     try:
         maxpain_day(key, sym, d)
     except Exception as e:
@@ -727,7 +745,7 @@ def _walls_and_mp(key, sym, d):
     return w
 
 
-def fill_walls(sub, days=45, budget_s=480, ticker=None):
+def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
     """Fetch the walls and the flip of every day for every watchlist ticker (or one ticker), as many as the time allows."""
     import flowdata
     from concurrent.futures import ThreadPoolExecutor
@@ -735,8 +753,8 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None):
     pk = db.upk(sub)
     cfg = config(sub)
     key = flowdata._key(sub)
-    sk = f"WWFILL#{ticker}" if ticker else "WWFILL"
-    todo, total = walls_todo([ticker] if ticker else cfg["tickers"], days)
+    sk = sk or (f"WWFILL#{ticker}" if ticker else "WWFILL")
+    todo, total = walls_todo([ticker] if ticker else cfg["tickers"], days, need_mp=mp)
     db.put({"PK": pk, "SK": sk, "running": iso(now_ny()), "total": total, "left": len(todo), "days": days,
             "at": (db.get(pk, sk) or {}).get("at")})
     done, errors = 0, []
@@ -744,7 +762,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None):
         for k in range(0, len(todo), 12):
             if time.time() - t0 > budget_s:
                 break
-            futs = [(t, ex.submit(_walls_and_mp, key, t[0], t[1])) for t in todo[k:k + 12]]
+            futs = [(t, ex.submit(_walls_and_mp, key, t[0], t[1], mp)) for t in todo[k:k + 12]]
             for t, f in futs:
                 try:
                     f.result()
@@ -754,7 +772,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None):
     left = max(0, len(todo) - done - len(errors))
     out = {"PK": pk, "SK": sk, "running": None, "total": total, "left": left, "fetched": done, "days": days,
            "errors": errors[:5], "at": iso(now_ny())}
-    if ticker and not left:                              # the ticker's signals over those days
+    if ticker and not left and mp:                       # the ticker's signals over those days
         try:
             check_ticker(sub, key, ticker, days, now_ny().replace(tzinfo=None))
         except Exception as e:

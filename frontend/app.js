@@ -2502,6 +2502,53 @@ async function runWatch(days) {
   let n = 0; const tick = async () => { n++; await loadWatch(); if (S.ww && S.ww.run && S.ww.run.running && n < 12 && route() === 'botwatch') setTimeout(tick, 30000); };
   setTimeout(tick, 30000);
 }
+/* ---------- rule tester: one fixed exit, every rule measured on the history ---------- */
+async function loadRuleTest(poll) {
+  S.rtBusy = true;
+  try { S.rt = await api('/bot/wallwatch/ruletest'); } catch (e) { S.rt = { error: e.message }; }
+  S.rtBusy = false;
+  if (route() === 'botwatch') render();
+  const t = (S.rt && S.rt.test) || {}, hs = (S.rt && S.rt.history) || {};
+  clearTimeout(S.rtPoll);
+  if ((t.running || hs.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
+}
+function wwRuleTester() {
+  const r = S.rt || {}, t = r.test || {}, hs = r.history || {}, P = t.params || {};
+  const num = (id, v, step, w) => `<input id="${id}" type="number" step="${step}" min="0" value="${v}" style="width:${w}em;padding:1px 4px">`;
+  const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const base = (t.rules || [])[0] || {};
+  const verdict = (x, ref) => {
+    ref = ref || base;
+    if (!x.n) return '<span class="muted">no trade</span>';
+    if (x.n < 30) return '<span class="muted">too few trades</span>';
+    if (x === ref) return '<span class="muted">reference</span>';
+    const up1 = x.h1 != null && ref.h1 != null && x.h1 > ref.h1, up2 = x.h2 != null && ref.h2 != null && x.h2 > ref.h2;
+    return up1 && up2 && x.avgR > 0 ? '<b class="gain">helps in both halves</b>' : up1 || up2 ? '<span style="color:var(--warn)">one half only: noise?</span>' : '<span class="loss">doesn’t help</span>';
+  };
+  const row = (x, label, ref) => `<tr><td>${esc(label || x.label)}</td><td class="r">${x.n || 0}</td><td class="r">${x.win ?? '—'}${x.win != null ? '%' : ''}</td><td class="r">${R(x.avgR)}</td><td class="r">${x.totR ?? '—'}</td>
+    <td class="r">${R(x.h1)} <span class="muted" style="font-size:.75rem">${x.h1n ?? ''}</span></td><td class="r">${R(x.h2)} <span class="muted" style="font-size:.75rem">${x.h2n ?? ''}</span></td><td>${verdict(x, ref)}</td></tr>`;
+  const thead = first => `<thead><tr><th>${first}</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">1st half</th><th class="r">2nd half</th><th></th></tr></thead>`;
+  const oldest = Object.values(hs.oldest || {}).filter(Boolean).sort()[0];
+  const hsTxt = hs.running ? `<span class="loading" style="padding:0">loading history… alerts ${(hs.alertsDone || []).length} tickers${hs.wallsTotal ? ` · walls ${hs.wallsTotal - (hs.wallsLeft || 0)} / ${hs.wallsTotal} days` : ''}</span>`
+    : hs.finishedAt ? `<span class="muted">history loaded ${esc((hs.finishedAt || '').slice(5, 16).replace('T', ' '))} (${hs.days} days asked${oldest ? `, oldest call alert ${esc(oldest)}` : ''})</span>` : '<span class="muted">no history loaded yet: 45 days only</span>';
+  const groups = {};
+  (t.buckets || []).forEach(b => { (groups[b.group] = groups[b.group] || []).push(b); });
+  const body = t.running ? '<p class="loading">Testing every rule on the history… (a few minutes)</p>' : !t.rules ? '<p class="muted">Load the history, then run the test.</p>' : `
+    <p class="muted" style="margin:6px 0">${t.tickers} tickers · ${t.alerts} call alerts · ${esc(t.period.from)} → ${esc(t.period.to)} (halves split at ${esc(t.period.mid)}) · exit: stop ${t.params.stopAtr} ATR under the support, target ${t.params.fixR}R${t.params.maxDays ? `, or sold after ${t.params.maxDays} days` : ''}. Earnings aren’t tested (no history).</p>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.85rem">${thead('Entry rules (each added alone to the base)')}<tbody>${(t.rules || []).map(x => row(x)).join('')}</tbody></table></div>
+    <div style="overflow-x:auto;margin-top:10px"><table class="pos" style="font-size:.85rem">${thead('Base split by')}<tbody>${Object.entries(groups).map(([g, bs]) => `<tr><td colspan="8" style="padding-top:8px"><b>${esc(g)}</b></td></tr>` + bs.map(b => row(b, b.label)).join('')).join('')}</tbody></table></div>
+    <div style="overflow-x:auto;margin-top:10px"><table class="pos" style="font-size:.85rem">${thead('Exits (on your entry settings)')}<tbody>${(t.exits || []).map(x => row(x, null, t.exits[0])).join('')}</tbody></table></div>
+    ${(t.bySymbol || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">By ticker (your entry settings)</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.85rem">${thead('Ticker')}<tbody>${t.bySymbol.map(x => row(x, x.sym, { h1: 0, h2: 0 })).join('')}</tbody></table></div></details>` : ''}
+    ${(t.errors || []).length ? `<p class="loss" style="font-size:.85rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+  return `<section class="panel" style="margin:0 0 14px"><h2>Rule tester</h2>
+    <p class="muted" style="margin:0 0 8px">Every rule measured on the same trades with one fixed exit. A rule is worth keeping only if it raises the average R in <b>both halves</b> of the period with at least 30 trades.</p>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:.85rem">
+      <b>History</b> ${num('rt-hdays', hs.days || 250, 10, 4.2)} trading days <button class="btn" data-rthist ${hs.running ? 'disabled' : ''}>Load history</button> ${hsTxt}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:.85rem;margin-top:6px">
+      <b>Test</b> last ${num('rt-days', P.days || 250, 10, 4.2)} days · stop ${num('rt-stop', P.stopAtr ?? ((S.ww && S.ww.config && S.ww.config.stopAtr) || 0.5), 0.1, 3.6)} ATR · target ${num('rt-fixr', P.fixR ?? 2, 0.5, 3.4)} R · sell after ${num('rt-maxd', P.maxDays ?? 5, 1, 3)} days
+      <button class="btn coachbtn" data-rtrun ${t.running ? 'disabled' : ''}>Run the test</button>${t.at && !t.running ? ` <span class="muted">last run ${esc(t.at.slice(5, 16).replace('T', ' '))} · ${t.secs}s</span>` : ''}</div>
+    ${body}</section>`;
+}
 function vWatch() {
   const h = head('Wall watch', 'Flow retest: a call alert of at least the chosen size arms the ticker; then, within the chosen days, the support is the highest put wall / call wall / flip under each candle’s close, and a green hourly candle whose low comes back to it (within the zone) and closes above it is the entry. No entry when the candle opens or closes above the call wall. Stop: support − N × the 30-day ATR, then a trailing stop N × ATR under the highest high (never down). Target: the call wall when it is above the entry. Every minute, tickers with unusual call flow join the list.', '');
   const d = S.ww;
@@ -2559,7 +2606,7 @@ function vWatch() {
     ${ps.map(p0 => `<tr><td><b>${esc(p0.symbol)}</b>${p0.wallwatch ? ` <span class="exchip">${p0.kind === 'retest' ? 'retest' : 'wall watch'}</span>` : ''}</td><td>${p0.strike ? esc(String(p0.strike)) + 'C ' : ''}${esc(p0.exp || '')}</td><td class="r">${p0.qty ?? ''}</td><td class="r">${p0.fill ?? (p0.limit ? 'limit ' + p0.limit : '—')}</td><td class="r">${p0.mark ?? '—'}</td>
       <td class="r ${(p0.pl || 0) >= 0 ? 'gain' : 'loss'}">${p0.pl != null ? money(p0.pl) : '—'}${p0.plPct != null ? ` (${p0.plPct >= 0 ? '+' : ''}${p0.plPct}%)` : ''}</td><td class="r">${p0.under != null ? (+p0.under).toFixed(2) : '—'}</td><td class="r">${p0.stop ?? '—'}</td><td class="r">${p0.target ?? '<span class="muted">trail</span>'}</td><td>${esc(p0.status)}</td>
       <td><button class="btn" data-wwchart="${esc(p0.symbol)}|" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No open position.</p>'}</section>`;
-  return h + runLine + posBox + stats + kinds + rtBox + flowBox + sigTable + by + now;
+  return h + runLine + posBox + wwRuleTester() + stats + kinds + rtBox + flowBox + sigTable + by + now;
 }
 function vExplore() {
   const d = S.ex;
@@ -2897,7 +2944,7 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
     if ((!S.botEvals || S.botEvals.mode !== mode) && S.evLoading !== mode) { S.evLoading = mode; loadEvals(1).finally(() => { S.evLoading = null; }); }
   }],
   botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }],
-  botwatch: [vWatch, () => { if (!S.ww) loadWatch(); }],
+  botwatch: [vWatch, () => { if (!S.ww) loadWatch(); if (!S.rt && !S.rtBusy) loadRuleTest(); }],
   botchart: [vChartFull, () => { if (!S.tickers && !S.tkBusy) loadTickers();
     const h = document.querySelector('.fcf-head'), inf = document.querySelector('.fcf-info');      // fit the chart to what's left
     const hh = h ? h.offsetHeight : 0, ih = inf ? inf.offsetHeight + 8 : 0;
@@ -2922,7 +2969,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2989,6 +3036,17 @@ document.addEventListener('click', e => {
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
+  if (el.hasAttribute('data-rthist')) {
+    const days = parseFloat(($('#rt-hdays') || {}).value) || 250;
+    api('/bot/wallwatch/history', { method: 'POST', body: { days } }).then(h => { S.rt = { ...(S.rt || {}), history: h }; toast('Loading the history in the background: this can take an hour or more (Unusual Whales limits)'); loadRuleTest(); }).catch(err => toast(err.message));
+    return;
+  }
+  if (el.hasAttribute('data-rtrun')) {
+    const v = id => { const x = parseFloat(($(id) || {}).value); return isNaN(x) ? undefined : x; };
+    const body = { days: v('#rt-days'), stopAtr: v('#rt-stop'), fixR: v('#rt-fixr'), maxDays: v('#rt-maxd') };
+    api('/bot/wallwatch/ruletest', { method: 'POST', body }).then(() => { S.rt = { ...(S.rt || {}), test: { ...((S.rt || {}).test || {}), running: 'now' } }; render(); loadRuleTest(); }).catch(err => toast(err.message));
+    return;
+  }
   if (el.dataset.wwtk) { wwTkFill(el.dataset.wwtk); return; }
   if (el.dataset.wwfill) { wwFill(); return; }
   if (el.dataset.wwrun) { runWatch(+el.dataset.wwrun); return; }

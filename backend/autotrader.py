@@ -1672,6 +1672,26 @@ def handler(event, context_):
                 except Exception as e:
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "error", "at": iso(now_ny()), "result": {"error": str(e)[:200]}})
                     raise
+            elif job == "wwhist":                        # history for the rule tester: one round, then the next
+                import backtest
+                try:
+                    more = backtest.load_history(sub)
+                    out[sub] = {"more": more}
+                    if more:
+                        backtest.continue_history(sub)
+                except Exception as e:
+                    st = db.get(db.upk(sub), backtest.HIST_SK) or {}
+                    db.put({**st, "PK": db.upk(sub), "SK": backtest.HIST_SK, "running": None,
+                            "errors": (list(st.get("errors") or []) + [str(e)[:160]])[-8:], "at": iso(now_ny())})
+                    raise
+            elif job == "wwruletest":
+                import backtest
+                try:
+                    out[sub] = {"n": len(backtest.rule_test(sub, event.get("params") or {}).get("rules") or [])}
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), backtest.TEST_SK) or {}), "PK": db.upk(sub), "SK": backtest.TEST_SK,
+                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
             elif job == "wwflowstudy":
                 import wallwatch
                 try:

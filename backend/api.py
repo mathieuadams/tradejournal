@@ -468,6 +468,44 @@ def bot_wallwatch_walls(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("GET", "/bot/wallwatch/ruletest")
+def bot_ruletest_get(sub, claims, body, q):
+    import backtest
+    return {"test": backtest.test_result(sub), "history": backtest.hist_status(sub)}
+
+
+@route("POST", "/bot/wallwatch/history")
+def bot_history(sub, claims, body, q):
+    """Load the call alerts and the walls of the last `days` trading days for every watchlist ticker (background)."""
+    import backtest
+    try:
+        days = int((body or {}).get("days") or 250)
+    except (TypeError, ValueError):
+        days = 250
+    st = backtest.start_history(sub, days)
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwhist"}))
+    return st
+
+
+@route("POST", "/bot/wallwatch/ruletest")
+def bot_ruletest(sub, claims, body, q):
+    import backtest
+    b = body or {}
+    params = {}
+    for k, lo, hi in (("days", 30, 500), ("stopAtr", 0.1, 5), ("fixR", 0, 10), ("maxDays", 0, 30)):
+        if b.get(k) not in (None, ""):
+            try:
+                params[k] = max(lo, min(hi, float(b[k])))
+            except (TypeError, ValueError):
+                pass
+    cur = backtest.test_result(sub)
+    db.put({"PK": db.upk(sub), "SK": backtest.TEST_SK, **cur, "running": iso(now_ny()), "params": params})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwruletest", "params": params}))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/wallwatch/run")
 def bot_wallwatch_run(sub, claims, body, q):
     """Check the watchlist now (days=3) or backfill the last `days` trading days (background job)."""
