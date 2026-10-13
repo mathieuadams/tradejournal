@@ -27,7 +27,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # rule switches (on/off) for the flow retest
           "usePW": True, "useFlip": True, "greenOnly": True, "noAboveCW": True, "cwRoomOn": True, "earnOn": True,
           "vwapOn": False, "emaOn": False, "emaLen": 20, "stopOn": True, "trailOn": True, "targetOn": True,
-          "vwapExit": False, "emaExit": False}   # tgtBuf: % under the call wall
+          "vwapExit": False, "emaExit": False, "emaOverVwap": False}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -53,7 +53,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap")
 
 
 def save_config(sub, body):
@@ -413,6 +413,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 continue                               # rule on: the close must be above the VWAP
             if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
                 continue                               # rule on: the close must be above the EMA
+            if on("emaOverVwap") and not (ema[i] is not None and vwap[i] is not None and ema[i] > vwap[i]):
+                continue                               # rule on: the EMA must be above the VWAP
             if on("noAboveCW") and cw_ and (b["o"] > cw_ or b["c"] > cw_):
                 continue                               # opening or closing above the call wall: no entry
             if cw_ and cw_room and cw_ - b["c"] < cw_room * a_:
@@ -1179,6 +1181,8 @@ def retest_table(sigs):
         ("Entry below the VWAP", lambda x: x.get("vwap") is not None and x["entry"] <= x["vwap"]),
         ("Entry above the EMA", lambda x: x.get("ema") is not None and x["entry"] > x["ema"]),
         ("Entry below the EMA", lambda x: x.get("ema") is not None and x["entry"] <= x["ema"]),
+        ("EMA above the VWAP", lambda x: x.get("ema") is not None and x.get("vwap") is not None and x["ema"] > x["vwap"]),
+        ("EMA below the VWAP", lambda x: x.get("ema") is not None and x.get("vwap") is not None and x["ema"] <= x["vwap"]),
         ("Entry above the gamma flip", lambda x: x.get("flip") is not None and x["entry"] > x["flip"]),
         ("Entry below the gamma flip", lambda x: x.get("flip") is not None and x["entry"] <= x["flip"]),
         ("Call wall target above the entry", lambda x: bool(x.get("target"))),
