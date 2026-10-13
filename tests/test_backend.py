@@ -2350,6 +2350,18 @@ def test_wall_watch_rule_switches():
     assert not wallwatch.detect_retest(red, {"2026-10-05": w}, alerts=al, datr={"next": 2.0})[0]
     assert wallwatch.detect_retest(red, {"2026-10-05": w}, cfg={"greenOnly": False}, alerts=al, datr={"next": 2.0})[0]
     assert wallwatch.version({**wallwatch.PARAMS, "vwapOn": True}) != wallwatch.version(wallwatch.PARAMS)
+    # exits on an hourly close under the VWAP / EMA
+    after = bars[:3] + [{"t": "2026-10-06T09:30", "o": 103, "h": 103.5, "l": 102.2, "c": 102.4},
+                        {"t": "2026-10-06T10:30", "o": 102.4, "h": 104, "l": 102.3, "c": 103.9}]
+    em = {b["t"][:16]: 102.8 for b in after}
+    x = wallwatch.detect_retest(after, ws, cfg={"emaExit": True, "trailOn": False}, alerts=al, datr={"next": 2.0}, ema_map=em)[0][0]
+    assert x["status"] == "ema" and x["exit"] == 102.4 and x["exitAt"] == "2026-10-06T09:30", x
+    vm = {b["t"][:16]: 102.8 for b in after}
+    assert wallwatch.detect_retest(after, ws, cfg={"vwapExit": True, "trailOn": False}, alerts=al, datr={"next": 2.0}, vwap_map=vm)[0][0]["status"] == "vwap"
+    assert wallwatch.detect_retest(after, ws, cfg={"trailOn": False}, alerts=al, datr={"next": 2.0}, vwap_map=vm)[0][0]["status"] == "open"
+    # entry rule: close above the VWAP
+    assert not wallwatch.detect_retest(bars, ws, cfg={"vwapOn": True}, alerts=al, datr={"next": 2.0}, vwap_map={b["t"][:16]: 104.0 for b in bars})[0]
+    assert wallwatch.detect_retest(bars, ws, cfg={"vwapOn": True}, alerts=al, datr={"next": 2.0}, vwap_map={b["t"][:16]: 102.5 for b in bars})[0]
 
 
 if __name__ == "__main__":

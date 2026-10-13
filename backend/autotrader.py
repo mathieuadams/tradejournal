@@ -1221,6 +1221,23 @@ def _wallwatch_exit(sub, rec, p):
             print("flip exit check failed", rec.get("symbol"), e)
     if p.get("underlyingTarget") and last["h"] >= float(p["underlyingTarget"]):
         return f"call wall {p['underlyingTarget']} reached ({last['h']:.2f})"
+    if ww.get("vwapExit") or ww.get("emaExit"):       # hourly close under the VWAP / EMA (last finished hourly candle)
+        try:
+            import wallwatch
+            hb = _yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=60), now + timedelta(hours=1)) or []
+            hb = wallwatch.finished(hb, now.replace(tzinfo=None))
+            if hb and hb[-1]["t"][:16] >= since[:13]:
+                h = hb[-1]
+                if ww.get("vwapExit"):
+                    vv = wallwatch.anchored_vwap(hb, int(ww.get("vwapDays") or wallwatch.VWAP_DAYS))[0][-1]
+                    if vv is not None and h["c"] < vv:
+                        return f"hourly close {h['c']:.2f} under the VWAP {vv:.2f}"
+                if ww.get("emaExit"):
+                    ev = wallwatch._ema_series([b["c"] for b in hb], int(ww.get("emaLen") or 20))[-1]
+                    if ev is not None and h["c"] < ev:
+                        return f"hourly close {h['c']:.2f} under the EMA{int(ww.get('emaLen') or 20)} {ev:.2f}"
+        except Exception as e:
+            print("vwap/ema exit check failed", rec.get("symbol"), e)
     if dte <= 0:
         return f"time stop ({dte} days to expiry)"
     return None
