@@ -2541,6 +2541,35 @@ def test_skew_history():
     assert backtest.skew_features(sk, sorted(sk)[5]) is None   # not enough history before
 
 
+def test_darkpool_history():
+    """Dark pool history: every day fetched once, packed by month; features known before the entry day."""
+    import backtest, flowdata, charts
+    import datetime as dt
+    from util import now_ny
+    seen = []
+    def fake_day(key, sym, d, floor):
+        seen.append(d)
+        return [{"t": f"{d}T10:00", "price": 100.0 + (hash(d) % 3) * 0.1, "size": 10**7, "premium": 5e8, "side": None},
+                {"t": f"{d}T11:00", "price": 110.0, "size": 10**7, "premium": 1e8, "side": None}]
+    saved = (flowdata.darkpool_day, charts._yahoo)
+    try:
+        flowdata.darkpool_day = fake_day
+        charts._yahoo = lambda *a, **k: [{"t": (now_ny().date() - dt.timedelta(days=k)).isoformat() + "T09:30", "o": 1, "h": 1, "l": 1, "c": 100, "v": 1e6} for k in range(40, 0, -1)]
+        n = backtest.fetch_darkpool("k", "DPX", 60)
+        assert n and n == len(seen)
+        before = len(seen)
+        assert backtest.fetch_darkpool("k", "DPX", 60) == n and len(seen) == before    # stored: nothing fetched again
+    finally:
+        flowdata.darkpool_day, charts._yahoo = saved
+    pr = backtest.stored_darkpool("DPX")
+    assert len(pr) == 2 * n and pr == sorted(pr, key=lambda x: x["t"])
+    day = (now_ny().date()).isoformat()
+    f = backtest.dp_features(pr, day, entry=101.0, support=100.0, target=112.0, atr=2.0)
+    assert f["dpNear"] is True and f["dpWay"] is True and f["dpAct"] > 0
+    g = backtest.dp_features(pr, day, entry=101.0, support=90.0, target=105.0, atr=2.0)
+    assert g["dpNear"] is False and g["dpWay"] is False
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

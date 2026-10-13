@@ -143,6 +143,73 @@ def skew_features(skew, day):
     return {"skew": v, "skewPct": round(pct), "skewChg": round(chg, 4) if chg is not None else None}
 
 
+# ---------------- dark pool history (prints >= 0.25% of the average daily volume) ----------------
+
+DP_PK = "UWDPH"              # compact prints by ticker and month: [[time, price, premium], ...]
+
+
+def fetch_darkpool(key, sym, days=250, budget_end=None):
+    """Every day's big dark pool prints (one request per day, each day cached for good), packed by month.
+    Returns the number of days stored, or None when the time ran out (resume next round)."""
+    import flowdata
+    import wallwatch
+    from charts import _yahoo
+    meta = db.get(DP_PK, f"{sym}#META") or {}
+    if meta.get("ts") and time.time() - float(meta["ts"]) < 3 * 86400 and int(meta.get("days") or 0) >= days:
+        return int(meta.get("n") or 0)
+    now = now_ny().replace(tzinfo=None)
+    daily = [b for b in (_yahoo(sym.replace(".", "-"), "1d", now - timedelta(days=60), now + timedelta(days=1)) or [])
+             if b["t"][:10] < now.strftime("%Y-%m-%d") and b.get("v")]
+    _, _, min_sh, _, floor = wallwatch.dp_floor(daily)
+    dates = [d for d in wallwatch._weekdays(days, now.date()) if d < now.strftime("%Y-%m-%d")]
+    by_m, n = {}, 0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futs = [(d, pool.submit(flowdata.darkpool_day, key, sym, d, floor)) for d in dates]
+        for d, f in futs:
+            if budget_end and time.time() > budget_end:
+                pool.shutdown(wait=False, cancel_futures=True)
+                return None
+            prints = f.result()
+            n += 1
+            keep = [[p["t"], p["price"], p["premium"]] for p in prints if not min_sh or p["size"] >= min_sh]
+            if keep:
+                by_m.setdefault(d[:7], []).extend(keep)
+    for m, rows in by_m.items():
+        rows.sort()
+        db.put({"PK": DP_PK, "SK": f"{sym}#{m}", "prints": rows[-3000:]})
+    db.put({"PK": DP_PK, "SK": f"{sym}#META", "days": days, "n": n, "floor": floor, "minShares": round(min_sh or 0),
+            "at": iso(now_ny()), "ts": int(time.time())})
+    return n
+
+
+def stored_darkpool(sym):
+    out = []
+    for r in db.q_prefix(DP_PK, f"{sym}#"):
+        if not r["SK"].endswith("#META"):
+            out += [{"t": x[0], "price": float(x[1]), "premium": float(x[2])} for x in r.get("prints") or []]
+    out.sort(key=lambda x: x["t"])
+    return out
+
+
+def dp_features(prints, day, entry, support, target, atr):
+    """Dark pool known before `day`: top 5 levels of the previous 45 trading days (as on the chart),
+    a level near the support, a level between the entry and the target, and the last 5 days' activity vs normal."""
+    import flowdata
+    if not prints or not atr:
+        return None
+    d0 = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=66)).strftime("%Y-%m-%d")
+    win = [p for p in prints if d0 <= p["t"][:10] < day]
+    if len(win) < 5:
+        return None
+    levels = flowdata.dp_levels(win, 5)
+    near = any(abs(lv["price"] - support) <= 0.5 * atr for lv in levels)
+    way = any(entry + 0.25 * atr < lv["price"] < target for lv in levels) if target else None
+    d5 = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+    last5 = sum(p["premium"] for p in win if p["t"][:10] >= d5)
+    avg5 = sum(p["premium"] for p in win) / max(1.0, len({p["t"][:10] for p in win})) * 5
+    return {"dpNear": near, "dpWay": way, "dpAct": round(last5 / avg5, 2) if avg5 else None}
+
+
 def hist_status(sub):
     st = db.get(db.upk(sub), HIST_SK) or {}
     return {k: v for k, v in st.items() if k not in ("PK", "SK")}
@@ -199,7 +266,23 @@ def load_history(sub, budget_s=520):
                 errors.append(f"{sym} skew: {str(e)[:80]}")
             skew_done.add(sym)
         st["skewDone"] = sorted(skew_done)
-    more = len(done) < len(tickers) or left > 0 or len(skew_done) < len(tickers)
+    dp_done = set(st.get("dpDone") or [])
+    if len(done) >= len(tickers) and not left and len(skew_done) >= len(tickers):
+        import flowdata
+        key = flowdata._key(sub)
+        for sym in [t for t in tickers if t not in dp_done]:
+            if time.time() - t0 > budget_s - 20:
+                break
+            try:
+                n = fetch_darkpool(key, sym, days, t0 + budget_s)
+                if n is None:
+                    break                              # out of time: this ticker resumes next round (cached days are skipped)
+                st["dpDays"] = {**(st.get("dpDays") or {}), sym: n}
+            except Exception as e:
+                errors.append(f"{sym} dark pool: {str(e)[:80]}")
+            dp_done.add(sym)
+        st["dpDone"] = sorted(dp_done)
+    more = len(done) < len(tickers) or left > 0 or len(skew_done) < len(tickers) or len(dp_done) < len(tickers)
     st.update(alertsDone=sorted(done), oldest=oldest, errors=errors[-8:], round=int(st.get("round") or 0) + 1,
               at=iso(now_ny()), running=iso(now_ny()) if more and int(st.get("round") or 0) < 80 else None)
     if not st["running"]:
@@ -257,18 +340,23 @@ def _ticker_data(sub, sym, days, cfg):
     vw, _ = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))
     em = wallwatch._ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20))
     kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
-    return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym), "skew": stored_skew(sym),
+    return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym), "skew": stored_skew(sym), "dp": stored_darkpool(sym),
             "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
             "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now)}}
 
 
 def _run(sym, data, cfg, first):
     rows = _run0(sym, data, cfg, first)
-    sk = data.get("skew") or {}
+    sk, dp = data.get("skew") or {}, data.get("dp") or []
     for r in rows:
         f = skew_features(sk, r["at"][:10]) if sk else None
         if f:
             r.update(f)
+        g = dp_features(dp, r["at"][:10], r["entry"], r["support"], r["cw"], r["atr"]) if dp else None
+        if g:
+            r.update(g)
+        for k in ("entry", "support", "cw", "atr"):
+            r.pop(k, None)
     return rows
 
 
@@ -282,6 +370,7 @@ def _run0(sym, data, cfg, first):
             continue                                   # still-open trades count at their last price (marked to market)
         cw = s.get("cw")
         out.append({"sym": sym, "at": s["at"], "R": s["R"], "pct": s["pct"], "exit": s["status"], "level": s.get("levelName"),
+                    "entry": s["entry"], "support": s.get("level"), "cw": cw, "atr": s.get("atr"),
                     "prem": s.get("armPremium") or 0, "room": round((cw - s["entry"]) / s["atr"], 2) if cw and s.get("atr") else None,
                     "waitH": round((datetime.strptime(s["at"], "%Y-%m-%dT%H:%M") - datetime.strptime(s["armedAt"][:16], "%Y-%m-%dT%H:%M")).total_seconds() / 3600, 1) if s.get("armedAt") else None,
                     "hour": s["at"][11:16], "spy": s.get("spy"),
@@ -310,6 +399,7 @@ BUCKETS = [
     ("Room to the call wall (ATR)", "room", [(-1e9, 0.5, "< 0.5"), (0.5, 1, "0.5–1"), (1, 2, "1–2"), (2, 1e9, "2+")]),
     ("Wait after the alert", "waitH", [(-1, 7, "same day"), (7, 48, "1–2 days"), (48, 1e9, "3+ days")]),
     ("Skew (25Δ put IV − call IV) vs its last 6 months", "skewPct", [(-1, 33.4, "low: calls bid (bullish demand)"), (33.4, 66.7, "normal"), (66.7, 101, "high: puts bid (fear)")]),
+    ("Dark pool activity, last 5 days vs the previous 2 months", "dpAct", [(-1, 0.7, "quiet (< 0.7×)"), (0.7, 1.5, "normal"), (1.5, 1e9, "heavy (> 1.5×)")]),
     ("Skew change over 5 days", "skewChg", [(-1e9, -0.005, "falling: puts cheaper"), (-0.005, 0.005, "flat"), (0.005, 1e9, "rising: puts richer")]),
 ]
 
@@ -380,9 +470,11 @@ def rule_test(sub, params=None, budget_s=540):
             buckets.append({"group": title, "label": lab, **_stats(rows, mid)})
     for title, key, labs in (("Keltner channel (21, 3)", "kcPos", ("below lower", "lower–mid", "mid–upper", "above upper")),
                              ("Opening range (09:30–10:30)", "orbPos", ("first hour", "below ORB low", "inside ORB", "above ORB high")),
-                             ("SPY trend (6 days)", "spy", (1, -1))):
+                             ("SPY trend (6 days)", "spy", (1, -1)),
+                             ("Dark pool level within 0.5 ATR of the support", "dpNear", (True, False)),
+                             ("Dark pool level between the entry and the call wall", "dpWay", (True, False))):
         for lab in labs:
-            buckets.append({"group": title, "label": {1: "up", -1: "down"}.get(lab, lab) if key == "spy" else lab,
+            buckets.append({"group": title, "label": {1: "up", -1: "down"}.get(lab, lab) if key == "spy" else ({True: "yes", False: "no"}[lab] if isinstance(lab, bool) else lab),
                             **_stats([r for r in base_rows if r.get(key) == lab], mid)})
     for lab, f_ in (("First hour (09:30)", lambda r: r["hour"] == "09:30"), ("Later in the day", lambda r: r["hour"] != "09:30")):
         buckets.append({"group": "Entry candle", "label": lab, **_stats([r for r in base_rows if f_(r)], mid)})

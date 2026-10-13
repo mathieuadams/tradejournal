@@ -1101,6 +1101,17 @@ def chart(sub, sym, days=45, flow=True):
             "maxPainMissing": sum(1 for d in dates if d != today and d not in mpd)}
 
 
+def dp_floor(daily, pct=0.25):
+    """Dark pool size floor from the 30-day average daily volume: (adv, price, min shares, $ at min shares, $ floor)."""
+    vols = [b["v"] for b in daily[-30:] if b.get("v")]
+    adv = sum(vols) / len(vols) if vols else None
+    price = daily[-1]["c"] if daily else None
+    min_sh = adv * pct / 100 if adv else None
+    dollars = (min_sh * price) if min_sh and price else 2_000_000
+    floor = max([x for x in (250_000, 500_000, 1e6, 2e6, 5e6, 10e6, 25e6, 50e6, 100e6) if x <= dollars * 0.8] or [250_000])
+    return adv, price, min_sh, dollars, floor
+
+
 def darkpool(sub, sym, min_pct=None, days=45):
     """Dark pool prints of the last `days` trading days whose size is at least `min_pct` % of the 30-day average daily
     volume (default 0.25%), with the side (bought at the ask / sold at the bid) and the top levels."""
@@ -1111,12 +1122,7 @@ def darkpool(sub, sym, min_pct=None, days=45):
     now = now_ny().replace(tzinfo=None)
     daily = _yahoo(sym.replace(".", "-"), "1d", now - timedelta(days=60), now + timedelta(days=1)) or []
     daily = [b for b in daily if b["t"][:10] < now.strftime("%Y-%m-%d") and b.get("v")]
-    vols = [b["v"] for b in daily[-30:]]
-    adv = sum(vols) / len(vols) if vols else None
-    price = daily[-1]["c"] if daily else None
-    min_sh = adv * pct / 100 if adv else None
-    dollars = (min_sh * price) if min_sh and price else 2_000_000
-    floor = max([x for x in (250_000, 500_000, 1e6, 2e6, 5e6, 10e6, 25e6, 50e6, 100e6) if x <= dollars * 0.8] or [250_000])
+    adv, price, min_sh, dollars, floor = dp_floor(daily, pct)
     out = flowdata.darkpool(sub, sym, _weekdays(days, now_ny().date()), floor)     # fetched with a round $ floor (cached)
     prints = [p for p in out.get("prints") or [] if not min_sh or p["size"] >= min_sh]
     buy = sum(p["premium"] for p in prints if p.get("side") == "buy")
