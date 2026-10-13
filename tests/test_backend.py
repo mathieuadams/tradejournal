@@ -2458,6 +2458,11 @@ def test_tos_indicators():
     sg = wallwatch.detect_retest(rb, ws, alerts=al, datr={"next": 2.0}, extra={"kc": {"2026-10-05T11:30": (103.5, 104, 103)}})[0][0]
     assert sg["orb"] == [105.5, 103.5] and sg["kc"] == [103.5, 104, 103]
     assert not wallwatch.detect_retest(rb, ws, cfg={"kcNotExt": True}, alerts=al, datr={"next": 2.0}, extra={"kc": {"2026-10-05T11:30": (101, 102.5, 99.5)}})[0]
+    # skew rule: only with a normal skew (middle third), no skew known = no entry
+    assert not wallwatch.detect_retest(rb, ws, cfg={"skewOn": True}, alerts=al, datr={"next": 2.0})[0]
+    assert not wallwatch.detect_retest(rb, ws, cfg={"skewOn": True}, alerts=al, datr={"next": 2.0}, extra={"skewPct": {"2026-10-05": 90}})[0]
+    ok = wallwatch.detect_retest(rb, ws, cfg={"skewOn": True}, alerts=al, datr={"next": 2.0}, extra={"skewPct": {"2026-10-05": 50}})[0]
+    assert ok and ok[0]["skewPct"] == 50
 
 
 def test_intraday_gamma_levels():

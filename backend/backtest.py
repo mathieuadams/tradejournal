@@ -104,11 +104,11 @@ def _rr_series(key, sym, exp, until):
     return {}
 
 
-def fetch_skew(key, sym, days=250):
+def fetch_skew(key, sym, days=250, max_age_s=3 * 86400):
     """Constant ~30-day skew by day: each day uses the monthly expiration closest to 30 days out (14 to 60 days)."""
     import wallwatch
     have = db.get(SKEW_PK, sym) or {}
-    if have.get("at") and time.time() - float(have.get("ts") or 0) < 3 * 86400 and int(have.get("days") or 0) >= days:
+    if have.get("at") and time.time() - float(have.get("ts") or 0) < max_age_s and int(have.get("days") or 0) >= days:
         return have.get("data") or {}
     today = now_ny().date()
     first = (today - timedelta(days=int(days * 1.45))).isoformat()
@@ -210,6 +210,16 @@ def dp_features(prints, day, entry, support, target, atr):
     return {"dpNear": near, "dpWay": way, "dpAct": round(last5 / avg5, 2) if avg5 else None}
 
 
+def skew_pct_map(skew, dates):
+    """{date: skew percentile known before that date opens}."""
+    out = {}
+    for d in dates:
+        f = skew_features(skew, d) if skew else None
+        if f:
+            out[d] = f["skewPct"]
+    return out
+
+
 def hist_status(sub):
     st = db.get(db.upk(sub), HIST_SK) or {}
     return {k: v for k, v in st.items() if k not in ("PK", "SK")}
@@ -306,11 +316,11 @@ def continue_history(sub):
 RULES = [  # (switch, label)
     ("greenOnly", "Green candle"), ("aboveFlip", "Above the flip"), ("vwapOn", "Above VWAP"), ("emaOn", "Above EMA"),
     ("emaOverVwap", "EMA > VWAP"), ("noAboveCW", "Not above CW"), ("cwRoomOn", "Room to CW"),
-    ("spyUp", "SPY trend up (6 days)"), ("kcNotExt", "Under the upper Keltner band"), ("orbAbove", "Above the opening range high"),
+    ("skewOn", "Skew normal (middle third of 6 months)"), ("spyUp", "SPY trend up (6 days)"), ("kcNotExt", "Under the upper Keltner band"), ("orbAbove", "Above the opening range high"),
 ]
 OFF = {"usePW": True, "useFlip": True, "greenOnly": False, "aboveFlip": False, "vwapOn": False, "emaOn": False,
        "emaOverVwap": False, "noAboveCW": False, "cwRoomOn": False, "earnOn": False,
-       "spyUp": False, "kcNotExt": False, "orbAbove": False,
+       "spyUp": False, "kcNotExt": False, "orbAbove": False, "skewOn": False,
        "stopOn": True, "trailOn": False, "targetOn": False, "flipExit": False, "vwapExit": False, "emaExit": False}
 EXITS = [  # label, exit settings on top of the fixed stop
     ("Fixed: target N x risk or N days", {}),
@@ -342,7 +352,8 @@ def _ticker_data(sub, sym, days, cfg):
     kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
     return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym), "skew": stored_skew(sym), "dp": stored_darkpool(sym),
             "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
-            "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now)}}
+            "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now),
+                      "skewPct": skew_pct_map(stored_skew(sym), sorted({b["t"][:10] for b in bars}))}}
 
 
 def _run(sym, data, cfg, first):

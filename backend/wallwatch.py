@@ -28,7 +28,8 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "usePW": True, "useFlip": True, "greenOnly": True, "noAboveCW": True, "cwRoomOn": True, "earnOn": True,
           "vwapOn": False, "emaOn": False, "emaLen": 20, "stopOn": True, "trailOn": True, "targetOn": True,
           "vwapExit": False, "emaExit": False, "emaOverVwap": False,
-          "spyUp": False, "kcNotExt": False, "orbAbove": False, "kcLen": 21, "kcMult": 3.0}   # tgtBuf: % under the call wall
+          "spyUp": False, "kcNotExt": False, "orbAbove": False, "kcLen": 21, "kcMult": 3.0,
+          "skewOn": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -54,7 +55,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn")
 
 
 def save_config(sub, body):
@@ -418,6 +419,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
     orb = orb_levels(bars)
     spy = extra.get("spy") or {}
+    skp = extra.get("skewPct") or {}                    # {date: percentile of the previous session's skew}
     flip_exit, earn_days = bool(P.get("flipExit", True)), int(P.get("earnDays") if P.get("earnDays") is not None else 10)
     earn_d = None
     try:
@@ -487,6 +489,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 continue                               # rule on: the close must be above the EMA
             if on("emaOverVwap") and not (ema[i] is not None and vwap[i] is not None and ema[i] > vwap[i]):
                 continue                               # rule on: the EMA must be above the VWAP
+            if on("skewOn") and not (skp.get(day) is not None and 33.4 <= skp[day] < 66.7):
+                continue                               # rule on: skew must be normal (middle third of its last 6 months)
             if on("spyUp") and spy.get(b["t"][:16]) == -1:
                 continue                               # rule on: SPY must be up over the last 6 sessions
             if on("kcNotExt") and not (kc[i] and b["c"] < kc[i][1]):
@@ -512,7 +516,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
                  "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
                  "vwapExit": on("vwapExit"), "emaExit": on("emaExit"),
-                 "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
+                 "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
             if P.get("fixR"):                          # backtest: fixed target at N x the risk
                 s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
             if P.get("maxDays"):
@@ -594,8 +598,17 @@ def check_ticker(sub, key, sym, days, now, since=None):
             emap = {b["t"][:16]: v for b, v in zip(bars, _ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20)))}
             kmap = {b["t"][:16]: v for b, v in zip(bars, keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3)))}
             spy = spy_trend(start, now)
+            skp = {}
+            if cfg.get("skewOn"):
+                try:
+                    import backtest
+                    import flowdata
+                    sk = backtest.fetch_skew(flowdata._key(sub), sym, 250, max_age_s=20 * 3600)
+                    skp = backtest.skew_pct_map(sk, sorted({b["t"][:10] for b in rb}))
+                except Exception as e:
+                    print("skew failed", sym, e)
             rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap, emap,
-                                      {"kc": kmap, "spy": spy})
+                                      {"kc": kmap, "spy": spy, "skewPct": skp})
             sigs += rs
         except Exception as e:
             print("retest failed", sym, e)

@@ -2434,6 +2434,7 @@ const WW_RULES = [
   ['vwapOn', 'Entry', 'Above VWAP', 'The entry candle must close above the anchored VWAP'],
   ['emaOn', 'Entry', 'Above EMA', 'The entry candle must close above the hourly EMA', ['ww-emal', 'emaLen', 1, 3.4, '', 20]],
   ['emaOverVwap', 'Entry', 'EMA > VWAP', 'The EMA must be above the anchored VWAP on the entry candle (uptrend)'],
+  ['skewOn', 'Entry', 'Skew normal', 'Only when the 25-delta skew (put IV − call IV, ~30 days) is in the middle third of its last 6 months: neither calls already bid nor puts bid (fear)'],
   ['spyUp', 'Entry', 'SPY trend up', 'SPY above its close of 6 sessions ago (the TOS ttmTrend of SPY)'],
   ['kcNotExt', 'Entry', 'Under upper Keltner', 'The entry candle closes under the upper Keltner band (not stretched)'],
   ['orbAbove', 'Entry', 'Above ORB high', 'The entry candle closes above the opening range high (09:30–10:30 candle); no entry in the first hour'],
@@ -2447,7 +2448,7 @@ const WW_RULES = [
   ['vwapExit', 'Exit', 'Close under VWAP', 'Sell when an hourly candle closes under the anchored VWAP'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
-const WW_DEF_ON = { aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false };
+const WW_DEF_ON = { aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false };
 S.wwSw = S.wwSw || null;
 function wwSwState() {
   const c = (S.ww && S.ww.config) || {};
