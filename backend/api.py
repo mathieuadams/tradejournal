@@ -506,6 +506,41 @@ def bot_ruletest(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("GET", "/bot/wallwatch/intraday")
+def bot_intraday_get(sub, claims, body, q):
+    import intraday
+    return intraday.result(sub)
+
+
+@route("POST", "/bot/wallwatch/intraday")
+def bot_intraday(sub, claims, body, q):
+    """Intraday gamma-level test on 5-minute candles (background job)."""
+    import intraday
+    b, params = body or {}, {}
+    for k, lo, hi in (("fastK", 0.5, 20), ("appBars", 2, 24), ("zoneK", 0, 5), ("bufK", 0, 5), ("minRR", 0, 10),
+                      ("maxRiskD", 0.05, 5), ("maxTrades", 1, 10)):
+        if b.get(k) not in (None, ""):
+            try:
+                params[k] = max(lo, min(hi, float(b[k])))
+            except (TypeError, ValueError):
+                pass
+    for k in ("appBars", "maxTrades"):
+        if k in params:
+            params[k] = int(params[k])
+    for k in ("watchlist", "skipEvents", "longs", "shorts", "useFlip"):
+        if k in b:
+            params[k] = bool(b[k])
+    if b.get("tickers"):
+        params["tickers"] = str(b["tickers"])[:400]
+    if b.get("sessionEnd") and len(str(b["sessionEnd"])) == 5:
+        params["sessionEnd"] = str(b["sessionEnd"])
+    cur = intraday.result(sub)
+    db.put({"PK": db.upk(sub), "SK": intraday.SK, **cur, "running": iso(now_ny()), "params": params})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwintraday", "params": params}))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/wallwatch/run")
 def bot_wallwatch_run(sub, claims, body, q):
     """Check the watchlist now (days=3) or backfill the last `days` trading days (background job)."""

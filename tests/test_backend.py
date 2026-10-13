@@ -2460,6 +2460,57 @@ def test_tos_indicators():
     assert not wallwatch.detect_retest(rb, ws, cfg={"kcNotExt": True}, alerts=al, datr={"next": 2.0}, extra={"kc": {"2026-10-05T11:30": (101, 102.5, 99.5)}})[0]
 
 
+def test_intraday_gamma_levels():
+    """Intraday framework: slow rejection at the put wall, fast overshoot + reclaim, short at the call wall, calendar."""
+    import intraday
+    ev = intraday.event_days(2026, 2026)
+    assert ev["2026-10-16"] == "monthly OPEX" and ev["2026-09-18"] == "triple witching" and ev["2026-10-21"] == "VIX expiration"
+    def mk(day, path):
+        out = []
+        import datetime as dt
+        t0 = dt.datetime.strptime(day + " 09:30", "%Y-%m-%d %H:%M")
+        for k, (o, h, l, c) in enumerate(path):
+            out.append({"t": (t0 + dt.timedelta(minutes=5 * k)).strftime("%Y-%m-%dT%H:%M"), "o": o, "h": h, "l": l, "c": c})
+        return out
+    w = {"2026-10-05": {"putWall": 100, "flip": 103, "callWall": 106}}
+    # slow drift down to the put wall, green rejection candle, then up to the flip (target)
+    path = [(101.6 - k * 0.1, 101.7 - k * 0.1, 101.45 - k * 0.1, 101.5 - k * 0.1) for k in range(15)]   # 101.6 -> 100.1
+    path += [(100.15, 100.4, 99.9, 100.35)]            # touches 99.9, closes above 100: rejection
+    path += [(100.35 + k * 0.2, 100.6 + k * 0.2, 100.3 + k * 0.2, 100.55 + k * 0.2) for k in range(20)]  # up to 103+
+    bars = mk("2026-10-05", path)
+    tr = intraday.simulate(bars, w, {"2026-10-05": 3.0}, {"minRR": 1.0}, {}, "AAA")
+    assert tr and tr[0]["side"] == "long" and tr[0]["kind"] == "rejection" and tr[0]["levelName"] == "put wall", tr
+    assert tr[0]["status"] == "target" and tr[0]["target"] == 103 and tr[0]["R"] > 1
+    # fast drop through the put wall, then a close back above it: reclaim
+    fpath = [(103.0, 103.1, 102.9, 103.0)] * 7 + [(103, 103, 101, 101.2), (101.2, 101.3, 100.2, 100.3), (100.3, 100.4, 99.2, 99.4),
+             (99.4, 99.6, 99.1, 99.5), (99.5, 100.6, 99.4, 100.5)] + [(100.5 + k * .2, 100.8 + k * .2, 100.4 + k * .2, 100.7 + k * .2) for k in range(20)]
+    tf = intraday.simulate(mk("2026-10-05", fpath), w, {"2026-10-05": 6.0}, {"minRR": 1.0}, {}, "AAA")
+    assert tf and tf[0]["kind"] == "reclaim" and tf[0]["side"] == "long" and tf[0]["fast"], tf
+    # event day skipped
+    assert not intraday.simulate(bars, w, {"2026-10-05": 3.0}, {"minRR": 1.0}, {"2026-10-05": "monthly OPEX"}, "AAA")
+    # short at the call wall from below: slow rise, red rejection, down to the flip
+    spath = [(104.4 + k * .1, 104.55 + k * .1, 104.35 + k * .1, 104.5 + k * .1) for k in range(15)] + [(105.85, 106.1, 105.7, 105.75)]
+    spath += [(105.75 - k * .2, 105.8 - k * .2, 105.5 - k * .2, 105.55 - k * .2) for k in range(20)]
+    ts = intraday.simulate(mk("2026-10-05", spath), w, {"2026-10-05": 3.0}, {"minRR": 1.0}, {}, "AAA")
+    assert ts and ts[0]["side"] == "short" and ts[0]["levelName"] == "call wall" and ts[0]["status"] == "target", ts
+    # the whole run on mocked data: tables come back and are stored
+    import charts, flowdata
+    saved = (charts._yahoo, flowdata.stored_walls)
+    try:
+        import datetime as dt
+        today = __import__("util").now_ny().date()
+        ds = [(today - dt.timedelta(days=k)).isoformat() for k in range(1, 30) if (today - dt.timedelta(days=k)).weekday() < 5]
+        five = []
+        for d in sorted(ds):
+            five += mk(d, path)
+        charts._yahoo = lambda sym, tf, s_, e: five if tf == "5m" else [{"t": f"{d}T09:30", "o": 100, "h": 103, "l": 97, "c": 100} for d in sorted(ds)]
+        flowdata.stored_walls = lambda sym: {d: w["2026-10-05"] for d in ds}
+        r = intraday.run("intra-user", {"tickers": "QQQ", "minRR": 1.0, "skipEvents": False})
+        assert r["all"]["n"] >= 5 and r["groups"] and r["exits"][1]["n"] == r["all"]["n"] and intraday.result("intra-user")["all"]["n"] == r["all"]["n"], r["all"]
+    finally:
+        charts._yahoo, flowdata.stored_walls = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

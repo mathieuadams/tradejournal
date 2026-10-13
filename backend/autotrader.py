@@ -1684,6 +1684,14 @@ def handler(event, context_):
                     db.put({**st, "PK": db.upk(sub), "SK": backtest.HIST_SK, "running": None,
                             "errors": (list(st.get("errors") or []) + [str(e)[:160]])[-8:], "at": iso(now_ny())})
                     raise
+            elif job == "wwintraday":
+                import intraday
+                try:
+                    out[sub] = {"n": (intraday.run(sub, event.get("params") or {}).get("all") or {}).get("n")}
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), intraday.SK) or {}), "PK": db.upk(sub), "SK": intraday.SK,
+                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
             elif job == "wwruletest":
                 import backtest
                 try:
