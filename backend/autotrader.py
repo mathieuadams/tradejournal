@@ -1211,6 +1211,10 @@ def _wallwatch_exit(sub, rec, p):
     if last["l"] <= stop:
         return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) or (ww.get('stopOn') is False and stop > 0) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
     now = now_ny()
+    if ww.get("kcRide"):                              # Keltner ride: don't sell a vertical move at the call wall
+        r = _keltner_ride(sub, rec, p, ww, last, since, now, dte)
+        if r is not False:
+            return r                                  # an exit, or None while riding / waiting for the close
     if ww.get("flipExit") and ww.get("aboveFlipAtEntry") and now.hour * 60 + now.minute >= 15 * 60 + 50:
         try:                                           # closing under today's gamma flip: out before the bell
             import flowdata
@@ -1241,6 +1245,41 @@ def _wallwatch_exit(sub, rec, p):
     if dte <= 0:
         return f"time stop ({dte} days to expiry)"
     return None
+
+
+def _keltner_ride(sub, rec, p, ww, last, since, now, dte):
+    """Returns an exit reason, None (hold: riding, or a target hit on a vertical candle waiting for the close),
+    or False (not riding: the normal exits apply). Upper band = the last finished hourly candle's Keltner band."""
+    import wallwatch
+    pk = db.upk(sub)
+    try:
+        hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=30), now + timedelta(hours=1)) or [],
+                                now.replace(tzinfo=None))
+        kc = wallwatch.keltner(hb, int(ww.get("kcLen") or 21), float(ww.get("kcMult") or 3)) if hb else []
+    except Exception as e:
+        print("keltner ride check failed", rec.get("symbol"), e)
+        return False
+    if not kc or not kc[-1]:
+        return False
+    up, hc, ht = kc[-1][1], hb[-1]["c"], hb[-1]["t"][:16]
+    late = now.hour * 60 + now.minute >= 15 * 60 + 50
+    if rec.get("wwRide"):
+        if late and now.strftime("%Y-%m-%d") > (rec.get("wwRideAt") or "")[:10] and last["c"] < up:
+            return f"Keltner ride ended: closing {last['c']:.2f} under the upper band {up:.2f}"
+        return f"time stop ({dte} days to expiry)" if dte <= 0 else None
+    tgt = p.get("underlyingTarget")
+    if late and last["c"] > up:                       # the day closes above the upper band: ride it from tomorrow
+        db.update(pk, rec["SK"], {"wwRide": True, "wwRideAt": now.strftime("%Y-%m-%dT%H:%M")})
+        return None
+    if tgt and last["h"] >= float(tgt) and last["c"] > up:
+        if not rec.get("wwTgtHit"):
+            db.update(pk, rec["SK"], {"wwTgtHit": now.strftime("%Y-%m-%dT%H:%M")})
+        return None                                   # target on a vertical candle: wait for the close
+    if rec.get("wwTgtHit"):
+        if late and last["c"] <= up:
+            return f"call wall {tgt} reached on a vertical move; closing {last['c']:.2f} under the upper Keltner band {up:.2f}"
+        return None                                   # wait for the day's close
+    return False
 
 
 # ---------------- diagonal: keep shorting against the long call ----------------
@@ -1690,6 +1729,14 @@ def handler(event, context_):
                     out[sub] = {"n": (intraday.run(sub, event.get("params") or {}).get("all") or {}).get("n")}
                 except Exception as e:
                     db.put({**(db.get(db.upk(sub), intraday.SK) or {}), "PK": db.upk(sub), "SK": intraday.SK,
+                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
+            elif job == "wwrobust":
+                import backtest
+                try:
+                    out[sub] = {"rows": len(backtest.robust_test(sub, event.get("params") or {}).get("rows") or [])}
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), backtest.ROB_SK) or {}), "PK": db.upk(sub), "SK": backtest.ROB_SK,
                             "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
             elif job == "wwruletest":

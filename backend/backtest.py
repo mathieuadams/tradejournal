@@ -320,7 +320,7 @@ RULES = [  # (switch, label)
 ]
 OFF = {"usePW": True, "useFlip": True, "greenOnly": False, "aboveFlip": False, "vwapOn": False, "emaOn": False,
        "emaOverVwap": False, "noAboveCW": False, "cwRoomOn": False, "earnOn": False,
-       "spyUp": False, "kcNotExt": False, "orbAbove": False, "skewOn": False,
+       "spyUp": False, "kcNotExt": False, "orbAbove": False, "skewOn": False, "kcRide": False,
        "stopOn": True, "trailOn": False, "targetOn": False, "flipExit": False, "vwapExit": False, "emaExit": False}
 EXITS = [  # label, exit settings on top of the fixed stop
     ("Fixed: target N x risk or N days", {}),
@@ -331,8 +331,10 @@ EXITS = [  # label, exit settings on top of the fixed stop
     ("Close under VWAP", {"fixR": 0, "vwapExit": True}),
     ("Close under EMA", {"fixR": 0, "emaExit": True}),
     ("Your exits", "mine"),
+    ("Your exits + Keltner ride", "mine+ride"),
+    ("Your exits without Keltner ride", "mine-ride"),
 ]
-EXIT_KEYS = ("stopOn", "trailOn", "targetOn", "flipExit", "vwapExit", "emaExit", "trailAtr", "tgtBuf")
+EXIT_KEYS = ("stopOn", "trailOn", "targetOn", "flipExit", "vwapExit", "emaExit", "trailAtr", "tgtBuf", "kcRide")
 
 
 def _ticker_data(sub, sym, days, cfg):
@@ -439,8 +441,9 @@ def rule_test(sub, params=None, budget_s=540):
     variants.append(("mine", "Your entry settings", {**base, **mine_entry}))
     exits = []
     for lab, ex in EXITS:
-        if ex == "mine":
-            ex = {"fixR": 0, "maxDays": 0, **{k: cfg.get(k) for k in EXIT_KEYS}}
+        if str(ex).startswith("mine"):
+            ex = {"fixR": 0, "maxDays": 0, **{k: cfg.get(k) for k in EXIT_KEYS},
+                  **({"kcRide": True} if ex == "mine+ride" else {"kcRide": False} if ex == "mine-ride" else {})}
         exits.append((lab, {**base, **mine_entry, **ex}))
     tickers = cfg["tickers"]
     db.put({"PK": pk, "SK": TEST_SK, **(db.get(pk, TEST_SK) or {}), "running": iso(now_ny()), "params": P})
@@ -501,6 +504,113 @@ def rule_test(sub, params=None, budget_s=540):
            "bySymbol": sorted([{"sym": s_, **_stats(v, mid)} for s_, v in by_sym.items()], key=lambda x: -(x.get("totR") or 0))[:60]}
     db.put(out)
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
+ROB_SK = "WWRROB"
+
+
+def _mc(rs, runs=2000, seed=7):
+    """Monte Carlo of the trade order: the drawdown (in R) you should expect, the longest losing streak,
+    and the chance the next N trades lose money overall (bootstrap)."""
+    import random
+    if len(rs) < 5:
+        return {}
+    rnd = random.Random(seed)
+    dds, neg = [], 0
+    for _ in range(runs):
+        seq = rnd.sample(rs, len(rs))
+        eq = peak = dd = 0.0
+        for r in seq:
+            eq += r
+            peak = max(peak, eq)
+            dd = max(dd, peak - eq)
+        dds.append(dd)
+        if sum(rnd.choice(rs) for _ in range(len(rs))) < 0:
+            neg += 1
+    dds.sort()
+    streak = cur = 0
+    for r in rs:
+        cur = cur + 1 if r <= 0 else 0
+        streak = max(streak, cur)
+    return {"ddMedian": round(dds[len(dds) // 2], 1), "dd95": round(dds[int(len(dds) * 0.95)], 1),
+            "lossStreak": streak, "pLoss": round(neg / runs * 100, 1), "n": len(rs)}
+
+
+def robust_test(sub, params=None, budget_s=540):
+    """Your full settings (entry + exits) re-run with each setting nudged up and down: an edge that collapses when a
+    number moves a little is fitted to the past. Plus: the share of the profit made by the best 3 tickers and a
+    Monte Carlo of the trade order (expected drawdown, losing streak, chance of losing over the same number of trades)."""
+    import wallwatch
+    t0 = time.time()
+    pk = db.upk(sub)
+    P = {"days": 250, **(params or {})}
+    cfg = wallwatch.config(sub)
+    days = max(30, min(500, int(P["days"])))
+    first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
+    mid = (now_ny() - timedelta(days=int(days * 1.45) // 2)).strftime("%Y-%m-%d")
+    mine = {**{k: cfg.get(k) for k in PARAMS_KEYS(cfg)}, "earnOn": False, "fixR": 0, "maxDays": 0}
+    st, room, km, zone = float(cfg.get("stopAtr") or 0.5), float(cfg.get("cwRoom") or 1), float(cfg.get("kcMult") or 3), float(cfg.get("retestZone") or 0.25)
+    vmin, wait = float(cfg.get("retestMin") or 250_000), int(cfg.get("retestDays") or 5)
+    variants = [("Your settings as they are", {})]
+    variants += [(f"Stop {v:g} ATR (you: {st:g})", {"stopAtr": v}) for v in (round(st * 0.8, 2), round(st * 1.2, 2))]
+    if cfg.get("cwRoomOn"):
+        variants += [(f"Room to CW {v:g} ATR (you: {room:g})", {"cwRoom": v}) for v in (max(0.25, room - 0.5), room + 0.5)]
+    if cfg.get("kcNotExt") or cfg.get("kcRide"):
+        variants += [(f"Keltner × {v:g} (you: {km:g})", {"kcMult": v}) for v in (km - 0.5, km + 0.5)]
+    variants += [(f"Retest zone {v:g} ATR (you: {zone:g})", {"retestZone": v}) for v in (round(zone * 0.6, 2), round(zone * 1.4, 2))]
+    variants += [(f"Call alert ≥ ${int(v / 1000)}K (you: ${int(vmin / 1000)}K)", {"retestMin": v}) for v in (vmin * 1.4,)]
+    variants += [(f"Wait {v} days (you: {wait})", {"retestDays": v}) for v in (max(1, wait - 1), wait + 1)]
+    db.put({"PK": pk, "SK": ROB_SK, **(db.get(pk, ROB_SK) or {}), "running": iso(now_ny())})
+    res = {lab: [] for lab, _ in variants}
+    errors = []
+
+    def one(sym):
+        d = _ticker_data(sub, sym, days, cfg)
+        if not d:
+            return sym, None
+        out = {}
+        for lab, ch in variants:
+            c = {**mine, **ch}
+            if "kcMult" in ch:                          # the Keltner bands themselves change
+                kc = wallwatch.keltner(d["bars"], int(cfg.get("kcLen") or 21), float(ch["kcMult"]))
+                d2 = {**d, "extra": {**d["extra"], "kc": {b["t"][:16]: v for b, v in zip(d["bars"], kc)}}}
+                out[lab] = _run(sym, d2, c, first)
+            else:
+                out[lab] = _run(sym, d, c, first)
+        return sym, out
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for f in [pool.submit(one, t) for t in cfg["tickers"]]:
+            try:
+                sym, out = f.result(timeout=max(5, budget_s - (time.time() - t0)))
+                for k, v in (out or {}).items():
+                    res[k] += v
+            except Exception as e:
+                errors.append(str(e)[:100])
+    base_rows = res[variants[0][0]]
+    rows = [{"label": lab, **_stats(res[lab], mid)} for lab, _ in variants]
+    by = {}
+    for r in base_rows:
+        by[r["sym"]] = by.get(r["sym"], 0) + r["R"]
+    tot = sum(by.values())
+    top3 = sorted(by.items(), key=lambda x: -x[1])[:3]
+    rest = [r for r in base_rows if r["sym"] not in {t for t, _ in top3}]
+    conc = {"top3": [{"sym": t, "R": round(v, 1)} for t, v in top3], "top3Share": round(sum(v for _, v in top3) / tot * 100) if tot > 0 else None,
+            "withoutTop3": _stats(rest, mid), "tickers": len(by)}
+    out = {"PK": pk, "SK": ROB_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "rows": rows,
+           "concentration": conc, "monteCarlo": _mc([r["R"] for r in sorted(base_rows, key=lambda r: r["at"])]), "errors": errors[:5]}
+    db.put(out)
+    return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
+def PARAMS_KEYS(cfg):
+    import wallwatch
+    return [k for k in wallwatch.PARAMS if k in cfg]
+
+
+def robust_result(sub):
+    r = db.get(db.upk(sub), ROB_SK) or {}
+    return {k: v for k, v in r.items() if k not in ("PK", "SK")}
 
 
 def test_result(sub):

@@ -471,7 +471,16 @@ def bot_wallwatch_walls(sub, claims, body, q):
 @route("GET", "/bot/wallwatch/ruletest")
 def bot_ruletest_get(sub, claims, body, q):
     import backtest
-    return {"test": backtest.test_result(sub), "history": backtest.hist_status(sub)}
+    return {"test": backtest.test_result(sub), "history": backtest.hist_status(sub), "robust": backtest.robust_result(sub)}
+
+
+@route("POST", "/bot/wallwatch/robust")
+def bot_robust(sub, claims, body, q):
+    import backtest
+    db.put({"PK": db.upk(sub), "SK": backtest.ROB_SK, **backtest.robust_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwrobust", "params": {"days": (body or {}).get("days") or 250}}))
+    return {"status": "running"}
 
 
 @route("POST", "/bot/wallwatch/history")

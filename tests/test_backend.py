@@ -2408,6 +2408,17 @@ def test_rule_tester():
         assert backtest.test_result(sub)["rules"][0]["n"] == base["n"]
     finally:
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts = saved
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else db_
+        flowdata.stored_walls = lambda sym: {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
+        backtest.stored_alerts = lambda sub_, sym: [{"t": f"{day}T10:00", "c": 1, "p": 900000} for day in days[::3]]
+        rb = backtest.robust_test(sub, {"days": 120})
+        assert rb["rows"][0]["label"].startswith("Your settings") and len(rb["rows"]) >= 6
+        assert backtest.robust_result(sub)["rows"][0]["n"] == rb["rows"][0]["n"]
+        mc = backtest._mc([1, -1, 2, -1, -1, 0.5, 2, -1])
+        assert mc["lossStreak"] == 2 and mc["dd95"] >= mc["ddMedian"] >= 0
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts = saved
     st = backtest.start_history(sub, 120)
     assert st["running"] and st["days"] == 120
     # stored history: a second load only asks for the days since the last one
@@ -2573,6 +2584,61 @@ def test_darkpool_history():
     assert f["dpNear"] is True and f["dpWay"] is True and f["dpAct"] > 0
     g = backtest.dp_features(pr, day, entry=101.0, support=90.0, target=105.0, atr=2.0)
     assert g["dpNear"] is False and g["dpWay"] is False
+
+
+def test_keltner_ride_exit():
+    """A vertical move through the call wall is ridden while the days close above the upper Keltner band;
+    the first daily close back under it sells. Without the switch the call wall target sells."""
+    import wallwatch
+    w = {"callWall": 106, "flip": 102, "putWall": 100}
+    days = ["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08"]
+    ws = {d: w for d in days}
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0}]      # entry
+    bars += [{"t": f"2026-10-05T{h}", "o": 103.5, "h": 104, "l": 103.4, "c": 103.8} for h in H[3:]]
+    px = 104.0
+    for h in H:                                                                           # day 2: vertical, through the CW 106
+        bars.append({"t": f"2026-10-06T{h}", "o": px, "h": px + 1.2, "l": px - 0.1, "c": px + 1.0}); px += 1.0
+    for h in H:                                                                           # day 3: keeps going
+        bars.append({"t": f"2026-10-07T{h}", "o": px, "h": px + 0.6, "l": px - 0.1, "c": px + 0.5}); px += 0.5
+    for h in H:                                                                           # day 4: fades
+        bars.append({"t": f"2026-10-08T{h}", "o": px, "h": px + 0.1, "l": px - 0.6, "c": px - 0.5}); px -= 0.5
+    kc = {}
+    for b in bars:                                                                        # upper band just under the close on days 2-3, above it on day 4
+        d = b["t"][:10]
+        kc[b["t"]] = (b["c"] - 2, b["c"] - 0.3 if d in ("2026-10-06", "2026-10-07") else b["c"] + 0.5, b["c"] - 4)
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    base = {"tgtBuf": 0, "trailOn": False, "flipExit": False}
+    plain = wallwatch.detect_retest(bars, ws, cfg=base, alerts=al, datr={"next": 2.0}, extra={"kc": kc})[0][0]
+    assert plain["status"] == "target" and plain["exit"] == 106, plain
+    ride = wallwatch.detect_retest(bars, ws, cfg={**base, "kcRide": True}, alerts=al, datr={"next": 2.0}, extra={"kc": kc})[0][0]
+    assert ride["status"] == "keltner" and ride["exitAt"] == "2026-10-08T15:30" and ride["exit"] > 106, ride
+    # live: target on a vertical candle waits; the day closing above the band starts the ride; a daily close under it sells
+    import autotrader, db
+    import datetime as dt
+    saved = autotrader._yahoo
+    try:
+        hb = [{"t": f"2026-10-0{1 + k // 7}T{H[k % 7]}", "o": 100 + k * .2, "h": 100.5 + k * .2, "l": 99.8 + k * .2, "c": 100.3 + k * .2, "v": 1} for k in range(35)]
+        autotrader._yahoo = lambda *a, **k: hb
+        sub, ww = "ride-user", {"kcRide": True, "kcLen": 5, "kcMult": 0.1}
+        rec = {"SK": "BOT#20261005000000-abcdef", "symbol": "AAA"}
+        db.put({"PK": db.upk(sub), **rec})
+        p_ = {"underlyingTarget": 105.0}
+        up = wallwatch.keltner(wallwatch.finished(hb, dt.datetime(2026, 10, 6, 12)), 5, 0.1)[-1][1]
+        mid = dt.datetime(2026, 10, 6, 12, 0)
+        assert autotrader._keltner_ride(sub, rec, p_, ww, {"h": 110, "c": up + 1}, "", mid, 10) is None          # vertical: wait
+        rec = db.get(db.upk(sub), rec["SK"])
+        assert rec.get("wwTgtHit")
+        late = dt.datetime(2026, 10, 6, 15, 52)
+        assert autotrader._keltner_ride(sub, rec, p_, ww, {"h": 110, "c": up + 1}, "", late, 10) is None          # ride starts
+        rec = db.get(db.upk(sub), rec["SK"])
+        assert rec.get("wwRide")
+        nxt = dt.datetime(2026, 10, 7, 15, 52)
+        assert "ride ended" in autotrader._keltner_ride(sub, rec, p_, ww, {"h": up, "c": up - 5}, "", nxt, 10)
+    finally:
+        autotrader._yahoo = saved
 
 
 if __name__ == "__main__":

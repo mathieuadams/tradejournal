@@ -1479,7 +1479,7 @@ function fcSvg0(d, id, opts) {
       if (sg.exitAt && i1 == null && sg.exitAt > lastT) i1 = n - 1;
       if (i0 == null && !(sg.exitAt && sg.exitAt >= bars[0].t && sg.at < bars[0].t)) return;
       const a0 = i0 == null ? 0 : i0, b0 = i1 == null ? a0 : i1, xa = i0 == null ? L : X(a0), xb = X(b0);
-      const col = sg.status === 'target' || (['trail', 'flip', 'vwap', 'ema'].includes(sg.status) && sg.pct >= 0) ? 'var(--gain)' : ['stop', 'trail', 'flip', 'vwap', 'ema'].includes(sg.status) ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
+      const col = sg.status === 'target' || (['trail', 'flip', 'vwap', 'ema', 'keltner'].includes(sg.status) && sg.pct >= 0) ? 'var(--gain)' : ['stop', 'trail', 'flip', 'vwap', 'ema', 'keltner'].includes(sg.status) ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
       const sel = S.wwSel && S.wwSel.sym === d.symbol && S.wwSel.at === sg.at;
       g += `<rect x="${xa}" y="${T}" width="${Math.max(2, xb - xa)}" height="${B - T}" fill="${col}" opacity="${sel ? .12 : .06}"/>`;
       if (sg.target != null && sg.target >= lo && sg.target <= hi) g += `<line x1="${xa}" x2="${xb}" y1="${Y(sg.target)}" y2="${Y(sg.target)}" stroke="var(--gain)" stroke-width="2" opacity=".85"><title>target ${sg.target} (call wall ${sg.cw})</title></line>`;
@@ -1495,7 +1495,7 @@ function fcSvg0(d, id, opts) {
         g += `<line x1="${xa2}" x2="${xa}" y1="${yl}" y2="${yl}" stroke="var(--coach,#5b5bd6)" stroke-width="1.5" stroke-dasharray="3 3"><title>Waiting for the retest of the ${esc(sg.levelName || 'level')} ${sg.level}</title></line>
           <text x="${xa2}" y="${yl - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">⚑ ${money(sg.armPremium || 0, false)} calls</text>`; } }
       if (sg.status !== 'open' && i1 != null && sg.exit >= lo && sg.exit <= hi) { const y = Y(sg.exit);
-        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'vwap' ? 'Hourly close under the VWAP' : sg.status === 'ema' ? 'Hourly close under the EMA' : sg.status === 'flip' ? 'Day closed under the gamma flip' : sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (${sg.kind === 'merged' ? 'call wall of the day − N × ATR' : 'highest high − N × 30-day ATR'})` : `Stop (${sg.kind === 'flip' ? 'flip' : sg.kind === 'merged' ? 'merged wall' : 'put wall'} − N × 30-day ATR) ${sg.stop ?? sg.pw}`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'keltner' ? 'Keltner ride ended: daily close back under the upper band' : sg.status === 'vwap' ? 'Hourly close under the VWAP' : sg.status === 'ema' ? 'Hourly close under the EMA' : sg.status === 'flip' ? 'Day closed under the gamma flip' : sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (${sg.kind === 'merged' ? 'call wall of the day − N × ATR' : 'highest high − N × 30-day ATR'})` : `Stop (${sg.kind === 'flip' ? 'flip' : sg.kind === 'merged' ? 'merged wall' : 'put wall'} − N × 30-day ATR) ${sg.stop ?? sg.pw}`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
           <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.pct >= 0 ? '+' : ''}${sg.pct}%</text>`; }
     });
   }
@@ -2446,9 +2446,10 @@ const WW_RULES = [
   ['targetOn', 'Exit', 'Call wall target', 'Sell at the call wall − this %', ['ww-tbuf', 'tgtBuf', 0.1, 3.4, '%', 0.5]],
   ['flipExit', 'Exit', 'Close under flip', 'Sell when the day closes under the gamma flip (trades entered above it)'],
   ['vwapExit', 'Exit', 'Close under VWAP', 'Sell when an hourly candle closes under the anchored VWAP'],
+  ['kcRide', 'Exit', 'Keltner ride', 'A day closing above the upper Keltner band starts a ride: the call wall target and the other exits wait, and the trade is sold at the first daily close back under the upper band (the stop still applies). A target hit on a vertical candle waits for the day’s close.'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
-const WW_DEF_ON = { aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false };
+const WW_DEF_ON = { aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false };
 S.wwSw = S.wwSw || null;
 function wwSwState() {
   const c = (S.ww && S.ww.config) || {};
@@ -2533,9 +2534,9 @@ async function loadRuleTest(poll) {
   try { S.rt = await api('/bot/wallwatch/ruletest'); } catch (e) { S.rt = { error: e.message }; }
   S.rtBusy = false;
   if (route() === 'botwatch') render();
-  const t = (S.rt && S.rt.test) || {}, hs = (S.rt && S.rt.history) || {};
+  const t = (S.rt && S.rt.test) || {}, hs = (S.rt && S.rt.history) || {}, rb = (S.rt && S.rt.robust) || {};
   clearTimeout(S.rtPoll);
-  if ((t.running || hs.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
+  if ((t.running || hs.running || rb.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
 }
 function wwRuleTester() {
   const r = S.rt || {}, t = r.test || {}, hs = r.history || {}, P = t.params || {};
@@ -2565,6 +2566,17 @@ function wwRuleTester() {
     <div style="overflow-x:auto;margin-top:10px"><table class="pos" style="font-size:.85rem">${thead('Exits (on your entry settings)')}<tbody>${(t.exits || []).map(x => row(x, null, t.exits[0])).join('')}</tbody></table></div>
     ${(t.bySymbol || []).length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">By ticker (your entry settings)</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.85rem">${thead('Ticker')}<tbody>${t.bySymbol.map(x => row(x, x.sym, { h1: 0, h2: 0 })).join('')}</tbody></table></div></details>` : ''}
     ${(t.errors || []).length ? `<p class="loss" style="font-size:.85rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+  const rb = r.robust || {}, mc = rb.monteCarlo || {}, cc = rb.concentration || {}, b0 = (rb.rows || [])[0] || {};
+  const rbBody = rb.running ? '<p class="loading">Re-running your settings with each number nudged… (a few minutes)</p>' : !rb.rows ? '' : `
+    <div style="overflow-x:auto;margin-top:6px"><table class="pos" style="font-size:.85rem"><thead><tr><th>Your settings (entry + exits) with one number changed</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">1st half</th><th class="r">2nd half</th><th></th></tr></thead><tbody>
+    ${rb.rows.map((x, i) => `<tr><td>${esc(x.label)}</td><td class="r">${x.n || 0}</td><td class="r">${x.win ?? '—'}${x.win != null ? '%' : ''}</td><td class="r">${R(x.avgR)}</td><td class="r">${x.totR ?? '—'}</td><td class="r">${R(x.h1)}</td><td class="r">${R(x.h2)}</td>
+      <td>${i === 0 ? '<span class="muted">reference</span>' : !x.n ? '' : x.avgR > 0 && b0.avgR > 0 && x.avgR >= b0.avgR * 0.5 ? '<b class="gain">holds</b>' : x.avgR > 0 ? '<span style="color:var(--warn)">weaker</span>' : '<span class="loss">breaks</span>'}</td></tr>`).join('')}</tbody></table></div>
+    <div class="strip" style="margin:10px 0 0">
+      <div class="stat"><span>Best 3 tickers</span><b>${cc.top3Share ?? '—'}%</b><span>of the total R · ${(cc.top3 || []).map(x => `${esc(x.sym)} ${x.R}R`).join(' · ')}</span></div>
+      <div class="stat"><span>Without them</span><b>${R((cc.withoutTop3 || {}).avgR)}</b><span>${(cc.withoutTop3 || {}).n || 0} trades · ${cc.tickers || 0} tickers traded</span></div>
+      <div class="stat"><span>Drawdown to expect</span><b>${mc.ddMedian ?? '—'}R</b><span>bad case (95%) ${mc.dd95 ?? '—'}R · longest losing streak ${mc.lossStreak ?? '—'}</span></div>
+      <div class="stat"><span>Chance of losing</span><b>${mc.pLoss ?? '—'}%</b><span>over ${mc.n || 0} trades (resampled)</span></div></div>
+    <p class="muted" style="font-size:.8rem;margin:6px 0 0">“Holds” = still positive with at least half the average R. If most lines break, the result is fitted to the past. If the best 3 tickers make most of the profit, it depends on them. Size so the bad-case drawdown is a loss you can live with.</p>`;
   return `<section class="panel" style="margin:0 0 14px"><h2>Rule tester</h2>
     <p class="muted" style="margin:0 0 8px">Every rule measured on the same trades with one fixed exit. A rule is worth keeping only if it raises the average R in <b>both halves</b> of the period with at least 30 trades.</p>
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:.85rem">
@@ -2572,7 +2584,10 @@ function wwRuleTester() {
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:.85rem;margin-top:6px">
       <b>Test</b> last ${num('rt-days', P.days || 250, 10, 4.2)} days · stop ${num('rt-stop', P.stopAtr ?? ((S.ww && S.ww.config && S.ww.config.stopAtr) || 0.5), 0.1, 3.6)} ATR · target ${num('rt-fixr', P.fixR ?? 2, 0.5, 3.4)} R · sell after ${num('rt-maxd', P.maxDays ?? 5, 1, 3)} days
       <button class="btn coachbtn" data-rtrun ${t.running ? 'disabled' : ''}>Run the test</button>${t.at && !t.running ? ` <span class="muted">last run ${esc(t.at.slice(5, 16).replace('T', ' '))} · ${t.secs}s</span>` : ''}</div>
-    ${body}</section>`;
+    ${body}
+    <h3 style="font-size:.95rem;margin:16px 0 4px">Robustness check <button class="btn" data-rtrob ${rb.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${rb.at && !rb.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(rb.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
+    <p class="muted" style="margin:0;font-size:.85rem">Your full settings re-run with each number moved a little, where the profit comes from, and the drawdown to expect.</p>
+    ${rbBody}</section>`;
 }
 /* ---------- intraday gamma levels (the NQ framework on 5-minute candles) ---------- */
 async function loadIntraday() {
@@ -2635,7 +2650,7 @@ function vWatch() {
     <button class="btn" data-wwchart="${esc((cfg.tickers || [])[0] || '')}|" style="font-size:.8rem;padding:2px 10px">Open the charts</button>
     <label style="margin-left:6px"><input type="checkbox" id="ww-on" ${cfg.enabled ? 'checked' : ''}> every hour</label></p>`;
   const sigs = d.signals || [];
-  const st = s => s.status === 'target' ? '<b class="gain">target</b>' : s.status === 'stop' ? '<b class="loss">stop</b>' : s.status === 'trail' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">trailing stop</b>` : s.status === 'flip' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the flip</b>` : s.status === 'vwap' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the VWAP</b>` : s.status === 'ema' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the EMA</b>` : '<span style="color:var(--coach)">open</span>';
+  const st = s => s.status === 'target' ? '<b class="gain">target</b>' : s.status === 'stop' ? '<b class="loss">stop</b>' : s.status === 'trail' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">trailing stop</b>` : s.status === 'flip' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the flip</b>` : s.status === 'vwap' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the VWAP</b>` : s.status === 'keltner' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">Keltner ride ended</b>` : s.status === 'ema' ? `<b class="${s.pct >= 0 ? 'gain' : 'loss'}">closed under the EMA</b>` : '<span style="color:var(--coach)">open</span>';
   const sigTable = `<section class="panel"><h2>Signals</h2>${sigs.length ? `<div class="tablewrap"><table class="pos" style="font-size:.85rem"><thead><tr><th>Ticker</th><th>Setup</th><th>Candle</th><th class="r">Entry</th><th class="r">Put wall</th><th class="r">Flip</th><th class="r">Call wall</th><th class="r">Target</th><th class="r">Stop</th><th>Result</th><th class="r">Move</th><th class="r">R</th><th></th></tr></thead><tbody>
     ${sigs.map(s => `<tr><td><b>${esc(s.symbol)}</b></td><td>${s.kind === 'flip' ? '<span class="exchip">Flip</span>' : s.kind === 'merged' ? '<span class="exchip">Merged</span>' : s.kind === 'retest' ? `<span class="exchip" title="Armed ${esc((s.armedAt || '').replace('T', ' ').slice(5))} by a ${money(s.armPremium || 0, false)} call alert">Retest ${esc(s.levelName || '')}</span>` : '<span class="exchip">PW</span>'}</td><td>${esc(t5(s.at))}</td><td class="r">${(+s.entry).toFixed(2)}</td><td class="r">${s.pw}</td><td class="r">${s.flip}</td><td class="r">${s.cw}</td><td class="r">${s.tgtPct == null ? '<span class="muted">trail</span>' : pc(s.tgtPct, 1)}</td><td class="r" title="${s.stop0 != null ? `first stop ${s.stop0} (${s.kind === 'flip' ? 'flip' : 'put wall'} − N × 30-day ATR ${s.atr})${s.stop > s.stop0 ? ` · trailed to ${s.stop}` : ''}` : ''}">${pc(-s.riskPct, 1)}</td>
       <td>${s.botId ? '<span class="exchip" title="A call was bought on Alpaca paper">traded</span> ' : s.tradeError ? `<span class="exchip" title="${esc(s.tradeError)}">not traded</span> ` : ''}${st(s)}${s.exitAt ? ` <span class="muted">${esc(t5(s.exitAt))}</span>` : s.lastAt ? ` <span class="muted">now ${(+s.last).toFixed(2)}</span>` : ''}</td><td class="r">${pc(s.pct)}</td><td class="r">${s.R == null ? '—' : (s.R > 0 ? '+' : '') + s.R}</td><td><button class="btn" data-wwchart="${esc(s.symbol)}|${esc(s.at)}" style="font-size:.75rem;padding:1px 7px">chart</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">No signal yet. Press <b>Get all walls (45 days)</b> to see how often it happened.</p>'}</section>`;
@@ -3036,7 +3051,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3103,6 +3118,11 @@ document.addEventListener('click', e => {
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
+  if (el.hasAttribute('data-rtrob')) {
+    api('/bot/wallwatch/robust', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250 } })
+      .then(() => { S.rt = { ...(S.rt || {}), robust: { ...((S.rt || {}).robust || {}), running: 'now' } }; render(); setTimeout(loadRuleTest, 15000); }).catch(err => toast(err.message));
+    return;
+  }
   if (el.hasAttribute('data-itdrun')) {
     const v = id => { const x = parseFloat(($(id) || {}).value); return isNaN(x) ? undefined : x; }, c = id => !!($(id) || {}).checked;
     const body = { tickers: ($('#itd-tk') || {}).value || 'QQQ SPY', watchlist: c('#itd-wl'), sessionEnd: (($('#itd-end') || {}).value || '11:30').trim(),

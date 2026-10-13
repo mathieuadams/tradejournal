@@ -29,7 +29,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "vwapOn": False, "emaOn": False, "emaLen": 20, "stopOn": True, "trailOn": True, "targetOn": True,
           "vwapExit": False, "emaExit": False, "emaOverVwap": False,
           "spyUp": False, "kcNotExt": False, "orbAbove": False, "kcLen": 21, "kcMult": 3.0,
-          "skewOn": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "skewOn": False, "kcRide": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -55,7 +55,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide")
 
 
 def save_config(sub, body):
@@ -240,34 +240,55 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
-def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None):
+def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None):
     """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
-    Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held)."""
+    Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held).
+    kcRide (kcu = upper Keltner band of this candle): a day closing above the upper band starts a ride -> the target,
+    the time / flip / VWAP / EMA exits are suspended and the first daily close back under the band sells. A target
+    reached on a candle that closes above the band waits for the day's close instead of selling; the ride ends at the
+    first daily close back under the band."""
     if s.get("maxDays") and b["t"][:10] != s.get("_dd"):
         s["_dd"] = b["t"][:10]
         s["_dn"] = s.get("_dn", -1) + 1
     if b["l"] <= s["stop"]:
         s.update(status="trail" if s.get("stops") else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
         return
-    if s.get("target") and b["h"] >= s["target"]:
-        s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
-        return
-    if s.get("fixT") and b["h"] >= s["fixT"]:
-        s.update(status="R", exitAt=b["t"][:16], exit=round(max(b["o"], s["fixT"]), 4))
-        return
-    if s.get("maxDays") and is_last and s.get("_dn", 0) >= int(s["maxDays"]):
-        s.update(status="time", exitAt=b["t"][:16], exit=b["c"])
-        return
-    fl = (walls.get(b["t"][:10]) or {}).get("flip")
-    if flip_exit and is_last and s.get("aboveFlipAtEntry") and fl and b["c"] < float(fl):
-        s.update(status="flip", exitAt=b["t"][:16], exit=b["c"])          # the day closed under the gamma flip
-        return
-    if s.get("vwapExit") and vw is not None and b["c"] < vw:
-        s.update(status="vwap", exitAt=b["t"][:16], exit=b["c"])          # hourly close under the VWAP
-        return
-    if s.get("emaExit") and em is not None and b["c"] < em:
-        s.update(status="ema", exitAt=b["t"][:16], exit=b["c"])           # hourly close under the EMA
-        return
+    ride_on = bool(s.get("kcRide")) and kcu is not None
+    above = ride_on and b["c"] > kcu
+    if s.get("riding"):
+        if is_last and kcu is not None and b["c"] < kcu:
+            s.update(status="keltner", exitAt=b["t"][:16], exit=b["c"])  # the ride ended: a daily close under the upper band
+            return
+    else:
+        hits = [(k, st) for k, st in (("target", "target"), ("fixT", "R")) if s.get(k) and b["h"] >= s[k]]
+        if hits:
+            k, st = hits[0]
+            if ride_on and (above or s.get("tgtHit")) and not is_last:
+                s["tgtHit"] = s.get("tgtHit") or st              # vertical: wait for the day's close before selling
+            elif above:
+                s["tgtHit"] = s.get("tgtHit") or st
+            else:
+                s.update(status=st, exitAt=b["t"][:16], exit=round(max(b["o"], s[k]), 4))
+                return
+        elif s.get("tgtHit") and is_last and not above:
+            s.update(status=s["tgtHit"], exitAt=b["t"][:16], exit=b["c"])  # target reached, the day closed under the band
+            return
+        if is_last and above:
+            s["riding"], s["rideAt"] = True, b["t"][:16]           # day closed above the upper Keltner band: ride it
+        else:
+            if s.get("maxDays") and is_last and s.get("_dn", 0) >= int(s["maxDays"]):
+                s.update(status="time", exitAt=b["t"][:16], exit=b["c"])
+                return
+            fl = (walls.get(b["t"][:10]) or {}).get("flip")
+            if flip_exit and is_last and s.get("aboveFlipAtEntry") and fl and b["c"] < float(fl):
+                s.update(status="flip", exitAt=b["t"][:16], exit=b["c"])          # the day closed under the gamma flip
+                return
+            if s.get("vwapExit") and vw is not None and b["c"] < vw:
+                s.update(status="vwap", exitAt=b["t"][:16], exit=b["c"])          # hourly close under the VWAP
+                return
+            if s.get("emaExit") and em is not None and b["c"] < em:
+                s.update(status="ema", exitAt=b["t"][:16], exit=b["c"])           # hourly close under the EMA
+                return
     s["last"], s["lastAt"] = b["c"], b["t"][:16]
     s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
     s["mae"] = min(s.get("mae", s["entry"]), b["l"])
@@ -445,7 +466,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 arm = big[ai]
             ai += 1
         if open_:
-            _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i])
+            _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i],
+                  kcu=kc[i][1] if kc[i] else None)
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -515,7 +537,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "last": b["c"], "lastAt": b["t"][:16], "i0": i,
                  "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
                  "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
-                 "vwapExit": on("vwapExit"), "emaExit": on("emaExit"),
+                 "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
                  "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
             if P.get("fixR"):                          # backtest: fixed target at N x the risk
                 s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
@@ -528,12 +550,13 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         i0 = s.pop("i0")                               # the same entry with the other choice for the daily flip exit
-        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn")}
+        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn", "riding", "rideAt", "tgtHit")}
         if alt.get("maxDays"):
             alt["_dd"], alt["_dn"] = alt["at"][:10], 0
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
         for j in range(i0 + 1, len(bars)):
-            _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j])
+            _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j],
+                  kcu=kc[j][1] if kc[j] else None)
             if alt["status"] != "open":
                 break
         ap, ar = _result(alt)
@@ -752,6 +775,7 @@ def enter(sub, sym, sg):
             raise ValueError("no call contract in the expiration / delta window")
         ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]) if cfg.get("trailOn", True) else 0.0,
               "vwapExit": bool(cfg.get("vwapExit")), "emaExit": bool(cfg.get("emaExit")), "emaLen": int(cfg.get("emaLen") or 20),
+              "kcRide": bool(cfg.get("kcRide")), "kcLen": int(cfg.get("kcLen") or 21), "kcMult": float(cfg.get("kcMult") or 3),
               "vwapDays": int(cfg.get("vwapDays") or VWAP_DAYS),
               "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
