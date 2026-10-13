@@ -542,7 +542,9 @@ def dp_levels(prints, top_n=5):
         step = max(0.01, round(ps[len(ps) // 2] * 0.0025, 2))          # bucket ~0.25% of price
         for p in prints:
             b = round(round(p["price"] / step) * step, 2)
-            lv = levels.setdefault(b, {"price": b, "premium": 0, "prints": 0, "_pw": 0.0, "buy": 0, "sell": 0})
+            lv = levels.setdefault(b, {"price": b, "premium": 0, "prints": 0, "_pw": 0.0, "buy": 0, "sell": 0, "times": []})
+            if p.get("t"):
+                lv["times"].append([p["t"], p["premium"]])
             lv["premium"] += p["premium"]
             lv["prints"] += 1
             lv["_pw"] += p["price"] * p["premium"]
@@ -550,4 +552,11 @@ def dp_levels(prints, top_n=5):
                 lv[p["side"]] += p["premium"]
     for lv in levels.values():          # the level sits at the premium-weighted price of its prints
         lv["price"] = round(lv.pop("_pw") / lv["premium"], 2) if lv["premium"] else lv["price"]
-    return sorted(levels.values(), key=lambda x: -x["premium"])[:top_n]
+        lv["times"].sort()
+        lv["first"] = lv["times"][0][0] if lv["times"] else None      # when the level started (first print)
+        lv["last"] = lv["times"][-1][0] if lv["times"] else None
+    out = sorted(levels.values(), key=lambda x: -x["premium"])[:top_n]
+    if top_n > 20:                                     # the volume profile doesn't need every print time
+        for lv in out:
+            lv.pop("times", None)
+    return out

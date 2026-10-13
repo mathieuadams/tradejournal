@@ -1387,10 +1387,19 @@ function fcSvg0(d, id, opts) {
   }
   if (dp && !dp.error) {                    // dark pool: the price levels with the most premium, then each big print
     const prem = v => v >= 1e9 ? `$${(v / 1e9).toFixed(1)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(0)}M` : `$${Math.round(v / 1e3)}k`;
+    const bi = t => { let q = -1; for (let i = 0; i < n; i++) { if (bars[i].t <= t) q = i; else break; } return q; };   // candle of a print
+    const md = t => (t || '').slice(5, 10);
     (dp.levels || []).forEach((lv, j) => { if (!near(lv.price)) return; const y = Y(lv.price), c = 'var(--warn)';
-      const split = ` · ${lv.prints} prints`;
-      g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="${j === 0 ? 3 : 2}" opacity="${j === 0 ? .55 : .35}"><title>Dark pool level ${lv.price}: ${prem(lv.premium)} in ${lv.prints} prints${split}</title></line>
-        <text x="${L + 4}" y="${y - 4}" font-size="${fs - 1}" font-weight="600" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round">DP ${lv.price} · ${prem(lv.premium)}${split}</text>`; });
+      const i0 = lv.first ? bi(lv.first) : -1, before = lv.first && i0 < 0, x0 = i0 >= 0 ? X(i0) : L;
+      const since = lv.first ? ` · since ${md(lv.first)}${before ? ' (before the chart)' : ''}` : '';
+      const tip = `Dark pool level ${lv.price}: ${prem(lv.premium)} in ${lv.prints} prints, first ${(lv.first || '').replace('T', ' ')}, last ${(lv.last || '').replace('T', ' ')}`;
+      if (i0 > 0) g += `<line x1="${L}" x2="${x0}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="1" stroke-dasharray="2 4" opacity=".3"><title>${esc(tip)} (no print here yet)</title></line>`;
+      g += `<line x1="${x0}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="${j === 0 ? 3 : 2}" opacity="${j === 0 ? .55 : .35}"><title>${esc(tip)}</title></line>`;
+      if (i0 >= 0) g += `<circle cx="${x0}" cy="${y}" r="4.5" fill="${c}" stroke="var(--surface)" stroke-width="1.5"><title>${esc(`First dark pool print at this level: ${lv.first.replace('T', ' ')}`)}</title></circle>`;
+      const mx = Math.max(1, ...(lv.times || []).map(x => x[1]));
+      (lv.times || []).forEach(([t, pr]) => { const i = bi(t); if (i < 0) return; const h = 3 + 7 * Math.sqrt(pr / mx);
+        g += `<line x1="${X(i)}" x2="${X(i)}" y1="${y - h}" y2="${y + h}" stroke="${c}" stroke-width="1.5" opacity=".8"><title>${esc(`Dark pool print ${t.replace('T', ' ')} · ${prem(pr)}`)}</title></line>`; });
+      g += `<text x="${Math.max(L + 4, Math.min(x0 + 6, W - Rr - 260))}" y="${y - 4}" font-size="${fs - 1}" font-weight="600" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round">DP ${lv.price} · ${prem(lv.premium)} · ${lv.prints} prints${since}</text>`; });
     // only the 5 levels with the most dark pool money are drawn (no single prints)
   }
   if (LY.ema !== false && (d.ema || []).length) {     // hourly EMA
