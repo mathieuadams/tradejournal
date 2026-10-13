@@ -2387,28 +2387,57 @@ async function wwFill() {
   setTimeout(poll, 20000);
 }
 S.wwTk = S.wwTk || {};
+const WW_RULES = [
+  // [switch key, group, label, tooltip, optional field: [id, key, step, width, suffix, default, scale]]
+  ['usePW', 'Entry', 'Support: put wall', 'The put wall can be the support that is retested'],
+  ['useFlip', 'Entry', 'Support: flip', 'The gamma flip can be the support that is retested'],
+  ['greenOnly', 'Entry', 'Green candle', 'The retest candle must close green (close > open)'],
+  ['aboveFlip', 'Entry', 'Above the flip', 'The entry candle must close above the gamma flip'],
+  ['vwapOn', 'Entry', 'Above VWAP', 'The entry candle must close above the anchored VWAP'],
+  ['emaOn', 'Entry', 'Above EMA', 'The entry candle must close above the hourly EMA', ['ww-emal', 'emaLen', 1, 3.4, '', 20]],
+  ['noAboveCW', 'Entry', 'Not above CW', 'No entry when the candle opens or closes above the call wall'],
+  ['cwRoomOn', 'Entry', 'Room to CW', 'No entry when the close is less than this × ATR under the call wall', ['ww-cwr', 'cwRoom', 0.25, 3.6, 'ATR', 1]],
+  ['earnOn', 'Entry', 'Earnings', 'No entry within this many days of earnings', ['ww-earn', 'earnDays', 1, 3.2, 'd', 10]],
+  ['stopOn', 'Exit', 'Stop', 'Stop = the support − this × the 30-day ATR (off: no stop, the value still sets 1R)', ['ww-stop', 'stopAtr', 0.1, 3.4, 'ATR', 0.5]],
+  ['trailOn', 'Exit', 'Trailing stop', 'Highest high since entry − this × the 30-day ATR, never down', ['ww-trail', 'trailAtr', 0.25, 3.4, 'ATR', 1]],
+  ['targetOn', 'Exit', 'Call wall target', 'Sell at the call wall − this %', ['ww-tbuf', 'tgtBuf', 0.1, 3.4, '%', 0.5]],
+  ['flipExit', 'Exit', 'Close under flip', 'Sell when the day closes under the gamma flip (trades entered above it)'],
+];
+const WW_DEF_ON = { aboveFlip: false, vwapOn: false, emaOn: false };
+S.wwSw = S.wwSw || null;
+function wwSwState() {
+  const c = (S.ww && S.ww.config) || {};
+  if (!S.wwSw) S.wwSw = Object.fromEntries(WW_RULES.map(([k]) => [k, c[k] ?? (WW_DEF_ON[k] ?? true)]));
+  return S.wwSw;
+}
 function wwParams(compact) {
-  const c = (S.ww && S.ww.config) || {}, lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
-  return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center${compact ? '' : ';border:1px solid var(--line);border-radius:8px;padding:6px 10px'}">
+  const c = (S.ww && S.ww.config) || {}, sw = wwSwState(), lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
+  const inp = (id, v, step, w) => `<input id="${id}" type="number" step="${step}" min="0" value="${v}" style="width:${w}em;padding:1px 4px">`;
+  const chip = ([k, , label, tip, f]) => {
+    const onv = !!sw[k];
+    return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${onv ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${onv ? '' : 'opacity:.55'}">
+      <button class="btn" data-wwsw="${k}" title="${esc(tip)} — click to turn ${onv ? 'off' : 'on'}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${onv ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${onv ? 'ON' : 'OFF'}</button>
+      <span style="font-size:.8rem">${label}</span>${f ? ` ${inp(f[0], c[f[1]] ?? f[5], f[2], f[3])}<span class="muted" style="font-size:.75rem">${f[4]}</span>` : ''}</span>`;
+  };
+  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g).map(chip).join('')}</div>`;
+  return `<div style="display:flex;flex-direction:column;gap:6px${compact ? '' : ';border:1px solid var(--line);border-radius:8px;padding:8px 10px'}">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Flow</b>
     <label ${lab} title="Every minute, tickers with unusual call flow (your bot's flow filters) join the list"><input type="checkbox" id="ww-auto" ${c.autoAdd !== false ? 'checked' : ''}>add flow tickers</label>
     <label ${lab} title="Buy a call on Alpaca paper when a signal fires (contract picked by the bot, limit chased up until filled)"><input type="checkbox" id="ww-trade" ${c.trade !== false ? 'checked' : ''}>trade signals</label>
-    <label ${lab} title="A call alert of at least this size arms the ticker; the support is the highest put wall / call wall / flip under the price; then wait for a green candle retesting it"><input type="hidden" id="ww-rt" value="1">Flow retest: call alert ≥ $<input id="ww-rtmin" type="number" step="100" min="50" value="${Math.round((c.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K, wait<input id="ww-rtdays" type="number" step="1" min="1" value="${c.retestDays ?? 5}" style="width:3em;padding:1px 4px">days</label>
-    <label ${lab} title="The VWAP restarts on the hourly candle with the highest volume of this many trading days">VWAP resets on the top volume of<input id="ww-vwd" type="number" step="1" min="1" value="${c.vwapDays ?? 10}" style="width:3.6em;padding:1px 4px">days</label>
-    <label ${lab} title="Sell when the day closes under the gamma flip (only trades entered above it)"><input type="checkbox" id="ww-fx" ${c.flipExit !== false ? 'checked' : ''}>exit on a daily close under the flip</label>
-    <label ${lab} title="No entry when earnings are within this many days">no entry within<input id="ww-earn" type="number" step="1" min="0" value="${c.earnDays ?? 10}" style="width:3.8em;padding:1px 4px">days of earnings</label>
-    <label ${lab} title="A candle retests the support when its low comes within this × the 30-day ATR of it (at least 0.3%)">zone<input id="ww-zone" type="number" step="0.05" min="0" value="${c.retestZone ?? 0.25}" style="width:4.4em;padding:1px 4px">ATR</label>
-    <label ${lab} title="No entry when the close is less than this × the 30-day ATR under the call wall (the call wall is the target, never the support)">room to CW ≥<input id="ww-cwr" type="number" step="0.25" min="0" value="${c.cwRoom ?? 1}" style="width:4.4em;padding:1px 4px">ATR</label>
-    <label ${lab} title="Only enter when the entry candle closes above the gamma flip (positive gamma: dealers dampen moves, supports hold better)"><input type="checkbox" id="ww-af" ${c.aboveFlip ? 'checked' : ''}>only above the flip</label>
-    <label ${lab} title="Stop = the level crossed (put wall or flip) − this × the 30-day ATR">stop −<input id="ww-stop" type="number" step="0.1" min="0" value="${c.stopAtr ?? 0.5}" style="width:3.6em;padding:1px 4px">ATR</label>
-    <label ${lab} title="Target = call wall − this % (sell just under the wall, where price often stalls). 0 = exactly at the call wall">target −<input id="ww-tbuf" type="number" step="0.1" min="0" value="${c.tgtBuf ?? 0.5}" style="width:3.6em;padding:1px 4px">% under CW</label>
-    <label ${lab} title="Trailing stop = highest high since entry − this × the 30-day ATR. 0 = no trailing">trail<input id="ww-trail" type="number" step="0.25" min="0" value="${c.trailAtr ?? 1}" style="width:3.6em;padding:1px 4px">ATR</label>
-    <button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 9px">Apply</button></span>`;
+    <label ${lab} title="A call alert of at least this size arms the ticker">call alert ≥ $${inp('ww-rtmin', Math.round((c.retestMin ?? 500000) / 1000), 100, 4.2)}K</label>
+    <label ${lab} title="How long the ticker waits for the retest after the alert">wait ${inp('ww-rtdays', c.retestDays ?? 5, 1, 3)} days</label>
+    <label ${lab} title="A candle retests the support when its low comes within this × the 30-day ATR of it (at least 0.3%)">retest zone ${inp('ww-zone', c.retestZone ?? 0.25, 0.05, 4.6)} ATR</label>
+    <label ${lab} title="The VWAP restarts on the hourly candle with the highest volume of this many trading days">VWAP reset ${inp('ww-vwd', c.vwapDays ?? 10, 1, 3.2)} days</label></div>
+    ${grp('Entry')}${grp('Exit')}
+    <div><button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 12px">Apply</button>
+    <span class="muted" style="font-size:.75rem">ON/OFF changes take effect when you click Apply (signals are recomputed)</span></div></div>`;
 }
 async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
-  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked,  retestSetup: true, retestZone: num('#ww-zone'), cwRoom: num('#ww-cwr'), flipExit: !!($('#ww-fx') || {}).checked, vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), aboveFlip: !!($('#ww-af') || {}).checked,
+  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, retestSetup: true, ...wwSwState(),
+    retestZone: num('#ww-zone'), cwRoom: num('#ww-cwr'), vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), emaLen: num('#ww-emal'),
     retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf') };
-  try { S.ww = await api('/bot/wallwatch', { method: 'PUT', body }); } catch (e) { toast(e.message); return; }
+  try { S.ww = await api('/bot/wallwatch', { method: 'PUT', body }); S.wwSw = null; } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
   if (where === 'chart') { wwTkFill(fcfSymbol()); toast('Recomputing this chart now, every ticker in the background'); }
   else { toast('Recomputing every ticker with the new settings — about a minute'); runWatchPoll(); }
@@ -2868,7 +2897,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -2925,6 +2954,13 @@ document.addEventListener('click', e => {
   if (el.dataset.wwchart) { const [sym, at] = el.dataset.wwchart.split('|'); fcfSetMode('ww'); S.wwSel = at ? { sym, at, zoom: true } : null; location.hash = '#botchart?t=' + encodeURIComponent(sym); return; }
   if (el.dataset.wwflow) { S.wwFlowBusy = true; render(); api('/bot/wallwatch/flowstudy', { method: 'POST', body: {} }).then(() => { toast('Matching every signal with the flow — a few minutes'); let n = 0; const tk = async () => { n++; S.ww = null; await loadWatch(); const f = (S.ww && S.ww.flowStudy) || {}; if (f.running && n < 20) setTimeout(tk, 20000); else { S.wwFlowBusy = false; render(); } }; setTimeout(tk, 20000); }).catch(err => { S.wwFlowBusy = false; toast(err.message); render(); }); return; }
   if (el.dataset.wwrule !== undefined) { const v = +el.dataset.wwrule; api('/bot/wallwatch', { method: 'PUT', body: { flowRule: v < 0 ? null : v } }).then(r => { S.ww = r; toast(v < 0 ? 'Flow filter removed' : 'Only signals passing this flow condition will be bought'); render(); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.wwsw) {                 // flip a rule ON/OFF in place (typed values stay); saved on Apply
+    const k = el.dataset.wwsw, sw = wwSwState(); sw[k] = !sw[k];
+    document.querySelectorAll(`[data-wwsw="${k}"]`).forEach(b => { const onv = sw[k], wrap = b.parentElement;
+      b.textContent = onv ? 'ON' : 'OFF'; b.style.background = onv ? 'var(--gain)' : ''; b.style.color = onv ? '#fff' : ''; b.style.borderColor = onv ? 'transparent' : '';
+      wrap.style.opacity = onv ? '' : '.55'; wrap.style.borderColor = onv ? 'var(--gain)' : 'var(--line)'; });
+    return;
+  }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
   if (el.dataset.wwtk) { wwTkFill(el.dataset.wwtk); return; }
   if (el.dataset.wwfill) { wwFill(); return; }

@@ -23,7 +23,10 @@ DEFAULT = ["AAPL", "ABNB", "AMAT", "AMD", "AMZN", "AVGO", "AXP", "BA", "BABA", "
 
 PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "tgtBuf": 0.5, "mergedSetup": True,
           "retestSetup": True, "retestMin": 500000, "retestDays": 5, "aboveFlip": False, "retestZone": 0.25,
-          "flipExit": True, "earnDays": 10, "vwapDays": 10, "cwRoom": 1.0}   # tgtBuf: % under the call wall
+          "flipExit": True, "earnDays": 10, "vwapDays": 10, "cwRoom": 1.0,
+          # rule switches (on/off) for the flow retest
+          "usePW": True, "useFlip": True, "greenOnly": True, "noAboveCW": True, "cwRoomOn": True, "earnOn": True,
+          "vwapOn": False, "emaOn": False, "emaLen": 20, "stopOn": True, "trailOn": True, "targetOn": True}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -45,7 +48,11 @@ def version(cfg):
     """Signals made with other settings are recomputed."""
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
-            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}")
+            f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}")
+
+
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn")
 
 
 def save_config(sub, body):
@@ -64,7 +71,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30)):
+    for k, lo_, hi_ in (("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
@@ -76,7 +83,7 @@ def save_config(sub, body):
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
             except (TypeError, ValueError):
                 pass
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit"):
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -233,12 +240,12 @@ RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (af
 def _step(s, b, walls, k_trail, flip_exit, is_last):
     """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip."""
     if b["l"] <= s["stop"]:
-        s.update(status="trail" if s["stop"] > s["stop0"] else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
+        s.update(status="trail" if s.get("stops") else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
         return
     if s.get("target") and b["h"] >= s["target"]:
         s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
         return
-    fl = (walls.get(b["t"][:10]) or {}).get("flip")
+    fl =(walls.get(b["t"][:10]) or {}).get("flip")
     if flip_exit and is_last and s.get("aboveFlipAtEntry") and fl and b["c"] < float(fl):
         s.update(status="flip", exitAt=b["t"][:16], exit=b["c"])          # the day closed under the gamma flip
         return
@@ -302,6 +309,18 @@ def sig_sk(sym, s):
     return f"WWSIG#{sym}#{s['at']}" + ("#R" if s.get("kind") == "retest" else "")
 
 
+def _ema_series(xs, n):
+    """Exponential moving average of the closes (None until n values)."""
+    out, e, k = [], None, 2 / (n + 1)
+    for i, x in enumerate(xs):
+        if i + 1 < n:
+            out.append(None)
+            continue
+        e = sum(xs[i + 1 - n:i + 1]) / n if e is None else x * k + e * (1 - k)
+        out.append(e)
+    return out
+
+
 def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None, vwap_map=None):
     """Flow retest: a call alert of at least retestMin arms the ticker (a new alert re-arms it). The support is the highest
     of put wall / flip at or under the price at the close of the alert's candle. From that candle on, within
@@ -312,7 +331,14 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
     vmin, ndays = float(P.get("retestMin") or 500000), int(P.get("retestDays") or 5)
     zone_atr = float(P.get("retestZone") if P.get("retestZone") is not None else 0.25)
-    cw_room = float(P.get("cwRoom") if P.get("cwRoom") is not None else 1.0)
+    cw_room = float(P.get("cwRoom") if P.get("cwRoom") is not None else 1.0) if P.get("cwRoomOn", True) else 0.0
+    on = lambda k: bool(P.get(k, PARAMS[k]))
+    if not on("trailOn"):
+        k_trail = 0.0
+    if not on("earnOn"):
+        earnings = None
+    sup_keys = tuple(x for x, k in ((("putWall", "put wall"), "usePW"), (("flip", "flip"), "useFlip")) if on(k))
+    ema = _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     flip_exit, earn_days = bool(P.get("flipExit", True)), int(P.get("earnDays") if P.get("earnDays") is not None else 10)
     earn_d = None
     try:
@@ -344,7 +370,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             continue
         w = walls.get(day) or {}
         if arm:                                        # call flow (new or again): the support is the level at / under price
-            lv = [(float(w[k]), n) for k, n in (("putWall", "put wall"), ("flip", "flip")) if w.get(k)]   # the call wall is the target, never the support
+            lv = [(float(w[k]), n) for k, n in sup_keys if w.get(k)]   # the call wall is the target, never the support
             under = [x for x in lv if x[0] <= b["c"] * (1 + RETEST_NEAR / 100)]
             if under:
                 lvl0, name = max(under)
@@ -363,20 +389,24 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             watch = None
             continue
         # the support follows the price: the highest put wall / flip of the day under this candle's close
-        lv = [(float(w[k]), n) for k, n in (("putWall", "put wall"), ("flip", "flip")) if w.get(k)]   # the call wall is the target, never the support
+        lv = [(float(w[k]), n) for k, n in sup_keys if w.get(k)]   # the call wall is the target, never the support
         under = [x for x in lv if x[0] < b["c"]]
         if not under:
             continue
         lvl, lname = max(under)
         zone = max(lvl * RETEST_NEAR / 100, zone_atr * a_)
         # entry: a green candle whose low comes back to the support (within the zone) and that closes above it
-        if b["c"] > b["o"] and b["l"] <= lvl + zone:
+        if (b["c"] > b["o"] or not on("greenOnly")) and b["l"] <= lvl + zone:
             if P.get("aboveFlip") and not (w.get("flip") and b["c"] > float(w["flip"])):
                 continue                               # only above the gamma flip (positive gamma): wait for another candle
             if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
                 continue                               # earnings within the next N days: no entry
             cw_ = float(w["callWall"]) if w.get("callWall") else None
-            if cw_ and (b["o"] > cw_ or b["c"] > cw_):
+            if on("vwapOn") and not (vwap[i] is not None and b["c"] > vwap[i]):
+                continue                               # rule on: the close must be above the VWAP
+            if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
+                continue                               # rule on: the close must be above the EMA
+            if on("noAboveCW") and cw_ and (b["o"] > cw_ or b["c"] > cw_):
                 continue                               # opening or closing above the call wall: no entry
             if cw_ and cw_room and cw_ - b["c"] < cw_room * a_:
                 continue                               # too close under the call wall: not enough room to the target
@@ -385,15 +415,15 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 continue
             watch["levelName"] = lname
             cw = float(w["callWall"]) if w.get("callWall") else None
-            tgt = round(cw * (1 - buf / 100), 4) if cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
-            st = round(lvl - k_stop * a_, 4)
+            tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
+            st = round(lvl - k_stop * a_, 4)              # stop0: the risk unit for R, even with the stop off
             s = {"at": b["t"][:16], "kind": "retest", "level": lvl, "levelName": watch["levelName"], "armedAt": watch["armedAt"],
                  "armPremium": watch["armPremium"], "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
                  "flip": float(w["flip"]) if w.get("flip") else None, "cw": cw, "target": tgt, "atr": round(a_, 4),
-                 "stop": st, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
+                 "stop": st if on("stopOn") else 0.0, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
                  "last": b["c"], "lastAt": b["t"][:16], "i0": i,
                  "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
-                 "vwap": vwap[i]}
+                 "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None}
             sigs.append(s)
             open_, watch = s, None
     for s in sigs:
@@ -402,7 +432,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         i0 = s.pop("i0")                               # the same entry with the other choice for the daily flip exit
         alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae")}
-        alt.update(status="open", stop=s["stop0"], last=s["entry"], lastAt=s["at"])
+        alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
         for j in range(i0 + 1, len(bars)):
             _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]))
             if alt["status"] != "open":
@@ -608,7 +638,8 @@ def enter(sub, sym, sg):
         p = rec.get("proposal") or rec.get("altProposal")
         if not p:
             raise ValueError("no call contract in the expiration / delta window")
-        ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]),
+        ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]) if cfg.get("trailOn", True) else 0.0,
+              "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
               "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry"))}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
@@ -1129,6 +1160,8 @@ def retest_table(sigs):
         ("Flip flat or up vs the day before", lambda x: x.get("flipChg") is not None and x["flipChg"] >= 0),
         ("Entry above the VWAP (reset on high volume)", lambda x: x.get("vwap") is not None and x["entry"] > x["vwap"]),
         ("Entry below the VWAP", lambda x: x.get("vwap") is not None and x["entry"] <= x["vwap"]),
+        ("Entry above the EMA", lambda x: x.get("ema") is not None and x["entry"] > x["ema"]),
+        ("Entry below the EMA", lambda x: x.get("ema") is not None and x["entry"] <= x["ema"]),
         ("Entry above the gamma flip", lambda x: x.get("flip") is not None and x["entry"] > x["flip"]),
         ("Entry below the gamma flip", lambda x: x.get("flip") is not None and x["entry"] <= x["flip"]),
         ("Call wall target above the entry", lambda x: bool(x.get("target"))),

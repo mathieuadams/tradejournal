@@ -1209,7 +1209,7 @@ def _wallwatch_exit(sub, rec, p):
     db.update(pk, rec["SK"], upd)
     dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
     if last["l"] <= stop:
-        return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
+        return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) or (ww.get('stopOn') is False and stop > 0) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
     now = now_ny()
     if ww.get("flipExit") and ww.get("aboveFlipAtEntry") and now.hour * 60 + now.minute >= 15 * 60 + 50:
         try:                                           # closing under today's gamma flip: out before the bell

@@ -2324,6 +2324,34 @@ def test_wallwatch_skips_claude_review():
     assert not aicheck.is_wallwatch({"proposal": {}})
 
 
+def test_wall_watch_rule_switches():
+    """Each flow retest rule can be turned on or off."""
+    import wallwatch
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0},
+            {"t": "2026-10-06T09:30", "o": 103, "h": 110, "l": 102.9, "c": 109}]
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    ws = {"2026-10-05": w, "2026-10-06": w}
+    run = lambda **cfg: wallwatch.detect_retest(bars, ws, cfg=cfg, alerts=al, datr={"next": 2.0})[0]
+    assert run()[0]["levelName"] == "flip"
+    assert not run(useFlip=False, usePW=False)                      # no support levels: no entry
+    s = run(useFlip=False)                                           # put wall only: price never comes back to 100
+    assert not s
+    assert run(targetOn=False)[0]["target"] is None
+    st = run(stopOn=False)[0]
+    assert st["stop0"] > 0 and st["status"] != "stop"
+    dip = bars[:3] + [{"t": "2026-10-06T09:30", "o": 103, "h": 103.2, "l": 99.0, "c": 103.1}]   # under stop0 = 101
+    assert wallwatch.detect_retest(dip, ws, cfg={"trailOn": False}, alerts=al, datr={"next": 2.0})[0][0]["status"] == "stop"
+    assert wallwatch.detect_retest(dip, ws, cfg={"trailOn": False, "stopOn": False}, alerts=al, datr={"next": 2.0})[0][0]["status"] == "open"
+    assert not run(emaOn=True, emaLen=2)                             # close 103 under the 2-candle EMA
+    red = bars[:2] + [{"t": "2026-10-05T11:30", "o": 103.2, "h": 103.4, "l": 102.1, "c": 102.5}]
+    assert not wallwatch.detect_retest(red, {"2026-10-05": w}, alerts=al, datr={"next": 2.0})[0]
+    assert wallwatch.detect_retest(red, {"2026-10-05": w}, cfg={"greenOnly": False}, alerts=al, datr={"next": 2.0})[0]
+    assert wallwatch.version({**wallwatch.PARAMS, "vwapOn": True}) != wallwatch.version(wallwatch.PARAMS)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
