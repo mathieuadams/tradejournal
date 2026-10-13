@@ -267,5 +267,6 @@ def run(sub, params=None, budget_s=540):
 
 
 def result(sub):
-    r = db.get(db.upk(sub), SK) or {}
+    import backtest
+    r = backtest._unstick(db.get(db.upk(sub), SK) or {})
     return {k: v for k, v in r.items() if k not in ("PK", "SK")}

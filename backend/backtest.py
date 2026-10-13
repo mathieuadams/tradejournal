@@ -361,16 +361,54 @@ def _ticker_data(sub, sym, days, cfg):
 def _run(sym, data, cfg, first):
     rows = _run0(sym, data, cfg, first)
     sk, dp = data.get("skew") or {}, data.get("dp") or []
+    memo = data.setdefault("_memo", {})                # the same trade shows up in many variants: compute once
     for r in rows:
-        f = skew_features(sk, r["at"][:10]) if sk else None
-        if f:
-            r.update(f)
-        g = dp_features(dp, r["at"][:10], r["entry"], r["support"], r["cw"], r["atr"]) if dp else None
-        if g:
-            r.update(g)
+        key = (r["at"], r["support"], r["entry"], r["cw"])
+        if key not in memo:
+            f = {}
+            if sk:
+                f.update(_skew_day(data, r["at"][:10]) or {})
+            if dp:
+                f.update(_dp_feat(data, r["at"][:10], r["entry"], r["support"], r["cw"], r["atr"]) or {})
+            memo[key] = f
+        r.update(memo[key])
         for k in ("entry", "support", "cw", "atr"):
             r.pop(k, None)
     return rows
+
+
+def _skew_day(data, day):
+    c = data.setdefault("_skew", {})
+    if day not in c:
+        c[day] = skew_features(data.get("skew") or {}, day)
+    return c[day]
+
+
+def _dp_feat(data, day, entry, support, target, atr):
+    """dp_features with the 2-month window found by binary search and its top levels computed once per day."""
+    import bisect
+    import flowdata
+    if not atr:
+        return None
+    dp = data["dp"]
+    if "_dpt" not in data:
+        data["_dpt"] = [p["t"][:10] for p in dp]
+    ts, cache = data["_dpt"], data.setdefault("_dpd", {})
+    if day not in cache:
+        d0 = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=66)).strftime("%Y-%m-%d")
+        d5 = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        win = dp[bisect.bisect_left(ts, d0):bisect.bisect_left(ts, day)]
+        if len(win) < 5:
+            cache[day] = None
+        else:
+            last5 = sum(p["premium"] for p in win if p["t"][:10] >= d5)
+            avg5 = sum(p["premium"] for p in win) / max(1.0, len({p["t"][:10] for p in win})) * 5
+            cache[day] = (flowdata.dp_levels(win, 5), round(last5 / avg5, 2) if avg5 else None)
+    if not cache[day]:
+        return None
+    levels, act = cache[day]
+    return {"dpNear": any(abs(lv["price"] - support) <= 0.5 * atr for lv in levels),
+            "dpWay": any(entry + 0.25 * atr < lv["price"] < target for lv in levels) if target else None, "dpAct": act}
 
 
 def _run0(sym, data, cfg, first):
@@ -417,7 +455,7 @@ BUCKETS = [
 ]
 
 
-def rule_test(sub, params=None, budget_s=540):
+def rule_test(sub, params=None, budget_s=480):
     import wallwatch
     t0 = time.time()
     pk = db.upk(sub)
@@ -459,11 +497,12 @@ def rule_test(sub, params=None, budget_s=540):
         ex_out = {lab: _run(sym, d, c, first) for lab, c in exits}
         return sym, out, ex_out, (d["bars"][0]["t"][:10], len([a for a in d["alerts"] if a["c"] and a["p"] >= vmin and a["t"][:10] >= first]))
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    pool = ThreadPoolExecutor(max_workers=8)
+    if True:
         futs = [pool.submit(one, t) for t in tickers]
         for f in futs:
             try:
-                sym, out, ex_out, info = f.result(timeout=max(5, budget_s - (time.time() - t0)))
+                sym, out, ex_out, info = f.result(timeout=max(1, budget_s - (time.time() - t0)))
             except Exception as e:
                 errors.append(str(e)[:100])
                 continue
@@ -476,6 +515,9 @@ def rule_test(sub, params=None, budget_s=540):
                 res[k] += v
             for k, v in ex_out.items():
                 exr[k] += v
+    pool.shutdown(wait=False, cancel_futures=True)       # never wait past the budget (the function has 10 minutes)
+    if used < len(tickers):
+        errors.insert(0, f"Time limit: {used} of {len(tickers)} tickers tested. Run again for the rest of the cache to help, or test fewer days.")
     base_rows = res["base"]
     buckets = []
     for title, key, bs in BUCKETS:
@@ -536,7 +578,7 @@ def _mc(rs, runs=2000, seed=7):
             "lossStreak": streak, "pLoss": round(neg / runs * 100, 1), "n": len(rs)}
 
 
-def robust_test(sub, params=None, budget_s=540):
+def robust_test(sub, params=None, budget_s=480):
     """Your full settings (entry + exits) re-run with each setting nudged up and down: an edge that collapses when a
     number moves a little is fitted to the past. Plus: the share of the profit made by the best 3 tickers and a
     Monte Carlo of the trade order (expected drawdown, losing streak, chance of losing over the same number of trades)."""
@@ -579,14 +621,19 @@ def robust_test(sub, params=None, budget_s=540):
                 out[lab] = _run(sym, d, c, first)
         return sym, out
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        for f in [pool.submit(one, t) for t in cfg["tickers"]]:
-            try:
-                sym, out = f.result(timeout=max(5, budget_s - (time.time() - t0)))
-                for k, v in (out or {}).items():
-                    res[k] += v
-            except Exception as e:
-                errors.append(str(e)[:100])
+    pool = ThreadPoolExecutor(max_workers=8)
+    done_n = 0
+    for f in [pool.submit(one, t) for t in cfg["tickers"]]:
+        try:
+            sym, out = f.result(timeout=max(1, budget_s - (time.time() - t0)))
+            done_n += 1
+            for k, v in (out or {}).items():
+                res[k] += v
+        except Exception as e:
+            errors.append(str(e)[:100] or "time limit")
+    pool.shutdown(wait=False, cancel_futures=True)
+    if done_n < len(cfg["tickers"]):
+        errors.insert(0, f"Time limit: {done_n} of {len(cfg['tickers'])} tickers tested.")
     base_rows = res[variants[0][0]]
     rows = [{"label": lab, **_stats(res[lab], mid)} for lab, _ in variants]
     by = {}
@@ -609,10 +656,17 @@ def PARAMS_KEYS(cfg):
 
 
 def robust_result(sub):
-    r = db.get(db.upk(sub), ROB_SK) or {}
+    r = _unstick(db.get(db.upk(sub), ROB_SK) or {})
     return {k: v for k, v in r.items() if k not in ("PK", "SK")}
 
 
+def _unstick(r):
+    """A run the 10-minute limit killed never cleared its flag: after 12 minutes it isn't running any more."""
+    if r.get("running") and r["running"] < iso(now_ny() - timedelta(minutes=12)):
+        r = {**r, "running": None, "errors": ["The last run hit the 10-minute limit and stopped: run it again."] + list(r.get("errors") or [])}
+    return r
+
+
 def test_result(sub):
-    r = db.get(db.upk(sub), TEST_SK) or {}
+    r = _unstick(db.get(db.upk(sub), TEST_SK) or {})
     return {k: v for k, v in r.items() if k not in ("PK", "SK")}
