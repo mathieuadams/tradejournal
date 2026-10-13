@@ -1516,11 +1516,11 @@ const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = list.includes(t0) || held.includes(t0) ? t0 : (list[0] || t0), id = 'ww-' + sym;
-  if (!S.ww && !S.wwBusy) setTimeout(loadWatch, 0);
+  if (!S.ww && !S.wwBusy) { S.wwBusy = true; setTimeout(() => { S.wwBusy = false; loadWatch(); }, 0); }
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
   const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
   const k = fcKey(id), d = sym ? S.fc[k] : null;
-  if (sym && !d && !S.fcBusy[k]) setTimeout(() => loadWwChart(sym), 0);
+  if (sym && !d && !S.fcBusy[k]) { S.fcBusy[k] = true; setTimeout(() => loadWwChart(sym), 0); }
   if (sym) fcNeedDark(id);
   const sigs = (d && d.signals) || [];
   const selK = S.wwSel && S.wwSel.sym === sym ? sigs.findIndex(x => x.at === S.wwSel.at) : -1;
@@ -2365,7 +2365,7 @@ function vStrats() {
 /* ---------- Wall watch: CW > flip > PW + green hourly candle crossing the put wall ---------- */
 async function loadWatch() {
   if (S.wwBusy) return; S.wwBusy = true;
-  try { S.ww = await api('/bot/wallwatch'); } catch (e) { S.ww = { error: e.message }; }
+  try { S.ww = await api('/bot/wallwatch'); } catch (e) { if (!S.ww) S.ww = { error: e.message }; }
   S.wwBusy = false;
   if (route() === 'botwatch' || route() === 'botchart') render();
 }
@@ -2443,7 +2443,7 @@ function wwParams(compact) {
     <label ${lab} title="The VWAP restarts on the hourly candle with the highest volume of this many trading days">VWAP reset ${inp('ww-vwd', c.vwapDays ?? 10, 1, 3.2)} days</label></div>
     ${grp('Entry')}${grp('Exit')}
     <div><button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 12px">Apply</button>
-    <span class="muted" style="font-size:.75rem">ON/OFF saves right away; Apply saves the numbers. Signals are recomputed either way.</span></div></div>`;
+    <span class="muted" style="font-size:.75rem">ON/OFF saves by itself (a second after your last click); Apply saves the numbers. Signals are recomputed either way.</span></div></div>`;
 }
 async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
@@ -2461,7 +2461,9 @@ function wwTkBtn(sym, d) {
   return `<button class="btn ${miss ? 'coachbtn' : ''}" data-wwtk="${esc(sym)}" ${busy ? 'disabled' : ''} style="font-size:.8rem;padding:2px 10px" title="Fetch the put wall, call wall, flip and max pain of the last 45 days for ${esc(sym)}, then find its signals">${busy ? 'Getting walls…' : 'Get walls (45 days)'}</button>`
     + (d && !busy ? ` <span class="muted" style="font-size:.8rem">${miss ? `${miss} day${miss === 1 ? '' : 's'} missing` : 'all days stored'}</span>` : '');
 }
+S.wwTkPoll = S.wwTkPoll || {};
 async function wwTkFill(sym) {
+  clearTimeout(S.wwTkPoll[sym]);                 // one poller per ticker
   S.wwTk[sym] = true; render();
   try { await api('/bot/wallwatch/walls', { method: 'POST', body: { t: sym } }); }
   catch (e) { toast(e.message); S.wwTk[sym] = false; render(); return; }
@@ -2471,15 +2473,15 @@ async function wwTkFill(sym) {
     const k = fcKey('ww-' + sym);
     try { S.fc[k] = await api('/bot/wallwatch/chart?t=' + encodeURIComponent(sym)); } catch (e) {}
     const f = (S.fc[k] && S.fc[k].fill) || {};
-    if (f.running && n < 40) { if (route() === 'botchart') render(); return setTimeout(poll, 8000); }
-    S.wwTk[sym] = false; S.ww = null; loadWatch();
+    if (f.running && n < 40) { if (route() === 'botchart') render(); S.wwTkPoll[sym] = setTimeout(poll, 8000); return; }
+    S.wwTk[sym] = false; loadWatch();
     toast(f.left ? `${sym}: ${f.left} days still missing — press again` : `${sym}: walls stored`);
     if (route() === 'botchart') render();
   };
-  setTimeout(poll, 8000);
+  S.wwTkPoll[sym] = setTimeout(poll, 8000);
 }
 function runWatchPoll() {
-  let n = 0; const tick = async () => { n++; S.ww = null; await loadWatch(); if (S.ww && S.ww.run && S.ww.run.running && n < 12 && route() === 'botwatch') setTimeout(tick, 30000); };
+  let n = 0; const tick = async () => { n++; await loadWatch(); if (S.ww && S.ww.run && S.ww.run.running && n < 12 && route() === 'botwatch') setTimeout(tick, 30000); };
   setTimeout(tick, 30000);
 }
 async function runWatch(days) {
@@ -2965,14 +2967,15 @@ document.addEventListener('click', e => {
   if (el.dataset.fcfmode) { fcfSetMode(el.dataset.fcfmode); if (el.dataset.fcfmode === 'ww' && !S.ww) loadWatch(); else if (el.dataset.fcfmode === 'ev' && !S.tickers) loadTickers(); location.hash = '#botchart'; render(); return; }
   if (el.dataset.wwsel) { const [sym, at] = el.dataset.wwsel.split('|'); S.wwSel = { sym, at, zoom: true }; render(); return; }
   if (el.dataset.wwchart) { const [sym, at] = el.dataset.wwchart.split('|'); fcfSetMode('ww'); S.wwSel = at ? { sym, at, zoom: true } : null; location.hash = '#botchart?t=' + encodeURIComponent(sym); return; }
-  if (el.dataset.wwflow) { S.wwFlowBusy = true; render(); api('/bot/wallwatch/flowstudy', { method: 'POST', body: {} }).then(() => { toast('Matching every signal with the flow — a few minutes'); let n = 0; const tk = async () => { n++; S.ww = null; await loadWatch(); const f = (S.ww && S.ww.flowStudy) || {}; if (f.running && n < 20) setTimeout(tk, 20000); else { S.wwFlowBusy = false; render(); } }; setTimeout(tk, 20000); }).catch(err => { S.wwFlowBusy = false; toast(err.message); render(); }); return; }
+  if (el.dataset.wwflow) { S.wwFlowBusy = true; render(); api('/bot/wallwatch/flowstudy', { method: 'POST', body: {} }).then(() => { toast('Matching every signal with the flow — a few minutes'); let n = 0; const tk = async () => { n++; await loadWatch(); const f = (S.ww && S.ww.flowStudy) || {}; if (f.running && n < 20) setTimeout(tk, 20000); else { S.wwFlowBusy = false; render(); } }; setTimeout(tk, 20000); }).catch(err => { S.wwFlowBusy = false; toast(err.message); render(); }); return; }
   if (el.dataset.wwrule !== undefined) { const v = +el.dataset.wwrule; api('/bot/wallwatch', { method: 'PUT', body: { flowRule: v < 0 ? null : v } }).then(r => { S.ww = r; toast(v < 0 ? 'Flow filter removed' : 'Only signals passing this flow condition will be bought'); render(); }).catch(err => toast(err.message)); return; }
   if (el.dataset.wwsw) {                 // flip a rule ON/OFF in place (typed values stay); saved on Apply
     const k = el.dataset.wwsw, sw = wwSwState(); sw[k] = !sw[k];
     document.querySelectorAll(`[data-wwsw="${k}"]`).forEach(b => { const onv = sw[k], wrap = b.parentElement;
       b.textContent = onv ? 'ON' : 'OFF'; b.style.background = onv ? 'var(--gain)' : ''; b.style.color = onv ? '#fff' : ''; b.style.borderColor = onv ? 'transparent' : '';
       wrap.style.opacity = onv ? '' : '.55'; wrap.style.borderColor = onv ? 'var(--gain)' : 'var(--line)'; });
-    const where = el.closest('[data-wwwhere]'); wwSaveParams(where ? where.dataset.wwwhere : (S.view === 'botwatch' ? 'page' : 'chart'));
+    const where = el.closest('[data-wwwhere]'), w_ = where ? where.dataset.wwwhere : 'page';
+    clearTimeout(S.wwSwT); S.wwSwT = setTimeout(() => wwSaveParams(w_), 1500);      // several clicks: one save
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
