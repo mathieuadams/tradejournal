@@ -81,6 +81,68 @@ def _fetch_alerts(sub, sym, days):
     return {"n": len(ts), "oldest": oldest, "topUp": cal < int(days * 1.45) + 3}
 
 
+# ---------------- skew (25-delta risk reversal: put IV - call IV) ----------------
+
+SKEW_PK = "UWSKEW"           # market data: shared, kept for good, topped up every 3 days
+
+
+def _rr_series(key, sym, exp, until):
+    """Daily 25-delta risk reversal of one expiration: {date: value}."""
+    import flowdata
+    for delta in ("25", "0.25"):
+        r = flowdata._uw(key, f"/api/stock/{sym}/historical-risk-reversal-skew",
+                         {"expiry": exp, "delta": delta, "timeframe": "1Y", "date": until})
+        rows = (r or {}).get("data") or []
+        if rows:
+            out = {}
+            for x in rows:
+                try:
+                    out[str(x["date"])[:10]] = float(x["risk_reversal"])
+                except (KeyError, TypeError, ValueError):
+                    pass
+            return out
+    return {}
+
+
+def fetch_skew(key, sym, days=250):
+    """Constant ~30-day skew by day: each day uses the monthly expiration closest to 30 days out (14 to 60 days)."""
+    import wallwatch
+    have = db.get(SKEW_PK, sym) or {}
+    if have.get("at") and time.time() - float(have.get("ts") or 0) < 3 * 86400 and int(have.get("days") or 0) >= days:
+        return have.get("data") or {}
+    today = now_ny().date()
+    first = (today - timedelta(days=int(days * 1.45))).isoformat()
+    exps = wallwatch.monthly_exps((today - timedelta(days=int(days * 1.45) - 14)).isoformat(), (today + timedelta(days=62)).isoformat())
+    by_day = {}                                        # date -> (|dte - 30|, value)
+    for exp in exps:
+        until = min(today - timedelta(days=1), datetime.strptime(exp, "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
+        for d, v in _rr_series(key, sym, exp, until).items():
+            if d < first:
+                continue
+            dte = (datetime.strptime(exp, "%Y-%m-%d").date() - datetime.strptime(d, "%Y-%m-%d").date()).days
+            if 14 <= dte <= 60 and (d not in by_day or abs(dte - 30) < by_day[d][0]):
+                by_day[d] = (abs(dte - 30), v)
+    data = {d: round(v[1], 5) for d, v in sorted(by_day.items())}
+    db.put({"PK": SKEW_PK, "SK": sym, "data": data, "days": days, "at": iso(now_ny()), "ts": int(time.time())})
+    return data
+
+
+def stored_skew(sym):
+    return (db.get(SKEW_PK, sym) or {}).get("data") or {}
+
+
+def skew_features(skew, day):
+    """Skew known before `day` opens (previous session): its value, its percentile vs the prior ~6 months, its 5-day change."""
+    prior = sorted(d for d in skew if d < day)
+    if len(prior) < 25:
+        return None
+    vals = [skew[d] for d in prior[-126:]]
+    v = vals[-1]
+    pct = sum(1 for x in vals[:-1] if x <= v) / (len(vals) - 1) * 100
+    chg = v - skew[prior[-6]] if len(prior) >= 6 else None
+    return {"skew": v, "skewPct": round(pct), "skewChg": round(chg, 4) if chg is not None else None}
+
+
 def hist_status(sub):
     st = db.get(db.upk(sub), HIST_SK) or {}
     return {k: v for k, v in st.items() if k not in ("PK", "SK")}
@@ -122,7 +184,22 @@ def load_history(sub, budget_s=520):
         left = f.get("left") or 0
         st.update(wallsLeft=left, wallsTotal=f.get("total"))
         errors += f.get("errors") or []
-    more = len(done) < len(tickers) or left > 0
+    skew_done = set(st.get("skewDone") or [])
+    if len(done) >= len(tickers) and not left:
+        import flowdata
+        key = flowdata._key(sub)
+        for sym in [t for t in tickers if t not in skew_done]:
+            if time.time() - t0 > budget_s:
+                break
+            try:
+                n = len(fetch_skew(key, sym, days))
+                oldest_sk = st.get("skewDays") or {}
+                st["skewDays"] = {**oldest_sk, sym: n}
+            except Exception as e:
+                errors.append(f"{sym} skew: {str(e)[:80]}")
+            skew_done.add(sym)
+        st["skewDone"] = sorted(skew_done)
+    more = len(done) < len(tickers) or left > 0 or len(skew_done) < len(tickers)
     st.update(alertsDone=sorted(done), oldest=oldest, errors=errors[-8:], round=int(st.get("round") or 0) + 1,
               at=iso(now_ny()), running=iso(now_ny()) if more and int(st.get("round") or 0) < 80 else None)
     if not st["running"]:
@@ -180,12 +257,22 @@ def _ticker_data(sub, sym, days, cfg):
     vw, _ = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))
     em = wallwatch._ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20))
     kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
-    return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym),
+    return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym), "skew": stored_skew(sym),
             "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
             "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now)}}
 
 
 def _run(sym, data, cfg, first):
+    rows = _run0(sym, data, cfg, first)
+    sk = data.get("skew") or {}
+    for r in rows:
+        f = skew_features(sk, r["at"][:10]) if sk else None
+        if f:
+            r.update(f)
+    return rows
+
+
+def _run0(sym, data, cfg, first):
     import wallwatch
     sigs, _ = wallwatch.detect_retest(data["bars"], data["walls"], first, cfg, data["datr"], data["alerts"], None,
                                       data["vmap"], data["emap"], data.get("extra"))
@@ -222,6 +309,8 @@ BUCKETS = [
     ("Call alert", "prem", [(0, 250_000, "$100–250K"), (250_000, 500_000, "$250–500K"), (500_000, 1_000_000, "$500K–1M"), (1_000_000, 1e18, "$1M+")]),
     ("Room to the call wall (ATR)", "room", [(-1e9, 0.5, "< 0.5"), (0.5, 1, "0.5–1"), (1, 2, "1–2"), (2, 1e9, "2+")]),
     ("Wait after the alert", "waitH", [(-1, 7, "same day"), (7, 48, "1–2 days"), (48, 1e9, "3+ days")]),
+    ("Skew (25Δ put IV − call IV) vs its last 6 months", "skewPct", [(-1, 33.4, "low: calls bid (bullish demand)"), (33.4, 66.7, "normal"), (66.7, 101, "high: puts bid (fear)")]),
+    ("Skew change over 5 days", "skewChg", [(-1e9, -0.005, "falling: puts cheaper"), (-0.005, 0.005, "flat"), (0.005, 1e9, "rising: puts richer")]),
 ]
 
 

@@ -2511,6 +2511,36 @@ def test_intraday_gamma_levels():
         charts._yahoo, flowdata.stored_walls = saved
 
 
+def test_skew_history():
+    """25-delta risk reversal: ~30-day expiry chosen per day, stored, and turned into features known before the open."""
+    import backtest, flowdata
+    import datetime as dt
+    from util import now_ny
+    calls = []
+    def fake(key, path, params=None, attempts=4):
+        calls.append(params)
+        if "historical-risk-reversal-skew" not in path or params["delta"] != "25":
+            return None
+        exp = dt.date.fromisoformat(params["expiry"])
+        days = [exp - dt.timedelta(days=k) for k in range(70, 0, -1)]
+        return {"data": [{"date": d.isoformat() + "T00:00:00.000Z", "delta": 25, "risk_reversal": str(round(0.02 + (exp.month % 3) * 0.01 + k * 0.0001, 5))}
+                         for k, d in enumerate(days)]}
+    saved = flowdata._uw
+    try:
+        flowdata._uw = fake
+        sk = backtest.fetch_skew("k", "SKW", 120)
+        assert len(sk) > 60 and backtest.stored_skew("SKW") == sk
+        n = len(calls)
+        backtest.fetch_skew("k", "SKW", 120)
+        assert len(calls) == n                                  # stored: no new request
+    finally:
+        flowdata._uw = saved
+    day = sorted(sk)[-1]
+    f = backtest.skew_features(sk, day)
+    assert f and 0 <= f["skewPct"] <= 100 and f["skew"] == sk[sorted(sk)[-2]]
+    assert backtest.skew_features(sk, sorted(sk)[5]) is None   # not enough history before
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
