@@ -2410,6 +2410,54 @@ def test_rule_tester():
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts = saved
     st = backtest.start_history(sub, 120)
     assert st["running"] and st["days"] == 120
+    # stored history: a second load only asks for the days since the last one
+    asked = []
+    saved_al = flowdata.alerts
+    try:
+        flowdata.alerts = lambda *a_, **k: asked.append(a_[9]) or {"alerts": [{"ticker": "AAA", "atEt": "2026-09-01 10:00", "premium": 300000}]}
+        r1 = backtest._fetch_alerts(sub, "AAA", 120)
+        r2 = backtest._fetch_alerts(sub, "AAA", 120)
+        assert asked[0] > 150 and asked[1] <= 3 and r2["topUp"] and r1["oldest"] == "2026-09-01", asked
+        assert len(backtest.stored_alerts.__wrapped__(sub, "AAA") if hasattr(backtest.stored_alerts, "__wrapped__") else
+                   [x for r in db.q_prefix(db.upk(sub), "WWHFLOW#AAA#") for x in r["alerts"]]) == 1
+    finally:
+        flowdata.alerts = saved_al
+
+
+def test_tos_indicators():
+    """Keltner channel, opening range and SPY trend: values and the entry switches."""
+    import wallwatch, charts
+    bars = [{"t": f"2026-10-0{1 + i // 7}T{['09:30','10:30','11:30','12:30','13:30','14:30','15:30'][i % 7]}",
+             "o": 100 + i * .1, "h": 101 + i * .1, "l": 99 + i * .1, "c": 100.5 + i * .1, "v": 1} for i in range(35)]
+    kc = wallwatch.keltner(bars, 5, 3)
+    assert kc[3] is None and kc[10][1] > kc[10][0] > kc[10][2] and abs((kc[10][1] - kc[10][0]) - (kc[10][0] - kc[10][2])) < 1e-6
+    orb = wallwatch.orb_levels(bars)
+    assert orb[0] is None and orb[1] == (bars[0]["h"], bars[0]["l"]) and orb[7] is None and orb[8] == (bars[7]["h"], bars[7]["l"])
+    saved = charts._yahoo
+    try:
+        import datetime as dt
+        days = ["2026-09-%02d" % d for d in (21, 22, 23, 24, 25, 28, 29, 30)]
+        charts._yahoo = lambda sym, tf, s_, e: ([{"t": f"{d}T09:30", "o": 1, "h": 1, "l": 1, "c": 500 + k} for k, d in enumerate(days)] if tf == "1d"
+                                               else [{"t": "2026-09-30T10:30", "o": 1, "h": 1, "l": 1, "c": 499.0}, {"t": "2026-09-30T11:30", "o": 1, "h": 1, "l": 1, "c": 503.0}])
+        wallwatch._SPY.clear()
+        sp = wallwatch.spy_trend(None, dt.datetime(2026, 10, 1, 12))
+        assert sp == {"2026-09-30T10:30": -1, "2026-09-30T11:30": 1}, sp      # 6 sessions before 09-30 = 09-22 (501)
+    finally:
+        charts._yahoo = saved
+        wallwatch._SPY.clear()
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    rb = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+          {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+          {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0}]
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    ws = {"2026-10-05": w}
+    assert wallwatch.detect_retest(rb, ws, alerts=al, datr={"next": 2.0})[0]
+    assert not wallwatch.detect_retest(rb, ws, cfg={"spyUp": True}, alerts=al, datr={"next": 2.0}, extra={"spy": {"2026-10-05T11:30": -1}})[0]
+    assert wallwatch.detect_retest(rb, ws, cfg={"spyUp": True}, alerts=al, datr={"next": 2.0}, extra={"spy": {"2026-10-05T11:30": 1}})[0]
+    assert not wallwatch.detect_retest(rb, ws, cfg={"orbAbove": True}, alerts=al, datr={"next": 2.0})[0]     # 103 < ORB high 105.5
+    sg = wallwatch.detect_retest(rb, ws, alerts=al, datr={"next": 2.0}, extra={"kc": {"2026-10-05T11:30": (103.5, 104, 103)}})[0][0]
+    assert sg["orb"] == [105.5, 103.5] and sg["kc"] == [103.5, 104, 103]
+    assert not wallwatch.detect_retest(rb, ws, cfg={"kcNotExt": True}, alerts=al, datr={"next": 2.0}, extra={"kc": {"2026-10-05T11:30": (101, 102.5, 99.5)}})[0]
 
 
 if __name__ == "__main__":

@@ -53,23 +53,32 @@ def stored_alerts(sub, sym):
 
 
 def _fetch_alerts(sub, sym, days):
-    """Call alerts >= $100K bought at the ask, as far back as Unusual Whales pages (stored by month)."""
+    """Call alerts >= $100K bought at the ask, as far back as Unusual Whales pages (stored by month, kept for good).
+    A ticker already loaded for at least `days` is only topped up since its last load."""
     import flowdata
-    res = flowdata.alerts(sub, MIN_ALERT, "call", 0, 400, True, False, sym, 0, int(days * 1.45) + 3, exclude_etfs=False)
+    pk = db.upk(sub)
+    meta = db.get(pk, f"WWHMETA#{sym}") or {}
+    cal = int(days * 1.45) + 3
+    if meta.get("days") and int(meta["days"]) >= days and meta.get("at"):
+        since = (now_ny().date() - datetime.strptime(meta["at"][:10], "%Y-%m-%d").date()).days + 2
+        cal = max(2, min(cal, since))                  # only what's new since the last load
+    res = flowdata.alerts(sub, MIN_ALERT, "call", 0, 400, True, False, sym, 0, cal, exclude_etfs=False)
     by_m = {}
     for a in res.get("alerts") or []:
         if (a.get("ticker") or "").upper() != sym or not a.get("atEt"):
             continue
         t = a["atEt"].replace(" ", "T")[:16]
         by_m.setdefault(t[:7], []).append({"t": t, "c": 1, "p": round(a.get("premium") or 0)})
-    pk = db.upk(sub)
     for m, al in by_m.items():
         old = db.get(pk, _alerts_key(sym, m)) or {}
         seen = {(x["t"], x["p"]) for x in old.get("alerts") or []}
         merged = list(old.get("alerts") or []) + [x for x in al if (x["t"], x["p"]) not in seen]
         db.put({"PK": pk, "SK": _alerts_key(sym, m), "alerts": sorted(merged, key=lambda x: x["t"])[-4000:]})
     ts = sorted(t for al in by_m.values() for t in (x["t"] for x in al))
-    return {"n": len(ts), "oldest": ts[0][:10] if ts else None}
+    oldest = min([x for x in (meta.get("oldest"), ts[0][:10] if ts else None) if x] or [None])
+    db.put({"PK": pk, "SK": f"WWHMETA#{sym}", "days": max(int(meta.get("days") or 0), days), "at": iso(now_ny()),
+            "oldest": oldest, "n": int(meta.get("n") or 0) + len(ts)})
+    return {"n": len(ts), "oldest": oldest, "topUp": cal < int(days * 1.45) + 3}
 
 
 def hist_status(sub):
@@ -137,9 +146,11 @@ def continue_history(sub):
 RULES = [  # (switch, label)
     ("greenOnly", "Green candle"), ("aboveFlip", "Above the flip"), ("vwapOn", "Above VWAP"), ("emaOn", "Above EMA"),
     ("emaOverVwap", "EMA > VWAP"), ("noAboveCW", "Not above CW"), ("cwRoomOn", "Room to CW"),
+    ("spyUp", "SPY trend up (6 days)"), ("kcNotExt", "Under the upper Keltner band"), ("orbAbove", "Above the opening range high"),
 ]
 OFF = {"usePW": True, "useFlip": True, "greenOnly": False, "aboveFlip": False, "vwapOn": False, "emaOn": False,
        "emaOverVwap": False, "noAboveCW": False, "cwRoomOn": False, "earnOn": False,
+       "spyUp": False, "kcNotExt": False, "orbAbove": False,
        "stopOn": True, "trailOn": False, "targetOn": False, "flipExit": False, "vwapExit": False, "emaExit": False}
 EXITS = [  # label, exit settings on top of the fixed stop
     ("Fixed: target N x risk or N days", {}),
@@ -168,14 +179,16 @@ def _ticker_data(sub, sym, days, cfg):
     walls = flowdata.stored_walls(sym)
     vw, _ = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))
     em = wallwatch._ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20))
+    kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
     return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym),
-            "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)}}
+            "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
+            "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now)}}
 
 
 def _run(sym, data, cfg, first):
     import wallwatch
     sigs, _ = wallwatch.detect_retest(data["bars"], data["walls"], first, cfg, data["datr"], data["alerts"], None,
-                                      data["vmap"], data["emap"])
+                                      data["vmap"], data["emap"], data.get("extra"))
     out = []
     for s in sigs:
         if s["status"] == "open" or s.get("R") is None:
@@ -184,7 +197,9 @@ def _run(sym, data, cfg, first):
         out.append({"sym": sym, "at": s["at"], "R": s["R"], "pct": s["pct"], "exit": s["status"], "level": s.get("levelName"),
                     "prem": s.get("armPremium") or 0, "room": round((cw - s["entry"]) / s["atr"], 2) if cw and s.get("atr") else None,
                     "waitH": round((datetime.strptime(s["at"], "%Y-%m-%dT%H:%M") - datetime.strptime(s["armedAt"][:16], "%Y-%m-%dT%H:%M")).total_seconds() / 3600, 1) if s.get("armedAt") else None,
-                    "hour": s["at"][11:16]})
+                    "hour": s["at"][11:16], "spy": s.get("spy"),
+                    "kcPos": None if not s.get("kc") else ("above upper" if s["entry"] >= s["kc"][1] else "mid–upper" if s["entry"] >= s["kc"][0] else "lower–mid" if s["entry"] >= s["kc"][2] else "below lower"),
+                    "orbPos": "first hour" if not s.get("orb") else ("above ORB high" if s["entry"] > s["orb"][0] else "below ORB low" if s["entry"] < s["orb"][1] else "inside ORB")})
     return out
 
 
@@ -223,7 +238,7 @@ def rule_test(sub, params=None, budget_s=540):
     mid_d = now_ny() - timedelta(days=int(days * 1.45) // 2)
     mid = mid_d.strftime("%Y-%m-%d")
     fixed = {"fixR": float(P["fixR"] or 0), "maxDays": int(P["maxDays"] or 0)}
-    common = {k: cfg.get(k) for k in ("retestDays", "retestZone", "cwRoom", "emaLen", "vwapDays", "trailAtr", "tgtBuf")}
+    common = {k: cfg.get(k) for k in ("retestDays", "retestZone", "cwRoom", "emaLen", "vwapDays", "trailAtr", "tgtBuf", "kcLen", "kcMult")}
     base = {**common, **OFF, "stopAtr": stop, "retestMin": vmin, **fixed}
     mine_entry = {k: cfg.get(k) for k in wallwatch.SWITCHES if k not in EXIT_KEYS}
     mine_entry.update(aboveFlip=cfg.get("aboveFlip"), earnOn=False)      # no earnings history: off in the test
@@ -274,6 +289,12 @@ def rule_test(sub, params=None, budget_s=540):
         for lo, hi, lab in bs:
             rows = [r for r in base_rows if r.get(key) is not None and lo <= r[key] < hi]
             buckets.append({"group": title, "label": lab, **_stats(rows, mid)})
+    for title, key, labs in (("Keltner channel (21, 3)", "kcPos", ("below lower", "lower–mid", "mid–upper", "above upper")),
+                             ("Opening range (09:30–10:30)", "orbPos", ("first hour", "below ORB low", "inside ORB", "above ORB high")),
+                             ("SPY trend (6 days)", "spy", (1, -1))):
+        for lab in labs:
+            buckets.append({"group": title, "label": {1: "up", -1: "down"}.get(lab, lab) if key == "spy" else lab,
+                            **_stats([r for r in base_rows if r.get(key) == lab], mid)})
     for lab, f_ in (("First hour (09:30)", lambda r: r["hour"] == "09:30"), ("Later in the day", lambda r: r["hour"] != "09:30")):
         buckets.append({"group": "Entry candle", "label": lab, **_stats([r for r in base_rows if f_(r)], mid)})
     by_sym = {}
