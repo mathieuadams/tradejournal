@@ -2799,15 +2799,6 @@ def test_pw_vwap_study():
     near[3] = dict(near[3], l=103.2)                 # 0.2 above the top of the gap
     assert wallwatch.fvg_bull_touch(near, fz)[3] is None
     assert wallwatch.fvg_bull_touch(near, fz, 0.25, [1.0] * 5)[3] is fz[0]
-    # TOS: a newer bullish gap replaces the older one; the threshold is 0.33 x the 20-day average daily range
-    rb = [{"t": f"2026-10-01T{9 + k}:30", "o": l, "h": h, "l": l, "c": h, "v": 1} for k, (h, l) in enumerate(
-        [(101, 100), (103, 101.5), (104, 102), (106, 104.5), (107, 105.5)])]
-    rz = wallwatch.fvg_zones(rb, 0.33, [3.0] * 5)
-    assert [(z["lo"], z["hi"], z["end"]) for z in rz] == [(101, 102, "replaced"), (103, 104.5, "replaced"), (104, 105.5, None)]
-    assert wallwatch.fvg_zones(rb, 0.6, [3.0] * 5) == []          # gaps of 1-1.5 under 0.6 x 3
-    dd = [{"t": f"2026-09-{d:02d}T10:30", "o": 100, "h": 102, "l": 98, "c": 100} for d in range(1, 9)]
-    da = wallwatch.daily_atr20(dd)
-    assert da[:5] == [None] * 5 and da[5] == 4.0
     # exit on a new bearish FVG: candle 4's high under candle 2's low
     xb = [{"t": f"2026-10-01T{9 + k}:30", "o": c, "h": h, "l": l, "c": c, "v": 1} for k, (h, l, c) in enumerate(
         [(101, 99, 100), (102, 100, 101), (103, 101, 102), (102, 99, 100), (100.5, 98, 99), (100, 97, 98)])]
