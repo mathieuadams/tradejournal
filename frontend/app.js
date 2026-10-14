@@ -1571,12 +1571,13 @@ async function loadWwChart(sym) {
 const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
-  const sym = list.includes(t0) || held.includes(t0) ? t0 : (list[0] || t0), id = 'ww-' + sym;
+  const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
+  if (labOn && S.labTest === undefined) { S.labTest = null; setTimeout(loadLabTest, 0); }
   if (!S.ww && !S.wwBusy) { S.wwBusy = true; setTimeout(() => { S.wwBusy = false; loadWatch(); }, 0); }
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
   const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
   const k = fcKey(id), d = sym ? S.fc[k] : null;
-  if (sym && !d && !S.fcBusy[k]) { S.fcBusy[k] = true; setTimeout(() => loadWwChart(sym), 0); }
+  if (sym && !d && !S.fcBusy[k]) { S.fcBusy[k] = true; setTimeout(() => labOn ? loadLabChart(sym) : loadWwChart(sym), 0); }
   if (sym) fcNeedDark(id);
   const sigs = (d && d.signals) || [];
   const selK = S.wwSel && S.wwSel.sym === sym ? sigs.findIndex(x => x.at === S.wwSel.at) : -1;
@@ -1596,7 +1597,8 @@ function vChartWW() {
       <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>${d && d.staleSignals ? ` <span class="muted" style="font-size:.8rem">· ${d.staleSignals} from older settings hidden (recomputing)</span>` : ''}${(stMap[sym] || {}).watch ? ` <b style="color:var(--coach);font-size:.85rem">⚑ waiting for a retest of the ${esc(stMap[sym].watch.levelName)} ${stMap[sym].watch.level}</b>` : ''}` : ''}
       ${sel}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
       <span class="seg" role="group" aria-label="Days on the chart">${[45, 90, 180].map(n => `<button class="btn ${(S.wwDays || 45) === n ? 'coachbtn' : ''}" data-wwdays="${n}" title="${n} trading days${n > 45 ? ' (signals older than 45 days are replayed with your current settings)' : ''}" style="padding:3px 9px">${n}d</button>`).join('')}</span>
-      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.fcLayers.dark ? `<label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="Dark pool prints of at least this % of the 30-day average daily volume">dark pool ≥<input id="ww-dpmin" type="number" step="0.05" min="0.01" value="${S.wwDpPct ?? 0.25}" style="width:4.6em;padding:1px 4px">% of avg daily volume</label>` : ''}${S.ww ? wwParams(true) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
+      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.fcLayers.dark ? `<label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="Dark pool prints of at least this % of the 30-day average daily volume">dark pool ≥<input id="ww-dpmin" type="number" step="0.05" min="0.01" value="${S.wwDpPct ?? 0.25}" style="width:4.6em;padding:1px 4px">% of avg daily volume</label>` : ''}<button class="btn ${labOn ? 'coachbtn' : ''}" data-chartlab title="${labOn ? 'Back to the live strategy' : 'Try other settings on this chart without touching the live bot'}" style="padding:3px 10px">${labOn ? '✓ Strategy lab' : 'Strategy lab'}</button>
+      ${S.ww ? (labOn ? labPanel() : wwParams(true)) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
   else if (!sym) main = '<p class="muted" style="padding:16px">The watchlist is empty.</p>';
@@ -1621,6 +1623,7 @@ function vChartWW() {
           + (sa ? `<span><b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}</span>` : '')
           + (d.note ? `<span class="muted">${esc(d.note)}</span>` : ''); })()}
       <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
+      ${labOn ? labStats(sigs) + labTestBox() : ''}
       <span class="muted">IN = PW setup, FLIP = flip setup, MRG = merged walls, RT = flow retest · green line = target (call wall) · red line = stop, trailing under the highest high · square = exit · × = reached the support but no entry (hover for the reason; grey = no call alert) · ◆ = VWAP reset candle touching the put wall (purple: closed above it, pink: under it) · ↑ ↓ ticker</span>
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
@@ -1703,8 +1706,6 @@ function vChartFull() {
   let rt = null;
   window.addEventListener('resize', () => { if (route() !== 'botchart') return; clearTimeout(rt); rt = setTimeout(render, 150); });
   document.addEventListener('change', e => { if (e.target.id === 'fcf-sel') location.hash = '#botchart?t=' + encodeURIComponent(e.target.value); });
-  document.addEventListener('change', e => { if (e.target.id === 'lab-sym') location.hash = '#botlab?t=' + encodeURIComponent(e.target.value); });
-  document.addEventListener('submit', e => { if (e.target.id !== 'lab-symf') return; e.preventDefault(); const v = (($('#lab-symq') || {}).value || '').trim().toUpperCase(); if (v) location.hash = '#botlab?t=' + encodeURIComponent(v); });
   document.addEventListener('input', e => {
     if (e.target.id !== 'fcf-q') return;
     S.fcfQ = e.target.value.trim(); const q = S.fcfQ.toUpperCase();
@@ -2677,18 +2678,19 @@ const labLive = () => { const c = (S.ww && S.ww.config) || {}, L = labCfg() || {
   const def = k => { const r = WW_RULES.find(x => x[0] === k); if (r) return WW_DEF_ON[k] ?? true; const f = WW_RULES.find(x => x[4] && x[4][1] === k); return f ? f[4][5] : undefined; };
   return Object.keys(L).filter(k => L[k] !== undefined && String(L[k]) !== String(c[k] ?? def(k))).length; };
 async function loadLabChart(sym) {
-  const k = fcKey('ww-lab-' + sym); S.fcBusy[k] = true; if (route() === 'botlab') render();
+  const k = fcKey('ww-lab-' + sym); S.fcBusy[k] = true; if (route() === 'botchart') render();
   try { S.fc[k] = await api('/bot/lab/chart', { method: 'POST', body: { t: sym, days: S.wwDays || 45, cfg: labCfg() } }); } catch (e) { S.fc[k] = { error: e.message }; }
-  S.fcBusy[k] = false; if (route() === 'botlab') render();
+  S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
 async function loadLabTest() {
   try { S.labTest = await api('/bot/lab/test'); } catch (e) { S.labTest = { error: e.message }; }
-  if (route() === 'botlab') render();
+  if (route() === 'botchart') render();
   clearTimeout(S.labPoll);
-  if (S.labTest && S.labTest.running && route() === 'botlab') S.labPoll = setTimeout(loadLabTest, 15000);
+  if (S.labTest && S.labTest.running && route() === 'botchart') S.labPoll = setTimeout(loadLabTest, 15000);
 }
 function labRedraw() { labSave(); const sym = labSymbol(); Object.keys(S.fc).filter(x => x.includes('ww-lab-')).forEach(x => { delete S.fc[x]; }); clearTimeout(S.labT); S.labT = setTimeout(() => loadLabChart(sym), 600); render(); }
 function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return t || l[0] || ''; }
+try { S.chartLab = localStorage.getItem('chartLab') === '1'; } catch (e) { S.chartLab = false; }
 function labPanel() {
   const L = labCfg() || {}, lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
   const inp = (k, step, w) => `<input data-labnum="${k}" type="number" step="${step}" min="0" value="${L[k] ?? ''}" style="width:${w}em;padding:1px 4px">`;
@@ -2730,33 +2732,6 @@ function labTestBox() {
     <tbody>${row(`<b>Lab</b>${changed ? '' : ' <span class="muted">(same as live when run)</span>'}`, t.lab)}${row('Live', t.live)}</tbody></table></div>
     <p class="muted" style="font-size:.82rem;margin:4px 0">Lab exits: ${Object.entries(t.lab.exits || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')} · best / worst tickers: ${(t.lab.top || []).map(x => `${esc(x.sym)} ${x.totR > 0 ? '+' : ''}${x.totR}R`).join(' · ')}</p>
     ${(t.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
-}
-function vLab() {
-  const list = wwTickers(), sym = labSymbol(), id = 'ww-lab-' + sym, k = fcKey(id);
-  if (!S.ww) return '<p class="loading">Loading the watchlist…</p>';
-  if (S.ww.error) return `<div class="errbox">${esc(S.ww.error)}</div>`;
-  if (!labCfg()) return '<p class="loading">Loading settings…</p>';
-  const d = sym ? S.fc[k] : null;
-  if (sym && !d && !S.fcBusy[k]) { S.fcBusy[k] = true; setTimeout(() => loadLabChart(sym), 0); }
-  if (sym) fcNeedDark(id);
-  const W = Math.max(320, Math.min(window.innerWidth - 40, 1700)), H = Math.max(360, Math.round(window.innerHeight * 0.62));
-  const zb_ = (q, l, t) => `<button class="btn" data-fczoom="${id}|${q}" title="${t}" style="padding:3px 10px">${l}</button>`;
-  const sigs = (d && d.signals) || [];
-  const head = `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-    <b style="font-size:1.2rem">Strategy lab</b>
-    <select id="lab-sym" aria-label="Ticker">${(list.includes(sym) ? list : [sym, ...list]).map(x => `<option value="${esc(x)}" ${x === sym ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
-    <form id="lab-symf" style="display:inline-flex;gap:4px"><input id="lab-symq" placeholder="Any ticker" style="width:7em" aria-label="Any ticker"><button class="btn" type="submit" style="padding:2px 8px">Go</button></form>
-    ${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
-    <span class="seg" role="group" aria-label="Days on the chart">${[45, 90, 180].map(n => `<button class="btn ${(S.wwDays || 45) === n ? 'coachbtn' : ''}" data-wwdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
-    ${fcLayerBar(id)}</div>`;
-  let main;
-  if (!sym) main = '<p class="muted">Pick a ticker.</p>';
-  else if (!d || S.fcBusy[k]) main = '<p class="loading" style="padding:16px">Replaying the signals with these settings…</p>';
-  else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
-  else main = fcSvg(d, id, { W, H }) + `<div class="fcf-info" style="display:flex;flex-wrap:wrap;gap:12px;font-size:.85rem;margin-top:4px">${labStats(sigs)}
-      ${(d.fvg || []).length ? `<span class="muted">FVG: ${d.fvg.filter(z => !z.fillAt && z.type === 'bull').length} bullish / ${d.fvg.filter(z => !z.fillAt && z.type === 'bear').length} bearish still open</span>` : ''}
-      ${d.note ? `<span class="muted">${esc(d.note)}</span>` : ''}</div>`;
-  return `<section class="card" style="padding:10px 12px">${head}${labPanel()}${main}${labTestBox()}</section>`;
 }
 function pvTrades(t) {
   if (!t) return '';
@@ -3180,7 +3155,7 @@ setInterval(() => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botlab', 'Strategy lab'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
+  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
 const isBotRoute = () => ['bot', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
 const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
@@ -3210,7 +3185,7 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
   }],
   botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }],
   botwatch: [vWatch, () => { if (!S.ww) loadWatch(); if (!S.rt && !S.rtBusy) loadRuleTest(); }],
-  botlab: [vLab, () => { if (!S.ww) loadWatch(); if (S.labTest === undefined) { S.labTest = null; loadLabTest(); } }],
+  botlab: [() => '', () => { S.chartLab = true; try { localStorage.setItem('chartLab', '1'); } catch (e) {} fcfSetMode('ww'); location.replace('#botchart' + (hashParam('t') ? '?t=' + encodeURIComponent(hashParam('t')) : '')); }],
   botchart: [vChartFull, () => { if (!S.tickers && !S.tkBusy) loadTickers();
     const h = document.querySelector('.fcf-head'), inf = document.querySelector('.fcf-info');      // fit the chart to what's left
     const hh = h ? h.offsetHeight : 0, ih = inf ? inf.offsetHeight + 8 : 0;
@@ -3235,7 +3210,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3302,6 +3277,7 @@ document.addEventListener('click', e => {
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
+  if (el.hasAttribute('data-chartlab')) { S.chartLab = !S.chartLab; try { localStorage.setItem('chartLab', S.chartLab ? '1' : '0'); } catch (e) {} render(); return; }
   if (el.dataset.labsw) { const L = labCfg(); L[el.dataset.labsw] = !L[el.dataset.labsw]; labRedraw(); return; }
   if (el.hasAttribute('data-labapply')) { const L = labCfg();
     document.querySelectorAll('[data-labnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) L[i.dataset.labnum] = i.dataset.scale ? v * +i.dataset.scale : v; });
