@@ -2809,6 +2809,15 @@ def test_pw_vwap_study():
         if st_["status"] != "open":
             break
     assert st_["status"] == "fvg" and st_["exitAt"] == xb[4]["t"] and st_["exit"] == 99
+    # partial exit: half sold at entry + 1R, the stop of the rest moved to the entry, then stopped there
+    sc = {"at": "2026-10-01T09:30", "entry": 100, "stop": 98, "stop0": 98, "status": "open", "scaleOn": True, "scaleR": 1,
+          "scalePct": 50, "scaleBE": True, "atr": 1}
+    wallwatch._step(sc, {"t": "2026-10-01T10:30", "o": 100, "h": 102.5, "l": 99.5, "c": 102}, {}, 0, False, False)
+    assert sc["scaled"]["px"] == 102 and sc["stop"] == 100 and sc["status"] == "open"
+    wallwatch._step(sc, {"t": "2026-10-01T11:30", "o": 101, "h": 101, "l": 99, "c": 99.5}, {}, 0, False, False)
+    assert sc["status"] == "breakeven" and sc["exit"] == 100
+    assert wallwatch._result(sc) == (1.0, 0.5)          # half at +2%, half at 0%: +1% = 0.5R
+    assert wallwatch.config("nobody")["scaleOn"] is False
     # wall regimes: labels per day, wall moves vs the previous day, forward moves from the close
     import backtest
     hb = [{"t": f"2026-09-{d:02d}T{h}:30", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100 + d} for d in range(1, 13) for h in (10, 11)]

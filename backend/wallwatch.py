@@ -39,7 +39,10 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # fvgOn: the entry candle must trade into an open bullish fair value gap (3-candle gap of at least fvgMin x ATR)
           "fvgOn": False, "fvgMin": 0.2, "fvgNear": 0.25,   # fvgNear: a low within this x ATR above the gap counts as a touch
           # fvgExit: sell at the close of the candle that completes a new bearish fair value gap after the entry
-          "fvgExit": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "fvgExit": False,
+          # scaleOn (lab / backtest): sell scalePct % of the position when price reaches entry + scaleR x risk;
+          # scaleBE: then move the stop of the rest to the entry price
+          "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -49,6 +52,7 @@ def config(sub):
     out.update({k: c.get(k, v) for k, v in PARAMS.items()})
     out.update({k: c.get(k, v) for k, v in OPTS.items()})
     out["added"] = c.get("added") or {}                 # {ticker: {"at", "by", "premium"}} for tickers added from the flow
+    out["scaleOn"] = False                              # partial exits: Strategy lab / backtests only, the live bot sells all at once
     if FLOW_ONLY:                                       # only the flow retest setup is used for now
         out.update(pwSetup=False, flipSetup=False, mergedSetup=False, retestSetup=True)
     return out
@@ -62,10 +66,10 @@ def version(cfg):
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
-            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}")
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE")
 
 
 def save_config(sub, body):
@@ -90,12 +94,17 @@ def save_config(sub, body):
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
             except (TypeError, ValueError):
                 pass
-    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "relMult", "fvgMin", "fvgNear"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "relMult", "fvgMin", "fvgNear", "scaleR"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
             except (TypeError, ValueError):
                 pass
+    if "scalePct" in body:
+        try:
+            cur["scalePct"] = max(1, min(99, int(float(body["scalePct"]))))
+        except (TypeError, ValueError):
+            pass
     for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
@@ -265,8 +274,17 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
                                          float(fl_) if fl_ else None, 1 if s.get("riding") else 0])
         s["dlog"] = s["dlog"][-40:]
     if b["l"] <= s["stop"]:
-        s.update(status="trail" if s.get("stops") else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
+        st_ = "breakeven" if s.get("scaled") and abs(s["stop"] - s["entry"]) < 1e-9 else "trail" if s.get("stops") else "stop"
+        s.update(status=st_, exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
         return
+    if s.get("scaleOn") and not s.get("scaled"):     # part of the position sold at entry + N x risk
+        lvl = s["entry"] + float(s.get("scaleR") or 1) * (s["entry"] - s["stop0"])
+        if s["entry"] > s["stop0"] and b["h"] >= lvl:
+            px_ = round(max(b["o"], lvl), 4)
+            s["scaled"] = {"at": b["t"][:16], "px": px_, "frac": max(0.01, min(0.99, float(s.get("scalePct") or 50) / 100))}
+            if s.get("scaleBE") and s["stop"] < s["entry"]:
+                s["stop"] = s["entry"]                    # the rest can't lose any more
+                s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], s["entry"]])
     if s.get("fvgExit") and bear:                    # this candle completes a new bearish fair value gap: out at its close
         s.update(status="fvg", exitAt=b["t"][:16], exit=b["c"])
         return
@@ -325,6 +343,9 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
 def _result(s):
     ex = s.get("exit") if s["status"] != "open" else s["last"]
     pct = round((ex / s["entry"] - 1) * 100, 2)
+    sc = s.get("scaled")
+    if sc:                                             # partial exit: the two parts weighted by their size
+        pct = round(sc["frac"] * (sc["px"] / s["entry"] - 1) * 100 + (1 - sc["frac"]) * (ex / s["entry"] - 1) * 100, 2)
     risk = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
     return pct, (round(pct / risk, 2) if risk > 0 else None)
 
@@ -735,6 +756,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
                  "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
                  "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"),
+                 "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
                  "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
             if P.get("fixR"):                          # backtest: fixed target at N x the risk
                 s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
@@ -747,7 +769,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         i0 = s.pop("i0")                               # the same entry with the other choice for the daily flip exit
-        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn", "riding", "rideAt", "tgtHit", "dlog", "passed", "lostLevel")}
+        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn", "riding", "rideAt", "tgtHit", "dlog", "passed", "lostLevel", "scaled")}
         if alt.get("maxDays"):
             alt["_dd"], alt["_dn"] = alt["at"][:10], 0
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
@@ -814,7 +836,8 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
              "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])),
              "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"), "cwLost": on("cwLost"), "dpLost": on("dpLost"),
-             "pvEod": on("pvEod"), "fvgExit": on("fvgExit"), "kc": list(kc[i]) if kc[i] else None,
+             "pvEod": on("pvEod"), "fvgExit": on("fvgExit"),
+             "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "kc": list(kc[i]) if kc[i] else None,
              "kcPos": e.get("kcPos"), "above": e.get("above"), "green": e.get("green")}
         j = i
         last_of_day = lambda k: k + 1 == len(bars) or bars[k + 1]["t"][:10] != bars[k]["t"][:10]
