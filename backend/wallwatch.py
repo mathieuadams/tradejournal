@@ -32,7 +32,10 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False,
           # pvSetup: the VWAP reset on the put wall strategy replaces the flow retest (LONG signal of pw_vwap_events)
           # pvEod: with it, the entry day must close above the put wall, else sold at that close
-          "pvSetup": True, "pvEod": True}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "pvSetup": True, "pvEod": True,
+          # relFlow: a call alert arms the ticker when its premium is at least relMult x the median premium of the
+          # ticker's call alerts of the previous 30 days (unusual for THIS ticker); retestMin is the fallback with < 5 alerts
+          "relFlow": True, "relMult": 3.0}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -55,10 +58,10 @@ def version(cfg):
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
-            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}")
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow")
 
 
 def save_config(sub, body):
@@ -83,7 +86,7 @@ def save_config(sub, body):
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
             except (TypeError, ValueError):
                 pass
-    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "relMult"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
@@ -490,6 +493,33 @@ def spy_trend(start, now=None):
     return out
 
 
+REL_DAYS, REL_MIN_N, REL_FLOOR = 30, 5, 50_000
+
+
+def unusual_calls(alerts, fallback=500_000, mult=3.0):
+    """Call alerts that are unusual for this ticker: premium >= mult x the median premium of its call alerts of the
+    previous REL_DAYS days (only past alerts: no look-ahead), and at least REL_FLOOR. With fewer than REL_MIN_N past
+    alerts the fixed `fallback` is used. Adds "x" = premium / that median (None on the fallback)."""
+    import bisect
+    calls = sorted((a for a in (alerts or []) if a.get("c")), key=lambda a: a["t"])
+    ts = [a["t"] for a in calls]
+    out = []
+    for k, a in enumerate(calls):
+        try:
+            lo_t = (datetime.strptime(a["t"][:10], "%Y-%m-%d") - timedelta(days=REL_DAYS)).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+        prev = sorted(float(x.get("p") or 0) for x in calls[bisect.bisect_left(ts, lo_t):k])
+        p = float(a.get("p") or 0)
+        if len(prev) >= REL_MIN_N:
+            med = prev[len(prev) // 2]
+            if med > 0 and p >= max(REL_FLOOR, mult * med):
+                out.append({**a, "x": round(p / med, 1)})
+        elif p >= fallback:
+            out.append({**a, "x": None})
+    return out
+
+
 def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None, vwap_map=None, ema_map=None,
                   extra=None):
     """Flow retest: a call alert of at least retestMin arms the ticker (a new alert re-arms it). The support is the highest
@@ -539,7 +569,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         vwap = [vwap_map.get(b["t"][:16]) for b in bars]
     else:
         vwap, _ = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))
-    big = sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
+    big = unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else \
+        sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
     sigs, open_, watch, ai = [], None, None, 0
     for i, b in enumerate(bars):
         day = b["t"][:10]
@@ -563,13 +594,14 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             under = [x for x in lv if x[0] <= b["c"] * (1 + RETEST_NEAR / 100)]
             if under:
                 lvl0, name = max(under)
-                watch = {"armedAt": arm["t"], "armPremium": arm["p"], "level": lvl0, "levelName": name, "day0": day, "days": 0,
+                watch = {"armedAt": arm["t"], "armPremium": arm["p"], "armX": arm.get("x"), "level": lvl0, "levelName": name, "day0": day, "days": 0,
                          "since": b["t"][:16]}
         if not watch:
             if misses is not None:                      # at a support without a recent call alert: say so
                 lv0 = [float(w[k]) for k, n in sup_keys if w.get(k)]
                 if any(b["l"] <= x + max(x * RETEST_NEAR / 100, zone_atr * a_) and b["c"] > x for x in lv0):
-                    miss(b, f"no call alert ≥ ${vmin / 1000:,.0f}K in the {ndays} days before")
+                    miss(b, f"no unusual call alert (≥ {float(P.get('relMult') or 3):g}× its 30-day median) in the {ndays} days before"
+                         if on("relFlow") else f"no call alert ≥ ${vmin / 1000:,.0f}K in the {ndays} days before")
             continue
         if day != watch.get("_d"):
             watch["_d"] = day
@@ -635,7 +667,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
             st = round(lvl - k_stop * a_, 4)              # stop0: the risk unit for R, even with the stop off
             s = {"at": b["t"][:16], "kind": "retest", "level": lvl, "levelName": watch["levelName"], "armedAt": watch["armedAt"],
-                 "armPremium": watch["armPremium"], "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
+                 "armPremium": watch["armPremium"], "armX": watch.get("armX"), "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
                  "flip": float(w["flip"]) if w.get("flip") else None, "cw": cw, "target": tgt, "atr": round(a_, 4),
                  "stop": st if on("stopOn") else 0.0, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
                  "last": b["c"], "lastAt": b["t"][:16], "i0": i,

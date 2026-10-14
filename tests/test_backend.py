@@ -88,6 +88,7 @@ SUB = "user-123"
 import autotrader  # noqa: E402
 import wallwatch as _ww0  # noqa: E402
 _ww0.PARAMS["pvSetup"] = False   # the flow retest tests below; the VWAP reset strategy is tested on its own
+_ww0.PARAMS["relFlow"] = False   # fixed alert size in the flow retest tests; unusual flow is tested on its own
 autotrader.DEFAULTS["aiCheck"] = False     # the order tests below don't exercise Claude's chart check (see test_ai_chart_check)
 
 
@@ -2784,6 +2785,13 @@ def test_pw_vwap_study():
     sg3, w3 = wallwatch.detect_retest(tb, tw, None, {"pvSetup": True, "tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False,
                                                     "trailOn": False, "earnOn": False}, None, None, None, None, None,
                                       {"kc": {b["t"][:16]: (110, 130, 90) for b in tb}, "vwResets": [tb[3]["t"]]})
+    # unusual flow: relative to the ticker's last 30 days of call alerts, no look-ahead
+    al = [{"t": f"2026-09-{d:02d}T10:00", "c": 1, "p": 100_000} for d in range(1, 11)]
+    al += [{"t": "2026-09-12T10:00", "c": 1, "p": 250_000}, {"t": "2026-09-13T10:00", "c": 1, "p": 400_000},
+           {"t": "2026-09-14T10:00", "c": 0, "p": 9_000_000}]
+    u = wallwatch.unusual_calls(al, 500_000, 3)
+    assert [a["p"] for a in u] == [400_000] and u[0]["x"] == 4.0
+    assert [a["p"] for a in wallwatch.unusual_calls(al[:3] + [{"t": "2026-09-05T10:00", "c": 1, "p": 600_000}], 500_000, 3)] == [600_000]
     assert w3 is None and len(sg3) == 1 and sg3[0]["kind"] == "retest" and sg3[0]["setup"] == "pvlong" and sg3[0]["status"] == "target"
     today = now_ny().date()
     days, d = [], today - dt.timedelta(days=200)

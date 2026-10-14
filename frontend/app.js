@@ -1504,7 +1504,7 @@ function fcSvg0(d, id, opts) {
           <text x="${xa}" y="${y + 31}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.kind === 'flip' ? 'FLIP' : sg.kind === 'merged' ? 'MRG' : sg.kind === 'retest' ? 'RT' : 'IN'}</text>`; }
       if (sg.kind === 'retest' && sg.armedAt) { const ia = at(sg.armedAt); if (ia != null && sg.level >= lo && sg.level <= hi) { const xa2 = X(ia), yl = Y(sg.level);
         g += `<line x1="${xa2}" x2="${xa}" y1="${yl}" y2="${yl}" stroke="var(--coach,#5b5bd6)" stroke-width="1.5" stroke-dasharray="3 3"><title>Waiting for the retest of the ${esc(sg.levelName || 'level')} ${sg.level}</title></line>
-          <text x="${xa2}" y="${yl - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">⚑ ${money(sg.armPremium || 0, false)} calls</text>`; } }
+          <text x="${xa2}" y="${yl - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">⚑ ${money(sg.armPremium || 0, false)} calls${sg.armX ? ` · ${sg.armX}× usual` : ''}</text>`; } }
       if (sg.status !== 'open' && i1 != null && sg.exit >= lo && sg.exit <= hi) { const y = Y(sg.exit);
         g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'eodpw' ? 'Entry day closed under the put wall' : sg.status === 'lost' ? `Passed the ${sg.lostLevel || 'level'}, the day closed back under it` : sg.status === 'keltner' ? 'Keltner ride ended: daily close back under the upper band' : sg.status === 'vwap' ? 'Hourly close under the VWAP' : sg.status === 'ema' ? 'Hourly close under the EMA' : sg.status === 'flip' ? 'Day closed under the gamma flip' : sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (${sg.kind === 'merged' ? 'call wall of the day − N × ATR' : 'highest high − N × 30-day ATR'})` : `Stop (${sg.kind === 'flip' ? 'flip' : sg.kind === 'merged' ? 'merged wall' : 'put wall'} − N × 30-day ATR) ${sg.stop ?? sg.pw}`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
           <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.pct >= 0 ? '+' : ''}${sg.pct}%</text>`; }
@@ -2450,6 +2450,7 @@ S.wwTk = S.wwTk || {};
 const WW_RULES = [
   // [switch key, group, label, tooltip, optional field: [id, key, step, width, suffix, default, scale]]
   ['pvSetup', 'Entry', 'VWAP reset on PW', 'Strategy: buy the VWAP reset candle (highest volume of the period) that touches the put wall and closes in the lower half of the Keltner channel (put wall ≠ call wall). Off: the flow retest (call alert, then a retest of the support).'],
+  ['relFlow', 'Entry', 'Unusual flow', 'A call alert arms the ticker when its premium is at least this × the median call alert premium of THAT ticker over the last 30 days (min $50K). Fewer than 5 alerts in 30 days: the $ amount of the Flow row is used. Off: the fixed $ amount only.', ['ww-relx', 'relMult', 0.5, 3.2, '× median', 3]],
   ['usePW', 'Entry', 'Support: put wall', 'The put wall can be the support that is retested'],
   ['useFlip', 'Entry', 'Support: flip', 'The gamma flip can be the support that is retested'],
   ['greenOnly', 'Entry', 'Green candle', 'The retest candle must close green (close > open)'],
@@ -2475,8 +2476,8 @@ const WW_RULES = [
   ['dpLost', 'Exit', 'Back under dark pool', 'After an hourly close above one of the top 5 dark pool levels (above your entry), sell at the first daily close back under the highest one passed'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
-const WW_CORE = ['pvSetup', 'pvEod', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
-const WW_DEF_ON = { pvSetup: true, pvEod: true, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
+const WW_CORE = ['pvSetup', 'pvEod', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
+const WW_DEF_ON = { relFlow: true, pvSetup: true, pvEod: true, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 function wwSwState() {
   const c = (S.ww && S.ww.config) || {};
@@ -2502,7 +2503,7 @@ function wwParams(compact) {
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Flow</b>
     <label ${lab} title="Every minute, tickers with unusual call flow (your bot's flow filters) join the list"><input type="checkbox" id="ww-auto" ${c.autoAdd !== false ? 'checked' : ''}>add flow tickers</label>
     <label ${lab} title="Buy a call on Alpaca paper when a signal fires (contract picked by the bot, limit chased up until filled)"><input type="checkbox" id="ww-trade" ${c.trade !== false ? 'checked' : ''}>trade signals</label>
-    <label ${lab} title="A call alert of at least this size arms the ticker">call alert ≥ $${inp('ww-rtmin', Math.round((c.retestMin ?? 500000) / 1000), 100, 4.2)}K</label>
+    <label ${lab} title="A call alert of at least this size arms the ticker (with Unusual flow ON: only when the ticker has fewer than 5 alerts in 30 days)">call alert ≥ $${inp('ww-rtmin', Math.round((c.retestMin ?? 500000) / 1000), 100, 4.2)}K</label>
     <label ${lab} title="How long the ticker waits for the retest after the alert">wait ${inp('ww-rtdays', c.retestDays ?? 5, 1, 3)} days</label>
     <label ${lab} title="A candle retests the support when its low comes within this × the 30-day ATR of it (at least 0.3%)">retest zone ${inp('ww-zone', c.retestZone ?? 0.25, 0.05, 4.6)} ATR</label>
     <label ${lab} title="The VWAP restarts on the hourly candle with the highest volume of this many trading days">VWAP reset ${inp('ww-vwd', c.vwapDays ?? 10, 1, 3.2)} days</label>
@@ -2516,7 +2517,7 @@ async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
   const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, retestSetup: true, ...wwSwState(),
     retestZone: num('#ww-zone'), cwRoom: num('#ww-cwr'), vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), emaLen: num('#ww-emal'), kcLen: num('#ww-kcl'), kcMult: num('#ww-kcm'),
-    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf') };
+    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf'), relMult: num('#ww-relx') };
   try { S.ww = { ...(S.ww || {}), ...(await api('/bot/wallwatch', { method: 'PUT', body })) }; } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
   if (where === 'chart') { wwTkFill(fcfSymbol()); toast('Recomputing this chart now, every ticker in the background'); }

@@ -475,7 +475,7 @@ def rule_test(sub, params=None, budget_s=480):
     mid_d = now_ny() - timedelta(days=int(days * 1.45) // 2)
     mid = mid_d.strftime("%Y-%m-%d")
     fixed = {"fixR": float(P["fixR"] or 0), "maxDays": int(P["maxDays"] or 0)}
-    common = {k: cfg.get(k) for k in ("retestDays", "retestZone", "cwRoom", "emaLen", "vwapDays", "trailAtr", "tgtBuf", "kcLen", "kcMult")}
+    common = {k: cfg.get(k) for k in ("retestDays", "retestZone", "cwRoom", "emaLen", "vwapDays", "trailAtr", "tgtBuf", "kcLen", "kcMult", "relFlow", "relMult")}
     base = {**common, **OFF, "stopAtr": stop, "retestMin": vmin, **fixed}
     mine_entry = {k: cfg.get(k) for k in wallwatch.SWITCHES if k not in EXIT_KEYS}
     mine_entry.update(aboveFlip=cfg.get("aboveFlip"), earnOn=False)      # no earnings history: off in the test
