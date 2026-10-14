@@ -150,8 +150,9 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
             continue
         seen.add(uid)
         exp = a.get("expiry")
-        try:
-            dte = (datetime.strptime(exp, "%Y-%m-%d").date() - today).days
+        try:                                           # days to expiry on the day of the alert (an old alert's contract
+            d_at = datetime.strptime(created[:10], "%Y-%m-%d").date()   # may have expired since: it still counts)
+            dte = (datetime.strptime(exp, "%Y-%m-%d").date() - min(d_at, today)).days
         except (TypeError, ValueError):
             continue
         prem, ask = _f(a.get("total_premium")), _f(a.get("total_ask_side_prem"))

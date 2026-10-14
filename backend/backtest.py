@@ -52,6 +52,9 @@ def stored_alerts(sub, sym):
     return uniq
 
 
+ALERTS_V = 2   # 2: alerts whose contract has expired since are kept (they were dropped before)
+
+
 def _fetch_alerts(sub, sym, days):
     """Call alerts >= $100K bought at the ask, as far back as Unusual Whales pages (stored by month, kept for good).
     A ticker already loaded for at least `days` is only topped up since its last load."""
@@ -59,6 +62,8 @@ def _fetch_alerts(sub, sym, days):
     pk = db.upk(sub)
     meta = db.get(pk, f"WWHMETA#{sym}") or {}
     cal = int(days * 1.45) + 3
+    if meta.get("v") != ALERTS_V:                      # loaded before the expired-contract fix: load it all again
+        meta = {}
     if meta.get("days") and int(meta["days"]) >= days and meta.get("at"):
         since = (now_ny().date() - datetime.strptime(meta["at"][:10], "%Y-%m-%d").date()).days + 2
         cal = max(2, min(cal, since))                  # only what's new since the last load
@@ -76,7 +81,7 @@ def _fetch_alerts(sub, sym, days):
         db.put({"PK": pk, "SK": _alerts_key(sym, m), "alerts": sorted(merged, key=lambda x: x["t"])[-4000:]})
     ts = sorted(t for al in by_m.values() for t in (x["t"] for x in al))
     oldest = min([x for x in (meta.get("oldest"), ts[0][:10] if ts else None) if x] or [None])
-    db.put({"PK": pk, "SK": f"WWHMETA#{sym}", "days": max(int(meta.get("days") or 0), days), "at": iso(now_ny()),
+    db.put({"PK": pk, "SK": f"WWHMETA#{sym}", "v": ALERTS_V, "days": max(int(meta.get("days") or 0), days), "at": iso(now_ny()),
             "oldest": oldest, "n": int(meta.get("n") or 0) + len(ts)})
     return {"n": len(ts), "oldest": oldest, "topUp": cal < int(days * 1.45) + 3}
 
