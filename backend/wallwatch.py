@@ -388,9 +388,13 @@ def dp_level_map(prints, dates, top_n=5, window_days=66):
     return out
 
 
-def pw_vwap_events(bars, walls, resets, near_pct=0.3):
+def pw_vwap_events(bars, walls, resets, near_pct=0.3, kc=None):
     """VWAP reset candles (the hourly candle with the highest volume of the period) and whether their range touches the
-    put wall of the day (within near_pct %). [{i, t, touch, pw, above (close above the put wall), green}]"""
+    put wall of the day (within near_pct %). [{i, t, touch, pw, above (close above the put wall), green,
+    kcPos (close in the Keltner channel, 0 = lower band, 100 = upper band), kcHalf ("lower"/"upper" half)}]
+    kc: keltner(bars) list aligned with bars (computed if missing)."""
+    if kc is None:
+        kc = keltner(bars)
     out = []
     for j in sorted(set(resets)):
         if j <= 0 or j >= len(bars):
@@ -403,8 +407,18 @@ def pw_vwap_events(bars, walls, resets, near_pct=0.3):
         z = pw * near_pct / 100
         out.append({"i": j, "t": b["t"][:16], "pw": pw, "touch": b["l"] <= pw + z and b["h"] >= pw - z,
                     "above": b["c"] >= pw, "green": b["c"] >= b["o"],
-                    "o": round(b["o"], 2), "h": round(b["h"], 2), "l": round(b["l"], 2), "c": round(b["c"], 2)})
+                    "o": round(b["o"], 2), "h": round(b["h"], 2), "l": round(b["l"], 2), "c": round(b["c"], 2),
+                    **_kc_pos(b["c"], kc[j] if j < len(kc) else None)})
     return out
+
+
+def _kc_pos(price, k):
+    """Where a price sits in the Keltner channel: kcPos 0 = lower band, 50 = midline, 100 = upper band."""
+    if not k or k[1] <= k[2]:
+        return {"kcPos": None, "kcHalf": None}
+    pos = round((price - k[2]) / (k[1] - k[2]) * 100)
+    return {"kcPos": pos, "kcHalf": "upper" if price >= k[0] else "lower",
+            "kcM": round(k[0], 2), "kcU": round(k[1], 2), "kcL": round(k[2], 2)}
 
 
 def keltner(bars, n=21, mult=3.0):
@@ -1248,7 +1262,9 @@ def chart(sub, sym, days=45, flow=True):
     misses = replay_misses + [m for m in (mrec.get("misses") or []) if mrec.get("v") == cur_v and m["t"][:10] >= (cut or (dates[0] if dates else ""))]
     try:
         vres_all = anchored_vwap(bars_all, int(ccfg.get("vwapDays") or VWAP_DAYS))[1]
-        pv = [{k: e[k] for k in ("t", "pw", "above", "green", "o", "h", "l", "c")} for e in pw_vwap_events(bars_all, stored, vres_all)
+        kc_all = keltner(bars_all, int(ccfg.get("kcLen") or 21), float(ccfg.get("kcMult") or 3))
+        pv = [{k: e.get(k) for k in ("t", "pw", "above", "green", "o", "h", "l", "c", "kcPos", "kcHalf", "kcM", "kcU", "kcL")}
+              for e in pw_vwap_events(bars_all, stored, vres_all, kc=kc_all)
               if e["touch"] and e["t"][:10] >= (dates[0] if dates else "")]
     except Exception as e:
         print("pw/vwap events failed", sym, e)

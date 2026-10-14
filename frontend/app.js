@@ -1536,11 +1536,11 @@ function fcSvg0(d, id, opts) {
     d.pwVwap.forEach(e => { const i = idx[e.t]; if (i == null) return;
       const x = X(i), c = e.above ? '#7c3aed' : '#be185d', cw = Math.max(6, bw + 4);
       const yl = Math.min(B - 2, Y(e.l != null ? e.l : e.pw) + 10), yp = Y(e.pw);
-      const tip = esc(`PW + VWAP reset ${e.t.replace('T', ' ').slice(5)}\nPut wall ${e.pw}${e.l != null ? `\nO ${e.o}  H ${e.h}  L ${e.l}  C ${e.c}` : ''}\n${e.green ? 'Green' : 'Red'} candle, closed ${e.above ? 'above' : 'under'} the put wall`);
+      const tip = esc(`PW + VWAP reset ${e.t.replace('T', ' ').slice(5)}\nPut wall ${e.pw}${e.l != null ? `\nO ${e.o}  H ${e.h}  L ${e.l}  C ${e.c}` : ''}\n${e.green ? 'Green' : 'Red'} candle, closed ${e.above ? 'above' : 'under'} the put wall${e.kcHalf ? `\nKeltner: ${e.kcHalf} half (${e.kcPos}% of the channel · lower ${e.kcL} · mid ${e.kcM} · upper ${e.kcU})` : ''}`);
       g += `<g style="cursor:help"><title>${tip}</title><rect x="${x - cw / 2}" y="${T}" width="${cw}" height="${B - T}" fill="${c}" fill-opacity=".13"/>`;
       if (e.pw >= lo && e.pw <= hi) g += `<line x1="${x - cw}" x2="${x + cw}" y1="${yp}" y2="${yp}" stroke="${c}" stroke-width="2.5"/>`;
       g += `<path d="M${x},${yl - 8} L${x + 7},${yl} L${x},${yl + 8} L${x - 7},${yl} Z" fill="${c}" stroke="var(--surface)" stroke-width="1.5"/>`;
-      g += `<text x="${x}" y="${Math.min(B + 12, yl + 20)}" text-anchor="middle" font-size="${fs - 1}" font-weight="700" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">PW⟲</text></g>`; });
+      g += `<text x="${x}" y="${Math.min(B + 12, yl + 20)}" text-anchor="middle" font-size="${fs - 1}" font-weight="700" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">PW⟲${e.kcHalf ? (e.kcHalf === 'lower' ? ' ↓KC' : ' ↑KC') : ''}</text></g>`; });
   }
   g += `<line class="fc-xh" x1="0" x2="0" y1="${T}" y2="${AB}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" style="display:none;pointer-events:none"/>
     <text class="fc-ohlc" x="${L + 4}" y="${T + 13}" font-size="${fs}" fill="var(--ink)" paint-order="stroke" stroke="var(--surface)" stroke-width="4" style="pointer-events:none"></text>`;

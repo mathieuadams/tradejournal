@@ -695,8 +695,10 @@ def pv_study(sub, params=None, budget_s=480):
             return sym, [], []
         bars = d["bars"]
         res = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))[1]
-        ev = [e for e in wallwatch.pw_vwap_events(bars, d["walls"], res) if e["t"][:10] >= first]
-        out = [{"sym": sym, "at": e["t"], "touch": e["touch"], "above": e["above"], "green": e["green"], **fwd(bars, e["i"])} for e in ev]
+        kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
+        ev = [e for e in wallwatch.pw_vwap_events(bars, d["walls"], res, kc=kc) if e["t"][:10] >= first]
+        out = [{"sym": sym, "at": e["t"], "touch": e["touch"], "above": e["above"], "green": e["green"], "kcHalf": e.get("kcHalf"),
+                "kcPos": e.get("kcPos"), **fwd(bars, e["i"])} for e in ev]
         bl = [{"at": b["t"], **fwd(bars, i)} for i, b in enumerate(bars) if b["t"][:10] >= first and i % 7 == 3]   # one candle a day
         return sym, out, bl
 
@@ -736,6 +738,9 @@ def pv_study(sub, params=None, budget_s=480):
         ("   … green candle", [r for r in t_ if r["green"]]),
         ("   … red candle", [r for r in t_ if not r["green"]]),
         ("   … green and closes above the put wall", [r for r in t_ if r["green"] and r["above"]]),
+        ("   … closes in the lower half of the Keltner channel", [r for r in t_ if r.get("kcHalf") == "lower"]),
+        ("   … closes in the upper half of the Keltner channel", [r for r in t_ if r.get("kcHalf") == "upper"]),
+        ("   … lower Keltner half and closes above the put wall", [r for r in t_ if r.get("kcHalf") == "lower" and r["above"]]),
         ("VWAP reset away from the put wall", [r for r in rows if not r["touch"]]),
         ("Any day (baseline)", base),
     ]

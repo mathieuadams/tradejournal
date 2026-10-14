@@ -2751,6 +2751,11 @@ def test_pw_vwap_study():
     assert [(e["t"], e["touch"], e["above"]) for e in ev] == [("2026-10-01T11:30", True, True), ("2026-10-02T10:30", True, True)]
     far = [dict(b, l=105, h=106) for b in bars]
     assert not wallwatch.pw_vwap_events(far, ws, [2])[0]["touch"]
+    assert wallwatch._kc_pos(95, (100, 110, 90)) == {"kcPos": 25, "kcHalf": "lower", "kcM": 100, "kcU": 110, "kcL": 90}
+    assert wallwatch._kc_pos(105, (100, 110, 90))["kcHalf"] == "upper"
+    assert wallwatch._kc_pos(105, None)["kcHalf"] is None
+    kc = [(100, 110, 90)] * len(bars)
+    assert all("kcHalf" in e for e in wallwatch.pw_vwap_events(bars, ws, [2, 8], kc=kc))
     today = now_ny().date()
     days, d = [], today - dt.timedelta(days=200)
     while d < today:
