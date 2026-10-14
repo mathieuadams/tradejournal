@@ -2567,9 +2567,9 @@ async function loadRuleTest(poll) {
   try { S.rt = await api('/bot/wallwatch/ruletest'); } catch (e) { S.rt = { error: e.message }; }
   S.rtBusy = false;
   if (route() === 'botwatch') render();
-  const t = (S.rt && S.rt.test) || {}, hs = (S.rt && S.rt.history) || {}, rb = (S.rt && S.rt.robust) || {}, pv = (S.rt && S.rt.pv) || {};
+  const t = (S.rt && S.rt.test) || {}, hs = (S.rt && S.rt.history) || {}, rb = (S.rt && S.rt.robust) || {}, pv = (S.rt && S.rt.pv) || {}, rgm = (S.rt && S.rt.regime) || {};
   clearTimeout(S.rtPoll);
-  if ((t.running || hs.running || rb.running || pv.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
+  if ((t.running || hs.running || rb.running || pv.running || rgm.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
 }
 function wwRuleTester() {
   const r = S.rt || {}, t = r.test || {}, hs = r.history || {}, P = t.params || {};
@@ -2622,7 +2622,8 @@ function wwRuleTester() {
     <h3 style="font-size:.95rem;margin:16px 0 4px">Robustness check <button class="btn" data-rtrob ${rb.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${rb.at && !rb.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(rb.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
     <p class="muted" style="margin:0;font-size:.85rem">Your full settings re-run with each number moved a little, where the profit comes from, and the drawdown to expect.</p>
     ${rbBody}
-    ${wwPvStudy(r.pv || {})}</section>`;
+    ${wwPvStudy(r.pv || {})}
+    ${wwRegime(r.regime || {})}</section>`;
 }
 /* ---------- put wall crossings with a VWAP reset: what happens next ---------- */
 function wwPvStudy(pv) {
@@ -2637,6 +2638,20 @@ function wwPvStudy(pv) {
     ${(pv.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(pv.errors.join(' · '))}</p>` : ''}`;
   return `<h3 style="font-size:.95rem;margin:16px 0 4px">VWAP reset on the walls (long / short) <button class="btn" data-pvrun ${pv.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${pv.at && !pv.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(pv.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
     <p class="muted" style="margin:0;font-size:.85rem">LONG = the VWAP reset candle (highest volume of the period) touches the put wall and closes in the lower half of the Keltner channel. SHORT = it touches the call wall and closes in the upper half. Skipped when the put wall equals the call wall.</p>${body}`;
+}
+function wwRegime(rg) {
+  const P = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}%</span>`;
+  const H = ['1 day', '3 days', '5 days', '10 days'];
+  const cell = x => x ? `<b>${x.up}%</b> up<br>${P(x.avg)} <span class="muted" style="font-size:.75rem">med ${x.med > 0 ? '+' : ''}${x.med}%</span>` : '—';
+  const sk = rg.streaks || {};
+  const body = rg.running ? '<p class="loading">Classifying every day by its gamma walls… (a few minutes)</p>' : !rg.sections ? '' : `
+    <p class="muted" style="font-size:.82rem;margin:6px 0">${rg.tickers} tickers · ${rg.days} ticker-days since ${esc((rg.period || {}).from || '')} · from each day's close · a run of the same regime lasts on average: CW > PW ${sk.normal ?? '—'} d, CW = PW ${sk.same ?? '—'} d, CW < PW ${sk.inverted ?? '—'} d</p>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th>Situation</th><th class="r">Days</th><th class="r">% of days</th>${H.map(h => `<th class="r">After ${h}</th>`).join('')}<th class="r">Best move<br>5 days</th><th class="r">Worst move<br>5 days</th><th class="r">5 days: 1st / 2nd half</th></tr></thead><tbody>
+    ${rg.sections.map(sc => `<tr><td colspan="10" style="background:var(--line);font-weight:700;font-size:.82rem">${esc(sc.title)}</td></tr>` + sc.groups.map(g => `<tr><td>${esc(g.label)}</td><td class="r">${g.n}</td><td class="r">${g.share}%</td>${H.map(h => `<td class="r">${cell(g[h])}</td>`).join('')}<td class="r">${P(g.mfe)}</td><td class="r">${P(g.mae)}</td><td class="r">${P(g.h1)} / ${P(g.h2)}<br><span class="muted" style="font-size:.75rem">${g.h1n} / ${g.h2n}</span></td></tr>`).join('')).join('')}
+    </tbody></table></div>
+    ${(rg.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(rg.errors.join(' · '))}</p>` : ''}`;
+  return `<h3 style="font-size:.95rem;margin:16px 0 4px">Gamma wall regimes <button class="btn" data-regrun ${rg.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${rg.at && !rg.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(rg.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
+    <p class="muted" style="margin:0;font-size:.85rem">Every day of every ticker, sorted by how the call wall, put wall and flip sit and where the stock closed — and the days the walls move (yesterday's call wall becoming the put wall, the put wall stepping down…). Compare each row with "Every day".</p>${body}`;
 }
 function pvTrades(t) {
   if (!t) return '';
@@ -3114,7 +3129,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3181,6 +3196,11 @@ document.addEventListener('click', e => {
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
+  if (el.hasAttribute('data-regrun')) {
+    api('/bot/wallwatch/regime', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250 } })
+      .then(() => { S.rt = { ...(S.rt || {}), regime: { ...((S.rt || {}).regime || {}), running: 'now' } }; render(); setTimeout(loadRuleTest, 15000); }).catch(err => toast(err.message));
+    return;
+  }
   if (el.hasAttribute('data-pvrun')) {
     api('/bot/wallwatch/pvstudy', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250 } })
       .then(() => { S.rt = { ...(S.rt || {}), pv: { ...((S.rt || {}).pv || {}), running: 'now' } }; render(); setTimeout(loadRuleTest, 15000); }).catch(err => toast(err.message));

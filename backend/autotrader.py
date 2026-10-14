@@ -1775,6 +1775,14 @@ def handler(event, context_):
                     db.put({**(db.get(db.upk(sub), intraday.SK) or {}), "PK": db.upk(sub), "SK": intraday.SK,
                             "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
+            elif job == "wwregime":
+                import backtest
+                try:
+                    out[sub] = {"sections": len(backtest.regime_study(sub, event.get("params") or {}).get("sections") or [])}
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), backtest.REG_SK) or {}), "PK": db.upk(sub), "SK": backtest.REG_SK,
+                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
             elif job == "wwpvstudy":
                 import backtest
                 try:

@@ -767,6 +767,175 @@ def pv_study(sub, params=None, budget_s=480):
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
 
 
+REG_SK = "WWREGIME"
+REG_H = [("1 day", 1), ("3 days", 3), ("5 days", 5), ("10 days", 10)]
+
+
+def _daily(bars):
+    """Daily candles from hourly ones: [{d, o, h, l, c}]."""
+    out = []
+    for b in bars:
+        d = b["t"][:10]
+        if not out or out[-1]["d"] != d:
+            out.append({"d": d, "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"]})
+        else:
+            x = out[-1]
+            x["h"], x["l"], x["c"] = max(x["h"], b["h"]), min(x["l"], b["l"]), b["c"]
+    return out
+
+
+def regime_rows(daily, walls, first):
+    """One row per day with stored walls: the wall regime, where the close sits, where the flip sits, the change of
+    the walls vs the previous stored day, and the forward moves from that close (no look-ahead in the labels)."""
+    rows, prev = [], None
+    for i, x in enumerate(daily):
+        w = walls.get(x["d"]) or {}
+        pw, cw, fl = (float(w[k]) if w.get(k) else None for k in ("putWall", "callWall", "flip"))
+        if not pw or not cw:
+            prev = None
+            continue
+        c = x["c"]
+        same = abs(cw - pw) < 1e-6
+        lo, hi = min(pw, cw), max(pw, cw)
+        r = {"d": x["d"], "regime": "same" if same else "normal" if cw > pw else "inverted",
+             "px": ("below" if c < lo else "above" if c > hi else "between"),
+             "flipSide": None if not fl else ("above" if c >= fl else "below"),
+             "flipLoc": None if not fl or same else ("below" if fl < lo else "above" if fl > hi else "between")}
+        if prev:
+            ppw, pcw = prev
+            r["cwToPw"] = abs(pw - pcw) / pcw <= 0.005 and pw > ppw * 1.002      # yesterday's call wall is today's put wall
+            r["pwDown"], r["pwUp"] = pw < ppw * 0.995, pw > ppw * 1.005
+            r["cwDown"], r["cwUp"] = cw < pcw * 0.995, cw > pcw * 1.005
+            r["merged"] = same and abs(pcw - ppw) > 1e-6
+            r["inverted"] = cw < pw and not pcw < ppw
+            r["normal"] = cw > pw and not pcw > ppw
+        prev = (pw, cw)
+        if x["d"] < first:
+            continue
+        for lab, n in REG_H:
+            r[lab] = round((daily[i + n]["c"] / c - 1) * 100, 2) if i + n < len(daily) else None
+        seg = daily[i + 1:i + 6]
+        r["mfe"] = round((max(y["h"] for y in seg) / c - 1) * 100, 2) if seg else None
+        r["mae"] = round((min(y["l"] for y in seg) / c - 1) * 100, 2) if seg else None
+        rows.append(r)
+    return rows
+
+
+def _streaks(rows, key):
+    """Average length in days of a run of the same regime (per ticker, consecutive stored days)."""
+    runs, cur, n = {}, None, 0
+    for r in rows + [{"regime": None, "sym": None}]:
+        k = (r.get("sym"), r.get(key))
+        if k == cur:
+            n += 1
+            continue
+        if cur and cur[1]:
+            runs.setdefault(cur[1], []).append(n)
+        cur, n = k, 1
+    return {k: round(sum(v) / len(v), 1) for k, v in runs.items()}
+
+
+def regime_study(sub, params=None, budget_s=480):
+    """How the stock moves after each gamma wall configuration: call wall above / equal to / under the put wall, the
+    close vs the walls and the flip, and the day the walls move (yesterday's call wall becomes the put wall, the put
+    wall steps down...). Daily closes, forward 1/3/5/10 days, best / worst move over 5 days."""
+    import wallwatch
+    t0 = time.time()
+    pk = db.upk(sub)
+    P = {"days": 250, **(params or {})}
+    cfg = wallwatch.config(sub)
+    days = max(30, min(500, int(P["days"])))
+    first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
+    mid = (now_ny() - timedelta(days=int(days * 1.45) // 2)).strftime("%Y-%m-%d")
+    db.put({"PK": pk, "SK": REG_SK, **(db.get(pk, REG_SK) or {}), "running": iso(now_ny())})
+    rows, errors, done_n = [], [], 0
+
+    def one(sym):
+        d = _ticker_data(sub, sym, days, cfg, False)
+        if not d:
+            return []
+        return [{**r, "sym": sym} for r in regime_rows(_daily(d["bars"]), d["walls"], first)]
+
+    pool = ThreadPoolExecutor(max_workers=8)
+    for f in [pool.submit(one, t) for t in cfg["tickers"]]:
+        try:
+            rows += f.result(timeout=max(1, budget_s - (time.time() - t0)))
+            done_n += 1
+        except Exception as e:
+            errors.append(str(e)[:100] or "time limit")
+    pool.shutdown(wait=False, cancel_futures=True)
+    total = len(rows) or 1
+
+    def st(rs):
+        out = {"n": len(rs), "share": round(len(rs) / total * 100, 1)}
+        for lab, _ in REG_H:
+            xs = sorted(r[lab] for r in rs if r.get(lab) is not None)
+            if xs:
+                out[lab] = {"up": round(sum(1 for x in xs if x > 0) / len(xs) * 100), "avg": round(sum(xs) / len(xs), 2),
+                            "med": xs[len(xs) // 2]}
+        for k in ("mfe", "mae"):
+            xs = [r[k] for r in rs if r.get(k) is not None]
+            out[k] = round(sum(xs) / len(xs), 2) if xs else None
+        h1 = [r["5 days"] for r in rs if r.get("5 days") is not None and r["d"] < mid]
+        h2 = [r["5 days"] for r in rs if r.get("5 days") is not None and r["d"] >= mid]
+        out["h1"] = round(sum(h1) / len(h1), 2) if h1 else None
+        out["h2"] = round(sum(h2) / len(h2), 2) if h2 else None
+        out["h1n"], out["h2n"] = len(h1), len(h2)
+        return out
+
+    R = lambda **kw: [r for r in rows if all(r.get(k) == v for k, v in kw.items())]
+    sections = [
+        ("Wall regime", [
+            ("CW above PW (normal)", R(regime="normal")),
+            ("CW = PW (same strike)", R(regime="same")),
+            ("CW under PW (inverted)", R(regime="inverted"))]),
+        ("CW above PW: where the close is", [
+            ("Under the put wall", R(regime="normal", px="below")),
+            ("Between PW and CW", R(regime="normal", px="between")),
+            ("Above the call wall", R(regime="normal", px="above"))]),
+        ("CW = PW: where the close is", [
+            ("Under the wall", R(regime="same", px="below")),
+            ("Above the wall", R(regime="same", px="above"))]),
+        ("CW under PW: where the close is", [
+            ("Under both walls", R(regime="inverted", px="below")),
+            ("Between CW and PW", R(regime="inverted", px="between")),
+            ("Above both walls", R(regime="inverted", px="above"))]),
+        ("The flip", [
+            ("Close above the flip", R(flipSide="above")),
+            ("Close under the flip", R(flipSide="below")),
+            ("CW > PW, flip between the walls, close above it", R(regime="normal", flipLoc="between", flipSide="above")),
+            ("CW > PW, flip between the walls, close under it", R(regime="normal", flipLoc="between", flipSide="below")),
+            ("CW > PW, flip under the put wall", R(regime="normal", flipLoc="below")),
+            ("CW > PW, flip above the call wall", R(regime="normal", flipLoc="above")),
+            ("CW < PW, close above the flip", R(regime="inverted", flipSide="above")),
+            ("CW < PW, close under the flip", R(regime="inverted", flipSide="below"))]),
+        ("The day the walls move", [
+            ("Yesterday's CW became today's PW", R(cwToPw=True)),
+            ("PW stepped down", R(pwDown=True)),
+            ("PW stepped up", R(pwUp=True)),
+            ("CW stepped up", R(cwUp=True)),
+            ("CW stepped down", R(cwDown=True)),
+            ("Walls merged (CW = PW starts)", R(merged=True)),
+            ("Walls turned inverted (CW < PW starts)", R(inverted=True)),
+            ("Back to normal (CW > PW starts)", R(normal=True))]),
+        ("Baseline", [("Every day", rows)]),
+    ]
+    rows.sort(key=lambda r: (r["sym"], r["d"]))
+    out = {"PK": pk, "SK": REG_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "tickers": done_n,
+           "days": len(rows), "period": {"from": first, "mid": mid}, "streaks": _streaks(rows, "regime"),
+           "sections": [{"title": t, "groups": [{"label": lab, **st(rs)} for lab, rs in gs]} for t, gs in sections],
+           "errors": errors[:5]}
+    if done_n < len(cfg["tickers"]):
+        out["errors"].insert(0, f"Time limit: {done_n} of {len(cfg['tickers'])} tickers.")
+    db.put(out)
+    return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
+def regime_result(sub):
+    r = _unstick(db.get(db.upk(sub), REG_SK) or {})
+    return {k: v for k, v in r.items() if k not in ("PK", "SK")}
+
+
 def pv_result(sub):
     r = _unstick(db.get(db.upk(sub), PV_SK) or {})
     return {k: v for k, v in r.items() if k not in ("PK", "SK")}

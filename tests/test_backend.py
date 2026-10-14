@@ -2781,6 +2781,18 @@ def test_pw_vwap_study():
     tr2 = wallwatch.pv_long_trades(tb2, tw, [{"i": 3, "t": tb2[3]["t"], "side": "long", "pw": 100}],
                                    {"tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
     assert tr2[0]["status"] == "eodpw" and tr2[0]["exit"] == 99.8
+    # wall regimes: labels per day, wall moves vs the previous day, forward moves from the close
+    import backtest
+    hb = [{"t": f"2026-09-{d:02d}T{h}:30", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100 + d} for d in range(1, 13) for h in (10, 11)]
+    dl = backtest._daily(hb)
+    assert len(dl) == 12 and dl[0]["c"] == 101
+    wr = {"2026-09-01": {"putWall": 95, "callWall": 110, "flip": 100}, "2026-09-02": {"putWall": 110, "callWall": 120, "flip": 105},
+          "2026-09-03": {"putWall": 115, "callWall": 115}, "2026-09-04": {"putWall": 120, "callWall": 110, "flip": 100}}
+    rr = backtest.regime_rows(dl, wr, "2026-09-01")
+    assert [r["regime"] for r in rr] == ["normal", "normal", "same", "inverted"]
+    assert rr[0]["px"] == "between" and rr[0]["flipSide"] == "above" and rr[0]["flipLoc"] == "between"
+    assert rr[1]["cwToPw"] and rr[2]["merged"] and rr[3]["inverted"] and rr[1]["px"] == "below"
+    assert rr[0]["1 day"] == round((102 / 101 - 1) * 100, 2)
     # the strategy switch: detect_retest runs the VWAP reset strategy, signals in the retest format
     sg3, w3 = wallwatch.detect_retest(tb, tw, None, {"pvSetup": True, "tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False,
                                                     "trailOn": False, "earnOn": False}, None, None, None, None, None,
