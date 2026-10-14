@@ -437,14 +437,22 @@ def bot_wallwatch_save(sub, claims, body, q):
 @route("GET", "/bot/wallwatch/chart")
 def bot_wallwatch_chart(sub, claims, body, q):
     import wallwatch
-    return wallwatch.chart(sub, (q or {}).get("t"), flow=(q or {}).get("flow") != "0")
+    try:
+        days = max(20, min(250, int((q or {}).get("days") or 45)))
+    except (TypeError, ValueError):
+        days = 45
+    return wallwatch.chart(sub, (q or {}).get("t"), days=days, flow=(q or {}).get("flow") != "0")
 
 
 @route("GET", "/bot/wallwatch/darkpool")
 def bot_wallwatch_darkpool(sub, claims, body, q):
     import wallwatch
     q = q or {}
-    return wallwatch.darkpool(sub, q.get("t"), q.get("pct"))
+    try:
+        days = max(20, min(250, int(q.get("days") or 45)))
+    except (TypeError, ValueError):
+        days = 45
+    return wallwatch.darkpool(sub, q.get("t"), q.get("pct"), days)
 
 
 @route("POST", "/bot/wallwatch/flowstudy")

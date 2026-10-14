@@ -1198,11 +1198,35 @@ def chart(sub, sym, days=45, flow=True):
     cur_v = version({**PARAMS, **ccfg})
     stale = [x for x in sigs if x.get("v") and x["v"] != cur_v and x.get("status") != "open" and not x.get("botId")]
     sigs = [x for x in sigs if x not in stale]
+    replay_misses = []
+    cut = dates[-45] if len(dates) > 45 else None
+    if cut:                                            # longer view: the signals older than the stored 45 days, replayed
+        try:
+            import backtest
+            data = backtest._ticker_data(sub, sym, len(dates) + 5, ccfg, False)
+            if data:
+                extra = {**data["extra"], "misses": replay_misses}
+                old, _ = detect_retest(data["bars"], data["walls"], dates[0], ccfg, data["datr"], data["alerts"], None,
+                                       data["vmap"], data["emap"], extra)
+                for x in old:
+                    x.pop("i0", None)
+                    x["replay"] = True
+                sigs = [x for x in old if x["at"][:10] < cut] + [x for x in sigs if x["at"][:10] >= cut]
+                replay_misses = [m for m in replay_misses if m["t"][:10] < cut]
+                if flow:                               # calls older than the live window, from the stored history
+                    import autotrader
+                    big = autotrader.settings(sub)["flowMinPremium"]
+                    seen = {a["t"] for a in alerts}
+                    alerts = [{"t": a["t"], "premium": round(a["p"]), "type": "call", "contract": None, "big": a["p"] >= big,
+                               "sweep": False, "rule": "history"} for a in data["alerts"]
+                              if a.get("c") and dates[0] <= a["t"][:10] < (alerts[0]["t"][:10] if alerts else cut) and a["t"] not in seen] + alerts
+        except Exception as e:
+            note = (note + " · " if note else "") + f"Older signals unavailable: {str(e)[:100]}"
     vw, vres = vw[off:], [i - off for i in vres if i - off >= 0]
     vwap = [{"t": b["t"], "v": v} for b, v in zip(bars, vw)]
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
     mrec = db.get(db.upk(sub), f"WWMISS#{sym}") or {}
-    misses = [m for m in (mrec.get("misses") or []) if mrec.get("v") == cur_v and m["t"][:10] >= (dates[0] if dates else "")]
+    misses = replay_misses + [m for m in (mrec.get("misses") or []) if mrec.get("v") == cur_v and m["t"][:10] >= (cut or (dates[0] if dates else ""))]
     return {"curV": cur_v, "misses": misses, "kc": kc, "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),

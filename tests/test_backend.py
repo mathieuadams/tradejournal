@@ -2708,6 +2708,37 @@ def test_back_under_level_exit():
         autotrader._yahoo, flowdata.stored_walls = saved
 
 
+def test_chart_long_range_replay():
+    """A 90-day chart: the stored 45 days plus older signals replayed with the current settings."""
+    import wallwatch, charts, flowdata, backtest, math
+    import datetime as dt
+    from util import now_ny
+    today = now_ny().date()
+    days, d = [], today - dt.timedelta(days=200)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    hb = []
+    for day in days:
+        for h in ("09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"):
+            k = len(hb); px = 100 + 4 * math.sin(k / 15.0)
+            hb.append({"t": f"{day}T{h}", "o": px - .1, "h": px + .3, "l": px - .3, "c": px, "v": 1000})
+    db_ = [{"t": f"{d}T09:30", "o": 100, "h": 104, "l": 96, "c": 100, "v": 1e6} for d in days]
+    saved = (charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else db_
+        flowdata.stored_walls = lambda sym: {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
+        backtest.stored_alerts = lambda sub_, sym: [{"t": f"{day}T10:00", "c": 1, "p": 900000} for day in days[::3]]
+        backtest.stored_darkpool = lambda sym: []
+        wallwatch.save_config("long-user", {"tickers": ["AAA"], "cwRoomOn": False})
+        out = wallwatch.chart("long-user", "AAA", days=90, flow=False)
+        assert len({b["t"][:10] for b in out["bars"]}) == 90
+        assert any(x.get("replay") for x in out["signals"]), [x["at"] for x in out["signals"]]
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

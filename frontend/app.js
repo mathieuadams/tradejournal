@@ -1284,7 +1284,7 @@ async function loadDarkPool(id) {
   const k = fcKey(id);
   S.fcDpBusy[k] = true;
   const ww = String(id).startsWith('ww-');
-  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.slice(3))}&pct=${S.wwDpPct ?? 0.25}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
+  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.slice(3))}&pct=${S.wwDpPct ?? 0.25}&days=${S.wwDays || 45}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
   S.fcDpBusy[k] = false;
   if (isBotRoute()) render();
 }
@@ -1549,7 +1549,7 @@ function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m)
 function wwTickers() { return ((S.ww && S.ww.config && S.ww.config.tickers) || []); }
 async function loadWwChart(sym) {
   const k = fcKey('ww-' + sym); S.fcBusy[k] = true;
-  try { S.fc[k] = await api('/bot/wallwatch/chart?t=' + encodeURIComponent(sym)); } catch (e) { S.fc[k] = { error: e.message }; }
+  try { S.fc[k] = await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`); } catch (e) { S.fc[k] = { error: e.message }; }
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
 const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
@@ -1579,6 +1579,7 @@ function vChartWW() {
       ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow === 'flip' ? 'CW > PW > flip' : d.setupNow === 'merged' ? 'PW = CW < flip' : d.setupNow ? 'CW > flip > PW' : 'no setup'}</span>
       <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>${d && d.staleSignals ? ` <span class="muted" style="font-size:.8rem">· ${d.staleSignals} from older settings hidden (recomputing)</span>` : ''}${(stMap[sym] || {}).watch ? ` <b style="color:var(--coach);font-size:.85rem">⚑ waiting for a retest of the ${esc(stMap[sym].watch.levelName)} ${stMap[sym].watch.level}</b>` : ''}` : ''}
       ${sel}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
+      <span class="seg" role="group" aria-label="Days on the chart">${[45, 90, 180].map(n => `<button class="btn ${(S.wwDays || 45) === n ? 'coachbtn' : ''}" data-wwdays="${n}" title="${n} trading days${n > 45 ? ' (signals older than 45 days are replayed with your current settings)' : ''}" style="padding:3px 9px">${n}d</button>`).join('')}</span>
       ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.fcLayers.dark ? `<label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="Dark pool prints of at least this % of the 30-day average daily volume">dark pool ≥<input id="ww-dpmin" type="number" step="0.05" min="0.01" value="${S.wwDpPct ?? 0.25}" style="width:4.6em;padding:1px 4px">% of avg daily volume</label>` : ''}${S.ww ? wwParams(true) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
@@ -2515,6 +2516,7 @@ function wwTkBtn(sym, d) {
     + (d && !busy ? ` <span class="muted" style="font-size:.8rem">${miss ? `${miss} day${miss === 1 ? '' : 's'} missing` : 'all days stored'}</span>` : '');
 }
 S.wwTkPoll = S.wwTkPoll || {};
+try { S.wwDays = +(localStorage.getItem('wwDays') || 45) || 45; } catch (e) { S.wwDays = 45; }
 async function wwTkFill(sym) {
   clearTimeout(S.wwTkPoll[sym]);                 // one poller per ticker
   S.wwTk[sym] = true; render();
@@ -2524,7 +2526,7 @@ async function wwTkFill(sym) {
   const poll = async () => {
     n++;
     const k = fcKey('ww-' + sym);
-    try { S.fc[k] = await api('/bot/wallwatch/chart?t=' + encodeURIComponent(sym)); } catch (e) {}
+    try { S.fc[k] = await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`); } catch (e) {}
     const f = (S.fc[k] && S.fc[k].fill) || {};
     if (f.running && n < 40) { if (route() === 'botchart') render(); S.wwTkPoll[sym] = setTimeout(poll, 8000); return; }
     S.wwTk[sym] = false; loadWatch();
@@ -3070,7 +3072,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3137,6 +3139,13 @@ document.addEventListener('click', e => {
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
+  if (el.dataset.wwdays) {
+    S.wwDays = +el.dataset.wwdays;
+    try { localStorage.setItem('wwDays', String(S.wwDays)); } catch (e) {}
+    Object.keys(S.fc).filter(x => x.includes('ww-')).forEach(x => { delete S.fc[x]; delete S.fcZoom[x]; });
+    Object.keys(S.fcDp || {}).filter(x => x.includes('ww-')).forEach(x => delete S.fcDp[x]);
+    render(); return;
+  }
   if (el.hasAttribute('data-wwallrules')) { S.wwAllRules = !S.wwAllRules; render(); return; }
   if (el.hasAttribute('data-fcalllayers')) {
     S.fcAllLayers = !S.fcAllLayers;
