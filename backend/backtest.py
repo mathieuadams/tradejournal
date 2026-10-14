@@ -697,7 +697,7 @@ def pv_study(sub, params=None, budget_s=480):
         res = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))[1]
         kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
         ev = [e for e in wallwatch.pw_vwap_events(bars, d["walls"], res, kc=kc) if e["t"][:10] >= first]
-        out = [{"sym": sym, "at": e["t"], "touch": e["touch"], "above": e["above"], "green": e["green"], "kcHalf": e.get("kcHalf"),
+        out = [{"sym": sym, "at": e["t"], "touch": e["touch"], "above": e["above"], "green": e["green"], "kcHalf": e.get("kcHalf"), "side": e.get("side"), "same": e.get("same"), "cwTouch": e.get("cwTouch"),
                 "kcPos": e.get("kcPos"), **fwd(bars, e["i"])} for e in ev]
         bl = [{"at": b["t"], **fwd(bars, i)} for i, b in enumerate(bars) if b["t"][:10] >= first and i % 7 == 3]   # one candle a day
         return sym, out, bl
@@ -730,9 +730,11 @@ def pv_study(sub, params=None, budget_s=480):
         out["h1n"], out["h2n"] = len(h1), len(h2)
         return out
 
-    t_ = [r for r in rows if r["touch"]]
+    t_ = [r for r in rows if r["touch"] and not r.get("same")]
     groups = [
-        ("VWAP reset candle touching the put wall", t_),
+        ("LONG: reset on the put wall, lower Keltner half", [r for r in rows if r.get("side") == "long"]),
+        ("SHORT: reset on the call wall, upper Keltner half (wins when the stock goes down)", [r for r in rows if r.get("side") == "short"]),
+        ("All resets touching the put wall (PW ≠ CW)", t_),
         ("   … closes above the put wall", [r for r in t_ if r["above"]]),
         ("   … closes under the put wall", [r for r in t_ if not r["above"]]),
         ("   … green candle", [r for r in t_ if r["green"]]),
@@ -746,7 +748,7 @@ def pv_study(sub, params=None, budget_s=480):
     ]
     out = {"PK": pk, "SK": PV_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "tickers": done_n,
            "period": {"from": first, "mid": mid}, "groups": [{"label": lab, **st(rs)} for lab, rs in groups],
-           "recent": sorted(t_, key=lambda r: r["at"])[-40:], "errors": errors[:5]}
+           "recent": sorted([r for r in rows if r.get("side")], key=lambda r: r["at"])[-40:], "errors": errors[:5]}
     if done_n < len(cfg["tickers"]):
         out["errors"].insert(0, f"Time limit: {done_n} of {len(cfg['tickers'])} tickers.")
     db.put(out)

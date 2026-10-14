@@ -389,9 +389,11 @@ def dp_level_map(prints, dates, top_n=5, window_days=66):
 
 
 def pw_vwap_events(bars, walls, resets, near_pct=0.3, kc=None):
-    """VWAP reset candles (the hourly candle with the highest volume of the period) and whether their range touches the
-    put wall of the day (within near_pct %). [{i, t, touch, pw, above (close above the put wall), green,
-    kcPos (close in the Keltner channel, 0 = lower band, 100 = upper band), kcHalf ("lower"/"upper" half)}]
+    """VWAP reset candles (the hourly candle with the highest volume of the period) vs the gamma walls of the day.
+    touch / cwTouch: the candle's range touches the put wall / call wall (within near_pct %).
+    kcPos: close in the Keltner channel (0 = lower band, 100 = upper band), kcHalf "lower"/"upper" (vs the midline).
+    side: "long" = touches the put wall, closes in the lower Keltner half; "short" = touches the call wall, closes in
+    the upper Keltner half; None otherwise. No side when the put wall equals the call wall.
     kc: keltner(bars) list aligned with bars (computed if missing)."""
     if kc is None:
         kc = keltner(bars)
@@ -400,15 +402,23 @@ def pw_vwap_events(bars, walls, resets, near_pct=0.3, kc=None):
         if j <= 0 or j >= len(bars):
             continue
         b = bars[j]
-        pw = (walls.get(b["t"][:10]) or {}).get("putWall")
+        w = walls.get(b["t"][:10]) or {}
+        pw, cw = w.get("putWall"), w.get("callWall")
         if not pw:
             continue
-        pw = float(pw)
-        z = pw * near_pct / 100
-        out.append({"i": j, "t": b["t"][:16], "pw": pw, "touch": b["l"] <= pw + z and b["h"] >= pw - z,
+        pw, cw = float(pw), (float(cw) if cw else None)
+        hit = lambda lv: lv is not None and b["l"] <= lv * (1 + near_pct / 100) and b["h"] >= lv * (1 - near_pct / 100)
+        same = cw is not None and abs(pw - cw) < 1e-6
+        k = _kc_pos(b["c"], kc[j] if j < len(kc) else None)
+        touch, ctouch = hit(pw), hit(cw)
+        side = None
+        if not same and touch and k["kcHalf"] == "lower":
+            side = "long"
+        elif not same and ctouch and k["kcHalf"] == "upper":
+            side = "short"
+        out.append({"i": j, "t": b["t"][:16], "pw": pw, "cw": cw, "same": same, "touch": touch, "cwTouch": ctouch, "side": side,
                     "above": b["c"] >= pw, "green": b["c"] >= b["o"],
-                    "o": round(b["o"], 2), "h": round(b["h"], 2), "l": round(b["l"], 2), "c": round(b["c"], 2),
-                    **_kc_pos(b["c"], kc[j] if j < len(kc) else None)})
+                    "o": round(b["o"], 2), "h": round(b["h"], 2), "l": round(b["l"], 2), "c": round(b["c"], 2), **k})
     return out
 
 
@@ -1263,9 +1273,9 @@ def chart(sub, sym, days=45, flow=True):
     try:
         vres_all = anchored_vwap(bars_all, int(ccfg.get("vwapDays") or VWAP_DAYS))[1]
         kc_all = keltner(bars_all, int(ccfg.get("kcLen") or 21), float(ccfg.get("kcMult") or 3))
-        pv = [{k: e.get(k) for k in ("t", "pw", "above", "green", "o", "h", "l", "c", "kcPos", "kcHalf", "kcM", "kcU", "kcL")}
+        pv = [{k: e.get(k) for k in ("t", "pw", "cw", "side", "above", "green", "o", "h", "l", "c", "kcPos", "kcHalf", "kcM", "kcU", "kcL")}
               for e in pw_vwap_events(bars_all, stored, vres_all, kc=kc_all)
-              if e["touch"] and e["t"][:10] >= (dates[0] if dates else "")]
+              if e["side"] and e["t"][:10] >= (dates[0] if dates else "")]
     except Exception as e:
         print("pw/vwap events failed", sym, e)
         pv = []

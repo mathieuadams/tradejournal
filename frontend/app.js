@@ -1274,7 +1274,7 @@ async function loadFlowChart(id) {
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
 S.fcLayers = (() => { try { const v = { sig: true, pwv: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'PW + VWAP reset'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
   const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'vwap', 'ema', 'kc', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'vwap', 'kc', 'walls', 'flow', 'dark'];
@@ -1534,13 +1534,13 @@ function fcSvg0(d, id, opts) {
   }
   if (LY.pwv !== false && (d.pwVwap || []).length) {  // VWAP reset candle touching the put wall: highlighted on top of everything
     d.pwVwap.forEach(e => { const i = idx[e.t]; if (i == null) return;
-      const x = X(i), c = e.above ? '#7c3aed' : '#be185d', cw = Math.max(6, bw + 4);
-      const yl = Math.min(B - 2, Y(e.l != null ? e.l : e.pw) + 10), yp = Y(e.pw);
-      const tip = esc(`PW + VWAP reset ${e.t.replace('T', ' ').slice(5)}\nPut wall ${e.pw}${e.l != null ? `\nO ${e.o}  H ${e.h}  L ${e.l}  C ${e.c}` : ''}\n${e.green ? 'Green' : 'Red'} candle, closed ${e.above ? 'above' : 'under'} the put wall${e.kcHalf ? `\nKeltner: ${e.kcHalf} half (${e.kcPos}% of the channel · lower ${e.kcL} · mid ${e.kcM} · upper ${e.kcU})` : ''}`);
+      const sh = e.side === 'short', lv = sh ? e.cw : e.pw, x = X(i), c = sh ? '#dc2626' : '#16a34a', cw = Math.max(6, bw + 4);
+      const yl = sh ? Math.max(T + 10, Y(e.h != null ? e.h : lv) - 10) : Math.min(B - 2, Y(e.l != null ? e.l : lv) + 10), yp = Y(lv);
+      const tip = esc(`${sh ? 'SHORT · VWAP reset on the call wall' : 'LONG · VWAP reset on the put wall'} ${e.t.replace('T', ' ').slice(5)}\nPut wall ${e.pw} · Call wall ${e.cw ?? '—'}${e.l != null ? `\nO ${e.o}  H ${e.h}  L ${e.l}  C ${e.c}` : ''}\n${e.green ? 'Green' : 'Red'} candle, closed ${e.above ? 'above' : 'under'} the put wall${e.kcHalf ? `\nKeltner: ${e.kcHalf} half (${e.kcPos}% of the channel · lower ${e.kcL} · mid ${e.kcM} · upper ${e.kcU})` : ''}`);
       g += `<g style="cursor:help"><title>${tip}</title><rect x="${x - cw / 2}" y="${T}" width="${cw}" height="${B - T}" fill="${c}" fill-opacity=".13"/>`;
-      if (e.pw >= lo && e.pw <= hi) g += `<line x1="${x - cw}" x2="${x + cw}" y1="${yp}" y2="${yp}" stroke="${c}" stroke-width="2.5"/>`;
+      if (lv >= lo && lv <= hi) g += `<line x1="${x - cw}" x2="${x + cw}" y1="${yp}" y2="${yp}" stroke="${c}" stroke-width="2.5"/>`;
       g += `<path d="M${x},${yl - 8} L${x + 7},${yl} L${x},${yl + 8} L${x - 7},${yl} Z" fill="${c}" stroke="var(--surface)" stroke-width="1.5"/>`;
-      g += `<text x="${x}" y="${Math.min(B + 12, yl + 20)}" text-anchor="middle" font-size="${fs - 1}" font-weight="700" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">PW⟲${e.kcHalf ? (e.kcHalf === 'lower' ? ' ↓KC' : ' ↑KC') : ''}</text></g>`; });
+      g += `<text x="${x}" y="${sh ? Math.max(T + 2, yl - 12) : Math.min(B + 12, yl + 20)}" text-anchor="middle" font-size="${fs - 1}" font-weight="700" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sh ? 'SHORT' : 'LONG'}</text></g>`; });
   }
   g += `<line class="fc-xh" x1="0" x2="0" y1="${T}" y2="${AB}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" style="display:none;pointer-events:none"/>
     <text class="fc-ohlc" x="${L + 4}" y="${T + 13}" font-size="${fs}" fill="var(--ink)" paint-order="stroke" stroke="var(--surface)" stroke-width="4" style="pointer-events:none"></text>`;
@@ -2630,8 +2630,8 @@ function wwPvStudy(pv) {
     <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th>Situation</th><th class="r">Times</th>${H.map(h => `<th class="r">After ${h}</th>`).join('')}<th class="r">Best move<br>5 days (MFE)</th><th class="r">Worst move<br>5 days (MAE)</th><th class="r">5 days: 1st / 2nd half</th></tr></thead><tbody>
     ${pv.groups.map(g => `<tr><td>${esc(g.label)}</td><td class="r">${g.n}</td>${H.map(h => `<td class="r">${cell(g[h])}</td>`).join('')}<td class="r">${P(g.mfe)}</td><td class="r">${P(g.mae)}</td><td class="r">${P(g.h1)} / ${P(g.h2)}<br><span class="muted" style="font-size:.75rem">${g.h1n} / ${g.h2n}</span></td></tr>`).join('')}</tbody></table></div>
     ${(pv.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(pv.errors.join(' · '))}</p>` : ''}`;
-  return `<h3 style="font-size:.95rem;margin:16px 0 4px">VWAP reset on the put wall <button class="btn" data-pvrun ${pv.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${pv.at && !pv.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(pv.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
-    <p class="muted" style="margin:0;font-size:.85rem">How often the stock goes up when the candle that resets the VWAP (highest volume of the period) touches the put wall, and by how much, compared with resets elsewhere and with any day.</p>${body}`;
+  return `<h3 style="font-size:.95rem;margin:16px 0 4px">VWAP reset on the walls (long / short) <button class="btn" data-pvrun ${pv.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${pv.at && !pv.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(pv.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
+    <p class="muted" style="margin:0;font-size:.85rem">LONG = the VWAP reset candle (highest volume of the period) touches the put wall and closes in the lower half of the Keltner channel. SHORT = it touches the call wall and closes in the upper half. Skipped when the put wall equals the call wall.</p>${body}`;
 }
 /* ---------- intraday gamma levels (the NQ framework on 5-minute candles) ---------- */
 async function loadIntraday() {

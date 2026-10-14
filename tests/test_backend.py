@@ -2756,6 +2756,16 @@ def test_pw_vwap_study():
     assert wallwatch._kc_pos(105, None)["kcHalf"] is None
     kc = [(100, 110, 90)] * len(bars)
     assert all("kcHalf" in e for e in wallwatch.pw_vwap_events(bars, ws, [2, 8], kc=kc))
+    # long: put wall touch in the lower Keltner half; short: call wall touch in the upper half; none when PW == CW
+    b1 = [dict(bars[0], t="2026-10-01T09:30"), {"t": "2026-10-01T10:30", "o": 100, "h": 101, "l": 99.5, "c": 100.5, "v": 9}]
+    w1 = {"2026-10-01": {"putWall": 100, "callWall": 120}}
+    lo_kc, up_kc = [(110, 130, 90)] * 2, [(95, 105, 85)] * 2
+    assert wallwatch.pw_vwap_events(b1, w1, [1], kc=lo_kc)[0]["side"] == "long"
+    assert wallwatch.pw_vwap_events(b1, w1, [1], kc=up_kc)[0]["side"] is None
+    assert wallwatch.pw_vwap_events(b1, {"2026-10-01": {"putWall": 100, "callWall": 100}}, [1], kc=lo_kc)[0]["side"] is None
+    w2 = {"2026-10-01": {"putWall": 80, "callWall": 100}}
+    assert wallwatch.pw_vwap_events(b1, w2, [1], kc=up_kc)[0]["side"] == "short"
+    assert wallwatch.pw_vwap_events(b1, w2, [1], kc=lo_kc)[0]["side"] is None
     today = now_ny().date()
     days, d = [], today - dt.timedelta(days=200)
     while d < today:
@@ -2776,7 +2786,7 @@ def test_pw_vwap_study():
         wallwatch.save_config("pv-user", {"tickers": ["AAA"]})
         r = backtest.pv_study("pv-user", {"days": 120})
         g = {x["label"].strip(): x for x in r["groups"]}
-        assert g["VWAP reset candle touching the put wall"]["n"] > 0 and g["Any day (baseline)"]["n"] > 50
+        assert g["All resets touching the put wall (PW ≠ CW)"]["n"] > 0 and g["Any day (baseline)"]["n"] > 50
         assert "5 days" in g["Any day (baseline)"] and backtest.pv_result("pv-user")["groups"]
     finally:
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
