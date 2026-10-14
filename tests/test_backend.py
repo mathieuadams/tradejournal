@@ -2773,6 +2773,11 @@ def test_pw_vwap_study():
     tr = wallwatch.pv_long_trades(tb, tw, [{"i": 3, "t": tb[3]["t"], "side": "long", "pw": 100}],
                                   {"tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
     assert len(tr) == 1 and tr[0]["status"] == "target" and tr[0]["R"] > 0
+    tb2 = [dict(x) for x in tb]
+    tb2[6] = dict(tb2[6], c=99.8, l=99.6)            # entry day closes under the put wall 100
+    tr2 = wallwatch.pv_long_trades(tb2, tw, [{"i": 3, "t": tb2[3]["t"], "side": "long", "pw": 100}],
+                                   {"tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
+    assert tr2[0]["status"] == "eodpw" and tr2[0]["exit"] == 99.8
     today = now_ny().date()
     days, d = [], today - dt.timedelta(days=200)
     while d < today:

@@ -2637,10 +2637,10 @@ function wwPvStudy(pv) {
 function pvTrades(t) {
   if (!t) return '';
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
-  const EX = { target: 'call wall target', stop: 'stop', trail: 'trailing stop', flip: 'close under flip', vwap: 'close under VWAP', ema: 'close under EMA', keltner: 'Keltner ride ended', lost: 'back under level', open: 'still open' };
+  const EX = { target: 'call wall target', stop: 'stop', trail: 'trailing stop', flip: 'close under flip', vwap: 'close under VWAP', ema: 'close under EMA', keltner: 'Keltner ride ended', lost: 'back under level', eodpw: 'entry day closed under PW', open: 'still open' };
   if (!t.n) return '<h4 style="font-size:.9rem;margin:14px 0 4px">LONG signal traded with your exits</h4><p class="muted" style="font-size:.85rem">No trades.</p>';
   return `<h4 style="font-size:.9rem;margin:14px 0 4px">LONG signal traded with your exits</h4>
-    <p class="muted" style="font-size:.82rem;margin:0 0 6px">Entry at the close of the reset candle · stop = put wall − stop ATR · target = call wall · same switches as the strategy (Keltner ride, close under flip, back under CW / dark pool…). One trade at a time per ticker.</p>
+    <p class="muted" style="font-size:.82rem;margin:0 0 6px">Entry at the close of the reset candle · stop = put wall − stop ATR · target = call wall · same switches as the strategy (Keltner ride, close under flip, back under CW / dark pool…) · the entry day must close above the put wall, else sold at that close. One trade at a time per ticker.</p>
     <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th class="r">Trades</th><th class="r">Win rate</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">Profit factor</th><th class="r">Avg win / loss</th><th class="r">1st half / 2nd half</th><th class="r">Avg days held</th><th class="r">Still open</th></tr></thead>
     <tbody><tr><td class="r">${t.n}</td><td class="r">${t.win}%</td><td class="r">${R(t.avgR)}</td><td class="r">${R(t.totR)}</td><td class="r">${t.pf ?? '—'}</td><td class="r">${R(t.avgWin)} / ${R(t.avgLoss)}</td><td class="r">${R(t.h1)} / ${R(t.h2)}<br><span class="muted" style="font-size:.75rem">${t.h1n} / ${t.h2n}</span></td><td class="r">${t.avgDays ?? '—'}</td><td class="r">${t.open}</td></tr></tbody></table></div>
     <p class="muted" style="font-size:.82rem;margin:4px 0">Exits: ${Object.entries(t.exits || {}).map(([k, v]) => `${esc(EX[k] || k)} ${v}`).join(' · ')}</p>

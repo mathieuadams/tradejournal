@@ -669,7 +669,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
 def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None, kc=None, dpl=None, start=None):
     """LONG signals of pw_vwap_events traded with the strategy's exits: entry at the close of the reset candle, stop
     stopAtr x ATR under the put wall, target the call wall (minus the buffer), and the same switches (Keltner ride,
-    close under the flip, back under CW / dark pool, VWAP / EMA exits, trailing). One trade at a time per ticker.
+    close under the flip, back under CW / dark pool, VWAP / EMA exits, trailing). Plus: the entry day must close above
+    the put wall, else the trade is sold at that close (status "eodpw"). One trade at a time per ticker.
     vwap / ema / kc: lists aligned with bars. dpl: {date: dark pool levels}. Returns trades with pct / R."""
     P = {**PARAMS, **(cfg or {})}
     on = lambda k: bool(P.get(k, PARAMS[k]))
@@ -702,10 +703,18 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"), "cwLost": on("cwLost"), "dpLost": on("dpLost"),
              "kcPos": e.get("kcPos"), "above": e.get("above"), "green": e.get("green")}
         j = i
+        last_of_day = lambda k: k + 1 == len(bars) or bars[k + 1]["t"][:10] != bars[k]["t"][:10]
+        if last_of_day(i) and i + 1 < len(bars) and b["c"] < e["pw"]:
+            s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])   # entry candle is the last of the day, closed under the PW
         for j in range(i + 1, len(bars)):
-            _step(s, bars[j], walls, k_trail, flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]),
+            if s["status"] != "open":
+                break
+            _step(s, bars[j], walls, k_trail, flip_exit, is_last=last_of_day(j),
                   vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dpl.get(bars[j]["t"][:10]))
             if s["status"] != "open":
+                break
+            if bars[j]["t"][:10] == day and last_of_day(j) and bars[j]["c"] < e["pw"]:
+                s.update(status="eodpw", exitAt=bars[j]["t"][:16], exit=bars[j]["c"])   # entry day closed under the put wall: out
                 break
         busy = j
         s["pct"], s["R"] = _result(s)
