@@ -666,6 +666,54 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     return sigs, watch
 
 
+def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None, kc=None, dpl=None, start=None):
+    """LONG signals of pw_vwap_events traded with the strategy's exits: entry at the close of the reset candle, stop
+    stopAtr x ATR under the put wall, target the call wall (minus the buffer), and the same switches (Keltner ride,
+    close under the flip, back under CW / dark pool, VWAP / EMA exits, trailing). One trade at a time per ticker.
+    vwap / ema / kc: lists aligned with bars. dpl: {date: dark pool levels}. Returns trades with pct / R."""
+    P = {**PARAMS, **(cfg or {})}
+    on = lambda k: bool(P.get(k, PARAMS[k]))
+    k_stop, buf = float(P["stopAtr"]), float(P.get("tgtBuf") or 0)
+    k_trail = float(P["trailAtr"]) if on("trailOn") else 0.0
+    flip_exit = bool(P.get("flipExit", True))
+    atr = atr14(bars)
+    kc = kc or keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
+    vwap = vwap or anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[0]
+    ema = ema or _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
+    dpl = dpl or {}
+    out, busy = [], -1
+    for e in events:
+        i = e["i"]
+        if e.get("side") != "long" or i <= busy or (start and e["t"][:10] < start):
+            continue
+        b, day = bars[i], bars[i]["t"][:10]
+        w = walls.get(day) or {}
+        a_ = (_atr_on(datr, day) if datr else None) or atr[i]
+        if not a_:
+            continue
+        cw = float(w["callWall"]) if w.get("callWall") else None
+        st = round(e["pw"] - k_stop * a_, 4)
+        if st >= b["c"]:
+            continue                                   # closed under the stop already
+        tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
+        s = {"at": b["t"][:16], "kind": "pvlong", "entry": b["c"], "pw": e["pw"], "cw": cw, "target": tgt, "atr": round(a_, 4),
+             "stop": st if on("stopOn") else 0.0, "stop0": st, "status": "open", "last": b["c"], "lastAt": b["t"][:16],
+             "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])),
+             "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"), "cwLost": on("cwLost"), "dpLost": on("dpLost"),
+             "kcPos": e.get("kcPos"), "above": e.get("above"), "green": e.get("green")}
+        j = i
+        for j in range(i + 1, len(bars)):
+            _step(s, bars[j], walls, k_trail, flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]),
+                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dpl.get(bars[j]["t"][:10]))
+            if s["status"] != "open":
+                break
+        busy = j
+        s["pct"], s["R"] = _result(s)
+        s["days"] = len({x["t"][:10] for x in bars[i:j + 1]}) - 1
+        out.append(s)
+    return out
+
+
 def _walls(key, sym, dates, today):
     """{date: walls} for the dates; past days from the store (flip added when missing), today refreshed hourly."""
     import flowdata

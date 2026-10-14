@@ -2766,6 +2766,13 @@ def test_pw_vwap_study():
     w2 = {"2026-10-01": {"putWall": 80, "callWall": 100}}
     assert wallwatch.pw_vwap_events(b1, w2, [1], kc=up_kc)[0]["side"] == "short"
     assert wallwatch.pw_vwap_events(b1, w2, [1], kc=lo_kc)[0]["side"] is None
+    # LONG trade with the strategy's exits: target = call wall
+    tb = [{"t": f"2026-10-0{1 + k // 7}T{9 + k % 7}:30", "o": 100, "h": 101, "l": 99.5, "c": 100.5, "v": 9} for k in range(14)]
+    tb[10] = dict(tb[10], h=121, c=119)
+    tw = {f"2026-10-0{d}": {"putWall": 100, "callWall": 120, "flip": 99} for d in (1, 2)}
+    tr = wallwatch.pv_long_trades(tb, tw, [{"i": 3, "t": tb[3]["t"], "side": "long", "pw": 100}],
+                                  {"tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
+    assert len(tr) == 1 and tr[0]["status"] == "target" and tr[0]["R"] > 0
     today = now_ny().date()
     days, d = [], today - dt.timedelta(days=200)
     while d < today:

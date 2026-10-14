@@ -679,7 +679,7 @@ def pv_study(sub, params=None, budget_s=480):
     first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
     mid = (now_ny() - timedelta(days=int(days * 1.45) // 2)).strftime("%Y-%m-%d")
     db.put({"PK": pk, "SK": PV_SK, **(db.get(pk, PV_SK) or {}), "running": iso(now_ny())})
-    rows, base, errors, done_n = [], [], [], 0
+    rows, base, errors, done_n, trades = [], [], [], 0, []
 
     def fwd(bars, i):
         e = bars[i]["c"]
@@ -697,6 +697,10 @@ def pv_study(sub, params=None, budget_s=480):
         res = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))[1]
         kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
         ev = [e for e in wallwatch.pw_vwap_events(bars, d["walls"], res, kc=kc) if e["t"][:10] >= first]
+        ttr = wallwatch.pv_long_trades(bars, d["walls"], ev, cfg, d["datr"], kc=kc,
+                                       dpl=(d.get("extra") or {}).get("dpLevels"), start=first)
+        trades.extend({"sym": sym, "at": t["at"], "R": t["R"], "pct": t["pct"], "exit": t["status"], "days": t["days"],
+                       "entry": t["entry"], "pw": t["pw"], "cw": t["cw"]} for t in ttr if t.get("R") is not None)
         out = [{"sym": sym, "at": e["t"], "touch": e["touch"], "above": e["above"], "green": e["green"], "kcHalf": e.get("kcHalf"), "side": e.get("side"), "same": e.get("same"), "cwTouch": e.get("cwTouch"),
                 "kcPos": e.get("kcPos"), **fwd(bars, e["i"])} for e in ev]
         bl = [{"at": b["t"], **fwd(bars, i)} for i, b in enumerate(bars) if b["t"][:10] >= first and i % 7 == 3]   # one candle a day
@@ -748,7 +752,10 @@ def pv_study(sub, params=None, budget_s=480):
     ]
     out = {"PK": pk, "SK": PV_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "tickers": done_n,
            "period": {"from": first, "mid": mid}, "groups": [{"label": lab, **st(rs)} for lab, rs in groups],
-           "recent": sorted([r for r in rows if r.get("side")], key=lambda r: r["at"])[-40:], "errors": errors[:5]}
+           "recent": sorted([r for r in rows if r.get("side")], key=lambda r: r["at"])[-40:],
+           "trades": {**_stats(trades, mid), "exits": {k: sum(1 for t in trades if t["exit"] == k) for k in sorted({t["exit"] for t in trades})},
+                      "avgDays": round(sum(t["days"] for t in trades) / len(trades), 1) if trades else None,
+                      "list": sorted(trades, key=lambda t: t["at"])[-60:]}, "errors": errors[:5]}
     if done_n < len(cfg["tickers"]):
         out["errors"].insert(0, f"Time limit: {done_n} of {len(cfg['tickers'])} tickers.")
     db.put(out)
