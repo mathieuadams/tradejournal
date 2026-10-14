@@ -388,6 +388,25 @@ def dp_level_map(prints, dates, top_n=5, window_days=66):
     return out
 
 
+def pw_vwap_events(bars, walls, resets, near_pct=0.3):
+    """VWAP reset candles (the hourly candle with the highest volume of the period) and whether their range touches the
+    put wall of the day (within near_pct %). [{i, t, touch, pw, above (close above the put wall), green}]"""
+    out = []
+    for j in sorted(set(resets)):
+        if j <= 0 or j >= len(bars):
+            continue
+        b = bars[j]
+        pw = (walls.get(b["t"][:10]) or {}).get("putWall")
+        if not pw:
+            continue
+        pw = float(pw)
+        z = pw * near_pct / 100
+        out.append({"i": j, "t": b["t"][:16], "pw": pw, "touch": b["l"] <= pw + z and b["h"] >= pw - z,
+                    "above": b["c"] >= pw, "green": b["c"] >= b["o"],
+                    "o": round(b["o"], 2), "h": round(b["h"], 2), "l": round(b["l"], 2), "c": round(b["c"], 2)})
+    return out
+
+
 def keltner(bars, n=21, mult=3.0):
     """Keltner channel: EMA(n) of the close +/- mult x EMA(n) of the true range. [(mid, upper, lower) or None]."""
     closes = [b["c"] for b in bars]
@@ -1227,7 +1246,14 @@ def chart(sub, sym, days=45, flow=True):
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
     mrec = db.get(db.upk(sub), f"WWMISS#{sym}") or {}
     misses = replay_misses + [m for m in (mrec.get("misses") or []) if mrec.get("v") == cur_v and m["t"][:10] >= (cut or (dates[0] if dates else ""))]
-    return {"curV": cur_v, "misses": misses, "kc": kc, "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    try:
+        vres_all = anchored_vwap(bars_all, int(ccfg.get("vwapDays") or VWAP_DAYS))[1]
+        pv = [{k: e[k] for k in ("t", "pw", "above", "green", "o", "h", "l", "c")} for e in pw_vwap_events(bars_all, stored, vres_all)
+              if e["touch"] and e["t"][:10] >= (dates[0] if dates else "")]
+    except Exception as e:
+        print("pw/vwap events failed", sym, e)
+        pv = []
+    return {"pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),

@@ -2739,6 +2739,44 @@ def test_chart_long_range_replay():
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
 
 
+def test_pw_vwap_study():
+    """Put wall crossings flagged with a nearby VWAP reset; the study returns forward returns by group."""
+    import wallwatch, backtest, charts, flowdata, math
+    import datetime as dt
+    from util import now_ny
+    bars = [{"t": f"2026-10-0{1 + k // 7}T{['09:30','10:30','11:30','12:30','13:30','14:30','15:30'][k % 7]}",
+             "o": 99, "h": 101, "l": 98, "c": c, "v": 1} for k, c in enumerate([99, 99.5, 100.5, 101, 99.2, 98, 100.4, 101, 102, 103])]
+    ws = {f"2026-10-0{d}": {"putWall": 100} for d in (1, 2)}
+    ev = wallwatch.pw_vwap_events(bars, ws, [2, 8])
+    assert [(e["t"], e["touch"], e["above"]) for e in ev] == [("2026-10-01T11:30", True, True), ("2026-10-02T10:30", True, True)]
+    far = [dict(b, l=105, h=106) for b in bars]
+    assert not wallwatch.pw_vwap_events(far, ws, [2])[0]["touch"]
+    today = now_ny().date()
+    days, d = [], today - dt.timedelta(days=200)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    hb = []
+    for day in days:
+        for h in ("09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"):
+            k = len(hb); px = 100 + 3 * math.sin(k / 9.0)
+            hb.append({"t": f"{day}T{h}", "o": px - .1, "h": px + .3, "l": px - .3, "c": px, "v": 5000 + k if k % 40 == 0 else 1000})
+    saved = (charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else [{"t": f"{x}T09:30", "o": 100, "h": 103, "l": 97, "c": 100, "v": 1} for x in days]
+        flowdata.stored_walls = lambda sym: {day: {"callWall": 104, "putWall": 100, "flip": 101} for day in days}
+        backtest.stored_alerts = lambda sub_, sym: []
+        backtest.stored_darkpool = lambda sym: []
+        wallwatch.save_config("pv-user", {"tickers": ["AAA"]})
+        r = backtest.pv_study("pv-user", {"days": 120})
+        g = {x["label"].strip(): x for x in r["groups"]}
+        assert g["VWAP reset candle touching the put wall"]["n"] > 0 and g["Any day (baseline)"]["n"] > 50
+        assert "5 days" in g["Any day (baseline)"] and backtest.pv_result("pv-user")["groups"]
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

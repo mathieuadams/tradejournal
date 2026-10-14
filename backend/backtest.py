@@ -662,6 +662,97 @@ def robust_test(sub, params=None, budget_s=480):
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
 
 
+PV_SK = "WWPVSTUDY"
+PV_H = [("1 day", 7), ("3 days", 21), ("5 days", 35), ("10 days", 70)]
+
+
+def pv_study(sub, params=None, budget_s=480):
+    """How the stock moves after a VWAP reset candle (the hourly candle with the highest volume of the period) that
+    touches the put wall, vs resets elsewhere and any day. Forward returns from the crossing candle's close, plus
+    the best (MFE) and worst (MAE) move over the next 5 days. Baseline: every hourly candle."""
+    import wallwatch
+    t0 = time.time()
+    pk = db.upk(sub)
+    P = {"days": 250, **(params or {})}
+    cfg = wallwatch.config(sub)
+    days = max(30, min(500, int(P["days"])))
+    first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
+    mid = (now_ny() - timedelta(days=int(days * 1.45) // 2)).strftime("%Y-%m-%d")
+    db.put({"PK": pk, "SK": PV_SK, **(db.get(pk, PV_SK) or {}), "running": iso(now_ny())})
+    rows, base, errors, done_n = [], [], [], 0
+
+    def fwd(bars, i):
+        e = bars[i]["c"]
+        r = {lab: round((bars[i + n]["c"] / e - 1) * 100, 2) if i + n < len(bars) else None for lab, n in PV_H}
+        seg = bars[i + 1:i + 36]
+        r["mfe"] = round((max(b["h"] for b in seg) / e - 1) * 100, 2) if seg else None
+        r["mae"] = round((min(b["l"] for b in seg) / e - 1) * 100, 2) if seg else None
+        return r
+
+    def one(sym):
+        d = _ticker_data(sub, sym, days, cfg, False)
+        if not d:
+            return sym, [], []
+        bars = d["bars"]
+        res = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))[1]
+        ev = [e for e in wallwatch.pw_vwap_events(bars, d["walls"], res) if e["t"][:10] >= first]
+        out = [{"sym": sym, "at": e["t"], "touch": e["touch"], "above": e["above"], "green": e["green"], **fwd(bars, e["i"])} for e in ev]
+        bl = [{"at": b["t"], **fwd(bars, i)} for i, b in enumerate(bars) if b["t"][:10] >= first and i % 7 == 3]   # one candle a day
+        return sym, out, bl
+
+    pool = ThreadPoolExecutor(max_workers=8)
+    for f in [pool.submit(one, t) for t in cfg["tickers"]]:
+        try:
+            sym, out, bl = f.result(timeout=max(1, budget_s - (time.time() - t0)))
+            rows += out
+            base += bl
+            done_n += 1
+        except Exception as e:
+            errors.append(str(e)[:100] or "time limit")
+    pool.shutdown(wait=False, cancel_futures=True)
+
+    def st(rs):
+        out = {"n": len(rs)}
+        for lab, _ in PV_H:
+            xs = sorted(r[lab] for r in rs if r.get(lab) is not None)
+            if xs:
+                out[lab] = {"up": round(sum(1 for x in xs if x > 0) / len(xs) * 100), "avg": round(sum(xs) / len(xs), 2),
+                            "med": xs[len(xs) // 2]}
+        for k in ("mfe", "mae"):
+            xs = [r[k] for r in rs if r.get(k) is not None]
+            out[k] = round(sum(xs) / len(xs), 2) if xs else None
+        h1 = [r["5 days"] for r in rs if r.get("5 days") is not None and r["at"][:10] < mid]
+        h2 = [r["5 days"] for r in rs if r.get("5 days") is not None and r["at"][:10] >= mid]
+        out["h1"] = round(sum(h1) / len(h1), 2) if h1 else None
+        out["h2"] = round(sum(h2) / len(h2), 2) if h2 else None
+        out["h1n"], out["h2n"] = len(h1), len(h2)
+        return out
+
+    t_ = [r for r in rows if r["touch"]]
+    groups = [
+        ("VWAP reset candle touching the put wall", t_),
+        ("   … closes above the put wall", [r for r in t_ if r["above"]]),
+        ("   … closes under the put wall", [r for r in t_ if not r["above"]]),
+        ("   … green candle", [r for r in t_ if r["green"]]),
+        ("   … red candle", [r for r in t_ if not r["green"]]),
+        ("   … green and closes above the put wall", [r for r in t_ if r["green"] and r["above"]]),
+        ("VWAP reset away from the put wall", [r for r in rows if not r["touch"]]),
+        ("Any day (baseline)", base),
+    ]
+    out = {"PK": pk, "SK": PV_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "tickers": done_n,
+           "period": {"from": first, "mid": mid}, "groups": [{"label": lab, **st(rs)} for lab, rs in groups],
+           "recent": sorted(t_, key=lambda r: r["at"])[-40:], "errors": errors[:5]}
+    if done_n < len(cfg["tickers"]):
+        out["errors"].insert(0, f"Time limit: {done_n} of {len(cfg['tickers'])} tickers.")
+    db.put(out)
+    return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
+def pv_result(sub):
+    r = _unstick(db.get(db.upk(sub), PV_SK) or {})
+    return {k: v for k, v in r.items() if k not in ("PK", "SK")}
+
+
 def PARAMS_KEYS(cfg):
     import wallwatch
     return [k for k in wallwatch.PARAMS if k in cfg]
