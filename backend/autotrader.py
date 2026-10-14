@@ -1235,9 +1235,10 @@ def _wallwatch_exit(sub, rec, p):
     if ww.get("fvgExit"):                              # the last finished hourly candle completes a new bearish FVG
         try:
             import wallwatch
-            hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=30), now + timedelta(hours=1)) or [],
+            hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=45), now + timedelta(hours=1)) or [],
                                     now.replace(tzinfo=None))
-            if len(hb) >= 3 and hb[-1]["t"][:16] >= since[:13] and wallwatch.fvg_bear_new(hb, float(ww.get("fvgMin") or 0.2))[-1]:
+            hb = [b for b in hb if "09:30" <= b["t"][11:16] < "16:00"]
+            if len(hb) >= 3 and hb[-1]["t"][:16] >= since[:13] and wallwatch.fvg_bear_new(hb, float(ww.get("fvgAtr") or 0.33))[-1]:
                 return f"new bearish FVG {hb[-1]['h']:.2f}–{hb[-3]['l']:.2f} on the {hb[-1]['t'][11:16]} candle"
         except Exception as e:
             print("fvg exit check failed", rec.get("symbol"), e)

@@ -36,8 +36,10 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # relFlow: a call alert arms the ticker when its premium is at least relMult x the median premium of the
           # ticker's call alerts of the previous 30 days (unusual for THIS ticker); retestMin is the fallback with < 5 alerts
           "relFlow": True, "relMult": 3.0,
-          # fvgOn: the entry candle must trade into an open bullish fair value gap (3-candle gap of at least fvgMin x ATR)
-          "fvgOn": False, "fvgMin": 0.2, "fvgNear": 0.25,   # fvgNear: a low within this x ATR above the gap counts as a touch
+          # fvgOn: the entry candle must trade into the open bullish fair value gap (TOS definition: hourly 3-candle gap
+          # larger than fvgAtr x the 20-day average daily true range; one gap of each kind at a time, the newest
+          # replaces the older; gone when a candle closes through it). fvgNearD: a low within this x daily ATR above counts
+          "fvgOn": False, "fvgAtr": 0.33, "fvgNearD": 0.05,
           # fvgExit: sell at the close of the candle that completes a new bearish fair value gap after the entry
           "fvgExit": False,
           # scaleOn (lab / backtest): sell scalePct % of the position when price reaches entry + scaleR x risk;
@@ -66,7 +68,7 @@ def version(cfg):
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
-            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}")
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvgd{float(cfg.get('fvgAtr', 0.33)):g}n{float(cfg.get('fvgNearD', 0.05)):g}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}")
 
 
 SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE")
@@ -94,7 +96,7 @@ def save_config(sub, body):
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
             except (TypeError, ValueError):
                 pass
-    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "relMult", "fvgMin", "fvgNear", "scaleR"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "relMult", "fvgAtr", "fvgNearD", "scaleR"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
@@ -521,48 +523,78 @@ def spy_trend(start, now=None):
     return out
 
 
-def fvg_zones(bars, min_atr=0.2, atr=None):
-    """Fair value gaps on these candles: bullish when the low of candle i is above the high of candle i-2, bearish when
-    the high of candle i is under the low of candle i-2; kept when the gap is at least min_atr x ATR(14).
-    A zone is usable from candle i+1 and is filled when a later candle trades through it (low under the bottom of a
-    bullish gap / high over the top of a bearish one). [{i, t, type, lo, hi, fillI, fillAt}]"""
-    atr = atr or atr14(bars)
-    out = []
-    for i in range(2, len(bars)):
-        a, c = bars[i - 2], bars[i]
-        m = (atr[i] or 0) * min_atr
-        if c["l"] > a["h"] and c["l"] - a["h"] >= m:
-            out.append({"i": i, "t": bars[i - 1]["t"][:16], "type": "bull", "lo": round(a["h"], 4), "hi": round(c["l"], 4)})
-        elif c["h"] < a["l"] and a["l"] - c["h"] >= m:
-            out.append({"i": i, "t": bars[i - 1]["t"][:16], "type": "bear", "lo": round(c["h"], 4), "hi": round(a["l"], 4)})
-    for z in out:
-        z["fillI"] = z["fillAt"] = None
-        for j in range(z["i"] + 1, len(bars)):
-            if (z["type"] == "bull" and bars[j]["l"] < z["lo"]) or (z["type"] == "bear" and bars[j]["h"] > z["hi"]):
-                z["fillI"], z["fillAt"] = j, bars[j]["t"][:16]
-                break
+def daily_atr20(bars):
+    """Per hourly candle: the average daily true range of the 20 previous sessions (daily candles built from these
+    candles; at least 5 sessions, else None)."""
+    days, by = [], {}
+    for b in bars:
+        d = b["t"][:10]
+        if d not in by:
+            by[d] = {"h": b["h"], "l": b["l"], "c": b["c"]}
+            days.append(d)
+        else:
+            x = by[d]
+            x["h"], x["l"], x["c"] = max(x["h"], b["h"]), min(x["l"], b["l"]), b["c"]
+    tr, val = [], {}
+    for k, d in enumerate(days):
+        x = by[d]
+        win = tr[-20:]
+        val[d] = sum(win) / len(win) if len(win) >= 5 else None   # sessions before this one only
+        pc = by[days[k - 1]]["c"] if k else x["c"]
+        tr.append(max(x["h"] - x["l"], abs(x["h"] - pc), abs(x["l"] - pc)))
+    return [val[b["t"][:10]] for b in bars]
+
+
+def fvg_zones(bars, mult=0.33, datr=None):
+    """Fair value gaps as the TOS study draws them, on these (hourly) candles:
+    bullish when low[i] - high[i-2] > mult x the 20-day average daily true range, zone high[i-2]..low[i];
+    bearish when low[i-2] - high[i] > that, zone high[i]..low[i-2].
+    One gap of each kind at a time: a new one replaces the older ("replaced"); a bullish gap is gone when a candle
+    closes under its bottom, a bearish one when a candle closes above its top ("closed through").
+    [{i (candle that completes it), t (middle candle), type, lo, hi, fillI, fillAt, end}]"""
+    datr = datr or daily_atr20(bars)
+    out, cur = [], {"bull": None, "bear": None}
+    for i, b in enumerate(bars):
+        for typ in ("bull", "bear"):                   # closed through: gone
+            z = cur[typ]
+            if z and z["i"] < i and ((typ == "bull" and b["c"] < z["lo"]) or (typ == "bear" and b["c"] > z["hi"])):
+                z.update(fillI=i, fillAt=b["t"][:16], end="closed through")
+                cur[typ] = None
+        if i < 2 or not datr[i]:
+            continue
+        a, th = bars[i - 2], mult * datr[i]
+        typ = "bull" if b["l"] - a["h"] > th else "bear" if a["l"] - b["h"] > th else None
+        if not typ:
+            continue
+        z = {"i": i, "t": bars[i - 1]["t"][:16], "type": typ, "lo": round(a["h"] if typ == "bull" else b["h"], 4),
+             "hi": round(b["l"] if typ == "bull" else a["l"], 4), "fillI": None, "fillAt": None, "end": None}
+        if cur[typ]:
+            cur[typ].update(fillI=i, fillAt=b["t"][:16], end="replaced")
+        cur[typ] = z
+        out.append(z)
     return out
 
 
-def fvg_bear_new(bars, min_atr=0.2, atr=None):
-    """Per candle: True when it completes a bearish fair value gap (its high under the low of two candles before)."""
+def fvg_bear_new(bars, mult=0.33, datr=None):
+    """Per candle: True when it completes a new bearish fair value gap (TOS definition)."""
     out = [False] * len(bars)
-    for z in fvg_zones(bars, min_atr, atr):
-        if z["type"] == "bear":
-            out[z["i"]] = True
+    for z in fvg_zones(bars, mult, datr):
+        if z["type"] == "bull":
+            continue
+        out[z["i"]] = True
     return out
 
 
-def fvg_bull_touch(bars, zones, near=0.0, atr=None):
-    """Per candle: the open bullish FVG (formed before it, not filled before it) that its low trades into, or comes
-    within near x ATR above, while it closes above the bottom of the gap, else None."""
+def fvg_bull_touch(bars, zones, near=0.0, datr=None):
+    """Per candle: the open bullish FVG (completed before it, not replaced or closed through before it) that its low
+    trades into, or comes within near x daily ATR above, while it closes above the bottom of the gap; else None."""
     out = [None] * len(bars)
     bulls = [z for z in zones if z["type"] == "bull"]
-    atr = atr or (atr14(bars) if near else [0] * len(bars))
+    datr = datr or (daily_atr20(bars) if near else [0] * len(bars))
     for j, b in enumerate(bars):
-        m = near * (atr[j] or 0)
+        m = near * (datr[j] or 0)
         for z in bulls:
-            if z["i"] < j and (z["fillI"] is None or z["fillI"] >= j) and b["l"] <= z["hi"] + m and b["c"] > z["lo"]:
+            if z["i"] < j and (z["fillI"] is None or z["fillI"] > j) and b["l"] <= z["hi"] + m and b["c"] > z["lo"]:
                 out[j] = z
                 break
     return out
@@ -644,9 +676,10 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         vwap = [vwap_map.get(b["t"][:16]) for b in bars]
     else:
         vwap, _ = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))
-    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr),
-                           float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
-    bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
+    fd = daily_atr20(bars) if on("fvgOn") or on("fvgExit") else None
+    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgAtr") or 0.33), fd),
+                           float(P.get("fvgNearD") if P.get("fvgNearD") is not None else 0.05), fd) if on("fvgOn") else None
+    bear = fvg_bear_new(bars, float(P.get("fvgAtr") or 0.33), fd) if on("fvgExit") else [False] * len(bars)
     big = unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else \
         sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
     sigs, open_, watch, ai = [], None, None, 0
@@ -726,7 +759,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 miss(b, "SPY trending down")
                 continue                               # rule on: SPY must be up over the last 6 sessions
             if on("fvgOn") and not fvg_t[i]:
-                miss(b, f"not in (or within {float(P.get('fvgNear') if P.get('fvgNear') is not None else 0.25):g} ATR of) an open bullish FVG")
+                miss(b, f"not in (or within {float(P.get('fvgNearD') if P.get('fvgNearD') is not None else 0.05):g} daily ATR of) the open bullish FVG")
                 continue                               # rule on: the candle must trade into an open bullish fair value gap
             if on("kcNotExt") and not (kc[i] and b["c"] < kc[i][1]):
                 miss(b, "close above the upper Keltner band")
@@ -758,6 +791,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"),
                  "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
                  "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
+            if fvg_t is not None and fvg_t[i]:        # the gap the entry used (shown on the chart)
+                z_ = fvg_t[i]
+                s["fvgZone"] = {"t": z_["t"], "lo": z_["lo"], "hi": z_["hi"]}
             if P.get("fixR"):                          # backtest: fixed target at N x the risk
                 s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
             if P.get("maxDays"):
@@ -769,7 +805,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         i0 = s.pop("i0")                               # the same entry with the other choice for the daily flip exit
-        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn", "riding", "rideAt", "tgtHit", "dlog", "passed", "lostLevel", "scaled")}
+        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn", "riding", "rideAt", "tgtHit", "dlog", "passed", "lostLevel", "scaled", "fvgZone")}
         if alt.get("maxDays"):
             alt["_dd"], alt["_dn"] = alt["at"][:10], 0
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
@@ -806,9 +842,10 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
         earn_d = datetime.strptime(str(earnings)[:10], "%Y-%m-%d") if earnings and earn_days else None
     except ValueError:
         earn_d = None
-    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr),
-                           float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
-    bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
+    fd = daily_atr20(bars) if on("fvgOn") or on("fvgExit") else None
+    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgAtr") or 0.33), fd),
+                           float(P.get("fvgNearD") if P.get("fvgNearD") is not None else 0.05), fd) if on("fvgOn") else None
+    bear = fvg_bear_new(bars, float(P.get("fvgAtr") or 0.33), fd) if on("fvgExit") else [False] * len(bars)
     out, busy = [], -1
     for e in events:
         i = e["i"]
@@ -839,6 +876,8 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
              "pvEod": on("pvEod"), "fvgExit": on("fvgExit"),
              "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "kc": list(kc[i]) if kc[i] else None,
              "kcPos": e.get("kcPos"), "above": e.get("above"), "green": e.get("green")}
+        if fvg_t is not None and fvg_t[i]:
+            s["fvgZone"] = {"t": fvg_t[i]["t"], "lo": fvg_t[i]["lo"], "hi": fvg_t[i]["hi"]}
         j = i
         last_of_day = lambda k: k + 1 == len(bars) or bars[k + 1]["t"][:10] != bars[k]["t"][:10]
         if on("pvEod") and last_of_day(i) and i + 1 < len(bars) and b["c"] < e["pw"]:
@@ -1109,7 +1148,7 @@ def enter(sub, sym, sg):
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
               "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry")),
               "pvEodPw": sg.get("pw") if sg.get("setup") == "pvlong" and sg.get("pvEod") else None,
-              "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2)}
+              "fvgExit": bool(cfg.get("fvgExit")), "fvgAtr": float(cfg.get("fvgAtr") or 0.33)}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
         db.update(pk, f"BOT#{rec['id']}", {"proposal": p, "decision": "BUY", "strategyOnly": "wallwatch", "wallwatch": ww})
@@ -1462,12 +1501,14 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     stale = [x for x in sigs if x.get("v") and x["v"] != cur_v and x.get("status") != "open" and not x.get("botId")]
     sigs = [x for x in sigs if x not in stale]
     replay_misses = []
+    long_bars = None
     cut = "9999" if lab else dates[-45] if len(dates) > 45 else None   # lab: everything replayed
     if cut:                                            # longer view: the signals older than the stored 45 days, replayed
         try:
             import backtest
             data = backtest._ticker_data(sub, sym, len(dates) + 5, ccfg, False)
             if data:
+                long_bars = data["bars"]
                 extra = {**data["extra"], "misses": replay_misses}
                 old, _ = detect_retest(data["bars"], data["walls"], dates[0], ccfg, data["datr"], data["alerts"], None,
                                        data["vmap"], data["emap"], extra)
@@ -1500,8 +1541,8 @@ def chart(sub, sym, days=45, flow=True, lab=None):
         print("pw/vwap events failed", sym, e)
         pv = []
     try:
-        fz = fvg_zones(bars_all, float(ccfg.get("fvgMin") or 0.2))
-        fvg = [{k: z[k] for k in ("t", "type", "lo", "hi", "fillAt")} for z in fz
+        fz = fvg_zones(long_bars or bars_all, float(ccfg.get("fvgAtr") or 0.33))
+        fvg = [{k: z[k] for k in ("t", "type", "lo", "hi", "fillAt", "end")} for z in fz
                if dates and (z["fillAt"] is None or z["fillAt"][:10] >= dates[0])]
     except Exception as e:
         print("fvg failed", sym, e)

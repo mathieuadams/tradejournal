@@ -1349,10 +1349,10 @@ function fcSvg0(d, id, opts) {
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${x + 3}" y="${B + 16}" font-size="${fs}" fill="var(--muted)">${b.t.slice(5, 10)}</text>`; } });
   const pf = v => v.toFixed(v < 20 ? 3 : 2);
   if (LY.fvg && (d.fvg || []).length) {               // fair value gaps: from the middle candle to the candle that fills it
-    d.fvg.forEach(z => { if (z.hi < lo || z.lo > hi) return; const i0 = at(z.t); if (i0 == null) return;
+    d.fvg.forEach(z => { if (z.hi < lo || z.lo > hi) return; const i0 = z.t < bars[0].t ? 0 : at(z.t); if (i0 == null) return;   // formed before the view: from the left edge
       const i1 = z.fillAt ? at(z.fillAt) : n - 1, bull = z.type === 'bull', c = bull ? '#16a34a' : '#dc2626';
       const x0 = X(i0) - bw / 2, x1 = X(i1 == null ? n - 1 : i1) + bw / 2, y0 = Y(Math.min(hi, z.hi)), y1 = Y(Math.max(lo, z.lo));
-      g += `<rect x="${x0}" y="${y0}" width="${Math.max(2, x1 - x0)}" height="${Math.max(1, y1 - y0)}" fill="${c}" fill-opacity="${z.fillAt ? .08 : .16}" stroke="${c}" stroke-opacity=".45" stroke-width="1" ${z.fillAt ? 'stroke-dasharray="3 2"' : ''}><title>${esc(`${bull ? 'Bullish' : 'Bearish'} FVG ${z.lo}–${z.hi} · ${z.t.replace('T', ' ').slice(5)}${z.fillAt ? ` · filled ${z.fillAt.replace('T', ' ').slice(5)}` : ' · still open'}`)}</title></rect>`; });
+      g += `<rect x="${x0}" y="${y0}" width="${Math.max(2, x1 - x0)}" height="${Math.max(1, y1 - y0)}" fill="${c}" fill-opacity="${z.fillAt ? .08 : .16}" stroke="${c}" stroke-opacity=".45" stroke-width="1" ${z.fillAt ? 'stroke-dasharray="3 2"' : ''}><title>${esc(`${bull ? 'Bullish' : 'Bearish'} FVG ${z.lo}–${z.hi} · ${z.t.replace('T', ' ').slice(5)}${z.fillAt ? ` · ${z.end === 'replaced' ? 'replaced by a newer gap' : 'closed through'} ${z.fillAt.replace('T', ' ').slice(5)}` : ' · still open'}`)}</title></rect>`; });
   }
   bars.forEach((b, i) => { const up = b.c >= b.o, c = up ? 'var(--gain)' : 'var(--loss)', x = X(i);
     const tip = `<title>${esc(b.t.replace('T', ' ').slice(5))} ET · O ${pf(b.o)} H ${pf(b.h)} L ${pf(b.l)} C ${pf(b.c)} (${b.c >= b.o ? '+' : ''}${((b.c / b.o - 1) * 100).toFixed(2)}%)</title>`;
@@ -1511,6 +1511,9 @@ function fcSvg0(d, id, opts) {
       if (sg.kind === 'retest' && sg.armedAt) { const ia = at(sg.armedAt); if (ia != null && sg.level >= lo && sg.level <= hi) { const xa2 = X(ia), yl = Y(sg.level);
         g += `<line x1="${xa2}" x2="${xa}" y1="${yl}" y2="${yl}" stroke="var(--coach,#5b5bd6)" stroke-width="1.5" stroke-dasharray="3 3"><title>Waiting for the retest of the ${esc(sg.levelName || 'level')} ${sg.level}</title></line>
           <text x="${xa2}" y="${yl - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">⚑ ${money(sg.armPremium || 0, false)} calls${sg.armX ? ` · ${sg.armX}× usual` : ''}</text>`; } }
+      if (sg.fvgZone && sg.fvgZone.hi >= lo && sg.fvgZone.lo <= hi) { const iz = sg.fvgZone.t < bars[0].t ? 0 : at(sg.fvgZone.t);
+        if (iz != null) { const y0 = Y(Math.min(hi, sg.fvgZone.hi)), y1 = Y(Math.max(lo, sg.fvgZone.lo)), x0 = X(iz) - bw / 2;
+          g += `<rect x="${x0}" y="${y0}" width="${Math.max(2, xa - x0)}" height="${Math.max(1, y1 - y0)}" fill="#16a34a" fill-opacity=".22" stroke="#15803d" stroke-width="1.5"><title>${esc(`Bullish FVG used by the entry ${sg.at.replace('T', ' ').slice(5)}: ${sg.fvgZone.lo}–${sg.fvgZone.hi}, formed ${sg.fvgZone.t.replace('T', ' ').slice(5)}`)}</title></rect>`; } }
       if (sg.scaled) { const ip = at(sg.scaled.at); if (ip != null && sg.scaled.px >= lo && sg.scaled.px <= hi) { const xp = X(ip), yp = Y(sg.scaled.px);
         g += `<circle cx="${xp}" cy="${yp}" r="5.5" fill="var(--gain)" stroke="var(--surface)" stroke-width="1.5"><title>${esc(`Sold ${Math.round(sg.scaled.frac * 100)}% at ${sg.scaled.px} (${sg.scaled.at.replace('T', ' ').slice(5)}) · +${((sg.scaled.px / sg.entry - 1) * 100).toFixed(2)}%${sg.scaleBE ? ' · stop of the rest moved to the entry' : ''}`)}</title></circle>
           <text x="${xp + 7}" y="${yp - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--gain)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${Math.round(sg.scaled.frac * 100)}%</text>`; } }
@@ -2474,7 +2477,7 @@ const WW_RULES = [
   ['spyUp', 'Entry', 'SPY trend up', 'SPY above its close of 6 sessions ago (the TOS ttmTrend of SPY)'],
   ['kcNotExt', 'Entry', 'Under upper Keltner', 'The entry candle closes under the upper Keltner band (not stretched)'],
   ['orbAbove', 'Entry', 'Above ORB high', 'The entry candle closes above the opening range high (09:30–10:30 candle); no entry in the first hour'],
-  ['fvgOn', 'Entry', 'In bullish FVG', 'The entry candle must trade into an open bullish fair value gap (3-candle gap of at least this × ATR, not filled yet) and close above its bottom', ['ww-fvgm', 'fvgMin', 0.05, 3.2, 'ATR', 0.2]],
+  ['fvgOn', 'Entry', 'In bullish FVG', 'TOS FVG: the entry candle trades into the open bullish fair value gap (hourly 3-candle gap larger than this × the 20-day average daily range; the newest gap replaces the older one; gone once a candle closes under it) and closes above its bottom', ['ww-fvgm', 'fvgAtr', 0.01, 3.2, '× daily ATR', 0.33]],
   ['noAboveCW', 'Entry', 'Not above CW', 'No entry when the candle opens or closes above the call wall'],
   ['cwRoomOn', 'Entry', 'Room to CW', 'No entry when the close is less than this × ATR under the call wall', ['ww-cwr', 'cwRoom', 0.25, 3.6, 'ATR', 1]],
   ['earnOn', 'Entry', 'Earnings', 'No entry within this many days of earnings', ['ww-earn', 'earnDays', 1, 3.2, 'd', 10]],
@@ -2487,7 +2490,7 @@ const WW_RULES = [
   ['kcRide', 'Exit', 'Keltner ride', 'An hourly close above the upper Keltner band starts a ride: the call wall target and the other exits wait, and the trade is sold at the first daily close under the upper band, the same day included (the stop still applies).'],
   ['cwLost', 'Exit', 'Back under CW', 'After an hourly close above the call wall, sell at the first daily close back under it'],
   ['dpLost', 'Exit', 'Back under dark pool', 'After an hourly close above one of the top 5 dark pool levels (above your entry), sell at the first daily close back under the highest one passed'],
-  ['fvgExit', 'Exit', 'New bearish FVG', 'Sell at the close of the hourly candle that completes a new bearish fair value gap after the entry (its high under the low of two candles before, gap at least the FVG size × ATR)'],
+  ['fvgExit', 'Exit', 'New bearish FVG', 'Sell at the close of the hourly candle that completes a new bearish fair value gap after the entry (TOS definition: its high under the low of two candles before by more than the FVG size × daily ATR)'],
   ['scaleOn', 'Exit', 'Sell part at', 'Strategy lab only: sell part of the position when price reaches the entry + this many R (R = entry − stop), the rest keeps the other exits', ['ww-scr', 'scaleR', 0.25, 3.2, 'R', 1], ['ww-scp', 'scalePct', 5, 3.2, '%', 50]],
   ['scaleBE', 'Exit', 'Rest to breakeven', 'Strategy lab only: after the partial sale, the stop of the rest moves up to the entry price'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
@@ -2525,7 +2528,7 @@ function wwParams(compact) {
     <label ${lab} title="A candle retests the support when its low comes within this × the 30-day ATR of it (at least 0.3%)">retest zone ${inp('ww-zone', c.retestZone ?? 0.25, 0.05, 4.6)} ATR</label>
     <label ${lab} title="The VWAP restarts on the hourly candle with the highest volume of this many trading days">VWAP reset ${inp('ww-vwd', c.vwapDays ?? 10, 1, 3.2)} days</label>
     <label ${lab} title="Keltner channel: EMA of the close ± multiplier × EMA of the true range (hourly candles)">Keltner ${inp('ww-kcl', c.kcLen ?? 21, 1, 3.2)} × ${inp('ww-kcm', c.kcMult ?? 3, 0.5, 3)}</label>
-    <label ${lab} title="In bullish FVG rule: a candle whose low comes within this × ATR above the gap also counts">FVG margin ${inp('ww-fvgn', c.fvgNear ?? 0.25, 0.05, 3.6)} ATR</label></div>
+    <label ${lab} title="In bullish FVG rule: a candle whose low comes within this × the daily ATR above the gap also counts">FVG margin ${inp('ww-fvgn', c.fvgNearD ?? 0.05, 0.01, 3.6)} × daily ATR</label></div>
     ${grp('Entry')}${grp('Exit')}
     <div><button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 12px">Apply</button>
     <button class="btn" data-wwallrules style="font-size:.75rem;padding:1px 9px">${S.wwAllRules ? 'Hide unused rules' : `Show all rules (${hidden} hidden, all OFF)`}</button>
@@ -2535,7 +2538,7 @@ async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
   const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, retestSetup: true, ...wwSwState(),
     retestZone: num('#ww-zone'), cwRoom: num('#ww-cwr'), vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), emaLen: num('#ww-emal'), kcLen: num('#ww-kcl'), kcMult: num('#ww-kcm'),
-    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf'), relMult: num('#ww-relx'), fvgMin: num('#ww-fvgm'), fvgNear: num('#ww-fvgn') };
+    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf'), relMult: num('#ww-relx'), fvgAtr: num('#ww-fvgm'), fvgNearD: num('#ww-fvgn') };
   try { S.ww = { ...(S.ww || {}), ...(await api('/bot/wallwatch', { method: 'PUT', body })) }; } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
   if (where === 'chart') { wwTkFill(fcfSymbol()); toast('Recomputing this chart now, every ticker in the background'); }
@@ -2680,12 +2683,13 @@ function labCfg() {
     S.lab = Object.fromEntries([...WW_RULES.map(([k]) => [k, c[k] ?? (WW_DEF_ON[k] ?? true)]),
       ...WW_RULES.filter(r => r[4]).map(r => [r[4][1], c[r[4][1]] ?? r[4][5]]),
       ...WW_RULES.filter(r => r[5]).map(r => [r[5][1], c[r[5][1]] ?? r[5][5]]),
-      ...['retestMin', 'retestDays', 'retestZone', 'vwapDays', 'kcLen', 'kcMult', 'fvgNear'].map(k => [k, c[k] ?? (k === 'fvgNear' ? 0.25 : undefined)])].filter(([, v]) => v !== undefined)); }
-  if (S.lab && S.lab.fvgNear === undefined) S.lab.fvgNear = 0.25;
+      ...['retestMin', 'retestDays', 'retestZone', 'vwapDays', 'kcLen', 'kcMult', 'fvgNearD'].map(k => [k, c[k] ?? (k === 'fvgNearD' ? 0.05 : undefined)])].filter(([, v]) => v !== undefined)); }
+  if (S.lab && S.lab.fvgNearD === undefined) S.lab.fvgNearD = 0.05;
+  if (S.lab && S.lab.fvgAtr === undefined) S.lab.fvgAtr = 0.33;
   return S.lab;
 }
 const labLive = () => { const c = (S.ww && S.ww.config) || {}, L = labCfg() || {};
-  const def = k => { const r = WW_RULES.find(x => x[0] === k); if (r) return WW_DEF_ON[k] ?? true; const f = WW_RULES.find(x => x[4] && x[4][1] === k); if (f) return f[4][5]; const f2 = WW_RULES.find(x => x[5] && x[5][1] === k); return f2 ? f2[5][5] : k === 'fvgNear' ? 0.25 : undefined; };
+  const def = k => { const r = WW_RULES.find(x => x[0] === k); if (r) return WW_DEF_ON[k] ?? true; const f = WW_RULES.find(x => x[4] && x[4][1] === k); if (f) return f[4][5]; const f2 = WW_RULES.find(x => x[5] && x[5][1] === k); return f2 ? f2[5][5] : k === 'fvgNearD' ? 0.05 : undefined; };
   return Object.keys(L).filter(k => L[k] !== undefined && String(L[k]) !== String(c[k] ?? def(k))).length; };
 async function loadLabChart(sym) {
   const k = fcKey('ww-lab-' + sym); S.fcBusy[k] = true; if (route() === 'botchart') render();
@@ -2716,7 +2720,7 @@ function labPanel() {
     <label ${lab}>call alert ≥ $<input data-labnum="retestMin" data-scale="1000" type="number" step="50" min="0" value="${Math.round((L.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K</label>
     <label ${lab}>wait ${inp('retestDays', 1, 3)} days</label><label ${lab}>retest zone ${inp('retestZone', 0.05, 4.6)} ATR</label>
     <label ${lab}>VWAP reset ${inp('vwapDays', 1, 3.2)} days</label><label ${lab}>Keltner ${inp('kcLen', 1, 3.2)} × ${inp('kcMult', 0.5, 3)}</label>
-    <label ${lab} title="In bullish FVG rule: a candle whose low comes within this × ATR above the gap also counts">FVG margin ${inp('fvgNear', 0.05, 3.6)} ATR</label></div>
+    <label ${lab} title="In bullish FVG rule: a candle whose low comes within this × the daily ATR above the gap also counts">FVG margin ${inp('fvgNearD', 0.01, 3.6)} × daily ATR</label></div>
     ${grp('Entry')}${grp('Exit')}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn coachbtn" data-labapply style="font-size:.8rem;padding:1px 12px">Redraw</button>
     <button class="btn" data-labtest ${S.labTest && S.labTest.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px" title="These settings vs your live settings, on every ticker of the watchlist">${S.labTest && S.labTest.running ? 'Testing…' : 'Test on all tickers'}</button>
