@@ -1219,6 +1219,9 @@ def _wallwatch_exit(sub, rec, p):
         r = _keltner_ride(sub, rec, p, ww, last, since, now, dte)
         if r is not False:
             return r                                  # an exit, or None while riding / waiting for the close
+    if ww.get("pvEodPw") and str(ww.get("signalAt") or "")[:10] == now.strftime("%Y-%m-%d") \
+            and now.hour * 60 + now.minute >= 15 * 60 + 50 and last["c"] < float(ww["pvEodPw"]):
+        return f"entry day closing under the put wall {ww['pvEodPw']} ({last['c']:.2f})"
     if ww.get("flipExit") and ww.get("aboveFlipAtEntry") and now.hour * 60 + now.minute >= 15 * 60 + 50:
         try:                                           # closing under today's gamma flip: out before the bell
             import flowdata

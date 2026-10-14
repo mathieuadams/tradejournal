@@ -29,7 +29,10 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "vwapOn": False, "emaOn": False, "emaLen": 20, "stopOn": True, "trailOn": True, "targetOn": True,
           "vwapExit": False, "emaExit": False, "emaOverVwap": False,
           "spyUp": False, "kcNotExt": False, "orbAbove": False, "kcLen": 21, "kcMult": 3.0,
-          "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False,
+          # pvSetup: the VWAP reset on the put wall strategy replaces the flow retest (LONG signal of pw_vwap_events)
+          # pvEod: with it, the entry day must close above the put wall, else sold at that close
+          "pvSetup": True, "pvEod": True}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -55,7 +58,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod")
 
 
 def save_config(sub, body):
@@ -495,6 +498,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     is the entry. An hourly close under the stop before the entry ends the watch. Target: the call wall of the day if it's above the entry (minus the buffer), else trailing only.
     Returns (signals, current watch or None)."""
     P = {**PARAMS, **(cfg or {})}
+    if P.get("pvSetup"):                               # the VWAP reset on the put wall strategy
+        return detect_pvlong(bars, walls, start, P, datr, earnings, vwap_map, ema_map, extra), None
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
     vmin, ndays = float(P.get("retestMin") or 500000), int(P.get("retestDays") or 5)
     zone_atr = float(P.get("retestZone") if P.get("retestZone") is not None else 0.25)
@@ -666,7 +671,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     return sigs, watch
 
 
-def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None, kc=None, dpl=None, start=None):
+def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None, kc=None, dpl=None, start=None, earnings=None):
     """LONG signals of pw_vwap_events traded with the strategy's exits: entry at the close of the reset candle, stop
     stopAtr x ATR under the put wall, target the call wall (minus the buffer), and the same switches (Keltner ride,
     close under the flip, back under CW / dark pool, VWAP / EMA exits, trailing). Plus: the entry day must close above
@@ -682,6 +687,11 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
     vwap = vwap or anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[0]
     ema = ema or _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     dpl = dpl or {}
+    earn_days = int(P.get("earnDays") if P.get("earnDays") is not None else 10) if on("earnOn") else 0
+    try:
+        earn_d = datetime.strptime(str(earnings)[:10], "%Y-%m-%d") if earnings and earn_days else None
+    except ValueError:
+        earn_d = None
     out, busy = [], -1
     for e in events:
         i = e["i"]
@@ -697,14 +707,21 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
         if st >= b["c"]:
             continue                                   # closed under the stop already
         tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
-        s = {"at": b["t"][:16], "kind": "pvlong", "entry": b["c"], "pw": e["pw"], "cw": cw, "target": tgt, "atr": round(a_, 4),
+        if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
+            continue                                   # earnings within the next N days: no entry
+        s = {"at": b["t"][:16], "kind": "retest", "setup": "pvlong", "level": e["pw"], "levelName": "put wall · VWAP reset",
+             "armedAt": None, "armPremium": 0, "entry": b["c"], "pw": e["pw"], "cw": cw, "target": tgt, "atr": round(a_, 4),
+             "flip": float(w["flip"]) if w.get("flip") else None, "flipChg": _flip_chg(walls, day), "v": version(P),
+             "o": b["o"], "h": b["h"], "l": b["l"],
              "stop": st if on("stopOn") else 0.0, "stop0": st, "status": "open", "last": b["c"], "lastAt": b["t"][:16],
              "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])),
+             "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"), "cwLost": on("cwLost"), "dpLost": on("dpLost"),
+             "pvEod": on("pvEod"), "kc": list(kc[i]) if kc[i] else None,
              "kcPos": e.get("kcPos"), "above": e.get("above"), "green": e.get("green")}
         j = i
         last_of_day = lambda k: k + 1 == len(bars) or bars[k + 1]["t"][:10] != bars[k]["t"][:10]
-        if last_of_day(i) and i + 1 < len(bars) and b["c"] < e["pw"]:
+        if on("pvEod") and last_of_day(i) and i + 1 < len(bars) and b["c"] < e["pw"]:
             s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])   # entry candle is the last of the day, closed under the PW
         for j in range(i + 1, len(bars)):
             if s["status"] != "open":
@@ -713,14 +730,33 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
                   vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dpl.get(bars[j]["t"][:10]))
             if s["status"] != "open":
                 break
-            if bars[j]["t"][:10] == day and last_of_day(j) and bars[j]["c"] < e["pw"]:
+            if on("pvEod") and bars[j]["t"][:10] == day and last_of_day(j) and bars[j]["c"] < e["pw"]:
                 s.update(status="eodpw", exitAt=bars[j]["t"][:16], exit=bars[j]["c"])   # entry day closed under the put wall: out
                 break
-        busy = j
+        busy = j if s["status"] != "open" else len(bars)
         s["pct"], s["R"] = _result(s)
+        s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
+        s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         s["days"] = len({x["t"][:10] for x in bars[i:j + 1]}) - 1
         out.append(s)
     return out
+
+
+def detect_pvlong(bars, walls, start=None, cfg=None, datr=None, earnings=None, vwap_map=None, ema_map=None, extra=None):
+    """The VWAP reset on the put wall strategy, in the flow retest's signal format (kind "retest", setup "pvlong").
+    extra["vwResets"]: timestamps of the VWAP reset candles computed on a longer history (else from these bars)."""
+    P = {**PARAMS, **(cfg or {})}
+    extra = extra or {}
+    kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
+    vwap = [vwap_map.get(b["t"][:16]) for b in bars] if vwap_map else None
+    ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else None
+    if extra.get("vwResets") is not None:
+        rs = set(extra["vwResets"])
+        resets = [i for i, b in enumerate(bars) if b["t"][:16] in rs]
+    else:
+        resets = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[1]
+    ev = pw_vwap_events(bars, walls, resets, kc=kc)
+    return pv_long_trades(bars, walls, ev, P, datr, vwap=vwap, ema=ema, kc=kc, dpl=extra.get("dpLevels"), start=start, earnings=earnings)
 
 
 def _walls(key, sym, dates, today):
@@ -773,7 +809,7 @@ def check_ticker(sub, key, sym, days, now, since=None):
                 earn = autotrader.parse_earn(autotrader.earn_for(autotrader.settings(sub), sym)[0])[0]
             except Exception as e:
                 print("earnings lookup failed", sym, e)
-            vw_all, _ = anchored_vwap(bars, int(cfg.get("vwapDays") or VWAP_DAYS))
+            vw_all, vres_full = anchored_vwap(bars, int(cfg.get("vwapDays") or VWAP_DAYS))
             vmap = {b["t"][:16]: v for b, v in zip(bars, vw_all)}
             emap = {b["t"][:16]: v for b, v in zip(bars, _ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20)))}
             kmap = {b["t"][:16]: v for b, v in zip(bars, keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3)))}
@@ -797,7 +833,8 @@ def check_ticker(sub, key, sym, days, now, since=None):
                 except Exception as e:
                     print("dark pool levels failed", sym, e)
             rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap, emap,
-                                      {"kc": kmap, "spy": spy, "skewPct": skp, "misses": misses, "dpLevels": dpm})
+                                      {"kc": kmap, "spy": spy, "skewPct": skp, "misses": misses, "dpLevels": dpm,
+                                       "vwResets": [bars[i]["t"][:16] for i in vres_full if i > 0]})
             try:
                 db.put({"PK": db.upk(sub), "SK": f"WWMISS#{sym}", "misses": misses[-400:], "v": version(cfg), "at": iso(now_ny())})
             except Exception as e:
@@ -950,7 +987,8 @@ def enter(sub, sym, sg):
               "vwapDays": int(cfg.get("vwapDays") or VWAP_DAYS),
               "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
-              "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry"))}
+              "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry")),
+              "pvEodPw": sg.get("pw") if sg.get("setup") == "pvlong" and sg.get("pvEod") else None}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
         db.update(pk, f"BOT#{rec['id']}", {"proposal": p, "decision": "BUY", "strategyOnly": "wallwatch", "wallwatch": ww})
@@ -1062,7 +1100,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
 
 
 def summarize(sigs):
-    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail", "flip")]
+    done = [s for s in sigs if s.get("status") not in (None, "open")]
     hit = [s for s in done if s["status"] == "target"]
     avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None
     summary = {"signals": len(sigs), "open": len(sigs) - len(done), "closed": len(done), "targets": len(hit),
@@ -1085,7 +1123,7 @@ def view(sub):
             and (not FLOW_ONLY or s.get("kind") == "retest")]
     summary = summarize(sigs)
     by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip", "merged", "retest")}
-    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail", "flip")]
+    done = [s for s in sigs if s.get("status") not in (None, "open")]
     by = {}
     for s in done:
         b = by.setdefault(s["symbol"], {"symbol": s["symbol"], "n": 0, "targets": 0, "total": 0.0})
@@ -1332,7 +1370,7 @@ def chart(sub, sym, days=45, flow=True):
         kc_all = keltner(bars_all, int(ccfg.get("kcLen") or 21), float(ccfg.get("kcMult") or 3))
         pv = [{k: e.get(k) for k in ("t", "pw", "cw", "side", "above", "green", "o", "h", "l", "c", "kcPos", "kcHalf", "kcM", "kcU", "kcL")}
               for e in pw_vwap_events(bars_all, stored, vres_all, kc=kc_all)
-              if e["side"] and e["t"][:10] >= (dates[0] if dates else "")]
+              if e["side"] == "long" and e["t"][:10] >= (dates[0] if dates else "")]
     except Exception as e:
         print("pw/vwap events failed", sym, e)
         pv = []

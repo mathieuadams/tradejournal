@@ -86,6 +86,8 @@ from parsers import ParseError, parse_csv  # noqa: E402
 
 SUB = "user-123"
 import autotrader  # noqa: E402
+import wallwatch as _ww0  # noqa: E402
+_ww0.PARAMS["pvSetup"] = False   # the flow retest tests below; the VWAP reset strategy is tested on its own
 autotrader.DEFAULTS["aiCheck"] = False     # the order tests below don't exercise Claude's chart check (see test_ai_chart_check)
 
 
@@ -2778,6 +2780,11 @@ def test_pw_vwap_study():
     tr2 = wallwatch.pv_long_trades(tb2, tw, [{"i": 3, "t": tb2[3]["t"], "side": "long", "pw": 100}],
                                    {"tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
     assert tr2[0]["status"] == "eodpw" and tr2[0]["exit"] == 99.8
+    # the strategy switch: detect_retest runs the VWAP reset strategy, signals in the retest format
+    sg3, w3 = wallwatch.detect_retest(tb, tw, None, {"pvSetup": True, "tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False,
+                                                    "trailOn": False, "earnOn": False}, None, None, None, None, None,
+                                      {"kc": {b["t"][:16]: (110, 130, 90) for b in tb}, "vwResets": [tb[3]["t"]]})
+    assert w3 is None and len(sg3) == 1 and sg3[0]["kind"] == "retest" and sg3[0]["setup"] == "pvlong" and sg3[0]["status"] == "target"
     today = now_ny().date()
     days, d = [], today - dt.timedelta(days=200)
     while d < today:
