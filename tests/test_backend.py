@@ -2799,6 +2799,10 @@ def test_pw_vwap_study():
     near[3] = dict(near[3], l=103.2)                 # 0.2 above the top of the gap
     assert wallwatch.fvg_bull_touch(near, fz)[3] is None
     assert wallwatch.fvg_bull_touch(near, fz, 0.25, [1.0] * 5)[3] is fz[0]
+    # a gap not filled after max_days sessions expires
+    eb = fb[:4] + [{"t": f"2026-10-{d:02d}T10:30", "o": 104, "h": 105, "l": 103.5, "c": 104} for d in (2, 3, 6)]
+    ez = wallwatch.fvg_zones(eb, 0.1, [1.0] * len(eb), max_days=2)
+    assert ez[0]["end"] == "expired" and ez[0]["fillAt"] == "2026-10-06T10:30"
     # exit on a new bearish FVG: candle 4's high under candle 2's low
     xb = [{"t": f"2026-10-01T{9 + k}:30", "o": c, "h": h, "l": l, "c": c, "v": 1} for k, (h, l, c) in enumerate(
         [(101, 99, 100), (102, 100, 101), (103, 101, 102), (102, 99, 100), (100.5, 98, 99), (100, 97, 98)])]
