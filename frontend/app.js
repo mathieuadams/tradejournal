@@ -2732,6 +2732,7 @@ function labTestBox() {
 function vLab() {
   const list = wwTickers(), sym = labSymbol(), id = 'ww-lab-' + sym, k = fcKey(id);
   if (!S.ww) return '<p class="loading">Loading the watchlist…</p>';
+  if (S.ww.error) return `<div class="errbox">${esc(S.ww.error)}</div>`;
   if (!labCfg()) return '<p class="loading">Loading settings…</p>';
   const d = sym ? S.fc[k] : null;
   if (sym && !d && !S.fcBusy[k]) { S.fcBusy[k] = true; setTimeout(() => loadLabChart(sym), 0); }
@@ -3207,7 +3208,7 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
   }],
   botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }],
   botwatch: [vWatch, () => { if (!S.ww) loadWatch(); if (!S.rt && !S.rtBusy) loadRuleTest(); }],
-  botlab: [vLab, () => { if (!S.ww && !S.wwBusy) { S.wwBusy = true; loadWatch().finally(() => { S.wwBusy = false; }); } if (S.labTest === undefined) loadLabTest(); }],
+  botlab: [vLab, () => { if (!S.ww) loadWatch(); if (S.labTest === undefined) { S.labTest = null; loadLabTest(); } }],
   botchart: [vChartFull, () => { if (!S.tickers && !S.tkBusy) loadTickers();
     const h = document.querySelector('.fcf-head'), inf = document.querySelector('.fcf-info');      // fit the chart to what's left
     const hh = h ? h.offsetHeight : 0, ih = inf ? inf.offsetHeight + 8 : 0;
