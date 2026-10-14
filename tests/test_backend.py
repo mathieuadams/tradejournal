@@ -2795,6 +2795,16 @@ def test_pw_vwap_study():
     assert fz[0]["type"] == "bull" and fz[0]["lo"] == 101 and fz[0]["hi"] == 103 and fz[0]["fillI"] == 4
     ft = wallwatch.fvg_bull_touch(fb, fz)
     assert ft[3] is fz[0] and ft[2] is None and ft[4] is None
+    # exit on a new bearish FVG: candle 4's high under candle 2's low
+    xb = [{"t": f"2026-10-01T{9 + k}:30", "o": c, "h": h, "l": l, "c": c, "v": 1} for k, (h, l, c) in enumerate(
+        [(101, 99, 100), (102, 100, 101), (103, 101, 102), (102, 99, 100), (100.5, 98, 99), (100, 97, 98)])]
+    assert wallwatch.fvg_bear_new(xb, 0.1, [1.0] * 6) == [False, False, False, False, True, False]
+    st_ = {"at": xb[0]["t"], "entry": 100, "stop": 90, "stop0": 90, "status": "open", "fvgExit": True, "atr": 1}
+    for k in range(1, 6):
+        wallwatch._step(st_, xb[k], {}, 0, False, False, bear=wallwatch.fvg_bear_new(xb, 0.1, [1.0] * 6)[k])
+        if st_["status"] != "open":
+            break
+    assert st_["status"] == "fvg" and st_["exitAt"] == xb[4]["t"] and st_["exit"] == 99
     # wall regimes: labels per day, wall moves vs the previous day, forward moves from the close
     import backtest
     hb = [{"t": f"2026-09-{d:02d}T{h}:30", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100 + d} for d in range(1, 13) for h in (10, 11)]

@@ -1232,6 +1232,15 @@ def _wallwatch_exit(sub, rec, p):
             print("flip exit check failed", rec.get("symbol"), e)
     if p.get("underlyingTarget") and last["h"] >= float(p["underlyingTarget"]):
         return f"call wall {p['underlyingTarget']} reached ({last['h']:.2f})"
+    if ww.get("fvgExit"):                              # the last finished hourly candle completes a new bearish FVG
+        try:
+            import wallwatch
+            hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=30), now + timedelta(hours=1)) or [],
+                                    now.replace(tzinfo=None))
+            if len(hb) >= 3 and hb[-1]["t"][:16] >= since[:13] and wallwatch.fvg_bear_new(hb, float(ww.get("fvgMin") or 0.2))[-1]:
+                return f"new bearish FVG {hb[-1]['h']:.2f}–{hb[-3]['l']:.2f} on the {hb[-1]['t'][11:16]} candle"
+        except Exception as e:
+            print("fvg exit check failed", rec.get("symbol"), e)
     if ww.get("vwapExit") or ww.get("emaExit"):       # hourly close under the VWAP / EMA (last finished hourly candle)
         try:
             import wallwatch

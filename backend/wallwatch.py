@@ -37,7 +37,9 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # ticker's call alerts of the previous 30 days (unusual for THIS ticker); retestMin is the fallback with < 5 alerts
           "relFlow": True, "relMult": 3.0,
           # fvgOn: the entry candle must trade into an open bullish fair value gap (3-candle gap of at least fvgMin x ATR)
-          "fvgOn": False, "fvgMin": 0.2}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "fvgOn": False, "fvgMin": 0.2,
+          # fvgExit: sell at the close of the candle that completes a new bearish fair value gap after the entry
+          "fvgExit": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -63,7 +65,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit")
 
 
 def save_config(sub, body):
@@ -248,7 +250,7 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
-def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None):
+def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False):
     """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
     Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held).
     kcRide (kcu = upper Keltner band of this candle): an hourly close above the upper band starts a ride -> the target,
@@ -264,6 +266,9 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
         s["dlog"] = s["dlog"][-40:]
     if b["l"] <= s["stop"]:
         s.update(status="trail" if s.get("stops") else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
+        return
+    if s.get("fvgExit") and bear:                    # this candle completes a new bearish fair value gap: out at its close
+        s.update(status="fvg", exitAt=b["t"][:16], exit=b["c"])
         return
     if s.get("cwLost") or s.get("dpLost"):           # passed a level, then the day closes back under it: out
         lv = []
@@ -518,6 +523,15 @@ def fvg_zones(bars, min_atr=0.2, atr=None):
     return out
 
 
+def fvg_bear_new(bars, min_atr=0.2, atr=None):
+    """Per candle: True when it completes a bearish fair value gap (its high under the low of two candles before)."""
+    out = [False] * len(bars)
+    for z in fvg_zones(bars, min_atr, atr):
+        if z["type"] == "bear":
+            out[z["i"]] = True
+    return out
+
+
 def fvg_bull_touch(bars, zones):
     """Per candle: the open bullish FVG (formed before it, not filled before it) that its low trades into while it
     closes above the bottom of the gap, else None."""
@@ -608,6 +622,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     else:
         vwap, _ = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))
     fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr)) if on("fvgOn") else None
+    bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
     big = unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else \
         sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
     sigs, open_, watch, ai = [], None, None, 0
@@ -623,7 +638,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             ai += 1
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i],
-                  kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day))
+                  kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day), bear=bear[i])
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -716,7 +731,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
                  "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
                  "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
-                 "cwLost": on("cwLost"), "dpLost": on("dpLost"),
+                 "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"),
                  "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
             if P.get("fixR"):                          # backtest: fixed target at N x the risk
                 s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
@@ -735,7 +750,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
         for j in range(i0 + 1, len(bars)):
             _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j],
-                  kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]))
+                  kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j])
             if alt["status"] != "open":
                 break
         ap, ar = _result(alt)
@@ -767,6 +782,7 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
     except ValueError:
         earn_d = None
     fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr)) if on("fvgOn") else None
+    bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
     out, busy = [], -1
     for e in events:
         i = e["i"]
@@ -794,7 +810,7 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
              "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])),
              "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"), "cwLost": on("cwLost"), "dpLost": on("dpLost"),
-             "pvEod": on("pvEod"), "kc": list(kc[i]) if kc[i] else None,
+             "pvEod": on("pvEod"), "fvgExit": on("fvgExit"), "kc": list(kc[i]) if kc[i] else None,
              "kcPos": e.get("kcPos"), "above": e.get("above"), "green": e.get("green")}
         j = i
         last_of_day = lambda k: k + 1 == len(bars) or bars[k + 1]["t"][:10] != bars[k]["t"][:10]
@@ -804,7 +820,7 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
             if s["status"] != "open":
                 break
             _step(s, bars[j], walls, k_trail, flip_exit, is_last=last_of_day(j),
-                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dpl.get(bars[j]["t"][:10]))
+                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dpl.get(bars[j]["t"][:10]), bear=bear[j])
             if s["status"] != "open":
                 break
             if on("pvEod") and bars[j]["t"][:10] == day and last_of_day(j) and bars[j]["c"] < e["pw"]:
@@ -1065,7 +1081,8 @@ def enter(sub, sym, sg):
               "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
               "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry")),
-              "pvEodPw": sg.get("pw") if sg.get("setup") == "pvlong" and sg.get("pvEod") else None}
+              "pvEodPw": sg.get("pw") if sg.get("setup") == "pvlong" and sg.get("pvEod") else None,
+              "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2)}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
         db.update(pk, f"BOT#{rec['id']}", {"proposal": p, "decision": "BUY", "strategyOnly": "wallwatch", "wallwatch": ww})
