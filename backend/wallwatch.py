@@ -37,7 +37,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # ticker's call alerts of the previous 30 days (unusual for THIS ticker); retestMin is the fallback with < 5 alerts
           "relFlow": True, "relMult": 3.0,
           # fvgOn: the entry candle must trade into an open bullish fair value gap (3-candle gap of at least fvgMin x ATR)
-          "fvgOn": False, "fvgMin": 0.2,
+          "fvgOn": False, "fvgMin": 0.2, "fvgNear": 0.25,   # fvgNear: a low within this x ATR above the gap counts as a touch
           # fvgExit: sell at the close of the candle that completes a new bearish fair value gap after the entry
           "fvgExit": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
@@ -62,7 +62,7 @@ def version(cfg):
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
-            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}")
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}")
 
 
 SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit")
@@ -90,7 +90,7 @@ def save_config(sub, body):
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
             except (TypeError, ValueError):
                 pass
-    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "relMult", "fvgMin"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "relMult", "fvgMin", "fvgNear"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
@@ -532,14 +532,16 @@ def fvg_bear_new(bars, min_atr=0.2, atr=None):
     return out
 
 
-def fvg_bull_touch(bars, zones):
-    """Per candle: the open bullish FVG (formed before it, not filled before it) that its low trades into while it
-    closes above the bottom of the gap, else None."""
+def fvg_bull_touch(bars, zones, near=0.0, atr=None):
+    """Per candle: the open bullish FVG (formed before it, not filled before it) that its low trades into, or comes
+    within near x ATR above, while it closes above the bottom of the gap, else None."""
     out = [None] * len(bars)
     bulls = [z for z in zones if z["type"] == "bull"]
+    atr = atr or (atr14(bars) if near else [0] * len(bars))
     for j, b in enumerate(bars):
+        m = near * (atr[j] or 0)
         for z in bulls:
-            if z["i"] < j and (z["fillI"] is None or z["fillI"] >= j) and b["l"] <= z["hi"] and b["c"] > z["lo"]:
+            if z["i"] < j and (z["fillI"] is None or z["fillI"] >= j) and b["l"] <= z["hi"] + m and b["c"] > z["lo"]:
                 out[j] = z
                 break
     return out
@@ -621,7 +623,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         vwap = [vwap_map.get(b["t"][:16]) for b in bars]
     else:
         vwap, _ = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))
-    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr)) if on("fvgOn") else None
+    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr),
+                           float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
     bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
     big = unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else \
         sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
@@ -702,7 +705,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 miss(b, "SPY trending down")
                 continue                               # rule on: SPY must be up over the last 6 sessions
             if on("fvgOn") and not fvg_t[i]:
-                miss(b, "not in an open bullish FVG")
+                miss(b, f"not in (or within {float(P.get('fvgNear') if P.get('fvgNear') is not None else 0.25):g} ATR of) an open bullish FVG")
                 continue                               # rule on: the candle must trade into an open bullish fair value gap
             if on("kcNotExt") and not (kc[i] and b["c"] < kc[i][1]):
                 miss(b, "close above the upper Keltner band")
@@ -781,7 +784,8 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
         earn_d = datetime.strptime(str(earnings)[:10], "%Y-%m-%d") if earnings and earn_days else None
     except ValueError:
         earn_d = None
-    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr)) if on("fvgOn") else None
+    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr),
+                           float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
     bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
     out, busy = [], -1
     for e in events:

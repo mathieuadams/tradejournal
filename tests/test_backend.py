@@ -2795,6 +2795,10 @@ def test_pw_vwap_study():
     assert fz[0]["type"] == "bull" and fz[0]["lo"] == 101 and fz[0]["hi"] == 103 and fz[0]["fillI"] == 4
     ft = wallwatch.fvg_bull_touch(fb, fz)
     assert ft[3] is fz[0] and ft[2] is None and ft[4] is None
+    near = [dict(x) for x in fb]
+    near[3] = dict(near[3], l=103.2)                 # 0.2 above the top of the gap
+    assert wallwatch.fvg_bull_touch(near, fz)[3] is None
+    assert wallwatch.fvg_bull_touch(near, fz, 0.25, [1.0] * 5)[3] is fz[0]
     # exit on a new bearish FVG: candle 4's high under candle 2's low
     xb = [{"t": f"2026-10-01T{9 + k}:30", "o": c, "h": h, "l": l, "c": c, "v": 1} for k, (h, l, c) in enumerate(
         [(101, 99, 100), (102, 100, 101), (103, 101, 102), (102, 99, 100), (100.5, 98, 99), (100, 97, 98)])]

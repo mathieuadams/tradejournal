@@ -2518,7 +2518,8 @@ function wwParams(compact) {
     <label ${lab} title="How long the ticker waits for the retest after the alert">wait ${inp('ww-rtdays', c.retestDays ?? 5, 1, 3)} days</label>
     <label ${lab} title="A candle retests the support when its low comes within this × the 30-day ATR of it (at least 0.3%)">retest zone ${inp('ww-zone', c.retestZone ?? 0.25, 0.05, 4.6)} ATR</label>
     <label ${lab} title="The VWAP restarts on the hourly candle with the highest volume of this many trading days">VWAP reset ${inp('ww-vwd', c.vwapDays ?? 10, 1, 3.2)} days</label>
-    <label ${lab} title="Keltner channel: EMA of the close ± multiplier × EMA of the true range (hourly candles)">Keltner ${inp('ww-kcl', c.kcLen ?? 21, 1, 3.2)} × ${inp('ww-kcm', c.kcMult ?? 3, 0.5, 3)}</label></div>
+    <label ${lab} title="Keltner channel: EMA of the close ± multiplier × EMA of the true range (hourly candles)">Keltner ${inp('ww-kcl', c.kcLen ?? 21, 1, 3.2)} × ${inp('ww-kcm', c.kcMult ?? 3, 0.5, 3)}</label>
+    <label ${lab} title="In bullish FVG rule: a candle whose low comes within this × ATR above the gap also counts">FVG margin ${inp('ww-fvgn', c.fvgNear ?? 0.25, 0.05, 3.6)} ATR</label></div>
     ${grp('Entry')}${grp('Exit')}
     <div><button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 12px">Apply</button>
     <button class="btn" data-wwallrules style="font-size:.75rem;padding:1px 9px">${S.wwAllRules ? 'Hide unused rules' : `Show all rules (${hidden} hidden, all OFF)`}</button>
@@ -2528,7 +2529,7 @@ async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
   const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, retestSetup: true, ...wwSwState(),
     retestZone: num('#ww-zone'), cwRoom: num('#ww-cwr'), vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), emaLen: num('#ww-emal'), kcLen: num('#ww-kcl'), kcMult: num('#ww-kcm'),
-    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf'), relMult: num('#ww-relx'), fvgMin: num('#ww-fvgm') };
+    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf'), relMult: num('#ww-relx'), fvgMin: num('#ww-fvgm'), fvgNear: num('#ww-fvgn') };
   try { S.ww = { ...(S.ww || {}), ...(await api('/bot/wallwatch', { method: 'PUT', body })) }; } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
   if (where === 'chart') { wwTkFill(fcfSymbol()); toast('Recomputing this chart now, every ticker in the background'); }
@@ -2672,7 +2673,8 @@ function labCfg() {
   if (!S.lab) { const c = (S.ww && S.ww.config) || {}; if (!S.ww) return null;
     S.lab = Object.fromEntries([...WW_RULES.map(([k]) => [k, c[k] ?? (WW_DEF_ON[k] ?? true)]),
       ...WW_RULES.filter(r => r[4]).map(r => [r[4][1], c[r[4][1]] ?? r[4][5]]),
-      ...['retestMin', 'retestDays', 'retestZone', 'vwapDays', 'kcLen', 'kcMult'].map(k => [k, c[k]])].filter(([, v]) => v !== undefined)); }
+      ...['retestMin', 'retestDays', 'retestZone', 'vwapDays', 'kcLen', 'kcMult', 'fvgNear'].map(k => [k, c[k] ?? (k === 'fvgNear' ? 0.25 : undefined)])].filter(([, v]) => v !== undefined)); }
+  if (S.lab && S.lab.fvgNear === undefined) S.lab.fvgNear = 0.25;
   return S.lab;
 }
 const labLive = () => { const c = (S.ww && S.ww.config) || {}, L = labCfg() || {};
@@ -2706,7 +2708,8 @@ function labPanel() {
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Flow</b>
     <label ${lab}>call alert ≥ $<input data-labnum="retestMin" data-scale="1000" type="number" step="50" min="0" value="${Math.round((L.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K</label>
     <label ${lab}>wait ${inp('retestDays', 1, 3)} days</label><label ${lab}>retest zone ${inp('retestZone', 0.05, 4.6)} ATR</label>
-    <label ${lab}>VWAP reset ${inp('vwapDays', 1, 3.2)} days</label><label ${lab}>Keltner ${inp('kcLen', 1, 3.2)} × ${inp('kcMult', 0.5, 3)}</label></div>
+    <label ${lab}>VWAP reset ${inp('vwapDays', 1, 3.2)} days</label><label ${lab}>Keltner ${inp('kcLen', 1, 3.2)} × ${inp('kcMult', 0.5, 3)}</label>
+    <label ${lab} title="In bullish FVG rule: a candle whose low comes within this × ATR above the gap also counts">FVG margin ${inp('fvgNear', 0.05, 3.6)} ATR</label></div>
     ${grp('Entry')}${grp('Exit')}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn coachbtn" data-labapply style="font-size:.8rem;padding:1px 12px">Redraw</button>
     <button class="btn" data-labtest ${S.labTest && S.labTest.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px" title="These settings vs your live settings, on every ticker of the watchlist">${S.labTest && S.labTest.running ? 'Testing…' : 'Test on all tickers'}</button>
