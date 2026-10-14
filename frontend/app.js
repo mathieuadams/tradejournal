@@ -2664,7 +2664,9 @@ function wwRegime(rg) {
 }
 /* ---------- strategy lab: try settings on the chart without touching the live bot ---------- */
 S.lab = S.lab || null;
+function labSave() { try { localStorage.setItem('labCfg', JSON.stringify(S.lab || {})); } catch (e) {} }
 function labCfg() {
+  if (!S.lab) { try { const v = JSON.parse(localStorage.getItem('labCfg') || 'null'); if (v && Object.keys(v).length) S.lab = v; } catch (e) {} }
   if (!S.lab) { const c = (S.ww && S.ww.config) || {}; if (!S.ww) return null;
     S.lab = Object.fromEntries([...WW_RULES.map(([k]) => [k, c[k] ?? (WW_DEF_ON[k] ?? true)]),
       ...WW_RULES.filter(r => r[4]).map(r => [r[4][1], c[r[4][1]] ?? r[4][5]]),
@@ -2685,7 +2687,7 @@ async function loadLabTest() {
   clearTimeout(S.labPoll);
   if (S.labTest && S.labTest.running && route() === 'botlab') S.labPoll = setTimeout(loadLabTest, 15000);
 }
-function labRedraw() { const sym = labSymbol(); Object.keys(S.fc).filter(x => x.includes('ww-lab-')).forEach(x => { delete S.fc[x]; }); clearTimeout(S.labT); S.labT = setTimeout(() => loadLabChart(sym), 600); render(); }
+function labRedraw() { labSave(); const sym = labSymbol(); Object.keys(S.fc).filter(x => x.includes('ww-lab-')).forEach(x => { delete S.fc[x]; }); clearTimeout(S.labT); S.labT = setTimeout(() => loadLabChart(sym), 600); render(); }
 function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return t || l[0] || ''; }
 function labPanel() {
   const L = labCfg() || {}, lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
@@ -2705,9 +2707,9 @@ function labPanel() {
     ${grp('Entry')}${grp('Exit')}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn coachbtn" data-labapply style="font-size:.8rem;padding:1px 12px">Redraw</button>
     <button class="btn" data-labtest ${S.labTest && S.labTest.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px" title="These settings vs your live settings, on every ticker of the watchlist">${S.labTest && S.labTest.running ? 'Testing…' : 'Test on all tickers'}</button>
-    <button class="btn" data-labreset style="font-size:.8rem;padding:1px 10px">Reset to live</button>
-    <button class="btn" data-labsave ${diff ? '' : 'disabled'} style="font-size:.8rem;padding:1px 10px" title="Copy these settings to the live bot">Use for the live bot</button>
-    <span class="muted" style="font-size:.75rem">${diff ? `${diff} setting${diff === 1 ? '' : 's'} differ from live` : 'same as live'} · nothing here changes the live bot until you click “Use for the live bot”. ON/OFF redraws by itself; numbers on Redraw.</span></div></div>`;
+    <button class="btn" data-labreset style="font-size:.8rem;padding:1px 10px" title="Start over from a copy of the live settings (the live bot is not changed)">Copy live settings</button>
+
+    <span class="muted" style="font-size:.75rem">Lab only: these settings are kept apart and never change the live bot or its signals${diff ? ` · ${diff} differ from live` : ''}. ON/OFF redraws by itself; numbers on Redraw.</span></div></div>`;
 }
 function labStats(sigs) {
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
@@ -3233,7 +3235,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-labsave],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3304,13 +3306,9 @@ document.addEventListener('click', e => {
   if (el.hasAttribute('data-labapply')) { const L = labCfg();
     document.querySelectorAll('[data-labnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) L[i.dataset.labnum] = i.dataset.scale ? v * +i.dataset.scale : v; });
     labRedraw(); return; }
-  if (el.hasAttribute('data-labreset')) { S.lab = null; labRedraw(); return; }
+  if (el.hasAttribute('data-labreset')) { S.lab = null; try { localStorage.removeItem('labCfg'); } catch (e) {} labRedraw(); return; }
   if (el.hasAttribute('data-labtest')) {
     api('/bot/lab/test', { method: 'POST', body: { cfg: labCfg(), days: 250 } }).then(() => { S.labTest = { ...(S.labTest || {}), running: 'now' }; render(); setTimeout(loadLabTest, 15000); }).catch(err => toast(err.message));
-    return; }
-  if (el.hasAttribute('data-labsave')) {
-    if (!confirm('Copy the lab settings to the live bot? Every ticker is recomputed and the bot trades with them.')) return;
-    api('/bot/wallwatch', { method: 'PUT', body: { ...labCfg() } }).then(r => { S.ww = { ...(S.ww || {}), ...r }; S.lab = null; toast('Live bot now uses these settings'); return api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); }).catch(err => toast(err.message)).finally(render);
     return; }
   if (el.hasAttribute('data-regrun')) {
     api('/bot/wallwatch/regime', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250 } })
