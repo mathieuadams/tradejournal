@@ -931,6 +931,67 @@ def regime_study(sub, params=None, budget_s=480):
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
 
 
+LAB_SK = "WWLAB"
+
+
+def lab_test(sub, params=None, budget_s=480):
+    """Strategy lab: the settings being tried (not saved) vs the live settings, on every ticker of the watchlist,
+    each trade held with its own exits (open trades at their last price)."""
+    import wallwatch
+    t0 = time.time()
+    pk = db.upk(sub)
+    P = {"days": 250, "cfg": {}, **(params or {})}
+    live = wallwatch.config(sub)
+    lab = {**live, **{k: v for k, v in (P.get("cfg") or {}).items() if k in wallwatch.PARAMS}}
+    days = max(30, min(500, int(P["days"])))
+    first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
+    mid = (now_ny() - timedelta(days=int(days * 1.45) // 2)).strftime("%Y-%m-%d")
+    db.put({"PK": pk, "SK": LAB_SK, **(db.get(pk, LAB_SK) or {}), "running": iso(now_ny())})
+    rows_l, rows_v, errors, done_n = [], [], [], 0
+
+    def one(sym):
+        d = _ticker_data(sub, sym, days, lab, False)
+        if not d:
+            return [], []
+        return _run0(sym, d, {**lab, "earnOn": False}, first), _run0(sym, d, {**live, "earnOn": False}, first)
+
+    pool = ThreadPoolExecutor(max_workers=8)
+    for f in [pool.submit(one, t) for t in live["tickers"]]:
+        try:
+            a, b = f.result(timeout=max(1, budget_s - (time.time() - t0)))
+            rows_l += a
+            rows_v += b
+            done_n += 1
+        except Exception as e:
+            errors.append(str(e)[:100] or "time limit")
+    pool.shutdown(wait=False, cancel_futures=True)
+
+    def pack(rows):
+        st = _stats(rows, mid)
+        st["exits"] = {k: sum(1 for r in rows if r["exit"] == k) for k in sorted({r["exit"] for r in rows})}
+        by = {}
+        for r in rows:
+            by.setdefault(r["sym"], []).append(r["R"])
+        st["top"] = sorted(({"sym": k, "n": len(v), "totR": round(sum(v), 2)} for k, v in by.items()), key=lambda x: -x["totR"])
+        tot = sum(x["totR"] for x in st["top"])
+        st["top3Share"] = round(sum(x["totR"] for x in st["top"][:3]) / tot * 100) if tot > 0 else None
+        st["top"] = st["top"][:5] + st["top"][-3:] if len(st["top"]) > 8 else st["top"]
+        return st
+
+    out = {"PK": pk, "SK": LAB_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "tickers": done_n,
+           "period": {"from": first, "mid": mid}, "cfg": P.get("cfg") or {}, "lab": pack(rows_l), "live": pack(rows_v),
+           "trades": sorted(rows_l, key=lambda r: r["at"])[-80:], "errors": errors[:5]}
+    if done_n < len(live["tickers"]):
+        out["errors"].insert(0, f"Time limit: {done_n} of {len(live['tickers'])} tickers.")
+    db.put(out)
+    return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
+def lab_result(sub):
+    r = _unstick(db.get(db.upk(sub), LAB_SK) or {})
+    return {k: v for k, v in r.items() if k not in ("PK", "SK")}
+
+
 def regime_result(sub):
     r = _unstick(db.get(db.upk(sub), REG_SK) or {})
     return {k: v for k, v in r.items() if k not in ("PK", "SK")}

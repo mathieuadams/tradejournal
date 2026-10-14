@@ -2738,6 +2738,13 @@ def test_chart_long_range_replay():
         out = wallwatch.chart("long-user", "AAA", days=90, flow=False)
         assert len({b["t"][:10] for b in out["bars"]}) == 90
         assert any(x.get("replay") for x in out["signals"]), [x["at"] for x in out["signals"]]
+        # strategy lab: every signal replayed with the tried settings, nothing saved
+        lab = wallwatch.chart("long-user", "AAA", days=45, flow=False, lab={"stopAtr": 0.7, "bogus": 1})
+        assert lab["lab"] and lab["signals"] and all(x.get("replay") for x in lab["signals"])
+        assert float(wallwatch.config("long-user")["stopAtr"]) == 0.5
+        assert "fvg" in lab
+        r = backtest.lab_test("long-user", {"days": 60, "cfg": {"stopAtr": 0.7}})
+        assert r["lab"]["n"] > 0 and r["live"]["n"] > 0
     finally:
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
 
@@ -2781,6 +2788,13 @@ def test_pw_vwap_study():
     tr2 = wallwatch.pv_long_trades(tb2, tw, [{"i": 3, "t": tb2[3]["t"], "side": "long", "pw": 100}],
                                    {"tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
     assert tr2[0]["status"] == "eodpw" and tr2[0]["exit"] == 99.8
+    # fair value gaps: bullish gap between candle i-2 high and candle i low, filled when a later low trades under it
+    fb = [{"t": f"2026-10-01T{9 + k}:30", "o": o, "h": h, "l": l, "c": c, "v": 1} for k, (o, h, l, c) in enumerate(
+        [(100, 101, 99, 100.5), (100.5, 104, 100.4, 103.8), (104, 106, 103, 105), (105, 105.5, 102.5, 104), (104, 104.5, 100, 100.2)])]
+    fz = wallwatch.fvg_zones(fb, 0.1, [1.0] * 5)
+    assert fz[0]["type"] == "bull" and fz[0]["lo"] == 101 and fz[0]["hi"] == 103 and fz[0]["fillI"] == 4
+    ft = wallwatch.fvg_bull_touch(fb, fz)
+    assert ft[3] is fz[0] and ft[2] is None and ft[4] is None
     # wall regimes: labels per day, wall moves vs the previous day, forward moves from the close
     import backtest
     hb = [{"t": f"2026-09-{d:02d}T{h}:30", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100 + d} for d in range(1, 13) for h in (10, 11)]

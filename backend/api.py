@@ -501,6 +501,35 @@ def bot_regime(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("POST", "/bot/lab/chart")
+def bot_lab_chart(sub, claims, body, q):
+    import wallwatch
+    b = body or {}
+    try:
+        days = max(20, min(250, int(b.get("days") or 45)))
+    except (TypeError, ValueError):
+        days = 45
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else {}
+    return wallwatch.chart(sub, b.get("t"), days=days, flow=b.get("flow", True) is not False, lab=cfg or {"_": 1})
+
+
+@route("GET", "/bot/lab/test")
+def bot_lab_test_get(sub, claims, body, q):
+    import backtest
+    return backtest.lab_result(sub)
+
+
+@route("POST", "/bot/lab/test")
+def bot_lab_test(sub, claims, body, q):
+    import backtest
+    b = body or {}
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else {}
+    db.put({"PK": db.upk(sub), "SK": backtest.LAB_SK, **backtest.lab_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwlab", "params": {"days": b.get("days") or 250, "cfg": cfg}}))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/wallwatch/robust")
 def bot_robust(sub, claims, body, q):
     import backtest

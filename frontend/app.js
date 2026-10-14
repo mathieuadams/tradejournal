@@ -1273,18 +1273,18 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, pwv: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'vwap', 'ema', 'kc', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'vwap', 'kc', 'walls', 'flow', 'dark'];
-  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'mp', 'vwap', 'ema', 'kc', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
+  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'vwap', 'ema', 'kc', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'vwap', 'kc', 'walls', 'flow', 'dark'];
+  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'mp', 'vwap', 'ema', 'kc', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
   S.fcDpBusy[k] = true;
   const ww = String(id).startsWith('ww-');
-  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.slice(3))}&pct=${S.wwDpPct ?? 0.25}&days=${S.wwDays || 45}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
+  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.replace(/^ww-(lab-)?/, ""))}&pct=${S.wwDpPct ?? 0.25}&days=${S.wwDays || 45}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
   S.fcDpBusy[k] = false;
   if (isBotRoute()) render();
 }
@@ -1348,6 +1348,12 @@ function fcSvg0(d, id, opts) {
   bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (dk % every) return; const x = X(i) - (W - L - Rr) / n / 2;
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${x + 3}" y="${B + 16}" font-size="${fs}" fill="var(--muted)">${b.t.slice(5, 10)}</text>`; } });
   const pf = v => v.toFixed(v < 20 ? 3 : 2);
+  if (LY.fvg && (d.fvg || []).length) {               // fair value gaps: from the middle candle to the candle that fills it
+    d.fvg.forEach(z => { if (z.hi < lo || z.lo > hi) return; const i0 = at(z.t); if (i0 == null) return;
+      const i1 = z.fillAt ? at(z.fillAt) : n - 1, bull = z.type === 'bull', c = bull ? '#16a34a' : '#dc2626';
+      const x0 = X(i0) - bw / 2, x1 = X(i1 == null ? n - 1 : i1) + bw / 2, y0 = Y(Math.min(hi, z.hi)), y1 = Y(Math.max(lo, z.lo));
+      g += `<rect x="${x0}" y="${y0}" width="${Math.max(2, x1 - x0)}" height="${Math.max(1, y1 - y0)}" fill="${c}" fill-opacity="${z.fillAt ? .08 : .16}" stroke="${c}" stroke-opacity=".45" stroke-width="1" ${z.fillAt ? 'stroke-dasharray="3 2"' : ''}><title>${esc(`${bull ? 'Bullish' : 'Bearish'} FVG ${z.lo}–${z.hi} · ${z.t.replace('T', ' ').slice(5)}${z.fillAt ? ` · filled ${z.fillAt.replace('T', ' ').slice(5)}` : ' · still open'}`)}</title></rect>`; });
+  }
   bars.forEach((b, i) => { const up = b.c >= b.o, c = up ? 'var(--gain)' : 'var(--loss)', x = X(i);
     const tip = `<title>${esc(b.t.replace('T', ' ').slice(5))} ET · O ${pf(b.o)} H ${pf(b.h)} L ${pf(b.l)} C ${pf(b.c)} (${b.c >= b.o ? '+' : ''}${((b.c / b.o - 1) * 100).toFixed(2)}%)</title>`;
     g += `<g><line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`
@@ -1697,6 +1703,8 @@ function vChartFull() {
   let rt = null;
   window.addEventListener('resize', () => { if (route() !== 'botchart') return; clearTimeout(rt); rt = setTimeout(render, 150); });
   document.addEventListener('change', e => { if (e.target.id === 'fcf-sel') location.hash = '#botchart?t=' + encodeURIComponent(e.target.value); });
+  document.addEventListener('change', e => { if (e.target.id === 'lab-sym') location.hash = '#botlab?t=' + encodeURIComponent(e.target.value); });
+  document.addEventListener('submit', e => { if (e.target.id !== 'lab-symf') return; e.preventDefault(); const v = (($('#lab-symq') || {}).value || '').trim().toUpperCase(); if (v) location.hash = '#botlab?t=' + encodeURIComponent(v); });
   document.addEventListener('input', e => {
     if (e.target.id !== 'fcf-q') return;
     S.fcfQ = e.target.value.trim(); const q = S.fcfQ.toUpperCase();
@@ -2418,7 +2426,7 @@ async function loadWatch() {
   if (S.wwBusy) return; S.wwBusy = true;
   try { S.ww = await api('/bot/wallwatch'); } catch (e) { if (!S.ww) S.ww = { error: e.message }; }
   S.wwBusy = false;
-  if (route() === 'botwatch' || route() === 'botchart') render();
+  if (['botwatch', 'botchart', 'botlab'].includes(route())) render();
 }
 function wwFillTxt() {
   const f = (S.ww && S.ww.fill) || {};
@@ -2462,6 +2470,7 @@ const WW_RULES = [
   ['spyUp', 'Entry', 'SPY trend up', 'SPY above its close of 6 sessions ago (the TOS ttmTrend of SPY)'],
   ['kcNotExt', 'Entry', 'Under upper Keltner', 'The entry candle closes under the upper Keltner band (not stretched)'],
   ['orbAbove', 'Entry', 'Above ORB high', 'The entry candle closes above the opening range high (09:30–10:30 candle); no entry in the first hour'],
+  ['fvgOn', 'Entry', 'In bullish FVG', 'The entry candle must trade into an open bullish fair value gap (3-candle gap of at least this × ATR, not filled yet) and close above its bottom', ['ww-fvgm', 'fvgMin', 0.05, 3.2, 'ATR', 0.2]],
   ['noAboveCW', 'Entry', 'Not above CW', 'No entry when the candle opens or closes above the call wall'],
   ['cwRoomOn', 'Entry', 'Room to CW', 'No entry when the close is less than this × ATR under the call wall', ['ww-cwr', 'cwRoom', 0.25, 3.6, 'ATR', 1]],
   ['earnOn', 'Entry', 'Earnings', 'No entry within this many days of earnings', ['ww-earn', 'earnDays', 1, 3.2, 'd', 10]],
@@ -2477,7 +2486,7 @@ const WW_RULES = [
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
 const WW_CORE = ['pvSetup', 'pvEod', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
-const WW_DEF_ON = { relFlow: true, pvSetup: true, pvEod: true, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
+const WW_DEF_ON = { fvgOn: false, relFlow: true, pvSetup: true, pvEod: true, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 function wwSwState() {
   const c = (S.ww && S.ww.config) || {};
@@ -2495,7 +2504,7 @@ function wwParams(compact) {
       <button class="btn" data-wwsw="${k}" title="${esc(tip)} — click to turn ${onv ? 'off' : 'on'}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${onv ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${onv ? 'ON' : 'OFF'}</button>
       <span style="font-size:.8rem">${label}</span>${f ? ` ${inp(f[0], c[f[1]] ?? f[5], f[2], f[3])}<span class="muted" style="font-size:.75rem">${f[4]}</span>` : ''}</span>`;
   };
-  const PV_ENTRY = ['pvSetup', 'earnOn'];          // entry rules that apply to the VWAP reset strategy
+  const PV_ENTRY = ['pvSetup', 'earnOn', 'fvgOn'];          // entry rules that apply to the VWAP reset strategy
   const shown = r => r[0] === 'pvEod' ? !!sw.pvSetup : sw.pvSetup && r[1] === 'Entry' ? PV_ENTRY.includes(r[0]) : (S.wwAllRules || WW_CORE.includes(r[0]) || sw[r[0]]);
   const hidden = WW_RULES.filter(r => !shown(r)).length;
   const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g && shown(r)).map(chip).join('')}</div>`;
@@ -2517,7 +2526,7 @@ async function wwSaveParams(where) {
   const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
   const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, retestSetup: true, ...wwSwState(),
     retestZone: num('#ww-zone'), cwRoom: num('#ww-cwr'), vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), emaLen: num('#ww-emal'), kcLen: num('#ww-kcl'), kcMult: num('#ww-kcm'),
-    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf'), relMult: num('#ww-relx') };
+    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf'), relMult: num('#ww-relx'), fvgMin: num('#ww-fvgm') };
   try { S.ww = { ...(S.ww || {}), ...(await api('/bot/wallwatch', { method: 'PUT', body })) }; } catch (e) { toast(e.message); return; }
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
   if (where === 'chart') { wwTkFill(fcfSymbol()); toast('Recomputing this chart now, every ticker in the background'); }
@@ -2652,6 +2661,99 @@ function wwRegime(rg) {
     ${(rg.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(rg.errors.join(' · '))}</p>` : ''}`;
   return `<h3 style="font-size:.95rem;margin:16px 0 4px">Gamma wall regimes <button class="btn" data-regrun ${rg.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${rg.at && !rg.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(rg.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
     <p class="muted" style="margin:0;font-size:.85rem">Every day of every ticker, sorted by how the call wall, put wall and flip sit and where the stock closed — and the days the walls move (yesterday's call wall becoming the put wall, the put wall stepping down…). Compare each row with "Every day".</p>${body}`;
+}
+/* ---------- strategy lab: try settings on the chart without touching the live bot ---------- */
+S.lab = S.lab || null;
+function labCfg() {
+  if (!S.lab) { const c = (S.ww && S.ww.config) || {}; if (!S.ww) return null;
+    S.lab = Object.fromEntries([...WW_RULES.map(([k]) => [k, c[k] ?? (WW_DEF_ON[k] ?? true)]),
+      ...WW_RULES.filter(r => r[4]).map(r => [r[4][1], c[r[4][1]] ?? r[4][5]]),
+      ...['retestMin', 'retestDays', 'retestZone', 'vwapDays', 'kcLen', 'kcMult'].map(k => [k, c[k]])].filter(([, v]) => v !== undefined)); }
+  return S.lab;
+}
+const labLive = () => { const c = (S.ww && S.ww.config) || {}, L = labCfg() || {};
+  const def = k => { const r = WW_RULES.find(x => x[0] === k); if (r) return WW_DEF_ON[k] ?? true; const f = WW_RULES.find(x => x[4] && x[4][1] === k); return f ? f[4][5] : undefined; };
+  return Object.keys(L).filter(k => L[k] !== undefined && String(L[k]) !== String(c[k] ?? def(k))).length; };
+async function loadLabChart(sym) {
+  const k = fcKey('ww-lab-' + sym); S.fcBusy[k] = true; if (route() === 'botlab') render();
+  try { S.fc[k] = await api('/bot/lab/chart', { method: 'POST', body: { t: sym, days: S.wwDays || 45, cfg: labCfg() } }); } catch (e) { S.fc[k] = { error: e.message }; }
+  S.fcBusy[k] = false; if (route() === 'botlab') render();
+}
+async function loadLabTest() {
+  try { S.labTest = await api('/bot/lab/test'); } catch (e) { S.labTest = { error: e.message }; }
+  if (route() === 'botlab') render();
+  clearTimeout(S.labPoll);
+  if (S.labTest && S.labTest.running && route() === 'botlab') S.labPoll = setTimeout(loadLabTest, 15000);
+}
+function labRedraw() { const sym = labSymbol(); Object.keys(S.fc).filter(x => x.includes('ww-lab-')).forEach(x => { delete S.fc[x]; }); clearTimeout(S.labT); S.labT = setTimeout(() => loadLabChart(sym), 600); render(); }
+function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return t || l[0] || ''; }
+function labPanel() {
+  const L = labCfg() || {}, lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
+  const inp = (k, step, w) => `<input data-labnum="${k}" type="number" step="${step}" min="0" value="${L[k] ?? ''}" style="width:${w}em;padding:1px 4px">`;
+  const chip = ([k, , label, tip, f]) => { const onv = !!L[k];
+    return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${onv ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${onv ? '' : 'opacity:.55'}">
+      <button class="btn" data-labsw="${k}" title="${esc(tip)}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${onv ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${onv ? 'ON' : 'OFF'}</button>
+      <span style="font-size:.8rem">${label}</span>${f ? ` ${inp(f[1], f[2], f[3])}<span class="muted" style="font-size:.75rem">${f[4]}</span>` : ''}</span>`; };
+  const shown = r => r[0] === 'pvEod' ? !!L.pvSetup : L.pvSetup && r[1] === 'Entry' ? ['pvSetup', 'earnOn', 'fvgOn'].includes(r[0]) : true;
+  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g && shown(r)).map(chip).join('')}</div>`;
+  const diff = labLive();
+  return `<div style="display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Flow</b>
+    <label ${lab}>call alert ≥ $<input data-labnum="retestMin" data-scale="1000" type="number" step="50" min="0" value="${Math.round((L.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K</label>
+    <label ${lab}>wait ${inp('retestDays', 1, 3)} days</label><label ${lab}>retest zone ${inp('retestZone', 0.05, 4.6)} ATR</label>
+    <label ${lab}>VWAP reset ${inp('vwapDays', 1, 3.2)} days</label><label ${lab}>Keltner ${inp('kcLen', 1, 3.2)} × ${inp('kcMult', 0.5, 3)}</label></div>
+    ${grp('Entry')}${grp('Exit')}
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn coachbtn" data-labapply style="font-size:.8rem;padding:1px 12px">Redraw</button>
+    <button class="btn" data-labtest ${S.labTest && S.labTest.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px" title="These settings vs your live settings, on every ticker of the watchlist">${S.labTest && S.labTest.running ? 'Testing…' : 'Test on all tickers'}</button>
+    <button class="btn" data-labreset style="font-size:.8rem;padding:1px 10px">Reset to live</button>
+    <button class="btn" data-labsave ${diff ? '' : 'disabled'} style="font-size:.8rem;padding:1px 10px" title="Copy these settings to the live bot">Use for the live bot</button>
+    <span class="muted" style="font-size:.75rem">${diff ? `${diff} setting${diff === 1 ? '' : 's'} differ from live` : 'same as live'} · nothing here changes the live bot until you click “Use for the live bot”. ON/OFF redraws by itself; numbers on Redraw.</span></div></div>`;
+}
+function labStats(sigs) {
+  const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const rs = sigs.filter(x => x.R != null), w = rs.filter(x => x.R > 0), tot = rs.reduce((a, x) => a + x.R, 0);
+  const ex = {}; sigs.forEach(x => { ex[x.status] = (ex[x.status] || 0) + 1; });
+  return `<span><b>This ticker</b> ${sigs.length} trade${sigs.length === 1 ? '' : 's'} · win ${rs.length ? Math.round(w.length / rs.length * 100) : 0}% · avg ${R(rs.length ? tot / rs.length : null)} · total ${R(tot)} · ${Object.entries(ex).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</span>`;
+}
+function labTestBox() {
+  const t = S.labTest || {};
+  if (t.error) return `<div class="errbox">${esc(t.error)}</div>`;
+  if (t.running) return '<p class="loading">Testing these settings and your live settings on every ticker… (a few minutes)</p>';
+  if (!t.lab) return '';
+  const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const row = (lab, x) => `<tr><td>${lab}</td><td class="r">${x.n}</td><td class="r">${x.win ?? '—'}%</td><td class="r">${R(x.avgR)}</td><td class="r">${R(x.totR)}</td><td class="r">${x.pf ?? '—'}</td><td class="r">${R(x.h1)} / ${R(x.h2)}<br><span class="muted" style="font-size:.75rem">${x.h1n} / ${x.h2n}</span></td><td class="r">${x.top3Share != null ? x.top3Share + '%' : '—'}</td><td class="r">${x.open ?? 0}</td></tr>`;
+  const changed = Object.keys(t.cfg || {}).length;
+  return `<h3 style="font-size:.95rem;margin:12px 0 4px">All tickers <span class="muted" style="font-weight:400;font-size:.8rem">${t.tickers} tickers since ${esc((t.period || {}).from || '')} · run ${esc((t.at || '').slice(5, 16).replace('T', ' '))}</span></h3>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th>Settings</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">1st / 2nd half</th><th class="r">Top 3 tickers</th><th class="r">Open</th></tr></thead>
+    <tbody>${row(`<b>Lab</b>${changed ? '' : ' <span class="muted">(same as live when run)</span>'}`, t.lab)}${row('Live', t.live)}</tbody></table></div>
+    <p class="muted" style="font-size:.82rem;margin:4px 0">Lab exits: ${Object.entries(t.lab.exits || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')} · best / worst tickers: ${(t.lab.top || []).map(x => `${esc(x.sym)} ${x.totR > 0 ? '+' : ''}${x.totR}R`).join(' · ')}</p>
+    ${(t.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+}
+function vLab() {
+  const list = wwTickers(), sym = labSymbol(), id = 'ww-lab-' + sym, k = fcKey(id);
+  if (!S.ww) return '<p class="loading">Loading the watchlist…</p>';
+  if (!labCfg()) return '<p class="loading">Loading settings…</p>';
+  const d = sym ? S.fc[k] : null;
+  if (sym && !d && !S.fcBusy[k]) { S.fcBusy[k] = true; setTimeout(() => loadLabChart(sym), 0); }
+  if (sym) fcNeedDark(id);
+  const W = Math.max(320, Math.min(window.innerWidth - 40, 1700)), H = Math.max(360, Math.round(window.innerHeight * 0.62));
+  const zb_ = (q, l, t) => `<button class="btn" data-fczoom="${id}|${q}" title="${t}" style="padding:3px 10px">${l}</button>`;
+  const sigs = (d && d.signals) || [];
+  const head = `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+    <b style="font-size:1.2rem">Strategy lab</b>
+    <select id="lab-sym" aria-label="Ticker">${(list.includes(sym) ? list : [sym, ...list]).map(x => `<option value="${esc(x)}" ${x === sym ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+    <form id="lab-symf" style="display:inline-flex;gap:4px"><input id="lab-symq" placeholder="Any ticker" style="width:7em" aria-label="Any ticker"><button class="btn" type="submit" style="padding:2px 8px">Go</button></form>
+    ${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
+    <span class="seg" role="group" aria-label="Days on the chart">${[45, 90, 180].map(n => `<button class="btn ${(S.wwDays || 45) === n ? 'coachbtn' : ''}" data-wwdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
+    ${fcLayerBar(id)}</div>`;
+  let main;
+  if (!sym) main = '<p class="muted">Pick a ticker.</p>';
+  else if (!d || S.fcBusy[k]) main = '<p class="loading" style="padding:16px">Replaying the signals with these settings…</p>';
+  else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
+  else main = fcSvg(d, id, { W, H }) + `<div class="fcf-info" style="display:flex;flex-wrap:wrap;gap:12px;font-size:.85rem;margin-top:4px">${labStats(sigs)}
+      ${(d.fvg || []).length ? `<span class="muted">FVG: ${d.fvg.filter(z => !z.fillAt && z.type === 'bull').length} bullish / ${d.fvg.filter(z => !z.fillAt && z.type === 'bear').length} bearish still open</span>` : ''}
+      ${d.note ? `<span class="muted">${esc(d.note)}</span>` : ''}</div>`;
+  return `<section class="card" style="padding:10px 12px">${head}${labPanel()}${main}${labTestBox()}</section>`;
 }
 function pvTrades(t) {
   if (!t) return '';
@@ -3075,9 +3177,9 @@ setInterval(() => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
+  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botlab', 'Strategy lab'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
-const isBotRoute = () => ['bot', 'botevals', 'botchart', 'botwatch', 'botexplore', 'botstrats'].includes(route());
+const isBotRoute = () => ['bot', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
 const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
@@ -3105,6 +3207,7 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
   }],
   botexplore: [vExplore, () => { if (!S.ex && !S.exBusy) runExplore(false); }],
   botwatch: [vWatch, () => { if (!S.ww) loadWatch(); if (!S.rt && !S.rtBusy) loadRuleTest(); }],
+  botlab: [vLab, () => { if (!S.ww && !S.wwBusy) { S.wwBusy = true; loadWatch().finally(() => { S.wwBusy = false; }); } if (S.labTest === undefined) loadLabTest(); }],
   botchart: [vChartFull, () => { if (!S.tickers && !S.tkBusy) loadTickers();
     const h = document.querySelector('.fcf-head'), inf = document.querySelector('.fcf-info');      // fit the chart to what's left
     const hh = h ? h.offsetHeight : 0, ih = inf ? inf.offsetHeight + 8 : 0;
@@ -3129,7 +3232,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-labsave],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3196,6 +3299,18 @@ document.addEventListener('click', e => {
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
+  if (el.dataset.labsw) { const L = labCfg(); L[el.dataset.labsw] = !L[el.dataset.labsw]; labRedraw(); return; }
+  if (el.hasAttribute('data-labapply')) { const L = labCfg();
+    document.querySelectorAll('[data-labnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) L[i.dataset.labnum] = i.dataset.scale ? v * +i.dataset.scale : v; });
+    labRedraw(); return; }
+  if (el.hasAttribute('data-labreset')) { S.lab = null; labRedraw(); return; }
+  if (el.hasAttribute('data-labtest')) {
+    api('/bot/lab/test', { method: 'POST', body: { cfg: labCfg(), days: 250 } }).then(() => { S.labTest = { ...(S.labTest || {}), running: 'now' }; render(); setTimeout(loadLabTest, 15000); }).catch(err => toast(err.message));
+    return; }
+  if (el.hasAttribute('data-labsave')) {
+    if (!confirm('Copy the lab settings to the live bot? Every ticker is recomputed and the bot trades with them.')) return;
+    api('/bot/wallwatch', { method: 'PUT', body: { ...labCfg() } }).then(r => { S.ww = { ...(S.ww || {}), ...r }; S.lab = null; toast('Live bot now uses these settings'); return api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); }).catch(err => toast(err.message)).finally(render);
+    return; }
   if (el.hasAttribute('data-regrun')) {
     api('/bot/wallwatch/regime', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250 } })
       .then(() => { S.rt = { ...(S.rt || {}), regime: { ...((S.rt || {}).regime || {}), running: 'now' } }; render(); setTimeout(loadRuleTest, 15000); }).catch(err => toast(err.message));
