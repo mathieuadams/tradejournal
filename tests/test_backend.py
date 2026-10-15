@@ -2592,6 +2592,22 @@ def test_darkpool_history():
     assert g["dpNear"] is False and g["dpWay"] is False
 
 
+def test_keltner_daily():
+    """Daily Keltner on hourly candles: the previous days' EMAs updated with today's candle so far (no later price)."""
+    import wallwatch
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars = [{"t": f"2026-09-{d:02d}T{h}", "o": 100, "h": 101, "l": 99, "c": 100} for d in range(1, 6) for h in H]
+    bars += [{"t": f"2026-09-08T{h}", "o": 100, "h": 100 + k + 1, "l": 99, "c": 100 + k} for k, h in enumerate(H)]
+    kc = wallwatch.keltner(bars, 3, 2.0, daily=True)
+    assert kc[0] is None and kc[20] is None and kc[21] is not None    # 3 completed days needed
+    first_today = kc[35]                                                 # 09-08 09:30: close 100, range 99-101
+    assert first_today[0] == 100 and round(first_today[1] - first_today[0], 4) == 4.0
+    assert kc[41][0] == round(106 * 0.5 + 100 * 0.5, 4)                 # 15:30: today's close 106 weighs 2/(3+1)
+    assert kc[34] == kc[34] and kc[36][0] < kc[41][0]
+    hk = wallwatch.keltner(bars, 3, 2.0)                                  # hourly channel: a value from the 3rd candle
+    assert hk[1] is None and hk[2] is not None and hk[41] != kc[41]
+
+
 def test_keltner_ride_exit():
     """A vertical move through the call wall is ridden while the days close above the upper Keltner band;
     the first daily close back under it sells. Without the switch the call wall target sells."""
@@ -2633,7 +2649,7 @@ def test_keltner_ride_exit():
     try:
         hb = [{"t": f"2026-10-0{1 + k // 7}T{H[k % 7]}", "o": 100 + k * .2, "h": 100.5 + k * .2, "l": 99.8 + k * .2, "c": 100.3 + k * .2, "v": 1} for k in range(35)]
         autotrader._yahoo = lambda *a, **k: hb
-        sub, ww = "ride-user", {"kcRide": True, "kcLen": 5, "kcMult": 0.1}
+        sub, ww = "ride-user", {"kcRide": True, "kcLen": 5, "kcMult": 0.1, "kcDaily": False}
         rec = {"SK": "BOT#20261005000000-abcdef", "symbol": "AAA"}
         db.put({"PK": db.upk(sub), **rec})
         p_ = {"underlyingTarget": 105.0}
@@ -2786,7 +2802,7 @@ def test_pw_vwap_study():
     tb2 = [dict(x) for x in tb]
     tb2[6] = dict(tb2[6], c=99.8, l=99.6)            # entry day closes under the put wall 100
     tr2 = wallwatch.pv_long_trades(tb2, tw, [{"i": 3, "t": tb2[3]["t"], "side": "long", "pw": 100}],
-                                   {"tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
+                                   {"pvEod": True, "tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
     assert tr2[0]["status"] == "eodpw" and tr2[0]["exit"] == 99.8
     # fair value gaps: bullish gap between candle i-2 high and candle i low, filled when a later low trades under it
     fb = [{"t": f"2026-10-01T{9 + k}:30", "o": o, "h": h, "l": l, "c": c, "v": 1} for k, (o, h, l, c) in enumerate(
@@ -2837,7 +2853,7 @@ def test_pw_vwap_study():
     # the strategy switch: detect_retest runs the VWAP reset strategy, signals in the retest format
     sg3, w3 = wallwatch.detect_retest(tb, tw, None, {"pvSetup": True, "tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False,
                                                     "trailOn": False, "earnOn": False}, None, None, None, None, None,
-                                      {"kc": {b["t"][:16]: (110, 130, 90) for b in tb}, "vwResets": [tb[3]["t"]]})
+                                      {"kc": {b["t"][:16]: (110, 130, 90) for b in tb}, "kch": {b["t"][:16]: (110, 130, 90) for b in tb}, "vwResets": [tb[3]["t"]]})
     # unusual flow: relative to the ticker's last 30 days of call alerts, no look-ahead
     al = [{"t": f"2026-09-{d:02d}T10:00", "c": 1, "p": 100_000} for d in range(1, 11)]
     al += [{"t": "2026-09-12T10:00", "c": 1, "p": 250_000}, {"t": "2026-09-13T10:00", "c": 1, "p": 400_000},
@@ -2845,6 +2861,14 @@ def test_pw_vwap_study():
     u = wallwatch.unusual_calls(al, 500_000, 3)
     assert [a["p"] for a in u] == [400_000] and u[0]["x"] == 4.0
     assert [a["p"] for a in wallwatch.unusual_calls(al[:3] + [{"t": "2026-09-05T10:00", "c": 1, "p": 600_000}], 500_000, 3)] == [600_000]
+    # the same idea as building blocks: no call alert needed + VWAP reset candle + entry day close above the support
+    rbx = [dict(x, o=99.6) for x in tb]
+    rbx[3] = dict(rbx[3], o=100.2, l=99.9, c=100.6)
+    rr_, _ = wallwatch.detect_retest(rbx, tw, None, {"alertReq": False, "vwapReset": True, "pvEod": True, "greenOnly": False,
+                                                      "useFlip": False, "earnOn": False, "cwRoomOn": False, "noAboveCW": False,
+                                                      "kcNotExt": False, "tgtBuf": 0, "trailOn": False, "kcRide": False},
+                                     None, None, None, None, None, {"kc": {b["t"][:16]: (110, 130, 90) for b in rbx}, "vwResets": [rbx[3]["t"]]})
+    assert [x["at"] for x in rr_] == [rbx[3]["t"]] and rr_[0]["level"] == 100, rr_
     assert w3 is None and len(sg3) == 1 and sg3[0]["kind"] == "retest" and sg3[0]["setup"] == "pvlong" and sg3[0]["status"] == "target"
     today = now_ny().date()
     days, d = [], today - dt.timedelta(days=200)

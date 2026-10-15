@@ -1311,9 +1311,11 @@ def _keltner_ride(sub, rec, p, ww, last, since, now, dte):
     import wallwatch
     pk = db.upk(sub)
     try:
-        hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=30), now + timedelta(hours=1)) or [],
+        dly = ww.get("kcDaily", True)
+        hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=75 if dly else 30), now + timedelta(hours=1)) or [],
                                 now.replace(tzinfo=None))
-        kc = wallwatch.keltner(hb, int(ww.get("kcLen") or 21), float(ww.get("kcMult") or 3)) if hb else []
+        hb = [b for b in hb if "09:30" <= b["t"][11:16] < "16:00"]
+        kc = wallwatch.keltner(hb, int(ww.get("kcLen") or 21), float(ww.get("kcMult") or 3), bool(dly)) if hb else []
     except Exception as e:
         print("keltner ride check failed", rec.get("symbol"), e)
         return False

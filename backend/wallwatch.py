@@ -29,10 +29,15 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "vwapOn": False, "emaOn": False, "emaLen": 20, "stopOn": True, "trailOn": True, "targetOn": True,
           "vwapExit": False, "emaExit": False, "emaOverVwap": False,
           "spyUp": False, "kcNotExt": False, "orbAbove": False, "kcLen": 21, "kcMult": 3.0,
+          "kcDaily": True,     # over-extension (Under upper Keltner, Keltner ride) on the daily channel, else hourly
+          "kchLower": False, "kchLen": 21, "kchMult": 3.0,   # hourly Keltner channel   # entry fine tuning: the entry candle closes in the lower half of the HOURLY Keltner channel
+          # building blocks (no dedicated strategies): alertReq = a call alert must arm the ticker first;
+          # vwapReset = the entry candle is a VWAP reset candle (highest volume of the period); pwNeCw = no entry when PW = CW
+          "alertReq": True, "vwapReset": False, "pwNeCw": False,
           "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False,
           # pvSetup: the VWAP reset on the put wall strategy replaces the flow retest (LONG signal of pw_vwap_events)
           # pvEod: with it, the entry day must close above the put wall, else sold at that close
-          "pvSetup": True, "pvEod": True,
+          "pvSetup": False, "pvEod": False,
           # relFlow: a call alert arms the ticker when its premium is at least relMult x the median premium of the
           # ticker's call alerts of the previous 30 days (unusual for THIS ticker); retestMin is the fallback with < 5 alerts
           "relFlow": True, "relMult": 3.0,
@@ -53,6 +58,7 @@ def config(sub):
     out.update({k: c.get(k, v) for k, v in OPTS.items()})
     out["added"] = c.get("added") or {}                 # {ticker: {"at", "by", "premium"}} for tickers added from the flow
     out["scaleOn"] = False                              # partial exits: Strategy lab / backtests only, the live bot sells all at once
+    out["pvSetup"] = False                              # no dedicated strategies: the VWAP reset is a rule (vwapReset) now
     if FLOW_ONLY:                                       # only the flow retest setup is used for now
         out.update(pwSetup=False, flipSetup=False, mergedSetup=False, retestSetup=True)
     return out
@@ -66,10 +72,10 @@ def version(cfg):
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
-            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}")
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw")
 
 
 def save_config(sub, body):
@@ -88,13 +94,13 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200)):
+    for k, lo_, hi_ in (("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
             except (TypeError, ValueError):
                 pass
-    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "relMult", "fvgMin", "fvgNear", "scaleR"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "kchMult", "relMult", "fvgMin", "fvgNear", "scaleR"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
@@ -105,6 +111,8 @@ def save_config(sub, body):
             cur["scalePct"] = max(1, min(99, int(float(body["scalePct"]))))
         except (TypeError, ValueError):
             pass
+    if "kcDaily" in body:
+        cur["kcDaily"] = bool(body["kcDaily"])
     for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
@@ -285,6 +293,9 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
             if s.get("scaleBE") and s["stop"] < s["entry"]:
                 s["stop"] = s["entry"]                    # the rest can't lose any more
                 s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], s["entry"]])
+    if s.get("pvEod") and is_last and b["t"][:10] == s["at"][:10] and s.get("level") and b["c"] < float(s["level"]):
+        s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])        # the entry day closed under the support: out
+        return
     if s.get("fvgExit") and bear:                    # this candle completes a new bearish fair value gap: out at its close
         s.update(status="fvg", exitAt=b["t"][:16], exit=b["c"])
         return
@@ -430,7 +441,7 @@ def pw_vwap_events(bars, walls, resets, near_pct=0.3, kc=None):
     the upper Keltner half; None otherwise. No side when the put wall equals the call wall.
     kc: keltner(bars) list aligned with bars (computed if missing)."""
     if kc is None:
-        kc = keltner(bars)
+        kc = keltner(bars, daily=True)
     out = []
     for j in sorted(set(resets)):
         if j <= 0 or j >= len(bars):
@@ -465,14 +476,48 @@ def _kc_pos(price, k):
             "kcM": round(k[0], 2), "kcU": round(k[1], 2), "kcL": round(k[2], 2)}
 
 
-def keltner(bars, n=21, mult=3.0):
-    """Keltner channel: EMA(n) of the close +/- mult x EMA(n) of the true range. [(mid, upper, lower) or None]."""
+def keltner(bars, n=21, mult=3.0, daily=False):
+    """Keltner channel: EMA(n) of the close +/- mult x EMA(n) of the true range. [(mid, upper, lower) or None] per candle.
+    daily: on daily candles, as a daily chart shows it: for each hourly candle, the EMAs of the previous days updated with
+    today's candle so far (close, high, low up to this hour), so no later price is used."""
+    if daily:
+        return _keltner_daily(bars, n, mult)
     closes = [b["c"] for b in bars]
     tr = [max(b["h"] - b["l"], abs(b["h"] - bars[i - 1]["c"]), abs(b["l"] - bars[i - 1]["c"])) if i else b["h"] - b["l"]
           for i, b in enumerate(bars)]
     mid, rng = _ema_series(closes, n), _ema_series(tr, n)
     return [(round(m, 4), round(m + mult * r, 4), round(m - mult * r, 4)) if m is not None and r is not None else None
             for m, r in zip(mid, rng)]
+
+
+def _keltner_daily(bars, n=21, mult=3.0):
+    k = 2 / (n + 1)
+    out, closes, trs = [], [], []                      # completed days
+    e_prev = a_prev = None                             # EMAs at the previous day's close
+    day, dh, dl, pc = None, None, None, None
+    for i, b in enumerate(bars):
+        d = b["t"][:10]
+        if d != day:
+            if day is not None:                         # yesterday is complete: commit it
+                c_, tr_ = bars[i - 1]["c"], max(dh - dl, abs(dh - pc), abs(dl - pc)) if pc is not None else dh - dl
+                closes.append(c_)
+                trs.append(tr_)
+                if e_prev is None:
+                    if len(closes) >= n:
+                        e_prev, a_prev = sum(closes[-n:]) / n, sum(trs[-n:]) / n
+                else:
+                    e_prev, a_prev = c_ * k + e_prev * (1 - k), tr_ * k + a_prev * (1 - k)
+                pc = c_
+            day, dh, dl = d, b["h"], b["l"]
+        else:
+            dh, dl = max(dh, b["h"]), min(dl, b["l"])
+        if e_prev is None:
+            out.append(None)
+            continue
+        tr = max(dh - dl, abs(dh - pc), abs(dl - pc)) if pc is not None else dh - dl
+        m, r = b["c"] * k + e_prev * (1 - k), tr * k + a_prev * (1 - k)
+        out.append((round(m, 4), round(m + mult * r, 4), round(m - mult * r, 4)))
+    return out
 
 
 def orb_levels(bars):
@@ -623,7 +668,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     sup_keys = tuple(x for x, k in ((("putWall", "put wall"), "usePW"), (("flip", "flip"), "useFlip")) if on(k))
     ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     extra = extra or {}
-    kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
+    kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
+    kch = ([extra["kch"].get(b["t"][:16]) for b in bars] if extra.get("kch") else keltner(bars, int(P.get("kchLen") or 21), float(P.get("kchMult") or 3))) \
+        if on("kchLower") else None
     orb = orb_levels(bars)
     spy = extra.get("spy") or {}
     skp = extra.get("skewPct") or {}
@@ -653,6 +700,13 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10)),
                            float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
     bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
+    if on("vwapReset"):
+        if extra.get("vwResets") is not None:
+            rs_ = set(extra["vwResets"])
+            vreset = {i for i, b in enumerate(bars) if b["t"][:16] in rs_}
+        else:
+            vreset = set(anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[1])
+    need_alert = on("alertReq")
     big = unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else \
         sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
     sigs, open_, watch, ai = [], None, None, 0
@@ -680,6 +734,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 lvl0, name = max(under)
                 watch = {"armedAt": arm["t"], "armPremium": arm["p"], "armX": arm.get("x"), "level": lvl0, "levelName": name, "day0": day, "days": 0,
                          "since": b["t"][:16]}
+        if not watch and not need_alert:              # no call alert needed: always watching
+            watch = {"armedAt": None, "armPremium": 0, "level": 0, "levelName": "", "day0": day, "days": 0, "since": b["t"][:16], "free": True}
         if not watch:
             if misses is not None:                      # at a support without a recent call alert: say so
                 lv0 = [float(w[k]) for k, n in sup_keys if w.get(k)]
@@ -691,10 +747,10 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             watch["_d"] = day
             if day != watch["day0"]:
                 watch["days"] += 1
-        if watch["days"] > ndays:
+        if watch["days"] > ndays and not watch.get("free"):
             watch = None
             continue
-        if b["c"] < watch["level"] - k_stop * a_:     # the support of the alert broken before any retest
+        if not watch.get("free") and b["c"] < watch["level"] - k_stop * a_:     # the support of the alert broken before any retest
             miss(b, f"closed under the {watch['levelName']} {watch['level']:g} − stop: watch cancelled, waiting for a new call alert")
             watch = None
             continue
@@ -716,6 +772,12 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 miss(b, f"earnings {str(earnings)[:10]} within {earn_days} days")
                 continue                               # earnings within the next N days: no entry
             cw_ = float(w["callWall"]) if w.get("callWall") else None
+            if on("vwapReset") and i not in vreset:
+                miss(b, "not a VWAP reset candle")
+                continue                               # rule on: the entry candle must be the VWAP reset candle
+            if on("pwNeCw") and w.get("putWall") and w.get("callWall") and abs(float(w["putWall"]) - float(w["callWall"])) < 1e-6:
+                miss(b, "put wall = call wall")
+                continue                               # rule on: no entry when the walls are the same strike
             if on("vwapOn") and not (vwap[i] is not None and b["c"] > vwap[i]):
                 miss(b, f"close {b['c']:.2f} under the VWAP {vwap[i]:.2f}" if vwap[i] is not None else "no VWAP yet")
                 continue                               # rule on: the close must be above the VWAP
@@ -734,8 +796,11 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             if on("fvgOn") and not fvg_t[i]:
                 miss(b, f"not in (or within {float(P.get('fvgNear') if P.get('fvgNear') is not None else 0.25):g} ATR of) an open bullish FVG")
                 continue                               # rule on: the candle must trade into an open bullish fair value gap
+            if on("kchLower") and not (kch[i] and b["c"] <= kch[i][0]):
+                miss(b, "close in the upper half of the hourly Keltner")
+                continue                               # rule on: the close must be in the lower half of the hourly channel
             if on("kcNotExt") and not (kc[i] and b["c"] < kc[i][1]):
-                miss(b, "close above the upper Keltner band")
+                miss(b, f"close above the upper {'daily' if P.get('kcDaily', True) else 'hourly'} Keltner band")
                 continue                               # rule on: the close must be under the upper Keltner band
             if on("orbAbove") and not (orb[i] and b["c"] > orb[i][0]):
                 miss(b, "close under the opening range high")
@@ -761,7 +826,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                  "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
                  "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
                  "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
-                 "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"),
+                 "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"),
                  "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
                  "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
             if fvg_t is not None and fvg_t[i]:        # the gap the entry used (shown on the chart)
@@ -773,6 +838,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 s["maxDays"], s["_dd"], s["_dn"] = int(P["maxDays"]), day, 0
             sigs.append(s)
             open_, watch = s, None
+            if on("pvEod") and (i + 1 < len(bars) and bars[i + 1]["t"][:10] != day) and b["c"] < lvl:
+                s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])   # last candle of the day, under the support
+                open_ = None
     for s in sigs:
         s["pct"], s["R"] = _result(s)
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
@@ -806,7 +874,7 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
     k_trail = float(P["trailAtr"]) if on("trailOn") else 0.0
     flip_exit = bool(P.get("flipExit", True))
     atr = atr14(bars)
-    kc = kc or keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
+    kc = kc or keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
     vwap = vwap or anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[0]
     ema = ema or _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     dpl = dpl or {}
@@ -878,7 +946,8 @@ def detect_pvlong(bars, walls, start=None, cfg=None, datr=None, earnings=None, v
     extra["vwResets"]: timestamps of the VWAP reset candles computed on a longer history (else from these bars)."""
     P = {**PARAMS, **(cfg or {})}
     extra = extra or {}
-    kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
+    kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
+    kch = [extra["kch"].get(b["t"][:16]) for b in bars] if extra.get("kch") else keltner(bars, int(P.get("kchLen") or 21), float(P.get("kchMult") or 3))
     vwap = [vwap_map.get(b["t"][:16]) for b in bars] if vwap_map else None
     ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else None
     if extra.get("vwResets") is not None:
@@ -886,7 +955,7 @@ def detect_pvlong(bars, walls, start=None, cfg=None, datr=None, earnings=None, v
         resets = [i for i, b in enumerate(bars) if b["t"][:16] in rs]
     else:
         resets = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[1]
-    ev = pw_vwap_events(bars, walls, resets, kc=kc)
+    ev = pw_vwap_events(bars, walls, resets, kc=kch)    # lower / upper half: hourly channel (entry fine tuning)
     return pv_long_trades(bars, walls, ev, P, datr, vwap=vwap, ema=ema, kc=kc, dpl=extra.get("dpLevels"), start=start, earnings=earnings)
 
 
@@ -908,7 +977,7 @@ def _walls(key, sym, dates, today):
 def check_ticker(sub, key, sym, days, now, since=None):
     """since: date of the oldest open signal of the ticker (followed until it ends)."""
     from charts import _yahoo
-    start = (now - timedelta(days=int(days * 1.5) + 7 + 25)).replace(hour=0, minute=0, second=0, microsecond=0)  # + VWAP warm-up
+    start = (now - timedelta(days=int(days * 1.5) + 7 + 45)).replace(hour=0, minute=0, second=0, microsecond=0)  # + VWAP / daily Keltner warm-up
     if since:
         start = min(start, datetime.strptime(since, "%Y-%m-%d") - timedelta(days=3))
     bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
@@ -943,7 +1012,8 @@ def check_ticker(sub, key, sym, days, now, since=None):
             vw_all, vres_full = anchored_vwap(bars, int(cfg.get("vwapDays") or VWAP_DAYS))
             vmap = {b["t"][:16]: v for b, v in zip(bars, vw_all)}
             emap = {b["t"][:16]: v for b, v in zip(bars, _ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20)))}
-            kmap = {b["t"][:16]: v for b, v in zip(bars, keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3)))}
+            kmap = {b["t"][:16]: v for b, v in zip(bars, keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3), bool(cfg.get("kcDaily", True))))}
+            khmap = {b["t"][:16]: v for b, v in zip(bars, keltner(bars, int(cfg.get("kchLen") or 21), float(cfg.get("kchMult") or 3)))}
             spy = spy_trend(start, now) if cfg.get("spyUp") else {}      # only fetched when the rule is used
             skp = {}
             if cfg.get("skewOn"):
@@ -964,7 +1034,7 @@ def check_ticker(sub, key, sym, days, now, since=None):
                 except Exception as e:
                     print("dark pool levels failed", sym, e)
             rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap, emap,
-                                      {"kc": kmap, "spy": spy, "skewPct": skp, "misses": misses, "dpLevels": dpm,
+                                      {"kc": kmap, "kch": khmap, "spy": spy, "skewPct": skp, "misses": misses, "dpLevels": dpm,
                                        "vwResets": [bars[i]["t"][:16] for i in vres_full if i > 0]})
             try:
                 db.put({"PK": db.upk(sub), "SK": f"WWMISS#{sym}", "misses": misses[-400:], "v": version(cfg), "at": iso(now_ny())})
@@ -1114,12 +1184,13 @@ def enter(sub, sym, sg):
         ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]) if cfg.get("trailOn", True) else 0.0,
               "vwapExit": bool(cfg.get("vwapExit")), "emaExit": bool(cfg.get("emaExit")), "emaLen": int(cfg.get("emaLen") or 20),
               "kcRide": bool(cfg.get("kcRide")), "kcLen": int(cfg.get("kcLen") or 21), "kcMult": float(cfg.get("kcMult") or 3),
+              "kcDaily": bool(cfg.get("kcDaily", True)),
               "cwLost": bool(cfg.get("cwLost")), "dpLost": bool(cfg.get("dpLost")),
               "vwapDays": int(cfg.get("vwapDays") or VWAP_DAYS),
               "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
               "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry")),
-              "pvEodPw": sg.get("pw") if sg.get("setup") == "pvlong" and sg.get("pvEod") else None,
+              "pvEodPw": sg.get("level") if sg.get("pvEod") else None,
               "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2)}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
@@ -1401,7 +1472,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
         from util import BadRequest
         raise BadRequest("Pick a ticker.")
     now = now_ny().replace(tzinfo=None)
-    start = (now - timedelta(days=int(days * 1.5) + 25)).replace(hour=0, minute=0, second=0, microsecond=0)   # + VWAP warm-up
+    start = (now - timedelta(days=int(days * 1.5) + 45)).replace(hour=0, minute=0, second=0, microsecond=0)   # + VWAP / daily Keltner warm-up
     bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
     bars = [{"t": b["t"][:16], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v")}
             for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
@@ -1455,13 +1526,15 @@ def chart(sub, sym, days=45, flow=True, lab=None):
             flow_note = f"Options flow unavailable: {str(e)[:120]}"
     ccfg = config(sub)
     if lab:
-        ccfg = {**ccfg, **{k: v for k, v in lab.items() if k in PARAMS}}
+        ccfg = {**ccfg, **{k: v for k, v in lab.items() if k in PARAMS and k != "pvSetup"}}
         sigs = []
     vw, vres = anchored_vwap(bars_all, int(ccfg.get("vwapDays") or VWAP_DAYS))
     off = len(bars_all) - len(bars)
     em = _ema_series([b["c"] for b in bars_all], int(ccfg.get("emaLen") or 20))[off:]
-    kcs = keltner(bars_all, int(ccfg.get("kcLen") or 21), float(ccfg.get("kcMult") or 3))[off:]
+    kcs = keltner(bars_all, int(ccfg.get("kcLen") or 21), float(ccfg.get("kcMult") or 3), bool(ccfg.get("kcDaily", True)))[off:]
     kc = [{"t": b["t"], "m": k[0], "u": k[1], "l": k[2]} for b, k in zip(bars, kcs) if k]
+    kchs = keltner(bars_all, int(ccfg.get("kchLen") or 21), float(ccfg.get("kchMult") or 3))[off:]
+    kch = [{"t": b["t"], "m": k[0], "u": k[1], "l": k[2]} for b, k in zip(bars, kchs) if k]
     orbs = [{"d": b["t"][:10], "h": b["h"], "l": b["l"]} for b in bars if b["t"][11:16] == "09:30"]
     try:
         sp = spy_trend(start, now) if bars else {}
@@ -1505,7 +1578,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     misses = replay_misses + [m for m in (mrec.get("misses") or []) if mrec.get("v") == cur_v and m["t"][:10] >= (cut or (dates[0] if dates else ""))]
     try:
         vres_all = anchored_vwap(bars_all, int(ccfg.get("vwapDays") or VWAP_DAYS))[1]
-        kc_all = keltner(bars_all, int(ccfg.get("kcLen") or 21), float(ccfg.get("kcMult") or 3))
+        kc_all = keltner(bars_all, int(ccfg.get("kchLen") or 21), float(ccfg.get("kchMult") or 3))   # halves: hourly
         pv = [{k: e.get(k) for k in ("t", "pw", "cw", "side", "above", "green", "o", "h", "l", "c", "kcPos", "kcHalf", "kcM", "kcU", "kcL")}
               for e in pw_vwap_events(bars_all, stored, vres_all, kc=kc_all)
               if e["side"] == "long" and e["t"][:10] >= (dates[0] if dates else "")]
@@ -1519,7 +1592,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     except Exception as e:
         print("fvg failed", sym, e)
         fvg = []
-    return {"fvg": fvg, "lab": bool(lab), "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    return {"fvg": fvg, "lab": bool(lab), "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),

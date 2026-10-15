@@ -359,14 +359,16 @@ def _ticker_data(sub, sym, days, cfg, full=True):
     walls = flowdata.stored_walls(sym)
     vw, _ = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))
     em = wallwatch._ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20))
-    kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
+    kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3), bool(cfg.get("kcDaily", True)))
     dp = stored_darkpool(sym)
     days_ = sorted({b["t"][:10] for b in bars})
     sk = stored_skew(sym) if full or cfg.get("skewOn") else {}
     return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym),
             "skew": sk, "dp": dp,
             "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
-            "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)}, "spy": wallwatch.spy_trend(start, now) if full or cfg.get("spyUp") else {},
+            "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)},
+                      "kch": {b["t"][:16]: v for b, v in zip(bars, wallwatch.keltner(bars, int(cfg.get("kchLen") or 21), float(cfg.get("kchMult") or 3)))},
+                      "spy": wallwatch.spy_trend(start, now) if full or cfg.get("spyUp") else {},
                       "dpLevels": wallwatch.dp_level_map(dp, days_), "skewPct": skew_pct_map(sk, days_) if sk else {}}}
 
 
@@ -631,7 +633,7 @@ def robust_test(sub, params=None, budget_s=480):
         for lab, ch in variants:
             c = {**mine, **ch}
             if "kcMult" in ch:                          # the Keltner bands themselves change
-                kc = wallwatch.keltner(d["bars"], int(cfg.get("kcLen") or 21), float(ch["kcMult"]))
+                kc = wallwatch.keltner(d["bars"], int(cfg.get("kcLen") or 21), float(ch["kcMult"]), bool(cfg.get("kcDaily", True)))
                 d2 = {**d, "extra": {**d["extra"], "kc": {b["t"][:16]: v for b, v in zip(d["bars"], kc)}}}
                 out[lab] = _run(sym, d2, c, first)
             else:
@@ -700,8 +702,9 @@ def pv_study(sub, params=None, budget_s=480):
             return sym, [], []
         bars = d["bars"]
         res = wallwatch.anchored_vwap(bars, int(cfg.get("vwapDays") or wallwatch.VWAP_DAYS))[1]
-        kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3))
-        ev = [e for e in wallwatch.pw_vwap_events(bars, d["walls"], res, kc=kc) if e["t"][:10] >= first]
+        kc = wallwatch.keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3), bool(cfg.get("kcDaily", True)))
+        kch = wallwatch.keltner(bars, int(cfg.get("kchLen") or 21), float(cfg.get("kchMult") or 3))
+        ev = [e for e in wallwatch.pw_vwap_events(bars, d["walls"], res, kc=kch) if e["t"][:10] >= first]
         ttr = wallwatch.pv_long_trades(bars, d["walls"], ev, cfg, d["datr"], kc=kc,
                                        dpl=(d.get("extra") or {}).get("dpLevels"), start=first)
         trades.extend({"sym": sym, "at": t["at"], "R": t["R"], "pct": t["pct"], "exit": t["status"], "days": t["days"],
@@ -942,7 +945,7 @@ def lab_test(sub, params=None, budget_s=480):
     pk = db.upk(sub)
     P = {"days": 250, "cfg": {}, **(params or {})}
     live = wallwatch.config(sub)
-    lab = {**live, **{k: v for k, v in (P.get("cfg") or {}).items() if k in wallwatch.PARAMS}}
+    lab = {**live, **{k: v for k, v in (P.get("cfg") or {}).items() if k in wallwatch.PARAMS and k != "pvSetup"}}
     days = max(30, min(500, int(P["days"])))
     first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
     mid = (now_ny() - timedelta(days=int(days * 1.45) // 2)).strftime("%Y-%m-%d")

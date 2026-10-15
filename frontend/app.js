@@ -1273,12 +1273,12 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'vwap', 'ema', 'kc', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'vwap', 'kc', 'walls', 'flow', 'dark'];
-  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'mp', 'vwap', 'ema', 'kc', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
+  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark'];
+  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
@@ -1320,7 +1320,7 @@ function fcSvg0(d, id, opts) {
   const all = d.bars || [];
   if (all.length < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
-  const LY = id.startsWith('ww-') && !S.fcAllLayers ? { ...S.fcLayers, ema: false, orb: false, spy: false, mp: false, acc: false } : S.fcLayers;
+  const LY = id.startsWith('ww-') && !S.fcAllLayers ? { ...S.fcLayers, mp: false, acc: false } : S.fcLayers;
   const dp = LY.dark ? S.fcDp[fcKey(id)] : null;
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
@@ -1410,13 +1410,15 @@ function fcSvg0(d, id, opts) {
       g += `<text x="${Math.max(L + 4, Math.min(x0 + 6, W - Rr - 260))}" y="${y - 4}" font-size="${fs - 1}" font-weight="600" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round">DP ${lv.price} · ${prem(lv.premium)} · ${lv.prints} prints${since}</text>`; });
     // only the 5 levels with the most dark pool money are drawn (no single prints)
   }
-  if (LY.kc && (d.kc || []).length) {                // Keltner channel
-    const kcol = '#64748b', km = {}; d.kc.forEach(x => { km[x.t] = x; });
+  const kcDraw = (rows, kcol, name, wid) => { const km = {}; rows.forEach(x => { km[x.t] = x; });
     ['u', 'm', 'l'].forEach(f => { let path = '', on_ = false;
       bars.forEach((b, i) => { const x = km[b.t], v = x && x[f]; if (v == null || v < lo || v > hi) { on_ = false; return; }
         path += `${on_ ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`; on_ = true; });
-      if (path) g += `<path d="${path}" fill="none" stroke="${kcol}" stroke-width="${f === 'm' ? 1 : 1.3}" ${f === 'm' ? 'stroke-dasharray="4 3"' : ''} opacity=".75"><title>Keltner ${f === 'u' ? 'upper band' : f === 'l' ? 'lower band' : 'middle (EMA)'}</title></path>`; });
-  }
+      if (path) g += `<path d="${path}" fill="none" stroke="${kcol}" stroke-width="${f === 'm' ? wid * .75 : wid}" ${f === 'm' ? 'stroke-dasharray="4 3"' : ''} opacity=".8"><title>${name} ${f === 'u' ? 'upper band' : f === 'l' ? 'lower band' : 'middle (EMA)'}</title></path>`; });
+    const last = km[bars[n - 1].t];
+    if (last && last.u >= lo && last.u <= hi) g += `<text x="${X(n - 1) - 4}" y="${Y(last.u) - 4}" text-anchor="end" font-size="${fs - 2}" font-weight="700" fill="${kcol}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${name}</text>`; };
+  if (LY.kc && (d.kc || []).length) kcDraw(d.kc, '#475569', d.kcDaily === false ? 'Keltner (hourly)' : 'Keltner daily', 1.6);   // over-extension
+  if (LY.kch && (d.kch || []).length && d.kcDaily !== false) kcDraw(d.kch, '#d97706', 'Keltner hourly', 1);                  // entry fine tuning
   if (LY.orb && (d.orb || []).length) {              // opening range (09:30–10:30 candle) for the rest of each day
     const om = {}; d.orb.forEach(x => { om[x.d] = x; });
     let curD = null, i0 = null;
@@ -1712,7 +1714,21 @@ function vChartFull() {
   let rt = null;
   window.addEventListener('resize', () => { if (route() !== 'botchart') return; clearTimeout(rt); rt = setTimeout(render, 150); });
   document.addEventListener('change', e => { if (e.target.id === 'fcf-sel') location.hash = '#botchart?t=' + encodeURIComponent(e.target.value); });
-  document.addEventListener('input', e => {
+  document.addEventListener('change', e => {      // bot checkboxes: pending until Apply
+  if (e.target.id === 'ww-auto' || e.target.id === 'ww-trade') {
+    S.wwDraft = { ...(S.wwDraft || {}), [e.target.id === 'ww-auto' ? 'autoAdd' : 'trade']: e.target.checked }; S.wwDirty = true; wwMarkDirty(); }
+});
+document.addEventListener('input', e => {       // settings typed but not applied yet: kept across redraws
+  const t = e.target;
+  if (t.dataset && (t.dataset.pk || t.dataset.labnum)) {
+    const v = parseFloat(t.value), k = t.dataset.pk || t.dataset.labnum;
+    if (isNaN(v)) return;
+    const val = t.dataset.scale ? v * +t.dataset.scale : v;
+    if (t.dataset.pk) { S.wwDraft = { ...(S.wwDraft || {}), [k]: val }; S.wwDirty = true; wwMarkDirty(); }
+    else { S.labDraft = { ...(S.labDraft || {}), [k]: val }; S.labDirty = true; wwMarkDirty(); }
+  }
+});
+document.addEventListener('input', e => {
     if (e.target.id !== 'fcf-q') return;
     S.fcfQ = e.target.value.trim(); const q = S.fcfQ.toUpperCase();
     document.querySelectorAll('.fcf-list li').forEach(li => { li.hidden = !!q && !li.dataset.sym.includes(q); });
@@ -2464,30 +2480,33 @@ async function wwFill() {
 S.wwTk = S.wwTk || {};
 const WW_RULES = [
   // [switch key, group, label, tooltip, optional field: [id, key, step, width, suffix, default, scale]]
-  ['pvSetup', 'Entry', 'VWAP reset on PW', 'Strategy: buy the VWAP reset candle (highest volume of the period) that touches the put wall and closes in the lower half of the Keltner channel (put wall ≠ call wall). Off: the flow retest (call alert, then a retest of the support).'],
-  ['relFlow', 'Entry', 'Unusual flow', 'A call alert arms the ticker when its premium is at least this × the median call alert premium of THAT ticker over the last 30 days (min $50K). Fewer than 5 alerts in 30 days: the $ amount of the Flow row is used. Off: the fixed $ amount only.', ['ww-relx', 'relMult', 0.5, 3.2, '× median', 3]],
+  ['alertReq', 'Entry', 'Call alert first', 'A call alert must arm the ticker before an entry (size from the Flow row / Unusual flow); off: any candle can enter'],
+  ['vwapReset', 'Entry', 'VWAP reset candle', 'The entry candle must be the VWAP reset candle: the hourly candle with the highest volume of the last N days (VWAP reset in the Flow row)'],
+  ['pwNeCw', 'Entry', 'PW ≠ CW', 'No entry when the put wall and the call wall are the same strike'],
+  ['relFlow', 'Entry', 'Unusual flow', 'The call alert counts when its premium is at least N × the median call alert premium of THAT ticker over the last 30 days (Options flow row, min $50K). Fewer than 5 alerts in 30 days: the $ amount is used. Off: the fixed $ amount only.'],
   ['usePW', 'Entry', 'Support: put wall', 'The put wall can be the support that is retested'],
   ['useFlip', 'Entry', 'Support: flip', 'The gamma flip can be the support that is retested'],
   ['greenOnly', 'Entry', 'Green candle', 'The retest candle must close green (close > open)'],
   ['aboveFlip', 'Entry', 'Above the flip', 'The entry candle must close above the gamma flip'],
   ['vwapOn', 'Entry', 'Above VWAP', 'The entry candle must close above the anchored VWAP'],
-  ['emaOn', 'Entry', 'Above EMA', 'The entry candle must close above the hourly EMA', ['ww-emal', 'emaLen', 1, 3.4, '', 20]],
+  ['emaOn', 'Entry', 'Above EMA', 'The entry candle must close above the hourly EMA (length in the EMA row)'],
   ['emaOverVwap', 'Entry', 'EMA > VWAP', 'The EMA must be above the anchored VWAP on the entry candle (uptrend)'],
   ['skewOn', 'Entry', 'Skew normal', 'Only when the 25-delta skew (put IV − call IV, ~30 days) is in the middle third of its last 6 months: neither calls already bid nor puts bid (fear)'],
   ['spyUp', 'Entry', 'SPY trend up', 'SPY above its close of 6 sessions ago (the TOS ttmTrend of SPY)'],
-  ['kcNotExt', 'Entry', 'Under upper Keltner', 'The entry candle closes under the upper Keltner band (not stretched)'],
+  ['kcNotExt', 'Entry', 'Under upper daily KC', 'Not over-extended: the entry candle closes under the upper band of the DAILY Keltner channel'],
+  ['kchLower', 'Entry', 'Lower half hourly KC', 'Entry fine tuning: the entry candle closes in the lower half of the HOURLY Keltner channel (at or under its middle line)'],
   ['orbAbove', 'Entry', 'Above ORB high', 'The entry candle closes above the opening range high (09:30–10:30 candle); no entry in the first hour'],
-  ['fvgOn', 'Entry', 'In bullish FVG', 'The entry candle must trade into an open bullish fair value gap (3-candle gap of at least this × ATR, not filled yet) and close above its bottom', ['ww-fvgm', 'fvgMin', 0.05, 3.2, 'ATR', 0.2]],
+  ['fvgOn', 'Entry', 'In bullish FVG', 'The entry candle must trade into (or come within the margin of) an open bullish fair value gap and close above its bottom (sizes in the FVG row)'],
   ['noAboveCW', 'Entry', 'Not above CW', 'No entry when the candle opens or closes above the call wall'],
   ['cwRoomOn', 'Entry', 'Room to CW', 'No entry when the close is less than this × ATR under the call wall', ['ww-cwr', 'cwRoom', 0.25, 3.6, 'ATR', 1]],
   ['earnOn', 'Entry', 'Earnings', 'No entry within this many days of earnings', ['ww-earn', 'earnDays', 1, 3.2, 'd', 10]],
-  ['pvEod', 'Exit', 'Entry day close > PW', 'VWAP reset strategy: the entry day must close above the put wall, else the trade is sold at that close'],
+  ['pvEod', 'Exit', 'Entry day close > support', 'The entry day must close above the support (put wall / flip) it bounced from, else the trade is sold at that close'],
   ['stopOn', 'Exit', 'Stop', 'Stop = the support − this × the 30-day ATR (off: no stop, the value still sets 1R)', ['ww-stop', 'stopAtr', 0.1, 3.4, 'ATR', 0.5]],
   ['trailOn', 'Exit', 'Trailing stop', 'Highest high since entry − this × the 30-day ATR, never down', ['ww-trail', 'trailAtr', 0.25, 3.4, 'ATR', 1]],
   ['targetOn', 'Exit', 'Call wall target', 'Sell at the call wall − this %', ['ww-tbuf', 'tgtBuf', 0.1, 3.4, '%', 0.5]],
   ['flipExit', 'Exit', 'Close under flip', 'Sell when the day closes under the gamma flip (trades entered above it)'],
   ['vwapExit', 'Exit', 'Close under VWAP', 'Sell when an hourly candle closes under the anchored VWAP'],
-  ['kcRide', 'Exit', 'Keltner ride', 'An hourly close above the upper Keltner band starts a ride: the call wall target and the other exits wait, and the trade is sold at the first daily close under the upper band, the same day included (the stop still applies).'],
+  ['kcRide', 'Exit', 'Ride the daily KC', 'Follow the daily Keltner: an hourly close above its upper band starts the ride; the call wall target and the other exits wait, and the trade is sold at the first daily close back under the upper band, the same day included (the stop still applies).'],
   ['cwLost', 'Exit', 'Back under CW', 'After an hourly close above the call wall, sell at the first daily close back under it'],
   ['dpLost', 'Exit', 'Back under dark pool', 'After an hourly close above one of the top 5 dark pool levels (above your entry), sell at the first daily close back under the highest one passed'],
   ['fvgExit', 'Exit', 'New bearish FVG', 'Sell at the close of the hourly candle that completes a new bearish fair value gap after the entry (its high under the low of two candles before, gap at least the FVG size × ATR)'],
@@ -2495,52 +2514,75 @@ const WW_RULES = [
   ['scaleBE', 'Exit', 'Rest to breakeven', 'Strategy lab only: after the partial sale, the stop of the rest moves up to the entry price'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
+// indicators: [key, name, chart layer, parameters [key, label, step, width, suffix, default, scale], what it is, rules that use it]
+const WW_IND = [
+  ['walls', 'Gamma walls', 'walls', [['retestZone', 'retest zone', 0.05, 4, '× ATR', 0.25]], 'Put wall, call wall and gamma flip of each day; a candle retests a wall when its low comes within the zone', ['usePW', 'useFlip', 'aboveFlip', 'noAboveCW', 'cwRoomOn', 'pwNeCw', 'targetOn', 'flipExit', 'cwLost', 'pvEod']],
+  ['flow', 'Options flow', 'flow', [['retestMin', 'call alert ≥ $', 50, 4.2, 'K', 500000, 1000], ['retestDays', 'wait', 1, 3, 'days', 5], ['relMult', 'unusual', 0.5, 3, '× median', 3]], 'Call alerts bought at the ask (Unusual Whales); the retest must come within the wait', ['alertReq', 'relFlow']],
+  ['vwap', 'Anchored VWAP', 'vwap', [['vwapDays', 'reset on highest volume of', 1, 3.2, 'days', 10]], 'VWAP restarted on the hourly candle with the highest volume of the period', ['vwapOn', 'vwapReset', 'emaOverVwap', 'vwapExit']],
+  ['ema', 'EMA (hourly)', 'ema', [['emaLen', 'length', 1, 3.4, '', 20]], 'Exponential average of the hourly closes', ['emaOn', 'emaOverVwap', 'emaExit']],
+  ['kcd', 'Keltner daily', 'kc', [['kcLen', 'EMA', 1, 3.2, '', 21], ['kcMult', '±', 0.5, 3, '× ATR', 3]], 'Daily candles (today building up hour by hour): over-extension', ['kcNotExt', 'kcRide']],
+  ['kch', 'Keltner hourly', 'kch', [['kchLen', 'EMA', 1, 3.2, '', 21], ['kchMult', '±', 0.5, 3, '× ATR', 3]], 'Hourly candles: entry fine tuning', ['kchLower']],
+  ['fvg', 'Fair value gaps', 'fvg', [['fvgMin', 'min size', 0.05, 3.2, '× ATR', 0.2], ['fvgNear', 'margin', 0.05, 3.2, '× ATR', 0.25], ['fvgDays', 'max age', 1, 3, 'days', 10]], '3-candle gaps on hourly candles, until filled or expired', ['fvgOn', 'fvgExit']],
+  ['dark', 'Dark pool', 'dark', [], 'Top dark pool price levels of the last 2 months', ['dpLost']],
+  ['orb', 'Opening range', 'orb', [], 'High / low of the 09:30–10:30 candle', ['orbAbove']],
+  ['spy', 'SPY trend', 'spy', [], 'SPY vs its close 6 sessions ago', ['spyUp']],
+  ['skew', 'Skew (25Δ)', null, [], '25-delta put IV − call IV vs its last 6 months', ['skewOn']],
+];
+// the indicators table, then the Entry / Exit ON/OFF rules. vals: settings; sw: switches; mode 'live' | 'lab'
+function wwRulePanel(vals, sw, mode, shown) {
+  const numA = mode === 'lab' ? 'data-labnum' : 'data-pk', swA = mode === 'lab' ? 'data-labsw' : 'data-wwsw';
+  const inp = (k, step, w, def, scale) => `<input ${numA}="${k}" ${scale ? `data-scale="${scale}"` : ''} type="number" step="${step}" min="0" value="${vals[k] != null ? +(vals[k] / (scale || 1)).toFixed(4) : def / (scale || 1)}" style="width:${w}em;padding:1px 4px">`;
+  const label = Object.fromEntries(WW_RULES.map(r => [r[0], r[2]]));
+  const rows = WW_IND.map(([k, name, layer, ps, tip, uses]) => {
+    const used = uses.filter(u => sw[u]);
+    const eye = layer ? `<button class="btn ${S.fcLayers[layer] ? 'coachbtn' : ''}" data-fclayer="${layer}" title="Show / hide on the chart" style="font-size:.72rem;padding:0 7px">${S.fcLayers[layer] ? 'shown' : 'hidden'}</button>` : '<span class="muted" style="font-size:.72rem">—</span>';
+    return `<tr style="${used.length ? '' : 'opacity:.6'}"><td style="padding:2px 6px">${eye}</td><td style="padding:2px 6px" title="${esc(tip)}"><b style="font-size:.82rem">${esc(name)}</b></td>
+      <td style="white-space:nowrap;padding:2px 6px">${ps.map(([pk, pl, st, w, suf, def, sc]) => `<span class="muted" style="font-size:.78rem">${esc(pl)}</span> ${inp(pk, st, w, def, sc)}<span class="muted" style="font-size:.75rem">${esc(suf)}</span>`).join(' &nbsp;') || '<span class="muted" style="font-size:.75rem">no setting</span>'}</td>
+      <td style="font-size:.78rem;padding:2px 6px">${used.length ? `<span class="gain">used by</span> ${used.map(u => esc(label[u] || u)).join(', ')}` : '<span class="muted">not used</span>'}</td></tr>`;
+  }).join('');
+  const chip = ([k, , lbl, tip, f, f2]) => { const onv = !!sw[k];
+    return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${onv ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${onv ? '' : 'opacity:.55'}">
+      <button class="btn" ${swA}="${k}" title="${esc(tip)} — click to turn ${onv ? 'off' : 'on'}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${onv ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${onv ? 'ON' : 'OFF'}</button>
+      <span style="font-size:.8rem">${lbl}</span>${f ? ` ${inp(f[1], f[2], f[3], f[5])}<span class="muted" style="font-size:.75rem">${f[4]}</span>` : ''}${f2 ? ` <span style="font-size:.8rem">sell</span> ${inp(f2[1], f2[2], f2[3], f2[5])}<span class="muted" style="font-size:.75rem">${f2[4]}</span>` : ''}</span>`; };
+  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g && shown(r)).map(chip).join('')}</div>`;
+  return `<details open style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Indicators</summary>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin:4px 0"><tbody>${rows}</tbody></table></div></details>
+    ${grp('Entry')}${grp('Exit')}`;
+}
 const LAB_ONLY = ['scaleOn', 'scaleBE'];   // rules the live bot can't do yet: shown in the Strategy lab only
-const WW_CORE = ['pvSetup', 'pvEod', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
-const WW_DEF_ON = { scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, pvSetup: true, pvEod: true, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
+const WW_CORE = ['alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
+const WW_DEF_ON = { kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 function wwSwState() {
   const c = (S.ww && S.ww.config) || {};
-  if (S.wwSwFor !== c) S.wwSw = null;      // settings (re)loaded from the server: start from them
+  if (S.wwSwFor !== c && !S.wwDirty) S.wwSw = null;      // settings (re)loaded from the server: start from them, unless edits are pending
   S.wwSwFor = c;
   if (!S.wwSw) S.wwSw = Object.fromEntries(WW_RULES.map(([k]) => [k, c[k] ?? (WW_DEF_ON[k] ?? true)]));
   return S.wwSw;
 }
 function wwParams(compact) {
-  const c = (S.ww && S.ww.config) || {}, sw = wwSwState(), lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
-  const inp = (id, v, step, w) => `<input id="${id}" type="number" step="${step}" min="0" value="${v}" style="width:${w}em;padding:1px 4px">`;
-  const chip = ([k, , label, tip, f]) => {
-    const onv = !!sw[k];
-    return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${onv ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${onv ? '' : 'opacity:.55'}">
-      <button class="btn" data-wwsw="${k}" title="${esc(tip)} — click to turn ${onv ? 'off' : 'on'}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${onv ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${onv ? 'ON' : 'OFF'}</button>
-      <span style="font-size:.8rem">${label}</span>${f ? ` ${inp(f[0], c[f[1]] ?? f[5], f[2], f[3])}<span class="muted" style="font-size:.75rem">${f[4]}</span>` : ''}</span>`;
-  };
-  const PV_ENTRY = ['pvSetup', 'earnOn', 'fvgOn'];          // entry rules that apply to the VWAP reset strategy
-  const shown = r => LAB_ONLY.includes(r[0]) ? false : r[0] === 'pvEod' ? !!sw.pvSetup : sw.pvSetup && r[1] === 'Entry' ? PV_ENTRY.includes(r[0]) : (S.wwAllRules || WW_CORE.includes(r[0]) || sw[r[0]]);
+  const c = { ...((S.ww && S.ww.config) || {}), ...(S.wwDraft || {}) }, sw = wwSwState(), lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
+  const shown = r => LAB_ONLY.includes(r[0]) ? false : (S.wwAllRules || WW_CORE.includes(r[0]) || sw[r[0]]);
   const hidden = WW_RULES.filter(r => !shown(r) && !LAB_ONLY.includes(r[0])).length;
-  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g && shown(r)).map(chip).join('')}</div>`;
   return `<div data-wwwhere="${compact ? 'chart' : 'page'}" style="display:flex;flex-direction:column;gap:6px${compact ? '' : ';border:1px solid var(--line);border-radius:8px;padding:8px 10px'}">
-    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Flow</b>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Bot</b>
     <label ${lab} title="Every minute, tickers with unusual call flow (your bot's flow filters) join the list"><input type="checkbox" id="ww-auto" ${c.autoAdd !== false ? 'checked' : ''}>add flow tickers</label>
-    <label ${lab} title="Buy a call on Alpaca paper when a signal fires (contract picked by the bot, limit chased up until filled)"><input type="checkbox" id="ww-trade" ${c.trade !== false ? 'checked' : ''}>trade signals</label>
-    <label ${lab} title="A call alert of at least this size arms the ticker (with Unusual flow ON: only when the ticker has fewer than 5 alerts in 30 days)">call alert ≥ $${inp('ww-rtmin', Math.round((c.retestMin ?? 500000) / 1000), 100, 4.2)}K</label>
-    <label ${lab} title="How long the ticker waits for the retest after the alert">wait ${inp('ww-rtdays', c.retestDays ?? 5, 1, 3)} days</label>
-    <label ${lab} title="A candle retests the support when its low comes within this × the 30-day ATR of it (at least 0.3%)">retest zone ${inp('ww-zone', c.retestZone ?? 0.25, 0.05, 4.6)} ATR</label>
-    <label ${lab} title="The VWAP restarts on the hourly candle with the highest volume of this many trading days">VWAP reset ${inp('ww-vwd', c.vwapDays ?? 10, 1, 3.2)} days</label>
-    <label ${lab} title="Keltner channel: EMA of the close ± multiplier × EMA of the true range (hourly candles)">Keltner ${inp('ww-kcl', c.kcLen ?? 21, 1, 3.2)} × ${inp('ww-kcm', c.kcMult ?? 3, 0.5, 3)}</label>
-    <label ${lab} title="In bullish FVG rule: a candle whose low comes within this × ATR above the gap also counts">FVG margin ${inp('ww-fvgn', c.fvgNear ?? 0.25, 0.05, 3.6)} ATR</label>
-    <label ${lab} title="A gap that isn't filled after this many sessions expires">FVG max age ${inp('ww-fvgd', c.fvgDays ?? 10, 1, 3)} days</label></div>
-    ${grp('Entry')}${grp('Exit')}
-    <div><button class="btn" data-wwparams="${compact ? 'chart' : 'page'}" style="font-size:.78rem;padding:1px 12px">Apply</button>
+    <label ${lab} title="Buy a call on Alpaca paper when a signal fires (contract picked by the bot, limit chased up until filled)"><input type="checkbox" id="ww-trade" ${c.trade !== false ? 'checked' : ''}>trade signals</label></div>
+    ${wwRulePanel({ ...c, ...(S.wwDraft || {}) }, sw, 'live', shown)}
+    <div><button class="btn ${S.wwDirty ? 'coachbtn' : ''}" data-wwparams="${compact ? 'chart' : 'page'}" data-applybtn="live" style="font-size:.78rem;padding:1px 12px">${S.wwDirty ? 'Apply changes' : 'Apply'}</button>
     <button class="btn" data-wwallrules style="font-size:.75rem;padding:1px 9px">${S.wwAllRules ? 'Hide unused rules' : `Show all rules (${hidden} hidden, all OFF)`}</button>
-    <span class="muted" style="font-size:.75rem">ON/OFF saves by itself (a second after your last click); Apply saves the numbers. Signals are recomputed either way.</span></div></div>`;
+    <span class="muted" style="font-size:.75rem">Nothing changes until you click Apply (switches and numbers). Signals are then recomputed.</span></div></div>`;
+}
+function wwMarkDirty() {                        // pending changes: light up the Apply buttons without redrawing
+  document.querySelectorAll('[data-applybtn]').forEach(b => { const d = b.dataset.applybtn === 'lab' ? S.labDirty : S.wwDirty;
+    if (d) { b.classList.add('coachbtn'); b.textContent = 'Apply changes'; } });
 }
 async function wwSaveParams(where) {
-  const num = id => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? undefined : v; };
-  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, retestSetup: true, ...wwSwState(),
-    retestZone: num('#ww-zone'), cwRoom: num('#ww-cwr'), vwapDays: num('#ww-vwd'), earnDays: num('#ww-earn'), emaLen: num('#ww-emal'), kcLen: num('#ww-kcl'), kcMult: num('#ww-kcm'),
-    retestMin: num('#ww-rtmin') != null ? num('#ww-rtmin') * 1000 : undefined, retestDays: num('#ww-rtdays'), stopAtr: num('#ww-stop'), trailAtr: num('#ww-trail'), tgtBuf: num('#ww-tbuf'), relMult: num('#ww-relx'), fvgMin: num('#ww-fvgm'), fvgNear: num('#ww-fvgn'), fvgDays: num('#ww-fvgd') };
+  const nums = {};
+  document.querySelectorAll(`[data-wwwhere="${where}"] [data-pk]`).forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) nums[i.dataset.pk] = i.dataset.scale ? v * +i.dataset.scale : v; });
+  const body = { autoAdd: !!($('#ww-auto') || {}).checked, trade: !!($('#ww-trade') || {}).checked, retestSetup: true, kcDaily: true, ...wwSwState(), ...(S.wwDraft || {}), ...nums };
   try { S.ww = { ...(S.ww || {}), ...(await api('/bot/wallwatch', { method: 'PUT', body })) }; } catch (e) { toast(e.message); return; }
+  S.wwDraft = {}; S.wwDirty = false; S.wwSw = null;
   try { await api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }); } catch (e) {}
   if (where === 'chart') { wwTkFill(fcfSymbol()); toast('Recomputing this chart now, every ticker in the background'); }
   else { toast('Recomputing every ticker with the new settings — about a minute'); runWatchPoll(); }
@@ -2684,13 +2726,17 @@ function labCfg() {
     S.lab = Object.fromEntries([...WW_RULES.map(([k]) => [k, c[k] ?? (WW_DEF_ON[k] ?? true)]),
       ...WW_RULES.filter(r => r[4]).map(r => [r[4][1], c[r[4][1]] ?? r[4][5]]),
       ...WW_RULES.filter(r => r[5]).map(r => [r[5][1], c[r[5][1]] ?? r[5][5]]),
+      ...WW_IND.flatMap(x => x[3]).map(p0 => [p0[0], c[p0[0]] ?? p0[5]]),
       ...['retestMin', 'retestDays', 'retestZone', 'vwapDays', 'kcLen', 'kcMult', 'fvgNear'].map(k => [k, c[k] ?? (k === 'fvgNear' ? 0.25 : undefined)])].filter(([, v]) => v !== undefined)); }
   if (S.lab && S.lab.fvgNear === undefined) S.lab.fvgNear = 0.25;
+  if (S.lab) WW_IND.flatMap(x => x[3]).forEach(p0 => { if (S.lab[p0[0]] === undefined) S.lab[p0[0]] = ((S.ww && S.ww.config) || {})[p0[0]] ?? p0[5]; });
+  if (S.lab && 'pvSetup' in S.lab) delete S.lab.pvSetup;
+  if (S.lab && S.lab.kcDaily === undefined) S.lab.kcDaily = ((S.ww && S.ww.config) || {}).kcDaily !== false;
   if (S.lab && S.lab.fvgDays === undefined) S.lab.fvgDays = 10;
   return S.lab;
 }
 const labLive = () => { const c = (S.ww && S.ww.config) || {}, L = labCfg() || {};
-  const def = k => { const r = WW_RULES.find(x => x[0] === k); if (r) return WW_DEF_ON[k] ?? true; const f = WW_RULES.find(x => x[4] && x[4][1] === k); if (f) return f[4][5]; const f2 = WW_RULES.find(x => x[5] && x[5][1] === k); return f2 ? f2[5][5] : k === 'fvgNear' ? 0.25 : k === 'fvgDays' ? 10 : undefined; };
+  const def = k => { const r = WW_RULES.find(x => x[0] === k); if (r) return WW_DEF_ON[k] ?? true; const ip = WW_IND.flatMap(x => x[3]).find(x => x[0] === k); if (ip) return ip[5]; const f = WW_RULES.find(x => x[4] && x[4][1] === k); if (f) return f[4][5]; const f2 = WW_RULES.find(x => x[5] && x[5][1] === k); return f2 ? f2[5][5] : k === 'fvgNear' ? 0.25 : k === 'fvgDays' ? 10 : k === 'kcDaily' ? true : undefined; };
   return Object.keys(L).filter(k => L[k] !== undefined && String(L[k]) !== String(c[k] ?? def(k))).length; };
 async function loadLabChart(sym) {
   const k = fcKey('ww-lab-' + sym); S.fcBusy[k] = true; if (route() === 'botchart') render();
@@ -2707,28 +2753,15 @@ function labRedraw() { labSave(); const sym = labSymbol(); Object.keys(S.fc).fil
 function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return t || l[0] || ''; }
 try { S.chartLab = localStorage.getItem('chartLab') === '1'; } catch (e) { S.chartLab = false; }
 function labPanel() {
-  const L = labCfg() || {}, lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
-  const inp = (k, step, w) => `<input data-labnum="${k}" type="number" step="${step}" min="0" value="${L[k] ?? ''}" style="width:${w}em;padding:1px 4px">`;
-  const chip = ([k, , label, tip, f, f2]) => { const onv = !!L[k];
-    return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${onv ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${onv ? '' : 'opacity:.55'}">
-      <button class="btn" data-labsw="${k}" title="${esc(tip)}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${onv ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${onv ? 'ON' : 'OFF'}</button>
-      <span style="font-size:.8rem">${label}</span>${f ? ` ${inp(f[1], f[2], f[3])}<span class="muted" style="font-size:.75rem">${f[4]}</span>` : ''}${f2 ? ` <span style="font-size:.8rem">sell</span> ${inp(f2[1], f2[2], f2[3])}<span class="muted" style="font-size:.75rem">${f2[4]}</span>` : ''}</span>`; };
-  const shown = r => r[0] === 'scaleBE' ? !!L.scaleOn : r[0] === 'pvEod' ? !!L.pvSetup : L.pvSetup && r[1] === 'Entry' ? ['pvSetup', 'earnOn', 'fvgOn'].includes(r[0]) : true;
-  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g && shown(r)).map(chip).join('')}</div>`;
+  const L = labCfg() || {};
+  const shown = r => r[0] === 'scaleBE' ? !!L.scaleOn : true;
   const diff = labLive();
   return `<div style="display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0">
-    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Flow</b>
-    <label ${lab}>call alert ≥ $<input data-labnum="retestMin" data-scale="1000" type="number" step="50" min="0" value="${Math.round((L.retestMin ?? 500000) / 1000)}" style="width:4.2em;padding:1px 4px">K</label>
-    <label ${lab}>wait ${inp('retestDays', 1, 3)} days</label><label ${lab}>retest zone ${inp('retestZone', 0.05, 4.6)} ATR</label>
-    <label ${lab}>VWAP reset ${inp('vwapDays', 1, 3.2)} days</label><label ${lab}>Keltner ${inp('kcLen', 1, 3.2)} × ${inp('kcMult', 0.5, 3)}</label>
-    <label ${lab} title="In bullish FVG rule: a candle whose low comes within this × ATR above the gap also counts">FVG margin ${inp('fvgNear', 0.05, 3.6)} ATR</label>
-    <label ${lab} title="A gap that isn't filled after this many sessions expires">FVG max age ${inp('fvgDays', 1, 3)} days</label></div>
-    ${grp('Entry')}${grp('Exit')}
-    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn coachbtn" data-labapply style="font-size:.8rem;padding:1px 12px">Redraw</button>
+    ${wwRulePanel({ ...L, ...(S.labDraft || {}) }, { ...L, ...(S.labSw || {}) }, 'lab', shown)}
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn coachbtn" data-labapply data-applybtn="lab" style="font-size:.8rem;padding:1px 12px">${S.labDirty ? 'Apply changes' : 'Apply'}</button>
     <button class="btn" data-labtest ${S.labTest && S.labTest.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px" title="These settings vs your live settings, on every ticker of the watchlist">${S.labTest && S.labTest.running ? 'Testing…' : 'Test on all tickers'}</button>
     <button class="btn" data-labreset style="font-size:.8rem;padding:1px 10px" title="Start over from a copy of the live settings (the live bot is not changed)">Copy live settings</button>
-
-    <span class="muted" style="font-size:.75rem">Lab only: these settings are kept apart and never change the live bot or its signals${diff ? ` · ${diff} differ from live` : ''}. ON/OFF redraws by itself; numbers on Redraw.</span></div></div>`;
+    <span class="muted" style="font-size:.75rem">Lab only: these settings are kept apart and never change the live bot or its signals${diff ? ` · ${diff} differ from live` : ''}. Nothing changes until you click Apply.</span></div></div>`;
 }
 function labStats(sigs) {
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
@@ -3289,17 +3322,17 @@ document.addEventListener('click', e => {
     document.querySelectorAll(`[data-wwsw="${k}"]`).forEach(b => { const onv = sw[k], wrap = b.parentElement;
       b.textContent = onv ? 'ON' : 'OFF'; b.style.background = onv ? 'var(--gain)' : ''; b.style.color = onv ? '#fff' : ''; b.style.borderColor = onv ? 'transparent' : '';
       wrap.style.opacity = onv ? '' : '.55'; wrap.style.borderColor = onv ? 'var(--gain)' : 'var(--line)'; });
-    const where = el.closest('[data-wwwhere]'), w_ = where ? where.dataset.wwwhere : 'page';
-    clearTimeout(S.wwSwT); S.wwSwT = setTimeout(() => wwSaveParams(w_), 1500);      // several clicks: one save
+    S.wwDirty = true; wwMarkDirty();                                               // saved only on Apply
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
   if (el.hasAttribute('data-chartlab')) { S.chartLab = !S.chartLab; try { localStorage.setItem('chartLab', S.chartLab ? '1' : '0'); } catch (e) {} render(); return; }
-  if (el.dataset.labsw) { const L = labCfg(); L[el.dataset.labsw] = !L[el.dataset.labsw]; labRedraw(); return; }
+  if (el.dataset.labsw) { const k = el.dataset.labsw; S.labSw = { ...(S.labSw || {}) }; const L = labCfg(); S.labSw[k] = !((k in S.labSw) ? S.labSw[k] : L[k]); S.labDirty = true; render(); return; }
   if (el.hasAttribute('data-labapply')) { const L = labCfg();
     document.querySelectorAll('[data-labnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) L[i.dataset.labnum] = i.dataset.scale ? v * +i.dataset.scale : v; });
+    Object.assign(L, S.labDraft || {}, S.labSw || {}); S.labDraft = {}; S.labSw = {}; S.labDirty = false;
     labRedraw(); return; }
-  if (el.hasAttribute('data-labreset')) { S.lab = null; try { localStorage.removeItem('labCfg'); } catch (e) {} labRedraw(); return; }
+  if (el.hasAttribute('data-labreset')) { S.lab = null; S.labDraft = {}; S.labSw = {}; S.labDirty = false; try { localStorage.removeItem('labCfg'); } catch (e) {} labRedraw(); return; }
   if (el.hasAttribute('data-labtest')) {
     api('/bot/lab/test', { method: 'POST', body: { cfg: labCfg(), days: 250 } }).then(() => { S.labTest = { ...(S.labTest || {}), running: 'now' }; render(); setTimeout(loadLabTest, 15000); }).catch(err => toast(err.message));
     return; }
@@ -3323,7 +3356,7 @@ document.addEventListener('click', e => {
   if (el.hasAttribute('data-wwallrules')) { S.wwAllRules = !S.wwAllRules; render(); return; }
   if (el.hasAttribute('data-fcalllayers')) {
     S.fcAllLayers = !S.fcAllLayers;
-    if (!S.fcAllLayers) ['ema', 'orb', 'spy', 'mp', 'acc'].forEach(k => { S.fcLayers[k] = false; });   // hidden layers aren't drawn
+    if (!S.fcAllLayers) ['mp', 'acc'].forEach(k => { S.fcLayers[k] = false; });   // hidden layers aren't drawn
     try { localStorage.setItem('fcLayers', JSON.stringify(S.fcLayers)); } catch (e) {}
     render(); return;
   }
