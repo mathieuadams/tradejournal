@@ -3043,6 +3043,43 @@ def test_hourly_inertia():
     assert closed and all(r[idx[s["exitAt"]]]["s"] != "G" for s in closed)
 
 
+def test_option_test():
+    """Option test: contract picked among the calls that traded on the entry day; the entry at the 30-minute bar ending
+    with the stock candle; take profit / stop / stock exit on the option's own bars."""
+    import optiontest, alpaca, backtest
+    from datetime import datetime, timedelta
+    import db as db_
+    assert optiontest.occ("BRK.B", "2025-03-21", 450) == "BRKB250321C00450000"
+    assert optiontest.fridays("2025-03-03", 7, 21) == ["2025-03-14", "2025-03-21"]
+    assert optiontest.strikes_near(101.2)[0] == 101
+    want = optiontest.occ("AAA", "2025-03-14", 100)
+
+    def fake_bars(c, syms, tf, start, end):
+        if tf == "1Day":
+            return {s: [{"t": "2025-03-03T05:00:00Z", "v": 50}] for s in syms if s in (want, optiontest.occ("AAA", "2025-03-21", 100))}
+        out = []                                       # 30-minute bars (UTC): 2.00 at the entry, then up to 3.10 on day 2
+        for d, pxs in (("2025-03-03", [2.0] * 13), ("2025-03-04", [2.0, 2.4, 2.8, 3.1] + [2.9] * 9)):
+            t0 = datetime.strptime(d + "T14:30", "%Y-%m-%dT%H:%M")      # 09:30 NY (EST)
+            for k, px in enumerate(pxs):
+                out.append({"t": (t0 + timedelta(minutes=30 * k)).strftime("%Y-%m-%dT%H:%M:%SZ"), "o": px, "h": px, "l": px - 0.05, "c": px})
+        return {syms[0]: out}
+    saved = (optiontest.bars, alpaca.creds)
+    try:
+        optiontest.bars = fake_bars
+        alpaca.creds = lambda sub: {"key": "k", "secret": "s"}
+        db_.put({"PK": db_.upk("opt-user"), "SK": backtest.LAB_SK, "trades": [
+            {"sym": "AAA", "at": "2025-03-03T10:30", "R": 1.2, "pct": 2.0, "exit": "trail", "exitAt": "2025-03-05T10:30", "entry": 100.4}]})
+        r = optiontest.run("opt-user", {"dteMin": 7, "dteMax": 21, "money": 0, "tp": 50, "sl": 40, "slip": 0, "follow": True})
+        assert r["priced"] == 1, r
+        o = r["trades"][0]["opt"]
+        assert o["sym"] == want and o["entry"] == 2.0 and o["why"] == "option target" and o["pct"] == 55.0, o   # gapped over the target: filled at the open
+        g = {(x["tp"], x["sl"], x["follow"]): x for x in r["grid"]}
+        assert g[(None, None, True)]["avg"] == 45.0          # held to the stock exit: last option close 2.90
+        assert g[(100, None, False)]["n"] == 1
+    finally:
+        optiontest.bars, alpaca.creds = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -435,7 +435,7 @@ def _run0(sym, data, cfg, first):
         if s.get("R") is None:
             continue                                   # still-open trades count at their last price (marked to market)
         cw = s.get("cw")
-        out.append({"sym": sym, "at": s["at"], "R": s["R"], "pct": s["pct"], "exit": s["status"], "level": s.get("levelName"),
+        out.append({"sym": sym, "at": s["at"], "R": s["R"], "pct": s["pct"], "exit": s["status"], "exitAt": s.get("exitAt"), "level": s.get("levelName"),
                     "entry": s["entry"], "support": s.get("level"), "cw": cw, "atr": s.get("atr"),
                     "prem": s.get("armPremium") or 0, "room": round((cw - s["entry"]) / s["atr"], 2) if cw and s.get("atr") else None,
                     "waitH": round((datetime.strptime(s["at"], "%Y-%m-%dT%H:%M") - datetime.strptime(s["armedAt"][:16], "%Y-%m-%dT%H:%M")).total_seconds() / 3600, 1) if s.get("armedAt") else None,

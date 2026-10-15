@@ -1602,6 +1602,7 @@ function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
   if (labOn && S.labTest === undefined) { S.labTest = null; setTimeout(loadLabTest, 0); }
+  if (labOn && S.optTest === undefined) { S.optTest = null; setTimeout(loadOptTest, 0); }
   if (!S.ww && !S.wwBusy) { S.wwBusy = true; setTimeout(() => { S.wwBusy = false; loadWatch(); }, 0); }
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
   const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
@@ -1659,7 +1660,7 @@ function vChartWW() {
           + (sa ? `<span><b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}</span>` : '')
           + (d.note ? `<span class="muted">${esc(d.note)}</span>` : ''); })()}
       <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
-      ${labOn ? labStats(sigs) + labTestBox() : ''}
+      ${labOn ? labStats(sigs) + labTestBox() + optTestBox() : ''}
       <span class="muted">IN = PW setup, FLIP = flip setup, MRG = merged walls, RT = flow retest · green line = target (call wall) · red line = stop, trailing under the highest high · square = exit · × = reached the support but no entry (hover for the reason; grey = no call alert) · ◆ = VWAP reset candle touching the put wall (purple: closed above it, pink: under it) · ↑ ↓ ticker</span>
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
@@ -2832,6 +2833,44 @@ async function loadLabChart(sym) {
   try { S.fc[k] = await api('/bot/lab/chart', { method: 'POST', body: { t: sym, days: S.wwDays || 45, cfg: labCfg(), flow: !!S.fcLayers.flow } }); } catch (e) { S.fc[k] = { error: e.message }; }
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
+async function loadOptTest() {
+  try { S.optTest = await api('/bot/lab/options'); } catch (e) { S.optTest = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.optPoll);
+  if (S.optTest && S.optTest.running && route() === 'botchart') S.optPoll = setTimeout(loadOptTest, 15000);
+}
+function optParams() { let v = {}; try { v = JSON.parse(localStorage.getItem('optParams') || '{}') || {}; } catch (e) {}
+  return { dteMin: 7, dteMax: 21, money: 0, tp: 50, sl: 40, slip: 2, follow: true, ...v }; }
+function optTestBox() {
+  const t = S.optTest || {}, P = optParams();
+  const pc = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${v}%</b>`;
+  const inp = (id, v, w, step) => `<input id="${id}" type="number" step="${step || 1}" value="${v}" style="width:${w}em;padding:1px 4px">`;
+  const lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:3px;align-items:center"';
+  const head = `<h3 style="font-size:.95rem;margin:14px 0 4px">Option test <span class="muted" style="font-weight:400;font-size:.8rem">the last lab test's trades, each bought as a real call (Alpaca option prices, from Feb 2024)</span></h3>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:4px 0">
+    <span ${lab}>expiration ${inp('opt-dmin', P.dteMin, 3.4)}–${inp('opt-dmax', P.dteMax, 3.4)} days</span>
+    <span ${lab} title="Strike vs the stock entry price: 0 = at the money, -5 = 5% in the money, +5 = 5% out of the money">strike ${inp('opt-mon', P.money, 3.6, 0.5)}% from price</span>
+    <span ${lab} title="Sell when the option is up this much (0 = no target)">take profit ${inp('opt-tp', P.tp, 3.6, 5)}%</span>
+    <span ${lab} title="Sell when the option is down this much (0 = no stop)">stop ${inp('opt-sl', P.sl, 3.4, 5)}%</span>
+    <span ${lab} title="Paid on the way in and out (no historical bid/ask)">slippage ${inp('opt-slip', P.slip, 3, 0.5)}%</span>
+    <label ${lab} title="Also sell when the stock trade exits"><input type="checkbox" id="opt-follow" ${P.follow ? 'checked' : ''}>sell on the stock exit</label>
+    <button class="btn coachbtn" data-optrun ${t.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${t.running ? 'Pricing options…' : 'Run option test'}</button></div>`;
+  if (t.error) return head + `<div class="errbox">${esc(t.error)}</div>`;
+  if (t.running) return head + '<p class="loading">Picking a contract and pulling its prices for each trade… (a few minutes)</p>';
+  if (!t.mine) return head + `${(t.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(t.errors.join(' · '))}</p>` : '<p class="muted" style="font-size:.82rem">Run Test on all tickers first, then Run option test.</p>'}`;
+  const m = t.mine, st = t.stock || {}, p = t.params || {};
+  const lbl = g => `${g.tp ? '+' + g.tp + '%' : 'no target'} / ${g.sl ? '−' + g.sl + '%' : 'no stop'}${g.follow ? ' + stock exit' : ''}`;
+  return head + `<p class="muted" style="font-size:.8rem;margin:2px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${t.priced} of ${t.tested} trades priced${t.skipped ? ` (${t.skipped} without option prints)` : ''} · calls ${p.dteMin}–${p.dteMax} days, strike ${p.money > 0 ? '+' : ''}${p.money}% · slippage ${p.slip}% each way</p>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Median</th><th class="r">Avg win / loss</th><th class="r">PF</th></tr></thead><tbody>
+    <tr><td><b>Option</b> ${esc(lbl({ tp: p.tp, sl: p.sl, follow: p.follow }))}</td><td class="r">${m.n}</td><td class="r">${m.win ?? '—'}%</td><td class="r">${pc(m.avg)}</td><td class="r">${pc(m.med)}</td><td class="r">${pc(m.avgWin)} / ${pc(m.avgLoss)}</td><td class="r">${m.pf ?? '—'}</td></tr>
+    <tr><td class="muted">Same trades, stock (R)</td><td class="r">${st.n || 0}</td><td class="r">${st.win ?? '—'}%</td><td class="r">${st.avgR != null ? (st.avgR > 0 ? '+' : '') + st.avgR + 'R' : '—'}</td><td></td><td></td><td class="r">${st.pf ?? '—'}</td></tr></tbody></table></div>
+    <p class="muted" style="font-size:.82rem;margin:4px 0">Option exits: ${Object.entries(m.exits || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</p>
+    <details open style="margin:4px 0"><summary style="font-size:.82rem;cursor:pointer">Take profit × stop on the same option prices (best average first)</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Target / stop</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Median</th><th class="r">Avg win / loss</th><th class="r">PF</th><th class="r">Total</th></tr></thead><tbody>
+    ${(t.grid || []).slice(0, 20).map(g => `<tr><td>${esc(lbl(g))}</td><td class="r">${g.n}</td><td class="r">${g.win ?? '—'}%</td><td class="r">${pc(g.avg)}</td><td class="r">${pc(g.med)}</td><td class="r">${pc(g.avgWin)} / ${pc(g.avgLoss)}</td><td class="r">${g.pf ?? '—'}</td><td class="r">${pc(g.tot)}</td></tr>`).join('')}</tbody></table></div></details>
+    <details style="margin:4px 0"><summary style="font-size:.82rem;cursor:pointer">Option trades (last ${(t.trades || []).length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Ticker</th><th>Entry</th><th>Contract</th><th class="r">Paid</th><th class="r">Best</th><th>Exit</th><th class="r">Option</th><th class="r">Stock</th></tr></thead><tbody>
+    ${(t.trades || []).slice().reverse().map(x => `<tr><td><a href="#botchart?t=${encodeURIComponent(x.sym)}">${esc(x.sym)}</a></td><td>${esc(x.at.replace('T', ' ').slice(2))}</td><td>${esc(x.opt.exp.slice(2))} ${x.opt.strike}C</td><td class="r">${x.opt.entry}</td><td class="r">${pc(x.opt.mfe)}</td><td>${esc(x.opt.why || '')} ${esc((x.opt.exitAt || '').replace('T', ' ').slice(5))}</td><td class="r">${pc(x.opt.pct)}</td><td class="r">${x.R > 0 ? '+' : ''}${x.R}R</td></tr>`).join('')}</tbody></table></div></details>
+    ${(t.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+}
 async function loadLabTest() {
   try { S.labTest = await api('/bot/lab/test'); } catch (e) { S.labTest = { error: e.message }; }
   if (route() === 'botchart') render();
@@ -3360,7 +3399,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-optrun],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3439,6 +3478,13 @@ document.addEventListener('click', e => {
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }
   if (el.hasAttribute('data-labreset')) { S.lab = null; S.labDraft = {}; S.labSw = {}; S.labDirty = false; try { localStorage.removeItem('labCfg'); } catch (e) {} labRedraw(); return; }
+  if (el.hasAttribute('data-optrun')) {
+    const g = id => parseFloat(($('#' + id) || {}).value);
+    const P = { dteMin: g('opt-dmin'), dteMax: g('opt-dmax'), money: g('opt-mon'), tp: g('opt-tp'), sl: g('opt-sl'), slip: g('opt-slip'), follow: !!($('#opt-follow') || {}).checked };
+    Object.keys(P).forEach(k => { if (typeof P[k] === 'number' && isNaN(P[k])) delete P[k]; });
+    try { localStorage.setItem('optParams', JSON.stringify(P)); } catch (e) {}
+    api('/bot/lab/options', { method: 'POST', body: P }).then(() => { S.optTest = { ...(S.optTest || {}), running: 'now' }; render(); setTimeout(loadOptTest, 15000); }).catch(err => toast(err.message));
+    return; }
   if (el.hasAttribute('data-labtest')) {
     api('/bot/lab/test', { method: 'POST', body: { cfg: labCfg(), days: 250 } }).then(() => { S.labTest = { ...(S.labTest || {}), running: 'now' }; render(); setTimeout(loadLabTest, 15000); }).catch(err => toast(err.message));
     return; }

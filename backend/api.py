@@ -513,6 +513,32 @@ def bot_lab_chart(sub, claims, body, q):
     return wallwatch.chart(sub, b.get("t"), days=days, flow=b.get("flow", True) is not False, lab=cfg or {"_": 1})
 
 
+@route("GET", "/bot/lab/options")
+def bot_lab_options_get(sub, claims, body, q):
+    import optiontest
+    return optiontest.result(sub)
+
+
+@route("POST", "/bot/lab/options")
+def bot_lab_options(sub, claims, body, q):
+    import optiontest
+    b = body or {}
+    P = {}
+    for k, lo, hi in (("dteMin", 0, 120), ("dteMax", 1, 180), ("money", -30, 30), ("tp", 0, 1000), ("sl", 0, 100), ("slip", 0, 20), ("maxTrades", 10, 400)):
+        if b.get(k) not in (None, ""):
+            try:
+                P[k] = max(lo, min(hi, float(b[k])))
+            except (TypeError, ValueError):
+                pass
+    P["follow"] = b.get("follow") is not False
+    if P.get("dteMax", 21) < P.get("dteMin", 7):
+        P["dteMax"] = P.get("dteMin", 7)
+    db.put({"PK": db.upk(sub), "SK": optiontest.OPT_SK, **optiontest.result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwopt", "params": P}))
+    return {"status": "running"}
+
+
 @route("GET", "/bot/lab/test")
 def bot_lab_test_get(sub, claims, body, q):
     import backtest
