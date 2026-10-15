@@ -1115,6 +1115,11 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
     ema = _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     kc = keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
     inr = inertia_regime(bars, (int(P.get("inN1") or 70), int(P.get("inN2") or 40), int(P.get("inN3") or 20)))
+    inh = [None] * len(bars)                           # hourly inertia at each day's last hourly candle (its close)
+    if on("inhGreen") or on("inhNotRed") or on("inhYExit"):
+        ih_ = inertia_hourly(hbars, (int(P.get("inhN1") or 70), int(P.get("inhN2") or 40), int(P.get("inhN3") or 20)))
+        at_ = {b["t"][:16]: x for b, x in zip(hbars, ih_)}
+        inh = [at_.get(b["t"]) for b in bars]
     zones = fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10))
     bulls = [z for z in zones if z["type"] == "bull"]
     bear = [False] * len(bars)
@@ -1127,7 +1132,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
         day = b["t"][:10]
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, True, em=ema[i] if on("emaExit") else None,
-                  kcu=kc[i][1] if kc[i] else None, bear=bear[i] and on("fvgExit"), reg=inr[i])
+                  kcu=kc[i][1] if kc[i] else None, bear=bear[i] and on("fvgExit"), reg=inr[i], hreg=inh[i])
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -1147,6 +1152,10 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
         if on("inGreen") and not (inr[i] and inr[i]["s"] == "G"):
             continue
         if on("inNotRed") and not (inr[i] and inr[i]["s"] != "R"):
+            continue
+        if on("inhGreen") and not (inh[i] and inh[i]["s"] == "G"):
+            continue
+        if on("inhNotRed") and not (inh[i] and inh[i]["s"] != "R"):
             continue
         fz = None
         if on("fvgOn"):
@@ -1179,7 +1188,8 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
              "ema": round(ema[i], 4) if ema[i] is not None else None, "emaExit": on("emaExit"), "kcRide": on("kcRide"),
              "cwLost": on("cwLost"), "fvgExit": on("fvgExit"), "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1),
              "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "inRedExit": on("inRedExit"),
-             "inYExit": on("inYExit"), "inSt": (inr[i] or {}).get("s"), "kc": list(kc[i]) if kc[i] else None}
+             "inYExit": on("inYExit"), "inhYExit": on("inhYExit"), "inhSt": (inh[i] or {}).get("s"),
+             "inSt": (inr[i] or {}).get("s"), "kc": list(kc[i]) if kc[i] else None}
         if fz:
             s["fvgZone"] = {"t": fz["t"], "lo": fz["lo"], "hi": fz["hi"]}
         if P.get("fixR"):

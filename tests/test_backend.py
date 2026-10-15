@@ -2993,6 +2993,13 @@ def test_daily_strategy():
     assert off["status"] in ("stop", "open") and off["exitAt" if off["status"] != "open" else "lastAt"] >= s["exitAt"]
     assert wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False}, None)[0][0]["at"] < s["at"]   # every day passes
     assert wallwatch.config("x")["tf"] == "1h"
+    ih = wallwatch.inertia_hourly(hb, (12, 8, 4))
+    last = {b["t"][:10]: x for b, x in zip(hb, ih)}
+    hs_ = wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False, "inhNotRed": True, "inhN1": 12, "inhN2": 8, "inhN3": 4}, None)[0]
+    assert hs_
+    for sg_ in hs_:
+        assert last[sg_["at"][:10]]["s"] != "R" and sg_["inhSt"] == last[sg_["at"][:10]]["s"]
+    assert not wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False, "inhGreen": True, "inhN1": 12, "inhN2": 8, "inhN3": 4}, None)[0]   # never green here
 
 
 def test_no_support_any_candle():

@@ -2525,7 +2525,7 @@ const WW_RULES = [
   ['kcNotExt', 'Entry', 'Under upper daily KC', 'Not over-extended: the entry candle closes under the upper band of the DAILY Keltner channel'],
   ['inGreen', 'Entry', 'Daily inertia green', 'Direction: the inertia (linear regression of the daily closes) over the 3 lengths is rising on all of them, today included'],
   ['inNotRed', 'Entry', 'Daily inertia not red', 'Direction: at least one of the 3 daily inertias is rising (green or yellow)'],
-  ['inhGreen', 'Entry', 'Hourly inertia green', 'Entry fine tuning: the inertia of the hourly closes over the 3 lengths is rising on all of them at the entry candle'],
+  ['inhGreen', 'Entry', 'Hourly inertia green', 'The inertia of the hourly closes over the 3 lengths is rising on all of them at the entry candle (1D timeframe: at the day\'s last hourly candle)'],
   ['inhNotRed', 'Entry', 'Hourly inertia not red', 'At least one of the 3 hourly inertias is rising at the entry candle'],
   ['kcdLower', 'Entry', 'Lower half daily KC', 'The entry candle closes in the lower half of the DAILY Keltner channel (at or under its middle line, the 21 EMA)'],
   ['kchLower', 'Entry', 'Lower half hourly KC', 'Entry fine tuning: the entry candle closes in the lower half of the HOURLY Keltner channel (at or under its middle line)'],
@@ -2547,7 +2547,7 @@ const WW_RULES = [
   ['scaleOn', 'Exit', 'Sell part at', 'Sell part of the position (contracts, at market; at least 1, never all) when price reaches the entry + this many R (R = entry − stop), the rest keeps the other exits', ['ww-scr', 'scaleR', 0.25, 3.2, 'R', 1], ['ww-scp', 'scalePct', 5, 3.2, '%', 50]],
   ['scaleBE', 'Exit', 'Rest to breakeven', 'After the partial sale, the stop of the rest moves up to the entry price'],
   ['inYExit', 'Exit', 'Inertia not green', 'Sell at the daily close when the daily inertia is no longer green (yellow or red)'],
-  ['inhYExit', 'Exit', 'Hourly inertia not green', 'Sell at the close of the first hourly candle where the hourly inertia is no longer green (yellow or red)'],
+  ['inhYExit', 'Exit', 'Hourly inertia not green', 'Sell when the hourly inertia is no longer green (yellow or red): at that hourly close (1D timeframe: at the daily close)'],
   ['inRedExit', 'Exit', 'Inertia turns red', 'Sell at the daily close when all 3 daily inertias are falling (red)'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
@@ -2561,7 +2561,7 @@ const WW_IND = [
   ['kch', 'Keltner hourly', 'kch', [['kchLen', 'EMA', 1, 3.2, '', 21], ['kchMult', '±', 0.5, 3, '× ATR', 3]], 'Hourly candles: entry fine tuning', ['kchLower']],
   ['fvg', 'Fair value gaps', 'fvg', [['fvgMin', 'min size', 0.05, 3.2, '× ATR', 0.2], ['fvgNear', 'margin', 0.05, 3.2, '× ATR', 0.25], ['fvgDays', 'max age', 1, 3, 'days', 10]], '3-candle gaps on hourly candles, until filled or expired', ['fvgOn', 'fvgExit']],
   ['inertia', 'Daily inertia', 'inertia', [['inN1', 'lengths', 1, 3.2, '', 70], ['inN2', '', 1, 3.2, '', 40], ['inN3', '', 1, 3.2, 'days', 20]], 'Direction from the daily closes: linear regression over 3 lengths; green = all rising, yellow = mixed, red = all falling (colored strip under the candles)', ['inGreen', 'inNotRed', 'inYExit', 'inRedExit']],
-  ['inertiah', 'Hourly inertia', 'inertiah', [['inhN1', 'lengths', 1, 3.2, '', 70], ['inhN2', '', 1, 3.2, '', 40], ['inhN3', '', 1, 3.2, 'candles', 20]], 'The same regression on the hourly closes (lengths in hourly candles); thin strip above the daily one, hourly view only', ['inhGreen', 'inhNotRed', 'inhYExit']],
+  ['inertiah', 'Hourly inertia', 'inertiah', [['inhN1', 'lengths', 1, 3.2, '', 70], ['inhN2', '', 1, 3.2, '', 40], ['inhN3', '', 1, 3.2, 'candles', 20]], 'The same regression on the hourly closes (lengths in hourly candles); thin strip above the daily one (1h chart view)', ['inhGreen', 'inhNotRed', 'inhYExit']],
   ['dark', 'Dark pool', 'dark', [], 'Top dark pool price levels of the last 2 months', ['dpLost']],
   ['orb', 'Opening range', 'orb', [], 'High / low of the 09:30–10:30 candle', ['orbAbove']],
   ['spy', 'SPY trend', 'spy', [], 'SPY vs its close 6 sessions ago', ['spyUp']],
@@ -2841,7 +2841,7 @@ async function loadLabTest() {
 function labRedraw() { labSave(); const sym = labSymbol(); Object.keys(S.fc).filter(x => x.includes('ww-lab-')).forEach(x => { delete S.fc[x]; }); clearTimeout(S.labT); S.labT = setTimeout(() => loadLabChart(sym), 600); render(); }
 function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return t || l[0] || ''; }
 try { S.chartLab = localStorage.getItem('chartLab') === '1'; } catch (e) { S.chartLab = false; }
-const HOURLY_ONLY = ['inhGreen', 'inhNotRed', 'inhYExit', 'alertReq', 'relFlow', 'vwapReset', 'usePW', 'useFlip', 'vwapOn', 'emaOverVwap', 'skewOn', 'spyUp', 'kchLower', 'orbAbove', 'pvEod', 'vwapExit', 'dpLost'];
+const HOURLY_ONLY = ['alertReq', 'relFlow', 'vwapReset', 'usePW', 'useFlip', 'vwapOn', 'emaOverVwap', 'skewOn', 'spyUp', 'kchLower', 'orbAbove', 'pvEod', 'vwapExit', 'dpLost'];
 const DAILY_PRESET = { tf: '1D', pwTest: true, inGreen: true, fvgOn: true, inYExit: true, greenOnly: false, inNotRed: false, emaOn: false, kcdLower: false, kcNotExt: false, aboveFlip: false, noAboveCW: false, cwRoomOn: false, earnOn: false, pwNeCw: false, stopOn: true, trailOn: false, targetOn: false, flipExit: false, kcRide: false, cwLost: false, fvgExit: false, scaleOn: false, inRedExit: false, emaExit: false };
 function labPanel() {
   const L = labCfg() || {};
