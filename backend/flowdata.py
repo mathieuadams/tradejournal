@@ -150,9 +150,8 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
             continue
         seen.add(uid)
         exp = a.get("expiry")
-        try:                                           # days to expiry on the day of the alert (an old alert's contract
-            d_at = datetime.strptime(created[:10], "%Y-%m-%d").date()   # may have expired since: it still counts)
-            dte = (datetime.strptime(exp, "%Y-%m-%d").date() - min(d_at, today)).days
+        try:
+            dte = (datetime.strptime(exp, "%Y-%m-%d").date() - today).days
         except (TypeError, ValueError):
             continue
         prem, ask = _f(a.get("total_premium")), _f(a.get("total_ask_side_prem"))
@@ -543,9 +542,7 @@ def dp_levels(prints, top_n=5):
         step = max(0.01, round(ps[len(ps) // 2] * 0.0025, 2))          # bucket ~0.25% of price
         for p in prints:
             b = round(round(p["price"] / step) * step, 2)
-            lv = levels.setdefault(b, {"price": b, "premium": 0, "prints": 0, "_pw": 0.0, "buy": 0, "sell": 0, "times": []})
-            if p.get("t"):
-                lv["times"].append([p["t"], p["premium"]])
+            lv = levels.setdefault(b, {"price": b, "premium": 0, "prints": 0, "_pw": 0.0, "buy": 0, "sell": 0})
             lv["premium"] += p["premium"]
             lv["prints"] += 1
             lv["_pw"] += p["price"] * p["premium"]
@@ -553,11 +550,4 @@ def dp_levels(prints, top_n=5):
                 lv[p["side"]] += p["premium"]
     for lv in levels.values():          # the level sits at the premium-weighted price of its prints
         lv["price"] = round(lv.pop("_pw") / lv["premium"], 2) if lv["premium"] else lv["price"]
-        lv["times"].sort()
-        lv["first"] = lv["times"][0][0] if lv["times"] else None      # when the level started (first print)
-        lv["last"] = lv["times"][-1][0] if lv["times"] else None
-    out = sorted(levels.values(), key=lambda x: -x["premium"])[:top_n]
-    if top_n > 20:                                     # the volume profile doesn't need every print time
-        for lv in out:
-            lv.pop("times", None)
-    return out
+    return sorted(levels.values(), key=lambda x: -x["premium"])[:top_n]

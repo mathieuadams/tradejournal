@@ -27,27 +27,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # rule switches (on/off) for the flow retest
           "usePW": True, "useFlip": True, "greenOnly": True, "noAboveCW": True, "cwRoomOn": True, "earnOn": True,
           "vwapOn": False, "emaOn": False, "emaLen": 20, "stopOn": True, "trailOn": True, "targetOn": True,
-          "vwapExit": False, "emaExit": False, "emaOverVwap": False,
-          "spyUp": False, "kcNotExt": False, "orbAbove": False, "kcLen": 21, "kcMult": 3.0,
-          "kcDaily": True,     # over-extension (Under upper Keltner, Keltner ride) on the daily channel, else hourly
-          "kchLower": False, "kchLen": 21, "kchMult": 3.0, "kcdLower": False,   # kcdLower: close in the lower half of the DAILY channel   # hourly Keltner channel   # entry fine tuning: the entry candle closes in the lower half of the HOURLY Keltner channel
-          # building blocks (no dedicated strategies): alertReq = a call alert must arm the ticker first;
-          # vwapReset = the entry candle is a VWAP reset candle (highest volume of the period); pwNeCw = no entry when PW = CW
-          "alertReq": True, "vwapReset": False, "pwNeCw": False,
-          "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False,
-          # pvSetup: the VWAP reset on the put wall strategy replaces the flow retest (LONG signal of pw_vwap_events)
-          # pvEod: with it, the entry day must close above the put wall, else sold at that close
-          "pvSetup": False, "pvEod": False,
-          # relFlow: a call alert arms the ticker when its premium is at least relMult x the median premium of the
-          # ticker's call alerts of the previous 30 days (unusual for THIS ticker); retestMin is the fallback with < 5 alerts
-          "relFlow": True, "relMult": 3.0,
-          # fvgOn: the entry candle must trade into an open bullish fair value gap (3-candle gap of at least fvgMin x ATR)
-          "fvgOn": False, "fvgMin": 0.2, "fvgNear": 0.25, "fvgDays": 10,   # fvgDays: a gap not filled after N sessions expires   # fvgNear: a low within this x ATR above the gap counts as a touch
-          # fvgExit: sell at the close of the candle that completes a new bearish fair value gap after the entry
-          "fvgExit": False,
-          # scaleOn (lab / backtest): sell scalePct % of the position when price reaches entry + scaleR x risk;
-          # scaleBE: then move the stop of the rest to the entry price
-          "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "vwapExit": False, "emaExit": False}   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -57,8 +37,6 @@ def config(sub):
     out.update({k: c.get(k, v) for k, v in PARAMS.items()})
     out.update({k: c.get(k, v) for k, v in OPTS.items()})
     out["added"] = c.get("added") or {}                 # {ticker: {"at", "by", "premium"}} for tickers added from the flow
-    out["scaleOn"] = False                              # partial exits: Strategy lab / backtests only, the live bot sells all at once
-    out["pvSetup"] = False                              # no dedicated strategies: the VWAP reset is a rule (vwapReset) now
     if FLOW_ONLY:                                       # only the flow retest setup is used for now
         out.update(pwSetup=False, flipSetup=False, mergedSetup=False, retestSetup=True)
     return out
@@ -72,10 +50,10 @@ def version(cfg):
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
-            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}")
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit")
 
 
 def save_config(sub, body):
@@ -94,25 +72,18 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
+    for k, lo_, hi_ in (("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
             except (TypeError, ValueError):
                 pass
-    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "kchMult", "relMult", "fvgMin", "fvgNear", "scaleR"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
             except (TypeError, ValueError):
                 pass
-    if "scalePct" in body:
-        try:
-            cur["scalePct"] = max(1, min(99, int(float(body["scalePct"]))))
-        except (TypeError, ValueError):
-            pass
-    if "kcDaily" in body:
-        cur["kcDaily"] = bool(body["kcDaily"])
     for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
@@ -267,80 +238,24 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
-def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False):
-    """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
-    Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held).
-    kcRide (kcu = upper Keltner band of this candle): an hourly close above the upper band starts a ride -> the target,
-    the time / flip / VWAP / EMA exits are suspended, and the trade is sold at the first daily close under the band
-    (the same day included). A target reached on a candle that closes above the band doesn't sell: it starts the ride."""
-    if s.get("maxDays") and b["t"][:10] != s.get("_dd"):
-        s["_dd"] = b["t"][:10]
-        s["_dn"] = s.get("_dn", -1) + 1
-    if is_last and s.get("kind") == "retest":         # each daily close: what the exits saw (shown on the chart)
-        fl_ = (walls.get(b["t"][:10]) or {}).get("flip")
-        s.setdefault("dlog", []).append([b["t"][:10], round(b["c"], 2), round(kcu, 2) if kcu is not None else None,
-                                         float(fl_) if fl_ else None, 1 if s.get("riding") else 0])
-        s["dlog"] = s["dlog"][-40:]
+def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None):
+    """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip."""
     if b["l"] <= s["stop"]:
-        st_ = "breakeven" if s.get("scaled") and abs(s["stop"] - s["entry"]) < 1e-9 else "trail" if s.get("stops") else "stop"
-        s.update(status=st_, exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
+        s.update(status="trail" if s.get("stops") else "stop", exitAt=b["t"][:16], exit=round(min(b["o"], s["stop"]), 4))
         return
-    if s.get("scaleOn") and not s.get("scaled"):     # part of the position sold at entry + N x risk
-        lvl = s["entry"] + float(s.get("scaleR") or 1) * (s["entry"] - s["stop0"])
-        if s["entry"] > s["stop0"] and b["h"] >= lvl:
-            px_ = round(max(b["o"], lvl), 4)
-            s["scaled"] = {"at": b["t"][:16], "px": px_, "frac": max(0.01, min(0.99, float(s.get("scalePct") or 50) / 100))}
-            if s.get("scaleBE") and s["stop"] < s["entry"]:
-                s["stop"] = s["entry"]                    # the rest can't lose any more
-                s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], s["entry"]])
-    if s.get("pvEod") and is_last and b["t"][:10] == s["at"][:10] and s.get("level") and b["c"] < float(s["level"]):
-        s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])        # the entry day closed under the support: out
+    if s.get("target") and b["h"] >= s["target"]:
+        s.update(status="target", exitAt=b["t"][:16], exit=round(max(b["o"], s["target"]), 4))
         return
-    if s.get("fvgExit") and bear:                    # this candle completes a new bearish fair value gap: out at its close
-        s.update(status="fvg", exitAt=b["t"][:16], exit=b["c"])
+    fl =(walls.get(b["t"][:10]) or {}).get("flip")
+    if flip_exit and is_last and s.get("aboveFlipAtEntry") and fl and b["c"] < float(fl):
+        s.update(status="flip", exitAt=b["t"][:16], exit=b["c"])          # the day closed under the gamma flip
         return
-    if s.get("cwLost") or s.get("dpLost"):           # passed a level, then the day closes back under it: out
-        lv = []
-        cw_d = (walls.get(b["t"][:10]) or {}).get("callWall")
-        if s.get("cwLost") and cw_d:
-            lv.append(("call wall", float(cw_d)))
-        if s.get("dpLost") and dpl:
-            lv += [("dark pool level", float(x)) for x in dpl if float(x) > s["entry"]]
-        passed = s.setdefault("passed", [])
-        for name, px in lv:
-            if b["c"] > px and [name, px] not in passed:
-                passed.append([name, px])                 # an hourly close above the level
-        if is_last and passed:
-            name, px = max(passed, key=lambda x: x[1])
-            if b["c"] < px:
-                s.update(status="lost", exitAt=b["t"][:16], exit=b["c"], lostLevel=f"{name} {px:g}")
-                return
-    ride_on = bool(s.get("kcRide")) and kcu is not None
-    if ride_on and not s.get("riding") and b["c"] > kcu:
-        s["riding"], s["rideAt"] = True, b["t"][:16]      # an hourly close above the upper Keltner band starts the ride
-    if s.get("riding"):
-        if is_last and kcu is not None and b["c"] < kcu:
-            s.update(status="keltner", exitAt=b["t"][:16], exit=b["c"])  # the day closed under the upper band: out
-            return
-    else:
-        hits = [(k, st) for k, st in (("target", "target"), ("fixT", "R")) if s.get(k) and b["h"] >= s[k]]
-        if hits:
-            k, st = hits[0]
-            s.update(status=st, exitAt=b["t"][:16], exit=round(max(b["o"], s[k]), 4))
-            return
-        if s.get("maxDays") and is_last and s.get("_dn", 0) >= int(s["maxDays"]):
-            s.update(status="time", exitAt=b["t"][:16], exit=b["c"])
-            return
-        fl = (walls.get(b["t"][:10]) or {}).get("flip")
-        if flip_exit and is_last and s.get("aboveFlipAtEntry") and fl and b["c"] < float(fl):
-            s.update(status="flip", exitAt=b["t"][:16], exit=b["c"])          # the day closed under the gamma flip
-            return
-        if s.get("vwapExit") and vw is not None and b["c"] < vw:
-            s.update(status="vwap", exitAt=b["t"][:16], exit=b["c"])          # hourly close under the VWAP
-            return
-        if s.get("emaExit") and em is not None and b["c"] < em:
-            s.update(status="ema", exitAt=b["t"][:16], exit=b["c"])           # hourly close under the EMA
-            return
+    if s.get("vwapExit") and vw is not None and b["c"] < vw:
+        s.update(status="vwap", exitAt=b["t"][:16], exit=b["c"])          # hourly close under the VWAP
+        return
+    if s.get("emaExit") and em is not None and b["c"] < em:
+        s.update(status="ema", exitAt=b["t"][:16], exit=b["c"])           # hourly close under the EMA
+        return
     s["last"], s["lastAt"] = b["c"], b["t"][:16]
     s["mfe"] = max(s.get("mfe", s["entry"]), b["h"])
     s["mae"] = min(s.get("mae", s["entry"]), b["l"])
@@ -354,9 +269,6 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
 def _result(s):
     ex = s.get("exit") if s["status"] != "open" else s["last"]
     pct = round((ex / s["entry"] - 1) * 100, 2)
-    sc = s.get("scaled")
-    if sc:                                             # partial exit: the two parts weighted by their size
-        pct = round(sc["frac"] * (sc["px"] / s["entry"] - 1) * 100 + (1 - sc["frac"]) * (ex / s["entry"] - 1) * 100, 2)
     risk = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
     return pct, (round(pct / risk, 2) if risk > 0 else None)
 
@@ -416,246 +328,13 @@ def _ema_series(xs, n):
     return out
 
 
-def dp_level_map(prints, dates, top_n=5, window_days=66):
-    """{date: [prices]}: the top dark pool levels of the ~2 months before each date (as drawn on the chart)."""
-    import bisect
-    import flowdata
-    if not prints:
-        return {}
-    prints = sorted(prints, key=lambda p: p["t"])
-    ts = [p["t"][:10] for p in prints]
-    out = {}
-    for d in dates:
-        d0 = (datetime.strptime(d, "%Y-%m-%d") - timedelta(days=window_days)).strftime("%Y-%m-%d")
-        win = prints[bisect.bisect_left(ts, d0):bisect.bisect_left(ts, d)]
-        if len(win) >= 5:
-            out[d] = [lv["price"] for lv in flowdata.dp_levels(win, top_n)]
-    return out
-
-
-def pw_vwap_events(bars, walls, resets, near_pct=0.3, kc=None):
-    """VWAP reset candles (the hourly candle with the highest volume of the period) vs the gamma walls of the day.
-    touch / cwTouch: the candle's range touches the put wall / call wall (within near_pct %).
-    kcPos: close in the Keltner channel (0 = lower band, 100 = upper band), kcHalf "lower"/"upper" (vs the midline).
-    side: "long" = touches the put wall, closes in the lower Keltner half; "short" = touches the call wall, closes in
-    the upper Keltner half; None otherwise. No side when the put wall equals the call wall.
-    kc: keltner(bars) list aligned with bars (computed if missing)."""
-    if kc is None:
-        kc = keltner(bars, daily=True)
-    out = []
-    for j in sorted(set(resets)):
-        if j <= 0 or j >= len(bars):
-            continue
-        b = bars[j]
-        w = walls.get(b["t"][:10]) or {}
-        pw, cw = w.get("putWall"), w.get("callWall")
-        if not pw:
-            continue
-        pw, cw = float(pw), (float(cw) if cw else None)
-        hit = lambda lv: lv is not None and b["l"] <= lv * (1 + near_pct / 100) and b["h"] >= lv * (1 - near_pct / 100)
-        same = cw is not None and abs(pw - cw) < 1e-6
-        k = _kc_pos(b["c"], kc[j] if j < len(kc) else None)
-        touch, ctouch = hit(pw), hit(cw)
-        side = None
-        if not same and touch and k["kcHalf"] == "lower":
-            side = "long"
-        elif not same and ctouch and k["kcHalf"] == "upper":
-            side = "short"
-        out.append({"i": j, "t": b["t"][:16], "pw": pw, "cw": cw, "same": same, "touch": touch, "cwTouch": ctouch, "side": side,
-                    "above": b["c"] >= pw, "green": b["c"] >= b["o"],
-                    "o": round(b["o"], 2), "h": round(b["h"], 2), "l": round(b["l"], 2), "c": round(b["c"], 2), **k})
-    return out
-
-
-def _kc_pos(price, k):
-    """Where a price sits in the Keltner channel: kcPos 0 = lower band, 50 = midline, 100 = upper band."""
-    if not k or k[1] <= k[2]:
-        return {"kcPos": None, "kcHalf": None}
-    pos = round((price - k[2]) / (k[1] - k[2]) * 100)
-    return {"kcPos": pos, "kcHalf": "upper" if price >= k[0] else "lower",
-            "kcM": round(k[0], 2), "kcU": round(k[1], 2), "kcL": round(k[2], 2)}
-
-
-def keltner(bars, n=21, mult=3.0, daily=False):
-    """Keltner channel: EMA(n) of the close +/- mult x EMA(n) of the true range. [(mid, upper, lower) or None] per candle.
-    daily: on daily candles, as a daily chart shows it: for each hourly candle, the EMAs of the previous days updated with
-    today's candle so far (close, high, low up to this hour), so no later price is used."""
-    if daily:
-        return _keltner_daily(bars, n, mult)
-    closes = [b["c"] for b in bars]
-    tr = [max(b["h"] - b["l"], abs(b["h"] - bars[i - 1]["c"]), abs(b["l"] - bars[i - 1]["c"])) if i else b["h"] - b["l"]
-          for i, b in enumerate(bars)]
-    mid, rng = _ema_series(closes, n), _ema_series(tr, n)
-    return [(round(m, 4), round(m + mult * r, 4), round(m - mult * r, 4)) if m is not None and r is not None else None
-            for m, r in zip(mid, rng)]
-
-
-def _keltner_daily(bars, n=21, mult=3.0):
-    k = 2 / (n + 1)
-    out, closes, trs = [], [], []                      # completed days
-    e_prev = a_prev = None                             # EMAs at the previous day's close
-    day, dh, dl, pc = None, None, None, None
-    for i, b in enumerate(bars):
-        d = b["t"][:10]
-        if d != day:
-            if day is not None:                         # yesterday is complete: commit it
-                c_, tr_ = bars[i - 1]["c"], max(dh - dl, abs(dh - pc), abs(dl - pc)) if pc is not None else dh - dl
-                closes.append(c_)
-                trs.append(tr_)
-                if e_prev is None:
-                    if len(closes) >= n:
-                        e_prev, a_prev = sum(closes[-n:]) / n, sum(trs[-n:]) / n
-                else:
-                    e_prev, a_prev = c_ * k + e_prev * (1 - k), tr_ * k + a_prev * (1 - k)
-                pc = c_
-            day, dh, dl = d, b["h"], b["l"]
-        else:
-            dh, dl = max(dh, b["h"]), min(dl, b["l"])
-        if e_prev is None:
-            out.append(None)
-            continue
-        tr = max(dh - dl, abs(dh - pc), abs(dl - pc)) if pc is not None else dh - dl
-        m, r = b["c"] * k + e_prev * (1 - k), tr * k + a_prev * (1 - k)
-        out.append((round(m, 4), round(m + mult * r, 4), round(m - mult * r, 4)))
-    return out
-
-
-def orb_levels(bars):
-    """Opening range = the 09:30-10:30 hourly candle of the day: [(high, low) known after that candle, else None]."""
-    out, cur, day = [], None, None
-    for b in bars:
-        if b["t"][:10] != day:
-            day, cur = b["t"][:10], None
-        if b["t"][11:16] == "09:30":
-            out.append(None)
-            cur = (b["h"], b["l"])
-        else:
-            out.append(cur)
-    return out
-
-
-_SPY = {}
-
-
-def spy_trend(start, now=None):
-    """{hourly candle 'YYYY-MM-DDTHH:MM': 1 / -1}: SPY at that candle's close vs SPY's close 6 sessions before that day
-    (the TOS 'ttmTrend' of SPY on daily closes, 6 bars). Cached for the hour."""
-    from charts import _yahoo
-    now = now or now_ny().replace(tzinfo=None)
-    key = now.strftime("%Y-%m-%dT%H")
-    if key in _SPY:
-        return _SPY[key]
-    start = now - timedelta(days=725)                  # one fetch covers every chart / backtest (hourly: ~2 years max)
-    try:
-        hb = finished(_yahoo("SPY", "1h", start, now + timedelta(days=1)) or [], now)
-        db_ = [b for b in (_yahoo("SPY", "1d", start - timedelta(days=20), now + timedelta(days=1)) or []) if b.get("c")]
-    except Exception as e:
-        print("spy trend failed", e)
-        return {}
-    dates = [b["t"][:10] for b in db_]
-    closes = {b["t"][:10]: b["c"] for b in db_}
-    out, j = {}, 0
-    for b in hb:
-        d = b["t"][:10]
-        while j < len(dates) and dates[j] < d:
-            j += 1
-        if j >= 6:
-            out[b["t"][:16]] = 1 if b["c"] - closes[dates[j - 6]] >= 0 else -1
-    _SPY.clear()
-    _SPY[key] = out
-    return out
-
-
-def fvg_zones(bars, min_atr=0.2, atr=None, max_days=10):
-    """Fair value gaps on these candles: bullish when the low of candle i is above the high of candle i-2, bearish when
-    the high of candle i is under the low of candle i-2; kept when the gap is at least min_atr x ATR(14).
-    A zone is usable from candle i+1 and is filled when a later candle trades through it (low under the bottom of a
-    bullish gap / high over the top of a bearish one). [{i, t, type, lo, hi, fillI, fillAt}]"""
-    atr = atr or atr14(bars)
-    out = []
-    for i in range(2, len(bars)):
-        a, c = bars[i - 2], bars[i]
-        m = (atr[i] or 0) * min_atr
-        if c["l"] > a["h"] and c["l"] - a["h"] >= m:
-            out.append({"i": i, "t": bars[i - 1]["t"][:16], "type": "bull", "lo": round(a["h"], 4), "hi": round(c["l"], 4)})
-        elif c["h"] < a["l"] and a["l"] - c["h"] >= m:
-            out.append({"i": i, "t": bars[i - 1]["t"][:16], "type": "bear", "lo": round(c["h"], 4), "hi": round(a["l"], 4)})
-    for z in out:                                      # filled, or expired after max_days sessions
-        z["fillI"] = z["fillAt"] = z["end"] = None
-        d0, nd = bars[z["i"]]["t"][:10], 0
-        for j in range(z["i"] + 1, len(bars)):
-            if bars[j]["t"][:10] != bars[j - 1]["t"][:10]:
-                nd += 1
-            if max_days and nd > max_days:
-                z["fillI"], z["fillAt"], z["end"] = j, bars[j]["t"][:16], "expired"
-                break
-            if (z["type"] == "bull" and bars[j]["l"] < z["lo"]) or (z["type"] == "bear" and bars[j]["h"] > z["hi"]):
-                z["fillI"], z["fillAt"], z["end"] = j, bars[j]["t"][:16], "filled"
-                break
-    return out
-
-
-def fvg_bear_new(bars, min_atr=0.2, atr=None):
-    """Per candle: True when it completes a bearish fair value gap (its high under the low of two candles before)."""
-    out = [False] * len(bars)
-    for z in fvg_zones(bars, min_atr, atr):
-        if z["type"] == "bear":
-            out[z["i"]] = True
-    return out
-
-
-def fvg_bull_touch(bars, zones, near=0.0, atr=None):
-    """Per candle: the open bullish FVG (formed before it, not filled before it) that its low trades into, or comes
-    within near x ATR above, while it closes above the bottom of the gap, else None."""
-    out = [None] * len(bars)
-    bulls = [z for z in zones if z["type"] == "bull"]
-    atr = atr or (atr14(bars) if near else [0] * len(bars))
-    for j, b in enumerate(bars):
-        m = near * (atr[j] or 0)
-        for z in bulls:
-            if z["i"] < j and (z["fillI"] is None or z["fillI"] >= j) and b["l"] <= z["hi"] + m and b["c"] > z["lo"]:
-                out[j] = z
-                break
-    return out
-
-
-REL_DAYS, REL_MIN_N, REL_FLOOR = 30, 5, 50_000
-
-
-def unusual_calls(alerts, fallback=500_000, mult=3.0):
-    """Call alerts that are unusual for this ticker: premium >= mult x the median premium of its call alerts of the
-    previous REL_DAYS days (only past alerts: no look-ahead), and at least REL_FLOOR. With fewer than REL_MIN_N past
-    alerts the fixed `fallback` is used. Adds "x" = premium / that median (None on the fallback)."""
-    import bisect
-    calls = sorted((a for a in (alerts or []) if a.get("c")), key=lambda a: a["t"])
-    ts = [a["t"] for a in calls]
-    out = []
-    for k, a in enumerate(calls):
-        try:
-            lo_t = (datetime.strptime(a["t"][:10], "%Y-%m-%d") - timedelta(days=REL_DAYS)).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-        prev = sorted(float(x.get("p") or 0) for x in calls[bisect.bisect_left(ts, lo_t):k])
-        p = float(a.get("p") or 0)
-        if len(prev) >= REL_MIN_N:
-            med = prev[len(prev) // 2]
-            if med > 0 and p >= max(REL_FLOOR, mult * med):
-                out.append({**a, "x": round(p / med, 1)})
-        elif p >= fallback:
-            out.append({**a, "x": None})
-    return out
-
-
-def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None, vwap_map=None, ema_map=None,
-                  extra=None):
+def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None, vwap_map=None, ema_map=None):
     """Flow retest: a call alert of at least retestMin arms the ticker (a new alert re-arms it). The support is the highest
     of put wall / flip at or under the price at the close of the alert's candle. From that candle on, within
     retestDays trading days: a green hourly candle whose low reaches the support (within 0.3%) and that closes above it
     is the entry. An hourly close under the stop before the entry ends the watch. Target: the call wall of the day if it's above the entry (minus the buffer), else trailing only.
     Returns (signals, current watch or None)."""
     P = {**PARAMS, **(cfg or {})}
-    if P.get("pvSetup"):                               # the VWAP reset on the put wall strategy
-        return detect_pvlong(bars, walls, start, P, datr, earnings, vwap_map, ema_map, extra), None
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
     vmin, ndays = float(P.get("retestMin") or 500000), int(P.get("retestDays") or 5)
     zone_atr = float(P.get("retestZone") if P.get("retestZone") is not None else 0.25)
@@ -667,24 +346,6 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         earnings = None
     sup_keys = tuple(x for x, k in ((("putWall", "put wall"), "usePW"), (("flip", "flip"), "useFlip")) if on(k))
     ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
-    extra = extra or {}
-    kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
-    kch = ([extra["kch"].get(b["t"][:16]) for b in bars] if extra.get("kch") else keltner(bars, int(P.get("kchLen") or 21), float(P.get("kchMult") or 3))) \
-        if on("kchLower") else None
-    orb = orb_levels(bars)
-    spy = extra.get("spy") or {}
-    skp = extra.get("skewPct") or {}
-    dplv = extra.get("dpLevels") or {}                  # {date: top dark pool level prices known before that day}
-    misses = extra.get("misses")                        # optional list: candles at the support that didn't enter, and why
-    seen_miss = set()
-
-    def miss(b, why):
-        if misses is None or (start and b["t"][:10] < start):
-            return
-        k = (b["t"][:10], why)
-        if k not in seen_miss:                          # once per day and reason
-            seen_miss.add(k)
-            misses.append({"t": b["t"][:16], "r": why, "l": b["l"]})                    # {date: percentile of the previous session's skew}
     flip_exit, earn_days = bool(P.get("flipExit", True)), int(P.get("earnDays") if P.get("earnDays") is not None else 10)
     earn_d = None
     try:
@@ -697,18 +358,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         vwap = [vwap_map.get(b["t"][:16]) for b in bars]
     else:
         vwap, _ = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))
-    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10)),
-                           float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
-    bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
-    if on("vwapReset"):
-        if extra.get("vwResets") is not None:
-            rs_ = set(extra["vwResets"])
-            vreset = {i for i, b in enumerate(bars) if b["t"][:16] in rs_}
-        else:
-            vreset = set(anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[1])
-    need_alert = on("alertReq")
-    big = [] if not need_alert else (unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else
-                                     sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"]))
+    big = sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
     sigs, open_, watch, ai = [], None, None, 0
     for i, b in enumerate(bars):
         day = b["t"][:10]
@@ -721,8 +371,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 arm = big[ai]
             ai += 1
         if open_:
-            _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i],
-                  kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day), bear=bear[i])
+            _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i])
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -732,26 +381,18 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             under = [x for x in lv if x[0] <= b["c"] * (1 + RETEST_NEAR / 100)]
             if under:
                 lvl0, name = max(under)
-                watch = {"armedAt": arm["t"], "armPremium": arm["p"], "armX": arm.get("x"), "level": lvl0, "levelName": name, "day0": day, "days": 0,
+                watch = {"armedAt": arm["t"], "armPremium": arm["p"], "level": lvl0, "levelName": name, "day0": day, "days": 0,
                          "since": b["t"][:16]}
-        if not watch and not need_alert:              # no call alert needed: always watching
-            watch = {"armedAt": None, "armPremium": 0, "level": 0, "levelName": "", "day0": day, "days": 0, "since": b["t"][:16], "free": True}
         if not watch:
-            if misses is not None:                      # at a support without a recent call alert: say so
-                lv0 = [float(w[k]) for k, n in sup_keys if w.get(k)]
-                if any(b["l"] <= x + max(x * RETEST_NEAR / 100, zone_atr * a_) and b["c"] > x for x in lv0):
-                    miss(b, f"no unusual call alert (≥ {float(P.get('relMult') or 3):g}× its 30-day median) in the {ndays} days before"
-                         if on("relFlow") else f"no call alert ≥ ${vmin / 1000:,.0f}K in the {ndays} days before")
             continue
         if day != watch.get("_d"):
             watch["_d"] = day
             if day != watch["day0"]:
                 watch["days"] += 1
-        if watch["days"] > ndays and not watch.get("free"):
+        if watch["days"] > ndays:
             watch = None
             continue
-        if not watch.get("free") and b["c"] < watch["level"] - k_stop * a_:     # the support of the alert broken before any retest
-            miss(b, f"closed under the {watch['levelName']} {watch['level']:g} − stop: watch cancelled, waiting for a new call alert")
+        if b["c"] < watch["level"] - k_stop * a_:     # the support of the alert broken before any retest
             watch = None
             continue
         # the support follows the price: the highest put wall / flip of the day under this candle's close
@@ -762,57 +403,19 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         lvl, lname = max(under)
         zone = max(lvl * RETEST_NEAR / 100, zone_atr * a_)
         # entry: a green candle whose low comes back to the support (within the zone) and that closes above it
-        if b["l"] <= lvl + zone and b["c"] <= b["o"] and on("greenOnly"):
-            miss(b, "red candle (Green candle rule)")
         if (b["c"] > b["o"] or not on("greenOnly")) and b["l"] <= lvl + zone:
             if P.get("aboveFlip") and not (w.get("flip") and b["c"] > float(w["flip"])):
-                miss(b, f"close under the flip {w.get('flip')} (Above the flip rule)")
                 continue                               # only above the gamma flip (positive gamma): wait for another candle
             if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
-                miss(b, f"earnings {str(earnings)[:10]} within {earn_days} days")
                 continue                               # earnings within the next N days: no entry
             cw_ = float(w["callWall"]) if w.get("callWall") else None
-            if on("vwapReset") and i not in vreset:
-                miss(b, "not a VWAP reset candle")
-                continue                               # rule on: the entry candle must be the VWAP reset candle
-            if on("pwNeCw") and w.get("putWall") and w.get("callWall") and abs(float(w["putWall"]) - float(w["callWall"])) < 1e-6:
-                miss(b, "put wall = call wall")
-                continue                               # rule on: no entry when the walls are the same strike
             if on("vwapOn") and not (vwap[i] is not None and b["c"] > vwap[i]):
-                miss(b, f"close {b['c']:.2f} under the VWAP {vwap[i]:.2f}" if vwap[i] is not None else "no VWAP yet")
                 continue                               # rule on: the close must be above the VWAP
             if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
-                miss(b, "close under the EMA")
                 continue                               # rule on: the close must be above the EMA
-            if on("emaOverVwap") and not (ema[i] is not None and vwap[i] is not None and ema[i] > vwap[i]):
-                miss(b, "EMA under the VWAP")
-                continue                               # rule on: the EMA must be above the VWAP
-            if on("skewOn") and not (skp.get(day) is not None and 33.4 <= skp[day] < 66.7):
-                miss(b, "skew not normal")
-                continue                               # rule on: skew must be normal (middle third of its last 6 months)
-            if on("spyUp") and spy.get(b["t"][:16]) == -1:
-                miss(b, "SPY trending down")
-                continue                               # rule on: SPY must be up over the last 6 sessions
-            if on("fvgOn") and not fvg_t[i]:
-                miss(b, f"not in (or within {float(P.get('fvgNear') if P.get('fvgNear') is not None else 0.25):g} ATR of) an open bullish FVG")
-                continue                               # rule on: the candle must trade into an open bullish fair value gap
-            if on("kchLower") and not (kch[i] and b["c"] <= kch[i][0]):
-                miss(b, "close in the upper half of the hourly Keltner")
-                continue                               # rule on: the close must be in the lower half of the hourly channel
-            if on("kcdLower") and not (kc[i] and b["c"] <= kc[i][0]):
-                miss(b, f"close above the middle of the {'daily' if P.get('kcDaily', True) else 'hourly'} Keltner")
-                continue                               # rule on: the close must be in the lower half of the daily channel
-            if on("kcNotExt") and not (kc[i] and b["c"] < kc[i][1]):
-                miss(b, f"close above the upper {'daily' if P.get('kcDaily', True) else 'hourly'} Keltner band")
-                continue                               # rule on: the close must be under the upper Keltner band
-            if on("orbAbove") and not (orb[i] and b["c"] > orb[i][0]):
-                miss(b, "close under the opening range high")
-                continue                               # rule on: the close must be above the opening range high
             if on("noAboveCW") and cw_ and (b["o"] > cw_ or b["c"] > cw_):
-                miss(b, "above the call wall")
                 continue                               # opening or closing above the call wall: no entry
             if cw_ and cw_room and cw_ - b["c"] < cw_room * a_:
-                miss(b, f"only {(cw_ - b['c']) / a_:.1f} ATR under the call wall {cw_:g} (Room to CW ≥ {cw_room:g})")
                 continue                               # too close under the call wall: not enough room to the target
             if start and day < start:
                 watch = None
@@ -822,40 +425,24 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
             st = round(lvl - k_stop * a_, 4)              # stop0: the risk unit for R, even with the stop off
             s = {"at": b["t"][:16], "kind": "retest", "level": lvl, "levelName": watch["levelName"], "armedAt": watch["armedAt"],
-                 "armPremium": watch["armPremium"], "armX": watch.get("armX"), "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
+                 "armPremium": watch["armPremium"], "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
                  "flip": float(w["flip"]) if w.get("flip") else None, "cw": cw, "target": tgt, "atr": round(a_, 4),
                  "stop": st if on("stopOn") else 0.0, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
                  "last": b["c"], "lastAt": b["t"][:16], "i0": i,
                  "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
                  "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
-                 "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
-                 "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"),
-                 "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
-                 "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
-            if fvg_t is not None and fvg_t[i]:        # the gap the entry used (shown on the chart)
-                z_ = fvg_t[i]
-                s["fvgZone"] = {"t": z_["t"], "lo": z_["lo"], "hi": z_["hi"]}
-            if P.get("fixR"):                          # backtest: fixed target at N x the risk
-                s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
-            if P.get("maxDays"):
-                s["maxDays"], s["_dd"], s["_dn"] = int(P["maxDays"]), day, 0
+                 "vwapExit": on("vwapExit"), "emaExit": on("emaExit")}
             sigs.append(s)
             open_, watch = s, None
-            if on("pvEod") and (i + 1 < len(bars) and bars[i + 1]["t"][:10] != day) and b["c"] < lvl:
-                s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])   # last candle of the day, under the support
-                open_ = None
     for s in sigs:
         s["pct"], s["R"] = _result(s)
         s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
         s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
         i0 = s.pop("i0")                               # the same entry with the other choice for the daily flip exit
-        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae", "_dd", "_dn", "riding", "rideAt", "tgtHit", "dlog", "passed", "lostLevel", "scaled", "fvgZone")}
-        if alt.get("maxDays"):
-            alt["_dd"], alt["_dn"] = alt["at"][:10], 0
+        alt = {k: v for k, v in s.items() if k not in ("stops", "exit", "exitAt", "mfe", "mae")}
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
         for j in range(i0 + 1, len(bars)):
-            _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j],
-                  kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j])
+            _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j])
             if alt["status"] != "open":
                 break
         ap, ar = _result(alt)
@@ -863,103 +450,6 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     if watch:
         watch.pop("_d", None)
     return sigs, watch
-
-
-def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None, kc=None, dpl=None, start=None, earnings=None):
-    """LONG signals of pw_vwap_events traded with the strategy's exits: entry at the close of the reset candle, stop
-    stopAtr x ATR under the put wall, target the call wall (minus the buffer), and the same switches (Keltner ride,
-    close under the flip, back under CW / dark pool, VWAP / EMA exits, trailing). Plus: the entry day must close above
-    the put wall, else the trade is sold at that close (status "eodpw"). One trade at a time per ticker.
-    vwap / ema / kc: lists aligned with bars. dpl: {date: dark pool levels}. Returns trades with pct / R."""
-    P = {**PARAMS, **(cfg or {})}
-    on = lambda k: bool(P.get(k, PARAMS[k]))
-    k_stop, buf = float(P["stopAtr"]), float(P.get("tgtBuf") or 0)
-    k_trail = float(P["trailAtr"]) if on("trailOn") else 0.0
-    flip_exit = bool(P.get("flipExit", True))
-    atr = atr14(bars)
-    kc = kc or keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
-    vwap = vwap or anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[0]
-    ema = ema or _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
-    dpl = dpl or {}
-    earn_days = int(P.get("earnDays") if P.get("earnDays") is not None else 10) if on("earnOn") else 0
-    try:
-        earn_d = datetime.strptime(str(earnings)[:10], "%Y-%m-%d") if earnings and earn_days else None
-    except ValueError:
-        earn_d = None
-    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10)),
-                           float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
-    bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
-    out, busy = [], -1
-    for e in events:
-        i = e["i"]
-        if e.get("side") != "long" or i <= busy or (start and e["t"][:10] < start):
-            continue
-        b, day = bars[i], bars[i]["t"][:10]
-        w = walls.get(day) or {}
-        a_ = (_atr_on(datr, day) if datr else None) or atr[i]
-        if not a_:
-            continue
-        cw = float(w["callWall"]) if w.get("callWall") else None
-        st = round(e["pw"] - k_stop * a_, 4)
-        if st >= b["c"]:
-            continue                                   # closed under the stop already
-        tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
-        if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
-            continue                                   # earnings within the next N days: no entry
-        if fvg_t is not None and not fvg_t[i]:
-            continue                                   # FVG rule on: the reset candle must trade into an open bullish gap
-        s = {"at": b["t"][:16], "kind": "retest", "setup": "pvlong", "level": e["pw"], "levelName": "put wall · VWAP reset",
-             "armedAt": None, "armPremium": 0, "entry": b["c"], "pw": e["pw"], "cw": cw, "target": tgt, "atr": round(a_, 4),
-             "flip": float(w["flip"]) if w.get("flip") else None, "flipChg": _flip_chg(walls, day), "v": version(P),
-             "o": b["o"], "h": b["h"], "l": b["l"],
-             "stop": st if on("stopOn") else 0.0, "stop0": st, "status": "open", "last": b["c"], "lastAt": b["t"][:16],
-             "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])),
-             "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
-             "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"), "cwLost": on("cwLost"), "dpLost": on("dpLost"),
-             "pvEod": on("pvEod"), "fvgExit": on("fvgExit"),
-             "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "kc": list(kc[i]) if kc[i] else None,
-             "kcPos": e.get("kcPos"), "above": e.get("above"), "green": e.get("green")}
-        if fvg_t is not None and fvg_t[i]:
-            s["fvgZone"] = {"t": fvg_t[i]["t"], "lo": fvg_t[i]["lo"], "hi": fvg_t[i]["hi"]}
-        j = i
-        last_of_day = lambda k: k + 1 == len(bars) or bars[k + 1]["t"][:10] != bars[k]["t"][:10]
-        if on("pvEod") and last_of_day(i) and i + 1 < len(bars) and b["c"] < e["pw"]:
-            s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])   # entry candle is the last of the day, closed under the PW
-        for j in range(i + 1, len(bars)):
-            if s["status"] != "open":
-                break
-            _step(s, bars[j], walls, k_trail, flip_exit, is_last=last_of_day(j),
-                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dpl.get(bars[j]["t"][:10]), bear=bear[j])
-            if s["status"] != "open":
-                break
-            if on("pvEod") and bars[j]["t"][:10] == day and last_of_day(j) and bars[j]["c"] < e["pw"]:
-                s.update(status="eodpw", exitAt=bars[j]["t"][:16], exit=bars[j]["c"])   # entry day closed under the put wall: out
-                break
-        busy = j if s["status"] != "open" else len(bars)
-        s["pct"], s["R"] = _result(s)
-        s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
-        s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
-        s["days"] = len({x["t"][:10] for x in bars[i:j + 1]}) - 1
-        out.append(s)
-    return out
-
-
-def detect_pvlong(bars, walls, start=None, cfg=None, datr=None, earnings=None, vwap_map=None, ema_map=None, extra=None):
-    """The VWAP reset on the put wall strategy, in the flow retest's signal format (kind "retest", setup "pvlong").
-    extra["vwResets"]: timestamps of the VWAP reset candles computed on a longer history (else from these bars)."""
-    P = {**PARAMS, **(cfg or {})}
-    extra = extra or {}
-    kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
-    kch = [extra["kch"].get(b["t"][:16]) for b in bars] if extra.get("kch") else keltner(bars, int(P.get("kchLen") or 21), float(P.get("kchMult") or 3))
-    vwap = [vwap_map.get(b["t"][:16]) for b in bars] if vwap_map else None
-    ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else None
-    if extra.get("vwResets") is not None:
-        rs = set(extra["vwResets"])
-        resets = [i for i, b in enumerate(bars) if b["t"][:16] in rs]
-    else:
-        resets = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[1]
-    ev = pw_vwap_events(bars, walls, resets, kc=kch)    # lower / upper half: hourly channel (entry fine tuning)
-    return pv_long_trades(bars, walls, ev, P, datr, vwap=vwap, ema=ema, kc=kc, dpl=extra.get("dpLevels"), start=start, earnings=earnings)
 
 
 def _walls(key, sym, dates, today):
@@ -980,7 +470,7 @@ def _walls(key, sym, dates, today):
 def check_ticker(sub, key, sym, days, now, since=None):
     """since: date of the oldest open signal of the ticker (followed until it ends)."""
     from charts import _yahoo
-    start = (now - timedelta(days=int(days * 1.5) + 7 + 45)).replace(hour=0, minute=0, second=0, microsecond=0)  # + VWAP / daily Keltner warm-up
+    start = (now - timedelta(days=int(days * 1.5) + 7 + 25)).replace(hour=0, minute=0, second=0, microsecond=0)  # + VWAP warm-up
     if since:
         start = min(start, datetime.strptime(since, "%Y-%m-%d") - timedelta(days=3))
     bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
@@ -1012,37 +502,10 @@ def check_ticker(sub, key, sym, days, now, since=None):
                 earn = autotrader.parse_earn(autotrader.earn_for(autotrader.settings(sub), sym)[0])[0]
             except Exception as e:
                 print("earnings lookup failed", sym, e)
-            vw_all, vres_full = anchored_vwap(bars, int(cfg.get("vwapDays") or VWAP_DAYS))
+            vw_all, _ = anchored_vwap(bars, int(cfg.get("vwapDays") or VWAP_DAYS))
             vmap = {b["t"][:16]: v for b, v in zip(bars, vw_all)}
             emap = {b["t"][:16]: v for b, v in zip(bars, _ema_series([b["c"] for b in bars], int(cfg.get("emaLen") or 20)))}
-            kmap = {b["t"][:16]: v for b, v in zip(bars, keltner(bars, int(cfg.get("kcLen") or 21), float(cfg.get("kcMult") or 3), bool(cfg.get("kcDaily", True))))}
-            khmap = {b["t"][:16]: v for b, v in zip(bars, keltner(bars, int(cfg.get("kchLen") or 21), float(cfg.get("kchMult") or 3)))}
-            spy = spy_trend(start, now) if cfg.get("spyUp") else {}      # only fetched when the rule is used
-            skp = {}
-            if cfg.get("skewOn"):
-                try:
-                    import backtest
-                    import flowdata
-                    sk = backtest.fetch_skew(flowdata._key(sub), sym, 250, max_age_s=20 * 3600)
-                    skp = backtest.skew_pct_map(sk, sorted({b["t"][:10] for b in rb}))
-                except Exception as e:
-                    print("skew failed", sym, e)
-            misses = []
-            dpm = {}
-            if cfg.get("dpLost"):
-                try:
-                    import backtest
-                    pr = backtest.stored_darkpool(sym) or darkpool(sub, sym, None, 66).get("prints") or []
-                    dpm = dp_level_map(pr, sorted({b["t"][:10] for b in rb}))
-                except Exception as e:
-                    print("dark pool levels failed", sym, e)
-            rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap, emap,
-                                      {"kc": kmap, "kch": khmap, "spy": spy, "skewPct": skp, "misses": misses, "dpLevels": dpm,
-                                       "vwResets": [bars[i]["t"][:16] for i in vres_full if i > 0]})
-            try:
-                db.put({"PK": db.upk(sub), "SK": f"WWMISS#{sym}", "misses": misses[-400:], "v": version(cfg), "at": iso(now_ny())})
-            except Exception as e:
-                print("misses not stored", sym, e)
+            rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap, emap)
             sigs += rs
         except Exception as e:
             print("retest failed", sym, e)
@@ -1186,15 +649,10 @@ def enter(sub, sym, sg):
             raise ValueError("no call contract in the expiration / delta window")
         ww = {"kind": sg.get("kind"), "signalAt": sg["at"], "atr": sg["atr"], "stop0": sg["stop0"], "trailAtr": float(cfg["trailAtr"]) if cfg.get("trailOn", True) else 0.0,
               "vwapExit": bool(cfg.get("vwapExit")), "emaExit": bool(cfg.get("emaExit")), "emaLen": int(cfg.get("emaLen") or 20),
-              "kcRide": bool(cfg.get("kcRide")), "kcLen": int(cfg.get("kcLen") or 21), "kcMult": float(cfg.get("kcMult") or 3),
-              "kcDaily": bool(cfg.get("kcDaily", True)),
-              "cwLost": bool(cfg.get("cwLost")), "dpLost": bool(cfg.get("dpLost")),
               "vwapDays": int(cfg.get("vwapDays") or VWAP_DAYS),
               "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
-              "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry")),
-              "pvEodPw": sg.get("level") if sg.get("pvEod") else None,
-              "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2)}
+              "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry"))}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
         db.update(pk, f"BOT#{rec['id']}", {"proposal": p, "decision": "BUY", "strategyOnly": "wallwatch", "wallwatch": ww})
@@ -1235,7 +693,7 @@ def _weekdays(n, today):
     return sorted(out)
 
 
-def walls_todo(tickers, days=45, need_mp=True):
+def walls_todo(tickers, days=45):
     """(ticker, date) pairs whose call wall / put wall / flip aren't stored yet. Days with no data (holidays) count as done."""
     today = now_ny().date()
     dates = _weekdays(days, today)
@@ -1251,17 +709,15 @@ def walls_todo(tickers, days=45, need_mp=True):
             data = (r or {}).get("data")
             if d == ts:
                 continue                                # today: refreshed by the hourly check
-            if r and (d in mp or not need_mp) and (data is None or (data.get("callWall") is not None and data.get("flip") is not None and not data.get("noflip"))):
+            if r and d in mp and (data is None or (data.get("callWall") is not None and data.get("flip") is not None and not data.get("noflip"))):
                 continue
             todo.append((sym, d))
     return todo, len(dates) * len(tickers)
 
 
-def _walls_and_mp(key, sym, d, mp=True):
+def _walls_and_mp(key, sym, d):
     import flowdata
     w = flowdata.gex_day(key, sym, d, True)
-    if not mp:
-        return w
     try:
         maxpain_day(key, sym, d)
     except Exception as e:
@@ -1269,7 +725,7 @@ def _walls_and_mp(key, sym, d, mp=True):
     return w
 
 
-def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
+def fill_walls(sub, days=45, budget_s=480, ticker=None):
     """Fetch the walls and the flip of every day for every watchlist ticker (or one ticker), as many as the time allows."""
     import flowdata
     from concurrent.futures import ThreadPoolExecutor
@@ -1277,8 +733,8 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
     pk = db.upk(sub)
     cfg = config(sub)
     key = flowdata._key(sub)
-    sk = sk or (f"WWFILL#{ticker}" if ticker else "WWFILL")
-    todo, total = walls_todo([ticker] if ticker else cfg["tickers"], days, need_mp=mp)
+    sk = f"WWFILL#{ticker}" if ticker else "WWFILL"
+    todo, total = walls_todo([ticker] if ticker else cfg["tickers"], days)
     db.put({"PK": pk, "SK": sk, "running": iso(now_ny()), "total": total, "left": len(todo), "days": days,
             "at": (db.get(pk, sk) or {}).get("at")})
     done, errors = 0, []
@@ -1286,7 +742,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
         for k in range(0, len(todo), 12):
             if time.time() - t0 > budget_s:
                 break
-            futs = [(t, ex.submit(_walls_and_mp, key, t[0], t[1], mp)) for t in todo[k:k + 12]]
+            futs = [(t, ex.submit(_walls_and_mp, key, t[0], t[1])) for t in todo[k:k + 12]]
             for t, f in futs:
                 try:
                     f.result()
@@ -1296,7 +752,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
     left = max(0, len(todo) - done - len(errors))
     out = {"PK": pk, "SK": sk, "running": None, "total": total, "left": left, "fetched": done, "days": days,
            "errors": errors[:5], "at": iso(now_ny())}
-    if ticker and not left and mp:                       # the ticker's signals over those days
+    if ticker and not left:                              # the ticker's signals over those days
         try:
             check_ticker(sub, key, ticker, days, now_ny().replace(tzinfo=None))
         except Exception as e:
@@ -1306,7 +762,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
 
 
 def summarize(sigs):
-    done = [s for s in sigs if s.get("status") not in (None, "open")]
+    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail", "flip")]
     hit = [s for s in done if s["status"] == "target"]
     avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None
     summary = {"signals": len(sigs), "open": len(sigs) - len(done), "closed": len(done), "targets": len(hit),
@@ -1329,7 +785,7 @@ def view(sub):
             and (not FLOW_ONLY or s.get("kind") == "retest")]
     summary = summarize(sigs)
     by_kind = {k: summarize([x for x in sigs if (x.get("kind") or "pw") == k]) for k in ("pw", "flip", "merged", "retest")}
-    done = [s for s in sigs if s.get("status") not in (None, "open")]
+    done = [s for s in sigs if s.get("status") in ("target", "stop", "trail", "flip")]
     by = {}
     for s in done:
         b = by.setdefault(s["symbol"], {"symbol": s["symbol"], "n": 0, "targets": 0, "total": 0.0})
@@ -1465,9 +921,8 @@ def flow_alerts(sub, sym, first, last):
     return out
 
 
-def chart(sub, sym, days=45, flow=True, lab=None):
-    """Hourly chart of a watchlist ticker: candles, walls + flip by day, its signals, and the call / put flow.
-    lab: settings to try (not saved): every signal is replayed with the live settings + these, none read from the store."""
+def chart(sub, sym, days=45, flow=True):
+    """Hourly chart of a watchlist ticker: candles, walls + flip by day, its signals, and the call / put flow."""
     import flowdata
     from charts import _yahoo
     sym = (sym or "").upper().replace("/", ".")
@@ -1475,7 +930,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
         from util import BadRequest
         raise BadRequest("Pick a ticker.")
     now = now_ny().replace(tzinfo=None)
-    start = (now - timedelta(days=int(days * 1.5) + 45)).replace(hour=0, minute=0, second=0, microsecond=0)   # + VWAP / daily Keltner warm-up
+    start = (now - timedelta(days=int(days * 1.5) + 25)).replace(hour=0, minute=0, second=0, microsecond=0)   # + VWAP warm-up
     bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
     bars = [{"t": b["t"][:16], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v")}
             for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
@@ -1528,90 +983,22 @@ def chart(sub, sym, days=45, flow=True, lab=None):
         except Exception as e:
             flow_note = f"Options flow unavailable: {str(e)[:120]}"
     ccfg = config(sub)
-    if lab:
-        ccfg = {**ccfg, **{k: v for k, v in lab.items() if k in PARAMS and k != "pvSetup"}}
-        sigs = []
     vw, vres = anchored_vwap(bars_all, int(ccfg.get("vwapDays") or VWAP_DAYS))
     off = len(bars_all) - len(bars)
     em = _ema_series([b["c"] for b in bars_all], int(ccfg.get("emaLen") or 20))[off:]
-    kcs = keltner(bars_all, int(ccfg.get("kcLen") or 21), float(ccfg.get("kcMult") or 3), bool(ccfg.get("kcDaily", True)))[off:]
-    kc = [{"t": b["t"], "m": k[0], "u": k[1], "l": k[2]} for b, k in zip(bars, kcs) if k]
-    kchs = keltner(bars_all, int(ccfg.get("kchLen") or 21), float(ccfg.get("kchMult") or 3))[off:]
-    kch = [{"t": b["t"], "m": k[0], "u": k[1], "l": k[2]} for b, k in zip(bars, kchs) if k]
-    orbs = [{"d": b["t"][:10], "h": b["h"], "l": b["l"]} for b in bars if b["t"][11:16] == "09:30"]
-    try:
-        sp = spy_trend(start, now) if bars else {}
-    except Exception:
-        sp = {}
-    spy_dn = [b["t"] for b in bars if sp.get(b["t"][:16]) == -1]
     ema = [{"t": b["t"], "v": round(v, 4)} for b, v in zip(bars, em) if v is not None]
     cur_v = version({**PARAMS, **ccfg})
     stale = [x for x in sigs if x.get("v") and x["v"] != cur_v and x.get("status") != "open" and not x.get("botId")]
     sigs = [x for x in sigs if x not in stale]
-    replay_misses = []
-    long_bars = None
-    cut = "9999" if lab else dates[-45] if len(dates) > 45 else None   # lab: everything replayed
-    if cut:                                            # longer view: the signals older than the stored 45 days, replayed
-        try:
-            import backtest
-            data = backtest._ticker_data(sub, sym, len(dates) + 5, ccfg, False)
-            if data:
-                long_bars = data["bars"]
-                extra = {**data["extra"], "misses": replay_misses}
-                old, _ = detect_retest(data["bars"], data["walls"], dates[0], ccfg, data["datr"], data["alerts"], None,
-                                       data["vmap"], data["emap"], extra)
-                for x in old:
-                    x.pop("i0", None)
-                    x["replay"] = True
-                sigs = [x for x in old if x["at"][:10] < cut] + [x for x in sigs if x["at"][:10] >= cut]
-                replay_misses = [m for m in replay_misses if m["t"][:10] < cut]
-                if flow:                               # calls older than the live window, from the stored history
-                    import autotrader
-                    big = autotrader.settings(sub)["flowMinPremium"]
-                    seen = {a["t"] for a in alerts}
-                    alerts = [{"t": a["t"], "premium": round(a["p"]), "type": "call", "contract": None, "big": a["p"] >= big,
-                               "sweep": False, "rule": "history"} for a in data["alerts"]
-                              if a.get("c") and dates[0] <= a["t"][:10] < (alerts[0]["t"][:10] if alerts else cut) and a["t"] not in seen] + alerts
-        except Exception as e:
-            note = (note + " · " if note else "") + f"Older signals unavailable: {str(e)[:100]}"
     vw, vres = vw[off:], [i - off for i in vres if i - off >= 0]
     vwap = [{"t": b["t"], "v": v} for b, v in zip(bars, vw)]
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
-    mrec = db.get(db.upk(sub), f"WWMISS#{sym}") or {}
-    misses = replay_misses + [m for m in (mrec.get("misses") or []) if mrec.get("v") == cur_v and m["t"][:10] >= (cut or (dates[0] if dates else ""))]
-    try:
-        vres_all = anchored_vwap(bars_all, int(ccfg.get("vwapDays") or VWAP_DAYS))[1]
-        kc_all = keltner(bars_all, int(ccfg.get("kchLen") or 21), float(ccfg.get("kchMult") or 3))   # halves: hourly
-        pv = [{k: e.get(k) for k in ("t", "pw", "cw", "side", "above", "green", "o", "h", "l", "c", "kcPos", "kcHalf", "kcM", "kcU", "kcL")}
-              for e in pw_vwap_events(bars_all, stored, vres_all, kc=kc_all)
-              if e["side"] == "long" and e["t"][:10] >= (dates[0] if dates else "")]
-    except Exception as e:
-        print("pw/vwap events failed", sym, e)
-        pv = []
-    try:
-        fz = fvg_zones(long_bars or bars_all, float(ccfg.get("fvgMin") or 0.2), None, int(ccfg.get("fvgDays") or 10))
-        fvg = [{k: z[k] for k in ("t", "type", "lo", "hi", "fillAt", "end")} for z in fz
-               if dates and (z["fillAt"] is None or z["fillAt"][:10] >= dates[0])]
-    except Exception as e:
-        print("fvg failed", sym, e)
-        fvg = []
-    return {"fvg": fvg, "lab": bool(lab), "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    return {"vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),
             "added": (config(sub).get("added") or {}).get(sym),
             "maxPainMissing": sum(1 for d in dates if d != today and d not in mpd)}
-
-
-def dp_floor(daily, pct=0.25):
-    """Dark pool size floor from the 30-day average daily volume: (adv, price, min shares, $ at min shares, $ floor)."""
-    vols = [b["v"] for b in daily[-30:] if b.get("v")]
-    adv = sum(vols) / len(vols) if vols else None
-    price = daily[-1]["c"] if daily else None
-    min_sh = adv * pct / 100 if adv else None
-    dollars = (min_sh * price) if min_sh and price else 2_000_000
-    floor = max([x for x in (250_000, 500_000, 1e6, 2e6, 5e6, 10e6, 25e6, 50e6, 100e6) if x <= dollars * 0.8] or [250_000])
-    return adv, price, min_sh, dollars, floor
 
 
 def darkpool(sub, sym, min_pct=None, days=45):
@@ -1624,7 +1011,12 @@ def darkpool(sub, sym, min_pct=None, days=45):
     now = now_ny().replace(tzinfo=None)
     daily = _yahoo(sym.replace(".", "-"), "1d", now - timedelta(days=60), now + timedelta(days=1)) or []
     daily = [b for b in daily if b["t"][:10] < now.strftime("%Y-%m-%d") and b.get("v")]
-    adv, price, min_sh, dollars, floor = dp_floor(daily, pct)
+    vols = [b["v"] for b in daily[-30:]]
+    adv = sum(vols) / len(vols) if vols else None
+    price = daily[-1]["c"] if daily else None
+    min_sh = adv * pct / 100 if adv else None
+    dollars = (min_sh * price) if min_sh and price else 2_000_000
+    floor = max([x for x in (250_000, 500_000, 1e6, 2e6, 5e6, 10e6, 25e6, 50e6, 100e6) if x <= dollars * 0.8] or [250_000])
     out = flowdata.darkpool(sub, sym, _weekdays(days, now_ny().date()), floor)     # fetched with a round $ floor (cached)
     prints = [p for p in out.get("prints") or [] if not min_sh or p["size"] >= min_sh]
     buy = sum(p["premium"] for p in prints if p.get("side") == "buy")
@@ -1787,8 +1179,6 @@ def retest_table(sigs):
         ("Entry below the VWAP", lambda x: x.get("vwap") is not None and x["entry"] <= x["vwap"]),
         ("Entry above the EMA", lambda x: x.get("ema") is not None and x["entry"] > x["ema"]),
         ("Entry below the EMA", lambda x: x.get("ema") is not None and x["entry"] <= x["ema"]),
-        ("EMA above the VWAP", lambda x: x.get("ema") is not None and x.get("vwap") is not None and x["ema"] > x["vwap"]),
-        ("EMA below the VWAP", lambda x: x.get("ema") is not None and x.get("vwap") is not None and x["ema"] <= x["vwap"]),
         ("Entry above the gamma flip", lambda x: x.get("flip") is not None and x["entry"] > x["flip"]),
         ("Entry below the gamma flip", lambda x: x.get("flip") is not None and x["entry"] <= x["flip"]),
         ("Call wall target above the entry", lambda x: bool(x.get("target"))),
