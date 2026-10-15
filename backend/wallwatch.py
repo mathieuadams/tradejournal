@@ -30,7 +30,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "vwapExit": False, "emaExit": False, "emaOverVwap": False,
           "spyUp": False, "kcNotExt": False, "orbAbove": False, "kcLen": 21, "kcMult": 3.0,
           "kcDaily": True,     # over-extension (Under upper Keltner, Keltner ride) on the daily channel, else hourly
-          "kchLower": False, "kchLen": 21, "kchMult": 3.0,   # hourly Keltner channel   # entry fine tuning: the entry candle closes in the lower half of the HOURLY Keltner channel
+          "kchLower": False, "kchLen": 21, "kchMult": 3.0, "kcdLower": False,   # kcdLower: close in the lower half of the DAILY channel   # hourly Keltner channel   # entry fine tuning: the entry candle closes in the lower half of the HOURLY Keltner channel
           # building blocks (no dedicated strategies): alertReq = a call alert must arm the ticker first;
           # vwapReset = the entry candle is a VWAP reset candle (highest volume of the period); pwNeCw = no entry when PW = CW
           "alertReq": True, "vwapReset": False, "pwNeCw": False,
@@ -75,7 +75,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower")
 
 
 def save_config(sub, body):
@@ -707,8 +707,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         else:
             vreset = set(anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[1])
     need_alert = on("alertReq")
-    big = unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else \
-        sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
+    big = [] if not need_alert else (unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else
+                                     sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"]))
     sigs, open_, watch, ai = [], None, None, 0
     for i, b in enumerate(bars):
         day = b["t"][:10]
@@ -799,6 +799,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             if on("kchLower") and not (kch[i] and b["c"] <= kch[i][0]):
                 miss(b, "close in the upper half of the hourly Keltner")
                 continue                               # rule on: the close must be in the lower half of the hourly channel
+            if on("kcdLower") and not (kc[i] and b["c"] <= kc[i][0]):
+                miss(b, f"close above the middle of the {'daily' if P.get('kcDaily', True) else 'hourly'} Keltner")
+                continue                               # rule on: the close must be in the lower half of the daily channel
             if on("kcNotExt") and not (kc[i] and b["c"] < kc[i][1]):
                 miss(b, f"close above the upper {'daily' if P.get('kcDaily', True) else 'hourly'} Keltner band")
                 continue                               # rule on: the close must be under the upper Keltner band

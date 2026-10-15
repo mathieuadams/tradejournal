@@ -2869,6 +2869,13 @@ def test_pw_vwap_study():
                                                       "kcNotExt": False, "tgtBuf": 0, "trailOn": False, "kcRide": False},
                                      None, None, None, None, None, {"kc": {b["t"][:16]: (110, 130, 90) for b in rbx}, "vwResets": [rbx[3]["t"]]})
     assert [x["at"] for x in rr_] == [rbx[3]["t"]] and rr_[0]["level"] == 100, rr_
+    assert rr_[0]["armedAt"] is None and not rr_[0]["armPremium"]          # flow off: no alert attached
+    rr2, _ = wallwatch.detect_retest(rbx, tw, None, {"alertReq": False, "vwapReset": True, "kcdLower": True, "greenOnly": False,
+                                                      "useFlip": False, "earnOn": False, "cwRoomOn": False, "noAboveCW": False,
+                                                      "kcNotExt": False, "tgtBuf": 0, "trailOn": False, "kcRide": False},
+                                     None, [{"t": rbx[1]["t"], "c": 1, "p": 9e6}], None, None, None,
+                                     {"kc": {b["t"][:16]: (100.3, 130, 90) for b in rbx}, "vwResets": [rbx[3]["t"]]})
+    assert rr2 == []                                   # close 100.6 above the daily middle 100.3: no entry
     assert w3 is None and len(sg3) == 1 and sg3[0]["kind"] == "retest" and sg3[0]["setup"] == "pvlong" and sg3[0]["status"] == "target"
     today = now_ny().date()
     days, d = [], today - dt.timedelta(days=200)
