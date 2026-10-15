@@ -45,6 +45,10 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "fvgOn": False, "fvgMin": 0.2, "fvgNear": 0.25, "fvgDays": 10,   # fvgDays: a gap not filled after N sessions expires   # fvgNear: a low within this x ATR above the gap counts as a touch
           # fvgExit: sell at the close of the candle that completes a new bearish fair value gap after the entry
           "fvgExit": False,
+          # daily inertia (TOS inertia regime): linear-regression value of the daily closes over n1 / n2 / n3 days;
+          # green = all three rising, red = all three falling, yellow = mixed. inGreen / inNotRed: entry filters;
+          # inRedExit: sell at the daily close when the regime is red
+          "inN1": 70, "inN2": 40, "inN3": 20, "inGreen": False, "inNotRed": False, "inRedExit": False,
           # scaleOn (lab / backtest): sell scalePct % of the position when price reaches entry + scaleR x risk;
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
@@ -71,10 +75,10 @@ def version(cfg):
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
-            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}")
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}|in{int(cfg.get('inN1', 70))}.{int(cfg.get('inN2', 40))}.{int(cfg.get('inN3', 20))}")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower", "inGreen", "inNotRed", "inRedExit")
 
 
 def save_config(sub, body):
@@ -93,7 +97,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
+    for k, lo_, hi_ in (("inN1", 5, 250), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
@@ -266,7 +270,7 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
-def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False):
+def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False, reg=None):
     """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
     Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held).
     kcRide (kcu = upper Keltner band of this candle): an hourly close above the upper band starts a ride -> the target,
@@ -294,6 +298,9 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
                 s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], s["entry"]])
     if s.get("pvEod") and is_last and b["t"][:10] == s["at"][:10] and s.get("level") and b["c"] < float(s["level"]):
         s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])        # the entry day closed under the support: out
+        return
+    if s.get("inRedExit") and is_last and reg and reg.get("s") == "R":
+        s.update(status="inertia", exitAt=b["t"][:16], exit=b["c"])     # the day closes with the daily inertia red: out
         return
     if s.get("fvgExit") and bear:                    # this candle completes a new bearish fair value gap: out at its close
         s.update(status="fvg", exitAt=b["t"][:16], exit=b["c"])
@@ -519,6 +526,60 @@ def _keltner_daily(bars, n=21, mult=3.0):
     return out
 
 
+REGIME_PTS = {"RY": 2.0, "YG": 1.5, "GG": 3.0, "YY": 0.5, "RR": -2.0, "RG": 1.5, "YR": -2.0, "GY": -1.0}
+
+
+def _linreg_end(ys):
+    """Least-squares line through ys (x = 0..n-1), its value at the last point (the TOS inertia)."""
+    n = len(ys)
+    sx, sxx = n * (n - 1) / 2, (n - 1) * n * (2 * n - 1) / 6
+    sy = sum(ys)
+    sxy = sum(i * y for i, y in enumerate(ys))
+    den = n * sxx - sx * sx
+    if not den:
+        return ys[-1]
+    a = (n * sxy - sx * sy) / den
+    b = (sy - a * sx) / n
+    return a * (n - 1) + b
+
+
+def inertia_regime(bars, ns=(70, 40, 20)):
+    """Daily inertia regime on hourly candles, as a daily chart shows it: for each candle, the inertia of the daily closes
+    (today's close so far as the last one) vs the same at yesterday's close, for each length in ns.
+    G = all rising, R = none rising, Y = mixed; pts = the TOS regime points of (yesterday's state -> today's).
+    [{"s": "G"|"Y"|"R", "p": yesterday's state, "pts": float} or None]"""
+    closes, out = [], []
+    prev_i, prev_state, cur_day, sums = None, None, None, None
+    for k, b in enumerate(bars):
+        d = b["t"][:10]
+        if d != cur_day:
+            if cur_day is not None:                    # yesterday is complete
+                closes.append(bars[k - 1]["c"])
+                if len(closes) >= max(ns):
+                    new_i = [_linreg_end(closes[-n:]) for n in ns]
+                    if prev_i is not None:
+                        prev_state = "G" if all(x > y for x, y in zip(new_i, prev_i)) else "R" if all(x <= y for x, y in zip(new_i, prev_i)) else "Y"
+                    prev_i = new_i
+                    # today's inertia = line through the last n-1 closes + today's close: their sums are fixed for the day
+                    sums = []
+                    for n in ns:
+                        w = closes[-(n - 1):]
+                        sx, sxx = n * (n - 1) / 2, (n - 1) * n * (2 * n - 1) / 6
+                        sums.append((n, sum(w), sum(i * y for i, y in enumerate(w)), sx, n * sxx - sx * sx))
+            cur_day = d
+        if prev_i is None:
+            out.append(None)
+            continue
+        c, up = b["c"], []
+        for (n, sy0, sxy0, sx, den), pi in zip(sums, prev_i):
+            sy, sxy = sy0 + c, sxy0 + (n - 1) * c
+            a = (n * sxy - sx * sy) / den if den else 0.0
+            up.append(a * (n - 1) + (sy - a * sx) / n > pi)
+        st = "G" if all(up) else "R" if not any(up) else "Y"
+        out.append({"s": st, "p": prev_state, "pts": REGIME_PTS.get((prev_state or st) + st, 0.0)})
+    return out
+
+
 def orb_levels(bars):
     """Opening range = the 09:30-10:30 hourly candle of the day: [(high, low) known after that candle, else None]."""
     out, cur, day = [], None, None
@@ -646,11 +707,11 @@ def unusual_calls(alerts, fallback=500_000, mult=3.0):
 
 
 SEARCH_RULES = ["alertReq", "relFlow", "greenOnly", "aboveFlip", "vwapOn", "emaOn", "emaOverVwap", "kcNotExt", "kcdLower",
-                "kchLower", "orbAbove", "fvgOn", "noAboveCW", "cwRoomOn", "vwapReset", "pwNeCw", "spyUp", "skewOn"]
+                "kchLower", "orbAbove", "fvgOn", "noAboveCW", "cwRoomOn", "vwapReset", "pwNeCw", "spyUp", "skewOn", "inGreen", "inNotRed"]
 
 
 def _search_candidates(bars, walls, start, P, out, mk, a_of, alerts, vmin, ndays, zone_atr, sup_keys, vwap, ema, kc, orb, spy,
-                       skp, earn_d, earn_days, cw_room, k_trail, flip_exit, dplv, bear):
+                       skp, earn_d, earn_days, cw_room, k_trail, flip_exit, dplv, bear, inr=None):
     """Every candle whose low comes back to the support and closes above it, traded alone with the exits of P, and
     whether each entry rule would let it in. The search then replays any mix of rules one trade at a time."""
     n_ = len(bars)
@@ -695,12 +756,13 @@ def _search_candidates(bars, walls, start, P, out, mk, a_of, alerts, vmin, ndays
              "fvgOn": bool(fvg_t[i]), "noAboveCW": not (cw_ and (b["o"] > cw_ or b["c"] > cw_)),
              "cwRoomOn": not (cw_ and cw_room and cw_ - b["c"] < cw_room * a_), "vwapReset": i in vreset,
              "pwNeCw": not (w.get("putWall") and w.get("callWall") and abs(float(w["putWall"]) - float(w["callWall"])) < 1e-6),
+             "inGreen": bool(inr and inr[i] and inr[i]["s"] == "G"), "inNotRed": bool(inr and inr[i] and inr[i]["s"] != "R"),
              "spyUp": spy.get(b["t"][:16]) != -1, "skewOn": skp.get(day) is not None and 33.4 <= skp[day] < 66.7,
              "earnOn": not (earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days)}
         s = mk(i, b, w, lvl, lname, a_, {"armedAt": None, "armPremium": 0}, day)
         for j in range(i + 1, n_):
             _step(s, bars[j], walls, k_trail, flip_exit, is_last=(j + 1 == n_ or bars[j + 1]["t"][:10] != bars[j]["t"][:10]),
-                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j])
+                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j], reg=inr[j] if inr else None)
             if s["status"] != "open":
                 break
         pct, r = _result(s)
@@ -764,6 +826,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10)),
                            float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
     bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
+    in_ns = (int(P.get("inN1") or 70), int(P.get("inN2") or 40), int(P.get("inN3") or 20))
+    inr = (extra.get("inr") and [extra["inr"].get(b["t"][:16]) for b in bars]) or \
+        (inertia_regime(bars, in_ns) if (on("inGreen") or on("inNotRed") or on("inRedExit") or P.get("_collect") is not None) else None)
     if on("vwapReset"):
         if extra.get("vwResets") is not None:
             rs_ = set(extra["vwResets"])
@@ -788,6 +853,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
              "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"),
              "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
+             "inRedExit": on("inRedExit"), "inSt": (inr[i] or {}).get("s") if inr else None,
              "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
         if fvg_t is not None and fvg_t[i]:        # the gap the entry used (shown on the chart)
             z_ = fvg_t[i]
@@ -803,7 +869,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         _search_candidates(bars, walls, start, P, collect, mk, a_of=lambda i, d: (_atr_on(datr, d) if datr else None) or atr[i],
                            alerts=alerts, vmin=vmin, ndays=ndays, zone_atr=zone_atr, sup_keys=sup_keys, vwap=vwap, ema=ema, kc=kc,
                            orb=orb, spy=spy, skp=skp, earn_d=earn_d, earn_days=earn_days, cw_room=cw_room, k_trail=k_trail,
-                           flip_exit=flip_exit, dplv=dplv, bear=bear)
+                           flip_exit=flip_exit, dplv=dplv, bear=bear, inr=inr)
         return [], None
 
     sigs, open_, watch, ai = [], None, None, 0
@@ -819,7 +885,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             ai += 1
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i],
-                  kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day), bear=bear[i])
+                  kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day), bear=bear[i], reg=inr[i] if inr else None)
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -896,6 +962,12 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             if on("kchLower") and not (kch[i] and b["c"] <= kch[i][0]):
                 miss(b, "close in the upper half of the hourly Keltner")
                 continue                               # rule on: the close must be in the lower half of the hourly channel
+            if on("inGreen") and not (inr and inr[i] and inr[i]["s"] == "G"):
+                miss(b, f"daily inertia {(inr[i] or {}).get('s', '?') if inr else '?'} (not green)")
+                continue                               # rule on: the 3 daily inertias must all be rising
+            if on("inNotRed") and not (inr and inr[i] and inr[i]["s"] != "R"):
+                miss(b, "daily inertia red")
+                continue                               # rule on: not all 3 daily inertias falling
             if on("kcdLower") and not (kc[i] and b["c"] <= kc[i][0]):
                 miss(b, f"close above the middle of the {'daily' if P.get('kcDaily', True) else 'hourly'} Keltner")
                 continue                               # rule on: the close must be in the lower half of the daily channel
@@ -932,7 +1004,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
         for j in range(i0 + 1, len(bars)):
             _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j],
-                  kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j])
+                  kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j], reg=inr[j] if inr else None)
             if alt["status"] != "open":
                 break
         ap, ar = _result(alt)
@@ -966,6 +1038,7 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
     fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10)),
                            float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
     bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
+    inr = inertia_regime(bars, (int(P.get("inN1") or 70), int(P.get("inN2") or 40), int(P.get("inN3") or 20))) if on("inRedExit") else None
     out, busy = [], -1
     for e in events:
         i = e["i"]
@@ -1006,7 +1079,7 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
             if s["status"] != "open":
                 break
             _step(s, bars[j], walls, k_trail, flip_exit, is_last=last_of_day(j),
-                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dpl.get(bars[j]["t"][:10]), bear=bear[j])
+                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dpl.get(bars[j]["t"][:10]), bear=bear[j], reg=inr[j] if inr else None)
             if s["status"] != "open":
                 break
             if on("pvEod") and bars[j]["t"][:10] == day and last_of_day(j) and bars[j]["c"] < e["pw"]:
@@ -1057,7 +1130,7 @@ def _walls(key, sym, dates, today):
 def check_ticker(sub, key, sym, days, now, since=None):
     """since: date of the oldest open signal of the ticker (followed until it ends)."""
     from charts import _yahoo
-    start = (now - timedelta(days=int(days * 1.5) + 7 + 45)).replace(hour=0, minute=0, second=0, microsecond=0)  # + VWAP / daily Keltner warm-up
+    start = (now - timedelta(days=int(days * 1.5) + 7 + 120)).replace(hour=0, minute=0, second=0, microsecond=0)  # + VWAP / daily Keltner / inertia warm-up
     if since:
         start = min(start, datetime.strptime(since, "%Y-%m-%d") - timedelta(days=3))
     bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
@@ -1273,7 +1346,8 @@ def enter(sub, sym, sg):
               "pvEodPw": sg.get("level") if sg.get("pvEod") else None,
               "scaleOn": bool(cfg.get("scaleOn")), "scaleR": float(cfg.get("scaleR") or 1), "scalePct": float(cfg.get("scalePct") or 50),
               "scaleBE": bool(cfg.get("scaleBE", True)),
-              "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2)}
+              "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2),
+              "inRedExit": bool(cfg.get("inRedExit")), "inNs": [int(cfg.get("inN1") or 70), int(cfg.get("inN2") or 40), int(cfg.get("inN3") or 20)]}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
         db.update(pk, f"BOT#{rec['id']}", {"proposal": p, "decision": "BUY", "strategyOnly": "wallwatch", "wallwatch": ww})
@@ -1554,7 +1628,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
         from util import BadRequest
         raise BadRequest("Pick a ticker.")
     now = now_ny().replace(tzinfo=None)
-    start = (now - timedelta(days=int(days * 1.5) + 45)).replace(hour=0, minute=0, second=0, microsecond=0)   # + VWAP / daily Keltner warm-up
+    start = (now - timedelta(days=int(days * 1.5) + 120)).replace(hour=0, minute=0, second=0, microsecond=0)   # + VWAP / daily Keltner / inertia warm-up
     bars = _yahoo(sym.replace(".", "-"), "1h", start, now + timedelta(days=1)) or []
     bars = [{"t": b["t"][:16], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v")}
             for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
@@ -1674,7 +1748,13 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     except Exception as e:
         print("fvg failed", sym, e)
         fvg = []
-    return {"fvg": fvg, "lab": bool(lab), "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    try:
+        ir = inertia_regime(bars_all, (int(ccfg.get("inN1") or 70), int(ccfg.get("inN2") or 40), int(ccfg.get("inN3") or 20)))[off:]
+        inertia = [{"t": b["t"], "s": x["s"], "pts": x["pts"]} for b, x in zip(bars, ir) if x]
+    except Exception as e:
+        print("inertia failed", sym, e)
+        inertia = []
+    return {"inertia": inertia, "fvg": fvg, "lab": bool(lab), "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),

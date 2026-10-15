@@ -1249,6 +1249,18 @@ def _wallwatch_exit(sub, rec, p):
             print("flip exit check failed", rec.get("symbol"), e)
     if p.get("underlyingTarget") and last["h"] >= float(p["underlyingTarget"]):
         return f"call wall {p['underlyingTarget']} reached ({last['h']:.2f})"
+    if ww.get("inRedExit") and now.hour * 60 + now.minute >= 15 * 60 + 50:   # the day closes with the daily inertia red
+        try:
+            import wallwatch
+            hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=150), now + timedelta(hours=1)) or [],
+                                    now.replace(tzinfo=None))
+            hb = [b for b in hb if "09:30" <= b["t"][11:16] < "16:00"]
+            hb.append({"t": now.strftime("%Y-%m-%dT%H:%M"), "o": last["c"], "h": last["c"], "l": last["c"], "c": last["c"]})
+            rg = wallwatch.inertia_regime(hb, tuple(ww.get("inNs") or (70, 40, 20)))[-1]
+            if rg and rg["s"] == "R":
+                return f"daily inertia red at the close ({last['c']:.2f})"
+        except Exception as e:
+            print("inertia exit check failed", rec.get("symbol"), e)
     if ww.get("fvgExit"):                              # the last finished hourly candle completes a new bearish FVG
         try:
             import wallwatch

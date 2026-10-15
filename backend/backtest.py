@@ -368,6 +368,7 @@ def _ticker_data(sub, sym, days, cfg, full=True):
             "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
             "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)},
                       "kch": {b["t"][:16]: v for b, v in zip(bars, wallwatch.keltner(bars, int(cfg.get("kchLen") or 21), float(cfg.get("kchMult") or 3)))},
+                      "inr": {b["t"][:16]: v for b, v in zip(bars, wallwatch.inertia_regime(bars, (int(cfg.get("inN1") or 70), int(cfg.get("inN2") or 40), int(cfg.get("inN3") or 20))))},
                       "spy": wallwatch.spy_trend(start, now) if full or cfg.get("spyUp") else {},
                       "dpLevels": wallwatch.dp_level_map(dp, days_), "skewPct": skew_pct_map(sk, days_) if sk else {}}}
 
@@ -656,6 +657,11 @@ def robust_test(sub, params=None, budget_s=480):
     if on("emaOn") or on("emaOverVwap") or on("emaExit"):
         el = int(cfg.get("emaLen") or 20)
         variants += [(f"EMA {v} (you: {el})", {"emaLen": v}) for v in (max(5, el - 5), el + 5)]
+    if on("inGreen") or on("inNotRed") or on("inRedExit"):
+        ns_ = (int(cfg.get("inN1") or 70), int(cfg.get("inN2") or 40), int(cfg.get("inN3") or 20))
+        for f_ in (0.75, 1.25):
+            nn = [max(5, round(x * f_)) for x in ns_]
+            variants.append((f"Inertia {nn[0]}/{nn[1]}/{nn[2]} days (you: {ns_[0]}/{ns_[1]}/{ns_[2]})", {"inN1": nn[0], "inN2": nn[1], "inN3": nn[2]}))
     if on("scaleOn"):
         sr, sp = float(cfg.get("scaleR") or 1), float(cfg.get("scalePct") or 50)
         variants += [(f"Sell part at {v:g}R (you: {sr:g})", {"scaleR": v}) for v in (max(0.25, sr - 0.25), sr + 0.25)]
@@ -681,6 +687,9 @@ def robust_test(sub, params=None, budget_s=480):
             if "vwapDays" in ch:                        # the anchored VWAP restarts on another window
                 vw = wallwatch.anchored_vwap(d["bars"], int(ch["vwapDays"]))[0]
                 d2 = {**d2, "vmap": {b["t"][:16]: v for b, v in zip(d["bars"], vw)}}
+            if "inN1" in ch:                            # the daily inertia on other lengths
+                ir = wallwatch.inertia_regime(d["bars"], (int(ch["inN1"]), int(ch["inN2"]), int(ch["inN3"])))
+                d2 = {**d2, "extra": {**d2["extra"], "inr": {b["t"][:16]: v for b, v in zip(d["bars"], ir)}}}
             if "emaLen" in ch:
                 em = wallwatch._ema_series([b["c"] for b in d["bars"]], int(ch["emaLen"]))
                 d2 = {**d2, "emap": {b["t"][:16]: v for b, v in zip(d["bars"], em)}}
@@ -1127,7 +1136,15 @@ def rule_search(sub, params=None, budget_s=480):
         path.append({"rules": list(cur), **best[1]})
     allc = [{"rules": list(k), **v} for k, v in seen.items() if ok(v)]
     both = [x for x in allc if (x.get("h1") or 0) > 0 and (x.get("h2") or 0) > 0]
-    top = sorted(both, key=lambda x: -(x.get("avgR") or 0))[:15]
+    top, sig = [], set()                               # a rule that changes no trade is dropped: the shortest mix is kept
+    for x in sorted(both, key=lambda x: (-(x.get("avgR") or 0), len(x["rules"]))):
+        k = (x.get("n"), x.get("avgR"), x.get("totR"), x.get("h1"), x.get("h2"))
+        if k in sig:
+            continue
+        sig.add(k)
+        top.append(x)
+        if len(top) >= 15:
+            break
     out = {"PK": pk, "SK": SEARCH_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "tickers": done_n,
            "candidates": sum(len(v) for v in cands.values()), "tested": len(seen), "minTrades": min_n, "period": {"from": first, "mid": mid},
            "lab": bool(P.get("cfg")), "base": out_rows["base"], "mine": out_rows["mine"], "singles": singles, "path": path, "top": top,

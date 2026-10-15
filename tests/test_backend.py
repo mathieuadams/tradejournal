@@ -2616,6 +2616,23 @@ def test_live_partial_exit():
         autotrader._alp, autotrader._paper_creds, autotrader._notify = saved
 
 
+def test_inertia_regime():
+    """Daily inertia: green when the regression of the daily closes rises on all 3 lengths, red when on none."""
+    import wallwatch, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    up = [{"t": f"{(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat()}T{h}", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100 + d}
+          for d in range(30) for h in H]
+    r = wallwatch.inertia_regime(up, (10, 6, 3))
+    assert r[0] is None and r[-1]["s"] == "G" and r[-1]["pts"] == 3.0
+    down = [dict(b, c=200 - (100 - b["c"]) * -1) for b in up]
+    down = [dict(b, c=300 - b["c"]) for b in up]
+    assert wallwatch.inertia_regime(down, (10, 6, 3))[-1]["s"] == "R"
+    # entry filter: green only
+    w = {b["t"][:10]: {"putWall": 50, "callWall": 400, "flip": 40} for b in up}
+    sg, _ = wallwatch.detect_retest(down, w, None, {"alertReq": False, "inGreen": True, "greenOnly": False, "earnOn": False}, None)
+    assert sg == []
+
+
 def test_keltner_daily():
     """Daily Keltner on hourly candles: the previous days' EMAs updated with today's candle so far (no later price)."""
     import wallwatch
