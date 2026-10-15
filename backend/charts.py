@@ -42,7 +42,7 @@ def _yahoo(symbol, tf, start, end):
               "period1": _epoch(start),
               "period2": _epoch(end)}
     last = None
-    for host in ("query1", "query2"):
+    for n_, host in enumerate(("query1", "query2", "query1", "query2")):   # rate limited (429): back off and retry
         url = f"https://{host}.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol)}?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (tradejournal)", "Accept": "application/json"})
         try:
@@ -58,10 +58,10 @@ def _yahoo(symbol, tf, start, end):
                 except Exception:
                     msg = body[:200]
                 raise BadRequest(f"No {tf} bars for {symbol} in this period: {msg}")
-            time.sleep(1)
+            time.sleep((1, 3, 6, 0)[n_])
         except urllib.error.URLError as e:
             last = str(e.reason)
-            time.sleep(1)
+            time.sleep((1, 3, 6, 0)[n_])
     else:
         raise Unavailable(f"Market data couldn't be loaded right now. Try again in a minute. ({str(last)[:120]})")
     res = (data.get("chart") or {}).get("result") or []

@@ -3008,6 +3008,34 @@ def test_no_support_any_candle():
     assert sg and sg[0]["levelName"] == "candle low" and sg[0]["inSt"] == "G"
 
 
+def test_hourly_inertia():
+    """Hourly inertia: rolling regression matches the direct one; the entry filter and the not-green exit work."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars, k = [], 0
+    for d in range(40):
+        day = (dt.date(2026, 1, 5) + dt.timedelta(days=d)).isoformat()
+        for h in H:
+            c = 100 + 5 * math.sin(k / 9.0) + k * 0.02
+            bars.append({"t": f"{day}T{h}", "o": c - 0.1, "h": c + 0.3, "l": c - 0.3, "c": c, "v": 1})
+            k += 1
+    ns = (12, 8, 4)
+    r = wallwatch.inertia_hourly(bars, ns)
+    ys = [b["c"] for b in bars]
+    for j in range(13, len(bars)):
+        v = [wallwatch._linreg_end(ys[j - n + 1:j + 1]) > wallwatch._linreg_end(ys[j - n:j]) for n in ns]
+        assert r[j]["s"] == ("G" if all(v) else "R" if not any(v) else "Y"), j
+    assert r[11] is None and {x["s"] for x in r if x} == {"G", "Y", "R"}
+    w = {b["t"][:10]: {"putWall": 50, "callWall": 999, "flip": 40} for b in bars}
+    cfg = {"alertReq": False, "usePW": False, "useFlip": False, "greenOnly": False, "earnOn": False, "noAboveCW": False, "cwRoomOn": False,
+           "inhGreen": True, "inhYExit": True, "inhN1": 12, "inhN2": 8, "inhN3": 4, "trailOn": False, "targetOn": False, "flipExit": False, "stopAtr": 5}
+    sg, _ = wallwatch.detect_retest(bars, w, None, cfg, None)
+    idx = {b["t"][:16]: i for i, b in enumerate(bars)}
+    assert sg and all(r[idx[s["at"]]]["s"] == "G" for s in sg)
+    closed = [s for s in sg if s["status"] == "inertiaH"]
+    assert closed and all(r[idx[s["exitAt"]]]["s"] != "G" for s in closed)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

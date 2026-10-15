@@ -15,7 +15,7 @@
 import json
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta
 
 import db
@@ -1014,15 +1014,26 @@ def lab_test(sub, params=None, budget_s=480):
             return [], []
         return _run0(sym, d, {**lab, "earnOn": False}, first), _run0(sym, d, {**live, "earnOn": False}, first)
 
-    pool = ThreadPoolExecutor(max_workers=8)
-    for f in [pool.submit(one, t) for t in live["tickers"]]:
+    def one_retry(sym):
+        try:
+            return one(sym)
+        except Exception:                              # market data rate limit: wait and try once more
+            time.sleep(8)
+            return one(sym)
+
+    pool = ThreadPoolExecutor(max_workers=6)
+    failed, timed_out = [], 0
+    for t_, f in [(t, pool.submit(one_retry, t)) for t in live["tickers"]]:
         try:
             a, b = f.result(timeout=max(1, budget_s - (time.time() - t0)))
             rows_l += a
             rows_v += b
             done_n += 1
+        except FutureTimeout:
+            timed_out += 1
         except Exception as e:
-            errors.append(str(e)[:100] or "time limit")
+            failed.append(t_)
+            errors.append(f"{t_}: {str(e)[:80]}")
     pool.shutdown(wait=False, cancel_futures=True)
 
     def pack(rows):
@@ -1039,9 +1050,11 @@ def lab_test(sub, params=None, budget_s=480):
 
     out = {"PK": pk, "SK": LAB_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "tickers": done_n,
            "period": {"from": first, "mid": mid}, "cfg": P.get("cfg") or {}, "lab": pack(rows_l), "live": pack(rows_v),
-           "trades": sorted(rows_l, key=lambda r: r["at"])[-80:], "errors": errors[:5]}
-    if done_n < len(live["tickers"]):
+           "trades": sorted(rows_l, key=lambda r: r["at"])[-400:], "errors": errors[:5]}
+    if timed_out:
         out["errors"].insert(0, f"Time limit: {done_n} of {len(live['tickers'])} tickers.")
+    if failed:
+        out["errors"].insert(0, f"No market data for {len(failed)} ticker{'s' if len(failed) > 1 else ''} ({', '.join(failed[:8])}) — tested {done_n} of {len(live['tickers'])}.")
     db.put(out)
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
 
