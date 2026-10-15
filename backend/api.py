@@ -519,6 +519,34 @@ def bot_lab_options_get(sub, claims, body, q):
     return optiontest.result(sub)
 
 
+@route("GET", "/bot/lab/chartoptions")
+def bot_lab_chartopt_get(sub, claims, body, q):
+    import optiontest
+    return optiontest.result_sym(sub, (q.get("t") or "").upper())
+
+
+@route("POST", "/bot/lab/chartoptions")
+def bot_lab_chartopt(sub, claims, body, q):
+    import optiontest
+    b = body or {}
+    sym = str(b.get("t") or "").upper()[:10]
+    if not sym:
+        raise BadRequest("Pick a ticker.")
+    trades = [{k: x.get(k) for k in ("at", "entry", "exitAt", "exit", "R", "pct")} for x in (b.get("trades") or []) if isinstance(x, dict)][-60:]
+    P = {}
+    for k, lo, hi in (("dteMin", 0, 120), ("dteMax", 1, 180), ("money", -30, 30), ("tp", 0, 1000), ("sl", 0, 100), ("slip", 0, 20)):
+        if b.get(k) not in (None, ""):
+            try:
+                P[k] = max(lo, min(hi, float(b[k])))
+            except (TypeError, ValueError):
+                pass
+    P["follow"] = b.get("follow") is not False
+    db.put({"PK": db.upk(sub), "SK": f"WWOPTSYM#{sym}", **optiontest.result_sym(sub, sym), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwoptsym", "params": {"sym": sym, "trades": trades, "P": P}}, default=str))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/lab/options")
 def bot_lab_options(sub, claims, body, q):
     import optiontest

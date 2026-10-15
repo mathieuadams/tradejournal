@@ -148,13 +148,92 @@ def _stats(pcts):
             "avgWin": round(sum(w) / len(w), 1) if w else None, "avgLoss": round(sum(lo) / len(lo), 1) if lo else None}
 
 
+def price_one(c, t, P):
+    """One stock trade {sym, at, entry, exitAt, exit} bought as a call: {**t, opt: {...} | None, why, _grid}."""
+    import wallwatch
+    slip = float(P["slip"]) / 100
+    day = t["at"][:10]
+    entry_end = wallwatch._bar_end(t["at"]).strftime("%Y-%m-%dT%H:%M")
+    stock_exit_end = wallwatch._bar_end(t["exitAt"]).strftime("%Y-%m-%dT%H:%M") if t.get("exitAt") and t.get("exit") != "open" else None
+    ch = pick(c, t["sym"], day, float(t["entry"]), P)
+    if not ch:
+        return {**t, "opt": None, "why": "no call traded that day in the window"}
+    sym_, exp, strike, vol = ch[0]
+    end_d = min(exp, (datetime.strptime((t.get("exitAt") or day)[:10], "%Y-%m-%d") + timedelta(days=45)).strftime("%Y-%m-%d"))
+    end = min(datetime.utcnow() - timedelta(minutes=20), datetime.strptime(end_d, "%Y-%m-%d") + timedelta(days=1))
+    bs = bars(c, [sym_], "30Min", day, end.strftime("%Y-%m-%dT%H:%M:%SZ")).get(sym_) or []
+    path = []
+    for b in bs:
+        st = _ny(b["t"])
+        en = (datetime.strptime(st, "%Y-%m-%dT%H:%M") + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M")
+        if "09:30" <= st[11:16] < "16:00":
+            path.append((en, b["o"], b["h"], b["l"], b["c"]))
+    before = [p for p in path if p[0] <= entry_end and p[0][:10] == day]
+    if not before:
+        return {**t, "opt": None, "why": "no option trade before the entry"}
+    entry = before[-1][4]
+    after = [p for p in path if p[0] > entry_end]
+    res = {}
+    for tp in TPS:
+        for sl in SLS:
+            for fo in (True, False):
+                r = simulate(after, entry, entry_end, stock_exit_end, exp, tp, sl, fo, slip)
+                if r:
+                    res[f"{tp}|{sl}|{int(fo)}"] = r
+    mine = simulate(after, entry, entry_end, stock_exit_end, exp, None if P.get("tp") in (None, "", 0) else float(P["tp"]),
+                    None if P.get("sl") in (None, "", 0) else float(P["sl"]), bool(P.get("follow", True)), slip)
+    mfe = max([p[2] for p in after] or [entry])
+    return {**t, "opt": {"sym": sym_, "exp": exp, "strike": strike, "vol": vol, "entry": round(entry, 2),
+                         "mfe": round((mfe / (entry * (1 + slip)) - 1) * 100, 1),
+                         "pct": mine[0] if mine else None, "why": mine[1] if mine else None, "exitAt": mine[2] if mine else None},
+            "_grid": res}
+
+
+DEF = {"dteMin": 7, "dteMax": 21, "money": 0.0, "tp": 50, "sl": 40, "follow": True, "slip": 2.0, "maxTrades": 300}
+
+
+def run_sym(sub, sym, trades, params=None, budget_s=270):
+    """The Strategy lab chart: this ticker's trades bought as calls (stored per ticker)."""
+    import alpaca
+    t0 = time.time()
+    pk, sk = db.upk(sub), f"WWOPTSYM#{sym}"
+    P = {**DEF, **(params or {})}
+    c = alpaca.creds(sub)
+    if not c:
+        out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "errors": ["Connect Alpaca (Settings) to load option prices."]}
+        db.put(out)
+        return out
+    tr = [{"sym": sym, **{k: t.get(k) for k in ("at", "entry", "exitAt", "exit", "R", "pct")}} for t in trades
+          if (t.get("at") or "") >= "2024-02-05" and t.get("entry")][-60:]
+    rows, errors = [], []
+    pool = ThreadPoolExecutor(max_workers=4)
+    for f in [pool.submit(price_one, c, t, P) for t in tr]:
+        try:
+            rows.append(f.result(timeout=max(1, budget_s - (time.time() - t0))))
+        except Exception as e:
+            errors.append(str(e)[:120] or "time limit")
+    pool.shutdown(wait=False, cancel_futures=True)
+    by = {r["at"]: {**(r.get("opt") or {}), **({} if r.get("opt") else {"none": r.get("why")})} for r in rows}
+    ok = [r["opt"]["pct"] for r in rows if r.get("opt") and r["opt"].get("pct") is not None]
+    out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "params": P, "byAt": by, "stats": _stats(ok),
+           "errors": errors[:3], "older": sum(1 for t in trades if (t.get("at") or "") < "2024-02-05")}
+    db.put(out)
+    return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
+def result_sym(sub, sym):
+    import backtest
+    r = backtest._unstick(db.get(db.upk(sub), f"WWOPTSYM#{sym}") or {})
+    return {k: v for k, v in r.items() if k not in ("PK", "SK")}
+
+
 def run(sub, params=None, budget_s=540):
     import alpaca
     import backtest
     import wallwatch
     t0 = time.time()
     pk = db.upk(sub)
-    P = {"dteMin": 7, "dteMax": 21, "money": 0.0, "tp": 50, "sl": 40, "follow": True, "slip": 2.0, "maxTrades": 300, **(params or {})}
+    P = {**DEF, **(params or {})}
     db.put({"PK": pk, "SK": OPT_SK, **(db.get(pk, OPT_SK) or {}), "running": iso(now_ny()), "params": P})
     c = alpaca.creds(sub)
     if not c:
@@ -164,45 +243,10 @@ def run(sub, params=None, budget_s=540):
     lab = db.get(pk, backtest.LAB_SK) or {}
     trades = [t for t in (lab.get("trades") or []) if t.get("at", "") >= "2024-02-05" and t.get("entry")]
     trades = trades[-int(P["maxTrades"]):]
-    slip = float(P["slip"]) / 100
     errors = []
 
     def one(t):
-        day = t["at"][:10]
-        entry_end = wallwatch._bar_end(t["at"]).strftime("%Y-%m-%dT%H:%M")
-        stock_exit_end = wallwatch._bar_end(t["exitAt"]).strftime("%Y-%m-%dT%H:%M") if t.get("exitAt") and t.get("exit") != "open" else None
-        ch = pick(c, t["sym"], day, float(t["entry"]), P)
-        if not ch:
-            return {**t, "opt": None, "why": "no call traded that day in the window"}
-        sym_, exp, strike, vol = ch[0]
-        end_d = min(exp, (datetime.strptime((t.get("exitAt") or day)[:10], "%Y-%m-%d") + timedelta(days=45)).strftime("%Y-%m-%d"))
-        end = min(datetime.utcnow() - timedelta(minutes=20), datetime.strptime(end_d, "%Y-%m-%d") + timedelta(days=1))
-        bs = bars(c, [sym_], "30Min", day, end.strftime("%Y-%m-%dT%H:%M:%SZ")).get(sym_) or []
-        path = []
-        for b in bs:
-            st = _ny(b["t"])
-            en = (datetime.strptime(st, "%Y-%m-%dT%H:%M") + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M")
-            if "09:30" <= st[11:16] < "16:00":
-                path.append((en, b["o"], b["h"], b["l"], b["c"]))
-        before = [p for p in path if p[0] <= entry_end and p[0][:10] == day]
-        if not before:
-            return {**t, "opt": None, "why": "no option trade before the entry"}
-        entry = before[-1][4]
-        after = [p for p in path if p[0] > entry_end]
-        res = {}
-        for tp in TPS:
-            for sl in SLS:
-                for fo in (True, False):
-                    r = simulate(after, entry, entry_end, stock_exit_end, exp, tp, sl, fo, slip)
-                    if r:
-                        res[f"{tp}|{sl}|{int(fo)}"] = r
-        mine = simulate(after, entry, entry_end, stock_exit_end, exp, None if P["tp"] in (None, "", 0) else float(P["tp"]),
-                        None if P["sl"] in (None, "", 0) else float(P["sl"]), bool(P["follow"]), slip)
-        mfe = max([p[2] for p in after] or [entry])
-        return {**t, "opt": {"sym": sym_, "exp": exp, "strike": strike, "vol": vol, "entry": round(entry, 2),
-                             "mfe": round((mfe / (entry * (1 + slip)) - 1) * 100, 1),
-                             "pct": mine[0] if mine else None, "why": mine[1] if mine else None, "exitAt": mine[2] if mine else None},
-                "_grid": res}
+        return price_one(c, t, P)
 
     rows = []
     pool = ThreadPoolExecutor(max_workers=4)

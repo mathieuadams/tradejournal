@@ -1659,8 +1659,8 @@ function vChartWW() {
         return `<span><b class="gain">Calls</b> ${c.length} · ${money(sm(c), false)} &nbsp; <b class="loss">Puts</b> ${p_.length} · ${money(sm(p_), false)}</span>`
           + (sa ? `<span><b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}</span>` : '')
           + (d.note ? `<span class="muted">${esc(d.note)}</span>` : ''); })()}
-      <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
-      ${labOn ? labStats(sigs) + labTestBox() + optTestBox() : ''}
+      <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}${labOn ? optTag(sym, x) : ''}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
+      ${labOn ? labStats(sigs) + optSymBox(sym, sigs, selK >= 0 ? sigs[selK] : null) + labTestBox() + optTestBox() : ''}
       <span class="muted">IN = PW setup, FLIP = flip setup, MRG = merged walls, RT = flow retest · green line = target (call wall) · red line = stop, trailing under the highest high · square = exit · × = reached the support but no entry (hover for the reason; grey = no call alert) · ◆ = VWAP reset candle touching the put wall (purple: closed above it, pink: under it) · ↑ ↓ ticker</span>
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
@@ -2900,6 +2900,32 @@ function labPanel() {
     <button class="btn" data-labreset style="font-size:.8rem;padding:1px 10px" title="Start over from a copy of the live settings (the live bot is not changed)">Copy live settings</button>
     <span class="muted" style="font-size:.75rem">Lab only: these settings are kept apart and never change the live bot or its signals${diff ? ` · ${diff} differ from live` : ''}. Nothing changes until you click Apply.</span></div></div>`;
 }
+S.optSym = S.optSym || {};
+async function loadOptSym(sym) {
+  try { S.optSym[sym] = await api(`/bot/lab/chartoptions?t=${encodeURIComponent(sym)}`); } catch (e) { S.optSym[sym] = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.optSymPoll);
+  if (S.optSym[sym] && S.optSym[sym].running && route() === 'botchart') S.optSymPoll = setTimeout(() => loadOptSym(sym), 8000);
+}
+function optTag(sym, x) {                       // the call bought for this lab trade, on its button
+  const o = ((S.optSym[sym] || {}).byAt || {})[x.at];
+  if (!o) return '';
+  if (o.none) return ` <span class="muted" title="${esc(o.none)}">· no call</span>`;
+  return ` <span title="${esc(o.sym)} bought ${o.entry} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' '))} · best +${o.mfe}%" style="border-left:1px solid var(--line);padding-left:4px">${o.strike}C ${esc(o.exp.slice(5))} <b class="${o.pct > 0 ? 'gain' : o.pct < 0 ? 'loss' : ''}">${o.pct > 0 ? '+' : ''}${o.pct}%</b></span>`;
+}
+function optSymBox(sym, sigs, sel) {
+  const r = S.optSym[sym];
+  if (r === undefined) { S.optSym[sym] = null; setTimeout(() => loadOptSym(sym), 0); }
+  const x = r || {}, P = optParams(), st = x.stats || {};
+  const pc = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${v}%</b>`;
+  const o = sel && x.byAt ? x.byAt[sel.at] : null;
+  const btn = `<button class="btn coachbtn" data-optsym="${esc(sym)}" ${x.running || !sigs.length ? 'disabled' : ''} style="font-size:.78rem;padding:1px 10px" title="Each of these trades bought as a real call: ${P.dteMin}–${P.dteMax} days, strike ${P.money}% from price, take profit ${P.tp}%, stop ${P.sl}%${P.follow ? ', sold on the stock exit' : ''}, slippage ${P.slip}% (set in the Option test section)">${x.running ? 'Pricing calls…' : x.byAt ? 'Re-price calls' : 'Buy calls for these trades'}</button>`;
+  return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center">${btn}
+    ${x.stats && st.n ? `<span><b>Calls</b> ${st.n} trades · win ${st.win}% · avg ${pc(st.avg)} · median ${pc(st.med)} · avg win / loss ${pc(st.avgWin)} / ${pc(st.avgLoss)} · total ${pc(st.tot)}${x.params ? ` <span class="muted">(${x.params.dteMin}–${x.params.dteMax}d, TP ${x.params.tp}%, stop ${x.params.sl}%)</span>` : ''}</span>` : ''}
+    ${x.older ? `<span class="muted">${x.older} trades before Feb 2024: no option prices</span>` : ''}
+    ${o ? (o.none ? `<span class="muted">Selected trade: ${esc(o.none)}</span>` : `<span><b>Selected trade</b> bought <b>${esc(o.sym)}</b> (${esc(o.exp)} ${o.strike} call) at ${o.entry} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' ').slice(5))} → ${pc(o.pct)} · best ${pc(o.mfe)}</span>`) : ''}
+    ${(x.errors || []).length ? `<span class="loss">${esc(x.errors.join(' · '))}</span>` : ''}${x.error ? `<span class="loss">${esc(x.error)}</span>` : ''}</span>`;
+}
 function labStats(sigs) {
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
   const rs = sigs.filter(x => x.R != null), w = rs.filter(x => x.R > 0), tot = rs.reduce((a, x) => a + x.R, 0);
@@ -3400,7 +3426,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-optrun],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3479,6 +3505,10 @@ document.addEventListener('click', e => {
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }
   if (el.hasAttribute('data-labreset')) { S.lab = null; S.labDraft = {}; S.labSw = {}; S.labDirty = false; try { localStorage.removeItem('labCfg'); } catch (e) {} labRedraw(); return; }
+  if (el.dataset.optsym) { const sym = el.dataset.optsym, d = S.fc[fcKey('ww-lab-' + sym)] || {};
+    const trades = (d.signals || []).map(x => ({ at: x.at, entry: x.entry, exitAt: x.exitAt, exit: x.status, R: x.R, pct: x.pct }));
+    api('/bot/lab/chartoptions', { method: 'POST', body: { t: sym, trades, ...optParams() } }).then(() => { S.optSym[sym] = { ...(S.optSym[sym] || {}), running: 'now' }; render(); setTimeout(() => loadOptSym(sym), 8000); }).catch(err => toast(err.message));
+    return; }
   if (el.hasAttribute('data-optshow')) { S.hideStats = false; S.fcfInfoH = null; try { localStorage.setItem('hideStats', '0'); } catch (e) {} render();
     setTimeout(() => { const h = document.getElementById('opt-test'); if (h) h.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 80); return; }
   if (el.hasAttribute('data-optrun')) {

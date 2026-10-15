@@ -3076,6 +3076,10 @@ def test_option_test():
         g = {(x["tp"], x["sl"], x["follow"]): x for x in r["grid"]}
         assert g[(None, None, True)]["avg"] == 45.0          # held to the stock exit: last option close 2.90
         assert g[(100, None, False)]["n"] == 1
+        rs = optiontest.run_sym("opt-user", "AAA", [{"at": "2025-03-03T10:30", "entry": 100.4, "exitAt": "2025-03-05T10:30", "exit": "trail", "R": 1.2},
+                                                    {"at": "2023-05-01T10:30", "entry": 90, "exit": "stop", "R": -1}], {"slip": 0})
+        assert rs["byAt"]["2025-03-03T10:30"]["pct"] == 55.0 and rs["stats"]["n"] == 1 and rs["older"] == 1
+        assert optiontest.result_sym("opt-user", "AAA")["byAt"]
     finally:
         optiontest.bars, alpaca.creds = saved
 

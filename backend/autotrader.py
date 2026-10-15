@@ -1855,6 +1855,14 @@ def handler(event, context_):
                     db.put({**(db.get(db.upk(sub), backtest.SEARCH_SK) or {}), "PK": db.upk(sub), "SK": backtest.SEARCH_SK,
                             "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
+            elif job == "wwoptsym":
+                import optiontest
+                pr = event.get("params") or {}
+                try:
+                    out[sub] = {"n": (optiontest.run_sym(sub, pr.get("sym"), pr.get("trades") or [], pr.get("P") or {}).get("stats") or {}).get("n")}
+                except Exception as e:
+                    db.put({"PK": db.upk(sub), "SK": f"WWOPTSYM#{pr.get('sym')}", "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
             elif job == "wwopt":
                 import optiontest
                 try:
