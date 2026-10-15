@@ -345,7 +345,7 @@ EXITS = [  # label, exit settings on top of the fixed stop
 EXIT_KEYS = ("stopOn", "trailOn", "targetOn", "flipExit", "vwapExit", "emaExit", "trailAtr", "tgtBuf", "kcRide", "cwLost", "dpLost")
 
 
-def _ticker_data(sub, sym, days, cfg, full=True):
+def _ticker_data(sub, sym, days, cfg, full=True, alerts=True):
     import flowdata
     import wallwatch
     from charts import _yahoo
@@ -363,7 +363,7 @@ def _ticker_data(sub, sym, days, cfg, full=True):
     dp = stored_darkpool(sym)
     days_ = sorted({b["t"][:10] for b in bars})
     sk = stored_skew(sym) if full or cfg.get("skewOn") else {}
-    return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym),
+    return {"bars": bars, "datr": wallwatch.daily_atr(daily), "walls": walls, "alerts": stored_alerts(sub, sym) if alerts else [],
             "skew": sk, "dp": dp,
             "vmap": {b["t"][:16]: v for b, v in zip(bars, vw)}, "emap": {b["t"][:16]: v for b, v in zip(bars, em)},
             "extra": {"kc": {b["t"][:16]: v for b, v in zip(bars, kc)},

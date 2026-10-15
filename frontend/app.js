@@ -28,7 +28,7 @@ async function api(path, { method = 'GET', body } = {}) {
   } catch (e) { throw new Error('Can’t reach the server. Check your connection and try again.'); }
   if (r.status === 401) { Auth.login(); return new Promise(() => {}); }
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) { const e = new Error(data.error || `Request failed (${r.status}).`); e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error(data.error || (r.status >= 500 ? `The server took too long or failed (${r.status}) — try a shorter period (45d / 90d) and reload.` : `Request failed (${r.status}).`)); e.status = r.status; throw e; }
   return data;
 }
 
@@ -2819,7 +2819,7 @@ const labLive = () => { const c = (S.ww && S.ww.config) || {}, L = labCfg() || {
   return Object.keys(L).filter(k => L[k] !== undefined && String(L[k]) !== String(c[k] ?? def(k))).length; };
 async function loadLabChart(sym) {
   const k = fcKey('ww-lab-' + sym); S.fcBusy[k] = true; if (route() === 'botchart') render();
-  try { S.fc[k] = await api('/bot/lab/chart', { method: 'POST', body: { t: sym, days: S.wwDays || 45, cfg: labCfg() } }); } catch (e) { S.fc[k] = { error: e.message }; }
+  try { S.fc[k] = await api('/bot/lab/chart', { method: 'POST', body: { t: sym, days: S.wwDays || 45, cfg: labCfg(), flow: !!S.fcLayers.flow } }); } catch (e) { S.fc[k] = { error: e.message }; }
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
 async function loadLabTest() {

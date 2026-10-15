@@ -1842,7 +1842,8 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     if cut:                                            # longer view: the signals older than the stored 45 days, replayed
         try:
             import backtest
-            data = backtest._ticker_data(sub, sym, len(dates) + (120 if ccfg.get("tf") == "1D" else 5), ccfg, False)   # 1D: daily inertia warm-up
+            data = backtest._ticker_data(sub, sym, len(dates) + (120 if ccfg.get("tf") == "1D" else 5), ccfg, False,
+                                            alerts=bool(flow or (ccfg.get("alertReq", True) and ccfg.get("tf") != "1D")))   # 1D: daily inertia warm-up
             if data:
                 long_bars = data["bars"]
                 extra = {**data["extra"], "misses": replay_misses}
