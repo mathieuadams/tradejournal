@@ -2800,6 +2800,10 @@ def test_chart_long_range_replay():
         assert lab["lab"] and lab["signals"] and all(x.get("replay") for x in lab["signals"])
         assert float(wallwatch.config("long-user")["stopAtr"]) == 0.5
         assert "fvg" in lab
+        d1 = wallwatch.chart("long-user", "AAA", days=45, flow=False, lab={"tf": "1D", "greenOnly": False, "noAboveCW": False, "cwRoomOn": False})
+        assert d1["tf"] == "1D" and all(x.get("tf") == "1D" for x in d1["signals"])
+        r1 = backtest.lab_test("long-user", {"days": 60, "cfg": {"tf": "1D", "greenOnly": False}})
+        assert "n" in r1["lab"] and r1["live"]["n"] > 0
         r = backtest.lab_test("long-user", {"days": 60, "cfg": {"stopAtr": 0.7}})
         assert r["lab"]["n"] > 0 and r["live"]["n"] > 0
         rb = backtest.robust_test("long-user", {"days": 60, "cfg": {"trailOn": True, "fvgOn": True, "kchLower": True, "scaleOn": True, "vwapOn": True}})
@@ -2957,6 +2961,37 @@ def test_pw_vwap_study():
         assert "5 days" in g["Any day (baseline)"] and backtest.pv_result("pv-user")["groups"]
     finally:
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
+
+
+def test_daily_strategy():
+    """1D lab mode: daily candles from the hourly ones; entry on the put wall test + inertia green + an open bullish
+    daily FVG, exit at the first daily close with the inertia not green."""
+    import wallwatch, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [100 + 2 * d for d in range(86)] + [270 - 3 * k for k in range(1, 15)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = []
+    for d, c in zip(days, cl):
+        for k, h in enumerate(H):
+            px = c - 0.5 + k / 12
+            hb.append({"t": f"{d}T{h}", "o": px, "h": c + 1 if k == 3 else px + 0.1, "l": c - 1 if k == 2 else px - 0.1,
+                       "c": c if k == 6 else px + 0.05, "v": 1})
+    db_ = wallwatch.daily_bars(hb)
+    assert len(db_) == len(cl) and db_[5]["c"] == cl[5] and db_[5]["h"] == cl[5] + 1 and db_[5]["full"]
+    w = {d: {"putWall": 50, "callWall": 999, "flip": 40} for d in days}
+    w[days[85]] = {"putWall": cl[85] - 1 + 0.1, "callWall": 999, "flip": 40}
+    cfg = {"tf": "1D", "pwTest": True, "inGreen": True, "fvgOn": True, "inYExit": True, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "inN1": 10, "inN2": 6, "inN3": 3, "stopAtr": 5,
+           "fvgDays": 30}
+    sg, watch = wallwatch.detect_retest(hb, w, None, cfg, None)
+    assert watch is None and len(sg) == 1
+    s = sg[0]
+    assert s["at"].startswith(days[85]) and s["levelName"] == "put wall" and s["fvgZone"] and s["tf"] == "1D"
+    assert s["status"] == "inertia" and s["exitAt"][:10] > days[85]
+    off = wallwatch.detect_retest(hb, w, None, {**cfg, "inYExit": False, "stopOn": True}, None)[0][0]
+    assert off["status"] in ("stop", "open") and off["exitAt" if off["status"] != "open" else "lastAt"] >= s["exitAt"]
+    assert wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False}, None)[0][0]["at"] < s["at"]   # every day passes
+    assert wallwatch.config("x")["tf"] == "1h"
 
 
 if __name__ == "__main__":

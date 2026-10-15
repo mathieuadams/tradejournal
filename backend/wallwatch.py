@@ -51,7 +51,12 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           "inN1": 70, "inN2": 40, "inN3": 20, "inGreen": False, "inNotRed": False, "inRedExit": False,
           # scaleOn (lab / backtest): sell scalePct % of the position when price reaches entry + scaleR x risk;
           # scaleBE: then move the stop of the rest to the entry price
-          "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
+          # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
+          "inYExit": False,
+          # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
+          # tests the put wall (within the zone) and the day closes above it
+          "tf": "1h", "pwTest": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -61,6 +66,7 @@ def config(sub):
     out.update({k: c.get(k, v) for k, v in PARAMS.items()})
     out.update({k: c.get(k, v) for k, v in OPTS.items()})
     out["added"] = c.get("added") or {}                 # {ticker: {"at", "by", "premium"}} for tickers added from the flow
+    out["tf"] = "1h"                                    # the live bot trades hourly candles; 1D is for the lab
     out["pvSetup"] = False                              # no dedicated strategies: the VWAP reset is a rule (vwapReset) now
     if FLOW_ONLY:                                       # only the flow retest setup is used for now
         out.update(pwSetup=False, flipSetup=False, mergedSetup=False, retestSetup=True)
@@ -116,7 +122,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit", "inYExit", "pwTest") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -298,6 +304,9 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
                 s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], s["entry"]])
     if s.get("pvEod") and is_last and b["t"][:10] == s["at"][:10] and s.get("level") and b["c"] < float(s["level"]):
         s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])        # the entry day closed under the support: out
+        return
+    if s.get("inYExit") and is_last and reg and reg.get("s") != "G":
+        s.update(status="inertia", exitAt=b["t"][:16], exit=b["c"])     # the day closes with the daily inertia no longer green: out
         return
     if s.get("inRedExit") and is_last and reg and reg.get("s") == "R":
         s.update(status="inertia", exitAt=b["t"][:16], exit=b["c"])     # the day closes with the daily inertia red: out
@@ -780,6 +789,10 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     is the entry. An hourly close under the stop before the entry ends the watch. Target: the call wall of the day if it's above the entry (minus the buffer), else trailing only.
     Returns (signals, current watch or None)."""
     P = {**PARAMS, **(cfg or {})}
+    if P.get("tf") == "1D":                            # lab: the strategy on daily candles
+        if P.get("_collect") is not None:
+            return [], None
+        return detect_daily(bars, walls, start, P, earnings), None
     if P.get("pvSetup"):                               # the VWAP reset on the put wall strategy
         return detect_pvlong(bars, walls, start, P, datr, earnings, vwap_map, ema_map, extra), None
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
@@ -853,7 +866,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
              "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"),
              "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
-             "inRedExit": on("inRedExit"), "inSt": (inr[i] or {}).get("s") if inr else None,
+             "inRedExit": on("inRedExit"), "inYExit": on("inYExit"), "inSt": (inr[i] or {}).get("s") if inr else None,
              "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
         if fvg_t is not None and fvg_t[i]:        # the gap the entry used (shown on the chart)
             z_ = fvg_t[i]
@@ -1012,6 +1025,126 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     if watch:
         watch.pop("_d", None)
     return sigs, watch
+
+
+def daily_bars(bars):
+    """Hourly candles -> daily candles (t = the day's last hourly candle, "full" = the day reached its 15:30 candle)."""
+    out = []
+    for b in bars:
+        d = b["t"][:10]
+        if out and out[-1]["t"][:10] == d:
+            x = out[-1]
+            x.update(t=b["t"][:16], h=max(x["h"], b["h"]), l=min(x["l"], b["l"]), c=b["c"], v=(x["v"] or 0) + (b.get("v") or 0))
+        else:
+            out.append({"t": b["t"][:16], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v") or 0})
+        out[-1]["full"] = b["t"][11:16] >= "15:30"
+    return out
+
+
+def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
+    """The lab strategy on DAILY candles (built from the hourly ones). Entry at the close of a finished day that passes
+    the rules that are on: pwTest (low within the zone of the put wall, close above it), inGreen / inNotRed (daily
+    inertia), fvgOn (an open bullish daily FVG at or under the close: formed before, not filled, not expired),
+    greenOnly (green day), aboveFlip, emaOn (daily EMA), kcdLower / kcNotExt (daily Keltner), pwNeCw, noAboveCW,
+    cwRoom, earnings. Stop = put wall (or the day's low without pwTest) - stopAtr x daily ATR. Exits step on daily
+    candles with the same switches (stop, trailing, call wall target, scale, inertia yellow / red, bearish FVG,
+    call wall lost, Keltner ride, flip, EMA)."""
+    P = {**PARAMS, **(cfg or {})}
+    on = lambda k: bool(P.get(k, PARAMS[k]))
+    bars = daily_bars(hbars)
+    if not bars:
+        return []
+    k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]) if on("trailOn") else 0.0, float(P.get("tgtBuf") or 0)
+    zone_atr = float(P.get("retestZone") if P.get("retestZone") is not None else 0.25)
+    cw_room = float(P.get("cwRoom") if P.get("cwRoom") is not None else 1.0) if P.get("cwRoomOn", True) else 0.0
+    flip_exit = bool(P.get("flipExit", True))
+    earn_days = int(P.get("earnDays") if P.get("earnDays") is not None else 10)
+    try:
+        earn_d = datetime.strptime(str(earnings)[:10], "%Y-%m-%d") if (earnings and on("earnOn")) else None
+    except ValueError:
+        earn_d = None
+    atr = atr14(bars)
+    ema = _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
+    kc = keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3))
+    inr = inertia_regime(bars, (int(P.get("inN1") or 70), int(P.get("inN2") or 40), int(P.get("inN3") or 20)))
+    zones = fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10))
+    bulls = [z for z in zones if z["type"] == "bull"]
+    bear = [False] * len(bars)
+    for z in zones:
+        if z["type"] == "bear":
+            bear[z["i"]] = True
+    ver = version(P) + "|1D"
+    sigs, open_ = [], None
+    for i, b in enumerate(bars):
+        day = b["t"][:10]
+        if open_:
+            _step(open_, b, walls, k_trail, flip_exit, True, em=ema[i] if on("emaExit") else None,
+                  kcu=kc[i][1] if kc[i] else None, bear=bear[i] and on("fvgExit"), reg=inr[i])
+            if open_["status"] != "open":
+                open_ = None
+            continue
+        if not b["full"] or (start and day < start):
+            continue
+        w = walls.get(day) or {}
+        pw = float(w["putWall"]) if w.get("putWall") else None
+        cw = float(w["callWall"]) if w.get("callWall") else None
+        fl = float(w["flip"]) if w.get("flip") else None
+        a_ = atr[i] or 0
+        if not a_:
+            continue
+        if on("pwTest") and not (pw and b["l"] <= pw + max(pw * RETEST_NEAR / 100, zone_atr * a_) and b["c"] > pw):
+            continue
+        if on("greenOnly") and not b["c"] > b["o"]:
+            continue
+        if on("inGreen") and not (inr[i] and inr[i]["s"] == "G"):
+            continue
+        if on("inNotRed") and not (inr[i] and inr[i]["s"] != "R"):
+            continue
+        fz = None
+        if on("fvgOn"):
+            fz = next((z for z in reversed(bulls) if z["i"] < i and (z["fillI"] is None or z["fillI"] > i) and z["lo"] <= b["c"]), None)
+            if not fz:
+                continue
+        if P.get("aboveFlip") and not (fl and b["c"] > fl):
+            continue
+        if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
+            continue
+        if on("kcdLower") and not (kc[i] and b["c"] <= kc[i][0]):
+            continue
+        if on("kcNotExt") and not (kc[i] and b["c"] < kc[i][1]):
+            continue
+        if on("pwNeCw") and pw and cw and abs(pw - cw) < 1e-6:
+            continue
+        if on("noAboveCW") and cw and (b["o"] > cw or b["c"] > cw):
+            continue
+        if cw and cw_room and cw - b["c"] < cw_room * a_:
+            continue
+        if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
+            continue
+        lvl = pw if (on("pwTest") and pw) else b["l"]
+        st = round(lvl - k_stop * a_, 4)
+        tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
+        s = {"at": b["t"], "kind": "retest", "tf": "1D", "level": lvl, "levelName": "put wall" if on("pwTest") and pw else "day low",
+             "armedAt": None, "armPremium": 0, "entry": b["c"], "pw": pw, "flip": fl, "cw": cw, "target": tgt, "atr": round(a_, 4),
+             "stop": st if on("stopOn") else 0.0, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
+             "last": b["c"], "lastAt": b["t"], "aboveFlipAtEntry": bool(fl and b["c"] > fl), "flipChg": _flip_chg(walls, day),
+             "ema": round(ema[i], 4) if ema[i] is not None else None, "emaExit": on("emaExit"), "kcRide": on("kcRide"),
+             "cwLost": on("cwLost"), "fvgExit": on("fvgExit"), "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1),
+             "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "inRedExit": on("inRedExit"),
+             "inYExit": on("inYExit"), "inSt": (inr[i] or {}).get("s"), "kc": list(kc[i]) if kc[i] else None}
+        if fz:
+            s["fvgZone"] = {"t": fz["t"], "lo": fz["lo"], "hi": fz["hi"]}
+        if P.get("fixR"):
+            s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
+        if P.get("maxDays"):
+            s["maxDays"], s["_dd"], s["_dn"] = int(P["maxDays"]), day, 0
+        sigs.append(s)
+        open_ = s
+    for s in sigs:
+        s["pct"], s["R"] = _result(s)
+        s["tgtPct"] = round((s["target"] / s["entry"] - 1) * 100, 2) if s.get("target") else None
+        s["riskPct"] = round((s["entry"] - s["stop0"]) / s["entry"] * 100, 2)
+    return sigs
 
 
 def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None, kc=None, dpl=None, start=None, earnings=None):
@@ -1707,7 +1840,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     if cut:                                            # longer view: the signals older than the stored 45 days, replayed
         try:
             import backtest
-            data = backtest._ticker_data(sub, sym, len(dates) + 5, ccfg, False)
+            data = backtest._ticker_data(sub, sym, len(dates) + (120 if ccfg.get("tf") == "1D" else 5), ccfg, False)   # 1D: daily inertia warm-up
             if data:
                 long_bars = data["bars"]
                 extra = {**data["extra"], "misses": replay_misses}
@@ -1742,7 +1875,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
         print("pw/vwap events failed", sym, e)
         pv = []
     try:
-        fz = fvg_zones(long_bars or bars_all, float(ccfg.get("fvgMin") or 0.2), None, int(ccfg.get("fvgDays") or 10))
+        fz = fvg_zones(daily_bars(long_bars or bars_all) if ccfg.get("tf") == "1D" else (long_bars or bars_all), float(ccfg.get("fvgMin") or 0.2), None, int(ccfg.get("fvgDays") or 10))
         fvg = [{k: z[k] for k in ("t", "type", "lo", "hi", "fillAt", "end")} for z in fz
                if dates and (z["fillAt"] is None or z["fillAt"][:10] >= dates[0])]
     except Exception as e:
@@ -1754,7 +1887,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     except Exception as e:
         print("inertia failed", sym, e)
         inertia = []
-    return {"inertia": inertia, "fvg": fvg, "lab": bool(lab), "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    return {"inertia": inertia, "fvg": fvg, "lab": bool(lab), "tf": ccfg.get("tf") or "1h", "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),
