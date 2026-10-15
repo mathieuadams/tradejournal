@@ -469,12 +469,21 @@ BUCKETS = [
 ]
 
 
+def _with_lab(cfg, P):
+    """Settings for a test: the live ones, or the Strategy lab's when P["cfg"] is given (nothing is saved)."""
+    import wallwatch
+    lab = P.get("cfg") if isinstance(P.get("cfg"), dict) else None
+    if not lab:
+        return cfg
+    return {**cfg, **{k: v for k, v in lab.items() if k in wallwatch.PARAMS and k != "pvSetup"}}
+
+
 def rule_test(sub, params=None, budget_s=480):
     import wallwatch
     t0 = time.time()
     pk = db.upk(sub)
     P = {"days": 250, "stopAtr": None, "fixR": 2.0, "maxDays": 5, "retestMin": None, **(params or {})}
-    cfg = wallwatch.config(sub)
+    cfg = _with_lab(wallwatch.config(sub), P)
     days = max(30, min(500, int(P["days"])))
     stop = float(P["stopAtr"] if P["stopAtr"] is not None else cfg.get("stopAtr") or 0.5)
     vmin = float(P["retestMin"] or cfg.get("retestMin") or 500_000)
@@ -605,7 +614,7 @@ def robust_test(sub, params=None, budget_s=480):
     t0 = time.time()
     pk = db.upk(sub)
     P = {"days": 250, **(params or {})}
-    cfg = wallwatch.config(sub)
+    cfg = _with_lab(wallwatch.config(sub), P)
     days = max(30, min(500, int(P["days"])))
     first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
     mid = (now_ny() - timedelta(days=int(days * 1.45) // 2)).strftime("%Y-%m-%d")

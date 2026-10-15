@@ -535,7 +535,8 @@ def bot_robust(sub, claims, body, q):
     import backtest
     db.put({"PK": db.upk(sub), "SK": backtest.ROB_SK, **backtest.robust_result(sub), "running": iso(now_ny())})
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
-                     Payload=json.dumps({"sub": sub, "job": "wwrobust", "params": {"days": (body or {}).get("days") or 250}}))
+                     Payload=json.dumps({"sub": sub, "job": "wwrobust", "params": {"days": (body or {}).get("days") or 250,
+                                                                                    **({"cfg": body["cfg"]} if isinstance((body or {}).get("cfg"), dict) else {})}}))
     return {"status": "running"}
 
 
@@ -559,6 +560,8 @@ def bot_ruletest(sub, claims, body, q):
     b = body or {}
     params = {}
     params["full"] = bool(b.get("full"))
+    if isinstance(b.get("cfg"), dict):                 # Strategy lab settings (not saved)
+        params["cfg"] = b["cfg"]
     for k, lo, hi in (("days", 30, 500), ("stopAtr", 0.1, 5), ("fixR", 0, 10), ("maxDays", 0, 30)):
         if b.get(k) not in (None, ""):
             try:

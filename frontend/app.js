@@ -2511,8 +2511,8 @@ const WW_RULES = [
   ['cwLost', 'Exit', 'Back under CW', 'After an hourly close above the call wall, sell at the first daily close back under it'],
   ['dpLost', 'Exit', 'Back under dark pool', 'After an hourly close above one of the top 5 dark pool levels (above your entry), sell at the first daily close back under the highest one passed'],
   ['fvgExit', 'Exit', 'New bearish FVG', 'Sell at the close of the hourly candle that completes a new bearish fair value gap after the entry (its high under the low of two candles before, gap at least the FVG size × ATR)'],
-  ['scaleOn', 'Exit', 'Sell part at', 'Strategy lab only: sell part of the position when price reaches the entry + this many R (R = entry − stop), the rest keeps the other exits', ['ww-scr', 'scaleR', 0.25, 3.2, 'R', 1], ['ww-scp', 'scalePct', 5, 3.2, '%', 50]],
-  ['scaleBE', 'Exit', 'Rest to breakeven', 'Strategy lab only: after the partial sale, the stop of the rest moves up to the entry price'],
+  ['scaleOn', 'Exit', 'Sell part at', 'Sell part of the position (contracts, at market; at least 1, never all) when price reaches the entry + this many R (R = entry − stop), the rest keeps the other exits', ['ww-scr', 'scaleR', 0.25, 3.2, 'R', 1], ['ww-scp', 'scalePct', 5, 3.2, '%', 50]],
+  ['scaleBE', 'Exit', 'Rest to breakeven', 'After the partial sale, the stop of the rest moves up to the entry price'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
 ];
 // indicators: [key, name, chart layer, parameters [key, label, step, width, suffix, default, scale], what it is, rules that use it]
@@ -2551,10 +2551,11 @@ function wwRulePanel(vals, sw, mode, shown) {
     <details data-rulespanel ${S.rulesOpen !== false ? 'open' : ''} style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Entry &amp; exit rules</summary>
     <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">${grp('Entry')}${grp('Exit')}</div></details>`;
 }
-const LAB_ONLY = ['scaleOn', 'scaleBE'];   // rules the live bot can't do yet: shown in the Strategy lab only
+const LAB_ONLY = [];   // rules the live bot can't do yet: shown in the Strategy lab only
 const WW_CORE = ['alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
 const WW_DEF_ON = { kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
+try { S.rtUseLab = localStorage.getItem('rtUseLab') === '1'; } catch (e) { S.rtUseLab = false; }
 try { S.indOpen = localStorage.getItem('indOpen') !== '0'; S.rulesOpen = localStorage.getItem('rulesOpen') !== '0'; S.hideStats = localStorage.getItem('hideStats') === '1'; S.hideSettings = localStorage.getItem('hideSettings') === '1'; } catch (e) { S.indOpen = true; S.rulesOpen = true; S.hideStats = false; S.hideSettings = false; }
 document.addEventListener('toggle', e => {        // the Indicators / rules panels stay as you left them (toggle doesn't bubble: capture)
   const t = e.target;
@@ -2574,7 +2575,7 @@ function wwSwState() {
 }
 function wwParams(compact) {
   const c = { ...((S.ww && S.ww.config) || {}), ...(S.wwDraft || {}) }, sw = wwSwState(), lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
-  const shown = r => LAB_ONLY.includes(r[0]) ? false : (S.wwAllRules || WW_CORE.includes(r[0]) || sw[r[0]]);
+  const shown = r => LAB_ONLY.includes(r[0]) ? false : r[0] === 'scaleBE' ? !!sw.scaleOn : (S.wwAllRules || WW_CORE.includes(r[0]) || sw[r[0]] || r[0] === 'scaleOn');
   const hidden = WW_RULES.filter(r => !shown(r) && !LAB_ONLY.includes(r[0])).length;
   return `<div data-wwwhere="${compact ? 'chart' : 'page'}" style="display:flex;flex-direction:column;gap:6px${compact ? '' : ';border:1px solid var(--line);border-radius:8px;padding:8px 10px'}">
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Bot</b>
@@ -2686,7 +2687,12 @@ function wwRuleTester() {
       <div class="stat"><span>Drawdown to expect</span><b>${mc.ddMedian ?? '—'}R</b><span>bad case (95%) ${mc.dd95 ?? '—'}R · longest losing streak ${mc.lossStreak ?? '—'}</span></div>
       <div class="stat"><span>Chance of losing</span><b>${mc.pLoss ?? '—'}%</b><span>over ${mc.n || 0} trades (resampled)</span></div></div>
     <p class="muted" style="font-size:.8rem;margin:6px 0 0">“Holds” = still positive with at least half the average R. If most lines break, the result is fitted to the past. If the best 3 tickers make most of the profit, it depends on them. Size so the bad-case drawdown is a loss you can live with.</p>`;
+  const useLab = !!S.rtUseLab, hasLab = (() => { try { return !!localStorage.getItem('labCfg'); } catch (e) { return false; } })() || !!S.lab;
+  const ranOn = (t.params && t.params.cfg) ? 'Strategy lab' : 'live';
   return `<section class="panel" style="margin:0 0 14px"><h2>Rule tester</h2>
+    <div style="display:flex;gap:6px;align-items:center;margin:0 0 6px;font-size:.85rem"><b>Settings to test</b>
+      <span class="seg"><button class="btn ${!useLab ? 'coachbtn' : ''}" data-rtsrc="live" style="padding:2px 10px">Live bot</button><button class="btn ${useLab ? 'coachbtn' : ''}" data-rtsrc="lab" ${hasLab ? '' : 'disabled title="Open the Strategy lab on the chart first"'} style="padding:2px 10px">Strategy lab</button></span>
+      <span class="muted">${useLab ? 'the settings of the Strategy lab (nothing is saved, the bot is not changed)' : 'the settings the bot trades with'}${t.at ? ` · last test ran on the ${ranOn} settings` : ''}</span></div>
     <p class="muted" style="margin:0 0 8px">Every rule measured on the same trades with one fixed exit. A rule is worth keeping only if it raises the average R in <b>both halves</b> of the period with at least 30 trades.</p>
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:.85rem">
       <b>History</b> ${num('rt-hdays', hs.days || 250, 10, 4.2)} trading days <button class="btn" data-rthist ${hs.running ? 'disabled' : ''}>Load history</button> ${hsTxt}</div>
@@ -2777,6 +2783,7 @@ function labPanel() {
     ${wwRulePanel({ ...L, ...(S.labDraft || {}) }, { ...L, ...(S.labSw || {}) }, 'lab', shown)}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn coachbtn" data-labapply data-applybtn="lab" style="font-size:.8rem;padding:1px 12px">${S.labDirty ? 'Apply changes' : 'Apply'}</button>
     <button class="btn" data-labtest ${S.labTest && S.labTest.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px" title="These settings vs your live settings, on every ticker of the watchlist">${S.labTest && S.labTest.running ? 'Testing…' : 'Test on all tickers'}</button>
+    <a class="btn" href="#botwatch" data-rtlab style="font-size:.8rem;padding:1px 10px" title="Rule tester and robustness check on these lab settings (Wall watch tab)">Full stats ↗</a>
     <button class="btn" data-labreset style="font-size:.8rem;padding:1px 10px" title="Start over from a copy of the live settings (the live bot is not changed)">Copy live settings</button>
     <span class="muted" style="font-size:.75rem">Lab only: these settings are kept apart and never change the live bot or its signals${diff ? ` · ${diff} differ from live` : ''}. Nothing changes until you click Apply.</span></div></div>`;
 }
@@ -3278,7 +3285,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3380,8 +3387,10 @@ document.addEventListener('click', e => {
     try { localStorage.setItem('fcLayers', JSON.stringify(S.fcLayers)); } catch (e) {}
     render(); return;
   }
+  if (el.hasAttribute('data-rtlab')) { S.rtUseLab = true; try { localStorage.setItem('rtUseLab', '1'); } catch (e) {} }   // the link then opens Wall watch
+  if (el.dataset.rtsrc) { S.rtUseLab = el.dataset.rtsrc === 'lab'; try { localStorage.setItem('rtUseLab', S.rtUseLab ? '1' : '0'); } catch (e) {} render(); return; }
   if (el.hasAttribute('data-rtrob')) {
-    api('/bot/wallwatch/robust', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250 } })
+    api('/bot/wallwatch/robust', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250, ...(S.rtUseLab && labCfg() ? { cfg: labCfg() } : {}) } })
       .then(() => { S.rt = { ...(S.rt || {}), robust: { ...((S.rt || {}).robust || {}), running: 'now' } }; render(); setTimeout(loadRuleTest, 15000); }).catch(err => toast(err.message));
     return;
   }
@@ -3399,7 +3408,7 @@ document.addEventListener('click', e => {
   }
   if (el.hasAttribute('data-rtrun')) {
     const v = id => { const x = parseFloat(($(id) || {}).value); return isNaN(x) ? undefined : x; };
-    const body = { days: v('#rt-days'), stopAtr: v('#rt-stop'), fixR: v('#rt-fixr'), maxDays: v('#rt-maxd'), full: !!($('#rt-full') || {}).checked };
+    const body = { days: v('#rt-days'), stopAtr: v('#rt-stop'), fixR: v('#rt-fixr'), maxDays: v('#rt-maxd'), full: !!($('#rt-full') || {}).checked, ...(S.rtUseLab && labCfg() ? { cfg: labCfg() } : {}) };
     api('/bot/wallwatch/ruletest', { method: 'POST', body }).then(() => { S.rt = { ...(S.rt || {}), test: { ...((S.rt || {}).test || {}), running: 'now' } }; render(); loadRuleTest(); }).catch(err => toast(err.message));
     return;
   }

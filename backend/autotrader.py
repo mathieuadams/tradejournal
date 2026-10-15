@@ -934,9 +934,22 @@ def _refresh(sub, c, rec):
         qty = rec.get("filledQty") or rec.get("qty") or 0
         if not rec.get("riskAtFill") and rec.get("fillPrice"):
             upd.update(_risk_at_fill(sub, rec, rec["fillPrice"]))
+        parts = [dict(x) for x in (rec.get("partials") or [])]             # contracts sold earlier (wall watch partial exit)
+        for x in parts:
+            if x.get("orderId") and not x.get("filled"):
+                try:
+                    po = _alp(c, "GET", f"/v2/orders/{x['orderId']}") or {}
+                    if po.get("filled_avg_price"):
+                        x["px"], x["filled"] = abs(float(po["filled_avg_price"])), True
+                except Exception as e:
+                    print("partial fill lookup failed", rec.get("SK"), e)
+        if parts:
+            upd["partials"] = parts
         if exit_px is not None and rec.get("fillPrice"):
-            upd["realizedPl"] = round((exit_px - rec["fillPrice"]) * qty * 100, 2)
-            upd["realizedPct"] = round((exit_px / rec["fillPrice"] - 1) * 100, 1)
+            sold = sum(float(x.get("qty") or 0) for x in parts)
+            pl_parts = sum((float(x["px"]) - rec["fillPrice"]) * float(x["qty"]) * 100 for x in parts if x.get("px") is not None)
+            upd["realizedPl"] = round((exit_px - rec["fillPrice"]) * max(0, qty - sold) * 100 + pl_parts, 2)
+            upd["realizedPct"] = round(upd["realizedPl"] / (rec["fillPrice"] * qty * 100) * 100, 1) if qty else round((exit_px / rec["fillPrice"] - 1) * 100, 1)
             risk = upd.get("riskAtFill") or rec.get("riskAtFill")
             if risk:
                 upd["realizedR"] = round(upd["realizedPl"] / risk, 2)
@@ -1210,6 +1223,10 @@ def _wallwatch_exit(sub, rec, p):
     dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
     if last["l"] <= stop:
         return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) or (ww.get('stopOn') is False and stop > 0) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
+    if ww.get("scaleOn") and not rec.get("wwScaled") and ww.get("entry") and ww.get("stop0"):
+        r = _partial_exit(sub, rec, p, ww, bars, stop)
+        if r:
+            return r
     now = now_ny()
     if ww.get("cwLost") or ww.get("dpLost"):         # passed the call wall / a dark pool level, back under it at the close
         r = _level_lost(sub, rec, ww, last, since, now)
@@ -1260,6 +1277,38 @@ def _wallwatch_exit(sub, rec, p):
             print("vwap/ema exit check failed", rec.get("symbol"), e)
     if dte <= 0:
         return f"time stop ({dte} days to expiry)"
+    return None
+
+
+def _partial_exit(sub, rec, p, ww, bars, stop):
+    """Wall watch partial exit, live: when the stock reaches entry + scaleR x risk, sell scalePct % of the contracts at
+    market (at least 1, never all) and, with scaleBE, move the stop of the rest to the entry price. Done once."""
+    pk = db.upk(sub)
+    entry, s0 = float(ww["entry"]), float(ww["stop0"])
+    lvl = entry + float(ww.get("scaleR") or 1) * (entry - s0)
+    if entry <= s0 or max(b["h"] for b in bars) < lvl:
+        return None
+    qty = int(float(rec.get("filledQty") or rec.get("qty") or 0))
+    n = int(qty * float(ww.get("scalePct") or 50) / 100)
+    info = {"at": iso(now_ny()), "level": round(lvl, 2), "under": bars[-1]["c"], "qty": 0}
+    upd = {}
+    if not is_spread(p) and qty >= 2:
+        n = max(1, min(qty - 1, n))
+        try:
+            o = _alp(_paper_creds(sub), "POST", "/v2/orders", {"symbol": p["contract"], "qty": str(n), "side": "sell",
+                                                                  "type": "market", "time_in_force": "day"})
+            info.update(qty=n, orderId=(o or {}).get("id"))
+            upd["partials"] = list(rec.get("partials") or []) + [{"qty": n, "orderId": (o or {}).get("id"), "px": rec.get("lastMark"), "at": info["at"]}]
+        except Exception as e:
+            print("partial sell failed", rec.get("SK"), e)
+            return None                                   # retried at the next check
+    if ww.get("scaleBE") and stop < entry:
+        upd["proposal"] = {**p, "underlyingStop": round(entry, 4)}
+    upd["wwScaled"] = info
+    db.update(pk, rec["SK"], upd)
+    _notify(sub, f"Paper bot SELL {_desc(rec)} x{info['qty']} ({float(ww.get('scalePct') or 50):g}% at +{float(ww.get('scaleR') or 1):g}R: "
+                 f"{rec['symbol']} {bars[-1]['c']:.2f} ≥ {lvl:.2f})" + ("; stop of the rest moved to the entry" if ww.get("scaleBE") else "")
+                 + ("" if info["qty"] else " — 1 contract: nothing sold, only the stop moved"), "exit")
     return None
 
 

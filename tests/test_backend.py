@@ -2592,6 +2592,30 @@ def test_darkpool_history():
     assert g["dpNear"] is False and g["dpWay"] is False
 
 
+def test_live_partial_exit():
+    """Live: at entry + 1R, 40% of the contracts are sold at market and the stop of the rest moves to the entry."""
+    import autotrader, db
+    sent, saved = [], (autotrader._alp, autotrader._paper_creds, autotrader._notify)
+    try:
+        autotrader._alp = lambda c, m, path, body=None: sent.append((m, path, body)) or {"id": "ord-1"}
+        autotrader._paper_creds = lambda sub: {}
+        autotrader._notify = lambda *a, **k: None
+        sub = "partial-user"
+        p = {"contract": "AAA261120C00100000", "underlyingStop": 98.0, "exp": "2026-11-20"}
+        ww = {"entry": 100.0, "stop0": 98.0, "scaleOn": True, "scaleR": 1, "scalePct": 40, "scaleBE": True}
+        rec = {"SK": "BOT#20261005000000-partial", "symbol": "AAA", "filledQty": 5, "lastMark": 2.5}
+        db.put({"PK": db.upk(sub), **rec})
+        bars = [{"t": "2026-10-05T10:00", "o": 100, "h": 101.5, "l": 99.8, "c": 101}]
+        assert autotrader._partial_exit(sub, rec, p, ww, bars, 98.0) is None and not sent          # 102 not reached
+        bars.append({"t": "2026-10-05T10:05", "o": 101, "h": 102.2, "l": 100.9, "c": 102})
+        autotrader._partial_exit(sub, rec, p, ww, bars, 98.0)
+        assert sent[0][2]["qty"] == "2" and sent[0][2]["side"] == "sell"
+        r = db.get(db.upk(sub), rec["SK"])
+        assert r["wwScaled"]["qty"] == 2 and float(r["proposal"]["underlyingStop"]) == 100.0 and r["partials"][0]["orderId"] == "ord-1"
+    finally:
+        autotrader._alp, autotrader._paper_creds, autotrader._notify = saved
+
+
 def test_keltner_daily():
     """Daily Keltner on hourly candles: the previous days' EMAs updated with today's candle so far (no later price)."""
     import wallwatch
@@ -2760,6 +2784,8 @@ def test_chart_long_range_replay():
         assert float(wallwatch.config("long-user")["stopAtr"]) == 0.5
         assert "fvg" in lab
         r = backtest.lab_test("long-user", {"days": 60, "cfg": {"stopAtr": 0.7}})
+        rl = backtest._with_lab({"stopAtr": 0.5, "tickers": ["AAA"]}, {"cfg": {"stopAtr": 0.9, "pvSetup": True, "junk": 1}})
+        assert rl["stopAtr"] == 0.9 and "junk" not in rl and "pvSetup" not in rl and rl["tickers"] == ["AAA"]
         assert r["lab"]["n"] > 0 and r["live"]["n"] > 0
     finally:
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved

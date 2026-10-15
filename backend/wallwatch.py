@@ -57,7 +57,6 @@ def config(sub):
     out.update({k: c.get(k, v) for k, v in PARAMS.items()})
     out.update({k: c.get(k, v) for k, v in OPTS.items()})
     out["added"] = c.get("added") or {}                 # {ticker: {"at", "by", "premium"}} for tickers added from the flow
-    out["scaleOn"] = False                              # partial exits: Strategy lab / backtests only, the live bot sells all at once
     out["pvSetup"] = False                              # no dedicated strategies: the VWAP reset is a rule (vwapReset) now
     if FLOW_ONLY:                                       # only the flow retest setup is used for now
         out.update(pwSetup=False, flipSetup=False, mergedSetup=False, retestSetup=True)
@@ -1194,6 +1193,8 @@ def enter(sub, sym, sg):
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),
               "flipExit": bool(cfg.get("flipExit", True)), "aboveFlipAtEntry": bool(sg.get("aboveFlipAtEntry")),
               "pvEodPw": sg.get("level") if sg.get("pvEod") else None,
+              "scaleOn": bool(cfg.get("scaleOn")), "scaleR": float(cfg.get("scaleR") or 1), "scalePct": float(cfg.get("scalePct") or 50),
+              "scaleBE": bool(cfg.get("scaleBE", True)),
               "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2)}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
