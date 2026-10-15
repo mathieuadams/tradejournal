@@ -3258,6 +3258,7 @@ const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboa
 const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
 const evTicker = () => route() === 'botevals' ? (hashParam('t') || '').toUpperCase() : '';
 function render() {
+  if (S.fczDrag) { S.renderPending = true; return; }   // a drag-zoom in progress: redraw once it ends (else the drag is lost)
   const v = route();
   const grp = groupOf(v);
   document.querySelectorAll('.nav a[data-r]').forEach(a => {
@@ -3597,7 +3598,8 @@ $('#signin').addEventListener('click', () => Auth.login());
   document.addEventListener('pointerdown', ev => {
     const svg = ev.target.closest && ev.target.closest('svg[data-fcz]');
     if (!svg || ev.button > 0) return;
-    drag = { svg, x0: vx(svg, ev), moved: false };
+    drag = { svg, id: svg.dataset.fcz, x0: vx(svg, ev), moved: false };
+    S.fczDrag = true;
   });
   document.addEventListener('pointermove', ev => {
     const hsvg = ev.target.closest && ev.target.closest('svg[data-fcz]');
@@ -3618,15 +3620,22 @@ $('#signin').addEventListener('click', () => Auth.login());
     if (Math.abs(x - drag.x0) > 6) drag.moved = true;
     if (sel && drag.moved) { sel.style.display = ''; sel.setAttribute('x', Math.min(x, drag.x0)); sel.setAttribute('width', Math.abs(x - drag.x0)); }
   });
+  const endDrag = () => { S.fczDrag = false; if (S.renderPending) { S.renderPending = false; render(); } };
+  document.addEventListener('pointercancel', () => { if (drag) { drag = null; endDrag(); } });
   document.addEventListener('pointerup', ev => {
     if (!drag) return;
     const d0 = drag; drag = null;
-    if (!d0.moved) return;
+    if (!document.contains(d0.svg)) {              // redrawn meanwhile: use the chart on screen now
+      const now = document.querySelector(`svg[data-fcz="${CSS.escape(d0.id)}"]`);
+      if (now) d0.svg = now;
+    }
+    if (!d0.moved) { endDrag(); return; }
+    const pend = S.renderPending; S.fczDrag = false; S.renderPending = false;     // the zoom below redraws
     suppress = true; setTimeout(() => { suppress = false; }, 50);      // a drag that ends on a dot doesn't select it
     const f = info(d0.svg), x = vx(d0.svg, ev);
     const a = barAt(f, Math.min(x, d0.x0)), b = barAt(f, Math.max(x, d0.x0));
     if (b - a >= 2) fcSetZoom(f.id, a, b, f.all);
-    else { const sel = d0.svg.querySelector('.fcz-sel'); if (sel) sel.style.display = 'none'; }
+    else { const sel = d0.svg.querySelector('.fcz-sel'); if (sel) sel.style.display = 'none'; if (pend) render(); }
   });
   document.addEventListener('wheel', ev => {
     const svg = ev.target.closest && ev.target.closest('svg[data-fcz]');
