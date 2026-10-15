@@ -51,7 +51,7 @@ STAMP=$(date +%s)
 SITE=$(mktemp -d)
 cp -r frontend/. "$SITE/"
 sed -i "s|src=\"app.js\"|src=\"app.js?v=$STAMP\"|; s|src=\"auth.js\"|src=\"auth.js?v=$STAMP\"|; s|src=\"config.js\"|src=\"config.js?v=$STAMP\"|; s|href=\"styles.css\"|href=\"styles.css?v=$STAMP\"|" "$SITE/index.html"
-aws s3 sync "$SITE" "s3://$(out SiteBucketName)" --delete --region "$REGION"
+aws s3 sync "$SITE" "s3://$(out SiteBucketName)" --delete --cache-control "no-cache" --region "$REGION"
 aws s3 cp "$SITE/index.html" "s3://$(out SiteBucketName)/index.html" --cache-control "no-cache" --content-type "text/html" --region "$REGION"
 aws cloudfront create-invalidation --distribution-id "$(out DistributionId)" --paths "/*" >/dev/null
 echo

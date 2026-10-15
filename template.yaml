@@ -389,6 +389,10 @@ Resources:
       MemorySize: 1024
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - Statement:                                   # the rule tester's history loader continues in a new run of itself
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*BotFunction*"
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }   # Claude's chart check
         - Statement:
             - Effect: Allow

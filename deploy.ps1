@@ -47,7 +47,7 @@ $site = Join-Path ([IO.Path]::GetTempPath()) ("tj-site-" + $stamp)
 Copy-Item -Recurse -Path frontend -Destination $site
 $idx = Join-Path $site "index.html"
 (Get-Content $idx -Raw) -replace 'src="app.js"', "src=""app.js?v=$stamp""" -replace 'src="auth.js"', "src=""auth.js?v=$stamp""" -replace 'src="config.js"', "src=""config.js?v=$stamp""" -replace 'href="styles.css"', "href=""styles.css?v=$stamp""" | Set-Content $idx -Encoding UTF8
-aws s3 sync $site "s3://$(Out 'SiteBucketName')" --delete --region $Region
+aws s3 sync $site "s3://$(Out 'SiteBucketName')" --delete --cache-control "no-cache" --region $Region
 aws s3 cp $idx "s3://$(Out 'SiteBucketName')/index.html" --cache-control "no-cache" --content-type "text/html" --region $Region
 aws cloudfront create-invalidation --distribution-id (Out "DistributionId") --paths "/*" | Out-Null
 Write-Host ""
