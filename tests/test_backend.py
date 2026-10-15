@@ -2785,6 +2785,10 @@ def test_chart_long_range_replay():
         assert "fvg" in lab
         r = backtest.lab_test("long-user", {"days": 60, "cfg": {"stopAtr": 0.7}})
         assert r["lab"]["n"] > 0 and r["live"]["n"] > 0
+        rb = backtest.robust_test("long-user", {"days": 60, "cfg": {"trailOn": True, "fvgOn": True, "kchLower": True, "scaleOn": True, "vwapOn": True}})
+        labs = [x["label"] for x in rb["rows"]]
+        assert any(l.startswith("FVG min size") for l in labs) and any(l.startswith("Keltner hourly") for l in labs) \
+            and any(l.startswith("Sell part at") for l in labs) and any(l.startswith("VWAP reset") for l in labs), labs
         rl = backtest._with_lab({"stopAtr": 0.5, "tickers": ["AAA"]}, {"cfg": {"stopAtr": 0.9, "pvSetup": True, "junk": 1}})
         assert rl["stopAtr"] == 0.9 and "junk" not in rl and "pvSetup" not in rl and rl["tickers"] == ["AAA"]
         # rule search: screening + replay; with no entry rule it matches the real engine's trade count closely

@@ -628,8 +628,38 @@ def robust_test(sub, params=None, budget_s=480):
     if cfg.get("kcNotExt") or cfg.get("kcRide"):
         variants += [(f"Keltner × {v:g} (you: {km:g})", {"kcMult": v}) for v in (km - 0.5, km + 0.5)]
     variants += [(f"Retest zone {v:g} ATR (you: {zone:g})", {"retestZone": v}) for v in (round(zone * 0.6, 2), round(zone * 1.4, 2))]
-    variants += [(f"Call alert ≥ ${int(v / 1000)}K (you: ${int(vmin / 1000)}K)", {"retestMin": v}) for v in (vmin * 1.4,)]
-    variants += [(f"Wait {v} days (you: {wait})", {"retestDays": v}) for v in (max(1, wait - 1), wait + 1)]
+    on = lambda k: bool(cfg.get(k, wallwatch.PARAMS.get(k)))
+    if on("alertReq"):                                 # flow numbers only matter when a call alert is required
+        variants += [(f"Call alert ≥ ${int(v / 1000)}K (you: ${int(vmin / 1000)}K)", {"retestMin": v}) for v in (vmin * 1.4,)]
+        variants += [(f"Wait {v} days (you: {wait})", {"retestDays": v}) for v in (max(1, wait - 1), wait + 1)]
+        if on("relFlow"):
+            rm = float(cfg.get("relMult") or 3)
+            variants += [(f"Unusual × {v:g} median (you: {rm:g})", {"relMult": v}) for v in (max(1.5, rm - 1), rm + 1)]
+    if on("trailOn"):
+        tr = float(cfg.get("trailAtr") or 1)
+        variants += [(f"Trailing stop {v:g} ATR (you: {tr:g})", {"trailAtr": v}) for v in (round(tr * 0.75, 2), round(tr * 1.25, 2))]
+    if on("kcNotExt") or on("kcdLower") or on("kcRide"):
+        kl = int(cfg.get("kcLen") or 21)
+        variants += [(f"Keltner daily EMA {v} (you: {kl})", {"kcLen": v}) for v in (max(5, kl - 5), kl + 5)]
+    if on("kchLower"):
+        hm = float(cfg.get("kchMult") or 3)
+        variants += [(f"Keltner hourly × {v:g} (you: {hm:g})", {"kchMult": v}) for v in (max(0.5, hm - 0.5), hm + 0.5)]
+    if on("fvgOn") or on("fvgExit"):
+        fm, fn, fd = float(cfg.get("fvgMin") or 0.2), float(cfg.get("fvgNear") if cfg.get("fvgNear") is not None else 0.25), int(cfg.get("fvgDays") or 10)
+        variants += [(f"FVG min size {v:g} ATR (you: {fm:g})", {"fvgMin": v}) for v in (round(fm * 0.5, 3), round(fm * 1.5, 3))]
+        if on("fvgOn"):
+            variants += [(f"FVG margin {v:g} ATR (you: {fn:g})", {"fvgNear": v}) for v in (round(fn * 0.5, 3), round(fn * 1.5, 3))]
+            variants += [(f"FVG max age {v} days (you: {fd})", {"fvgDays": v}) for v in (max(1, fd // 2), fd * 2)]
+    if on("vwapOn") or on("vwapReset") or on("vwapExit") or on("emaOverVwap"):
+        vd = int(cfg.get("vwapDays") or 10)
+        variants += [(f"VWAP reset {v} days (you: {vd})", {"vwapDays": v}) for v in (max(3, vd - 3), vd + 3)]
+    if on("emaOn") or on("emaOverVwap") or on("emaExit"):
+        el = int(cfg.get("emaLen") or 20)
+        variants += [(f"EMA {v} (you: {el})", {"emaLen": v}) for v in (max(5, el - 5), el + 5)]
+    if on("scaleOn"):
+        sr, sp = float(cfg.get("scaleR") or 1), float(cfg.get("scalePct") or 50)
+        variants += [(f"Sell part at {v:g}R (you: {sr:g})", {"scaleR": v}) for v in (max(0.25, sr - 0.25), sr + 0.25)]
+        variants += [(f"Sell {v:g}% (you: {sp:g})", {"scalePct": v}) for v in (max(5, sp - 15), min(95, sp + 15))]
     db.put({"PK": pk, "SK": ROB_SK, **(db.get(pk, ROB_SK) or {}), "running": iso(now_ny())})
     res = {lab: [] for lab, _ in variants}
     errors = []
@@ -641,12 +671,20 @@ def robust_test(sub, params=None, budget_s=480):
         out = {}
         for lab, ch in variants:
             c = {**mine, **ch}
-            if "kcMult" in ch:                          # the Keltner bands themselves change
-                kc = wallwatch.keltner(d["bars"], int(cfg.get("kcLen") or 21), float(ch["kcMult"]), bool(cfg.get("kcDaily", True)))
-                d2 = {**d, "extra": {**d["extra"], "kc": {b["t"][:16]: v for b, v in zip(d["bars"], kc)}}}
-                out[lab] = _run(sym, d2, c, first)
-            else:
-                out[lab] = _run(sym, d, c, first)
+            d2 = d
+            if "kcMult" in ch or "kcLen" in ch:         # the daily Keltner bands themselves change
+                kc = wallwatch.keltner(d["bars"], int(c.get("kcLen") or 21), float(c.get("kcMult") or 3), bool(cfg.get("kcDaily", True)))
+                d2 = {**d2, "extra": {**d2["extra"], "kc": {b["t"][:16]: v for b, v in zip(d["bars"], kc)}}}
+            if "kchMult" in ch:                         # the hourly Keltner bands
+                kh = wallwatch.keltner(d["bars"], int(c.get("kchLen") or 21), float(c["kchMult"]))
+                d2 = {**d2, "extra": {**d2["extra"], "kch": {b["t"][:16]: v for b, v in zip(d["bars"], kh)}}}
+            if "vwapDays" in ch:                        # the anchored VWAP restarts on another window
+                vw = wallwatch.anchored_vwap(d["bars"], int(ch["vwapDays"]))[0]
+                d2 = {**d2, "vmap": {b["t"][:16]: v for b, v in zip(d["bars"], vw)}}
+            if "emaLen" in ch:
+                em = wallwatch._ema_series([b["c"] for b in d["bars"]], int(ch["emaLen"]))
+                d2 = {**d2, "emap": {b["t"][:16]: v for b, v in zip(d["bars"], em)}}
+            out[lab] = _run(sym, d2, c, first)
         return sym, out
 
     pool = ThreadPoolExecutor(max_workers=8)
