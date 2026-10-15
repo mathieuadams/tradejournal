@@ -905,7 +905,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         w = walls.get(day) or {}
         if arm:                                        # call flow (new or again): the support is the level at / under price
             lv = [(float(w[k]), n) for k, n in sup_keys if w.get(k)]   # the call wall is the target, never the support
-            under = [x for x in lv if x[0] <= b["c"] * (1 + RETEST_NEAR / 100)]
+            under = [x for x in lv if x[0] <= b["c"] * (1 + RETEST_NEAR / 100)] if sup_keys else [(0.0, "")]
             if under:
                 lvl0, name = max(under)
                 watch = {"armedAt": arm["t"], "armPremium": arm["p"], "armX": arm.get("x"), "level": lvl0, "levelName": name, "day0": day, "days": 0,
@@ -933,6 +933,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         # the support follows the price: the highest put wall / flip of the day under this candle's close
         lv = [(float(w[k]), n) for k, n in sup_keys if w.get(k)]   # the call wall is the target, never the support
         under = [x for x in lv if x[0] < b["c"]]
+        if not sup_keys:                               # no support rule on: any candle, the stop goes under its low
+            under = [(b["l"], "candle low")]
         if not under:
             continue
         lvl, lname = max(under)

@@ -2339,7 +2339,8 @@ def test_wall_watch_rule_switches():
     ws = {"2026-10-05": w, "2026-10-06": w}
     run = lambda **cfg: wallwatch.detect_retest(bars, ws, cfg=cfg, alerts=al, datr={"next": 2.0})[0]
     assert run()[0]["levelName"] == "flip"
-    assert not run(useFlip=False, usePW=False)                      # no support levels: no entry
+    ns = run(useFlip=False, usePW=False)                            # no support rule: any candle, stop under its low
+    assert not ns or ns[0]["levelName"] == "candle low"
     s = run(useFlip=False)                                           # put wall only: price never comes back to 100
     assert not s
     assert run(targetOn=False)[0]["target"] is None
@@ -2992,6 +2993,19 @@ def test_daily_strategy():
     assert off["status"] in ("stop", "open") and off["exitAt" if off["status"] != "open" else "lastAt"] >= s["exitAt"]
     assert wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False}, None)[0][0]["at"] < s["at"]   # every day passes
     assert wallwatch.config("x")["tf"] == "1h"
+
+
+def test_no_support_any_candle():
+    """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
+    import wallwatch, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    up = [{"t": f"{(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat()}T{h}", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100.5 + d}
+          for d in range(30) for h in H]
+    w = {b["t"][:10]: {"putWall": 50, "callWall": 400, "flip": 40} for b in up}
+    cfg = {"alertReq": False, "usePW": False, "useFlip": False, "inGreen": True, "greenOnly": False, "earnOn": False, "noAboveCW": False,
+           "cwRoomOn": False, "inN1": 10, "inN2": 6, "inN3": 3}
+    sg, _ = wallwatch.detect_retest(up, w, None, cfg, None)
+    assert sg and sg[0]["levelName"] == "candle low" and sg[0]["inSt"] == "G"
 
 
 if __name__ == "__main__":
