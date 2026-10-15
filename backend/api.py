@@ -480,7 +480,7 @@ def bot_wallwatch_walls(sub, claims, body, q):
 def bot_ruletest_get(sub, claims, body, q):
     import backtest
     return {"test": backtest.test_result(sub), "history": backtest.hist_status(sub), "robust": backtest.robust_result(sub),
-            "pv": backtest.pv_result(sub), "regime": backtest.regime_result(sub)}
+            "pv": backtest.pv_result(sub), "regime": backtest.regime_result(sub), "search": backtest.search_result(sub)}
 
 
 @route("POST", "/bot/wallwatch/pvstudy")
@@ -527,6 +527,19 @@ def bot_lab_test(sub, claims, body, q):
     db.put({"PK": db.upk(sub), "SK": backtest.LAB_SK, **backtest.lab_result(sub), "running": iso(now_ny())})
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
                      Payload=json.dumps({"sub": sub, "job": "wwlab", "params": {"days": b.get("days") or 250, "cfg": cfg}}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/wallwatch/search")
+def bot_search(sub, claims, body, q):
+    import backtest
+    b = body or {}
+    db.put({"PK": db.upk(sub), "SK": backtest.SEARCH_SK, **backtest.search_result(sub), "running": iso(now_ny())})
+    params = {"days": b.get("days") or 250, "minTrades": b.get("minTrades") or 60}
+    if isinstance(b.get("cfg"), dict):
+        params["cfg"] = b["cfg"]
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwsearch", "params": params}))
     return {"status": "running"}
 
 

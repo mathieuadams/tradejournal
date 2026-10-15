@@ -645,6 +645,71 @@ def unusual_calls(alerts, fallback=500_000, mult=3.0):
     return out
 
 
+SEARCH_RULES = ["alertReq", "relFlow", "greenOnly", "aboveFlip", "vwapOn", "emaOn", "emaOverVwap", "kcNotExt", "kcdLower",
+                "kchLower", "orbAbove", "fvgOn", "noAboveCW", "cwRoomOn", "vwapReset", "pwNeCw", "spyUp", "skewOn"]
+
+
+def _search_candidates(bars, walls, start, P, out, mk, a_of, alerts, vmin, ndays, zone_atr, sup_keys, vwap, ema, kc, orb, spy,
+                       skp, earn_d, earn_days, cw_room, k_trail, flip_exit, dplv, bear):
+    """Every candle whose low comes back to the support and closes above it, traded alone with the exits of P, and
+    whether each entry rule would let it in. The search then replays any mix of rules one trade at a time."""
+    n_ = len(bars)
+    kch = keltner(bars, int(P.get("kchLen") or 21), float(P.get("kchMult") or 3))
+    fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr14(bars), int(P.get("fvgDays") or 10)),
+                           float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr14(bars))
+    vreset = set(anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[1])
+    fixed = sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"])
+    rel = unusual_calls(alerts, vmin, float(P.get("relMult") or 3))
+    days = sorted({b["t"][:10] for b in bars})
+    didx = {d: k for k, d in enumerate(days)}
+    import bisect
+    ts_of = {id(fixed): [a["t"] for a in fixed], id(rel): [a["t"] for a in rel]}
+    def armed(lst, k_day, end):
+        ts = ts_of[id(lst)]
+        j = bisect.bisect_right(ts, end) - 1
+        if j < 0:
+            return False
+        dk = bisect.bisect_right(days, lst[j]["t"][:10]) - 1
+        return dk >= 0 and k_day - dk <= ndays
+    for i, b in enumerate(bars):
+        day = b["t"][:10]
+        if start and day < start:
+            continue
+        w = walls.get(day) or {}
+        lv = [(float(w[k]), nm) for k, nm in sup_keys if w.get(k)]
+        under = [x for x in lv if x[0] < b["c"]]
+        if not under:
+            continue
+        lvl, lname = max(under)
+        a_ = a_of(i, day)
+        if not a_ or not b["l"] <= lvl + max(lvl * RETEST_NEAR / 100, zone_atr * a_):
+            continue
+        end = _bar_end(b["t"]).strftime("%Y-%m-%dT%H:%M")
+        cw_ = float(w["callWall"]) if w.get("callWall") else None
+        f = {"alertReq": armed(fixed, didx[day], end), "relFlow": armed(rel, didx[day], end), "greenOnly": b["c"] > b["o"],
+             "aboveFlip": bool(w.get("flip") and b["c"] > float(w["flip"])),
+             "vwapOn": vwap[i] is not None and b["c"] > vwap[i], "emaOn": ema[i] is not None and b["c"] > ema[i],
+             "emaOverVwap": ema[i] is not None and vwap[i] is not None and ema[i] > vwap[i],
+             "kcNotExt": bool(kc[i] and b["c"] < kc[i][1]), "kcdLower": bool(kc[i] and b["c"] <= kc[i][0]),
+             "kchLower": bool(kch[i] and b["c"] <= kch[i][0]), "orbAbove": bool(orb[i] and b["c"] > orb[i][0]),
+             "fvgOn": bool(fvg_t[i]), "noAboveCW": not (cw_ and (b["o"] > cw_ or b["c"] > cw_)),
+             "cwRoomOn": not (cw_ and cw_room and cw_ - b["c"] < cw_room * a_), "vwapReset": i in vreset,
+             "pwNeCw": not (w.get("putWall") and w.get("callWall") and abs(float(w["putWall"]) - float(w["callWall"])) < 1e-6),
+             "spyUp": spy.get(b["t"][:16]) != -1, "skewOn": skp.get(day) is not None and 33.4 <= skp[day] < 66.7,
+             "earnOn": not (earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days)}
+        s = mk(i, b, w, lvl, lname, a_, {"armedAt": None, "armPremium": 0}, day)
+        for j in range(i + 1, n_):
+            _step(s, bars[j], walls, k_trail, flip_exit, is_last=(j + 1 == n_ or bars[j + 1]["t"][:10] != bars[j]["t"][:10]),
+                  vw=vwap[j], em=ema[j], kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j])
+            if s["status"] != "open":
+                break
+        pct, r = _result(s)
+        if r is None:
+            continue
+        out.append({"at": b["t"][:16], "end": s.get("exitAt") or "9999", "R": r, "f": f})
+
+
+
 def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, earnings=None, vwap_map=None, ema_map=None,
                   extra=None):
     """Flow retest: a call alert of at least retestMin arms the ticker (a new alert re-arms it). The support is the highest
@@ -708,6 +773,39 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     need_alert = on("alertReq")
     big = [] if not need_alert else (unusual_calls(alerts, vmin, float(P.get("relMult") or 3)) if on("relFlow") else
                                      sorted((a for a in (alerts or []) if a.get("c") and (a.get("p") or 0) >= vmin), key=lambda a: a["t"]))
+    def mk(i, b, w, lvl, lname, a_, watch, day):
+        """A new trade on candle i at the support lvl (the same for real entries and for the rule search)."""
+        cw = float(w["callWall"]) if w.get("callWall") else None
+        tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
+        st = round(lvl - k_stop * a_, 4)              # stop0: the risk unit for R, even with the stop off
+        s = {"at": b["t"][:16], "kind": "retest", "level": lvl, "levelName": lname, "armedAt": watch["armedAt"],
+             "armPremium": watch["armPremium"], "armX": watch.get("armX"), "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
+             "flip": float(w["flip"]) if w.get("flip") else None, "cw": cw, "target": tgt, "atr": round(a_, 4),
+             "stop": st if on("stopOn") else 0.0, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
+             "last": b["c"], "lastAt": b["t"][:16], "i0": i,
+             "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
+             "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
+             "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
+             "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"),
+             "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
+             "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
+        if fvg_t is not None and fvg_t[i]:        # the gap the entry used (shown on the chart)
+            z_ = fvg_t[i]
+            s["fvgZone"] = {"t": z_["t"], "lo": z_["lo"], "hi": z_["hi"]}
+        if P.get("fixR"):                          # backtest: fixed target at N x the risk
+            s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
+        if P.get("maxDays"):
+            s["maxDays"], s["_dd"], s["_dn"] = int(P["maxDays"]), day, 0
+        return s
+
+    collect = P.get("_collect")
+    if collect is not None:                            # rule search: every candle at the support, each rule as a flag
+        _search_candidates(bars, walls, start, P, collect, mk, a_of=lambda i, d: (_atr_on(datr, d) if datr else None) or atr[i],
+                           alerts=alerts, vmin=vmin, ndays=ndays, zone_atr=zone_atr, sup_keys=sup_keys, vwap=vwap, ema=ema, kc=kc,
+                           orb=orb, spy=spy, skp=skp, earn_d=earn_d, earn_days=earn_days, cw_room=cw_room, k_trail=k_trail,
+                           flip_exit=flip_exit, dplv=dplv, bear=bear)
+        return [], None
+
     sigs, open_, watch, ai = [], None, None, 0
     for i, b in enumerate(bars):
         day = b["t"][:10]
@@ -817,27 +915,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 watch = None
                 continue
             watch["levelName"] = lname
-            cw = float(w["callWall"]) if w.get("callWall") else None
-            tgt = round(cw * (1 - buf / 100), 4) if on("targetOn") and cw and cw * (1 - buf / 100) > b["c"] * 1.002 else None
-            st = round(lvl - k_stop * a_, 4)              # stop0: the risk unit for R, even with the stop off
-            s = {"at": b["t"][:16], "kind": "retest", "level": lvl, "levelName": watch["levelName"], "armedAt": watch["armedAt"],
-                 "armPremium": watch["armPremium"], "armX": watch.get("armX"), "entry": b["c"], "pw": float(w["putWall"]) if w.get("putWall") else None,
-                 "flip": float(w["flip"]) if w.get("flip") else None, "cw": cw, "target": tgt, "atr": round(a_, 4),
-                 "stop": st if on("stopOn") else 0.0, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
-                 "last": b["c"], "lastAt": b["t"][:16], "i0": i,
-                 "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
-                 "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
-                 "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
-                 "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"),
-                 "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
-                 "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
-            if fvg_t is not None and fvg_t[i]:        # the gap the entry used (shown on the chart)
-                z_ = fvg_t[i]
-                s["fvgZone"] = {"t": z_["t"], "lo": z_["lo"], "hi": z_["hi"]}
-            if P.get("fixR"):                          # backtest: fixed target at N x the risk
-                s["fixT"] = round(b["c"] + float(P["fixR"]) * (b["c"] - st), 4)
-            if P.get("maxDays"):
-                s["maxDays"], s["_dd"], s["_dn"] = int(P["maxDays"]), day, 0
+            s = mk(i, b, w, lvl, lname, a_, watch, day)
             sigs.append(s)
             open_, watch = s, None
             if on("pvEod") and (i + 1 < len(bars) and bars[i + 1]["t"][:10] != day) and b["c"] < lvl:

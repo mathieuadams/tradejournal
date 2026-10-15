@@ -2784,9 +2784,18 @@ def test_chart_long_range_replay():
         assert float(wallwatch.config("long-user")["stopAtr"]) == 0.5
         assert "fvg" in lab
         r = backtest.lab_test("long-user", {"days": 60, "cfg": {"stopAtr": 0.7}})
+        assert r["lab"]["n"] > 0 and r["live"]["n"] > 0
         rl = backtest._with_lab({"stopAtr": 0.5, "tickers": ["AAA"]}, {"cfg": {"stopAtr": 0.9, "pvSetup": True, "junk": 1}})
         assert rl["stopAtr"] == 0.9 and "junk" not in rl and "pvSetup" not in rl and rl["tickers"] == ["AAA"]
-        assert r["lab"]["n"] > 0 and r["live"]["n"] > 0
+        # rule search: screening + replay; with no entry rule it matches the real engine's trade count closely
+        rs = backtest.rule_search("long-user", {"days": 60, "minTrades": 1})
+        assert rs["candidates"] > 0 and rs["tested"] > 20 and rs["base"]["n"] > 0 and len(rs["singles"]) == len(wallwatch.SEARCH_RULES)
+        dd = backtest._ticker_data("long-user", "AAA", 60, {**wallwatch.config("long-user"), "earnOn": False}, False)
+        real, _ = wallwatch.detect_retest(dd["bars"], dd["walls"], rs["period"]["from"],
+                                          {**wallwatch.config("long-user"), "earnOn": False, **{k: False for k in wallwatch.SEARCH_RULES}},
+                                          dd["datr"], dd["alerts"], None, dd["vmap"], dd["emap"], dd.get("extra"))
+        print("rule search base vs engine:", rs["base"]["n"], len(real), "tested", rs["tested"])
+        assert abs(rs["base"]["n"] - len(real)) <= max(2, len(real) // 5), (rs["base"]["n"], len(real))
     finally:
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
 

@@ -2644,9 +2644,35 @@ async function loadRuleTest(poll) {
   try { S.rt = await api('/bot/wallwatch/ruletest'); } catch (e) { S.rt = { error: e.message }; }
   S.rtBusy = false;
   if (route() === 'botwatch') render();
-  const t = (S.rt && S.rt.test) || {}, hs = (S.rt && S.rt.history) || {}, rb = (S.rt && S.rt.robust) || {}, pv = (S.rt && S.rt.pv) || {}, rgm = (S.rt && S.rt.regime) || {};
+  const t = (S.rt && S.rt.test) || {}, hs = (S.rt && S.rt.history) || {}, rb = (S.rt && S.rt.robust) || {}, pv = (S.rt && S.rt.pv) || {}, rgm = (S.rt && S.rt.regime) || {}, srch = (S.rt && S.rt.search) || {};
   clearTimeout(S.rtPoll);
-  if ((t.running || hs.running || rb.running || pv.running || rgm.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
+  if ((t.running || hs.running || rb.running || pv.running || rgm.running || srch.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
+}
+const SEARCH_RULES = ['alertReq', 'relFlow', 'greenOnly', 'aboveFlip', 'vwapOn', 'emaOn', 'emaOverVwap', 'kcNotExt', 'kcdLower', 'kchLower', 'orbAbove', 'fvgOn', 'noAboveCW', 'cwRoomOn', 'vwapReset', 'pwNeCw', 'spyUp', 'skewOn'];
+function wwSearchBox(x) {
+  const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const lbl = Object.fromEntries(WW_RULES.map(r => [r[0], r[2]]));
+  const names = rs => rs && rs.length ? rs.map(k => esc(lbl[k] || k)).join(' + ') : '<span class="muted">no entry rule (support retest only)</span>';
+  const row = (title, st, rs) => `<tr><td style="max-width:420px">${title}</td><td class="r">${st.n ?? 0}</td><td class="r">${st.win ?? '—'}${st.win != null ? '%' : ''}</td><td class="r">${R(st.avgR)}</td><td class="r">${st.totR ?? '—'}</td><td class="r">${st.pf ?? '—'}</td>
+    <td class="r">${R(st.h1)} / ${R(st.h2)}<br><span class="muted" style="font-size:.75rem">${st.h1n ?? 0} / ${st.h2n ?? 0}</span></td>
+    <td>${rs ? `<button class="btn" data-trycombo="${esc(rs.join(','))}" style="font-size:.75rem;padding:0 8px" title="Set these entry rules in the Strategy lab and open the chart">Try in lab</button>` : ''}</td></tr>`;
+  const head = '<thead><tr><th>Entry rules</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">1st / 2nd half</th><th></th></tr></thead>';
+  const body = x.running ? '<p class="loading">Trading every candle at the support with your exits, then replaying the mixes of rules… (a few minutes)</p>' : !x.top ? '' : `
+    <p class="muted" style="font-size:.82rem;margin:6px 0">${x.tickers} tickers · ${x.candidates} candles at the support · ${x.tested} mixes of rules tested · at least ${x.minTrades} trades · ${x.lab ? 'Strategy lab' : 'live'} exits · run ${esc((x.at || '').slice(5, 16).replace('T', ' '))}</p>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem">${head}<tbody>
+      <tr><td colspan="8" style="background:var(--line);font-weight:700;font-size:.82rem">Best mixes (positive in both halves)</td></tr>
+      ${(x.top || []).map(t => row(names(t.rules), t, t.rules)).join('') || '<tr><td colspan="8" class="muted">None with enough trades.</td></tr>'}
+      <tr><td colspan="8" style="background:var(--line);font-weight:700;font-size:.82rem">Step by step: add the rule that helps most</td></tr>
+      ${(x.path || []).map((t, i) => row(`${i + 1}. + ${esc(lbl[t.rules[t.rules.length - 1]] || '')}<br><span class="muted" style="font-size:.75rem">${names(t.rules)}</span>`, t, t.rules)).join('')}
+      <tr><td colspan="8" style="background:var(--line);font-weight:700;font-size:.82rem">Your entry rules, and each one changed</td></tr>
+      ${row('<b>Your entry rules</b><br><span class="muted" style="font-size:.75rem">' + names((x.mine || {}).rules) + '</span>', x.mine || {}, (x.mine || {}).rules)}
+      ${(x.singles || []).map(t => row(`${t.change === 'on' ? 'add' : 'remove'} <b>${esc(lbl[t.rule] || t.rule)}</b>`, t, t.rules)).join('')}
+      ${row('Base: support retest only', x.base || {}, [])}
+    </tbody></table></div>
+    <p class="muted" style="font-size:.8rem;margin:4px 0 0">Screening: every candle at the support is traded alone, then each mix replays them one trade at a time per ticker. Check a mix you like with “Try in lab” → Test on all tickers. More mixes tested = more chance one looks good by luck: prefer mixes that hold in both halves with many trades.</p>`;
+  return `<h3 style="font-size:.95rem;margin:16px 0 4px">Rule search <span class="muted" style="font-weight:400;font-size:.8rem">min trades</span> <input id="rs-min" type="number" min="10" step="10" value="${x.minTrades || 60}" style="width:4.5em;padding:1px 4px"> <button class="btn coachbtn" data-rsrun ${x.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px">Search the mixes</button></h3>
+    <p class="muted" style="margin:0;font-size:.85rem">Every entry rule on / off and their mixes, on the ${S.rtUseLab ? 'Strategy lab' : 'live'} exits.</p>${body}
+    ${(x.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(x.errors.join(' · '))}</p>` : ''}`;
 }
 function wwRuleTester() {
   const r = S.rt || {}, t = r.test || {}, hs = r.history || {}, P = t.params || {};
@@ -2701,6 +2727,7 @@ function wwRuleTester() {
       <label style="display:inline-flex;gap:4px;align-items:center" title="Every rule added alone, every split (alert size, room, skew, dark pool, Keltner, opening range, SPY…) and every exit. Slower."><input type="checkbox" id="rt-full" ${P.full ? 'checked' : ''}>full analysis</label>
       <button class="btn coachbtn" data-rtrun ${t.running ? 'disabled' : ''}>Run the test</button>${t.at && !t.running ? ` <span class="muted">last run ${esc(t.at.slice(5, 16).replace('T', ' '))} · ${t.secs}s</span>` : ''}</div>
     ${body}
+    ${wwSearchBox(r.search || {})}
     <h3 style="font-size:.95rem;margin:16px 0 4px">Robustness check <button class="btn" data-rtrob ${rb.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 10px;margin-left:6px">Run it</button>${rb.at && !rb.running ? ` <span class="muted" style="font-weight:400;font-size:.8rem">last run ${esc(rb.at.slice(5, 16).replace('T', ' '))}</span>` : ''}</h3>
     <p class="muted" style="margin:0;font-size:.85rem">Your full settings re-run with each number moved a little, where the profit comes from, and the drawdown to expect.</p>
     ${rbBody}
@@ -3285,7 +3312,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3388,6 +3415,19 @@ document.addEventListener('click', e => {
     render(); return;
   }
   if (el.hasAttribute('data-rtlab')) { S.rtUseLab = true; try { localStorage.setItem('rtUseLab', '1'); } catch (e) {} }   // the link then opens Wall watch
+  if (el.hasAttribute('data-rsrun')) {
+    api('/bot/wallwatch/search', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250, minTrades: parseFloat(($('#rs-min') || {}).value) || 60, ...(S.rtUseLab && labCfg() ? { cfg: labCfg() } : {}) } })
+      .then(() => { S.rt = { ...(S.rt || {}), search: { ...((S.rt || {}).search || {}), running: 'now' } }; render(); setTimeout(loadRuleTest, 15000); }).catch(err => toast(err.message));
+    return;
+  }
+  if (el.dataset.trycombo !== undefined) {
+    const want = el.dataset.trycombo ? el.dataset.trycombo.split(',') : [], L = labCfg();
+    if (!L) { toast('Open the chart once first'); return; }
+    SEARCH_RULES.forEach(k => { L[k] = want.includes(k); }); S.labSw = {}; S.labDirty = false; labSave();
+    Object.keys(S.fc).filter(x0 => x0.includes('ww-lab-')).forEach(x0 => { delete S.fc[x0]; });
+    S.chartLab = true; try { localStorage.setItem('chartLab', '1'); } catch (e) {}
+    fcfSetMode('ww'); location.hash = '#botchart'; toast('Lab entry rules set: check the chart, then Test on all tickers'); return;
+  }
   if (el.dataset.rtsrc) { S.rtUseLab = el.dataset.rtsrc === 'lab'; try { localStorage.setItem('rtUseLab', S.rtUseLab ? '1' : '0'); } catch (e) {} render(); return; }
   if (el.hasAttribute('data-rtrob')) {
     api('/bot/wallwatch/robust', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250, ...(S.rtUseLab && labCfg() ? { cfg: labCfg() } : {}) } })

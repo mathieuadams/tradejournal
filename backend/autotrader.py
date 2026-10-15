@@ -1835,6 +1835,14 @@ def handler(event, context_):
                     db.put({**(db.get(db.upk(sub), intraday.SK) or {}), "PK": db.upk(sub), "SK": intraday.SK,
                             "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
+            elif job == "wwsearch":
+                import backtest
+                try:
+                    out[sub] = {"tested": backtest.rule_search(sub, event.get("params") or {}).get("tested")}
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), backtest.SEARCH_SK) or {}), "PK": db.upk(sub), "SK": backtest.SEARCH_SK,
+                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
             elif job == "wwlab":
                 import backtest
                 try:

@@ -1004,6 +1004,107 @@ def lab_result(sub):
     return {k: v for k, v in r.items() if k not in ("PK", "SK")}
 
 
+SEARCH_SK = "WWSEARCH"
+
+
+def _replay(cands_by_sym, need, mid):
+    """One trade at a time per ticker, keeping only the candles that pass every rule in need."""
+    rows = []
+    for sym, cs in cands_by_sym.items():
+        last = ""
+        for c in cs:
+            if c["at"] <= last or not all(c["f"].get(r) for r in need):
+                continue
+            rows.append({"at": c["at"], "R": c["R"], "sym": sym})
+            last = c["end"]
+    st = _stats(rows, mid)
+    return st
+
+
+def rule_search(sub, params=None, budget_s=480):
+    """Search the mixes of entry rules: every candle at the support is traded alone with your exits and tagged with
+    each rule; any mix of rules is then replayed one trade at a time per ticker. Single rules, pairs, and a step-by-step
+    search (add the rule that helps most, again and again), on the live settings or the Strategy lab's."""
+    import wallwatch
+    from itertools import combinations
+    t0 = time.time()
+    pk = db.upk(sub)
+    P = {"days": 250, "minTrades": 60, **(params or {})}
+    cfg = _with_lab(wallwatch.config(sub), P)
+    days = max(30, min(500, int(P["days"])))
+    min_n = max(10, int(P.get("minTrades") or 60))
+    first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
+    mid = (now_ny() - timedelta(days=int(days * 1.45) // 2)).strftime("%Y-%m-%d")
+    db.put({"PK": pk, "SK": SEARCH_SK, **(db.get(pk, SEARCH_SK) or {}), "running": iso(now_ny())})
+    rules = list(wallwatch.SEARCH_RULES)
+    cands, errors, done_n = {}, [], 0
+    base_cfg = {**cfg, "earnOn": False, "fixR": 0, "maxDays": 0}
+
+    def one(sym):
+        d = _ticker_data(sub, sym, days, base_cfg, False)
+        if not d:
+            return sym, []
+        out = []
+        wallwatch.detect_retest(d["bars"], d["walls"], first, {**base_cfg, "_collect": out}, d["datr"], d["alerts"], None,
+                                d["vmap"], d["emap"], d.get("extra"))
+        return sym, sorted(out, key=lambda c: c["at"])
+
+    pool = ThreadPoolExecutor(max_workers=8)
+    for f in [pool.submit(one, t) for t in cfg["tickers"]]:
+        try:
+            sym, cs = f.result(timeout=max(1, budget_s * 0.8 - (time.time() - t0)))
+            if cs:
+                cands[sym] = cs
+            done_n += 1
+        except Exception as e:
+            errors.append(str(e)[:100] or "time limit")
+    pool.shutdown(wait=False, cancel_futures=True)
+
+    seen = {}
+    def ev(need):
+        k = tuple(sorted(need))
+        if k not in seen:
+            seen[k] = _replay(cands, k, mid)
+        return seen[k]
+    ok = lambda st: st.get("n", 0) >= min_n
+    score = lambda st: st.get("avgR") if ok(st) and st.get("avgR") is not None else -9
+
+    mine = [r for r in rules if cfg.get(r, wallwatch.PARAMS.get(r))]
+    out_rows = {"base": {"rules": [], **ev(())}, "mine": {"rules": mine, **ev(mine)}}
+    singles = []
+    for r in rules:                                    # each rule turned on / off from your settings
+        alt = [x for x in mine if x != r] if r in mine else mine + [r]
+        singles.append({"rule": r, "change": "off" if r in mine else "on", "rules": alt, **ev(alt)})
+    pairs = []
+    for a, b in combinations(rules, 2):                # every pair, from the base
+        if time.time() - t0 > budget_s:
+            break
+        pairs.append({"rules": [a, b], **ev((a, b))})
+    path, cur = [], []
+    for _ in range(8):                                 # step by step: add the rule that raises the average R the most
+        best = max(((r, ev(cur + [r])) for r in rules if r not in cur), key=lambda x: score(x[1]), default=None)
+        if not best or score(best[1]) <= score(ev(cur)) or not ok(best[1]):
+            break
+        cur = cur + [best[0]]
+        path.append({"rules": list(cur), **best[1]})
+    allc = [{"rules": list(k), **v} for k, v in seen.items() if ok(v)]
+    both = [x for x in allc if (x.get("h1") or 0) > 0 and (x.get("h2") or 0) > 0]
+    top = sorted(both, key=lambda x: -(x.get("avgR") or 0))[:15]
+    out = {"PK": pk, "SK": SEARCH_SK, "running": None, "at": iso(now_ny()), "secs": round(time.time() - t0), "tickers": done_n,
+           "candidates": sum(len(v) for v in cands.values()), "tested": len(seen), "minTrades": min_n, "period": {"from": first, "mid": mid},
+           "lab": bool(P.get("cfg")), "base": out_rows["base"], "mine": out_rows["mine"], "singles": singles, "path": path, "top": top,
+           "pairs": sorted([p_ for p_ in pairs if ok(p_)], key=lambda x: -(x.get("avgR") or 0))[:10], "errors": errors[:5]}
+    if done_n < len(cfg["tickers"]):
+        out["errors"].insert(0, f"Time limit: {done_n} of {len(cfg['tickers'])} tickers.")
+    db.put(out)
+    return {k: v for k, v in out.items() if k not in ("PK", "SK")}
+
+
+def search_result(sub):
+    r = _unstick(db.get(db.upk(sub), SEARCH_SK) or {})
+    return {k: v for k, v in r.items() if k not in ("PK", "SK")}
+
+
 def regime_result(sub):
     r = _unstick(db.get(db.upk(sub), REG_SK) or {})
     return {k: v for k, v in r.items() if k not in ("PK", "SK")}
