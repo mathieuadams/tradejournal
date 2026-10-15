@@ -1304,6 +1304,15 @@ function fcSetZoom(id, a, b, N) {
   S.fcZoom[fcKey(id)] = a <= 0 && b >= N - 1 ? null : [a, b];
   render();
 }
+function fcDaily(d) {                        // hourly chart data -> daily candles; lines take the last value of each day
+  const by = new Map(), day = t => t.slice(0, 10) + 'T09:30';
+  (d.bars || []).forEach(b => { const k = b.t.slice(0, 10), x = by.get(k);
+    if (!x) by.set(k, { t: day(b.t), o: b.o, h: b.h, l: b.l, c: b.c, v: b.v || 0 });
+    else { x.h = Math.max(x.h, b.h); x.l = Math.min(x.l, b.l); x.c = b.c; x.v += b.v || 0; } });
+  const last = rows => { const m = new Map(); (rows || []).forEach(r => { if (r && r.t) m.set(r.t.slice(0, 10), { ...r, t: day(r.t) }); }); return [...m.values()]; };
+  return { ...d, interval: 390, daily: true, bars: [...by.values()], vwap: last(d.vwap), ema: last(d.ema), kc: last(d.kc), kch: last(d.kch), inertia: last(d.inertia),
+    vwapResets: [...new Set((d.vwapResets || []).map(day))] };
+}
 function fcClean(d) {                       // drop malformed rows so one bad record can't break the chart
   const ok = x => x && typeof x.t === 'string' && x.t.length >= 16;
   const bars = (d.bars || []).filter(b => ok(b) && isFinite(b.o) && isFinite(b.h) && isFinite(b.l) && isFinite(b.c)).sort((a, b) => a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
@@ -1591,6 +1600,12 @@ function vChartWW() {
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
   const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
   const k = fcKey(id), d = sym ? S.fc[k] : null;
+  const did = id + ':D', vid = S.chartDaily ? did : id;          // daily view: the same data as daily candles
+  if (S.chartDaily && d && !d.error) {
+    const dk = fcKey(did);
+    if (!S.fc[dk] || S.fc[dk]._src !== d) S.fc[dk] = { ...fcDaily(d), _src: d };
+    S.fcDp[dk] = S.fcDp[k];
+  }
   if (sym && !d && !S.fcBusy[k]) { S.fcBusy[k] = true; setTimeout(() => labOn ? loadLabChart(sym) : loadWwChart(sym), 0); }
   if (sym) fcNeedDark(id);
   const sigs = (d && d.signals) || [];
@@ -1603,13 +1618,14 @@ function vChartWW() {
   const allSig = (S.ww && S.ww.signals) || [], bySym = {};
   allSig.forEach(x => { const b = bySym[x.symbol] = bySym[x.symbol] || { n: 0, t: 0, open: 0, tot: 0 }; b.n++; if (x.status === 'target') b.t++; if (x.status === 'open') b.open++; else b.tot += x.pct; });
   const stMap = Object.fromEntries(((S.ww && S.ww.status) || []).map(x => [x.symbol, x]));
-  const zb_ = (q, l, t) => sym ? `<button class="btn" data-fczoom="${id}|${q}" title="${t}" style="padding:3px 10px">${l}</button>` : '';
+  const zb_ = (q, l, t) => sym ? `<button class="btn" data-fczoom="${vid}|${q}" title="${t}" style="padding:3px 10px">${l}</button>` : '';
   const sel = narrow ? `<select id="fcf-sel" aria-label="Ticker">${list.map(x => `<option value="${esc(x)}" ${x === sym ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>` : '';
   const done = sigs.filter(x => x.status !== 'open'), hit = done.filter(x => x.status === 'target').length;
   const headBar = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>
       ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow === 'flip' ? 'CW > PW > flip' : d.setupNow === 'merged' ? 'PW = CW < flip' : d.setupNow ? 'CW > flip > PW' : 'no setup'}</span>
       <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>${d && d.staleSignals ? ` <span class="muted" style="font-size:.8rem">· ${d.staleSignals} from older settings hidden (recomputing)</span>` : ''}${(stMap[sym] || {}).watch ? ` <b style="color:var(--coach);font-size:.85rem">⚑ waiting for a retest of the ${esc(stMap[sym].watch.levelName)} ${stMap[sym].watch.level}</b>` : ''}` : ''}
       ${sel}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
+      <span class="seg" role="group" aria-label="Candles"><button class="btn ${!S.chartDaily ? 'coachbtn' : ''}" data-chartdaily="0" style="padding:3px 10px" title="Hourly candles">1h</button><button class="btn ${S.chartDaily ? 'coachbtn' : ''}" data-chartdaily="1" style="padding:3px 10px" title="Daily candles (same signals and levels)">1D</button></span>
       <span class="seg" role="group" aria-label="Days on the chart">${[45, 90, 180].map(n => `<button class="btn ${(S.wwDays || 45) === n ? 'coachbtn' : ''}" data-wwdays="${n}" title="${n} trading days${n > 45 ? ' (signals older than 45 days are replayed with your current settings)' : ''}" style="padding:3px 9px">${n}d</button>`).join('')}</span>
       ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.fcLayers.dark ? `<label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="Dark pool prints of at least this % of the 30-day average daily volume">dark pool ≥<input id="ww-dpmin" type="number" step="0.05" min="0.01" value="${S.wwDpPct ?? 0.25}" style="width:4.6em;padding:1px 4px">% of avg daily volume</label>` : ''}<button class="btn ${S.hideSettings ? 'coachbtn' : ''}" data-hidesettings title="Hide / show the indicators and the entry / exit rules" style="padding:3px 10px">${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideStats ? 'coachbtn' : ''}" data-hidestats title="Hide / show the stats under the chart" style="padding:3px 10px">${S.hideStats ? 'Show stats' : 'Hide stats'}</button><button class="btn ${labOn ? 'coachbtn' : ''}" data-chartlab title="${labOn ? 'Back to the live strategy' : 'Try other settings on this chart without touching the live bot'}" style="padding:3px 10px">${labOn ? '✓ Strategy lab' : 'Strategy lab'}</button>
       ${S.ww && !S.hideSettings ? (labOn ? labPanel() : wwParams(true)) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
@@ -1620,7 +1636,7 @@ function vChartWW() {
   else if (d.error) main = `<div class="errbox" style="margin:16px">${esc(d.error)}</div>`;
   else {
     const w = d.wallsNow, pc = v => `<b class="${v >= 0 ? 'gain' : 'loss'}">${v >= 0 ? '+' : ''}${v}%</b>`;
-    main = fcSvg(d, id, { W, H }) + `<div class="fcf-info" ${S.hideStats ? 'hidden style="display:none"' : ''}>
+    main = fcSvg(S.chartDaily ? S.fc[fcKey(did)] : d, vid, { W, H }) + `<div class="fcf-info" ${S.hideStats ? 'hidden style="display:none"' : ''}>
       ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b> · <b class="loss">put ${w.putWall}</b></span>` : ''}
       ${(d.trades || []).length ? `<span><b style="color:var(--coach)">Option trades</b> ${d.trades.map(tr => `${esc((tr.at || '').slice(5, 16).replace('T', ' '))} ${esc(tr.contract || '')} ×${tr.qty ?? ''} @${tr.fill ?? tr.limit ?? '—'} · ${esc(tr.status || '')}${tr.plPct != null ? ` <b class="${tr.plPct >= 0 ? 'gain' : 'loss'}">${tr.plPct >= 0 ? '+' : ''}${tr.plPct}%</b>` : ''}`).join(' | ')}</span>` : ''}
       ${(() => { const m = (d.maxPain || []).slice(-1)[0], nx = (d.expirations || []).find(e => e >= new Date().toISOString().slice(0, 10)); return m || nx ? `<span style="color:var(--warn,#d97706)"><b>${nx ? `Next monthly exp ${esc(nx)}` : ''}${m ? ` · max pain ${m.maxPain}${m.exp !== nx ? ` (${esc(m.exp)})` : ''}` : ''}</b></span>` : ''; })()}
@@ -2566,6 +2582,7 @@ const WW_CORE = ['alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn
 const WW_DEF_ON = { inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 try { S.rtUseLab = localStorage.getItem('rtUseLab') === '1'; } catch (e) { S.rtUseLab = false; }
+try { S.chartDaily = localStorage.getItem('chartDaily') === '1'; } catch (e) { S.chartDaily = false; }
 try { S.indOpen = localStorage.getItem('indOpen') !== '0'; S.rulesOpen = localStorage.getItem('rulesOpen') !== '0'; S.hideStats = localStorage.getItem('hideStats') === '1'; S.hideSettings = localStorage.getItem('hideSettings') === '1'; } catch (e) { S.indOpen = true; S.rulesOpen = true; S.hideStats = false; S.hideSettings = false; }
 document.addEventListener('toggle', e => {        // the Indicators / rules panels stay as you left them (toggle doesn't bubble: capture)
   const t = e.target;
@@ -3324,7 +3341,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3390,6 +3407,7 @@ document.addEventListener('click', e => {
     return;
   }
   if (el.dataset.wwparams) { wwSaveParams(el.dataset.wwparams); return; }
+  if (el.dataset.chartdaily !== undefined) { S.chartDaily = el.dataset.chartdaily === '1'; try { localStorage.setItem('chartDaily', S.chartDaily ? '1' : '0'); } catch (e) {} render(); return; }
   if (el.hasAttribute('data-hidesettings')) { S.hideSettings = !S.hideSettings; S.fcfHeadH = null; try { localStorage.setItem('hideSettings', S.hideSettings ? '1' : '0'); } catch (e) {} render(); return; }
   if (el.hasAttribute('data-hidestats')) { S.hideStats = !S.hideStats; S.fcfInfoH = S.hideStats ? 0 : null; try { localStorage.setItem('hideStats', S.hideStats ? '1' : '0'); } catch (e) {} render(); return; }
   if (el.hasAttribute('data-chartlab')) { S.chartLab = !S.chartLab; try { localStorage.setItem('chartLab', S.chartLab ? '1' : '0'); } catch (e) {} render(); return; }
