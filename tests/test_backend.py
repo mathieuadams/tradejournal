@@ -3080,6 +3080,8 @@ def test_option_test():
                                                     {"at": "2023-05-01T10:30", "entry": 90, "exit": "stop", "R": -1}], {"slip": 0})
         assert rs["byAt"]["2025-03-03T10:30"]["pct"] == 55.0 and rs["stats"]["n"] == 1 and rs["older"] == 1
         assert optiontest.result_sym("opt-user", "AAA")["byAt"]
+        cp = optiontest.clean_path([("a", 1, 1, 1, 10.0), ("b", 1, 1, 1, 4.0), ("c", 1, 1, 1, 10.4), ("d", 1, 1, 1, 10.6)])
+        assert cp[1][4] == 10.2 and cp[1][3] == 10.2                 # a stray print: replaced, and lows = closes
     finally:
         optiontest.bars, alpaca.creds = saved
 

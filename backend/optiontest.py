@@ -107,19 +107,30 @@ def pick(c, sym, day, price, P):
     return [(r[2], r[1], r[3], r[4]) for r in rows]
 
 
+def clean_path(path):
+    """Option trade prints include stray ones (legs of spreads, odd lots) far from the real market: a 30-minute close
+    more than 25% under / 33% over BOTH neighbours is replaced by their middle. The bars are then reduced to their
+    close, and the target / stop are checked on those closes (a single odd high / low print can't trigger them)."""
+    cs = [p[4] for p in path]
+    for i in range(1, len(cs) - 1):
+        a, b = cs[i - 1], cs[i + 1]
+        if cs[i] < 0.75 * min(a, b) or cs[i] > 1.33 * max(a, b):
+            cs[i] = (a + b) / 2
+    return [(p[0], c, c, c, c) for p, c in zip(path, cs)]
+
+
 def simulate(path, entry, entry_end, stock_exit_end, exp, tp, sl, follow, slip):
-    """path: [(bar end 'YYYY-MM-DDTHH:MM', o, h, l, c)] after the entry bar. Returns (pct, reason, at)."""
+    """path: [(bar end 'YYYY-MM-DDTHH:MM', o, h, l, c)] after the entry bar (cleaned: o = h = l = c).
+    Returns (pct, reason, at, exit price)."""
     e = entry * (1 + slip)
     last_day = (datetime.strptime(exp, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     out = None
     for t, o, h, l, cl in path:
         if sl is not None and l <= e * (1 - sl / 100):
-            px = min(o, e * (1 - sl / 100))
-            out = (px, "option stop", t)
+            out = (l, "option stop", t)
             break
         if tp is not None and h >= e * (1 + tp / 100):
-            px = max(o, e * (1 + tp / 100))
-            out = (px, "option target", t)
+            out = (h, "option target", t)
             break
         if follow and stock_exit_end and t >= stock_exit_end:
             out = (cl, "stock exit", t)
@@ -133,7 +144,7 @@ def simulate(path, entry, entry_end, stock_exit_end, exp, tp, sl, follow, slip):
         t, o, h, l, cl = path[-1]
         out = (cl, "open", t)
     px = out[0] * (1 - slip)
-    return round((px / e - 1) * 100, 1), out[1], out[2]
+    return round((px / e - 1) * 100, 1), out[1], out[2], round(out[0], 2)
 
 
 def _stats(pcts):
@@ -168,6 +179,7 @@ def price_one(c, t, P):
         en = (datetime.strptime(st, "%Y-%m-%dT%H:%M") + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M")
         if "09:30" <= st[11:16] < "16:00":
             path.append((en, b["o"], b["h"], b["l"], b["c"]))
+    path = clean_path(path)
     before = [p for p in path if p[0] <= entry_end and p[0][:10] == day]
     if not before:
         return {**t, "opt": None, "why": "no option trade before the entry"}
@@ -185,7 +197,8 @@ def price_one(c, t, P):
     mfe = max([p[2] for p in after] or [entry])
     return {**t, "opt": {"sym": sym_, "exp": exp, "strike": strike, "vol": vol, "entry": round(entry, 2),
                          "mfe": round((mfe / (entry * (1 + slip)) - 1) * 100, 1),
-                         "pct": mine[0] if mine else None, "why": mine[1] if mine else None, "exitAt": mine[2] if mine else None},
+                         "pct": mine[0] if mine else None, "why": mine[1] if mine else None, "exitAt": mine[2] if mine else None,
+                         "exitPx": mine[3] if mine else None, "entryAt": before[-1][0]},
             "_grid": res}
 
 
@@ -215,7 +228,7 @@ def run_sym(sub, sym, trades, params=None, budget_s=270):
     pool.shutdown(wait=False, cancel_futures=True)
     by = {r["at"]: {**(r.get("opt") or {}), **({} if r.get("opt") else {"none": r.get("why")})} for r in rows}
     ok = [r["opt"]["pct"] for r in rows if r.get("opt") and r["opt"].get("pct") is not None]
-    out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "params": P, "byAt": by, "stats": _stats(ok),
+    out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "params": P, "byAt": by, "v": 2, "stats": _stats(ok),
            "errors": errors[:3], "older": sum(1 for t in trades if (t.get("at") or "") < "2024-02-05")}
     db.put(out)
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}

@@ -2956,7 +2956,7 @@ function optSymBox(sym, sigs, sel) {
     const have = x.byAt || {}, missing = sigs.filter(s0 => s0.at >= '2024-02-05' && !(s0.at in have)).length;
     const pp = x.params || {}, same = ['dteMin', 'dteMax', 'money', 'tp', 'sl', 'slip'].every(k => +pp[k] === +P[k]) && !!pp.follow === !!P.follow;
     S.optAuto[key] = true;
-    if (missing || !same) setTimeout(() => optSymRun(sym), 0);
+    if (missing || !same || x.v !== 2) setTimeout(() => optSymRun(sym), 0);   // v2: stray prints filtered
   }
   const pc = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${v}%</b>`;
   const o = sel && x.byAt ? x.byAt[sel.at] : null;
@@ -2964,7 +2964,7 @@ function optSymBox(sym, sigs, sel) {
   return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center">${btn}
     ${x.stats && st.n ? `<span><b>Calls</b> ${st.n} trades · win ${st.win}% · avg ${pc(st.avg)} · median ${pc(st.med)} · avg win / loss ${pc(st.avgWin)} / ${pc(st.avgLoss)} · total ${pc(st.tot)}${x.params ? ` <span class="muted">(${x.params.dteMin}–${x.params.dteMax}d, TP ${x.params.tp}%, stop ${x.params.sl}%)</span>` : ''}</span>` : ''}
     ${x.older ? `<span class="muted">${x.older} trades before Feb 2024: no option prices</span>` : ''}
-    ${o ? (o.none ? `<span class="muted">Selected trade: ${esc(o.none)}</span>` : `<span><b>Selected trade</b> bought <b>${esc(o.sym)}</b> (${esc(o.exp)} ${o.strike} call) at ${o.entry} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' ').slice(5))} → ${pc(o.pct)} · best ${pc(o.mfe)}</span>`) : ''}
+    ${o ? (o.none ? `<span class="muted">Selected trade: ${esc(o.none)}</span>` : `<span><b>Selected trade</b> bought <b>${esc(o.sym)}</b> (${esc(o.exp)} ${o.strike} call) at ${o.entry}${o.entryAt ? ` (${esc(o.entryAt.replace('T', ' ').slice(5))})` : ''} → sold ${o.exitPx ?? '—'} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' ').slice(5))} → ${pc(o.pct)} · best ${pc(o.mfe)}</span>`) : ''}
     ${(x.errors || []).length ? `<span class="loss">${esc(x.errors.join(' · '))}</span>` : ''}${x.error ? `<span class="loss">${esc(x.error)}</span>` : ''}</span>`;
 }
 function labStats(sigs) {
