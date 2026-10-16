@@ -1617,8 +1617,8 @@ function vChartWW() {
   if (labOn && S.labTest === undefined) { S.labTest = null; setTimeout(loadLabTest, 0); }
   if (labOn && S.optTest === undefined) { S.optTest = null; setTimeout(loadOptTest, 0); }
   if (!S.ww && !S.wwBusy) { S.wwBusy = true; setTimeout(() => { S.wwBusy = false; loadWatch(); }, 0); }
-  const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
-  const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
+  const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = Math.min(110, S.fcfInfoH || (narrow ? 96 : 64));
+  const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(380, window.innerHeight - headH - infoH - 18);   // the page scrolls for the rest
   const k = fcKey(id), d = sym ? S.fc[k] : null;
   const did = id + ':D', vid = S.chartDaily ? did : id;          // daily view: the same data as daily candles
   if (S.chartDaily && d && !d.error) {
@@ -3563,7 +3563,8 @@ document.addEventListener('click', e => {
     api('/bot/lab/options', { method: 'POST', body: P }).then(() => { S.optTest = { ...(S.optTest || {}), running: 'now' }; render(); setTimeout(loadOptTest, 15000); }).catch(err => toast(err.message));
     return; }
   if (el.hasAttribute('data-labtest')) {
-    api('/bot/lab/test', { method: 'POST', body: { cfg: labCfg(), days: 250 } }).then(() => { S.labTest = { ...(S.labTest || {}), running: 'now' }; render(); setTimeout(loadLabTest, 15000); }).catch(err => toast(err.message));
+    S.hideStats = false; S.fcfInfoH = null; try { localStorage.setItem('hideStats', '0'); } catch (x) {}
+    api('/bot/lab/test', { method: 'POST', body: { cfg: labCfg(), days: 250 } }).then(() => { S.labTest = { ...(S.labTest || {}), running: 'now' }; toast('Testing every ticker — a few minutes; the results show under the chart (scroll down)'); render(); setTimeout(loadLabTest, 15000); }).catch(err => toast('Test on all tickers failed: ' + err.message));
     return; }
   if (el.hasAttribute('data-regrun')) {
     api('/bot/wallwatch/regime', { method: 'POST', body: { days: parseFloat(($('#rt-days') || {}).value) || 250 } })

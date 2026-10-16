@@ -414,12 +414,12 @@ tr.sel td{background:var(--sunk)}
 .shl li.sel{border-color:var(--coach,#5b5bd6);box-shadow:0 0 0 1px var(--coach,#5b5bd6) inset}
 
 /* full-screen chart */
-.fcf{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column}
+.fcf{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column;overflow-y:auto}
 .fcf-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 64px 8px 12px;border-bottom:1px solid var(--line);background:var(--surface)}
-.fcf-body{flex:1;display:flex;min-height:0}
-.fcf-main{flex:1;min-width:0;padding:6px 8px;overflow:hidden;background:var(--surface)}
+.fcf-body{flex:1 0 auto;display:flex;min-height:0}
+.fcf-main{flex:1;min-width:0;padding:6px 8px 40px;overflow-x:hidden;background:var(--surface)}
 .fcf-info{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.86rem;padding:6px 4px 0}
-.fcf-side{width:260px;border-left:1px solid var(--line);display:flex;flex-direction:column;background:var(--surface)}
+.fcf-side{width:260px;border-left:1px solid var(--line);display:flex;flex-direction:column;background:var(--surface);position:sticky;top:0;align-self:flex-start;max-height:100vh}
 .fcf-side input{margin:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
 .fcf-list{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
 .fcf-list a{display:flex;justify-content:space-between;gap:8px;padding:7px 12px;color:var(--ink);text-decoration:none;border-bottom:1px solid var(--line);line-height:1.35}
