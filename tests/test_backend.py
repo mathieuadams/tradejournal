@@ -3084,6 +3084,41 @@ def test_option_test():
         optiontest.bars, alpaca.creds = saved
 
 
+def test_squeeze():
+    """TTM squeeze: on while the range is tight (BB inside KC), fires when it expands; entry / exit rules on 1h and 1D."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars, k = [], 0
+    for d in range(60):
+        day = (dt.date(2026, 1, 5) + dt.timedelta(days=d)).isoformat()
+        for h in H:
+            if k < 150:
+                c = 100 + 3 * math.sin(k / 3.0)                 # wide swings: no squeeze
+            elif k < 260:
+                c = 100 + 0.05 * math.sin(k)                    # coiled
+            else:
+                c = 100 + (k - 260) * 0.4                       # breakout up
+            bars.append({"t": f"{day}T{h}", "o": c - 0.05, "h": c + 0.1, "l": c - 0.1, "c": c, "v": 1})
+            k += 1
+    sq = wallwatch.squeeze(bars, 20, 2.0, 1.5, 3)
+    assert sq[10] is None and sq[230]["on"] and not sq[120]["on"]
+    fired = [i for i, x in enumerate(sq) if x and x["fired"] and x["mom"] > 0]
+    assert fired and 255 < fired[0] < 290, fired[:3]
+    w = {b["t"][:10]: {"putWall": 50, "callWall": 999, "flip": 40} for b in bars}
+    cfg = {"alertReq": False, "usePW": False, "useFlip": False, "greenOnly": False, "earnOn": False, "noAboveCW": False, "cwRoomOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "stopAtr": 5, "sqhFire": True, "sqhExit": True}
+    sg, _ = wallwatch.detect_retest(bars, w, None, cfg, None)
+    idx = {b["t"][:16]: i for i, b in enumerate(bars)}
+    assert sg and all(sq[idx[s["at"]]]["fired"] for s in sg)
+    assert all(s["status"] in ("squeeze", "open", "stop") for s in sg)
+    d1 = wallwatch.detect_retest(bars, w, None, {**cfg, "tf": "1D", "sqhFire": False, "sqhExit": False, "sqdMom": True}, None)[0]
+    dsq = wallwatch.squeeze(wallwatch.daily_bars(bars), 20, 2.0, 1.5, 3)
+    dd = {b["t"][:10]: x for b, x in zip(wallwatch.daily_bars(bars), dsq)}
+    assert all(dd[s["at"][:10]]["mom"] > 0 and dd[s["at"][:10]]["up"] for s in d1)
+    prev = wallwatch.squeeze_daily_prev(bars, 20, 2.0, 1.5, 3)
+    assert prev[-1] == dsq[-2]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

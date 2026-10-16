@@ -58,7 +58,14 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
           # hourly inertia (lab): the same regression on the hourly closes, lengths in hourly candles
-          "inhN1": 70, "inhN2": 40, "inhN3": 20, "inhGreen": False, "inhNotRed": False, "inhYExit": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
+          "inhN1": 70, "inhN2": 40, "inhN3": 20, "inhGreen": False, "inhNotRed": False, "inhYExit": False,
+          # TTM squeeze (lab), hourly (sqh*) and daily (sqd*): Bollinger(len, bb x stdev) inside Keltner(len, kc x ATR)
+          # = squeeze on; fired = it turns off; momentum = regression of close - midpoint of the range / average.
+          # On = squeeze on at entry; Fire = fired within the last sqFireN candles with momentum > 0;
+          # Mom = momentum above 0 and rising; Exit = momentum falls (hourly: at that close; daily: at the daily close)
+          "sqhLen": 20, "sqhBB": 2.0, "sqhKC": 1.5, "sqdLen": 20, "sqdBB": 2.0, "sqdKC": 1.5, "sqFireN": 3,
+          "sqhOn": False, "sqhFire": False, "sqhMom": False, "sqhExit": False,
+          "sqdOn": False, "sqdFire": False, "sqdMom": False, "sqdExit": False}       # skewOn: entry only when the 25-delta skew is in the middle third of its last 6 months   # tgtBuf: % under the call wall
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
@@ -105,13 +112,13 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("inN1", 5, 250), ("inhN1", 5, 500), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
+    for k, lo_, hi_ in (("inN1", 5, 250), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
             except (TypeError, ValueError):
                 pass
-    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "kchMult", "relMult", "fvgMin", "fvgNear", "scaleR"):
+    for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "kcMult", "kchMult", "relMult", "fvgMin", "fvgNear", "scaleR", "sqhBB", "sqhKC", "sqdBB", "sqdKC"):
         if k in body:
             try:
                 cur[k] = max(0.0, min(10.0, round(float(body[k]), 2)))
@@ -124,7 +131,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -278,7 +285,7 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
-def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False, reg=None, hreg=None):
+def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False, reg=None, hreg=None, sqh=None, sqd=None):
     """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
     Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held).
     kcRide (kcu = upper Keltner band of this candle): an hourly close above the upper band starts a ride -> the target,
@@ -306,6 +313,12 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
                 s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"][:16], s["entry"]])
     if s.get("pvEod") and is_last and b["t"][:10] == s["at"][:10] and s.get("level") and b["c"] < float(s["level"]):
         s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])        # the entry day closed under the support: out
+        return
+    if s.get("sqhExit") and sqh and not sqh["up"]:
+        s.update(status="squeeze", exitAt=b["t"][:16], exit=b["c"])     # hourly squeeze momentum falling: out at this close
+        return
+    if s.get("sqdExit") and is_last and sqd and not sqd["up"]:
+        s.update(status="squeeze", exitAt=b["t"][:16], exit=b["c"])     # daily squeeze momentum falling at the daily close
         return
     if s.get("inhYExit") and hreg and hreg.get("s") != "G":
         s.update(status="inertiaH", exitAt=b["t"][:16], exit=b["c"])    # the hourly inertia is no longer green: out at this close
@@ -626,6 +639,57 @@ def inertia_hourly(bars, ns=(70, 40, 20)):
     return out
 
 
+def squeeze(bars, n=20, bb=2.0, kc=1.5, fire_n=3):
+    """TTM squeeze per candle: {"on": BB inside KC, "fired": turned off within the last fire_n candles, "mom": momentum,
+    "up": momentum rising} or None. BB = SMA(n) +/- bb x stdev(n); KC = EMA(n) +/- kc x ATR (EMA(n) of the true range);
+    momentum = linear regression end value over n of close - ((highest high + lowest low) / 2 + SMA(n)) / 2."""
+    N = len(bars)
+    cl = [b["c"] for b in bars]
+    tr = [max(b["h"] - b["l"], abs(b["h"] - bars[i - 1]["c"]), abs(b["l"] - bars[i - 1]["c"])) if i else b["h"] - b["l"]
+          for i, b in enumerate(bars)]
+    em, ra = _ema_series(cl, n), _ema_series(tr, n)
+    on, dev = [None] * N, [None] * N
+    for i in range(n - 1, N):
+        w = cl[i - n + 1:i + 1]
+        m = sum(w) / n
+        sd = (sum((x - m) ** 2 for x in w) / n) ** 0.5
+        if em[i] is not None and ra[i] is not None:
+            on[i] = (m + bb * sd) < (em[i] + kc * ra[i]) and (m - bb * sd) > (em[i] - kc * ra[i])
+        hh = max(b["h"] for b in bars[i - n + 1:i + 1])
+        ll = min(b["l"] for b in bars[i - n + 1:i + 1])
+        dev[i] = cl[i] - ((hh + ll) / 2 + m) / 2
+    out = [None] * N
+    for i in range(N):
+        if on[i] is None or i < 2 * n - 2:
+            continue
+        mom = _linreg_end(dev[i - n + 1:i + 1])
+        prev = out[i - 1]["mom"] if out[i - 1] else None
+        fired = any(on[j - 1] and on[j] is False for j in range(max(1, i - fire_n + 1), i + 1) if on[j - 1] is not None)
+        out[i] = {"on": bool(on[i]), "fired": bool(fired), "mom": round(mom, 4), "up": prev is not None and mom > prev}
+    return out
+
+
+def _sq_ok(x, kind):
+    """A squeeze rule on one candle's squeeze state."""
+    if not x:
+        return False
+    if kind == "on":
+        return x["on"]
+    if kind == "fire":
+        return x["fired"] and x["mom"] > 0
+    return x["mom"] > 0 and x["up"]                    # "mom"
+
+
+def squeeze_daily_prev(hbars, n=20, bb=2.0, kc=1.5, fire_n=3):
+    """For each hourly candle: the daily squeeze of the PREVIOUS completed day (no look-ahead)."""
+    db_ = daily_bars(hbars)
+    sq = squeeze(db_, n, bb, kc, fire_n)
+    prev = {}
+    for k, b in enumerate(db_):
+        prev[b["t"][:10]] = sq[k - 1] if k else None
+    return [prev.get(b["t"][:10]) for b in hbars]
+
+
 def orb_levels(bars):
     """Opening range = the 09:30-10:30 hourly candle of the day: [(high, low) known after that candle, else None]."""
     out, cur, day = [], None, None
@@ -881,6 +945,17 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         (inertia_regime(bars, in_ns) if (on("inGreen") or on("inNotRed") or on("inRedExit") or P.get("_collect") is not None) else None)
     inh = inertia_hourly(bars, (int(P.get("inhN1") or 70), int(P.get("inhN2") or 40), int(P.get("inhN3") or 20))) \
         if (on("inhGreen") or on("inhNotRed") or on("inhYExit")) else None
+    fire_n = int(P.get("sqFireN") or 3)
+    sqh = squeeze(bars, int(P.get("sqhLen") or 20), float(P.get("sqhBB") or 2), float(P.get("sqhKC") or 1.5), fire_n) \
+        if any(on(k) for k in ("sqhOn", "sqhFire", "sqhMom", "sqhExit")) else None
+    sqd_e = squeeze_daily_prev(bars, int(P.get("sqdLen") or 20), float(P.get("sqdBB") or 2), float(P.get("sqdKC") or 1.5), fire_n) \
+        if any(on(k) for k in ("sqdOn", "sqdFire", "sqdMom")) else None      # entries: yesterday's daily squeeze
+    sqd_x = None
+    if on("sqdExit"):                                  # exits: the day's own squeeze at its close
+        db0 = daily_bars(bars)
+        s0 = squeeze(db0, int(P.get("sqdLen") or 20), float(P.get("sqdBB") or 2), float(P.get("sqdKC") or 1.5), fire_n)
+        at0 = {b["t"][:10]: x for b, x in zip(db0, s0)}
+        sqd_x = [at0.get(b["t"][:10]) for b in bars]
     if on("vwapReset"):
         if extra.get("vwResets") is not None:
             rs_ = set(extra["vwResets"])
@@ -905,7 +980,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
              "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"),
              "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
-             "inRedExit": on("inRedExit"), "inYExit": on("inYExit"), "inhYExit": on("inhYExit"),
+             "inRedExit": on("inRedExit"), "inYExit": on("inYExit"), "inhYExit": on("inhYExit"), "sqhExit": on("sqhExit"), "sqdExit": on("sqdExit"),
              "inhSt": (inh[i] or {}).get("s") if inh else None, "inSt": (inr[i] or {}).get("s") if inr else None,
              "skewPct": skp.get(day), "kc": list(kc[i]) if kc[i] else None, "orb": list(orb[i]) if orb[i] else None, "spy": spy.get(b["t"][:16])}
         if fvg_t is not None and fvg_t[i]:        # the gap the entry used (shown on the chart)
@@ -938,7 +1013,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             ai += 1
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i],
-                  kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day), bear=bear[i], reg=inr[i] if inr else None, hreg=inh[i] if inh else None)
+                  kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day), bear=bear[i], reg=inr[i] if inr else None, hreg=inh[i] if inh else None,
+                  sqh=sqh[i] if sqh else None, sqd=sqd_x[i] if sqd_x else None)
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -1023,6 +1099,13 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             if on("inNotRed") and not (inr and inr[i] and inr[i]["s"] != "R"):
                 miss(b, "daily inertia red")
                 continue                               # rule on: not all 3 daily inertias falling
+            sq_bad = next((f"{tf_} squeeze: {nm_}" for k, tf_, kind, nm_, arr in (
+                ("sqhOn", "hourly", "on", "not on", sqh), ("sqhFire", "hourly", "fire", "not fired up", sqh), ("sqhMom", "hourly", "mom", "momentum not rising", sqh),
+                ("sqdOn", "daily", "on", "not on", sqd_e), ("sqdFire", "daily", "fire", "not fired up", sqd_e), ("sqdMom", "daily", "mom", "momentum not rising", sqd_e))
+                if on(k) and not _sq_ok(arr[i] if arr else None, kind)), None)
+            if sq_bad:
+                miss(b, sq_bad)
+                continue                               # rule on: the squeeze condition must hold
             if on("inhGreen") and not (inh and inh[i] and inh[i]["s"] == "G"):
                 miss(b, "hourly inertia not green")
                 continue                               # rule on: the 3 hourly inertias must all be rising
@@ -1065,7 +1148,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         alt.update(status="open", stop=s["stop0"] if on("stopOn") else 0.0, last=s["entry"], lastAt=s["at"])
         for j in range(i0 + 1, len(bars)):
             _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j],
-                  kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j], reg=inr[j] if inr else None, hreg=inh[j] if inh else None)
+                  kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j], reg=inr[j] if inr else None, hreg=inh[j] if inh else None,
+                  sqh=sqh[j] if sqh else None, sqd=sqd_x[j] if sqd_x else None)
             if alt["status"] != "open":
                 break
         ap, ar = _result(alt)
@@ -1120,6 +1204,13 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
         ih_ = inertia_hourly(hbars, (int(P.get("inhN1") or 70), int(P.get("inhN2") or 40), int(P.get("inhN3") or 20)))
         at_ = {b["t"][:16]: x for b, x in zip(hbars, ih_)}
         inh = [at_.get(b["t"]) for b in bars]
+    fire_n = int(P.get("sqFireN") or 3)
+    sqd = squeeze(bars, int(P.get("sqdLen") or 20), float(P.get("sqdBB") or 2), float(P.get("sqdKC") or 1.5), fire_n)
+    sqh = [None] * len(bars)                           # hourly squeeze at each day's last hourly candle
+    if any(on(k) for k in ("sqhOn", "sqhFire", "sqhMom", "sqhExit")):
+        hs_ = squeeze(hbars, int(P.get("sqhLen") or 20), float(P.get("sqhBB") or 2), float(P.get("sqhKC") or 1.5), fire_n)
+        at_ = {b["t"][:16]: x for b, x in zip(hbars, hs_)}
+        sqh = [at_.get(b["t"]) for b in bars]
     zones = fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10))
     bulls = [z for z in zones if z["type"] == "bull"]
     bear = [False] * len(bars)
@@ -1132,7 +1223,8 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
         day = b["t"][:10]
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, True, em=ema[i] if on("emaExit") else None,
-                  kcu=kc[i][1] if kc[i] else None, bear=bear[i] and on("fvgExit"), reg=inr[i], hreg=inh[i])
+                  kcu=kc[i][1] if kc[i] else None, bear=bear[i] and on("fvgExit"), reg=inr[i], hreg=inh[i],
+                  sqh=sqh[i], sqd=sqd[i])
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -1156,6 +1248,10 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
         if on("inhGreen") and not (inh[i] and inh[i]["s"] == "G"):
             continue
         if on("inhNotRed") and not (inh[i] and inh[i]["s"] != "R"):
+            continue
+        if any(on(k) and not _sq_ok(arr[i], kind) for k, kind, arr in (
+                ("sqhOn", "on", sqh), ("sqhFire", "fire", sqh), ("sqhMom", "mom", sqh),
+                ("sqdOn", "on", sqd), ("sqdFire", "fire", sqd), ("sqdMom", "mom", sqd))):
             continue
         fz = None
         if on("fvgOn"):
@@ -1189,6 +1285,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
              "cwLost": on("cwLost"), "fvgExit": on("fvgExit"), "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1),
              "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "inRedExit": on("inRedExit"),
              "inYExit": on("inYExit"), "inhYExit": on("inhYExit"), "inhSt": (inh[i] or {}).get("s"),
+             "sqhExit": on("sqhExit"), "sqdExit": on("sqdExit"),
              "inSt": (inr[i] or {}).get("s"), "kc": list(kc[i]) if kc[i] else None}
         if fz:
             s["fvgZone"] = {"t": fz["t"], "lo": fz["lo"], "hi": fz["hi"]}
@@ -1952,7 +2049,18 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     except Exception as e:
         print("hourly inertia failed", sym, e)
         inertia_h = []
-    return {"inertia": inertia, "inertiaH": inertia_h, "fvg": fvg, "lab": bool(lab), "tf": ccfg.get("tf") or "1h", "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    try:
+        fn_ = int(ccfg.get("sqFireN") or 3)
+        sh = squeeze(bars_all, int(ccfg.get("sqhLen") or 20), float(ccfg.get("sqhBB") or 2), float(ccfg.get("sqhKC") or 1.5), fn_)[off:]
+        sqz_h = [{"t": b["t"], "on": x["on"], "f": x["fired"], "m": x["mom"], "u": x["up"]} for b, x in zip(bars, sh) if x]
+        dball = daily_bars(bars_all)
+        sd = squeeze(dball, int(ccfg.get("sqdLen") or 20), float(ccfg.get("sqdBB") or 2), float(ccfg.get("sqdKC") or 1.5), fn_)
+        d0 = dates[0] if dates else ""
+        sqz_d = [{"t": b["t"][:10], "on": x["on"], "f": x["fired"], "m": x["mom"], "u": x["up"]} for b, x in zip(dball, sd) if x and b["t"][:10] >= d0]
+    except Exception as e:
+        print("squeeze failed", sym, e)
+        sqz_h, sqz_d = [], []
+    return {"sqzH": sqz_h, "sqzD": sqz_d, "inertia": inertia, "inertiaH": inertia_h, "fvg": fvg, "lab": bool(lab), "tf": ccfg.get("tf") or "1h", "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),

@@ -1273,12 +1273,12 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark'];
-  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
+  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark'];
+  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
@@ -1443,6 +1443,19 @@ function fcSvg0(d, id, opts) {
     bars.forEach((b, i) => { const x = im[b.t]; if (!x) return;
       g += `<rect x="${X(i) - (W - L - Rr) / n / 2}" y="${B - 4}" width="${Math.max(1, (W - L - Rr) / n)}" height="4" fill="${col[x.s]}" opacity=".85"><title>${esc(b.t.replace('T', ' ').slice(5))} · daily inertia ${nm[x.s]} · regime points ${x.pts}</title></rect>`; });
   }
+  if (LY.sqz && ((d.sqzH || []).length || (d.sqzD || []).length)) {   // TTM squeeze dots: red = on, green = off (ring = just fired)
+    const tip = (x, tf) => `${tf} squeeze ${x.on ? 'ON (coiled)' : 'off'}${x.f ? ' · fired' : ''} · momentum ${x.m} ${x.u ? 'rising' : 'falling'}`;
+    const cw = Math.max(1, (W - L - Rr) / n), rr = Math.max(1, Math.min(2.2, cw / 2.5));
+    const dot = (i, x, y, tf) => `<circle cx="${X(i)}" cy="${y}" r="${rr}" fill="${x.on ? '#dc2626' : '#16a34a'}" ${x.f && !x.on ? 'stroke="#16a34a" stroke-width="1.2" fill-opacity=".3"' : ''} opacity=".85"><title>${esc(tf)} · ${esc(tip(x, tf))}</title></circle>`;
+    const dm = {}; (d.sqzD || []).forEach(x => { dm[x.t.slice(0, 10)] = x; });
+    if (d.daily) bars.forEach((b, i) => { const x = dm[b.t.slice(0, 10)]; if (x) g += dot(i, x, B - 13, 'Daily ' + b.t.slice(5, 10)); });
+    else {
+      const hm = {}; (d.sqzH || []).forEach(x => { hm[x.t] = x; });
+      bars.forEach((b, i) => { const x = hm[b.t]; if (x) g += dot(i, x, B - 13, 'Hourly ' + b.t.replace('T', ' ').slice(5)); });
+      bars.forEach((b, i) => { const x = dm[b.t.slice(0, 10)]; if (x && (i === 0 || bars[i - 1].t.slice(0, 10) !== b.t.slice(0, 10)))
+        g += `<rect x="${X(i) - cw / 2}" y="${B - 19}" width="${cw * bars.filter(q => q.t.slice(0, 10) === b.t.slice(0, 10)).length}" height="2.5" fill="${x.on ? '#dc2626' : '#16a34a'}" opacity=".55"><title>Daily ${esc(b.t.slice(5, 10))} · ${esc(tip(x, 'Daily'))}</title></rect>`; });
+    }
+  }
   if (LY.inertiah && !d.daily && (d.inertiaH || []).length) {     // hourly inertia regime: a thin strip above the daily one
     const im = {}; d.inertiaH.forEach(x => { im[x.t] = x; });
     const col = { G: '#16a34a', Y: '#eab308', R: '#dc2626' }, nm = { G: 'green: all 3 rising', Y: 'yellow: mixed', R: 'red: all 3 falling' };
@@ -1517,7 +1530,7 @@ function fcSvg0(d, id, opts) {
       if (sg.exitAt && i1 == null && sg.exitAt > lastT) i1 = n - 1;
       if (i0 == null && !(sg.exitAt && sg.exitAt >= bars[0].t && sg.at < bars[0].t)) return;
       const a0 = i0 == null ? 0 : i0, b0 = i1 == null ? a0 : i1, xa = i0 == null ? L : X(a0), xb = X(b0);
-      const col = sg.status === 'target' || (['trail', 'flip', 'vwap', 'ema', 'keltner', 'lost', 'eodpw', 'fvg', 'breakeven', 'inertia', 'inertiaH'].includes(sg.status) && sg.pct >= 0) ? 'var(--gain)' : ['stop', 'trail', 'flip', 'vwap', 'ema', 'keltner', 'lost', 'eodpw', 'fvg', 'breakeven', 'inertia', 'inertiaH'].includes(sg.status) ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
+      const col = sg.status === 'target' || (['trail', 'flip', 'vwap', 'ema', 'keltner', 'lost', 'eodpw', 'fvg', 'breakeven', 'inertia', 'inertiaH', 'squeeze'].includes(sg.status) && sg.pct >= 0) ? 'var(--gain)' : ['stop', 'trail', 'flip', 'vwap', 'ema', 'keltner', 'lost', 'eodpw', 'fvg', 'breakeven', 'inertia', 'inertiaH', 'squeeze'].includes(sg.status) ? 'var(--loss)' : 'var(--coach,#5b5bd6)';
       const sel = S.wwSel && S.wwSel.sym === d.symbol && S.wwSel.at === sg.at;
       const dl = (sg.dlog || []).map(([dd, c, ku, fl, rid]) => `${dd.slice(5)} close ${c}` + (ku != null ? ` · upper Keltner ${ku}${c > ku ? ' (above)' : rid ? ' (under: ride ends)' : ''}` : '') + (fl != null ? ` · flip ${fl}${c < fl ? (sg.aboveFlipAtEntry ? ' (under)' : ' (under, but the trade was entered under the flip: no flip exit)') : ''}` : ''));
       const why = sg.status === 'open' ? `Open since ${sg.at.replace('T', ' ').slice(5)} · stop ${sg.stop}${sg.v && d.curV && sg.v !== d.curV ? ' · computed with older settings (press Get walls to recompute)' : ''}\nDaily closes:\n${dl.join('\n')}` : `${sg.status} ${(sg.exitAt || '').replace('T', ' ').slice(5)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%\nDaily closes:\n${dl.join('\n')}`;
@@ -1541,7 +1554,7 @@ function fcSvg0(d, id, opts) {
         g += `<circle cx="${xp}" cy="${yp}" r="5.5" fill="var(--gain)" stroke="var(--surface)" stroke-width="1.5"><title>${esc(`Sold ${Math.round(sg.scaled.frac * 100)}% at ${sg.scaled.px} (${sg.scaled.at.replace('T', ' ').slice(5)}) · +${((sg.scaled.px / sg.entry - 1) * 100).toFixed(2)}%${sg.scaleBE ? ' · stop of the rest moved to the entry' : ''}`)}</title></circle>
           <text x="${xp + 7}" y="${yp - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--gain)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${Math.round(sg.scaled.frac * 100)}%</text>`; } }
       if (sg.status !== 'open' && i1 != null && sg.exit >= lo && sg.exit <= hi) { const y = Y(sg.exit);
-        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'inertiaH' ? 'Hourly inertia no longer green' : sg.status === 'inertia' ? 'Daily inertia exit (daily close)' : sg.status === 'breakeven' ? 'Rest stopped at the entry (after the partial sale)' : sg.status === 'fvg' ? 'New bearish FVG' : sg.status === 'eodpw' ? 'Entry day closed under the put wall' : sg.status === 'lost' ? `Passed the ${sg.lostLevel || 'level'}, the day closed back under it` : sg.status === 'keltner' ? 'Keltner ride ended: daily close back under the upper band' : sg.status === 'vwap' ? 'Hourly close under the VWAP' : sg.status === 'ema' ? 'Hourly close under the EMA' : sg.status === 'flip' ? 'Day closed under the gamma flip' : sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (${sg.kind === 'merged' ? 'call wall of the day − N × ATR' : 'highest high − N × 30-day ATR'})` : `Stop (${sg.kind === 'flip' ? 'flip' : sg.kind === 'merged' ? 'merged wall' : 'put wall'} − N × 30-day ATR) ${sg.stop ?? sg.pw}`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
+        g += `<rect x="${xb - 6}" y="${y - 6}" width="12" height="12" fill="${col}" stroke="var(--surface)" stroke-width="1.5"><title>${sg.status === 'squeeze' ? 'Squeeze momentum turned down' : sg.status === 'inertiaH' ? 'Hourly inertia no longer green' : sg.status === 'inertia' ? 'Daily inertia exit (daily close)' : sg.status === 'breakeven' ? 'Rest stopped at the entry (after the partial sale)' : sg.status === 'fvg' ? 'New bearish FVG' : sg.status === 'eodpw' ? 'Entry day closed under the put wall' : sg.status === 'lost' ? `Passed the ${sg.lostLevel || 'level'}, the day closed back under it` : sg.status === 'keltner' ? 'Keltner ride ended: daily close back under the upper band' : sg.status === 'vwap' ? 'Hourly close under the VWAP' : sg.status === 'ema' ? 'Hourly close under the EMA' : sg.status === 'flip' ? 'Day closed under the gamma flip' : sg.status === 'target' ? 'Target: call wall' : sg.status === 'trail' ? `Trailing stop ${sg.stop} (${sg.kind === 'merged' ? 'call wall of the day − N × ATR' : 'highest high − N × 30-day ATR'})` : `Stop (${sg.kind === 'flip' ? 'flip' : sg.kind === 'merged' ? 'merged wall' : 'put wall'} − N × 30-day ATR) ${sg.stop ?? sg.pw}`} ${esc((sg.exitAt || '').replace('T', ' ').slice(5))} at ${(+sg.exit).toFixed(2)} · ${sg.pct >= 0 ? '+' : ''}${sg.pct}%</title></rect>
           <text x="${xb + 8}" y="${y + 4}" font-size="${fs - 1}" font-weight="700" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.pct >= 0 ? '+' : ''}${sg.pct}%</text>`; }
     });
   }
@@ -2528,6 +2541,12 @@ const WW_RULES = [
   ['inNotRed', 'Entry', 'Daily inertia not red', 'Direction: at least one of the 3 daily inertias is rising (green or yellow)'],
   ['inhGreen', 'Entry', 'Hourly inertia green', 'The inertia of the hourly closes over the 3 lengths is rising on all of them at the entry candle (1D timeframe: at the day\'s last hourly candle)'],
   ['inhNotRed', 'Entry', 'Hourly inertia not red', 'At least one of the 3 hourly inertias is rising at the entry candle'],
+  ['sqhOn', 'Entry', 'Squeeze on (1h)', 'The hourly TTM squeeze is on at the entry candle: Bollinger bands inside the Keltner channel (coiled)'],
+  ['sqhFire', 'Entry', 'Squeeze fired up (1h)', 'The hourly squeeze turned off within the last N candles (Squeeze rows) and its momentum is above 0'],
+  ['sqhMom', 'Entry', 'Squeeze momentum up (1h)', 'Hourly squeeze momentum above 0 and rising'],
+  ['sqdOn', 'Entry', 'Squeeze on (daily)', 'The daily TTM squeeze is on (hourly timeframe: yesterday\'s daily candle; 1D: the entry day)'],
+  ['sqdFire', 'Entry', 'Squeeze fired up (daily)', 'The daily squeeze turned off within the last N days and its momentum is above 0'],
+  ['sqdMom', 'Entry', 'Squeeze momentum up (daily)', 'Daily squeeze momentum above 0 and rising'],
   ['kcdLower', 'Entry', 'Lower half daily KC', 'The entry candle closes in the lower half of the DAILY Keltner channel (at or under its middle line, the 21 EMA)'],
   ['kchLower', 'Entry', 'Lower half hourly KC', 'Entry fine tuning: the entry candle closes in the lower half of the HOURLY Keltner channel (at or under its middle line)'],
   ['orbAbove', 'Entry', 'Above ORB high', 'The entry candle closes above the opening range high (09:30–10:30 candle); no entry in the first hour'],
@@ -2548,6 +2567,8 @@ const WW_RULES = [
   ['scaleOn', 'Exit', 'Sell part at', 'Sell part of the position (contracts, at market; at least 1, never all) when price reaches the entry + this many R (R = entry − stop), the rest keeps the other exits', ['ww-scr', 'scaleR', 0.25, 3.2, 'R', 1], ['ww-scp', 'scalePct', 5, 3.2, '%', 50]],
   ['scaleBE', 'Exit', 'Rest to breakeven', 'After the partial sale, the stop of the rest moves up to the entry price'],
   ['inYExit', 'Exit', 'Inertia not green', 'Sell at the daily close when the daily inertia is no longer green (yellow or red)'],
+  ['sqhExit', 'Exit', 'Squeeze momentum down (1h)', 'Sell at the close of the first hourly candle where the hourly squeeze momentum falls'],
+  ['sqdExit', 'Exit', 'Squeeze momentum down (daily)', 'Sell at the daily close when the daily squeeze momentum falls'],
   ['inhYExit', 'Exit', 'Hourly inertia not green', 'Sell when the hourly inertia is no longer green (yellow or red): at that hourly close (1D timeframe: at the daily close)'],
   ['inRedExit', 'Exit', 'Inertia turns red', 'Sell at the daily close when all 3 daily inertias are falling (red)'],
   ['emaExit', 'Exit', 'Close under EMA', 'Sell when an hourly candle closes under the EMA (same length as the entry EMA)'],
@@ -2563,6 +2584,8 @@ const WW_IND = [
   ['fvg', 'Fair value gaps', 'fvg', [['fvgMin', 'min size', 0.05, 3.2, '× ATR', 0.2], ['fvgNear', 'margin', 0.05, 3.2, '× ATR', 0.25], ['fvgDays', 'max age', 1, 3, 'days', 10]], '3-candle gaps on hourly candles, until filled or expired', ['fvgOn', 'fvgExit']],
   ['inertia', 'Daily inertia', 'inertia', [['inN1', 'lengths', 1, 3.2, '', 70], ['inN2', '', 1, 3.2, '', 40], ['inN3', '', 1, 3.2, 'days', 20]], 'Direction from the daily closes: linear regression over 3 lengths; green = all rising, yellow = mixed, red = all falling (colored strip under the candles)', ['inGreen', 'inNotRed', 'inYExit', 'inRedExit']],
   ['inertiah', 'Hourly inertia', 'inertiah', [['inhN1', 'lengths', 1, 3.2, '', 70], ['inhN2', '', 1, 3.2, '', 40], ['inhN3', '', 1, 3.2, 'candles', 20]], 'The same regression on the hourly closes (lengths in hourly candles); thin strip above the daily one (1h chart view)', ['inhGreen', 'inhNotRed', 'inhYExit']],
+  ['sqzh', 'Squeeze hourly', 'sqz', [['sqhLen', 'length', 1, 3.2, '', 20], ['sqhBB', 'BB', 0.1, 3, '× SD', 2], ['sqhKC', 'KC', 0.1, 3, '× ATR', 1.5], ['sqFireN', 'fired within', 1, 3, 'candles', 3]], 'TTM squeeze on hourly candles: red dot = squeeze on (BB inside KC), green = off; strip at the bottom of the chart', ['sqhOn', 'sqhFire', 'sqhMom', 'sqhExit']],
+  ['sqzd', 'Squeeze daily', 'sqz', [['sqdLen', 'length', 1, 3.2, '', 20], ['sqdBB', 'BB', 0.1, 3, '× SD', 2], ['sqdKC', 'KC', 0.1, 3, '× ATR', 1.5]], 'TTM squeeze on daily candles (same dots, lower strip)', ['sqdOn', 'sqdFire', 'sqdMom', 'sqdExit']],
   ['dark', 'Dark pool', 'dark', [], 'Top dark pool price levels of the last 2 months', ['dpLost']],
   ['orb', 'Opening range', 'orb', [], 'High / low of the 09:30–10:30 candle', ['orbAbove']],
   ['spy', 'SPY trend', 'spy', [], 'SPY vs its close 6 sessions ago', ['spyUp']],
@@ -2590,9 +2613,9 @@ function wwRulePanel(vals, sw, mode, shown) {
     <details data-rulespanel ${S.rulesOpen !== false ? 'open' : ''} style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Entry &amp; exit rules</summary>
     <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">${grp('Entry')}${grp('Exit')}</div></details>`;
 }
-const LAB_ONLY = ['pwTest', 'inYExit', 'inhGreen', 'inhNotRed', 'inhYExit'];   // rules the live bot can't do yet: shown in the Strategy lab only
+const LAB_ONLY = ['pwTest', 'inYExit', 'inhGreen', 'inhNotRed', 'inhYExit', 'sqhOn', 'sqhFire', 'sqhMom', 'sqhExit', 'sqdOn', 'sqdFire', 'sqdMom', 'sqdExit'];   // rules the live bot can't do yet: shown in the Strategy lab only
 const WW_CORE = ['alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
-const WW_DEF_ON = { inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
+const WW_DEF_ON = { sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 try { S.rtUseLab = localStorage.getItem('rtUseLab') === '1'; } catch (e) { S.rtUseLab = false; }
 try { S.chartDaily = localStorage.getItem('chartDaily') === '1'; } catch (e) { S.chartDaily = false; }
@@ -2907,16 +2930,34 @@ async function loadOptSym(sym) {
   clearTimeout(S.optSymPoll);
   if (S.optSym[sym] && S.optSym[sym].running && route() === 'botchart') S.optSymPoll = setTimeout(() => loadOptSym(sym), 8000);
 }
+function optSymRun(sym) {
+  const d = S.fc[fcKey('ww-lab-' + sym)] || {};
+  const trades = (d.signals || []).map(x => ({ at: x.at, entry: x.entry, exitAt: x.exitAt, exit: x.status, R: x.R, pct: x.pct }));
+  if (!trades.length) return;
+  S.optSym[sym] = { ...(S.optSym[sym] || {}), running: 'now' }; if (route() === 'botchart') render();
+  api('/bot/lab/chartoptions', { method: 'POST', body: { t: sym, trades, ...optParams() } })
+    .then(() => { clearTimeout(S.optSymPoll); S.optSymPoll = setTimeout(() => loadOptSym(sym), 8000); })
+    .catch(err => { S.optSym[sym] = { error: err.message }; if (route() === 'botchart') render(); });
+}
 function optTag(sym, x) {                       // the call bought for this lab trade, on its button
   const o = ((S.optSym[sym] || {}).byAt || {})[x.at];
   if (!o) return '';
-  if (o.none) return ` <span class="muted" title="${esc(o.none)}">· no call</span>`;
-  return ` <span title="${esc(o.sym)} bought ${o.entry} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' '))} · best +${o.mfe}%" style="border-left:1px solid var(--line);padding-left:4px">${o.strike}C ${esc(o.exp.slice(5))} <b class="${o.pct > 0 ? 'gain' : o.pct < 0 ? 'loss' : ''}">${o.pct > 0 ? '+' : ''}${o.pct}%</b></span>`;
+  if (o.none) return ` <span class="muted" title="${esc(o.none)}">│ no call</span>`;
+  return ` <span title="${esc(o.sym)} bought ${o.entry} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' '))} · best +${o.mfe}%" style="border-left:1px solid var(--line);padding-left:4px;margin-left:2px">call ${o.strike} ${esc(o.exp.slice(5))} <b class="${o.pct > 0 ? 'gain' : o.pct < 0 ? 'loss' : ''}">${o.pct > 0 ? '+' : ''}${o.pct}%</b></span>`;
 }
 function optSymBox(sym, sigs, sel) {
   const r = S.optSym[sym];
   if (r === undefined) { S.optSym[sym] = null; setTimeout(() => loadOptSym(sym), 0); }
   const x = r || {}, P = optParams(), st = x.stats || {};
+  // automatic: price this ticker's trades as calls once they're loaded (again when the lab trades change)
+  const key = sym + '|' + sigs.map(s0 => s0.at).join(',') + '|' + JSON.stringify(P);
+  S.optAuto = S.optAuto || {};
+  if (r && !r.running && !r.error && sigs.length && !S.optAuto[key]) {
+    const have = x.byAt || {}, missing = sigs.filter(s0 => s0.at >= '2024-02-05' && !(s0.at in have)).length;
+    const pp = x.params || {}, same = ['dteMin', 'dteMax', 'money', 'tp', 'sl', 'slip'].every(k => +pp[k] === +P[k]) && !!pp.follow === !!P.follow;
+    S.optAuto[key] = true;
+    if (missing || !same) setTimeout(() => optSymRun(sym), 0);
+  }
   const pc = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${v}%</b>`;
   const o = sel && x.byAt ? x.byAt[sel.at] : null;
   const btn = `<button class="btn coachbtn" data-optsym="${esc(sym)}" ${x.running || !sigs.length ? 'disabled' : ''} style="font-size:.78rem;padding:1px 10px" title="Each of these trades bought as a real call: ${P.dteMin}–${P.dteMax} days, strike ${P.money}% from price, take profit ${P.tp}%, stop ${P.sl}%${P.follow ? ', sold on the stock exit' : ''}, slippage ${P.slip}% (set in the Option test section)">${x.running ? 'Pricing calls…' : x.byAt ? 'Re-price calls' : 'Buy calls for these trades'}</button>`;
@@ -2951,7 +2992,7 @@ function labTestBox() {
 function pvTrades(t) {
   if (!t) return '';
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
-  const EX = { target: 'call wall target', stop: 'stop', trail: 'trailing stop', flip: 'close under flip', vwap: 'close under VWAP', ema: 'close under EMA', keltner: 'Keltner ride ended', lost: 'back under level', eodpw: 'entry day closed under PW', fvg: 'new bearish FVG', breakeven: 'rest stopped at entry', inertia: 'inertia exit', inertiaH: 'hourly inertia exit', open: 'still open' };
+  const EX = { target: 'call wall target', stop: 'stop', trail: 'trailing stop', flip: 'close under flip', vwap: 'close under VWAP', ema: 'close under EMA', keltner: 'Keltner ride ended', lost: 'back under level', eodpw: 'entry day closed under PW', fvg: 'new bearish FVG', breakeven: 'rest stopped at entry', inertia: 'inertia exit', inertiaH: 'hourly inertia exit', squeeze: 'squeeze momentum down', open: 'still open' };
   if (!t.n) return '<h4 style="font-size:.9rem;margin:14px 0 4px">LONG signal traded with your exits</h4><p class="muted" style="font-size:.85rem">No trades.</p>';
   return `<h4 style="font-size:.9rem;margin:14px 0 4px">LONG signal traded with your exits</h4>
     <p class="muted" style="font-size:.82rem;margin:0 0 6px">Entry at the close of the reset candle · stop = put wall − stop ATR · target = call wall · same switches as the strategy (Keltner ride, close under flip, back under CW / dark pool…) · the entry day must close above the put wall, else sold at that close. One trade at a time per ticker.</p>
@@ -3505,10 +3546,7 @@ document.addEventListener('click', e => {
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }
   if (el.hasAttribute('data-labreset')) { S.lab = null; S.labDraft = {}; S.labSw = {}; S.labDirty = false; try { localStorage.removeItem('labCfg'); } catch (e) {} labRedraw(); return; }
-  if (el.dataset.optsym) { const sym = el.dataset.optsym, d = S.fc[fcKey('ww-lab-' + sym)] || {};
-    const trades = (d.signals || []).map(x => ({ at: x.at, entry: x.entry, exitAt: x.exitAt, exit: x.status, R: x.R, pct: x.pct }));
-    api('/bot/lab/chartoptions', { method: 'POST', body: { t: sym, trades, ...optParams() } }).then(() => { S.optSym[sym] = { ...(S.optSym[sym] || {}), running: 'now' }; render(); setTimeout(() => loadOptSym(sym), 8000); }).catch(err => toast(err.message));
-    return; }
+  if (el.dataset.optsym) { optSymRun(el.dataset.optsym); return; }
   if (el.hasAttribute('data-optshow')) { S.hideStats = false; S.fcfInfoH = null; try { localStorage.setItem('hideStats', '0'); } catch (e) {} render();
     setTimeout(() => { const h = document.getElementById('opt-test'); if (h) h.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 80); return; }
   if (el.hasAttribute('data-optrun')) {
