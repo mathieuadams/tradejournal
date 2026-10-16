@@ -705,27 +705,30 @@ def inertia_hourly(bars, ns=(70, 40, 20)):
 
 
 def squeeze(bars, n=20, bb=2.0, kc=1.5, fire_n=3):
-    """TTM squeeze per candle: {"on": BB inside KC, "fired": turned off within the last fire_n candles, "mom": momentum,
-    "up": momentum rising} or None. BB = SMA(n) +/- bb x stdev(n); KC = EMA(n) +/- kc x ATR (EMA(n) of the true range);
-    momentum = linear regression end value over n of close - ((highest high + lowest low) / 2 + SMA(n)) / 2."""
+    """TTM squeeze per candle, as thinkorswim's TTM_Squeeze computes it: {"on": BB inside KC, "fired": turned off within
+    the last fire_n candles, "mom": momentum, "up": momentum rising} or None.
+    BB = SMA(n) +/- bb x stdev(n); KC = SMA(n) +/- kc x SMA(n) of the true range (TOS KeltnerChannels, simple averages);
+    squeeze on = upper BB under the upper KC. Momentum = linear regression end value (Inertia) over n of
+    close - ((highest high + lowest low) / 2 + EMA(n) of the close) / 2."""
     N = len(bars)
     cl = [b["c"] for b in bars]
     tr = [max(b["h"] - b["l"], abs(b["h"] - bars[i - 1]["c"]), abs(b["l"] - bars[i - 1]["c"])) if i else b["h"] - b["l"]
           for i, b in enumerate(bars)]
-    em, ra = _ema_series(cl, n), _ema_series(tr, n)
+    em = _ema_series(cl, n)
     on, dev = [None] * N, [None] * N
     for i in range(n - 1, N):
         w = cl[i - n + 1:i + 1]
         m = sum(w) / n
         sd = (sum((x - m) ** 2 for x in w) / n) ** 0.5
-        if em[i] is not None and ra[i] is not None:
-            on[i] = (m + bb * sd) < (em[i] + kc * ra[i]) and (m - bb * sd) > (em[i] - kc * ra[i])
-        hh = max(b["h"] for b in bars[i - n + 1:i + 1])
-        ll = min(b["l"] for b in bars[i - n + 1:i + 1])
-        dev[i] = cl[i] - ((hh + ll) / 2 + m) / 2
+        atr_ = sum(tr[i - n + 1:i + 1]) / n
+        on[i] = (m + bb * sd) < (m + kc * atr_)
+        if em[i] is not None:
+            hh = max(b["h"] for b in bars[i - n + 1:i + 1])
+            ll = min(b["l"] for b in bars[i - n + 1:i + 1])
+            dev[i] = cl[i] - ((hh + ll) / 2 + em[i]) / 2
     out = [None] * N
     for i in range(N):
-        if on[i] is None or i < 2 * n - 2:
+        if on[i] is None or i < n - 1 or any(v is None for v in dev[i - n + 1:i + 1]):
             continue
         mom = _linreg_end(dev[i - n + 1:i + 1])
         prev = out[i - 1]["mom"] if out[i - 1] else None
