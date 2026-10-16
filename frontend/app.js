@@ -1604,6 +1604,24 @@ async function loadTickers() {
 }
 S.fcfMode = 'ww';                         // the Chart tab shows the wall watch list only
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
+function wwReviewBox() {
+  const r = S.wwRev;
+  if (!r) return '';
+  if (r.error) return `<div class="loss" style="font-size:.75rem;padding:2px 6px">${esc(r.error)}</div>`;
+  const bad = r.rows.filter(x => x.verdict === 'exit' || x.verdict === 'no entry');
+  const col = { exit: 'var(--loss)', 'no entry': 'var(--warn,#d97706)', keep: 'var(--gain)', unknown: 'var(--muted)' };
+  const lbl = { exit: 'current exits: out', 'no entry': 'would not enter now', keep: 'fits', unknown: '?' };
+  return `<div style="font-size:.74rem;padding:2px 6px 6px;border-bottom:1px solid var(--line)">
+    <div class="muted" style="margin-bottom:3px">Checked ${esc((r.at || '').slice(11, 16))} · ${r.rows.length} open · ${bad.length} don't fit${bad.length ? ` <button class="btn" data-wwrevcloseall style="font-size:.7rem;padding:0 6px;margin-left:4px">Close all ${bad.length}</button>` : ''} <button class="btn" data-wwrevhide style="font-size:.7rem;padding:0 5px">✕</button></div>
+    ${r.rows.map(x => `<div style="display:flex;gap:4px;align-items:flex-start;padding:2px 0;border-top:1px dashed var(--line)"><div style="flex:1"><b>${esc(x.symbol)}</b> <b style="color:${col[x.verdict]}">${lbl[x.verdict]}</b>
+      ${x.plPct != null ? ` <span class="${x.plPct >= 0 ? 'gain' : 'loss'}">${x.plPct >= 0 ? '+' : ''}${x.plPct}%</span>` : ''}<br><span class="muted">${x.exitNow ? `${esc(x.exitNow.status)} ${esc((x.exitNow.at || '').replace('T', ' ').slice(5))} at ${x.exitNow.px}` : ''}${x.earnings ? esc(x.earnings) : ''}${(x.why || []).length ? esc(x.why.join(' · ')) : ''}${x.verdict === 'keep' && x.stopNow ? `stop now ${x.stopNow}${x.targetNow ? ` · target ${x.targetNow}` : ''}` : ''}</span></div>
+      ${x.verdict === 'exit' || x.verdict === 'no entry' ? `<button class="btn" data-botclose="${esc(x.id)}" style="font-size:.7rem;padding:0 6px">Close</button>` : ''}</div>`).join('')}</div>`;
+}
+async function wwReview() {
+  S.wwRevBusy = true; render();
+  try { S.wwRev = await api('/bot/wallwatch/review', { method: 'POST' }); } catch (e) { S.wwRev = { error: e.message }; }
+  S.wwRevBusy = false; render();
+}
 function wlPut(body, msg) {
   api('/bot/wallwatch', { method: 'PUT', body }).then(r => { S.ww = { ...(S.ww || {}), ...r }; S.wwSw = null; toast(msg); render(); }).catch(err => toast(err.message));
 }
@@ -1691,7 +1709,9 @@ function vChartWW() {
         <select id="ww-addlist" style="max-width:7.5em;margin:6px 0" aria-label="To list">${(((S.ww && S.ww.config && S.ww.config.lists) || [{ name: 'Main' }])).map(L => `<option ${L.name === (S.wlAddTo || 'Main') ? 'selected' : ''}>${esc(L.name)}</option>`).join('')}</select>
         <button class="btn" type="submit" style="padding:2px 8px;margin:6px 0">Add</button><button class="btn" type="button" data-wlnew style="padding:2px 8px;margin:6px 6px 6px 0" title="Create a new watchlist">+ List</button></form>
       ${(() => { const ps = (S.ww && S.ww.positions) || []; if (!ps.length) return '';
-        return `<div class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin:6px 2px 4px">Current positions (${ps.length})</div>
+        return `<div style="display:flex;align-items:center;gap:6px;margin:6px 2px 4px"><span class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;flex:1">Current positions (${ps.length})</span>
+          <button class="btn coachbtn" data-wwreview ${S.wwRevBusy ? 'disabled' : ''} style="font-size:.7rem;padding:1px 7px" title="Replay every open wall watch trade with the CURRENT settings: would the entry rules take it, would the exits have closed it already">${S.wwRevBusy ? 'Checking…' : 'Check vs settings'}</button></div>
+        ${wwReviewBox()}
         <ul class="fcf-list" style="margin-bottom:8px;border-bottom:2px solid var(--line)">${ps.map(p0 => `<li data-sym="${esc(p0.symbol)}"><a href="#botchart?t=${encodeURIComponent(p0.symbol)}" ${p0.symbol === sym ? 'aria-current="true"' : ''}>
           <span><b>${esc(p0.symbol)}</b> <span class="muted" style="font-size:.75rem">${p0.strike ? esc(String(p0.strike)) + 'C' : ''} ${esc((p0.exp || '').slice(5))}</span><br><span class="muted" style="font-size:.75rem">${p0.qty ?? ''}× @${p0.fill ?? p0.limit ?? '—'}${p0.status !== 'open' ? ' · ' + esc(p0.status) : ''}</span></span>
           <span style="text-align:right"><b class="${(p0.plPct || 0) >= 0 ? 'gain' : 'loss'}" style="font-size:.85rem">${p0.plPct != null ? (p0.plPct >= 0 ? '+' : '') + p0.plPct + '%' : '—'}</b><br><span class="muted" style="font-size:.72rem">${p0.pl != null ? money(p0.pl) : ''}</span></span></a></li>`).join('')}</ul>
@@ -3488,7 +3508,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3567,6 +3587,14 @@ document.addEventListener('click', e => {
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }
   if (el.dataset.wltoggle) { S.wlClosed = { ...(S.wlClosed || {}), [el.dataset.wltoggle]: !(S.wlClosed || {})[el.dataset.wltoggle] }; try { localStorage.setItem('wlClosed', JSON.stringify(S.wlClosed)); } catch (x) {} render(); return; }
+  if (el.hasAttribute('data-wwreview')) { wwReview(); return; }
+  if (el.hasAttribute('data-wwrevhide')) { S.wwRev = null; render(); return; }
+  if (el.hasAttribute('data-wwrevcloseall')) {
+    const bad = ((S.wwRev || {}).rows || []).filter(x => x.verdict === 'exit' || x.verdict === 'no entry');
+    if (!bad.length || !confirm(`Close ${bad.length} paper position${bad.length > 1 ? 's' : ''} at market (${bad.map(x => x.symbol).join(', ')})?`)) return;
+    Promise.all(bad.map(x => api(`/bot/${x.id}/close`, { method: 'POST' }).catch(err => toast(`${x.symbol}: ${err.message}`))))
+      .then(async () => { toast('Close orders sent'); S.wwRev = null; await loadWatch(); render(); });
+    return; }
   if (el.hasAttribute('data-wlnew')) { const nm = (prompt('Name of the new watchlist') || '').trim(); if (!nm) return; wlPut({ newList: nm }, `List ${nm} created`); return; }
   if (el.dataset.wldel) { if (!confirm(`Delete the list ${el.dataset.wldel}? Its tickers stop being scanned unless they are in another list.`)) return; wlPut({ deleteList: el.dataset.wldel }, 'List deleted'); return; }
   if (el.dataset.wlren) { const nm = (prompt('New name', el.dataset.wlren) || '').trim(); if (!nm) return; wlPut({ renameList: el.dataset.wlren, to: nm }, 'List renamed'); return; }

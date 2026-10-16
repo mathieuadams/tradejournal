@@ -980,6 +980,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     spy = extra.get("spy") or {}
     skp = extra.get("skewPct") or {}
     dplv = extra.get("dpLevels") or {}                  # {date: top dark pool level prices known before that day}
+    force = extra.get("force")                          # {"at", "level", "levelName"}: replay the exits of a given entry
     misses = extra.get("misses")                        # optional list: candles at the support that didn't enter, and why
     seen_miss = set()
 
@@ -1082,6 +1083,13 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                   sqh=sqh[i] if sqh else None, sqd=sqd_x[i] if sqd_x else None)
             if open_["status"] != "open":
                 open_ = None
+            continue
+        if force is not None:                          # review: the entry is given, only the exits run (current settings)
+            if not sigs and b["t"][:16] == force["at"]:
+                s = mk(i, b, walls.get(day) or {}, float(force.get("level") or b["l"]), force.get("levelName") or "level", a_,
+                       {"armedAt": None, "armPremium": 0}, day)
+                sigs.append(s)
+                open_ = s
             continue
         w = walls.get(day) or {}
         if arm:                                        # call flow (new or again): the support is the level at / under price
@@ -1722,6 +1730,60 @@ def enter(sub, sym, sg):
     except Exception as e:
         db.update(pk, sk, {"tradeError": str(e)[:160]})
         return {"symbol": sym, "error": str(e)[:160]}
+
+
+def review_open(sub):
+    """Open wall watch positions checked against the CURRENT settings: would today's entry rules have taken the trade,
+    and would today's exits have closed it already (its entry replayed with the current exits)?"""
+    import autotrader
+    import backtest
+    from concurrent.futures import ThreadPoolExecutor
+    cfg = config(sub)
+    try:
+        bcfg = autotrader.settings(sub)
+    except Exception:
+        bcfg = {}
+    recs = [r for r in db.q_prefix(db.upk(sub), "BOT#") if r.get("status") in ("submitted", "open")
+            and (r.get("proposal") or {}).get("wallwatch")]
+    now = now_ny().replace(tzinfo=None)
+
+    def one(r):
+        p = r["proposal"]
+        ww, sym = p["wallwatch"], r["symbol"]
+        at = str(ww.get("signalAt") or "")[:16]
+        row = {"id": r.get("id"), "symbol": sym, "contract": p.get("contract"), "plPct": r.get("lastPlPct"), "at": at,
+               "status": r.get("status")}
+        try:
+            days = max(10, (now - datetime.strptime(at[:10], "%Y-%m-%d")).days) + 70
+            d = backtest._ticker_data(sub, sym, days, cfg, False)
+            if not d:
+                return {**row, "verdict": "unknown", "why": ["no market data"]}
+            misses = []
+            sigs, _ = detect_retest(d["bars"], d["walls"], at[:10], cfg, d["datr"], d["alerts"], None, d["vmap"], d["emap"],
+                                    {**d["extra"], "misses": misses})
+            entry_ok = any(x["at"] == at for x in sigs)
+            why = [m["r"] for m in misses if m["t"][:16] == at] or [m["r"] for m in misses if m["t"][:10] == at[:10]][:2]
+            if not entry_ok and not why:
+                why = ["not a signal with the current entry rules"]
+            fs, _ = detect_retest(d["bars"], d["walls"], None, cfg, d["datr"], d["alerts"], None, d["vmap"], d["emap"],
+                                  {**d["extra"], "force": {"at": at, "level": ww.get("level"), "levelName": "support"}})
+            f = fs[0] if fs else None
+            ex = {"status": f["status"], "at": f.get("exitAt"), "px": f.get("exit"), "pct": f.get("pct")} if f and f["status"] != "open" else None
+            earn = None
+            if cfg.get("earnExit", True) and bcfg:
+                due, why_e = autotrader.earnings_exit_due(autotrader.earn_for(bcfg, sym)[0])
+                earn = why_e if due else None
+            verdict = "exit" if (ex or earn) else "keep" if entry_ok else "no entry"
+            return {**row, "verdict": verdict, "entryOk": entry_ok, "why": [] if entry_ok else why[:3], "exitNow": ex, "earnings": earn,
+                    "stopNow": f.get("stop") if f else None, "targetNow": f.get("target") if f else None,
+                    "last": f.get("last") if f else None}
+        except Exception as e:
+            return {**row, "verdict": "unknown", "why": [str(e)[:120]]}
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        rows = list(pool.map(one, recs))
+    rows.sort(key=lambda x: {"exit": 0, "no entry": 1, "unknown": 2, "keep": 3}.get(x["verdict"], 4))
+    return {"at": iso(now_ny()), "rows": rows}
 
 
 def trades_for(sub, sym):

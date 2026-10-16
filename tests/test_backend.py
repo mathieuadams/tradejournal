@@ -3167,6 +3167,47 @@ def test_watchlists():
         flowdata.alerts, autotrader.settings = saved
 
 
+def test_review_open_positions():
+    """Open wall watch trades replayed with the current settings: entry rules + exits (the entry forced)."""
+    import wallwatch, charts, flowdata, backtest, math
+    import datetime as dt
+    import db as db_
+    from util import now_ny
+    today = now_ny().date()
+    days, d = [], today - dt.timedelta(days=120)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    hb = []
+    for day in days:
+        for h in ("09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"):
+            k = len(hb); px = 100 + 4 * math.sin(k / 15.0)
+            hb.append({"t": f"{day}T{h}", "o": px - .1, "h": px + .3, "l": px - .3, "c": px, "v": 1000})
+    at = hb[-60]["t"]
+    w = {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
+    # forced entry: exits replayed with the current settings
+    fs, _ = wallwatch.detect_retest(hb, w, None, {"alertReq": False, "stopAtr": 0.1, "trailOn": False}, None, None, None, None, None,
+                                    {"force": {"at": at, "level": hb[-60]["l"], "levelName": "support"}})
+    assert len(fs) == 1 and fs[0]["at"] == at
+    saved = (charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else [{"t": f"{x}T09:30", "o": 100, "h": 104, "l": 96, "c": 100, "v": 1} for x in days]
+        flowdata.stored_walls = lambda sym: w
+        backtest.stored_alerts = lambda sub_, sym: []
+        backtest.stored_darkpool = lambda sym: []
+        wallwatch.save_config("rev-user", {"alertReq": False, "earnExit": False})
+        db_.put({"PK": db_.upk("rev-user"), "SK": "BOT#b1", "id": "b1", "symbol": "AAA", "status": "open", "lastPlPct": 12.0,
+                 "proposal": {"contract": "AAA261120C00100000", "wallwatch": {"signalAt": at, "level": 98, "entry": hb[-60]["c"]}}})
+        r = wallwatch.review_open("rev-user")
+        assert len(r["rows"]) == 1
+        x = r["rows"][0]
+        assert x["verdict"] in ("keep", "exit", "no entry") and "entryOk" in x, x
+        assert (x["verdict"] == "exit") == bool(x["exitNow"] or x["earnings"])
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

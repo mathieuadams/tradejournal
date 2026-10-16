@@ -427,6 +427,12 @@ def bot_wallwatch(sub, claims, body, q):
     return wallwatch.view(sub)
 
 
+@route("POST", "/bot/wallwatch/review")
+def bot_wallwatch_review(sub, claims, body, q):
+    import wallwatch
+    return wallwatch.review_open(sub)
+
+
 @route("PUT", "/bot/wallwatch")
 def bot_wallwatch_save(sub, claims, body, q):
     import wallwatch
