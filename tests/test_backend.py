@@ -3204,6 +3204,24 @@ def test_review_open_positions():
         x = r["rows"][0]
         assert x["verdict"] in ("keep", "exit", "no entry") and "entryOk" in x, x
         assert (x["verdict"] == "exit") == bool(x["exitNow"] or x["earnings"])
+        import autotrader
+        closed, sv = [], autotrader.close
+        autotrader.close = lambda sub_, bid, reason="manual": closed.append((bid, reason))
+        try:
+            r2 = wallwatch.review_open("rev-user", auto_close=True)
+        finally:
+            autotrader.close = sv
+        bad = r2["rows"][0]["verdict"] in ("exit", "no entry")
+        assert (closed and closed[0][0] == "b1" and r2["rows"][0]["closed"]) if bad else not closed
+        import autotrader
+        closed, sv = [], autotrader.close
+        autotrader.close = lambda sub_, bid, reason="manual": closed.append((bid, reason))
+        try:
+            r2 = wallwatch.review_open("rev-user", auto_close=True)
+        finally:
+            autotrader.close = sv
+        bad = r2["rows"][0]["verdict"] in ("exit", "no entry")
+        assert (closed and closed[0][0] == "b1" and r2["rows"][0]["closed"]) if bad else not closed
     finally:
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
 

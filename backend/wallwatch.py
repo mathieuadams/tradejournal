@@ -1732,7 +1732,7 @@ def enter(sub, sym, sg):
         return {"symbol": sym, "error": str(e)[:160]}
 
 
-def review_open(sub):
+def review_open(sub, auto_close=False):
     """Open wall watch positions checked against the CURRENT settings: would today's entry rules have taken the trade,
     and would today's exits have closed it already (its entry replayed with the current exits)?"""
     import autotrader
@@ -1743,7 +1743,7 @@ def review_open(sub):
         bcfg = autotrader.settings(sub)
     except Exception:
         bcfg = {}
-    recs = [r for r in db.q_prefix(db.upk(sub), "BOT#") if r.get("status") in ("submitted", "open")
+    recs = [r for r in db.q_prefix(db.upk(sub), "BOT#") if r.get("status") in ("submitted", "open", "closing")
             and (r.get("proposal") or {}).get("wallwatch")]
     now = now_ny().replace(tzinfo=None)
 
@@ -1783,7 +1783,18 @@ def review_open(sub):
     with ThreadPoolExecutor(max_workers=6) as pool:
         rows = list(pool.map(one, recs))
     rows.sort(key=lambda x: {"exit": 0, "no entry": 1, "unknown": 2, "keep": 3}.get(x["verdict"], 4))
-    return {"at": iso(now_ny()), "rows": rows}
+    if auto_close:                                     # positions that don't fit the current settings: sold at market
+        for x in rows:
+            if x["verdict"] not in ("exit", "no entry"):
+                continue
+            why = (f"current settings: {x['exitNow']['status']} exit {(x['exitNow'].get('at') or '').replace('T', ' ')}" if x.get("exitNow")
+                   else x.get("earnings") or "current settings: " + "; ".join(x.get("why") or ["would not enter"]))
+            try:
+                autotrader.close(sub, x["id"], why[:200])
+                x["closed"] = True
+            except Exception as e:
+                x["closeError"] = str(e)[:120]
+    return {"at": iso(now_ny()), "rows": rows, "autoClose": bool(auto_close)}
 
 
 def trades_for(sub, sym):

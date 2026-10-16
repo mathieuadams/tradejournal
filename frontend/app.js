@@ -1333,9 +1333,11 @@ function fcSvg0(d, id, opts) {
   const dp = LY.dark ? S.fcDp[fcKey(id)] : null;
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
-  const W = full ? opts.W : narrow ? 560 : 960, PH = full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340;
+  const SH = LY.sqz && ((d.sqzH || []).length || (d.sqzD || []).length) && !(opts && opts.noAcc) ? (full ? Math.max(80, Math.round(opts.H * 0.18)) : narrow ? 110 : 80) : 0;
+  const W = full ? opts.W : narrow ? 560 : 960, PH = (full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340) - (SH ? SH + 10 : 0);
   const L = 8, Rr = narrow ? 72 : full ? 64 : 58, T = 16, B = PH - (narrow ? 44 : 40);
-  const H = PH + (AH ? AH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
+  const H = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
+  const ST = PH + (AH ? AH + 10 : 0) + 6, SB = ST + SH - 6, XB = SH ? SB : AB;   // squeeze momentum pane (bottom)
   const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
   const walls = LY.walls ? (d.walls || []).filter(w => w.callWall != null || w.src === 'gap') : [];
   const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
@@ -1442,19 +1444,6 @@ function fcSvg0(d, id, opts) {
     const col = { G: '#16a34a', Y: '#eab308', R: '#dc2626' }, nm = { G: 'green: all 3 rising', Y: 'yellow: mixed', R: 'red: all 3 falling' };
     bars.forEach((b, i) => { const x = im[b.t]; if (!x) return;
       g += `<rect x="${X(i) - (W - L - Rr) / n / 2}" y="${B - 4}" width="${Math.max(1, (W - L - Rr) / n)}" height="4" fill="${col[x.s]}" opacity=".85"><title>${esc(b.t.replace('T', ' ').slice(5))} · daily inertia ${nm[x.s]} · regime points ${x.pts}</title></rect>`; });
-  }
-  if (LY.sqz && ((d.sqzH || []).length || (d.sqzD || []).length)) {   // TTM squeeze dots: red = on, green = off (ring = just fired)
-    const tip = (x, tf) => `${tf} squeeze ${x.on ? 'ON (coiled)' : 'off'}${x.f ? ' · fired' : ''} · momentum ${x.m} ${x.u ? 'rising' : 'falling'}`;
-    const cw = Math.max(1, (W - L - Rr) / n), rr = Math.max(1, Math.min(2.2, cw / 2.5));
-    const dot = (i, x, y, tf) => `<circle cx="${X(i)}" cy="${y}" r="${rr}" fill="${x.on ? '#dc2626' : '#16a34a'}" ${x.f && !x.on ? 'stroke="#16a34a" stroke-width="1.2" fill-opacity=".3"' : ''} opacity=".85"><title>${esc(tf)} · ${esc(tip(x, tf))}</title></circle>`;
-    const dm = {}; (d.sqzD || []).forEach(x => { dm[x.t.slice(0, 10)] = x; });
-    if (d.daily) bars.forEach((b, i) => { const x = dm[b.t.slice(0, 10)]; if (x) g += dot(i, x, B - 13, 'Daily ' + b.t.slice(5, 10)); });
-    else {
-      const hm = {}; (d.sqzH || []).forEach(x => { hm[x.t] = x; });
-      bars.forEach((b, i) => { const x = hm[b.t]; if (x) g += dot(i, x, B - 13, 'Hourly ' + b.t.replace('T', ' ').slice(5)); });
-      bars.forEach((b, i) => { const x = dm[b.t.slice(0, 10)]; if (x && (i === 0 || bars[i - 1].t.slice(0, 10) !== b.t.slice(0, 10)))
-        g += `<rect x="${X(i) - cw / 2}" y="${B - 19}" width="${cw * bars.filter(q => q.t.slice(0, 10) === b.t.slice(0, 10)).length}" height="2.5" fill="${x.on ? '#dc2626' : '#16a34a'}" opacity=".55"><title>Daily ${esc(b.t.slice(5, 10))} · ${esc(tip(x, 'Daily'))}</title></rect>`; });
-    }
   }
   if (LY.inertiah && !d.daily && (d.inertiaH || []).length) {     // hourly inertia regime: a thin strip above the daily one
     const im = {}; d.inertiaH.forEach(x => { im[x.t] = x; });
@@ -1580,6 +1569,22 @@ function fcSvg0(d, id, opts) {
   const yc = AY(cAcc[n - 1]), yp = AY(pAcc[n - 1]), clash = Math.abs(yc - yp) < fs;
   g += `<text x="${W - Rr + 6}" y="${(clash && yc >= yp ? yc + fs : yc) + 4}" font-size="${fs}" fill="var(--gain)">${km(cAcc[n - 1])}</text><text x="${W - Rr + 6}" y="${(clash && yp > yc ? yp + fs : yp) + 4}" font-size="${fs}" fill="var(--loss)">${km(pAcc[n - 1])}</text>`;
   }
+  if (SH) {                                            // TTM squeeze: momentum histogram + squeeze dots on the zero line
+    const daily = !!d.daily, src = daily ? (d.sqzD || []) : (d.sqzH || []), mp = {};
+    src.forEach(x => { mp[daily ? x.t.slice(0, 10) : x.t] = x; });
+    const get = b => mp[daily ? b.t.slice(0, 10) : b.t];
+    const dm = {}; (d.sqzD || []).forEach(x => { dm[x.t.slice(0, 10)] = x; });
+    const vals = bars.map(get).filter(Boolean).map(x => Math.abs(x.m)), mx = Math.max(1e-9, ...vals);
+    const Z = (ST + 14 + SB) / 2, MY = v => Z - v / mx * ((SB - ST - 14) / 2), cw = Math.max(1, (W - L - Rr) / n), hw = Math.max(1, cw * 0.7);
+    g += `<line x1="${L}" x2="${W - Rr}" y1="${SB}" y2="${SB}" stroke="var(--line)"/><line x1="${L}" x2="${W - Rr}" y1="${Z}" y2="${Z}" stroke="var(--line)"/>`
+      + `<text x="${L + 2}" y="${ST + 10}" font-size="${fs}" fill="var(--muted)">Squeeze ${daily ? 'daily' : '1h'} momentum · dots: red = squeeze on, green = off${daily ? '' : ' · top strip: daily squeeze'}</text>`;
+    bars.forEach((b, i) => { const x = get(b); if (!x) return;
+      const col = x.m >= 0 ? (x.u ? '#06b6d4' : '#1d4ed8') : (x.u ? '#eab308' : '#dc2626'), y = MY(x.m);
+      g += `<rect x="${X(i) - hw / 2}" y="${Math.min(y, Z)}" width="${hw}" height="${Math.max(1, Math.abs(y - Z))}" fill="${col}"><title>${esc(b.t.replace('T', ' ').slice(5))} · squeeze ${x.on ? 'ON' : 'off'}${x.f ? ' · fired' : ''} · momentum ${x.m} ${x.u ? 'rising' : 'falling'}</title></rect>`
+        + `<circle cx="${X(i)}" cy="${Z}" r="${Math.max(1.2, Math.min(2.4, cw / 2.6))}" fill="${x.on ? '#dc2626' : '#16a34a'}"/>`; });
+    if (!daily) bars.forEach((b, i) => { const x = dm[b.t.slice(0, 10)]; if (x) g += `<rect x="${X(i) - cw / 2}" y="${ST + 13}" width="${cw}" height="3" fill="${x.on ? '#dc2626' : '#16a34a'}" opacity=".6"/>`; });
+    g += `<text x="${W - Rr + 6}" y="${MY(mx) + 8}" font-size="${fs - 1}" fill="var(--muted)">+${+mx.toPrecision(3)}</text><text x="${W - Rr + 6}" y="${Z + 4}" font-size="${fs - 1}" fill="var(--muted)">0</text>`;
+  }
   if (LY.pwv !== false && (d.pwVwap || []).length) {  // VWAP reset candle touching the put wall: highlighted on top of everything
     d.pwVwap.forEach(e => { const i = idx[e.t]; if (i == null) return;
       const sh = e.side === 'short', lv = sh ? e.cw : e.pw, x = X(i), c = sh ? '#dc2626' : '#16a34a', cw = Math.max(6, bw + 4);
@@ -1590,7 +1595,7 @@ function fcSvg0(d, id, opts) {
       g += `<path d="M${x},${yl - 8} L${x + 7},${yl} L${x},${yl + 8} L${x - 7},${yl} Z" fill="${c}" stroke="var(--surface)" stroke-width="1.5"/>`;
       g += `<text x="${x}" y="${sh ? Math.max(T + 2, yl - 12) : Math.min(B + 12, yl + 20)}" text-anchor="middle" font-size="${fs - 1}" font-weight="700" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sh ? 'SHORT' : 'LONG'}</text></g>`; });
   }
-  g += `<line class="fc-xh" x1="0" x2="0" y1="${T}" y2="${AB}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" style="display:none;pointer-events:none"/>
+  g += `<line class="fc-xh" x1="0" x2="0" y1="${T}" y2="${XB}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" style="display:none;pointer-events:none"/>
     <text class="fc-ohlc" x="${L + 4}" y="${T + 13}" font-size="${fs}" fill="var(--ink)" paint-order="stroke" stroke="var(--surface)" stroke-width="4" style="pointer-events:none"></text>`;
   g += `<rect class="fcz-sel" x="0" y="${T}" width="0" height="${AB - T}" fill="var(--coach,#5b5bd6)" fill-opacity=".12" stroke="var(--coach,#5b5bd6)" stroke-width="1" style="display:none;pointer-events:none"/>`;
   return `<svg viewBox="0 0 ${W} ${H}" data-fcz="${esc(id)}" data-l="${L}" data-pw="${W - L - Rr}" data-a="${za}" data-n="${n}" data-all="${all.length}" data-vw="${W}" style="${full ? `width:${W}px;height:${H}px` : 'width:100%;height:auto'};display:block;touch-action:pan-y;cursor:crosshair;user-select:none" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
@@ -1612,15 +1617,18 @@ function wwReviewBox() {
   const col = { exit: 'var(--loss)', 'no entry': 'var(--warn,#d97706)', keep: 'var(--gain)', unknown: 'var(--muted)' };
   const lbl = { exit: 'current exits: out', 'no entry': 'would not enter now', keep: 'fits', unknown: '?' };
   return `<div style="font-size:.74rem;padding:2px 6px 6px;border-bottom:1px solid var(--line)">
-    <div class="muted" style="margin-bottom:3px">Checked ${esc((r.at || '').slice(11, 16))} · ${r.rows.length} open · ${bad.length} don't fit${bad.length ? ` <button class="btn" data-wwrevcloseall style="font-size:.7rem;padding:0 6px;margin-left:4px">Close all ${bad.length}</button>` : ''} <button class="btn" data-wwrevhide style="font-size:.7rem;padding:0 5px">✕</button></div>
+    <div class="muted" style="margin-bottom:3px">Checked ${esc((r.at || '').slice(11, 16))} · ${r.rows.length} open · ${bad.length} don't fit${bad.filter(x => x.closed).length ? ` · ${bad.filter(x => x.closed).length} closed` : ''} <button class="btn" data-wwrevhide style="font-size:.7rem;padding:0 5px">✕</button></div>
     ${r.rows.map(x => `<div style="display:flex;gap:4px;align-items:flex-start;padding:2px 0;border-top:1px dashed var(--line)"><div style="flex:1"><b>${esc(x.symbol)}</b> <b style="color:${col[x.verdict]}">${lbl[x.verdict]}</b>
       ${x.plPct != null ? ` <span class="${x.plPct >= 0 ? 'gain' : 'loss'}">${x.plPct >= 0 ? '+' : ''}${x.plPct}%</span>` : ''}<br><span class="muted">${x.exitNow ? `${esc(x.exitNow.status)} ${esc((x.exitNow.at || '').replace('T', ' ').slice(5))} at ${x.exitNow.px}` : ''}${x.earnings ? esc(x.earnings) : ''}${(x.why || []).length ? esc(x.why.join(' · ')) : ''}${x.verdict === 'keep' && x.stopNow ? `stop now ${x.stopNow}${x.targetNow ? ` · target ${x.targetNow}` : ''}` : ''}</span></div>
-      ${x.verdict === 'exit' || x.verdict === 'no entry' ? `<button class="btn" data-botclose="${esc(x.id)}" style="font-size:.7rem;padding:0 6px">Close</button>` : ''}</div>`).join('')}</div>`;
+      ${x.closed ? '<b class="loss" style="font-size:.7rem">closed</b>' : x.closeError ? `<span class="loss" title="${esc(x.closeError)}">close failed</span> <button class="btn" data-botclose="${esc(x.id)}" style="font-size:.7rem;padding:0 6px">Retry</button>` : ''}</div>`).join('')}</div>`;
 }
 async function wwReview() {
   S.wwRevBusy = true; render();
-  try { S.wwRev = await api('/bot/wallwatch/review', { method: 'POST' }); } catch (e) { S.wwRev = { error: e.message }; }
-  S.wwRevBusy = false; render();
+  try { S.wwRev = await api('/bot/wallwatch/review', { method: 'POST', body: { close: true } }); } catch (e) { S.wwRev = { error: e.message }; }
+  S.wwRevBusy = false;
+  const n = ((S.wwRev || {}).rows || []).filter(x => x.closed).length;
+  if (n) { toast(`${n} position${n > 1 ? 's' : ''} closed: not fitting the current settings`); try { await loadWatch(); } catch (e) {} }
+  render();
 }
 function wlPut(body, msg) {
   api('/bot/wallwatch', { method: 'PUT', body }).then(r => { S.ww = { ...(S.ww || {}), ...r }; S.wwSw = null; toast(msg); render(); }).catch(err => toast(err.message));
@@ -1710,7 +1718,7 @@ function vChartWW() {
         <button class="btn" type="submit" style="padding:2px 8px;margin:6px 0">Add</button><button class="btn" type="button" data-wlnew style="padding:2px 8px;margin:6px 6px 6px 0" title="Create a new watchlist">+ List</button></form>
       ${(() => { const ps = (S.ww && S.ww.positions) || []; if (!ps.length) return '';
         return `<div style="display:flex;align-items:center;gap:6px;margin:6px 2px 4px"><span class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;flex:1">Current positions (${ps.length})</span>
-          <button class="btn coachbtn" data-wwreview ${S.wwRevBusy ? 'disabled' : ''} style="font-size:.7rem;padding:1px 7px" title="Replay every open wall watch trade with the CURRENT settings: would the entry rules take it, would the exits have closed it already">${S.wwRevBusy ? 'Checking…' : 'Check vs settings'}</button></div>
+          <button class="btn coachbtn" data-wwreview ${S.wwRevBusy ? 'disabled' : ''} style="font-size:.7rem;padding:1px 7px" title="Replay every open wall watch trade with the CURRENT settings (entry rules + exits) and sell at market the ones that don't fit">${S.wwRevBusy ? 'Checking…' : 'Check & close misfits'}</button></div>
         ${wwReviewBox()}
         <ul class="fcf-list" style="margin-bottom:8px;border-bottom:2px solid var(--line)">${ps.map(p0 => `<li data-sym="${esc(p0.symbol)}"><a href="#botchart?t=${encodeURIComponent(p0.symbol)}" ${p0.symbol === sym ? 'aria-current="true"' : ''}>
           <span><b>${esc(p0.symbol)}</b> <span class="muted" style="font-size:.75rem">${p0.strike ? esc(String(p0.strike)) + 'C' : ''} ${esc((p0.exp || '').slice(5))}</span><br><span class="muted" style="font-size:.75rem">${p0.qty ?? ''}× @${p0.fill ?? p0.limit ?? '—'}${p0.status !== 'open' ? ' · ' + esc(p0.status) : ''}</span></span>

@@ -962,6 +962,31 @@ def _refresh(sub, c, rec):
                      + (f": {'+' if rp >= 0 else '-'}${abs(rp):,.0f} ({upd.get('realizedPct', 0):+.1f}%)" if rp is not None else "")
                      + f" | {rec.get('exitReason') or ''}", "closed")
         return rec, None
+    _n = now_ny()
+    _mkt = _n.weekday() < 5 and 9 * 60 + 31 <= _n.hour * 60 + _n.minute < 16 * 60
+    if rec["status"] == "closing" and _mkt and int(rec.get("closeRetries") or 0) < 5:   # still held: did the exit order die?
+        dead = False
+        try:
+            if rec.get("exitOrderId"):
+                o = _alp(c, "GET", f"/v2/orders/{rec['exitOrderId']}") or {}
+                dead = o.get("status") in ("canceled", "expired", "rejected", "done_for_day")
+            else:
+                dead = (rec.get("closedAt") or "9999") < iso(now_ny() - timedelta(minutes=10))
+            if (spread or diag) and rec.get("exitLegOrderIds"):
+                dead = dead or all((_alp(c, "GET", f"/v2/orders/{x}") or {}).get("status") in ("canceled", "expired", "rejected")
+                                   for x in rec["exitLegOrderIds"])
+        except Exception as e:
+            print("exit order check failed", rec.get("SK"), e)
+        if dead:                                       # back to open: the next exit check sends a new close
+            db.update(pk, rec["SK"], {"status": "open", "exitOrderId": "", "closeRetries": int(rec.get("closeRetries") or 0) + 1})
+            rec["status"] = "open"
+            _notify(sub, f"Paper bot: exit order for {_desc(rec)} did not fill ({rec.get('exitReason') or ''}): sending it again", "exit")
+            if rec.get("exitReason"):
+                try:
+                    close(sub, rec["id"], rec["exitReason"])
+                    rec = db.get(pk, rec["SK"]) or rec
+                except Exception as e:
+                    print("close retry failed", rec.get("SK"), e)
     if spread and not (lp and sp) and not (diag and lp and rec.get("rollOrderId")):   # mid-roll: the fill is handled by the roll
         # one leg is gone: the short call was assigned/exercised or a leg was closed outside the bot
         missing = p["contract"] if not lp else p["shortContract"]
