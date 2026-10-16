@@ -541,6 +541,7 @@ def bot_lab_chartopt(sub, claims, body, q):
             except (TypeError, ValueError):
                 pass
     P["follow"] = b.get("follow") is not False
+    P["sel"] = "manual" if b.get("sel") == "manual" else "live"
     db.put({"PK": db.upk(sub), "SK": f"WWOPTSYM#{sym}", **optiontest.result_sym(sub, sym), "running": iso(now_ny())})
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
                      Payload=json.dumps({"sub": sub, "job": "wwoptsym", "params": {"sym": sym, "trades": trades, "P": P}}, default=str))
@@ -559,6 +560,7 @@ def bot_lab_options(sub, claims, body, q):
             except (TypeError, ValueError):
                 pass
     P["follow"] = b.get("follow") is not False
+    P["sel"] = "manual" if b.get("sel") == "manual" else "live"
     if P.get("dteMax", 21) < P.get("dteMin", 7):
         P["dteMax"] = P.get("dteMin", 7)
     db.put({"PK": db.upk(sub), "SK": optiontest.OPT_SK, **optiontest.result(sub), "running": iso(now_ny())})

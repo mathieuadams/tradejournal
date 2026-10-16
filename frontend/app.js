@@ -1756,6 +1756,8 @@ function vChartFull() {
   let rt = null;
   window.addEventListener('resize', () => { if (route() !== 'botchart') return; clearTimeout(rt); rt = setTimeout(render, 150); });
   document.addEventListener('change', e => { if (e.target.id === 'fcf-sel') location.hash = '#botchart?t=' + encodeURIComponent(e.target.value); });
+  document.addEventListener('change', e => { if (e.target.id !== 'opt-sel') return;   // option test contract mode: show its fields
+    const P = optParams(); P.sel = e.target.value; try { localStorage.setItem('optParams', JSON.stringify(P)); } catch (x) {} render(); });
   document.addEventListener('change', e => {      // bot checkboxes: pending until Apply
   if (e.target.id === 'ww-auto' || e.target.id === 'ww-trade') {
     S.wwDraft = { ...(S.wwDraft || {}), [e.target.id === 'ww-auto' ? 'autoAdd' : 'trade']: e.target.checked }; S.wwDirty = true; wwMarkDirty(); }
@@ -2863,7 +2865,7 @@ async function loadOptTest() {
   if (S.optTest && S.optTest.running && route() === 'botchart') S.optPoll = setTimeout(loadOptTest, 15000);
 }
 function optParams() { let v = {}; try { v = JSON.parse(localStorage.getItem('optParams') || '{}') || {}; } catch (e) {}
-  return { dteMin: 7, dteMax: 21, money: 0, tp: 50, sl: 40, slip: 2, follow: true, ...v }; }
+  return { sel: 'live', dteMin: 7, dteMax: 21, money: 0, tp: 50, sl: 40, slip: 2, follow: true, ...v }; }
 function optTestBox() {
   const t = S.optTest || {}, P = optParams();
   const pc = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${v}%</b>`;
@@ -2871,8 +2873,9 @@ function optTestBox() {
   const lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:3px;align-items:center"';
   const head = `<h3 id="opt-test" style="font-size:.95rem;margin:14px 0 4px">Option test <span class="muted" style="font-weight:400;font-size:.8rem">the last lab test's trades, each bought as a real call (Alpaca option prices, from Feb 2024)</span></h3>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:4px 0">
-    <span ${lab}>expiration ${inp('opt-dmin', P.dteMin, 3.4)}–${inp('opt-dmax', P.dteMax, 3.4)} days</span>
-    <span ${lab} title="Strike vs the stock entry price: 0 = at the money, -5 = 5% in the money, +5 = 5% out of the money">strike ${inp('opt-mon', P.money, 3.6, 0.5)}% from price</span>
+    <span ${lab} title="Same as the live bot: its expiration window and delta window (Bot settings), delta computed from each option's price that day">contract <select id="opt-sel" style="padding:1px 4px"><option value="live" ${P.sel !== 'manual' ? 'selected' : ''}>same as the live bot</option><option value="manual" ${P.sel === 'manual' ? 'selected' : ''}>manual: days + strike %</option></select></span>
+    ${P.sel === 'manual' ? `<span ${lab}>expiration ${inp('opt-dmin', P.dteMin, 3.4)}–${inp('opt-dmax', P.dteMax, 3.4)} days</span>
+    <span ${lab} title="Strike vs the stock entry price: 0 = at the money, -5 = 5% in the money, +5 = 5% out of the money">strike ${inp('opt-mon', P.money, 3.6, 0.5)}% from price</span>` : `<span class="muted" style="font-size:.78rem">${(t.params && t.params.sel === 'live') ? `live window: ${t.params.dteMin}–${t.params.dteMax} days, delta ${t.params.deltaMin}–${t.params.deltaMax}` : 'live window from Bot settings'}</span>`}
     <span ${lab} title="Sell when the option is up this much (0 = no target)">take profit ${inp('opt-tp', P.tp, 3.6, 5)}%</span>
     <span ${lab} title="Sell when the option is down this much (0 = no stop)">stop ${inp('opt-sl', P.sl, 3.4, 5)}%</span>
     <span ${lab} title="Paid on the way in and out (no historical bid/ask)">slippage ${inp('opt-slip', P.slip, 3, 0.5)}%</span>
@@ -2883,7 +2886,7 @@ function optTestBox() {
   if (!t.mine) return head + `${(t.errors || []).length ? `<p class="loss" style="font-size:.82rem">${esc(t.errors.join(' · '))}</p>` : '<p class="muted" style="font-size:.82rem">Run Test on all tickers first, then Run option test.</p>'}`;
   const m = t.mine, st = t.stock || {}, p = t.params || {};
   const lbl = g => `${g.tp ? '+' + g.tp + '%' : 'no target'} / ${g.sl ? '−' + g.sl + '%' : 'no stop'}${g.follow ? ' + stock exit' : ''}`;
-  return head + `<p class="muted" style="font-size:.8rem;margin:2px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${t.priced} of ${t.tested} trades priced${t.skipped ? ` (${t.skipped} without option prints)` : ''} · calls ${p.dteMin}–${p.dteMax} days, strike ${p.money > 0 ? '+' : ''}${p.money}% · slippage ${p.slip}% each way</p>
+  return head + `<p class="muted" style="font-size:.8rem;margin:2px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${t.priced} of ${t.tested} trades priced${t.skipped ? ` (${t.skipped} without option prints)` : ''} · calls ${p.dteMin}–${p.dteMax} days, ${p.sel === 'live' ? `delta ${p.deltaMin}–${p.deltaMax} (live bot)` : `strike ${p.money > 0 ? '+' : ''}${p.money}%`} · slippage ${p.slip}% each way</p>
     <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Median</th><th class="r">Avg win / loss</th><th class="r">PF</th></tr></thead><tbody>
     <tr><td><b>Option</b> ${esc(lbl({ tp: p.tp, sl: p.sl, follow: p.follow }))}</td><td class="r">${m.n}</td><td class="r">${m.win ?? '—'}%</td><td class="r">${pc(m.avg)}</td><td class="r">${pc(m.med)}</td><td class="r">${pc(m.avgWin)} / ${pc(m.avgLoss)}</td><td class="r">${m.pf ?? '—'}</td></tr>
     <tr><td class="muted">Same trades, stock (R)</td><td class="r">${st.n || 0}</td><td class="r">${st.win ?? '—'}%</td><td class="r">${st.avgR != null ? (st.avgR > 0 ? '+' : '') + st.avgR + 'R' : '—'}</td><td></td><td></td><td class="r">${st.pf ?? '—'}</td></tr></tbody></table></div>
@@ -2954,17 +2957,17 @@ function optSymBox(sym, sigs, sel) {
   S.optAuto = S.optAuto || {};
   if (r && !r.running && !r.error && sigs.length && !S.optAuto[key]) {
     const have = x.byAt || {}, missing = sigs.filter(s0 => s0.at >= '2024-02-05' && !(s0.at in have)).length;
-    const pp = x.params || {}, same = ['dteMin', 'dteMax', 'money', 'tp', 'sl', 'slip'].every(k => +pp[k] === +P[k]) && !!pp.follow === !!P.follow;
+    const pp = x.params || {}, same = (pp.sel || 'manual') === P.sel && (P.sel === 'live' ? ['tp', 'sl', 'slip'] : ['dteMin', 'dteMax', 'money', 'tp', 'sl', 'slip']).every(k => +pp[k] === +P[k]) && !!pp.follow === !!P.follow;
     S.optAuto[key] = true;
-    if (missing || !same || x.v !== 2) setTimeout(() => optSymRun(sym), 0);   // v2: stray prints filtered
+    if (missing || !same || x.v !== 3) setTimeout(() => optSymRun(sym), 0);   // v2: stray prints filtered
   }
   const pc = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${v}%</b>`;
   const o = sel && x.byAt ? x.byAt[sel.at] : null;
   const btn = `<button class="btn coachbtn" data-optsym="${esc(sym)}" ${x.running || !sigs.length ? 'disabled' : ''} style="font-size:.78rem;padding:1px 10px" title="Each of these trades bought as a real call: ${P.dteMin}–${P.dteMax} days, strike ${P.money}% from price, take profit ${P.tp}%, stop ${P.sl}%${P.follow ? ', sold on the stock exit' : ''}, slippage ${P.slip}% (set in the Option test section)">${x.running ? 'Pricing calls…' : x.byAt ? 'Re-price calls' : 'Buy calls for these trades'}</button>`;
   return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center">${btn}
-    ${x.stats && st.n ? `<span><b>Calls</b> ${st.n} trades · win ${st.win}% · avg ${pc(st.avg)} · median ${pc(st.med)} · avg win / loss ${pc(st.avgWin)} / ${pc(st.avgLoss)} · total ${pc(st.tot)}${x.params ? ` <span class="muted">(${x.params.dteMin}–${x.params.dteMax}d, TP ${x.params.tp}%, stop ${x.params.sl}%)</span>` : ''}</span>` : ''}
+    ${x.stats && st.n ? `<span><b>Calls</b> ${st.n} trades · win ${st.win}% · avg ${pc(st.avg)} · median ${pc(st.med)} · avg win / loss ${pc(st.avgWin)} / ${pc(st.avgLoss)} · total ${pc(st.tot)}${x.params ? ` <span class="muted">(${x.params.sel === 'live' ? `live bot: ${x.params.dteMin}–${x.params.dteMax}d, delta ${x.params.deltaMin}–${x.params.deltaMax}` : `${x.params.dteMin}–${x.params.dteMax}d`}, TP ${x.params.tp || 'none'}${x.params.tp ? '%' : ''}, stop ${x.params.sl || 'none'}${x.params.sl ? '%' : ''})</span>` : ''}</span>` : ''}
     ${x.older ? `<span class="muted">${x.older} trades before Feb 2024: no option prices</span>` : ''}
-    ${o ? (o.none ? `<span class="muted">Selected trade: ${esc(o.none)}</span>` : `<span><b>Selected trade</b> bought <b>${esc(o.sym)}</b> (${esc(o.exp)} ${o.strike} call) at ${o.entry}${o.entryAt ? ` (${esc(o.entryAt.replace('T', ' ').slice(5))})` : ''} → sold ${o.exitPx ?? '—'} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' ').slice(5))} → ${pc(o.pct)} · best ${pc(o.mfe)}</span>`) : ''}
+    ${o ? (o.none ? `<span class="muted">Selected trade: ${esc(o.none)}</span>` : `<span><b>Selected trade</b> bought <b>${esc(o.sym)}</b> (${esc(o.exp)} ${o.strike} call${o.delta != null ? `, delta ${o.delta}` : ''}) at ${o.entry}${o.entryAt ? ` (${esc(o.entryAt.replace('T', ' ').slice(5))})` : ''} → sold ${o.exitPx ?? '—'} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' ').slice(5))} → ${pc(o.pct)} · best ${pc(o.mfe)}</span>`) : ''}
     ${(x.errors || []).length ? `<span class="loss">${esc(x.errors.join(' · '))}</span>` : ''}${x.error ? `<span class="loss">${esc(x.error)}</span>` : ''}</span>`;
 }
 function labStats(sigs) {
@@ -3551,7 +3554,7 @@ document.addEventListener('click', e => {
     setTimeout(() => { const h = document.getElementById('opt-test'); if (h) h.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 80); return; }
   if (el.hasAttribute('data-optrun')) {
     const g = id => parseFloat(($('#' + id) || {}).value);
-    const P = { dteMin: g('opt-dmin'), dteMax: g('opt-dmax'), money: g('opt-mon'), tp: g('opt-tp'), sl: g('opt-sl'), slip: g('opt-slip'), follow: !!($('#opt-follow') || {}).checked };
+    const P = { sel: (($('#opt-sel') || {}).value) || 'live', dteMin: g('opt-dmin'), dteMax: g('opt-dmax'), money: g('opt-mon'), tp: g('opt-tp'), sl: g('opt-sl'), slip: g('opt-slip'), follow: !!($('#opt-follow') || {}).checked };
     Object.keys(P).forEach(k => { if (typeof P[k] === 'number' && isNaN(P[k])) delete P[k]; });
     try { localStorage.setItem('optParams', JSON.stringify(P)); } catch (e) {}
     api('/bot/lab/options', { method: 'POST', body: P }).then(() => { S.optTest = { ...(S.optTest || {}), running: 'now' }; render(); setTimeout(loadOptTest, 15000); }).catch(err => toast(err.message));

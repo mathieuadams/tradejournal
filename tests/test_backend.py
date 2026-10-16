@@ -3069,7 +3069,7 @@ def test_option_test():
         alpaca.creds = lambda sub: {"key": "k", "secret": "s"}
         db_.put({"PK": db_.upk("opt-user"), "SK": backtest.LAB_SK, "trades": [
             {"sym": "AAA", "at": "2025-03-03T10:30", "R": 1.2, "pct": 2.0, "exit": "trail", "exitAt": "2025-03-05T10:30", "entry": 100.4}]})
-        r = optiontest.run("opt-user", {"dteMin": 7, "dteMax": 21, "money": 0, "tp": 50, "sl": 40, "slip": 0, "follow": True})
+        r = optiontest.run("opt-user", {"sel": "manual", "dteMin": 7, "dteMax": 21, "money": 0, "tp": 50, "sl": 40, "slip": 0, "follow": True})
         assert r["priced"] == 1, r
         o = r["trades"][0]["opt"]
         assert o["sym"] == want and o["entry"] == 2.0 and o["why"] == "option target" and o["pct"] == 55.0, o   # gapped over the target: filled at the open
@@ -3077,9 +3077,21 @@ def test_option_test():
         assert g[(None, None, True)]["avg"] == 45.0          # held to the stock exit: last option close 2.90
         assert g[(100, None, False)]["n"] == 1
         rs = optiontest.run_sym("opt-user", "AAA", [{"at": "2025-03-03T10:30", "entry": 100.4, "exitAt": "2025-03-05T10:30", "exit": "trail", "R": 1.2},
-                                                    {"at": "2023-05-01T10:30", "entry": 90, "exit": "stop", "R": -1}], {"slip": 0})
+                                                    {"at": "2023-05-01T10:30", "entry": 90, "exit": "stop", "R": -1}], {"sel": "manual", "slip": 0})
         assert rs["byAt"]["2025-03-03T10:30"]["pct"] == 55.0 and rs["stats"]["n"] == 1 and rs["older"] == 1
         assert optiontest.result_sym("opt-user", "AAA")["byAt"]
+        dl = optiontest.implied_delta(100, 100, 30 / 365, optiontest._bs_call(100, 100, 30 / 365, 0.3)[0])
+        assert abs(dl - optiontest._bs_call(100, 100, 30 / 365, 0.3)[1]) < 1e-3 and 0.5 < dl < 0.6
+        assert optiontest.implied_delta(100, 90, 30 / 365, 5.0) is None          # under intrinsic: no volatility fits
+        live_k = optiontest.occ("AAA", "2025-04-25", 96)
+
+        def fake_daily(c, syms, tf, start, end):                                  # one ITM call ~0.65 delta, one ATM ~0.52
+            px = {live_k: optiontest._bs_call(100, 96, 53.25 / 365, 0.3)[0], optiontest.occ("AAA", "2025-04-25", 100): optiontest._bs_call(100, 100, 53.25 / 365, 0.3)[0]}
+            return {s_: [{"t": start + "T05:00:00Z", "v": 20, "c": px[s_], "vw": px[s_]}] for s_ in syms if s_ in px}
+        optiontest.bars = fake_daily
+        ch = optiontest.pick_live({}, "AAA", "2025-03-03", 100.0, {"dteMin": 40, "dteMax": 65, "deltaMin": 0.55, "deltaMax": 0.75})
+        assert ch and ch[0][0] == live_k and 0.55 <= ch[0][4] <= 0.75, ch
+        optiontest.bars = fake_bars
         cp = optiontest.clean_path([("a", 1, 1, 1, 10.0), ("b", 1, 1, 1, 4.0), ("c", 1, 1, 1, 10.4), ("d", 1, 1, 1, 10.6)])
         assert cp[1][4] == 10.2 and cp[1][3] == 10.2                 # a stray print: replaced, and lows = closes
     finally:

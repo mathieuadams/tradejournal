@@ -119,6 +119,77 @@ def clean_path(path):
     return [(p[0], c, c, c, c) for p, c in zip(path, cs)]
 
 
+def _bs_call(S, K, T, iv, r=0.04):
+    import math
+    if T <= 0 or iv <= 0:
+        return max(S - K, 0.0), (1.0 if S > K else 0.0)
+    st = iv * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + iv * iv / 2) * T) / st
+    N = lambda x: 0.5 * (1 + math.erf(x / math.sqrt(2)))
+    return S * N(d1) - K * math.exp(-r * T) * N(d1 - st), N(d1)
+
+
+def implied_delta(S, K, T, px):
+    """Delta from the option's own price: implied volatility by bisection, then Black-Scholes delta (None if the
+    price is outside what any volatility can give)."""
+    lo, hi = 0.01, 5.0
+    if px <= max(S - K, 0) or _bs_call(S, K, T, hi)[0] < px:
+        return None
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if _bs_call(S, K, T, mid)[0] < px:
+            lo = mid
+        else:
+            hi = mid
+    return _bs_call(S, K, T, (lo + hi) / 2)[1]
+
+
+def pick_live(c, sym, day, price, P):
+    """The live bot's choice on that day: a call expiring in its DTE window with delta in its delta window (delta from
+    the option's price that day), closest to the middle delta, the most traded breaking ties (no historical open
+    interest / spread). [(occ, exp, strike, volume, delta)] best first."""
+    import math
+    exps = fridays(day, int(P["dteMin"]), int(P["dteMax"]))
+    if not exps:
+        return []
+    incs = (0.5, 1) if price < 25 else (1, 2.5, 5) if price < 200 else (2.5, 5, 10) if price < 600 else (5, 10, 25)
+    ks = set()
+    for inc in incs:
+        k = math.floor(price * 0.78 / inc) * inc
+        while k <= price * 1.06:
+            ks.add(round(k, 2))
+            k += inc
+    cands = {occ(sym, e, k): (e, k) for e in exps for k in ks}
+    nxt = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    got, syms = {}, list(cands)
+    for i in range(0, len(syms), 50):
+        got.update(bars(c, syms[i:i + 50], "1Day", day, nxt))
+    d0 = datetime.strptime(day, "%Y-%m-%d")
+    mid_d = (float(P["deltaMin"]) + float(P["deltaMax"])) / 2
+    rows = []
+    for s_, bs in got.items():
+        b = next((x for x in bs if x["t"][:10] == day), None)
+        if not b or not b.get("v"):
+            continue
+        e, k = cands[s_]
+        T = ((datetime.strptime(e, "%Y-%m-%d") - d0).days + 0.25) / 365
+        dl = implied_delta(price, k, T, float(b.get("vw") or b["c"]))
+        if dl is None or not (float(P["deltaMin"]) <= dl <= float(P["deltaMax"])):
+            continue
+        score = -abs(dl - mid_d) * 5 + min(math.log10(b["v"] + 1), 4) / 2
+        rows.append((score, s_, e, k, b["v"], round(dl, 2)))
+    rows.sort(key=lambda r: -r[0])
+    return [(r[1], r[2], r[3], r[4], r[5]) for r in rows]
+
+
+def live_params(sub, P):
+    """The live bot's contract window (Bot settings): DTE and delta."""
+    import autotrader
+    cfg = autotrader.settings(sub)
+    return {**P, "dteMin": int(cfg["dteMin"]), "dteMax": int(cfg["dteMax"]), "deltaMin": float(cfg["deltaMin"]),
+            "deltaMax": float(cfg["deltaMax"])}
+
+
 def simulate(path, entry, entry_end, stock_exit_end, exp, tp, sl, follow, slip):
     """path: [(bar end 'YYYY-MM-DDTHH:MM', o, h, l, c)] after the entry bar (cleaned: o = h = l = c).
     Returns (pct, reason, at, exit price)."""
@@ -166,10 +237,16 @@ def price_one(c, t, P):
     day = t["at"][:10]
     entry_end = wallwatch._bar_end(t["at"]).strftime("%Y-%m-%dT%H:%M")
     stock_exit_end = wallwatch._bar_end(t["exitAt"]).strftime("%Y-%m-%dT%H:%M") if t.get("exitAt") and t.get("exit") != "open" else None
-    ch = pick(c, t["sym"], day, float(t["entry"]), P)
-    if not ch:
-        return {**t, "opt": None, "why": "no call traded that day in the window"}
-    sym_, exp, strike, vol = ch[0]
+    if P.get("sel") == "live":
+        ch = pick_live(c, t["sym"], day, float(t["entry"]), P)
+        if not ch:
+            return {**t, "opt": None, "why": f"no call traded that day with delta {P['deltaMin']}–{P['deltaMax']}, {P['dteMin']}–{P['dteMax']} days"}
+        sym_, exp, strike, vol, dl = ch[0]
+    else:
+        ch = pick(c, t["sym"], day, float(t["entry"]), P)
+        if not ch:
+            return {**t, "opt": None, "why": "no call traded that day in the window"}
+        (sym_, exp, strike, vol), dl = ch[0], None
     end_d = min(exp, (datetime.strptime((t.get("exitAt") or day)[:10], "%Y-%m-%d") + timedelta(days=45)).strftime("%Y-%m-%d"))
     end = min(datetime.utcnow() - timedelta(minutes=20), datetime.strptime(end_d, "%Y-%m-%d") + timedelta(days=1))
     bs = bars(c, [sym_], "30Min", day, end.strftime("%Y-%m-%dT%H:%M:%SZ")).get(sym_) or []
@@ -195,14 +272,14 @@ def price_one(c, t, P):
     mine = simulate(after, entry, entry_end, stock_exit_end, exp, None if P.get("tp") in (None, "", 0) else float(P["tp"]),
                     None if P.get("sl") in (None, "", 0) else float(P["sl"]), bool(P.get("follow", True)), slip)
     mfe = max([p[2] for p in after] or [entry])
-    return {**t, "opt": {"sym": sym_, "exp": exp, "strike": strike, "vol": vol, "entry": round(entry, 2),
+    return {**t, "opt": {"sym": sym_, "exp": exp, "strike": strike, "vol": vol, "entry": round(entry, 2), "delta": dl,
                          "mfe": round((mfe / (entry * (1 + slip)) - 1) * 100, 1),
                          "pct": mine[0] if mine else None, "why": mine[1] if mine else None, "exitAt": mine[2] if mine else None,
                          "exitPx": mine[3] if mine else None, "entryAt": before[-1][0]},
             "_grid": res}
 
 
-DEF = {"dteMin": 7, "dteMax": 21, "money": 0.0, "tp": 50, "sl": 40, "follow": True, "slip": 2.0, "maxTrades": 300}
+DEF = {"sel": "live", "dteMin": 7, "dteMax": 21, "money": 0.0, "tp": 50, "sl": 40, "follow": True, "slip": 2.0, "maxTrades": 300}
 
 
 def run_sym(sub, sym, trades, params=None, budget_s=270):
@@ -211,6 +288,8 @@ def run_sym(sub, sym, trades, params=None, budget_s=270):
     t0 = time.time()
     pk, sk = db.upk(sub), f"WWOPTSYM#{sym}"
     P = {**DEF, **(params or {})}
+    if P.get("sel") == "live":
+        P = live_params(sub, P)
     c = alpaca.creds(sub)
     if not c:
         out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "errors": ["Connect Alpaca (Settings) to load option prices."]}
@@ -228,7 +307,7 @@ def run_sym(sub, sym, trades, params=None, budget_s=270):
     pool.shutdown(wait=False, cancel_futures=True)
     by = {r["at"]: {**(r.get("opt") or {}), **({} if r.get("opt") else {"none": r.get("why")})} for r in rows}
     ok = [r["opt"]["pct"] for r in rows if r.get("opt") and r["opt"].get("pct") is not None]
-    out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "params": P, "byAt": by, "v": 2, "stats": _stats(ok),
+    out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "params": P, "byAt": by, "v": 3, "stats": _stats(ok),
            "errors": errors[:3], "older": sum(1 for t in trades if (t.get("at") or "") < "2024-02-05")}
     db.put(out)
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
@@ -247,6 +326,8 @@ def run(sub, params=None, budget_s=540):
     t0 = time.time()
     pk = db.upk(sub)
     P = {**DEF, **(params or {})}
+    if P.get("sel") == "live":
+        P = live_params(sub, P)
     db.put({"PK": pk, "SK": OPT_SK, **(db.get(pk, OPT_SK) or {}), "running": iso(now_ny()), "params": P})
     c = alpaca.creds(sub)
     if not c:
