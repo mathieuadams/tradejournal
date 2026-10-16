@@ -90,6 +90,17 @@ def config(sub):
         extra = [t for t in old if t not in MAIN_V1]
         c = {**c, "tickers": list(MAIN_V1), "lists": [{"name": FLOW_LIST, "tickers": extra}], "listsV": 1}
         db.put(c)
+    if c and not c.get("listsFix"):                    # one time: flow tickers that went to Main by mistake -> Unusual flow
+        ad = c.get("added") or {}
+        moved = [t for t in (c.get("tickers") or []) if t not in MAIN_V1 and (ad.get(t) or {}).get("by") == "flow"]
+        ls = [dict(x) for x in (c.get("lists") or [])]
+        fl = next((x for x in ls if x.get("name") == FLOW_LIST), None)
+        if not fl:
+            fl = {"name": FLOW_LIST, "tickers": []}
+            ls.insert(0, fl)
+        fl["tickers"] = list(fl.get("tickers") or []) + [t for t in moved if t not in (fl.get("tickers") or [])]
+        c = {**c, "tickers": [t for t in (c.get("tickers") or []) if t not in moved], "lists": ls, "listsFix": 1}
+        db.put(c)
     main = list(c.get("tickers") or MAIN_V1)
     lists = [{"name": str(x.get("name") or "List"), "tickers": list(x.get("tickers") or [])} for x in (c.get("lists") or [])]
     if not any(x["name"] == FLOW_LIST for x in lists):
@@ -173,7 +184,7 @@ def save_config(sub, body):
             cur["flowRule"] = None if v in (None, "", -1, "-1") else int(v)
         except (TypeError, ValueError):
             pass
-    ln = str(body.get("list") or "Main")[:40]           # the list an add / remove / move works on
+    ln = str(body.get("list") or (FLOW_LIST if body.get("addedBy") == "flow" else "Main"))[:40]   # the list an add / remove / move works on
     def lst(name):
         if name == "Main":
             return main
@@ -190,8 +201,13 @@ def save_config(sub, body):
         nm = str(body["to"]).strip()[:40]
         if x and nm and nm != "Main" and lst(nm) is None:
             x["name"] = nm
+    removed = dict(cur.get("removed") or {})            # {ticker: when}: the flow doesn't add it back for 7 days
     if body.get("add"):                                  # add one ticker (to a list, Main by default)
         t = str(body["add"]).strip().upper().replace("/", ".")[:10]
+        if body.get("addedBy") == "flow" and (removed.get(t) or "") >= iso(now_ny() - timedelta(days=7)):
+            t = ""                                       # removed by you recently
+        elif t in removed and body.get("addedBy") != "flow":
+            removed.pop(t, None)
         L = lst(ln)
         if t and L is not None and t not in L:
             L.append(t)
@@ -203,6 +219,8 @@ def save_config(sub, body):
         for L in ([lst(ln)] if body.get("list") else [main] + [x["tickers"] for x in extra]):
             if L is not None and t in L:
                 L.remove(t)
+        if t not in main and not any(t in x["tickers"] for x in extra):
+            removed[t] = iso(now_ny())
     if body.get("move") and body.get("to"):              # move a ticker to another list
         t = str(body["move"]).strip().upper()
         dst = lst(str(body["to"]))
@@ -214,7 +232,7 @@ def save_config(sub, body):
     cur["tickers"] = main
     from decimal import Decimal
     db.put({"PK": db.upk(sub), "SK": "WWCFG", **{k: Decimal(str(v)) if isinstance(v, float) else v for k, v in cur.items()
-                                                 if k not in ("main",)}, "lists": extra, "listsV": 1})
+                                                 if k not in ("main",)}, "lists": extra, "listsV": 1, "listsFix": 1, "removed": removed})
     cur = config(sub)
     if version(cur) != before:                          # new settings: the 45-day history is recomputed from scratch
         run_ = db.get(db.upk(sub), "WWRUN") or {}
@@ -1660,9 +1678,10 @@ def flow_add(sub, cfg=None):
         t = (a.get("ticker") or "").upper().replace("/", ".")
         if t:
             prem[t] = prem.get(t, 0) + (a.get("premium") or 0)
-    new = [t for t in sorted(prem, key=lambda t: -prem[t]) if t not in cfg["tickers"]]
+    cur = db.get(db.upk(sub), "WWCFG") or {"PK": db.upk(sub), "SK": "WWCFG"}
+    cut = iso(now_ny() - timedelta(days=7))
+    new = [t for t in sorted(prem, key=lambda t: -prem[t]) if t not in cfg["tickers"] and (cur.get("removed") or {}).get(t, "") < cut]
     if new:                                            # into the "Unusual flow" list, not the main one
-        cur = db.get(db.upk(sub), "WWCFG") or {"PK": db.upk(sub), "SK": "WWCFG"}
         lists = [dict(x) for x in (cur.get("lists") or [])]
         fl = next((x for x in lists if x.get("name") == FLOW_LIST), None)
         if not fl:

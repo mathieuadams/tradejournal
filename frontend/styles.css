@@ -427,5 +427,5 @@ tr.sel td{background:var(--sunk)}
 .fcf-list a[aria-current]{background:var(--coach-soft);box-shadow:inset 3px 0 0 var(--coach)}
 
 .fcf-list li{position:relative}
-.wl-act{position:absolute;right:4px;top:4px;display:none;gap:2px;background:var(--surface);border-radius:6px}
-.fcf-list li:hover .wl-act{display:flex}
+.wl-act{position:absolute;left:96px;bottom:5px;display:flex;gap:2px;opacity:.45}
+.fcf-list li:hover .wl-act{opacity:1}

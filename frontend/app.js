@@ -3525,7 +3525,10 @@ function render() {
   document.querySelectorAll('.nav .nav-sub a').forEach(a => { if (a.dataset.r === v) a.setAttribute('aria-current', 'page'); });
   document.querySelectorAll('.nav .nav-sub').forEach(x => { x.hidden = grp !== (x.dataset.group || 'trades'); });
   document.querySelectorAll('[data-acct]').forEach(b => b.classList.toggle('on', grp === 'settings'));
+  const keep = {};                                      // scroll positions survive the redraw (watchlists, side panel, chart page)
+  document.querySelectorAll('[data-wlbox],.fcf-side,.fcf').forEach(el => { keep[el.dataset.wlbox ? 'wl:' + el.dataset.wlbox : el.className.split(' ')[0]] = el.scrollTop; });
   try { $('#view').innerHTML = subnav(v) + VIEWS[v][0](); } catch (e) { console.error(e); $('#view').innerHTML = `<div class="errbox">This page failed to load: ${esc(e.message)}</div>`; }
+  document.querySelectorAll('[data-wlbox],.fcf-side,.fcf').forEach(el => { const k = el.dataset.wlbox ? 'wl:' + el.dataset.wlbox : el.className.split(' ')[0]; if (keep[k]) el.scrollTop = keep[k]; });
   if (VIEWS[v][1]) VIEWS[v][1]();
 }
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }

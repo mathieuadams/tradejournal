@@ -3163,6 +3163,11 @@ def test_watchlists():
         r = wallwatch.flow_add("wl-user")
         c = wallwatch.config("wl-user")
         assert r["added"] == ["NEWT"] and "NEWT" not in c["main"] and "NEWT" in c["lists"][1]["tickers"] and "NEWT" in c["tickers"]
+        wallwatch.save_config("wl-user", {"remove": "NEWT"})                       # removed: the flow doesn't add it back
+        assert wallwatch.flow_add("wl-user")["added"] == [] and "NEWT" not in wallwatch.config("wl-user")["tickers"]
+        wallwatch.save_config("wl-user", {"add": "FLW", "addedBy": "flow"})        # flow adds (any path) go to Unusual flow
+        c = wallwatch.config("wl-user")
+        assert "FLW" not in c["main"] and "FLW" in c["lists"][1]["tickers"]
     finally:
         flowdata.alerts, autotrader.settings = saved
 
