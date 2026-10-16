@@ -2616,7 +2616,7 @@ function wwRulePanel(vals, sw, mode, shown) {
     <details data-rulespanel ${S.rulesOpen !== false ? 'open' : ''} style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Entry &amp; exit rules</summary>
     <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">${grp('Entry')}${grp('Exit')}</div></details>`;
 }
-const LAB_ONLY = ['pwTest', 'inYExit', 'inhGreen', 'inhNotRed', 'inhYExit', 'sqhOn', 'sqhFire', 'sqhMom', 'sqhExit', 'sqdOn', 'sqdFire', 'sqdMom', 'sqdExit'];   // rules the live bot can't do yet: shown in the Strategy lab only
+const LAB_ONLY = ['pwTest'];   // daily-timeframe only: the live bot runs on hourly candles   // rules the live bot can't do yet: shown in the Strategy lab only
 const WW_CORE = ['earnExit', 'alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
 const WW_DEF_ON = { sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
@@ -2641,15 +2641,13 @@ function wwSwState() {
 }
 function wwParams(compact) {
   const c = { ...((S.ww && S.ww.config) || {}), ...(S.wwDraft || {}) }, sw = wwSwState(), lab = 'class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center"';
-  const shown = r => LAB_ONLY.includes(r[0]) ? false : r[0] === 'scaleBE' ? !!sw.scaleOn : (S.wwAllRules || WW_CORE.includes(r[0]) || sw[r[0]] || r[0] === 'scaleOn');
-  const hidden = WW_RULES.filter(r => !shown(r) && !LAB_ONLY.includes(r[0])).length;
+  const shown = r => LAB_ONLY.includes(r[0]) ? false : r[0] === 'scaleBE' ? !!sw.scaleOn : true;   // the same rules as the Strategy lab
   return `<div data-wwwhere="${compact ? 'chart' : 'page'}" style="display:flex;flex-direction:column;gap:6px${compact ? '' : ';border:1px solid var(--line);border-radius:8px;padding:8px 10px'}">
     <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Bot</b>
     <label ${lab} title="Every minute, tickers with unusual call flow (your bot's flow filters) join the list"><input type="checkbox" id="ww-auto" ${c.autoAdd !== false ? 'checked' : ''}>add flow tickers</label>
     <label ${lab} title="Buy a call on Alpaca paper when a signal fires (contract picked by the bot, limit chased up until filled)"><input type="checkbox" id="ww-trade" ${c.trade !== false ? 'checked' : ''}>trade signals</label></div>
     ${wwRulePanel({ ...c, ...(S.wwDraft || {}) }, sw, 'live', shown)}
     <div><button class="btn ${S.wwDirty ? 'coachbtn' : ''}" data-wwparams="${compact ? 'chart' : 'page'}" data-applybtn="live" style="font-size:.78rem;padding:1px 12px">${S.wwDirty ? 'Apply changes' : 'Apply'}</button>
-    <button class="btn" data-wwallrules style="font-size:.75rem;padding:1px 9px">${S.wwAllRules ? 'Hide unused rules' : `Show all rules (${hidden} hidden, all OFF)`}</button>
     <span class="muted" style="font-size:.75rem">Nothing changes until you click Apply (switches and numbers). Signals are then recomputed.</span></div></div>`;
 }
 function wwMarkDirty() {                        // pending changes: light up the Apply buttons without redrawing
@@ -2925,6 +2923,7 @@ function labPanel() {
     <button class="btn" data-optshow style="font-size:.8rem;padding:1px 12px" title="Price the lab trades with real call options (results under the chart)">Option test ↓</button>
     <a class="btn" href="#botwatch" data-rtlab style="font-size:.8rem;padding:1px 10px" title="Rule tester and robustness check on these lab settings (Wall watch tab)">Full stats ↗</a>
     <button class="btn" data-labreset style="font-size:.8rem;padding:1px 10px" title="Start over from a copy of the live settings (the live bot is not changed)">Copy live settings</button>
+    <button class="btn" data-labtolive style="font-size:.8rem;padding:1px 10px" title="Make the live bot use these lab settings (every rule and number; the 1D timeframe and Put wall test stay lab only)">Use these settings live</button>
     <span class="muted" style="font-size:.75rem">Lab only: these settings are kept apart and never change the live bot or its signals${diff ? ` · ${diff} differ from live` : ''}. Nothing changes until you click Apply.</span></div></div>`;
 }
 S.optSym = S.optSym || {};
@@ -3474,7 +3473,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3552,6 +3551,16 @@ document.addEventListener('click', e => {
     Object.assign(L, S.labDraft || {}, S.labSw || {}); S.labDraft = {}; S.labSw = {}; S.labDirty = false;
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }
+  if (el.hasAttribute('data-labtolive')) {
+    const L = { ...(labCfg() || {}), ...(S.labDraft || {}), ...(S.labSw || {}) };
+    if (L.tf === '1D' && !confirm('The lab is on the 1D timeframe; the live bot trades hourly candles. Copy the rules anyway?')) return;
+    if (!confirm('Replace the live bot settings with these lab settings? Signals are recomputed.')) return;
+    const body = Object.fromEntries(Object.entries(L).filter(([k, v]) => !['tf', 'pwTest', 'pvSetup'].includes(k) && v !== undefined));
+    api('/bot/wallwatch', { method: 'PUT', body: { ...body, retestSetup: true } })
+      .then(r => { S.ww = { ...(S.ww || {}), ...r }; S.wwSw = null; S.wwDraft = {}; S.wwDirty = false;
+        return api('/bot/wallwatch/run', { method: 'POST', body: { days: 45 } }).catch(() => {}); })
+      .then(() => { toast('Live bot now uses the lab settings — recomputing signals'); render(); }).catch(err => toast(err.message));
+    return; }
   if (el.hasAttribute('data-labreset')) { S.lab = null; S.labDraft = {}; S.labSw = {}; S.labDirty = false; try { localStorage.removeItem('labCfg'); } catch (e) {} labRedraw(); return; }
   if (el.dataset.optsym) { optSymRun(el.dataset.optsym); return; }
   if (el.hasAttribute('data-optshow')) { S.hideStats = false; S.fcfInfoH = null; try { localStorage.setItem('hideStats', '0'); } catch (e) {} render();

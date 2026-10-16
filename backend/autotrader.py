@@ -1269,6 +1269,34 @@ def _wallwatch_exit(sub, rec, p):
                 return f"daily inertia red at the close ({last['c']:.2f})"
         except Exception as e:
             print("inertia exit check failed", rec.get("symbol"), e)
+    if any(ww.get(k) for k in ("inYExit", "sqdExit", "inhYExit", "sqhExit")):
+        try:
+            import wallwatch
+            hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=150), now + timedelta(hours=1)) or [],
+                                    now.replace(tzinfo=None))
+            hb = [b for b in hb if "09:30" <= b["t"][11:16] < "16:00"]
+            fire_n = int(ww.get("sqFireN") or 3)
+            if hb and hb[-1]["t"][:16] >= since[:13]:  # the last finished hourly candle (after the fill)
+                if ww.get("inhYExit"):
+                    x = wallwatch.inertia_hourly(hb, tuple(ww.get("inhNs") or (70, 40, 20)))[-1]
+                    if x and x["s"] != "G":
+                        return f"hourly inertia {'red' if x['s'] == 'R' else 'yellow'} at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
+                if ww.get("sqhExit"):
+                    x = wallwatch.squeeze(hb, *(ww.get("sqh") or (20, 2.0, 1.5)), fire_n)[-1]
+                    if x and not x["up"]:
+                        return f"hourly squeeze momentum falling at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
+            if now.hour * 60 + now.minute >= 15 * 60 + 50:   # daily: at the close, today's candle so far included
+                hd = hb + [{"t": now.strftime("%Y-%m-%dT%H:%M"), "o": last["c"], "h": last["c"], "l": last["c"], "c": last["c"]}]
+                if ww.get("inYExit"):
+                    rg = wallwatch.inertia_regime(hd, tuple(ww.get("inNs") or (70, 40, 20)))[-1]
+                    if rg and rg["s"] != "G":
+                        return f"daily inertia {'red' if rg['s'] == 'R' else 'yellow'} at the close ({last['c']:.2f})"
+                if ww.get("sqdExit"):
+                    x = wallwatch.squeeze(wallwatch.daily_bars(hd), *(ww.get("sqd") or (20, 2.0, 1.5)), fire_n)[-1]
+                    if x and not x["up"]:
+                        return f"daily squeeze momentum falling at the close ({last['c']:.2f})"
+        except Exception as e:
+            print("inertia / squeeze exit check failed", rec.get("symbol"), e)
     if ww.get("fvgExit"):                              # the last finished hourly candle completes a new bearish FVG
         try:
             import wallwatch

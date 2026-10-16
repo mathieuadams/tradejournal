@@ -91,7 +91,14 @@ def version(cfg):
     return (f"7|{float(cfg['stopAtr']):g}|{float(cfg['trailAtr']):g}|{int(bool(cfg['pwSetup']))}{int(bool(cfg['flipSetup']))}"
             f"{int(bool(cfg.get('mergedSetup', True)))}|{float(cfg.get('tgtBuf', 0.5)):g}"
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
-            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}|in{int(cfg.get('inN1', 70))}.{int(cfg.get('inN2', 40))}.{int(cfg.get('inN3', 20))}")
+            f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}|in{int(cfg.get('inN1', 70))}.{int(cfg.get('inN2', 40))}.{int(cfg.get('inN3', 20))}"
+            + (("|x" + "".join(str(int(bool(cfg.get(k)))) for k in EXTRA_SW)
+                + "|" + ".".join(f"{float(cfg.get(k, PARAMS[k])):g}" for k in EXTRA_NUM)) if any(cfg.get(k) for k in EXTRA_SW) else ""))
+
+
+# rules added later: in the version only when one is on (signals made before them stay valid)
+EXTRA_SW = ("inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
+EXTRA_NUM = ("inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
 
 
 SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower", "inGreen", "inNotRed", "inRedExit")
@@ -1637,6 +1644,11 @@ def enter(sub, sym, sg):
               "scaleBE": bool(cfg.get("scaleBE", True)),
               "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2),
               "earnExit": bool(cfg.get("earnExit", True)),
+              "inYExit": bool(cfg.get("inYExit")), "inhYExit": bool(cfg.get("inhYExit")),
+              "inhNs": [int(cfg.get("inhN1") or 70), int(cfg.get("inhN2") or 40), int(cfg.get("inhN3") or 20)],
+              "sqhExit": bool(cfg.get("sqhExit")), "sqdExit": bool(cfg.get("sqdExit")), "sqFireN": int(cfg.get("sqFireN") or 3),
+              "sqh": [int(cfg.get("sqhLen") or 20), float(cfg.get("sqhBB") or 2), float(cfg.get("sqhKC") or 1.5)],
+              "sqd": [int(cfg.get("sqdLen") or 20), float(cfg.get("sqdBB") or 2), float(cfg.get("sqdKC") or 1.5)],
               "inRedExit": bool(cfg.get("inRedExit")), "inNs": [int(cfg.get("inN1") or 70), int(cfg.get("inN2") or 40), int(cfg.get("inN3") or 20)]}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}
