@@ -3133,6 +3133,40 @@ def test_squeeze():
     assert prev[-1] == dsq[-2]
 
 
+def test_watchlists():
+    """Several watchlists: main reset once to the set list (the rest moved to Unusual flow), add / move / remove,
+    new lists, and flow tickers go to the Unusual flow list; the bot scans all of them."""
+    import wallwatch, flowdata, autotrader
+    import db as db_
+    db_.put({"PK": db_.upk("wl-user"), "SK": "WWCFG", "tickers": ["AAPL", "ZZZ", "NVDA"]})
+    c = wallwatch.config("wl-user")
+    assert c["main"] == wallwatch.MAIN_V1 and "V" in c["main"] and c["lists"][1] == {"name": "Unusual flow", "tickers": ["ZZZ"]}
+    assert "ZZZ" in c["tickers"] and len(c["tickers"]) == len(wallwatch.MAIN_V1) + 1
+    wallwatch.save_config("wl-user", {"newList": "Swing"})
+    wallwatch.save_config("wl-user", {"add": "HOOD", "list": "Swing"})
+    c = wallwatch.config("wl-user")
+    assert {"name": "Swing", "tickers": ["HOOD"]} in c["lists"] and "HOOD" in c["tickers"] and "HOOD" not in c["main"]
+    wallwatch.save_config("wl-user", {"move": "ZZZ", "to": "Main"})
+    c = wallwatch.config("wl-user")
+    assert "ZZZ" in c["main"] and c["lists"][1]["tickers"] == []
+    wallwatch.save_config("wl-user", {"remove": "ZZZ", "list": "Main"})
+    wallwatch.save_config("wl-user", {"renameList": "Swing", "to": "Swing 2"})
+    c = wallwatch.config("wl-user")
+    assert "ZZZ" not in c["tickers"] and any(x["name"] == "Swing 2" for x in c["lists"])
+    wallwatch.save_config("wl-user", {"deleteList": "Swing 2"})
+    assert "HOOD" not in wallwatch.config("wl-user")["tickers"]
+    saved = (flowdata.alerts, autotrader.settings)
+    try:
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "NEWT", "premium": 900000}, {"ticker": "AAPL", "premium": 1}]}
+        autotrader.settings = lambda sub: {"flowWindowMin": 5, "flowMinPremium": 1, "flowMinDte": 0, "flowMaxDte": 60, "flowAskSide": True,
+                                           "flowSweeps": False, "flowMinVolOi": 0, "excludeEtfs": False}
+        r = wallwatch.flow_add("wl-user")
+        c = wallwatch.config("wl-user")
+        assert r["added"] == ["NEWT"] and "NEWT" not in c["main"] and "NEWT" in c["lists"][1]["tickers"] and "NEWT" in c["tickers"]
+    finally:
+        flowdata.alerts, autotrader.settings = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

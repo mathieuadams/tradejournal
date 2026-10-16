@@ -1604,6 +1604,15 @@ async function loadTickers() {
 }
 S.fcfMode = 'ww';                         // the Chart tab shows the wall watch list only
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
+function wlPut(body, msg) {
+  api('/bot/wallwatch', { method: 'PUT', body }).then(r => { S.ww = { ...(S.ww || {}), ...r }; S.wwSw = null; toast(msg); render(); }).catch(err => toast(err.message));
+}
+try { S.wlClosed = JSON.parse(localStorage.getItem('wlClosed') || '{}') || {}; S.wlH = JSON.parse(localStorage.getItem('wlH') || '{}') || {}; } catch (e) { S.wlClosed = {}; S.wlH = {}; }
+document.addEventListener('mouseup', () => {          // a watchlist box resized by its corner: keep its height
+  let ch = false;
+  document.querySelectorAll('[data-wlbox]').forEach(b => { const h = Math.round(b.getBoundingClientRect().height); if (h && Math.abs(h - ((S.wlH || {})[b.dataset.wlbox] || 0)) > 4) { S.wlH = { ...(S.wlH || {}), [b.dataset.wlbox]: h }; ch = true; } });
+  if (ch) try { localStorage.setItem('wlH', JSON.stringify(S.wlH)); } catch (e) {}
+});
 function wwTickers() { return ((S.ww && S.ww.config && S.ww.config.tickers) || []); }
 async function loadWwChart(sym) {
   const k = fcKey('ww-' + sym); S.fcBusy[k] = true;
@@ -1678,7 +1687,9 @@ function vChartWW() {
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
   const added = ((S.ww && S.ww.config && S.ww.config.added) || {});
-  const side = narrow ? '' : `<aside class="fcf-side"><form id="ww-addf" style="display:flex;gap:6px;margin-bottom:6px"><input id="ww-add" placeholder="Add ticker" style="flex:1;min-width:0" aria-label="Add a ticker"><button class="btn" type="submit" style="padding:2px 10px">Add</button></form>
+  const side = narrow ? '' : `<aside class="fcf-side"><form id="ww-addf" style="display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap"><input id="ww-add" placeholder="Add ticker" style="flex:1;min-width:0;margin:6px 0 6px 6px" aria-label="Add a ticker">
+        <select id="ww-addlist" style="max-width:7.5em;margin:6px 0" aria-label="To list">${(((S.ww && S.ww.config && S.ww.config.lists) || [{ name: 'Main' }])).map(L => `<option ${L.name === (S.wlAddTo || 'Main') ? 'selected' : ''}>${esc(L.name)}</option>`).join('')}</select>
+        <button class="btn" type="submit" style="padding:2px 8px;margin:6px 0">Add</button><button class="btn" type="button" data-wlnew style="padding:2px 8px;margin:6px 6px 6px 0" title="Create a new watchlist">+ List</button></form>
       ${(() => { const ps = (S.ww && S.ww.positions) || []; if (!ps.length) return '';
         return `<div class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin:6px 2px 4px">Current positions (${ps.length})</div>
         <ul class="fcf-list" style="margin-bottom:8px;border-bottom:2px solid var(--line)">${ps.map(p0 => `<li data-sym="${esc(p0.symbol)}"><a href="#botchart?t=${encodeURIComponent(p0.symbol)}" ${p0.symbol === sym ? 'aria-current="true"' : ''}>
@@ -1686,10 +1697,14 @@ function vChartWW() {
           <span style="text-align:right"><b class="${(p0.plPct || 0) >= 0 ? 'gain' : 'loss'}" style="font-size:.85rem">${p0.plPct != null ? (p0.plPct >= 0 ? '+' : '') + p0.plPct + '%' : '—'}</b><br><span class="muted" style="font-size:.72rem">${p0.pl != null ? money(p0.pl) : ''}</span></span></a></li>`).join('')}</ul>
         <div class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin:2px 2px 4px">Watchlist (${list.length})</div>`; })()}
       <input id="fcf-q" type="search" placeholder="Filter tickers" value="${esc(S.fcfQ || '')}" aria-label="Filter tickers">
-      <ul class="fcf-list">${list.map(x => { const b = bySym[x] || { n: 0, t: 0, open: 0, tot: 0 }, st = stMap[x] || {}, ad = added[x];
+      ${(((S.ww && S.ww.config && S.ww.config.lists) || [{ name: 'Main', tickers: list }])).map(L => { const open_ = !(S.wlClosed || {})[L.name], h = (S.wlH || {})[L.name];
+        return `<div class="wl-sec" style="border-bottom:2px solid var(--line)"><div style="display:flex;align-items:center;gap:4px;padding:4px 6px;background:var(--sunk)">
+          <button class="btn" data-wltoggle="${esc(L.name)}" style="font-size:.7rem;padding:0 6px">${open_ ? '▾' : '▸'}</button><b style="font-size:.78rem;flex:1;text-transform:uppercase;letter-spacing:.04em">${esc(L.name)} <span class="muted">(${L.tickers.length})</span></b>
+          ${!['Main', 'Unusual flow'].includes(L.name) ? `<button class="btn" data-wlren="${esc(L.name)}" title="Rename" style="font-size:.7rem;padding:0 6px">✎</button><button class="btn" data-wldel="${esc(L.name)}" title="Delete this list" style="font-size:.7rem;padding:0 6px">✕</button>` : ''}</div>
+          ${open_ ? `<div class="wl-box" data-wlbox="${esc(L.name)}" style="height:${h || (L.name === 'Main' ? 420 : 200)}px;resize:vertical;overflow:auto;min-height:60px"><ul class="fcf-list" style="overflow:visible">${L.tickers.map(x => { const b = bySym[x] || { n: 0, t: 0, open: 0, tot: 0 }, st = stMap[x] || {}, ad = added[x];
         return `<li data-sym="${esc(x)}" ${S.fcfQ && !x.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x)}" ${x === sym ? 'aria-current="true"' : ''}>
         <span><b>${esc(x)}</b>${b.open ? ' <span class="exchip" style="font-size:.7rem">open</span>' : ''}${ad && ad.by === 'flow' ? ` <span class="exchip" style="font-size:.7rem" title="Added ${esc((ad.at || '').replace('T', ' ').slice(5, 16))} from unusual call flow ${money(ad.premium || 0, false)}">flow ${esc((ad.at || '').slice(5, 10))}</span>` : ''}<br><span class="muted" style="font-size:.75rem">${b.n} signal${b.n === 1 ? '' : 's'}${b.n ? ` · ${b.t} target` : ''}</span></span>
-        <span style="text-align:right">${st.setup ? '<span class="verdict ok" style="font-size:.72rem;padding:1px 7px">setup</span>' : ''}<br><span style="font-size:.75rem" class="${b.tot > 0 ? 'gain' : b.tot < 0 ? 'loss' : 'muted'}">${b.n - b.open ? (b.tot >= 0 ? '+' : '') + b.tot.toFixed(1) + '%' : ''}</span></span></a></li>`; }).join('')}</ul></aside>`;
+        <span style="text-align:right">${st.setup ? '<span class="verdict ok" style="font-size:.72rem;padding:1px 7px">setup</span>' : ''}<br><span style="font-size:.75rem" class="${b.tot > 0 ? 'gain' : b.tot < 0 ? 'loss' : 'muted'}">${b.n - b.open ? (b.tot >= 0 ? '+' : '') + b.tot.toFixed(1) + '%' : ''}</span></span></a><span class="wl-act"><button class="btn" data-wlmv="${esc(L.name)}|${esc(x)}" title="Move to another list" style="font-size:.68rem;padding:0 5px">⇄</button><button class="btn" data-wlrm="${esc(L.name)}|${esc(x)}" title="Remove from ${esc(L.name)}" style="font-size:.68rem;padding:0 5px">✕</button></span></li>`; }).join('')}</ul></div>` : ''}</div>`; }).join('')}</aside>`;
   return `<div class="fcf">${headBar}<div class="fcf-body"><div class="fcf-main">${main}</div>${side}</div></div>`;
 }
 function fcfSymbol() {
@@ -3473,7 +3488,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3551,6 +3566,16 @@ document.addEventListener('click', e => {
     Object.assign(L, S.labDraft || {}, S.labSw || {}); S.labDraft = {}; S.labSw = {}; S.labDirty = false;
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }
+  if (el.dataset.wltoggle) { S.wlClosed = { ...(S.wlClosed || {}), [el.dataset.wltoggle]: !(S.wlClosed || {})[el.dataset.wltoggle] }; try { localStorage.setItem('wlClosed', JSON.stringify(S.wlClosed)); } catch (x) {} render(); return; }
+  if (el.hasAttribute('data-wlnew')) { const nm = (prompt('Name of the new watchlist') || '').trim(); if (!nm) return; wlPut({ newList: nm }, `List ${nm} created`); return; }
+  if (el.dataset.wldel) { if (!confirm(`Delete the list ${el.dataset.wldel}? Its tickers stop being scanned unless they are in another list.`)) return; wlPut({ deleteList: el.dataset.wldel }, 'List deleted'); return; }
+  if (el.dataset.wlren) { const nm = (prompt('New name', el.dataset.wlren) || '').trim(); if (!nm) return; wlPut({ renameList: el.dataset.wlren, to: nm }, 'List renamed'); return; }
+  if (el.dataset.wlrm) { const [ln, t] = el.dataset.wlrm.split('|'); e.preventDefault(); wlPut({ remove: t, list: ln }, `${t} removed from ${ln}`); return; }
+  if (el.dataset.wlmv) { const [ln, t] = el.dataset.wlmv.split('|'); e.preventDefault();
+    const names = ((S.ww && S.ww.config && S.ww.config.lists) || []).map(L => L.name).filter(n => n !== ln);
+    const to = (prompt(`Move ${t} from ${ln} to which list?\n${names.join(' · ')}`, names[0] || '') || '').trim();
+    if (!to) return; if (!names.includes(to)) { toast(`No list named ${to}`); return; }
+    wlPut({ move: t, to }, `${t} moved to ${to}`); return; }
   if (el.hasAttribute('data-labtolive')) {
     const L = { ...(labCfg() || {}), ...(S.labDraft || {}), ...(S.labSw || {}) };
     if (L.tf === '1D' && !confirm('The lab is on the 1D timeframe; the live bot trades hourly candles. Copy the rules anyway?')) return;
@@ -3771,7 +3796,8 @@ document.addEventListener('submit', e => {
   if (e.target.id !== 'ww-addf') return;
   e.preventDefault();
   const t = (($('#ww-add') || {}).value || '').trim().toUpperCase(); if (!t) return;
-  api('/bot/wallwatch', { method: 'PUT', body: { add: t } }).then(r => { S.ww = r; toast(`${t} added`); location.hash = '#botchart?t=' + encodeURIComponent(t); render(); }).catch(err => toast(err.message));
+  const ln = (($('#ww-addlist') || {}).value) || 'Main'; S.wlAddTo = ln;
+  api('/bot/wallwatch', { method: 'PUT', body: { add: t, list: ln } }).then(r => { S.ww = r; toast(`${t} added`); location.hash = '#botchart?t=' + encodeURIComponent(t); render(); }).catch(err => toast(err.message));
 });
 document.addEventListener('change', e => {
   const id = e.target.id;

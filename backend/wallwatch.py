@@ -70,9 +70,32 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
 OPTS = {"autoAdd": True, "trade": True, "flowRule": None}   # flowRule: index in FLOW_BUCKETS a signal must pass to be traded        # add unusual-flow tickers to the list; buy the signals (Alpaca paper)
 
 
+MAIN_V1 = DEFAULT + ["V"]          # the main list as set on 2026-10-16
+FLOW_LIST = "Unusual flow"
+
+
+def _uniq(xs):
+    seen, out = set(), []
+    for x in xs:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
 def config(sub):
     c = db.get(db.upk(sub), "WWCFG") or {}
-    out = {"tickers": c.get("tickers") or DEFAULT, "enabled": c.get("enabled", True)}
+    if c and c.get("listsV") != 1:                     # one time: main list reset, the rest moved to the flow list
+        old = list(c.get("tickers") or DEFAULT)
+        extra = [t for t in old if t not in MAIN_V1]
+        c = {**c, "tickers": list(MAIN_V1), "lists": [{"name": FLOW_LIST, "tickers": extra}], "listsV": 1}
+        db.put(c)
+    main = list(c.get("tickers") or MAIN_V1)
+    lists = [{"name": str(x.get("name") or "List"), "tickers": list(x.get("tickers") or [])} for x in (c.get("lists") or [])]
+    if not any(x["name"] == FLOW_LIST for x in lists):
+        lists.insert(0, {"name": FLOW_LIST, "tickers": []})
+    out = {"tickers": _uniq(main + [t for x in lists for t in x["tickers"]]), "main": main,
+           "lists": [{"name": "Main", "tickers": main}] + lists, "enabled": c.get("enabled", True)}
     out.update({k: c.get(k, v) for k, v in PARAMS.items()})
     out.update({k: c.get(k, v) for k, v in OPTS.items()})
     out["added"] = c.get("added") or {}                 # {ticker: {"at", "by", "premium"}} for tickers added from the flow
@@ -106,6 +129,8 @@ SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", 
 
 def save_config(sub, body):
     cur = config(sub)
+    main = list(cur["main"])
+    extra = [dict(x) for x in cur["lists"][1:]]
     tk = body.get("tickers")
     if isinstance(tk, str):
         tk = tk.replace(",", " ").split()
@@ -116,7 +141,7 @@ def save_config(sub, body):
             if t and t not in seen and len(t) <= 10:
                 seen.add(t)
                 out.append(t)
-        cur["tickers"] = out[:150]
+        main = out[:150]
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
@@ -148,17 +173,49 @@ def save_config(sub, body):
             cur["flowRule"] = None if v in (None, "", -1, "-1") else int(v)
         except (TypeError, ValueError):
             pass
-    if body.get("add"):                                  # add one ticker
+    ln = str(body.get("list") or "Main")[:40]           # the list an add / remove / move works on
+    def lst(name):
+        if name == "Main":
+            return main
+        x = next((x for x in extra if x["name"] == name), None)
+        return x["tickers"] if x else None
+    if body.get("newList"):                              # create a list
+        nm = str(body["newList"]).strip()[:40]
+        if nm and nm != "Main" and lst(nm) is None and len(extra) < 20:
+            extra.append({"name": nm, "tickers": []})
+    if body.get("deleteList") and body["deleteList"] not in ("Main", FLOW_LIST):
+        extra = [x for x in extra if x["name"] != body["deleteList"]]
+    if body.get("renameList") and body.get("to"):
+        x = next((x for x in extra if x["name"] == body["renameList"] and x["name"] != FLOW_LIST), None)
+        nm = str(body["to"]).strip()[:40]
+        if x and nm and nm != "Main" and lst(nm) is None:
+            x["name"] = nm
+    if body.get("add"):                                  # add one ticker (to a list, Main by default)
         t = str(body["add"]).strip().upper().replace("/", ".")[:10]
-        if t and t not in cur["tickers"]:
-            cur["tickers"] = cur["tickers"] + [t]
-            cur["added"] = {**cur.get("added", {}), t: {"at": iso(now_ny()), "by": body.get("addedBy") or "you",
-                                                       **({"premium": round(body["premium"])} if body.get("premium") else {})}}
-    if body.get("remove"):
+        L = lst(ln)
+        if t and L is not None and t not in L:
+            L.append(t)
+            if t not in cur.get("added", {}):
+                cur["added"] = {**cur.get("added", {}), t: {"at": iso(now_ny()), "by": body.get("addedBy") or "you",
+                                                           **({"premium": round(body["premium"])} if body.get("premium") else {})}}
+    if body.get("remove"):                               # remove from that list (or from every list)
         t = str(body["remove"]).strip().upper()
-        cur["tickers"] = [x for x in cur["tickers"] if x != t]
+        for L in ([lst(ln)] if body.get("list") else [main] + [x["tickers"] for x in extra]):
+            if L is not None and t in L:
+                L.remove(t)
+    if body.get("move") and body.get("to"):              # move a ticker to another list
+        t = str(body["move"]).strip().upper()
+        dst = lst(str(body["to"]))
+        if dst is not None:
+            for L in [main] + [x["tickers"] for x in extra]:
+                if t in L:
+                    L.remove(t)
+            dst.append(t)
+    cur["tickers"] = main
     from decimal import Decimal
-    db.put({"PK": db.upk(sub), "SK": "WWCFG", **{k: Decimal(str(v)) if isinstance(v, float) else v for k, v in cur.items()}})
+    db.put({"PK": db.upk(sub), "SK": "WWCFG", **{k: Decimal(str(v)) if isinstance(v, float) else v for k, v in cur.items()
+                                                 if k not in ("main",)}, "lists": extra, "listsV": 1})
+    cur = config(sub)
     if version(cur) != before:                          # new settings: the 45-day history is recomputed from scratch
         run_ = db.get(db.upk(sub), "WWRUN") or {}
         if run_:
@@ -1593,15 +1650,20 @@ def flow_add(sub, cfg=None):
         if t:
             prem[t] = prem.get(t, 0) + (a.get("premium") or 0)
     new = [t for t in sorted(prem, key=lambda t: -prem[t]) if t not in cfg["tickers"]]
-    if new:
+    if new:                                            # into the "Unusual flow" list, not the main one
         cur = db.get(db.upk(sub), "WWCFG") or {"PK": db.upk(sub), "SK": "WWCFG"}
-        tickers = list(cur.get("tickers") or cfg["tickers"])
+        lists = [dict(x) for x in (cur.get("lists") or [])]
+        fl = next((x for x in lists if x.get("name") == FLOW_LIST), None)
+        if not fl:
+            fl = {"name": FLOW_LIST, "tickers": []}
+            lists.insert(0, fl)
+        fl["tickers"] = list(fl.get("tickers") or [])
         added = dict(cur.get("added") or {})
         for t in new[:20]:
-            if t not in tickers and len(tickers) < 300:
-                tickers.append(t)
+            if t not in fl["tickers"] and len(cfg["tickers"]) + len(fl["tickers"]) < 400:
+                fl["tickers"].append(t)
                 added[t] = {"at": iso(now_ny()), "by": "flow", "premium": round(prem[t])}
-        db.update(db.upk(sub), "WWCFG", {"tickers": tickers, "added": added})
+        db.update(db.upk(sub), "WWCFG", {"lists": lists, "added": added, "listsV": 1, **({} if cur.get("tickers") else {"tickers": list(cfg["main"])})})
     return {"alerts": len(res.get("alerts") or []), "added": new[:20]}
 
 

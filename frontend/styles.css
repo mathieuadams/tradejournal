@@ -419,9 +419,13 @@ tr.sel td{background:var(--sunk)}
 .fcf-body{flex:1 0 auto;display:flex;min-height:0}
 .fcf-main{flex:1;min-width:0;padding:6px 8px 40px;overflow-x:hidden;background:var(--surface)}
 .fcf-info{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.86rem;padding:6px 4px 0}
-.fcf-side{width:260px;border-left:1px solid var(--line);display:flex;flex-direction:column;background:var(--surface);position:sticky;top:0;align-self:flex-start;max-height:100vh}
+.fcf-side{width:260px;border-left:1px solid var(--line);display:flex;flex-direction:column;background:var(--surface);position:sticky;top:0;align-self:flex-start;max-height:100vh;overflow-y:auto}
 .fcf-side input{margin:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
 .fcf-list{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
 .fcf-list a{display:flex;justify-content:space-between;gap:8px;padding:7px 12px;color:var(--ink);text-decoration:none;border-bottom:1px solid var(--line);line-height:1.35}
 .fcf-list a:hover{background:var(--sunk)}
 .fcf-list a[aria-current]{background:var(--coach-soft);box-shadow:inset 3px 0 0 var(--coach)}
+
+.fcf-list li{position:relative}
+.wl-act{position:absolute;right:4px;top:4px;display:none;gap:2px;background:var(--surface);border-radius:6px}
+.fcf-list li:hover .wl-act{display:flex}
