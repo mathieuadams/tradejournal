@@ -2959,7 +2959,7 @@ function optSymBox(sym, sigs, sel) {
     const have = x.byAt || {}, missing = sigs.filter(s0 => s0.at >= '2024-02-05' && !(s0.at in have)).length;
     const pp = x.params || {}, same = (pp.sel || 'manual') === P.sel && (P.sel === 'live' ? ['tp', 'sl', 'slip'] : ['dteMin', 'dteMax', 'money', 'tp', 'sl', 'slip']).every(k => +pp[k] === +P[k]) && !!pp.follow === !!P.follow;
     S.optAuto[key] = true;
-    if (missing || !same || x.v !== 3) setTimeout(() => optSymRun(sym), 0);   // v2: stray prints filtered
+    if (missing || !same || x.v !== 4) setTimeout(() => optSymRun(sym), 0);   // v2: stray prints filtered
   }
   const pc = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${v}%</b>`;
   const o = sel && x.byAt ? x.byAt[sel.at] : null;
@@ -2967,6 +2967,9 @@ function optSymBox(sym, sigs, sel) {
   return `<span style="display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center">${btn}
     ${x.stats && st.n ? `<span><b>Calls</b> ${st.n} trades · win ${st.win}% · avg ${pc(st.avg)} · median ${pc(st.med)} · avg win / loss ${pc(st.avgWin)} / ${pc(st.avgLoss)} · total ${pc(st.tot)}${x.params ? ` <span class="muted">(${x.params.sel === 'live' ? `live bot: ${x.params.dteMin}–${x.params.dteMax}d, delta ${x.params.deltaMin}–${x.params.deltaMax}` : `${x.params.dteMin}–${x.params.dteMax}d`}, TP ${x.params.tp || 'none'}${x.params.tp ? '%' : ''}, stop ${x.params.sl || 'none'}${x.params.sl ? '%' : ''})</span>` : ''}</span>` : ''}
     ${x.older ? `<span class="muted">${x.older} trades before Feb 2024: no option prices</span>` : ''}
+    ${o && !o.none ? (() => { const bs0 = (S.fc[fcKey('ww-lab-' + sym)] || {}).bars || [], px = t => { let v = null; bs0.forEach(b0 => { if (b0.t < t) v = b0.c; }); return v; };
+      const se = px(o.entryAt || sel.at), sx = o.exitAt ? px(o.exitAt) : null, sm = o.maeAt ? px(o.maeAt) : null;
+      return `<span class="muted">${esc(sym)} ${se != null ? se.toFixed(2) : '—'} at entry · option worst ${pc(o.mae)} ${esc((o.maeAt || '').replace('T', ' ').slice(5))}${sm != null ? ` (${esc(sym)} ${sm.toFixed(2)}, ${se ? ((sm / se - 1) * 100).toFixed(1) + '%' : ''})` : ''} · at the option exit ${esc(sym)} ${sx != null ? sx.toFixed(2) : '—'}${sx != null && se ? ` (${((sx / se - 1) * 100).toFixed(1)}%)` : ''}</span>`; })() : ''}
     ${o ? (o.none ? `<span class="muted">Selected trade: ${esc(o.none)}</span>` : `<span><b>Selected trade</b> bought <b>${esc(o.sym)}</b> (${esc(o.exp)} ${o.strike} call${o.delta != null ? `, delta ${o.delta}` : ''}) at ${o.entry}${o.entryAt ? ` (${esc(o.entryAt.replace('T', ' ').slice(5))})` : ''} → sold ${o.exitPx ?? '—'} · ${esc(o.why || '')} ${esc((o.exitAt || '').replace('T', ' ').slice(5))} → ${pc(o.pct)} · best ${pc(o.mfe)}</span>`) : ''}
     ${(x.errors || []).length ? `<span class="loss">${esc(x.errors.join(' · '))}</span>` : ''}${x.error ? `<span class="loss">${esc(x.error)}</span>` : ''}</span>`;
 }

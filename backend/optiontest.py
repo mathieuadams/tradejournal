@@ -272,10 +272,13 @@ def price_one(c, t, P):
     mine = simulate(after, entry, entry_end, stock_exit_end, exp, None if P.get("tp") in (None, "", 0) else float(P["tp"]),
                     None if P.get("sl") in (None, "", 0) else float(P["sl"]), bool(P.get("follow", True)), slip)
     mfe = max([p[2] for p in after] or [entry])
+    upto = [p for p in after if not mine or p[0] <= mine[2]] or after
+    lo_ = min(upto, key=lambda p: p[3]) if upto else None          # the option's worst close while held
     return {**t, "opt": {"sym": sym_, "exp": exp, "strike": strike, "vol": vol, "entry": round(entry, 2), "delta": dl,
                          "mfe": round((mfe / (entry * (1 + slip)) - 1) * 100, 1),
                          "pct": mine[0] if mine else None, "why": mine[1] if mine else None, "exitAt": mine[2] if mine else None,
-                         "exitPx": mine[3] if mine else None, "entryAt": before[-1][0]},
+                         "exitPx": mine[3] if mine else None, "entryAt": before[-1][0],
+                         "mae": round((lo_[3] / (entry * (1 + slip)) - 1) * 100, 1) if lo_ else None, "maeAt": lo_[0] if lo_ else None},
             "_grid": res}
 
 
@@ -307,7 +310,7 @@ def run_sym(sub, sym, trades, params=None, budget_s=270):
     pool.shutdown(wait=False, cancel_futures=True)
     by = {r["at"]: {**(r.get("opt") or {}), **({} if r.get("opt") else {"none": r.get("why")})} for r in rows}
     ok = [r["opt"]["pct"] for r in rows if r.get("opt") and r["opt"].get("pct") is not None]
-    out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "params": P, "byAt": by, "v": 3, "stats": _stats(ok),
+    out = {"PK": pk, "SK": sk, "running": None, "at": iso(now_ny()), "params": P, "byAt": by, "v": 4, "stats": _stats(ok),
            "errors": errors[:3], "older": sum(1 for t in trades if (t.get("at") or "") < "2024-02-05")}
     db.put(out)
     return {k: v for k, v in out.items() if k not in ("PK", "SK")}
