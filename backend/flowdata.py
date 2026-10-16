@@ -210,6 +210,38 @@ def alerts(sub, min_premium=100000, opt_type="call", min_dte=0, max_dte=120, ask
             "totalPremium": round(sum(a["premium"] for a in out)), "topTickers": top}
 
 
+def stock_quotes(sub, symbols):
+    """{symbol: {"m": mark, "ch": change, "pct": % change}} vs the previous close (Alpaca snapshots, IEX feed).
+    Mark = bid/ask middle when the spread is tight (< 0.5%), else the last trade."""
+    import alpaca
+    c = alpaca.creds(sub)
+    if not c or not symbols:
+        return {}
+    h = {"APCA-API-KEY-ID": c["key"], "APCA-API-SECRET-KEY": c["secret"]}
+    today = now_ny().strftime("%Y-%m-%d")
+    out = {}
+    syms = sorted({s.upper() for s in symbols if s})
+    for i in range(0, len(syms), 100):
+        q = urllib.parse.urlencode({"symbols": ",".join(syms[i:i + 100]), "feed": "iex"})
+        req = urllib.request.Request(f"https://data.alpaca.markets/v2/stocks/snapshots?{q}", headers=h)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read()) or {}
+        except (urllib.error.HTTPError, urllib.error.URLError):
+            continue
+        for sym, sn in data.items():
+            sn = sn or {}
+            tr, qt, db_, pdb = sn.get("latestTrade") or {}, sn.get("latestQuote") or {}, sn.get("dailyBar") or {}, sn.get("prevDailyBar") or {}
+            bid, ask, last = qt.get("bp"), qt.get("ap"), tr.get("p") or db_.get("c")
+            mark = (bid + ask) / 2 if bid and ask and ask >= bid and (ask - bid) / ((ask + bid) / 2) < 0.005 else last
+            prev = pdb.get("c") if str(db_.get("t") or "")[:10] >= today else db_.get("c")
+            if not mark:
+                continue
+            out[sym] = {"m": round(mark, 4), "ch": round(mark - prev, 4) if prev else None,
+                        "pct": round((mark / prev - 1) * 100, 2) if prev else None}
+    return out
+
+
 def live_prices(sub, rows):
     """Add the option's current price and the stock's current price to each alert (Alpaca market data)."""
     import alpaca

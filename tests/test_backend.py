@@ -3226,6 +3226,28 @@ def test_review_open_positions():
         charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
 
 
+def test_stock_quotes():
+    """Watchlist Mark / change / % change from Alpaca snapshots (mid when tight, else last trade)."""
+    import flowdata, alpaca, json as js, io
+    from util import now_ny
+    today = now_ny().strftime("%Y-%m-%d")
+    snap = {"AAA": {"latestTrade": {"p": 101.0}, "latestQuote": {"bp": 100.98, "ap": 101.02}, "dailyBar": {"t": today + "T13:30:00Z", "c": 101},
+                    "prevDailyBar": {"c": 100.0}},
+            "BBB": {"latestTrade": {"p": 50.0}, "latestQuote": {"bp": 40, "ap": 60}, "dailyBar": {"t": "2020-01-01T00:00:00Z", "c": 49.0}}}
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    saved = (flowdata.urllib.request.urlopen, alpaca.creds)
+    try:
+        flowdata.urllib.request.urlopen = lambda req, timeout=15: R(js.dumps(snap).encode())
+        alpaca.creds = lambda sub: {"key": "k", "secret": "s"}
+        q = flowdata.stock_quotes("q-user", ["AAA", "BBB"])
+        assert q["AAA"] == {"m": 101.0, "ch": 1.0, "pct": 1.0}
+        assert q["BBB"]["m"] == 50.0 and q["BBB"]["ch"] == 1.0 and q["BBB"]["pct"] == 2.04   # wide spread: last trade; vs the last close
+    finally:
+        flowdata.urllib.request.urlopen, alpaca.creds = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

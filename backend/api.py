@@ -427,6 +427,13 @@ def bot_wallwatch(sub, claims, body, q):
     return wallwatch.view(sub)
 
 
+@route("GET", "/bot/wallwatch/quotes")
+def bot_wallwatch_quotes(sub, claims, body, q):
+    import flowdata
+    import wallwatch
+    return flowdata.stock_quotes(sub, wallwatch.config(sub)["tickers"])
+
+
 @route("POST", "/bot/wallwatch/review")
 def bot_wallwatch_review(sub, claims, body, q):
     import wallwatch

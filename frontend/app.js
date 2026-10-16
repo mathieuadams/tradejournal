@@ -1630,6 +1630,20 @@ async function wwReview() {
   if (n) { toast(`${n} position${n > 1 ? 's' : ''} closed: not fitting the current settings`); try { await loadWatch(); } catch (e) {} }
   render();
 }
+async function loadQuotes() {                    // watchlist Mark / change / % change, every 30 s while the chart page is open
+  clearTimeout(S.wwQT);
+  if (route() !== 'botchart') { S.wwQOn = false; return; }
+  S.wwQOn = true;
+  try { const q = await api('/bot/wallwatch/quotes'); if (q && typeof q === 'object') { S.wwQ = q; if (!S.fczDrag) wlQuotePaint(); } } catch (e) {}
+  S.wwQT = setTimeout(loadQuotes, 30000);
+}
+function qHtml(x, setup) {
+  const qx = (S.wwQ || {})[x], sc = setup ? '<span class="verdict ok" style="font-size:.66rem;padding:0 5px">setup</span>' : '';
+  if (!qx) return sc;
+  const cls = qx.ch > 0 ? 'gain' : qx.ch < 0 ? 'loss' : 'muted';
+  return `<b style="font-size:.85rem" title="Mark">${qx.m < 10 ? qx.m.toFixed(3) : qx.m.toFixed(2)}</b><br><span class="${cls}" style="font-size:.74rem" title="Mark change · % mark change vs the previous close">${qx.ch != null ? (qx.ch > 0 ? '+' : '') + qx.ch.toFixed(2) : '—'} · ${qx.pct != null ? (qx.pct > 0 ? '+' : '') + qx.pct.toFixed(2) + '%' : '—'}</span>${sc ? '<br>' + sc : ''}`;
+}
+function wlQuotePaint() { document.querySelectorAll('[data-q]').forEach(el => { el.innerHTML = qHtml(el.dataset.q, !!el.dataset.setup); }); }
 function wlPut(body, msg) {
   api('/bot/wallwatch', { method: 'PUT', body }).then(r => { S.ww = { ...(S.ww || {}), ...r }; S.wwSw = null; toast(msg); render(); }).catch(err => toast(err.message));
 }
@@ -1713,6 +1727,7 @@ function vChartWW() {
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
   const added = ((S.ww && S.ww.config && S.ww.config.added) || {});
+  if (!S.wwQOn) setTimeout(loadQuotes, 0);
   const side = narrow ? '' : `<aside class="fcf-side"><form id="ww-addf" style="display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap"><input id="ww-add" placeholder="Add ticker" style="flex:1;min-width:0;margin:6px 0 6px 6px" aria-label="Add a ticker">
         <select id="ww-addlist" style="max-width:7.5em;margin:6px 0" aria-label="To list">${(((S.ww && S.ww.config && S.ww.config.lists) || [{ name: 'Main' }])).map(L => `<option ${L.name === (S.wlAddTo || 'Main') ? 'selected' : ''}>${esc(L.name)}</option>`).join('')}</select>
         <button class="btn" type="submit" style="padding:2px 8px;margin:6px 0">Add</button><button class="btn" type="button" data-wlnew style="padding:2px 8px;margin:6px 6px 6px 0" title="Create a new watchlist">+ List</button></form>
@@ -1732,7 +1747,7 @@ function vChartWW() {
           ${open_ ? `<div class="wl-box" data-wlbox="${esc(L.name)}" style="height:${h || (L.name === 'Main' ? 420 : 200)}px;resize:vertical;overflow:auto;min-height:60px"><ul class="fcf-list" style="overflow:visible">${L.tickers.map(x => { const b = bySym[x] || { n: 0, t: 0, open: 0, tot: 0 }, st = stMap[x] || {}, ad = added[x];
         return `<li data-sym="${esc(x)}" ${S.fcfQ && !x.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x)}" ${x === sym ? 'aria-current="true"' : ''}>
         <span><b>${esc(x)}</b>${b.open ? ' <span class="exchip" style="font-size:.7rem">open</span>' : ''}${ad && ad.by === 'flow' ? ` <span class="exchip" style="font-size:.7rem" title="Added ${esc((ad.at || '').replace('T', ' ').slice(5, 16))} from unusual call flow ${money(ad.premium || 0, false)}">flow ${esc((ad.at || '').slice(5, 10))}</span>` : ''}<br><span class="muted" style="font-size:.75rem">${b.n} signal${b.n === 1 ? '' : 's'}${b.n ? ` · ${b.t} target` : ''}</span></span>
-        <span style="text-align:right">${st.setup ? '<span class="verdict ok" style="font-size:.72rem;padding:1px 7px">setup</span>' : ''}<br><span style="font-size:.75rem" class="${b.tot > 0 ? 'gain' : b.tot < 0 ? 'loss' : 'muted'}">${b.n - b.open ? (b.tot >= 0 ? '+' : '') + b.tot.toFixed(1) + '%' : ''}</span></span></a><span class="wl-act"><button class="btn" data-wlmv="${esc(L.name)}|${esc(x)}" title="Move to another list" style="font-size:.68rem;padding:0 5px">⇄</button><button class="btn" data-wlrm="${esc(L.name)}|${esc(x)}" title="Remove from ${esc(L.name)}" style="font-size:.68rem;padding:0 5px">✕</button></span></li>`; }).join('')}</ul></div>` : ''}</div>`; }).join('')}</aside>`;
+        <span data-q="${esc(x)}" data-setup="${st.setup ? 1 : ''}" style="text-align:right;font-variant-numeric:tabular-nums;line-height:1.25">${qHtml(x, !!st.setup)}</span></a><span class="wl-act"><button class="btn" data-wlmv="${esc(L.name)}|${esc(x)}" title="Move to another list" style="font-size:.68rem;padding:0 5px">⇄</button><button class="btn" data-wlrm="${esc(L.name)}|${esc(x)}" title="Remove from ${esc(L.name)}" style="font-size:.68rem;padding:0 5px">✕</button></span></li>`; }).join('')}</ul></div>` : ''}</div>`; }).join('')}</aside>`;
   return `<div class="fcf">${headBar}<div class="fcf-body"><div class="fcf-main">${main}</div>${side}</div></div>`;
 }
 function fcfSymbol() {
