@@ -1105,8 +1105,16 @@ def monitor(sub):
             actions.append((rec["symbol"], reason))
             continue
         if p.get("wallwatch"):                           # wall watch trade: its own stop / trailing stop / call wall target
+            reason = None
+            if (p["wallwatch"] or {}).get("earnExit", True):   # sell before earnings (at 15:30 the day before / AMC day)
+                try:
+                    due, why = earnings_exit_due(earn_for(cfg, rec["symbol"])[0])
+                    if due:
+                        reason = why
+                except Exception as e:
+                    print("wallwatch earnings check failed", rec.get("symbol"), e)
             try:
-                reason = _wallwatch_exit(sub, rec, p)
+                reason = reason or _wallwatch_exit(sub, rec, p)
             except Exception as e:
                 reason = None
                 print("wallwatch exit check failed", rec.get("symbol"), e)

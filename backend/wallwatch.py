@@ -58,6 +58,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
           # hourly inertia (lab): the same regression on the hourly closes, lengths in hourly candles
+          "earnExit": True,    # live: sell a wall watch trade before earnings (15:30 the day before, or the AMC day)
           "inhN1": 70, "inhN2": 40, "inhN3": 20, "inhGreen": False, "inhNotRed": False, "inhYExit": False,
           # TTM squeeze (lab), hourly (sqh*) and daily (sqd*): Bollinger(len, bb x stdev) inside Keltner(len, kc x ATR)
           # = squeeze on; fired = it turns off; momentum = regression of close - midpoint of the range / average.
@@ -131,7 +132,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -1635,6 +1636,7 @@ def enter(sub, sym, sg):
               "scaleOn": bool(cfg.get("scaleOn")), "scaleR": float(cfg.get("scaleR") or 1), "scalePct": float(cfg.get("scalePct") or 50),
               "scaleBE": bool(cfg.get("scaleBE", True)),
               "fvgExit": bool(cfg.get("fvgExit")), "fvgMin": float(cfg.get("fvgMin") or 0.2),
+              "earnExit": bool(cfg.get("earnExit", True)),
               "inRedExit": bool(cfg.get("inRedExit")), "inNs": [int(cfg.get("inN1") or 70), int(cfg.get("inN2") or 40), int(cfg.get("inN3") or 20)]}
         p = {**p, "qty": max(1, int(p.get("qty") or 1)), "underlyingStop": sg["stop"], "underlyingTarget": sg.get("target"),
              "strategyOnly": "wallwatch", "wallwatch": ww}

@@ -2556,6 +2556,7 @@ const WW_RULES = [
   ['noAboveCW', 'Entry', 'Not above CW', 'No entry when the candle opens or closes above the call wall'],
   ['cwRoomOn', 'Entry', 'Room to CW', 'No entry when the close is less than this × ATR under the call wall', ['ww-cwr', 'cwRoom', 0.25, 3.6, 'ATR', 1]],
   ['earnOn', 'Entry', 'Earnings', 'No entry within this many days of earnings', ['ww-earn', 'earnDays', 1, 3.2, 'd', 10]],
+  ['earnExit', 'Exit', 'Sell before earnings', 'Live bot: sell at 15:30 the trading day before earnings (or on the day for after-close reports). The backtest / lab can\'t replay it: no past earnings dates.'],
   ['pvEod', 'Exit', 'Entry day close > support', 'The entry day must close above the support (put wall / flip) it bounced from, else the trade is sold at that close'],
   ['stopOn', 'Exit', 'Stop', 'Stop = the support − this × the 30-day ATR (off: no stop, the value still sets 1R)', ['ww-stop', 'stopAtr', 0.1, 3.4, 'ATR', 0.5]],
   ['trailOn', 'Exit', 'Trailing stop', 'Highest high since entry − this × the 30-day ATR, never down', ['ww-trail', 'trailAtr', 0.25, 3.4, 'ATR', 1]],
@@ -2616,7 +2617,7 @@ function wwRulePanel(vals, sw, mode, shown) {
     <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">${grp('Entry')}${grp('Exit')}</div></details>`;
 }
 const LAB_ONLY = ['pwTest', 'inYExit', 'inhGreen', 'inhNotRed', 'inhYExit', 'sqhOn', 'sqhFire', 'sqhMom', 'sqhExit', 'sqdOn', 'sqdFire', 'sqdMom', 'sqdExit'];   // rules the live bot can't do yet: shown in the Strategy lab only
-const WW_CORE = ['alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
+const WW_CORE = ['earnExit', 'alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
 const WW_DEF_ON = { sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 try { S.rtUseLab = localStorage.getItem('rtUseLab') === '1'; } catch (e) { S.rtUseLab = false; }
