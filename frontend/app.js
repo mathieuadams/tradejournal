@@ -2109,7 +2109,8 @@ function vChartDT() {
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
     <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-dtreload style="padding:3px 10px" title="Reload the candles">↻</button>
-    <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button></div>`;
+    <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button>
+    <span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen" title="Close">✕</a></div>`;
   let main;
   if (!d) main = '<p class="loading">Loading 1-minute candles…</p>';
   else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
