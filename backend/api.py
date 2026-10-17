@@ -469,7 +469,71 @@ def daytrade_backtest(sub, claims, body, q):
     import daytrade
     b = body or {}
     cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else None
-    return daytrade.backtest(sub, b.get("days") or 20, cfg)
+    db.put({"PK": db.upk(sub), "SK": daytrade.BT_SK, **daytrade.backtest_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtbt", "params": {"days": b.get("days") or 20, "cfg": cfg, "opt": b.get("opt") if isinstance(b.get("opt"), dict) else None}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/presets")
+def daytrade_presets(sub, claims, body, q):
+    import daytrade
+    return {"presets": daytrade.presets(sub)}
+
+
+@route("PUT", "/daytrade/presets")
+def daytrade_presets_put(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    return {"presets": daytrade.save_preset(sub, b.get("name"), b.get("cfg") if isinstance(b.get("cfg"), dict) else {})}
+
+
+@route("DELETE", "/daytrade/presets")
+def daytrade_presets_del(sub, claims, body, q):
+    import daytrade
+    return {"presets": daytrade.delete_preset(sub, (q or {}).get("name") or (body or {}).get("name"))}
+
+
+@route("POST", "/daytrade/compare")
+def daytrade_compare(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    vs = [v for v in (b.get("variants") or []) if isinstance(v, dict)][:10]
+    if not vs:
+        raise BadRequest("Pick at least one setting to compare.")
+    db.put({"PK": db.upk(sub), "SK": daytrade.CMP_SK, **daytrade.compare_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtcmp", "params": {"days": b.get("days") or 60, "variants": vs,
+                                                                               "opt": b.get("opt") if isinstance(b.get("opt"), dict) else None}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/compare")
+def daytrade_compare_get(sub, claims, body, q):
+    import daytrade
+    return daytrade.compare_result(sub)
+
+
+@route("POST", "/daytrade/study")
+def daytrade_study(sub, claims, body, q):
+    import daystudy
+    b = body or {}
+    db.put({"PK": db.upk(sub), "SK": daystudy.SK, **daystudy.result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtstudy", "params": {"days": b.get("days") or 120, "tickers": b.get("tickers"), **({"wallNear": bool(b["wallNear"])} if "wallNear" in b else {})}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/study")
+def daytrade_study_get(sub, claims, body, q):
+    import daystudy
+    return daystudy.result(sub)
+
+
+@route("GET", "/daytrade/backtest")
+def daytrade_backtest_get(sub, claims, body, q):
+    import daytrade
+    return daytrade.backtest_result(sub)
 
 
 @route("GET", "/bot/wallwatch/quotes")

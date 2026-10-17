@@ -1284,8 +1284,8 @@ function fcLayerBar(id) {
 async function loadDarkPool(id) {
   const k = fcKey(id);
   S.fcDpBusy[k] = true;
-  const ww = String(id).startsWith('ww-');
-  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.replace(/^ww-(lab-)?/, "").replace(/:D$/, ""))}&pct=${S.wwDpPct ?? 0.25}&days=${S.wwDays || 45}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
+  const ww = String(id).startsWith('ww-') || String(id).startsWith('dt-');
+  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.replace(/^ww-(lab-)?/, "").replace(/^dt-/, "").replace(/-\d+$/, "").replace(/:D$/, ""))}&pct=${S.wwDpPct ?? 0.25}&days=${S.wwDays || 45}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
   S.fcDpBusy[k] = false;
   const r = S.fcDp[k] || {};                       // 180 days of history still loading: fetch again (each day is cached)
   S.fcDpTry = S.fcDpTry || {};
@@ -1348,7 +1348,8 @@ function fcSvg0(d, id, opts) {
   const wv = walls.flatMap(w => [w.callWall, w.putWall, w.flip]).concat(dp && !dp.error ? (dp.levels || []).slice(0, S.dpN ?? 5).map(l => l.price) : [])
     .concat(LY.mp !== false ? (d.maxPain || []).map(m => m.maxPain) : [])
 .filter(near);
-  const lo0 = Math.min(pl0, ...wv), hi0 = Math.max(ph0, ...wv), pad = (hi0 - lo0) * 0.08 || 1;
+  const fbv = LY.fibs && d.fibs ? (() => { const dd = new Set(bars.map(b => b.t.slice(0, 10))); return Object.entries(d.fibs).filter(([k]) => dd.has(k)).flatMap(([, lv]) => lv.map(x => x[1])); })() : [];
+  const lo0 = Math.min(pl0, ...wv, ...fbv), hi0 = Math.max(ph0, ...wv, ...fbv), pad = (hi0 - lo0) * 0.08 || 1;   // fibs: always in view
   const lo = lo0 - pad, hi = hi0 + pad;
   const X = i => L + (i + 0.5) * (W - L - Rr) / n, Y = v => T + (hi - v) / (hi - lo) * (B - T), bw = Math.max(1, (W - L - Rr) / n * 0.6);
   const idx = {}; bars.forEach((b, i) => { idx[b.t] = i; });
@@ -1804,12 +1805,13 @@ const DT_IND = [
   ['fvg', 'Fair value gaps', null, [['fvgMin', 'min size', 0.05, 3.2, '× ATR', 0.3], ['fvgNear', 'margin', 0.05, 3.2, '× ATR', 0.25], ['fvgDays', 'max age', 1, 3, 'days', 1]], '3-candle gaps on 1-minute candles', ['fvgTouch', 'fvgExit']],
   ['orb', 'Opening range', null, [['orbMin', 'first', 1, 3, 'minutes', 15]], 'High / low of the first minutes (values under the chart)', ['orbBreak']],
   ['pm', 'Pre-market high / low', null, [], '04:00-09:30 (values under the chart)', ['pmBreak']],
-  ['walls', 'Gamma walls', 'walls', [['zoneAtr', 'test zone', 0.1, 3.2, '× ATR', 1]], 'Put wall, flip, call wall of the day', ['pwTouch', 'aboveFlip']],
-  ['bands', 'EMA bands 9 / 22 / 44', 'bands', [], 'EMA 9 / 22 / 44 with the 22-44 cloud; arrows = candle formations when 9 > 13 > 22 (or the reverse)', []],
-  ['lis', 'LIS (line in the sand)', 'lis', [], 'Previous regular-session close; arrows = 5-minute formations off it (colored when the EMAs agree)', []],
-  ['pmz', 'Pre-market zone', 'pmz', [], '07:25-09:30 range: 20-40% under the high on a gap up, above the low on a gap down', []],
-  ['fibs', 'Auto fibs', 'fibs', [], 'Day high / low (with the previous close): 127.2%, 38.2%, 50%, 61.8%, -27.2% (every day)', []],
+  ['walls', 'Gamma walls', 'walls', [['zoneAtr', 'test zone', 0.1, 3.2, '× ATR', 1]], 'Put wall, flip, call wall of the day', ['pwTouch', 'aboveFlip', 'flipOpen', 'lvlTarget']],
+  ['bands', 'EMA bands 9 / 22 / 44', 'bands', [['formWin', 'formation signal lasts', 1, 3, 'min', 5]], 'EMA 9 / 22 / 44 with the 22-44 cloud; arrows = candle formations when 9 > 13 > 22 (or the reverse). The window applies to the band and LIS formation rules', ['bandForm']],
+  ['lis', 'LIS (line in the sand)', 'lis', [], 'Previous regular-session close; arrows = 5-minute formations off it (colored when the EMAs agree)', ['lisForm', 'lisAbove']],
+  ['pmz', 'Pre-market zone', 'pmz', [], '07:25-09:30 range: 20-40% under the high on a gap up, above the low on a gap down', ['pmzTouch']],
+  ['fibs', 'Auto fibs', 'fibs', [], 'The PREVIOUS day high / low, known at the open: inside 38.2% / 50% / 61.8%, above 127.2% / 161.8% / 200%, below -27.2% / -61.8% / -100%', ['fibTouch', 'lvlTarget']],
   ['turn', 'Squeeze turns', 'turn', [], 'Momentum peaks above 0 (turn down) / bottoms below 0 (turn up)', []],
+  ['dark', 'Dark pool', 'dark', [], 'Top dark pool price levels of the last 180 days', ['dpTouch', 'lvlTarget']],
 ];
 const DT_RULES = [
   ['aboveVwap', 'Entry', 'Above VWAP', 'Close above the session VWAP (short: below)'],
@@ -1837,6 +1839,26 @@ const DT_RULES = [
   ['sqExit', 'Exit', 'Squeeze momentum turns', 'Momentum stops rising (short: stops falling)'],
   ['inExit', 'Exit', 'Inertia turns', 'Inertia no longer all with the trade'],
   ['fvgExit', 'Exit', 'FVG against', 'A new gap against the trade'],
+  ['beOn', 'Exit', 'Breakeven stop', 'Once the trade is this many R in profit, the stop moves to the entry', ['beR', 0.25, 3.2, 'R', 1]],
+  ['scaleOn', 'Exit', 'Scale out half', 'Half the position off at this many R; the rest runs to the other exits (R counts both halves)', ['scaleR', 0.25, 3.2, 'R', 1]],
+  ['timeOn', 'Exit', 'Time stop', 'Out after this many minutes in the trade', ['timeMin', 1, 3.4, 'min', 30]],
+  ['lvlTarget', 'Exit', 'Target = next level', 'Target at the next level in the trade direction (at least 0.25 ATR away): previous-day fibs, gamma walls, previous high / low / close, dark pool, pre-market and opening range; falls back to the R target'],
+  ['dayStop', 'Exit', 'Daily loss limit', 'No new entry once the day\'s closed trades reach −this R', ['dayStopR', 0.5, 3.2, 'R', 2]],
+  ['bandForm', 'Entry', 'EMA band formation', 'A Tr3ndy EMA-band formation in the trade direction within the last N minutes (window under Indicators → EMA bands)'],
+  ['lisForm', 'Entry', 'LIS formation', 'A 5-minute LIS formation in the trade direction, confirmed, within the last N minutes'],
+  ['lisAbove', 'Entry', 'Above the LIS', 'Close above the line in the sand = previous close (short: below)'],
+  ['pmzTouch', 'Entry', 'Pre-market zone reclaim', 'Low into the pre-market zone, close above its top (short: high into it, close under its bottom)'],
+  ['fibTouch', 'Entry', 'Fib level test', 'Low tests a previous-day fib level (within the wall test zone) and closes above it (short: the mirror)'],
+  ['dpTouch', 'Entry', 'Dark pool level test', 'Low tests a dark pool level (top levels of the ~2 months before) and closes above it (short: the mirror)'],
+  ['prevTouch', 'Entry', 'Previous-day level test', 'Low tests the previous day high / low / close and closes above it (short: the mirror)'],
+  ['gapOn', 'Filter', 'Gap size', 'Only days whose open is this far from the previous close (absolute %)', [['gapMin', 0.05, 4, '%', 0.25, '', 'from'], ['gapMax', 0.25, 4, '%', 99, '', 'to']]],
+  ['gapWith', 'Filter', 'With the gap', 'Longs only on a gap up, shorts only on a gap down'],
+  ['gapFade', 'Filter', 'Fade the gap', 'Longs only on a gap down, shorts only on a gap up'],
+  ['flipOpen', 'Filter', 'Open vs flip', 'Longs only on days that opened above the gamma flip, shorts only below'],
+  ['peerAgree', 'Filter', 'Other ticker agrees', 'QQQ for SPY (and the reverse): the other ticker is above its VWAP at that minute for a long (below for a short)'],
+  ['rvolOn', 'Filter', 'Relative volume', 'Volume so far today vs the average of the last 10 days at the same minute', ['rvolMin', 0.1, 3, '× or more', 1.5]],
+  ['vixOn', 'Filter', 'VIX range', 'The previous VIX close inside this range', [['vixMin', 1, 3, '', 0, '', 'from'], ['vixMax', 1, 3, '', 25, '', 'to']]],
+  ['noLunch', 'Filter', 'Skip lunch', 'No new entry in this window', [['lunchFrom', 0, 4.2, '', '11:30', 'time', 'from'], ['lunchTo', 0, 4.2, '', '13:30', 'time', 'to']]],
 ];
 try { S.dtTf = +(localStorage.getItem('dtTf') || 1) || 1; S.dtDays = +(localStorage.getItem('dtDays') || 3) || 3; } catch (e) { S.dtTf = 1; S.dtDays = 3; }
 async function loadDT() { try { S.dt = await api('/daytrade'); } catch (e) { S.dt = { error: e.message }; } if (['botchart', 'settings'].includes(route())) render(); }
@@ -1858,11 +1880,11 @@ function dtPanel() {
   const rows = DT_IND.map(([k, name, layer, ps, tip, uses]) => { const used = uses.filter(u => c[u]);
     const eye = layer ? `<button class="btn ${S.fcLayers[layer] ? 'coachbtn' : ''}" data-fclayer="${layer}" style="font-size:.72rem;padding:0 7px">${S.fcLayers[layer] ? 'shown' : 'hidden'}</button>` : '<span class="muted" style="font-size:.72rem">—</span>';
     return `<tr style="${used.length ? '' : 'opacity:.6'}"><td style="padding:2px 6px">${eye}</td><td style="padding:2px 6px" title="${esc(tip)}"><b style="font-size:.82rem">${esc(name)}</b></td>
-      <td style="white-space:nowrap;padding:2px 6px">${ps.map(([pk, pl, st, w, suf, def]) => `<span class="muted" style="font-size:.78rem">${esc(pl)}</span> ${num(pk, st, w, def)}<span class="muted" style="font-size:.75rem">${esc(suf)}</span>`).join(' &nbsp;') || '<span class="muted" style="font-size:.75rem">no setting</span>'}</td>
+      <td style="white-space:nowrap;padding:2px 6px">${k === 'dark' ? `<span class="muted" style="font-size:.78rem">prints ≥</span> <input id="ww-dpmin" type="number" step="0.05" min="0.01" value="${S.wwDpPct ?? 0.25}" style="width:4.2em;padding:1px 4px"><span class="muted" style="font-size:.75rem">% of avg daily volume</span> &nbsp;<span class="muted" style="font-size:.78rem">lines</span> <input id="ww-dpn" type="number" step="1" min="0" max="10" value="${S.dpN ?? 5}" style="width:3.2em;padding:1px 4px"><span class="muted" style="font-size:.75rem">(0–10, last 180 days)</span>` : (ps.map(([pk, pl, st, w, suf, def]) => `<span class="muted" style="font-size:.78rem">${esc(pl)}</span> ${num(pk, st, w, def)}<span class="muted" style="font-size:.75rem">${esc(suf)}</span>`).join(' &nbsp;') || '<span class="muted" style="font-size:.75rem">no setting</span>') + (k === 'walls' ? ` &nbsp;<span class="muted" style="font-size:.78rem">expirations</span> <button class="btn ${c.wallNear ? '' : 'coachbtn'}" data-dtwexp="all" style="font-size:.72rem;padding:0 7px" title="Open interest of every expiration">all</button><button class="btn ${c.wallNear ? 'coachbtn' : ''}" data-dtwexp="near" style="font-size:.72rem;padding:0 7px" title="Only the nearest expiration (0DTE on SPY / QQQ); flip approximated from the strikes">nearest only</button>` : '')}</td>
       <td style="font-size:.78rem;padding:2px 6px">${used.length ? `<span class="gain">used by</span> ${used.map(u => esc(lbl[u] || u)).join(', ')}` : '<span class="muted">not used</span>'}</td></tr>`; }).join('');
   const chip = ([k, , l, tip, f]) => { const on = !!c[k];
     return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${on ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${on ? '' : 'opacity:.55'}">
-      <button class="btn" data-dtsw="${k}" title="${esc(tip)}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button><span style="font-size:.8rem">${l}</span>${f ? ` ${num(f[0], f[1], f[2], f[4])}<span class="muted" style="font-size:.75rem">${f[3]}</span>` : ''}</span>`; };
+      <button class="btn" data-dtsw="${k}" title="${esc(tip)}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button><span style="font-size:.8rem" title="${esc(tip)}">${l}</span>${(!f ? [] : Array.isArray(f[0]) ? f : [f]).map(x => ` ${x[6] ? `<span class="muted" style="font-size:.72rem">${x[6]}</span> ` : ''}${x[5] === 'time' ? `<input data-dttime="${x[0]}" value="${esc(c[x[0]] || x[4])}" style="width:${x[2]}em;padding:1px 4px">` : num(x[0], x[1], x[2], x[4])}<span class="muted" style="font-size:.75rem">${x[3]}</span>`).join('')}</span>`; };
   const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${DT_RULES.filter(r => r[1] === g).map(chip).join('')}</div>`;
   const tog = (k, l) => `<button class="btn ${c[k] ? 'coachbtn' : ''}" data-dtsw="${k}" style="font-size:.78rem;padding:1px 10px">${l}</button>`;
   const tm = (k, l) => `<span class="muted" style="font-size:.78rem">${l}</span> <input data-dttime="${k}" value="${esc(c[k] || '')}" style="width:4.2em;padding:1px 4px">`;
@@ -1873,7 +1895,7 @@ function dtPanel() {
       <span class="muted" style="font-size:.78rem" title="If set, shares = this $ ÷ (entry − stop), capped by max shares">or risk $</span> ${num('riskUsd', 10, 4.5, 0)} <span class="muted" style="font-size:.78rem">max shares</span> ${num('maxQty', 1, 4.5, 500)}
       <span class="muted" style="font-size:.78rem">tickers</span> <input data-dttk value="${esc((c.tickers || ['QQQ', 'SPY']).join(' '))}" style="width:8em;padding:1px 4px"></div>
     <details open style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Indicators</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin:4px 0"><tbody>${rows}</tbody></table></div></details>
-    <div style="display:flex;flex-direction:column;gap:6px">${grp('Entry')}${grp('Exit')}</div>
+    <div style="display:flex;flex-direction:column;gap:6px">${grp('Entry')}${grp('Filter')}${grp('Exit')}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn ${S.dtDirty ? 'coachbtn' : ''}" data-dtapply style="font-size:.8rem;padding:1px 12px">${S.dtDirty ? 'Apply changes' : 'Apply'}</button>
       <span class="muted" style="font-size:.75rem">Every rule that is ON must pass on the 1-minute entry candle (shorts: the mirror). Nothing changes until you click Apply. Settings apply to the backtest and to the live day-trading account.</span></div></div>`;
 }
@@ -1890,20 +1912,140 @@ function dtAccountBox(full) {
     <button class="btn" data-dtdisconnect style="font-size:.75rem;padding:0 8px">Disconnect</button>
     ${pos.length ? `<span>Positions: ${pos.map(p0 => `<b>${esc(p0.symbol)}</b> ${esc(p0.side)} ${esc(p0.qty)} @ ${(+p0.entry).toFixed(2)} <span class="${+p0.pl >= 0 ? 'gain' : 'loss'}">${+p0.pl >= 0 ? '+' : ''}${money(+p0.pl)}</span>`).join(' · ')}</span>` : '<span class="muted">no position</span>'}</div>`;
 }
+async function loadDTBt() {
+  try { S.dtBt = await api('/daytrade/backtest'); } catch (e) { S.dtBt = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.dtBtPoll);
+  if (S.dtBt && S.dtBt.running && route() === 'botchart') S.dtBtPoll = setTimeout(loadDTBt, 10000);
+}
 function dtBtBox() {
-  const t = S.dtBt;
+  if (S.dtBt === undefined) { S.dtBt = null; setTimeout(loadDTBt, 0); }
+  const t = S.dtBt || {};
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
-  const head = `<div style="display:flex;gap:6px;align-items:center;margin-top:10px"><b style="font-size:.95rem">Backtest</b> <select id="dt-btdays" style="padding:1px 4px">${[5, 10, 20, 40, 60].map(n => `<option ${n === (S.dtBtDays || 20) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select>
-    <button class="btn coachbtn" data-dtbt ${S.dtBtBusy ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${S.dtBtBusy ? 'Running…' : 'Run on all day tickers'}</button><span class="muted" style="font-size:.78rem">1-minute candles (Alpaca), the settings above${S.dtDirty ? ' (pending changes included)' : ''}</span></div>`;
-  if (!t) return head;
+  const head = `<div style="display:flex;gap:6px;align-items:center;margin-top:10px;flex-wrap:wrap"><b style="font-size:.95rem">Backtest</b> <select id="dt-btdays" style="padding:1px 4px">${[20, 60, 120, 250, 500].map(n => `<option ${n === (S.dtBtDays || 120) ? 'selected' : ''} value="${n}">${n} trading days</option>`).join('')}</select>
+    <button class="btn coachbtn" data-dtbt ${t.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${t.running ? 'Running… (a few minutes)' : 'Run on all day tickers'}</button><span class="muted" style="font-size:.78rem">1-minute candles from Alpaca (full-market SIP history when your account allows it), the saved settings${S.dtDirty ? ' + pending changes' : ''}</span></div>
+    ${dtOptCtl('bt')}`;
   if (t.error) return head + `<div class="errbox">${esc(t.error)}</div>`;
+  if (!t.all) return head + ((t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : '');
   const a = t.all || {};
-  const row = (l, x) => `<tr><td>${l}</td><td class="r">${x.n || 0}</td><td class="r">${x.win ?? '—'}%</td><td class="r">${R(x.avgR)}</td><td class="r">${R(x.totR)}</td><td class="r">${x.pf ?? '—'}</td><td class="r">${x.longs ?? 0} / ${x.shorts ?? 0}</td></tr>`;
-  const days = Object.entries(t.byDay || {});
-  return head + `<div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">Long / short</th></tr></thead><tbody>
-    ${row('<b>All</b>', a)}${Object.entries(t.byTicker || {}).map(([k, x]) => row(esc(k), x)).join('')}</tbody></table></div>
-    <p class="muted" style="font-size:.8rem;margin:4px 0">Exits: ${Object.entries(a.exits || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')} · green days ${days.filter(([, v]) => v > 0).length} / ${days.length}</p>
-    ${days.length ? `<div style="display:flex;flex-wrap:wrap;gap:3px">${days.map(([d0, v]) => `<span class="exchip" style="font-size:.72rem;${v > 0 ? 'color:var(--gain)' : v < 0 ? 'color:var(--loss)' : ''}">${esc(d0.slice(5))} ${v > 0 ? '+' : ''}${v}R</span>`).join('')}</div>` : ''}
+  const row = (l, x) => `<tr><td>${l}</td><td class="r">${x.n || 0}</td><td class="r">${x.win ?? '—'}%</td><td class="r">${R(x.avgR)}</td><td class="r">${R(x.totR)}</td><td class="r">${x.pf ?? '—'}</td><td class="r">${R(x.avgWin)} / ${R(x.avgLoss)}</td></tr>`;
+  const tbl = (title, obj) => obj && Object.keys(obj).length ? `<details style="margin:4px 0"><summary style="font-size:.84rem;cursor:pointer">${title}</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">Avg win / loss</th></tr></thead><tbody>${Object.entries(obj).map(([k, x]) => row(esc(k), x)).join('')}</tbody></table></div></details>` : '';
+  const cv = t.curve || [];
+  let svg = '';
+  if (cv.length > 1) { const W0 = 640, H0 = 120, mn = Math.min(0, ...cv), mx = Math.max(0, ...cv), sx = i => 4 + i / (cv.length - 1) * (W0 - 8), sy = v => H0 - 6 - (v - mn) / ((mx - mn) || 1) * (H0 - 12);
+    svg = `<svg viewBox="0 0 ${W0} ${H0}" style="width:100%;max-width:${W0}px;height:auto;display:block"><line x1="4" x2="${W0 - 4}" y1="${sy(0)}" y2="${sy(0)}" stroke="var(--line)"/><path d="${cv.map((v, i) => `${i ? 'L' : 'M'}${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join('')}" fill="none" stroke="${cv[cv.length - 1] >= 0 ? 'var(--gain)' : 'var(--loss)'}" stroke-width="2"/><text x="6" y="12" font-size="11" fill="var(--muted)">equity curve (R, trade by trade)</text></svg>`; }
+  return head + `<p class="muted" style="font-size:.8rem;margin:4px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${t.daysFound ?? '—'} trading days from ${esc(t.first || '')} · data ${esc(Object.entries(t.feed || {}).map(([k, v]) => `${k} ${v.toUpperCase()}`).join(', '))} · ${t.secs ?? '—'} s</p>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">Avg win / loss</th></tr></thead><tbody>
+    ${row('<b>All</b>', a)}${t.h1 ? row(`1st half <span class="muted">(to ${esc(t.mid || '')})</span>`, t.h1) : ''}${t.h2 ? row('2nd half', t.h2) : ''}${Object.entries(t.byTicker || {}).map(([k, x]) => row(esc(k), x)).join('')}${Object.entries(t.byDir || {}).map(([k, x]) => row(esc(k), x)).join('')}</tbody></table></div>
+    <p style="font-size:.84rem;margin:4px 0">Max drawdown <b class="loss">${t.maxDD ?? '—'}R</b> · longest losing streak <b>${t.maxLosing ?? '—'}</b> · green days <b>${t.greenDays ?? 0}</b> / ${t.daysTraded ?? 0} traded (of ${t.daysTotal ?? 0}) · avg day ${R(t.avgDayR)} · daily Sharpe ${t.dailySharpe ?? '—'}</p>
+    ${svg}${tbl('By month', t.byMonth)}${tbl('By weekday', t.byWeekday)}${tbl('By entry hour', t.byHour)}
+    <p class="muted" style="font-size:.8rem;margin:4px 0">Exits: ${Object.entries(a.exits || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</p>
+    ${t.opt ? dtOptLine(t.opt) : ''}
+    ${(t.trades || []).length ? `<details style="margin:4px 0"><summary style="font-size:.84rem;cursor:pointer">Trades (last ${Math.min(300, t.trades.length)})</summary><div style="overflow-x:auto;max-height:340px;overflow-y:auto"><table class="pos" style="font-size:.78rem"><thead><tr><th>Ticker</th><th>Entry</th><th>Side</th><th class="r">Price</th><th>Exit</th><th class="r">Price</th><th>Why</th><th class="r">R</th>${t.opt ? '<th>Option</th><th class="r">In → out</th><th class="r">Option %</th>' : ''}</tr></thead><tbody>
+      ${t.trades.slice().reverse().map(x => `<tr><td>${esc(x.sym || '')}</td><td>${esc((x.at || '').slice(5).replace('T', ' '))}</td><td>${esc(x.dir || '')}</td><td class="r">${x.entry != null ? (+x.entry).toFixed(2) : ''}</td><td>${esc((x.exitAt || '').slice(11))}</td><td class="r">${x.exit != null ? (+x.exit).toFixed(2) : ''}</td><td>${esc(x.status || '')}</td><td class="r">${R(x.R)}</td>${t.opt ? `<td>${esc(x.optSym || '—')}</td><td class="r">${x.optIn != null ? `${(+x.optIn).toFixed(2)} → ${(+x.optOut).toFixed(2)}` : ''}</td><td class="r">${x.optPct != null ? `<b class="${x.optPct > 0 ? 'gain' : 'loss'}">${x.optPct > 0 ? '+' : ''}${(+x.optPct).toFixed(1)}%</b>` : '—'}</td>` : ''}</tr>`).join('')}</tbody></table></div></details>` : ''}
+    ${(t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+}
+function dtOptCtl(k) {
+  const o = S.dtOpt || {};
+  return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:.8rem;margin:4px 0"><label style="display:inline-flex;gap:4px;align-items:center" title="Each trade bought as the nearest-expiration option (0DTE on SPY / QQQ): a call for a long, a put for a short. Alpaca option history starts Feb 2024."><input type="checkbox" data-dtopt="on" ${o.on ? 'checked' : ''}>also price on real 0DTE options</label>
+    <span class="muted">strike</span> <input data-dtopt="money" type="number" step="0.1" value="${o.money ?? 0}" style="width:3.6em;padding:1px 4px"><span class="muted">% out of the money</span>
+    <span class="muted">slippage</span> <input data-dtopt="slip" type="number" step="0.5" min="0" value="${o.slip ?? 1}" style="width:3.4em;padding:1px 4px"><span class="muted">% each side</span></div>`;
+}
+function dtOptGet() { const o = { ...(S.dtOpt || {}) }; document.querySelectorAll('[data-dtopt]').forEach(i => { o[i.dataset.dtopt] = i.type === 'checkbox' ? i.checked : parseFloat(i.value) || 0; }); S.dtOpt = o; return o.on ? o : null; }
+function dtOptLine(o) {
+  const P = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(1)}%</b>`;
+  return o.n ? `<p style="font-size:.84rem;margin:4px 0"><b>On 0DTE options</b> ${o.n} trades priced${o.of ? ` of ${o.of}` : ''}${o.before2024 ? ` (${o.before2024} before Feb 2024: no option data)` : ''} · win <b>${o.win}%</b> · avg ${P(o.avg)} · median ${P(o.med)} · total ${P(o.tot)} · PF ${o.pf ?? '—'} · best ${P(o.best)} · worst ${P(o.worst)} <span class="muted">(strike ${o.money ?? 0}% OTM, slippage ${o.slip ?? 1}% each side)</span></p>`
+    : `<p class="muted" style="font-size:.8rem">Options: ${esc(o.error || 'no trade could be priced')}${o.before2024 ? ` (${o.before2024} before Feb 2024)` : ''}</p>`;
+}
+function dtBody() {                              // the settings on screen: saved + pending changes + the inputs
+  const body = { ...(S.dtDraft || {}) };
+  document.querySelectorAll('[data-dtnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.dtnum] = v; });
+  document.querySelectorAll('[data-dttime]').forEach(i => { body[i.dataset.dttime] = i.value; });
+  const tk = document.querySelector('[data-dttk]'); if (tk) body.tickers = tk.value;
+  return body;
+}
+const DT_NUMS = () => { const out = []; DT_IND.forEach(r => r[3].forEach(p => out.push([p[0], `${r[1]}: ${p[1] || p[0]}`]))); DT_RULES.forEach(r => { const f = r[4]; (!f ? [] : Array.isArray(f[0]) ? f : [f]).forEach(x => { if (x[5] !== 'time') out.push([x[0], `${r[2]}${x[6] ? ' ' + x[6] : ''}`]); }); }); out.push(['maxTrades', 'Max trades a day']); return out; };
+async function loadDTCmp() {
+  try { S.dtCmp = await api('/daytrade/compare'); } catch (e) { S.dtCmp = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.dtCmpPoll);
+  if (S.dtCmp && S.dtCmp.running && route() === 'botchart') S.dtCmpPoll = setTimeout(loadDTCmp, 10000);
+}
+async function loadDTPre() { try { S.dtPre = (await api('/daytrade/presets')).presets || []; } catch (e) { S.dtPre = []; } if (route() === 'botchart') render(); }
+const CMP_COL = ['#2f80ed', '#eb5757', '#27ae60', '#f2994a', '#9b51e0', '#00a3a3', '#c2185b', '#7f8c8d', '#b8860b', '#3d5afe'];
+function dtCmpBox() {
+  if (S.dtCmp === undefined) { S.dtCmp = null; setTimeout(loadDTCmp, 0); }
+  if (S.dtPre === undefined) { S.dtPre = null; setTimeout(loadDTPre, 0); }
+  const t = S.dtCmp || {}, pre = S.dtPre || [], sel = S.dtCmpSel || {}, cur = S.dtCmpCur !== false;
+  const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const P = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(1)}%</b>`;
+  const nums = DT_NUMS();
+  const head = `<div style="display:flex;gap:6px;align-items:center;margin-top:14px;flex-wrap:wrap"><b style="font-size:.95rem">Compare settings</b>
+    <span class="muted" style="font-size:.78rem">several settings on the same days and candles, side by side</span></div>
+    <div style="display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:.82rem">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="min-width:5.5em">Saved</b>
+        <label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-dtcmpcur ${cur ? 'checked' : ''}>Current settings${S.dtDirty ? ' (with pending changes)' : ''}</label>
+        ${pre === null ? '<span class="muted">loading…</span>' : pre.map(p0 => `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid var(--line);border-radius:14px;padding:1px 6px"><input type="checkbox" data-dtpresel="${esc(p0.name)}" ${sel[p0.name] ? 'checked' : ''}><b>${esc(p0.name)}</b>
+          <button class="btn" data-dtpreload="${esc(p0.name)}" title="Load these settings into the panel (then Apply)" style="font-size:.7rem;padding:0 6px">load</button><button class="btn" data-dtpredel="${esc(p0.name)}" title="Delete" style="font-size:.7rem;padding:0 6px">✕</button></span>`).join('')}
+        <input id="dt-prename" placeholder="name" style="width:9em;padding:1px 4px"><button class="btn" data-dtpresave style="font-size:.78rem;padding:1px 10px">Save current as</button></div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="min-width:5.5em">Sweep</b><span class="muted">current settings with</span>
+        <select id="dt-swkey" style="padding:1px 4px;max-width:18em"><option value="">— no sweep —</option>${nums.map(([k, l]) => `<option value="${k}" ${S.dtSwKey === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+        <span class="muted">=</span><input id="dt-swvals" value="${esc(S.dtSwVals || '0.5 1 1.5 2')}" placeholder="0.5 1 1.5 2" style="width:10em;padding:1px 4px"><span class="muted">(each value = one setting)</span></div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="min-width:5.5em">Run</b><select id="dt-cmpdays" style="padding:1px 4px">${[20, 60, 120, 250, 500].map(n => `<option ${n === (S.dtCmpDays || 120) ? 'selected' : ''} value="${n}">${n} trading days</option>`).join('')}</select>
+        <button class="btn coachbtn" data-dtcmp ${t.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${t.running ? 'Running… (a few minutes)' : 'Compare'}</button><span class="muted">up to 10 settings</span></div>
+      ${dtOptCtl('cmp')}</div>`;
+  if (t.error) return head + `<div class="errbox">${esc(t.error)}</div>`;
+  const vs = t.variants || [];
+  if (!vs.length) return head + ((t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : '');
+  const best = Math.max(...vs.map(v => (v.all || {}).totR ?? -1e9));
+  const anyOpt = vs.some(v => v.opt);
+  const rows = vs.map((v, i) => { const a = v.all || {}, ch = Object.entries(v.changes || {});
+    return `<tr><td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${CMP_COL[i % CMP_COL.length]}"></span> <b>${esc(v.name)}</b>${ch.length ? `<div class="muted" style="font-size:.7rem;max-width:22em">${esc(ch.slice(0, 8).map(([k, x]) => `${k} ${typeof x === 'boolean' ? (x ? 'on' : 'off') : x}`).join(' · '))}${ch.length > 8 ? ' …' : ''}</div>` : ''}</td>
+      <td class="r">${a.n || 0}</td><td class="r">${a.win ?? '—'}%</td><td class="r">${R(a.avgR)}</td><td class="r" style="${a.totR === best ? 'outline:2px solid var(--gain);outline-offset:-2px' : ''}">${R(a.totR)}</td><td class="r">${a.pf ?? '—'}</td>
+      <td class="r"><b class="loss">${v.maxDD ?? '—'}R</b></td><td class="r">${v.maxLosing ?? '—'}</td><td class="r">${v.greenDays ?? 0} / ${v.daysTraded ?? 0}</td><td class="r">${v.dailySharpe ?? '—'}</td>
+      <td class="r">${R((v.h1 || {}).avgR)} / ${R((v.h2 || {}).avgR)}</td>${anyOpt ? `<td class="r">${v.opt && v.opt.n ? `${P(v.opt.avg)} · ${v.opt.win}% · ${v.opt.n}` : '—'}</td>` : ''}</tr>`; }).join('');
+  const cvs = vs.map(v => v.curve || []), all = [].concat(...cvs);
+  let svg = '';
+  if (all.length > 1) { const W0 = 640, H0 = 150, mn = Math.min(0, ...all), mx = Math.max(0, ...all), sy = v => H0 - 6 - (v - mn) / ((mx - mn) || 1) * (H0 - 12);
+    svg = `<svg viewBox="0 0 ${W0} ${H0}" style="width:100%;max-width:${W0}px;height:auto;display:block"><line x1="4" x2="${W0 - 4}" y1="${sy(0)}" y2="${sy(0)}" stroke="var(--line)"/>${cvs.map((cv, i) => cv.length > 1 ? `<path d="${cv.map((v, j) => `${j ? 'L' : 'M'}${(4 + j / (cv.length - 1) * (W0 - 8)).toFixed(1)},${sy(v).toFixed(1)}`).join('')}" fill="none" stroke="${CMP_COL[i % CMP_COL.length]}" stroke-width="1.8"/>` : '').join('')}<text x="6" y="12" font-size="11" fill="var(--muted)">equity curves (R, trade by trade)</text></svg>`; }
+  return head + `<p class="muted" style="font-size:.8rem;margin:4px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${t.daysFound ?? '—'} trading days from ${esc(t.first || '')} · halves split at ${esc(t.mid || '')} · ${t.secs ?? '—'} s</p>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Setting</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">Max DD</th><th class="r">Losing streak</th><th class="r">Green days</th><th class="r">Daily Sharpe</th><th class="r">Avg R 1st / 2nd half</th>${anyOpt ? '<th class="r">0DTE avg · win · n</th>' : ''}</tr></thead><tbody>${rows}</tbody></table></div>
+    ${svg}${(t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+}
+async function loadDTStudy() {
+  try { S.dtSt = await api('/daytrade/study'); } catch (e) { S.dtSt = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.dtStPoll);
+  if (S.dtSt && S.dtSt.running && route() === 'botchart') S.dtStPoll = setTimeout(loadDTStudy, 10000);
+}
+function dtStudyBox() {
+  if (S.dtSt === undefined) { S.dtSt = null; setTimeout(loadDTStudy, 0); }
+  const t = S.dtSt || {};
+  const P = v => v == null ? '—' : `<span class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}%</span>`;
+  const head = `<div style="display:flex;gap:6px;align-items:center;margin-top:14px;flex-wrap:wrap"><b style="font-size:.95rem">Scenario study</b>
+    <select id="dt-stdays" style="padding:1px 4px">${[60, 120, 250, 500].map(n => `<option ${n === (S.dtStDays || 250) ? 'selected' : ''} value="${n}">${n} trading days</option>`).join('')}</select>
+    <button class="btn coachbtn" data-dtstudy ${t.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${t.running ? 'Running… (a few minutes)' : 'Run the study'}</button>
+    <span class="muted" style="font-size:.78rem">gaps, retests of the previous high / low / close, pre-market, opening range, gamma walls and dark pool levels: what price did next (1-minute candles)</span></div>`;
+  if (t.error) return head + `<div class="errbox">${esc(t.error)}</div>`;
+  if (!t.gaps) return head + ((t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : '');
+  const th = cols => `<thead><tr>${cols.map((c, i) => `<th${i ? ' class="r"' : ''}>${c}</th>`).join('')}</tr></thead>`;
+  const gaps = `<div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th(['Open vs previous close', 'Days', 'Gap filled', 'Median minutes to fill', 'Green close', 'Open → close', 'Max up from open', 'Max down from open', 'Close > prev high', 'Close < prev low'])}<tbody>
+    ${Object.entries(t.gaps).map(([k, x]) => `<tr><td>${esc(k)}</td><td class="r">${x.n}</td><td class="r">${x.filled}%</td><td class="r">${x.fillMedMin ?? '—'}</td><td class="r">${x.greenClose}%</td><td class="r">${P(x.oc)}</td><td class="r">${P(x.upOpen)}</td><td class="r">${P(x.dnOpen)}</td><td class="r">${x.abovePH}%</td><td class="r">${x.belowPL}%</td></tr>`).join('')}</tbody></table></div>`;
+  const g = S.dtStGap || 'all', src = g === 'all' ? t.levels : (t.byGap || {})[g] || {};
+  const lvRow = (k, x) => `<tr><td>${esc(k)}</td><td class="r">${x.n}</td><td class="r">${x.n ? x.held + '%' : '—'}</td><td class="r">${P(x.f5)}</td><td class="r">${P(x.f15)}</td><td class="r">${P(x.f30)}</td><td class="r">${P(x.f60)}</td><td class="r">${P(x.fc)}</td><td class="r">${x.p15 ?? '—'}% / ${x.p60 ?? '—'}%</td><td class="r">${P(x.mfe30)} / ${P(x.mae30)}</td><td class="r">${x.minute ?? '—'}</td></tr>`;
+  const levels = `<div style="display:flex;gap:6px;align-items:center;margin:10px 0 4px"><b style="font-size:.88rem">First touch of a level</b> <select id="dt-stgap" style="padding:1px 4px"><option value="all">all days</option>${Object.keys(t.byGap || {}).map(k => `<option ${k === g ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select>
+    <span class="muted" style="font-size:.75rem">moves in % from the level, + = through it (a test from below: higher) · held = broke it and stayed past it 15-30 min later</span></div>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th(['Level · approach', 'Touches', 'Broke & held', '+5 min', '+15 min', '+30 min', '+60 min', 'Close', 'Through at 15 / 60 min', 'Best / worst 30 min', 'Avg minute'])}<tbody>
+    ${Object.entries(src).map(([k, x]) => lvRow(k, x)).join('')}</tbody></table></div>`;
+  const cf = Object.entries(t.confluence || {});
+  const conf = cf.length ? `<b style="font-size:.88rem;display:block;margin:10px 0 4px">Dark pool × gamma levels <span class="muted" style="font-weight:400;font-size:.75rem">a dark pool level within 0.15% of a gamma level (and the reverse)</span></b>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th(['Level · approach', 'With: touches', 'held', '+30 min', 'close', 'Without: touches', 'held', '+30 min', 'close'])}<tbody>
+    ${cf.map(([k, x]) => `<tr><td>${esc(k)}</td><td class="r">${x.with.n}</td><td class="r">${x.with.n ? x.with.held + '%' : '—'}</td><td class="r">${P(x.with.f30)}</td><td class="r">${P(x.with.fc)}</td><td class="r">${x.without.n}</td><td class="r">${x.without.n ? x.without.held + '%' : '—'}</td><td class="r">${P(x.without.f30)}</td><td class="r">${P(x.without.fc)}</td></tr>`).join('')}</tbody></table></div>` : '';
+  const fg = Object.entries(t.flipGap || {});
+  const flip = fg.length ? `<b style="font-size:.88rem;display:block;margin:10px 0 4px">Gamma flip × gap</b><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th(['Open', 'Days', 'Green close', 'Open → close'])}<tbody>
+    ${fg.map(([k, x]) => `<tr><td>${esc(k)}</td><td class="r">${x.n}</td><td class="r">${x.greenClose}%</td><td class="r">${P(x.oc)}</td></tr>`).join('')}</tbody></table></div>` : '';
+  return head + `<p class="muted" style="font-size:.8rem;margin:4px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${esc((t.tickers || []).join(', '))} · ${t.nDays} days · ${t.nEvents} level touches · gamma walls (${t.wallNear ? 'nearest expiration' : 'all expirations'}) on ${t.wallDays} days, dark pool levels on ${t.dpDays} days · data ${esc(Object.entries(t.feed || {}).map(([k, v]) => `${k} ${v.toUpperCase()}`).join(', '))}</p>
+    <b style="font-size:.88rem;display:block;margin:6px 0 4px">Gaps</b>${gaps}${levels}${conf}${flip}
     ${(t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
 }
 function vChartDT() {
@@ -1915,15 +2057,16 @@ function vChartDT() {
   const narrow = window.innerWidth < 800, headH = S.fcfHeadH || 58;
   const W = Math.max(320, window.innerWidth - 20), H = Math.max(420, window.innerHeight - headH - 90);   // settings / backtest below: scroll
   const id = 'dt-' + sym + '-' + S.dtTf;
+  fcNeedDark(id);
   const sigs = (d && d.signals) || [], st = (d && d.stats) || {};
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
   const zb = (q, l) => `<button class="btn" data-fczoom="${id}|${q}" style="padding:3px 10px">${l}</button>`;
   const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym)}</b> ${fcModeSeg()}
     <span class="seg">${tickers.map(x => `<a class="btn ${x === sym ? 'coachbtn' : ''}" href="#botchart?t=${encodeURIComponent(x)}" style="padding:3px 10px">${esc(x)}</a>`).join('')}</span>
     <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
-    <span class="seg">${[1, 3, 5, 10].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
+    <span class="seg">${[1, 3, 5, 10, 20, 30].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
-    <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-dtreload style="padding:3px 10px" title="Reload the candles">↻</button>
     <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button></div>`;
   let main;
@@ -1942,7 +2085,7 @@ function vChartDT() {
   const info = `${dtAccountBox()}
     ${live.length ? `<details style="margin:4px 0"><summary style="font-size:.85rem;cursor:pointer">Live day trades (${live.length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Ticker</th><th>Entry</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th><th>Exit</th></tr></thead><tbody>
       ${live.slice().reverse().map(r0 => `<tr><td>${esc(r0.symbol)}</td><td>${esc((r0.at || '').replace('T', ' ').slice(5))}</td><td>${esc(r0.dir || '')}</td><td class="r">${r0.qty ?? ''}</td><td class="r">${r0.entry ?? ''}</td><td>${esc(r0.status || '')}</td><td>${esc(r0.exitReason || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
-    ${S.hideSettings ? '' : dtPanel()}${dtBtBox()}`;
+    ${S.hideSettings ? '' : dtPanel()}${dtBtBox()}${dtCmpBox()}${dtStudyBox()}`;
   return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${main}${info}</div></div></div>`;
 }
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
@@ -3725,7 +3868,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3804,6 +3947,7 @@ document.addEventListener('click', e => {
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }
   if (el.dataset.wltoggle) { S.wlClosed = { ...(S.wlClosed || {}), [el.dataset.wltoggle]: !(S.wlClosed || {})[el.dataset.wltoggle] }; try { localStorage.setItem('wlClosed', JSON.stringify(S.wlClosed)); } catch (x) {} render(); return; }
+  if (el.dataset.dtwexp) { S.dtDraft = { ...(S.dtDraft || {}), wallNear: el.dataset.dtwexp === 'near' }; S.dtDirty = true; render(); return; }
   if (el.dataset.dtsw) { const k = el.dataset.dtsw; S.dtDraft = { ...(S.dtDraft || {}), [k]: !dtCfg()[k] }; S.dtDirty = true; render(); return; }
   if (el.hasAttribute('data-dtapply')) {
     const body = { ...(S.dtDraft || {}) };
@@ -3815,10 +3959,36 @@ document.addEventListener('click', e => {
   if (el.dataset.dtdays) { S.dtDays = +el.dataset.dtdays; try { localStorage.setItem('dtDays', S.dtDays); } catch (x) {} render(); return; }
   if (el.hasAttribute('data-dtreload')) { S.dtFc = null; render(); return; }
   if (el.hasAttribute('data-dtdisconnect')) { if (!confirm('Disconnect the day-trading account?')) return; api('/daytrade/account', { method: 'DELETE' }).then(r => { S.dt = r; render(); }).catch(err => toast(err.message)); return; }
+  if (el.hasAttribute('data-dtcmpcur')) { S.dtCmpCur = el.checked; return; }
+  if (el.dataset.dtpresel) { S.dtCmpSel = { ...(S.dtCmpSel || {}), [el.dataset.dtpresel]: el.checked }; return; }
+  if (el.hasAttribute('data-dtpresave')) {
+    const name = ((document.getElementById('dt-prename') || {}).value || '').trim(); if (!name) { toast('Give the settings a name'); return; }
+    api('/daytrade/presets', { method: 'PUT', body: { name, cfg: dtBody() } }).then(r => { S.dtPre = r.presets; S.dtCmpSel = { ...(S.dtCmpSel || {}), [name]: true }; toast(`Saved “${name}”`); render(); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.dtpredel) { if (!confirm(`Delete “${el.dataset.dtpredel}”?`)) return; api('/daytrade/presets?name=' + encodeURIComponent(el.dataset.dtpredel), { method: 'DELETE' }).then(r => { S.dtPre = r.presets; render(); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.dtpreload) { const p0 = (S.dtPre || []).find(x => x.name === el.dataset.dtpreload); if (!p0) return;
+    const c0 = (S.dt && S.dt.config) || {}, d = {}; Object.entries(p0.cfg || {}).forEach(([k, v]) => { if (!['enabled', 'trade'].includes(k) && JSON.stringify(v) !== JSON.stringify(c0[k])) d[k] = v; });
+    S.dtDraft = d; S.dtDirty = true; toast(`“${p0.name}” loaded: click Apply to use it`); render(); return; }
+  if (el.hasAttribute('data-dtcmp')) {
+    const days = +((document.getElementById('dt-cmpdays') || {}).value || 120); S.dtCmpDays = days;
+    const key = (document.getElementById('dt-swkey') || {}).value || '', vals = ((document.getElementById('dt-swvals') || {}).value || '').replace(/,/g, ' ').split(/\s+/).filter(Boolean).map(Number).filter(x => !isNaN(x));
+    S.dtSwKey = key; S.dtSwVals = (document.getElementById('dt-swvals') || {}).value;
+    const cur = dtBody(), vs = [];
+    if (S.dtCmpCur !== false && !key) vs.push({ name: 'Current', cfg: cur });
+    (S.dtPre || []).filter(p0 => (S.dtCmpSel || {})[p0.name]).forEach(p0 => vs.push({ name: p0.name, cfg: p0.cfg }));
+    if (key) vals.forEach(v => vs.push({ name: `${key} = ${v}`, cfg: { ...cur, [key]: v } }));
+    if (!vs.length) { toast('Pick the settings to compare'); return; }
+    if (vs.length > 10) { toast('10 settings at most'); return; }
+    api('/daytrade/compare', { method: 'POST', body: { days, variants: vs, opt: dtOptGet() } }).then(() => { S.dtCmp = { ...(S.dtCmp || {}), running: 'now' }; render(); clearTimeout(S.dtCmpPoll); S.dtCmpPoll = setTimeout(loadDTCmp, 10000); }).catch(err => toast(err.message));
+    return; }
+  if (el.hasAttribute('data-dtstudy')) {
+    const days = +((document.getElementById('dt-stdays') || {}).value || 250); S.dtStDays = days;
+    api('/daytrade/study', { method: 'POST', body: { days, wallNear: !!dtCfg().wallNear } }).then(() => { S.dtSt = { ...(S.dtSt || {}), running: 'now' }; render(); clearTimeout(S.dtStPoll); S.dtStPoll = setTimeout(loadDTStudy, 10000); }).catch(err => toast(err.message));
+    return; }
   if (el.hasAttribute('data-dtbt')) {
     const days = +((document.getElementById('dt-btdays') || {}).value || 20); S.dtBtDays = days; S.dtBtBusy = true; render();
-    const cfg = { ...(S.dtDraft || {}) }; document.querySelectorAll('[data-dtnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) cfg[i.dataset.dtnum] = v; });
-    api('/daytrade/backtest', { method: 'POST', body: { days, cfg } }).then(r => { S.dtBt = r; }).catch(err => { S.dtBt = { error: err.message }; }).finally(() => { S.dtBtBusy = false; render(); });
+    const cfg = dtBody(), opt = dtOptGet();
+    api('/daytrade/backtest', { method: 'POST', body: { days, cfg, opt } }).then(() => { S.dtBt = { ...(S.dtBt || {}), running: 'now' }; S.dtBtBusy = false; render(); clearTimeout(S.dtBtPoll); S.dtBtPoll = setTimeout(loadDTBt, 10000); })
+      .catch(err => { S.dtBt = { error: err.message }; S.dtBtBusy = false; render(); });
     return; }
   if (el.hasAttribute('data-wwreview')) { wwReview(); return; }
   if (el.hasAttribute('data-wwrevhide')) { S.wwRev = null; render(); return; }
@@ -4078,8 +4248,9 @@ document.addEventListener('change', e => {
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (id === 'eo-mult') { S.eoMult = +e.target.value; if (S.eo) runExitOpt(); return; }
   if (id === 'ex-key') { S.exPick = e.target.value || null; render(); return; }
+  if (id === 'dt-stgap') { S.dtStGap = e.target.value; render(); return; }
   if (id === 'ww-dpn') { const v = Math.max(0, Math.min(10, Math.round(+e.target.value || 0))); S.dpN = v; try { localStorage.setItem('dpN', String(v)); } catch (x) {} render(); return; }
-  if (id === 'ww-dpmin') { const v = parseFloat(e.target.value); if (v > 0) { S.wwDpPct = v; Object.keys(S.fcDp).filter(x => x.startsWith('ww-')).forEach(x => delete S.fcDp[x]); render(); } return; }
+  if (id === 'ww-dpmin') { const v = parseFloat(e.target.value); if (v > 0) { S.wwDpPct = v; Object.keys(S.fcDp).filter(x => x.startsWith('ww-') || x.startsWith('dt-')).forEach(x => delete S.fcDp[x]); render(); } return; }
   if (id === 'ww-on') { api('/bot/wallwatch', { method: 'PUT', body: { enabled: e.target.checked } }).then(r => { S.ww = r; render(); }).catch(err => toast(err.message)); return; }
   if (id === 'ex-days') { S.exDays = +e.target.value; S.ex = null; runExplore(false); return; }
   if (id === 'sh-days') { S.shadowDays = +e.target.value; S.shSel = null; loadShadow(); return; }

@@ -34,17 +34,32 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "aboveVwap": True, "vwapCross": False, "aboveEma": False, "emaStack": True, "greenBar": True, "kcNotExt": False,
           "kcLower": False, "sqOn": False, "sqFire": False, "sqMom": False, "inGreen": False, "inNotRed": False,
           "fvgTouch": False, "orbBreak": False, "pmBreak": False, "pwTouch": False, "aboveFlip": False,
+          "wallNear": False,      # gamma walls of the nearest expiration only (0DTE on SPY / QQQ) instead of all
+          # entry rules from the chart studies
+          "bandForm": False, "lisForm": False, "lisAbove": False, "pmzTouch": False, "fibTouch": False, "dpTouch": False,
+          "prevTouch": False, "formWin": 5,
+          # day filters
+          "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False,
+          "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
+          "noLunch": False, "lunchFrom": "11:30", "lunchTo": "13:30", "dayStop": False, "dayStopR": 2.0,
           # exits
           "stopOn": True, "stopAtr": 1.5, "targetOn": True, "targetR": 2.0, "trailOn": False, "trailAtr": 2.0,
-          "vwapExit": False, "emaExit": False, "sqExit": False, "inExit": False, "fvgExit": False}
+          "vwapExit": False, "emaExit": False, "sqExit": False, "inExit": False, "fvgExit": False,
+          "beOn": False, "beR": 1.0, "scaleOn": False, "scaleR": 1.0, "timeOn": False, "timeMin": 30, "lvlTarget": False}
 ENTRY = ("aboveVwap", "vwapCross", "aboveEma", "emaStack", "greenBar", "kcNotExt", "kcLower", "sqOn", "sqFire", "sqMom",
-         "inGreen", "inNotRed", "fvgTouch", "orbBreak", "pmBreak", "pwTouch", "aboveFlip")
-EXITS = ("stopOn", "targetOn", "trailOn", "vwapExit", "emaExit", "sqExit", "inExit", "fvgExit")
+         "inGreen", "inNotRed", "fvgTouch", "orbBreak", "pmBreak", "pwTouch", "aboveFlip",
+         "bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch")
+FILTERS = ("gapOn", "gapWith", "gapFade", "flipOpen", "peerAgree", "rvolOn", "vixOn", "noLunch")
+EXITS = ("stopOn", "targetOn", "trailOn", "vwapExit", "emaExit", "sqExit", "inExit", "fvgExit", "beOn", "scaleOn", "timeOn",
+         "lvlTarget", "dayStop")
 INTS = {"maxTrades": (1, 50), "qty": (1, 100000), "maxQty": (1, 100000), "emaLen": (2, 400), "ema2Len": (2, 400),
         "kcLen": (2, 400), "sqLen": (5, 400), "sqFireN": (1, 60), "inN1": (5, 800), "inN2": (5, 800), "inN3": (5, 800),
-        "fvgDays": (1, 20), "orbMin": (1, 120)}
+        "fvgDays": (1, 20), "orbMin": (1, 120), "formWin": (1, 120), "timeMin": (1, 400)}
 FLOATS = {"kcMult": (0.1, 10), "sqBB": (0.1, 10), "sqKC": (0.1, 10), "fvgMin": (0, 10), "fvgNear": (0, 10), "zoneAtr": (0, 20),
-          "stopAtr": (0.05, 50), "targetR": (0.1, 50), "trailAtr": (0.05, 50), "riskUsd": (0, 1e7)}
+          "stopAtr": (0.05, 50), "targetR": (0.1, 50), "trailAtr": (0.05, 50), "riskUsd": (0, 1e7),
+          "gapMin": (0, 99), "gapMax": (0, 99), "rvolMin": (0, 50), "vixMin": (0, 200), "vixMax": (0, 200), "dayStopR": (0.1, 50),
+          "beR": (0.1, 20), "scaleR": (0.1, 20)}
+TIMES = ("startT", "endT", "flatT", "lunchFrom", "lunchTo")
 
 
 def config(sub):
@@ -70,7 +85,15 @@ def _hm(v, d):
 
 
 def save_config(sub, body):
-    cur = config(sub)
+    cur = clean_cfg(config(sub), body)
+    from decimal import Decimal
+    db.put({"PK": db.upk(sub), "SK": SK, **{k: Decimal(str(v)) if isinstance(v, float) else v for k, v in cur.items()}})
+    return cur
+
+
+def clean_cfg(cur, body):
+    """cur (a full config) updated with the valid values of body."""
+    cur = dict(cur)
     for k, (lo, hi) in INTS.items():
         if k in body:
             try:
@@ -83,19 +106,27 @@ def save_config(sub, body):
                 cur[k] = max(lo, min(hi, round(float(body[k]), 4)))
             except (TypeError, ValueError):
                 pass
-    for k in ("enabled", "trade", "longs", "shorts") + ENTRY + EXITS:
+    for k in ("enabled", "trade", "longs", "shorts", "wallNear") + ENTRY + FILTERS + EXITS:
         if k in body:
             cur[k] = bool(body[k])
-    for k in ("startT", "endT", "flatT"):
+    for k in TIMES:
         if k in body:
             cur[k] = _hm(body[k], cur[k])
     if "tickers" in body:
         tk = body["tickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
         cur["tickers"] = [str(t).strip().upper()[:10] for t in (tk or []) if str(t).strip()][:10] or ["QQQ", "SPY"]
-    from decimal import Decimal
-    db.put({"PK": db.upk(sub), "SK": SK, **{k: Decimal(str(v)) if isinstance(v, float) else v for k, v in cur.items()}})
     return cur
+
+
+def full_cfg(c):
+    """A stored config / preset -> every parameter with its type."""
+    out = {k: (c or {}).get(k, v) for k, v in PARAMS.items()}
+    for k in INTS:
+        out[k] = int(out[k])
+    for k in FLOATS:
+        out[k] = float(out[k])
+    return out
 
 
 # ---------------- data ----------------
@@ -111,7 +142,7 @@ def data_creds(sub):
     return creds(sub) or alpaca.creds(sub)
 
 
-def minute_bars(sub, sym, days, now=None):
+def minute_bars(sub, sym, days, now=None, feed=None):
     """1-minute candles of the last `days` trading days (pre-market included), NY time. [{t,o,h,l,c,v}]"""
     import alpaca
     c = data_creds(sub)
@@ -119,15 +150,31 @@ def minute_bars(sub, sym, days, now=None):
         raise BadRequest("Connect an Alpaca account (Day trading → account) to load minute candles.")
     now = now or now_ny().replace(tzinfo=None)
     start = (now - timedelta(days=int(days * 1.5) + 4)).replace(hour=4, minute=0, second=0, microsecond=0)
-    end = now - timedelta(minutes=1) if c.get("feed", "iex") == "iex" else now - timedelta(minutes=16)
-    out = alpaca.bars(c, sym, start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S"), 1)
+    fd = feed or c.get("feed", "iex")
+    end = now - timedelta(minutes=1) if fd == "iex" else now - timedelta(minutes=16)   # SIP: not the last 15 minutes
+    pages = max(10, int(days * 1000 / 10000) + 3)
+    out = alpaca.bars(c, sym, start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S"), 1, max_pages=pages, feed=fd)
+    out = [b for b in out if "04:00" <= b["t"][11:16] < "16:00"]         # after-hours not used
     for b in out:
         b["t"] = b["t"][:16]
     return out
 
 
-def walls_by_day(sub, sym, dates):
+def walls_by_day(sub, sym, dates, near=None, budget_s=240):
+    """{date: {callWall, putWall, flip}}: all expirations (stored days), or the nearest expiration only (near=True,
+    or the wallNear setting when near is None; missing days are fetched)."""
     import flowdata
+    if near is None:
+        try:
+            near = bool(config(sub).get("wallNear"))
+        except Exception:
+            near = False
+    if near:
+        try:
+            return flowdata.near_walls(sub, sym, list(dates), budget_s)
+        except Exception as e:
+            print("near walls failed", sym, e)
+            return {}
     w = {}
     try:
         st = flowdata.stored_walls(sym)
@@ -201,6 +248,71 @@ def _fvg_scan(bars, atr, min_atr, near, max_days):
     return bull_t, bear_t, new_bull, new_bear
 
 
+def _rvol(bars, look=10):
+    """Relative volume: today's volume so far vs the average volume at the same minute of the session over the
+    previous `look` days (cumulative). None for the first days."""
+    out, hist, cur, day, k = [], [], [], None, 0
+    for b in bars:
+        d = b["t"][:10]
+        if d != day:
+            if cur:
+                hist.append(cur)
+                hist = hist[-look:]
+            day, cur, k = d, [], 0
+        cur.append((cur[-1] if cur else 0) + float(b.get("v") or 0))
+        ref = [h[min(k, len(h) - 1)] for h in hist if h]
+        avg = sum(ref) / len(ref) if len(ref) >= 3 else 0
+        out.append(round(cur[-1] / avg, 3) if avg > 0 else None)
+        k += 1
+    return out
+
+
+def studies(bars, ext, P):
+    """What the chart studies give the engine, known at each candle: per day the previous session high / low / close,
+    the open and the gap, the auto fibs (previous day), the pre-market zone, the line in the sand; per candle the
+    direction of a recent EMA-band formation / LIS formation (within formWin minutes, the LIS one once confirmed)."""
+    import tr3ndy
+    idx = {b["t"]: i for i, b in enumerate(bars)}
+    days, prev = {}, None
+    for b in bars:
+        d = b["t"][:10]
+        if d not in days:
+            days[d] = {"o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"]}
+        x = days[d]
+        x["h"], x["l"], x["c"] = max(x["h"], b["h"]), min(x["l"], b["l"]), b["c"]
+    info = {}
+    for d in sorted(days):
+        x = days[d]
+        info[d] = {"open": x["o"], "prev": prev, "gap": round((x["o"] / prev["c"] - 1) * 100, 3) if prev else None}
+        prev = x
+    fb = tr3ndy.fibs(bars)
+    b5 = tr3ndy.agg(ext, 5)
+    lines, lisf, _ = tr3ndy.lis(b5)
+    pz = tr3ndy.pmz(b5, lines)
+    win = int(P.get("formWin") or 5)
+    band = [0] * len(bars)
+    _, bf = tr3ndy.bands(bars)
+    for f in bf:
+        j = idx.get(f["t"])
+        if j is not None:
+            for k in range(j, min(len(bars), j + win)):
+                if bars[k]["t"][:10] == f["t"][:10]:
+                    band[k] = f["dir"]
+    lisd = [0] * len(bars)
+    for f in lisf:
+        t = datetime.strptime(f["t"], "%Y-%m-%dT%H:%M") + timedelta(minutes=9)     # confirmed at the close of the next 5-min candle
+        j = idx.get(t.strftime("%Y-%m-%dT%H:%M"))
+        if j is not None:
+            for k in range(j, min(len(bars), j + win)):
+                if bars[k]["t"][:10] == f["t"][:10]:
+                    lisd[k] = f["dir"]
+    return {"info": info, "fibs": {d: [v for _, v in x] for d, x in fb.items()}, "pmz": pz, "lis": lines, "band": band, "lisF": lisd}
+
+
+def _test(b, L, zone, long_):
+    return (b["l"] <= L + zone and b["c"] > L) if long_ else (b["h"] >= L - zone and b["c"] < L)
+
+
 def indicators(bars, ext, P):
     """bars: regular-session 1-minute candles; ext: all candles (pre-market for the pre-market high / low)."""
     import wallwatch as ww
@@ -229,7 +341,7 @@ def indicators(bars, ext, P):
                 cur = (hi_, lo_)
             orb.append(cur)
     bt, brt, nb, nbr = _fvg_scan(bars, atr, float(P["fvgMin"]), float(P["fvgNear"]), int(P["fvgDays"]))
-    return {"vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
+    return {"rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
             "kc": ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
             "sq": ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"])),
             "inr": ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
@@ -267,7 +379,57 @@ def _checks(i, b, prev, I, w, side, P):
         "pwTouch": (pw is not None and b["l"] <= pw + zone and c > pw) if long_ else (cw is not None and b["h"] >= cw - zone and c < cw),
         "aboveFlip": fl is not None and (c > fl if long_ else c < fl),
     }
+    X = I.get("X")
+    if X is None:
+        return out
+    d, hm = b["t"][:10], b["t"][11:16]
+    inf = X["info"].get(d) or {}
+    pv = inf.get("prev") or {}
+    z = X["pmz"].get(d)
+    lis = X["lis"].get(d)
+    sd = 1 if long_ else -1
+    gap = inf.get("gap")
+    ctx = I.get("ctx") or {}
+    dps = (ctx.get("dp") or {}).get(d) or []
+    vix = (ctx.get("vix") or {}).get(d)
+    peer = (ctx.get("peer") or {}).get(b["t"])
+    rv = I["rvol"][i]
+    out.update({
+        "bandForm": X["band"][i] == sd,
+        "lisForm": X["lisF"][i] == sd,
+        "lisAbove": lis is not None and (c > lis if long_ else c < lis),
+        "pmzTouch": bool(z) and ((b["l"] <= z["up"] and c > z["up"]) if long_ else (b["h"] >= z["lo"] and c < z["lo"])),
+        "fibTouch": any(_test(b, L, zone, long_) for L in X["fibs"].get(d) or []),
+        "dpTouch": any(_test(b, float(L), zone, long_) for L in dps),
+        "prevTouch": bool(pv) and any(_test(b, L, zone, long_) for L in (pv["h"], pv["l"], pv["c"])),
+        "gapOn": gap is not None and float(P["gapMin"]) <= abs(gap) <= float(P["gapMax"]),
+        "gapWith": gap is not None and gap * sd > 0,
+        "gapFade": gap is not None and gap * sd < 0,
+        "flipOpen": fl is not None and bool(inf) and ((inf["open"] > fl) if long_ else (inf["open"] < fl)),
+        "peerAgree": peer == sd,
+        "rvolOn": rv is not None and rv >= float(P["rvolMin"]),
+        "vixOn": vix is not None and float(P["vixMin"]) <= vix <= float(P["vixMax"]),
+        "noLunch": not (P["lunchFrom"] <= hm < P["lunchTo"]),
+    })
     return out
+
+
+def _levels(I, i, b, w, ctx):
+    """Every level known at candle i (for the level target)."""
+    X = I.get("X") or {}
+    d = b["t"][:10]
+    inf = (X.get("info") or {}).get(d) or {}
+    pv = inf.get("prev") or {}
+    lv = list((X.get("fibs") or {}).get(d) or [])
+    lv += [float(w[k]) for k in ("putWall", "flip", "callWall") if w.get(k)]
+    lv += [pv[k] for k in ("h", "l", "c") if pv]
+    lv += [float(x) for x in ((ctx or {}).get("dp") or {}).get(d) or []]
+    pm = I["pm"].get(d)
+    if pm:
+        lv += [pm[0], pm[1]]
+    if I["orb"][i]:
+        lv += list(I["orb"][i])
+    return lv
 
 
 def _r(s):
@@ -275,38 +437,76 @@ def _r(s):
     risk = abs(s["entry"] - s["stop0"])
     ex = s.get("exit") if s["status"] != "open" else s["last"]
     pnl = (ex - s["entry"]) * side
+    if s.get("scaled") is not None:                        # half off at the scale-out price
+        pnl = 0.5 * (s["scaled"] - s["entry"]) * side + 0.5 * pnl
     return round(pnl / s["entry"] * 100, 3), (round(pnl / risk, 2) if risk > 0 else None)
 
 
-def detect(bars_all, P, walls=None, start=None):
-    """Signals on 1-minute candles. bars_all: every candle (pre-market included). Returns [signal]."""
+IND_KEYS = ("emaLen", "ema2Len", "kcLen", "kcMult", "sqLen", "sqBB", "sqKC", "sqFireN", "inN1", "inN2", "inN3", "fvgMin",
+            "fvgNear", "fvgDays", "orbMin")
+STUDY_RULES = ("bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch") + FILTERS
+
+
+def detect(bars_all, P, walls=None, start=None, ctx=None):
+    """Signals on 1-minute candles. bars_all: every candle (pre-market included). ctx (optional): {"dp": {day: [dark
+    pool levels]}, "peer": {minute: +1 / -1 the other ticker vs its VWAP}, "vix": {day: previous VIX close}, "cache": {}
+    (indicators reused across settings that share them, for the same candles)}. Returns [signal]."""
     P = {**PARAMS, **(P or {})}
     walls = walls or {}
+    ctx = ctx or {}
     on = lambda k: bool(P.get(k))
-    bars = [b for b in bars_all if "09:30" <= b["t"][11:16] < "16:00"]
+    cache = ctx.get("cache")
+    if cache is not None and "bars" in cache:
+        bars = cache["bars"]
+    else:
+        bars = [b for b in bars_all if "09:30" <= b["t"][11:16] < "16:00"]
+        if cache is not None:
+            cache["bars"] = bars
     if len(bars) < 30:
         return []
-    I = indicators(bars, bars_all, P)
-    rules = [k for k in ENTRY if on(k)]
+    ik = tuple(P[k] for k in IND_KEYS)
+    I = cache.get(ik) if cache is not None else None
+    if I is None:
+        I = indicators(bars, bars_all, P)
+        if cache is not None:
+            cache[ik] = I
+    need_x = any(on(k) for k in STUDY_RULES) or on("lvlTarget")
+    if need_x:
+        xk = ("X", int(P["formWin"]))
+        X = cache.get(xk) if cache is not None else None
+        if X is None:
+            X = studies(bars, bars_all, P)
+            if cache is not None:
+                cache[xk] = X
+        I = {**I, "X": X, "ctx": ctx}
+    rules = [k for k in ENTRY + FILTERS if on(k)]
     sides = ([1] if on("longs") else []) + ([-1] if on("shorts") else [])
     st_t, en_t, fl_t = P["startT"], P["endT"], P["flatT"]
-    sigs, open_, per_day = [], None, {}
+    sigs, open_, per_day, day_r = [], None, {}, {}
     for i, b in enumerate(bars):
         day, hm = b["t"][:10], b["t"][11:16]
         last_of_day = hm >= "15:59" or (i + 1 < len(bars) and bars[i + 1]["t"][:10] != day)   # end of data != end of day (live)
         if open_:
             s = open_
             side, a = s["side"], I["atr"][i] or s["atr"]
+            risk = abs(s["entry"] - s["stop0"])
             exit_ = None
             if on("stopOn") and ((b["l"] <= s["stop"]) if side > 0 else (b["h"] >= s["stop"])):
                 px = min(b["o"], s["stop"]) if side > 0 else max(b["o"], s["stop"])
-                exit_ = ("trail" if s.get("trailed") else "stop", px)
-            elif s.get("target") and ((b["h"] >= s["target"]) if side > 0 else (b["l"] <= s["target"])):
-                px = max(b["o"], s["target"]) if side > 0 else min(b["o"], s["target"])
-                exit_ = ("target", px)
+                exit_ = ("trail" if s.get("trailed") else "breakeven" if s.get("be") else "stop", px)
             else:
+                if on("scaleOn") and s.get("scaled") is None and risk > 0:
+                    sp = s["entry"] + side * float(P["scaleR"]) * risk
+                    if (b["h"] >= sp) if side > 0 else (b["l"] <= sp):
+                        s["scaled"] = round(max(b["o"], sp) if side > 0 else min(b["o"], sp), 4)
+                        s["scaledAt"] = b["t"]
+                if s.get("target") and ((b["h"] >= s["target"]) if side > 0 else (b["l"] <= s["target"])):
+                    px = max(b["o"], s["target"]) if side > 0 else min(b["o"], s["target"])
+                    exit_ = ("level" if s.get("lvlT") else "target", px)
+            if not exit_:
                 c = b["c"]
                 vw, em, sq, ir = I["vwap"][i], I["ema"][i], I["sq"][i], I["inr"][i]
+                mins = (datetime.strptime(b["t"], "%Y-%m-%dT%H:%M") - datetime.strptime(s["at"], "%Y-%m-%dT%H:%M")).seconds // 60
                 if on("vwapExit") and ((c < vw) if side > 0 else (c > vw)):
                     exit_ = ("vwap", c)
                 elif on("emaExit") and em is not None and ((c < em) if side > 0 else (c > em)):
@@ -317,10 +517,13 @@ def detect(bars_all, P, walls=None, start=None):
                     exit_ = ("inertia", c)
                 elif on("fvgExit") and (I["newBear"][i] if side > 0 else I["newBull"][i]):
                     exit_ = ("fvg", c)
+                elif on("timeOn") and mins >= int(P["timeMin"]):
+                    exit_ = ("time stop", c)
                 elif hm >= fl_t or last_of_day:
                     exit_ = ("time", c)
             if exit_:
                 s.update(status=exit_[0], exitAt=b["t"], exit=round(exit_[1], 4))
+                day_r[day] = day_r.get(day, 0) + (_r(s)[1] or 0)
                 open_ = None
             else:
                 s["last"], s["lastAt"] = b["c"], b["t"]
@@ -332,10 +535,17 @@ def detect(bars_all, P, walls=None, start=None):
                         s["stop"] = round(lvl, 4)
                         s["trailed"] = True
                         s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"], s["stop"]])
+                if on("beOn") and on("stopOn") and not s.get("be") and risk > 0 and (best - s["entry"]) * side >= float(P["beR"]) * risk:
+                    if (s["entry"] > s["stop"]) if side > 0 else (s["entry"] < s["stop"]):
+                        s["stop"] = s["entry"]
+                        s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"], s["stop"]])
+                    s["be"] = True
             continue
         if not rules or not sides or hm < st_t or hm >= en_t or last_of_day or (start and day < start):
             continue
         if per_day.get(day, 0) >= int(P["maxTrades"]):
+            continue
+        if on("dayStop") and day_r.get(day, 0) <= -float(P["dayStopR"]):
             continue
         a = I["atr"][i] or 0
         if not a:
@@ -348,10 +558,17 @@ def detect(bars_all, P, walls=None, start=None):
                 e = b["c"]
                 st = round(e - side * float(P["stopAtr"]) * a, 4)
                 tgt = round(e + side * float(P["targetR"]) * abs(e - st), 4) if on("targetOn") else None
+                lvl_t = False
+                if on("lvlTarget"):
+                    beyond = [L for L in _levels(I, i, b, w, ctx) if (L - e) * side >= 0.25 * a]
+                    if beyond:
+                        tgt, lvl_t = round(min(beyond, key=lambda L: abs(L - e)), 4), True
                 s = {"at": b["t"], "kind": "day", "side": side, "dir": "long" if side > 0 else "short", "entry": e,
                      "stop0": st, "stop": st if on("stopOn") else (0.0 if side > 0 else 1e12), "target": tgt, "atr": round(a, 4),
                      "status": "open", "last": e, "lastAt": b["t"], "o": b["o"], "h": b["h"], "l": b["l"],
                      "rules": rules, "level": st, "levelName": "stop"}
+                if lvl_t:
+                    s["lvlT"] = True
                 if not on("stopOn"):
                     s["stop"] = -1e12 if side > 0 else 1e12
                 sigs.append(s)
@@ -406,8 +623,9 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
         return {"symbol": sym, "bars": [], "error": "No minute candles."}
     dates = sorted({b["t"][:10] for b in allb})
     show = dates[-days:]
-    W = walls_by_day(sub, sym, show)
-    sigs = detect(allb, P, W, show[0])
+    W = walls_by_day(sub, sym, show, bool(P.get("wallNear")), budget_s=15)
+    ctx = live_ctx(sub, sym, P, show, days + 3)
+    sigs = detect(allb, P, W, show[0], ctx)
     reg = [b for b in allb if "09:30" <= b["t"][11:16] < "16:00"]
     I = indicators(reg, allb, P)
     keep = [i for i, b in enumerate(reg) if b["t"][:10] >= show[0]]
@@ -430,7 +648,8 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
     lines, lisf, sent = tr3ndy.lis(b5)
     bser, bform = tr3ndy.bands(out_bars)
     sqz_h = [{"t": t, "m": I["sq"][i]["mom"]} for t, i in pick if I["sq"][i]]
-    fb = tr3ndy.fibs([b for b in allb if b["t"][:10] in show], lines)          # every day shown
+    prev_d = [x for x in dates if x < show[0]][-1:]
+    fb = {d: v for d, v in tr3ndy.fibs([b for b in allb if b["t"][:10] in prev_d + show]).items() if d in show}   # previous day's range
     pz = tr3ndy.pmz(b5, lines)
     studies = {"bands": bser, "bandsF": bform, "lis": {d: lines[d] for d in show if d in lines},
                "lisF": [x for x in lisf if x["t"][:10] >= show[0]], "lisSent": sent.get(show[-1]),
@@ -446,30 +665,320 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
             "trades": [], "wallsNow": W.get(show[-1]), "cfgAt": P.get("savedAt")}
 
 
-def backtest(sub, days=20, cfg=None):
-    P = {**config(sub), **(cfg or {})}
-    days = max(2, min(60, int(days or 20)))
-    rows, per, errors = [], {}, []
-    for sym in P["tickers"]:
+def live_ctx(sub, sym, P, dates, n_days, now=None, peer_bars=None):
+    """Context for the chart / the live tick: dark pool levels, the other ticker vs its VWAP, VIX (only when used)."""
+    on = lambda k: bool(P.get(k))
+    ctx = {}
+    if on("dpTouch") or on("lvlTarget"):
         try:
-            allb = minute_bars(sub, sym, days + 2)
+            import backtest as _bt
+            import wallwatch
+            ctx["dp"] = wallwatch.dp_level_map(_bt.stored_darkpool(sym), dates)
+        except Exception as e:
+            print("dark pool levels failed", sym, e)
+    if on("peerAgree"):
+        try:
+            ps = peer_of(sym, P.get("tickers") or [])
+            pb = (peer_bars or {}).get(ps)
+            if pb is None:
+                pb = minute_bars(sub, ps, n_days, now)
+                if peer_bars is not None:
+                    peer_bars[ps] = pb
+            ctx["peer"] = peer_map(pb)
+        except Exception as e:
+            print("peer failed", sym, e)
+    if on("vixOn"):
+        try:
+            ctx["vix"] = vix_map()
+        except Exception as e:
+            print("vix failed", e)
+    return ctx
+
+
+BT_SK = "DTBT"
+
+
+def deep_stats(rows, days_list):
+    """Validation statistics on the trades (R): halves, by month / weekday / entry hour, drawdown, streaks, equity."""
+    rs = [r for r in rows if r.get("R") is not None]
+    out = {"all": stats(rs)}
+    if not rs:
+        return out
+    mid = days_list[len(days_list) // 2] if days_list else rs[len(rs) // 2]["at"][:10]
+    out["h1"], out["h2"] = stats([r for r in rs if r["at"][:10] < mid]), stats([r for r in rs if r["at"][:10] >= mid])
+    out["mid"] = mid
+    grp = lambda key: {k: stats([r for r in rs if key(r) == k]) for k in sorted({key(r) for r in rs})}
+    wd = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    out["byMonth"] = grp(lambda r: r["at"][:7])
+    out["byWeekday"] = {wd[k]: v for k, v in grp(lambda r: datetime.strptime(r["at"][:10], "%Y-%m-%d").weekday()).items()}
+    out["byHour"] = grp(lambda r: r["at"][11:13] + ":00")
+    out["byDir"] = grp(lambda r: r.get("dir") or "long")
+    eq, peak, dd, cur_l, max_l, curve = 0.0, 0.0, 0.0, 0, 0, []
+    for r in rs:
+        eq += r["R"]
+        peak = max(peak, eq)
+        dd = min(dd, eq - peak)
+        cur_l = cur_l + 1 if r["R"] <= 0 else 0
+        max_l = max(max_l, cur_l)
+        curve.append(round(eq, 2))
+    step = max(1, len(curve) // 300)
+    out["curve"] = curve[::step] + ([curve[-1]] if (len(curve) - 1) % step else [])
+    out["maxDD"], out["maxLosing"] = round(dd, 2), max_l
+    byday = {}
+    for r in rs:
+        byday[r["at"][:10]] = byday.get(r["at"][:10], 0) + r["R"]
+    dv = list(byday.values())
+    mean = sum(dv) / len(dv)
+    sd = (sum((x - mean) ** 2 for x in dv) / len(dv)) ** 0.5 if len(dv) > 1 else 0
+    out["daysTraded"], out["daysTotal"] = len(dv), len(days_list)
+    out["greenDays"] = sum(1 for x in dv if x > 0)
+    out["dailySharpe"] = round(mean / sd * (252 ** 0.5), 2) if sd else None
+    out["avgDayR"] = round(mean, 3)
+    return out
+
+
+def peer_of(sym, tickers):
+    o = [t for t in tickers if t != sym]
+    return o[0] if o else ("SPY" if sym == "QQQ" else "QQQ")
+
+
+def peer_map(bars_all):
+    """{minute: +1 / -1}: the close above / under its session VWAP (for the 'other ticker agrees' filter)."""
+    reg = [b for b in bars_all if "09:30" <= b["t"][11:16] < "16:00"]
+    vw = _session_vwap(reg)
+    return {b["t"]: (1 if b["c"] > v else -1 if b["c"] < v else 0) for b, v in zip(reg, vw)}
+
+
+def vix_map():
+    """{day: the previous day's VIX close} (Yahoo daily, cached 6 hours)."""
+    import charts
+    hit = db.get("VIXD", "daily")
+    if hit and time.time() - hit.get("at", 0) < 6 * 3600 and hit.get("m"):
+        return {k: float(v) for k, v in hit["m"].items()}
+    end = now_ny().replace(tzinfo=None)
+    bars = charts._yahoo("^VIX", "1d", end - timedelta(days=1100), end + timedelta(days=1))
+    m, prev = {}, None
+    for b in bars:
+        d = b["t"][:10]
+        if prev is not None:
+            m[d] = prev
+        prev = round(b["c"], 2)
+    m[(end + timedelta(days=1)).strftime("%Y-%m-%d")] = prev
+    if prev is not None:                                  # today (no daily bar yet before the close)
+        m.setdefault(end.strftime("%Y-%m-%d"), prev)
+    try:
+        from decimal import Decimal
+        db.put({"PK": "VIXD", "SK": "daily", "at": int(time.time()), "m": {k: Decimal(str(v)) for k, v in m.items()}})
+    except Exception as e:
+        print("vix cache skipped", e)
+    return m
+
+
+def _bars_any(sub, sym, n, feed_used):
+    try:
+        out = minute_bars(sub, sym, n, feed="sip")
+        feed_used[sym] = "sip"
+    except Exception:
+        out = minute_bars(sub, sym, n, feed="iex")
+        feed_used[sym] = "iex"
+    return out
+
+
+def run_variants(sub, days, variants, budget_s=540, tickers=None):
+    """Every variant (full settings) on the same candles: the last `days` trading days of every day ticker, loaded
+    once. Context loaded only when a variant needs it (dark pool levels, the other ticker vs its VWAP, VIX).
+    Returns ({variant index: [trades]}, {variant index: {ticker: stats}}, sorted days, feed, errors)."""
+    t0 = time.time()
+    days = max(2, min(500, int(days or 20)))
+    tickers = tickers or variants[0]["tickers"]
+    on = lambda k: any(v.get(k) for v in variants)
+    rows = {i: [] for i in range(len(variants))}
+    per = {i: {} for i in range(len(variants))}
+    errors, all_days, feed_used = [], set(), {}
+    vix = {}
+    if on("vixOn"):
+        try:
+            vix = vix_map()
+        except Exception as e:
+            errors.append(f"VIX: {str(e)[:100]}")
+    peers = {}
+    if on("peerAgree"):
+        for sym in tickers:
+            ps = peer_of(sym, tickers)
+            if ps in peers:
+                continue
+            try:
+                bb = _bars_any(sub, ps, days + 2, {})
+                peers[ps] = peer_map(bb)
+                del bb
+            except Exception as e:
+                errors.append(f"{ps} (other ticker): {str(e)[:100]}")
+    for sym in tickers:
+        if time.time() - t0 > budget_s:
+            errors.append(f"{sym}: time limit")
+            continue
+        try:
+            allb = _bars_any(sub, sym, days + 2, feed_used)
             dates = sorted({b["t"][:10] for b in allb})
             show = dates[-days:]
-            sg = detect(allb, P, walls_by_day(sub, sym, show), show[0] if show else None)
-            for s in sg:
-                s["sym"] = sym
-            rows += sg
-            per[sym] = stats(sg)
+            all_days.update(show)
+            dp = {}
+            if on("dpTouch") or on("lvlTarget"):
+                try:
+                    import backtest as _bt
+                    import wallwatch
+                    dp = wallwatch.dp_level_map(_bt.stored_darkpool(sym), show)
+                except Exception as e:
+                    print("dark pool levels failed", sym, e)
+            ctx = {"dp": dp, "vix": vix, "peer": peers.get(peer_of(sym, tickers)) or {}, "cache": {}}
+            W = {}
+            for i, P in enumerate(variants):
+                if time.time() - t0 > budget_s + 30:
+                    errors.append(f"{sym}: time limit at variant {i + 1}")
+                    break
+                mode = bool(P.get("wallNear"))
+                if mode not in W:
+                    W[mode] = walls_by_day(sub, sym, show, mode, budget_s=max(30, budget_s - (time.time() - t0) - 90))
+                sg = detect(allb, P, W[mode], show[0] if show else None, ctx)
+                for x in sg:
+                    x["sym"] = sym
+                rows[i] += sg
+                per[i][sym] = stats(sg)
+            del allb, ctx
         except Exception as e:
             errors.append(f"{sym}: {str(e)[:120]}")
-    rows.sort(key=lambda s: s["at"])
+    for i in rows:
+        rows[i].sort(key=lambda x: x["at"])
+    return rows, per, sorted(all_days), feed_used, errors
+
+
+TRADE_KEYS = ("sym", "at", "dir", "entry", "exit", "exitAt", "status", "R", "pct", "optPct", "optSym", "optIn", "optOut")
+
+
+def backtest(sub, days=20, cfg=None, budget_s=540, opt=None):
+    """The settings on the last `days` trading days of 1-minute candles (SIP history when the account allows it,
+    else IEX), every day ticker, then the validation statistics; opt: price every trade on a real 0DTE option."""
+    t0 = time.time()
+    P = {**config(sub), **(cfg or {})}
+    days = max(2, min(500, int(days or 20)))
+    ob = 150 if opt and opt.get("on") else 0
+    rr, per, all_days, feed_used, errors = run_variants(sub, days, [P], budget_s - ob)
+    rows = rr[0]
+    optst = None
+    if ob:
+        import dtoptions
+        optst = dtoptions.price(sub, rows, opt, budget_s=max(60, budget_s - (time.time() - t0) - 20))
     byday = {}
     for s in rows:
         if s.get("R") is not None:
             byday[s["at"][:10]] = round(byday.get(s["at"][:10], 0) + s["R"], 2)
-    return {"at": iso(now_ny()), "days": days, "all": stats(rows), "byTicker": per, "byDay": byday,
-            "trades": [{k: s.get(k) for k in ("sym", "at", "dir", "entry", "exit", "exitAt", "status", "R", "pct")} for s in rows][-300:],
-            "errors": errors}
+    ds = deep_stats(rows, all_days)
+    return {"at": iso(now_ny()), "days": days, "daysFound": len(all_days), "first": all_days[0] if all_days else None,
+            "all": ds.pop("all"), **ds, "byTicker": per[0], "byDay": byday, "feed": feed_used, "secs": round(time.time() - t0),
+            "opt": optst, "trades": [{k: s.get(k) for k in TRADE_KEYS} for s in rows][-300:], "errors": errors}
+
+
+PRE = "DTPRE#"
+CMP_SK = "DTCMP"
+
+
+def presets(sub):
+    return sorted(({"name": r.get("name"), "at": r.get("at"), "cfg": full_cfg(r.get("cfg") or {})} for r in db.q_prefix(db.upk(sub), PRE)),
+                  key=lambda x: (x["name"] or "").lower())
+
+
+def save_preset(sub, name, cfg=None):
+    from decimal import Decimal
+    name = str(name or "").strip()[:40]
+    if not name:
+        raise BadRequest("Give the settings a name.")
+    cur = clean_cfg(config(sub), cfg or {})
+    if len(list(db.q_prefix(db.upk(sub), PRE))) >= 30 and not db.get(db.upk(sub), PRE + name.lower()):
+        raise BadRequest("30 saved settings at most: delete one first.")
+    db.put({"PK": db.upk(sub), "SK": PRE + name.lower(), "name": name, "at": iso(now_ny()),
+            "cfg": {k: Decimal(str(v)) if isinstance(v, float) else v for k, v in cur.items()}})
+    return presets(sub)
+
+
+def delete_preset(sub, name):
+    db.delete(db.upk(sub), PRE + str(name or "").strip().lower())
+    return presets(sub)
+
+
+def compare(sub, days=60, variants=None, opt=None, budget_s=540):
+    """Several settings (named variants: saved ones, the current one, a parameter sweep) on the same days and candles,
+    statistics side by side."""
+    t0 = time.time()
+    base = config(sub)
+    vs = []
+    for v in (variants or [])[:10]:
+        cfg = v.get("cfg") if isinstance(v.get("cfg"), dict) else {}
+        vs.append({"name": str(v.get("name") or f"#{len(vs) + 1}")[:60], "P": {**clean_cfg(base, cfg), "tickers": base["tickers"]}})
+    if not vs:
+        raise BadRequest("Pick at least one setting to compare.")
+    ob = 160 if opt and opt.get("on") else 0
+    rr, per, all_days, feed_used, errors = run_variants(sub, days, [v["P"] for v in vs], budget_s - ob, base["tickers"])
+    out = []
+    if ob:
+        import dtoptions
+        left = max(60, budget_s - (time.time() - t0) - 20)
+        oc = {}                                            # the same contracts' bars for every variant
+        for i in range(len(vs)):
+            dtoptions.price(sub, rr[i], opt, budget_s=left / len(vs), cache=oc)
+    for i, v in enumerate(vs):
+        ds = deep_stats(rr[i], all_days)
+        o = None
+        if ob:
+            import dtoptions
+            o = dtoptions.summary([r["optPct"] for r in rr[i] if r.get("optPct") is not None])
+        out.append({"name": v["name"], "all": ds.get("all"), "h1": ds.get("h1"), "h2": ds.get("h2"), "maxDD": ds.get("maxDD"),
+                    "maxLosing": ds.get("maxLosing"), "greenDays": ds.get("greenDays"), "daysTraded": ds.get("daysTraded"),
+                    "dailySharpe": ds.get("dailySharpe"), "avgDayR": ds.get("avgDayR"), "curve": (ds.get("curve") or [])[-200:],
+                    "byTicker": per[i], "byDir": ds.get("byDir"), "opt": o,
+                    "changes": {k: v["P"][k] for k in PARAMS if k not in ("enabled", "trade") and v["P"].get(k) != base.get(k)}})
+    return {"at": iso(now_ny()), "days": days, "daysFound": len(all_days), "first": all_days[0] if all_days else None,
+            "mid": all_days[len(all_days) // 2] if all_days else None, "feed": feed_used, "variants": out,
+            "secs": round(time.time() - t0), "errors": errors}
+
+
+def compare_job(sub, params=None):
+    p = params or {}
+    try:
+        out = compare(sub, p.get("days") or 60, p.get("variants"), p.get("opt"))
+    except Exception as e:
+        out = {"at": iso(now_ny()), "errors": [str(e)[:200]]}
+    import json as _j
+    from decimal import Decimal
+    db.put({"PK": db.upk(sub), "SK": CMP_SK, **_j.loads(_j.dumps(out, default=str), parse_float=Decimal), "running": None})
+    return out
+
+
+def compare_result(sub):
+    r = db.get(db.upk(sub), CMP_SK) or {}
+    if r.get("running") and r["running"] < iso(now_ny() - timedelta(minutes=12)):
+        r = {**r, "running": None, "errors": ["The last run hit the 10-minute limit: try fewer days or fewer settings."]}
+    return {k: v for k, v in r.items() if k not in ("PK", "SK")}
+
+
+def backtest_job(sub, params=None):
+    pk = db.upk(sub)
+    p = params or {}
+    try:
+        out = backtest(sub, p.get("days") or 20, p.get("cfg"), opt=p.get("opt"))
+    except Exception as e:
+        out = {"at": iso(now_ny()), "errors": [str(e)[:200]]}
+    import json as _j
+    from decimal import Decimal
+    item = _j.loads(_j.dumps(out), parse_float=Decimal)
+    db.put({"PK": pk, "SK": BT_SK, **item, "running": None})
+    return out
+
+
+def backtest_result(sub):
+    r = db.get(db.upk(sub), BT_SK) or {}
+    if r.get("running") and r["running"] < iso(now_ny() - timedelta(minutes=12)):
+        r = {**r, "running": None, "errors": ["The last run hit the 10-minute limit: try fewer days."]}
+    return {k: v for k, v in r.items() if k not in ("PK", "SK")}
 
 
 # ---------------- live (second Alpaca paper account) ----------------
@@ -529,10 +1038,21 @@ def tick(sub, now=None):
         return {"skipped": "market closed"}
     pk = db.upk(sub)
     acts = []
+    cut = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+    loaded = {}
     for sym in P["tickers"]:
         try:
-            allb = [b for b in minute_bars(sub, sym, 3, now) if b["t"] <= (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")]
-            sigs = detect(allb, P, walls_by_day(sub, sym, [today]), today)
+            loaded[sym] = [b for b in minute_bars(sub, sym, 3, now) if b["t"] <= cut]
+        except Exception as e:
+            acts.append(f"{sym}: {str(e)[:120]}")
+    for sym in P["tickers"]:
+        if sym not in loaded:
+            continue
+        try:
+            allb = loaded[sym]
+            pbars = {k: v for k, v in loaded.items()}
+            ctx = live_ctx(sub, sym, P, [today], 3, now, pbars)
+            sigs = detect(allb, P, walls_by_day(sub, sym, [today], bool(P.get("wallNear")), budget_s=10), today, ctx)
             recs = {r["at"]: r for r in db.q_prefix(pk, f"DTPOS#{sym}#") if r.get("at", "")[:10] == today}
             last_t = allb[-1]["t"] if allb else ""
             for s in sigs:

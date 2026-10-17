@@ -3329,7 +3329,7 @@ def test_daytrade_live_tick():
                 return {"id": "o2"}
             return {}
         daytrade._alp = alp
-        daytrade.walls_by_day = lambda sub, sym, dates: {}
+        daytrade.walls_by_day = lambda sub, sym, dates, *a, **k: {}
         daytrade.config = lambda sub: P
         t_in = dt.datetime.strptime(s0["at"], "%Y-%m-%dT%H:%M") + dt.timedelta(minutes=1, seconds=5)
         r = daytrade.tick("dt-live", t_in)
@@ -3358,11 +3358,197 @@ def test_tr3ndy_studies():
     r = pz["h"] - pz["l"]
     assert (abs(pz["up"] - (pz["h"] - .2 * r)) < 1e-3 and abs(pz["lo"] - (pz["h"] - .4 * r)) < 1e-3) if pz["gap"] else (abs(pz["lo"] - (pz["l"] + .2 * r)) < 1e-3)
     fb = dict((k, v) for k, v in tr3ndy.fibs(bars, lines)["2026-09-15"])
-    assert abs(fb["50%"] - (fb["high"] + fb["low"]) / 2) < 1e-3 and fb["127.2%"] > fb["high"] and fb["-27.2%"] < fb["low"]
+    d14 = [b for b in reg if b["t"][:10] == "2026-09-14"]
+    assert fb["high"] == round(max(b["h"] for b in d14), 4) and fb["low"] == round(min(b["l"] for b in d14), 4)   # the previous day
+    assert abs(fb["50%"] - (fb["high"] + fb["low"]) / 2) < 1e-3 and fb["200%"] > fb["161.8%"] > fb["127.2%"] > fb["high"] and fb["-100%"] < fb["-61.8%"] < fb["-27.2%"] < fb["low"]
+    assert "2026-09-14" not in tr3ndy.fibs(bars)
     tu = tr3ndy.turns([{"t": str(i), "m": m} for i, m in enumerate([1, 3, 2, 1, -1, -3, -2])])
     assert tu == [{"t": "2", "dir": -1}, {"t": "6", "dir": 1}]
     ser, fm = tr3ndy.bands(reg)
     assert len(ser) == len(reg) and all(x["dir"] in (1, -1) for x in fm)
+
+
+def test_daytrade_backtest_stats():
+    """Long backtest: SIP first (falls back to IEX), halves, month / weekday / hour, drawdown, equity curve."""
+    import daytrade
+    bars = _dt_bars(6)
+    seen = []
+    def mb(sub, sym, days, now=None, feed=None):
+        seen.append(feed)
+        if feed == "sip":
+            raise RuntimeError("subscription does not permit querying recent SIP data")
+        return bars
+    saved = (daytrade.minute_bars, daytrade.walls_by_day, daytrade.config)
+    try:
+        daytrade.minute_bars = mb
+        daytrade.walls_by_day = lambda sub, sym, dates, *a, **k: {}
+        daytrade.config = lambda sub: {**daytrade.PARAMS, "tickers": ["QQQ"]}
+        r = daytrade.backtest("bt-user", 250)
+        assert seen == ["sip", "iex"] and r["feed"] == {"QQQ": "iex"} and r["days"] == 250 and r["daysFound"] == 6
+        assert r["all"]["n"] > 0 and r["h1"]["n"] + r["h2"]["n"] == r["all"]["n"]
+        assert sum(x["n"] for x in r["byHour"].values()) == r["all"]["n"] and r["byWeekday"] and r["byMonth"]
+        assert r["curve"][-1] == round(sum(x["R"] for x in r["trades"]), 2) and r["maxDD"] <= 0
+        daytrade.backtest_job("bt-user", {"days": 30})
+        assert daytrade.backtest_result("bt-user")["all"]["n"] == r["all"]["n"]
+    finally:
+        daytrade.minute_bars, daytrade.walls_by_day, daytrade.config = saved
+
+
+def test_day_scenario_study():
+    """Scenario study: gaps (fill, direction), first touches of levels with the move after (signed through the level),
+    held / rejected, dark pool + gamma confluence."""
+    import daystudy
+    bars = _dt_bars(6)
+    walls = {d: {"putWall": 499, "flip": 501, "callWall": 504} for d in {b["t"][:10] for b in bars}}
+    dpm = {d: [501.05, 497.0] for d in walls}
+    days, ev = daystudy.study_ticker(bars, walls, dpm)
+    assert len(days) == 5 and all(x["bucket"] for x in days)
+    assert ev and all(e["side"] in ("from below", "from above") for e in ev)
+    seen = {}
+    for e in ev:
+        k = (e["d"], e["level"], e["price"])
+        assert k not in seen                                   # first touch only
+        seen[k] = 1
+    dp = [e for e in ev if e["level"] == "dark pool" and abs(e["price"] - 501.05) < 1e-6]
+    assert dp and all(e["conf"] == "flip" for e in dp)        # 501.05 within 0.15% of the flip
+    e0 = ev[0]
+    day = [b for b in bars if b["t"][:10] == e0["d"] and "09:30" <= b["t"][11:16] < "16:00"]
+    sgn = 1 if e0["side"] == "from below" else -1
+    assert abs(e0["f15"] - round((day[e0["minute"] + 15]["c"] / e0["price"] - 1) * 100 * sgn, 3)) < 1e-6
+    sm = daystudy.summarize(days, ev)
+    assert sm["gaps"] and sm["levels"] and sum(v["n"] for v in sm["gaps"].values()) == 5 and "flip · from below" in str(sm["confluence"]) or sm["confluence"] is not None
+
+
+def test_daytrade_new_rules_filters_exits():
+    """Study rules, day filters (gap, VIX, other ticker, lunch, daily loss), breakeven / scale-out / time stop /
+    level target; indicators reused across settings (cache)."""
+    import daytrade
+    bars = _dt_bars(6)
+    base = {**daytrade.PARAMS, "aboveVwap": True, "emaStack": False, "greenBar": True, "maxTrades": 5}
+    ref = daytrade.detect(bars, base)
+    assert ref
+    # every new entry rule / filter runs and only ever removes trades
+    for k in daytrade.STUDY_RULES:
+        sg = daytrade.detect(bars, {**base, k: True}, {}, None, {"vix": {d: 15.0 for d in {b["t"][:10] for b in bars}}})
+        assert len(sg) <= len(ref) * 2 + 5, k
+    # filters
+    days = sorted({b["t"][:10] for b in bars})
+    assert daytrade.detect(bars, {**base, "vixOn": True, "vixMax": 20}, {}, None, {"vix": {d: 30.0 for d in days}}) == []
+    assert daytrade.detect(bars, {**base, "vixOn": True, "vixMax": 20}, {}, None, {"vix": {d: 15.0 for d in days}})
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    assert daytrade.detect(bars, {**base, "peerAgree": True}, {}, None, {"peer": {b["t"]: -1 for b in reg}, }) == [] or base["shorts"]
+    longs = {**base, "shorts": False}
+    assert daytrade.detect(bars, {**longs, "peerAgree": True}, {}, None, {"peer": {b["t"]: -1 for b in reg}}) == []
+    assert daytrade.detect(bars, {**longs, "peerAgree": True}, {}, None, {"peer": {b["t"]: 1 for b in reg}})
+    nl = daytrade.detect(bars, {**base, "noLunch": True})
+    assert not any("11:30" <= s["at"][11:16] < "13:30" for s in nl)
+    gp = daytrade.detect(bars, {**base, "gapOn": True, "gapMin": 50, "gapMax": 99})
+    assert gp == []
+    # exits
+    tm = daytrade.detect(bars, {**base, "timeOn": True, "timeMin": 7, "targetOn": False, "stopAtr": 50})
+    assert tm and all(s["status"] in ("time stop", "time") for s in tm)
+    assert any(s["status"] == "time stop" and s["exitAt"][11:16] for s in tm)
+    sc = daytrade.detect(bars, {**base, "scaleOn": True, "scaleR": 0.5, "targetR": 2})
+    one = next((s for s in sc if s.get("scaled") is not None and s["status"] != "open"), None)
+    assert one is not None
+    risk = abs(one["entry"] - one["stop0"])
+    exp = round((0.5 * (one["scaled"] - one["entry"]) + 0.5 * (one["exit"] - one["entry"])) * one["side"] / risk, 2)
+    assert one["R"] == exp
+    be = daytrade.detect(bars, {**base, "beOn": True, "beR": 0.3, "targetOn": False, "stopAtr": 2})
+    assert any(s.get("be") for s in be)
+    bes = [s for s in be if s["status"] == "breakeven"]
+    assert bes and all((s["exit"] - s["entry"]) * s["side"] <= 1e-4 for s in bes)
+    lt = daytrade.detect(bars, {**base, "lvlTarget": True, "targetOn": False}, {d: {"callWall": 9999, "putWall": 1} for d in days})
+    assert any(s.get("lvlT") for s in lt)
+    # daily loss limit: no entry after the day's closed R reaches -X
+    ds = daytrade.detect(bars, {**base, "dayStop": True, "dayStopR": 0.5, "maxTrades": 50, "targetR": 5})
+    byd = {}
+    for s in ds:
+        tot = sum(x["R"] for x in byd.get(s["at"][:10], []))
+        assert tot > -0.5 or not byd.get(s["at"][:10]), s["at"]
+        byd.setdefault(s["at"][:10], []).append(s)
+    # cache: same indicator settings computed once
+    cache = {}
+    daytrade.detect(bars, base, {}, None, {"cache": cache})
+    daytrade.detect(bars, {**base, "targetR": 3}, {}, None, {"cache": cache})
+    assert len([k for k in cache if isinstance(k, tuple) and k[0] != "X"]) == 1
+
+
+def test_daytrade_compare_presets_options():
+    """Saved settings, compare several on the same candles, 0DTE option pricing (call for a long, put for a short)."""
+    import daytrade
+    import dtoptions
+    import optiontest
+    sub = "cmp-user"
+    daytrade.save_config(sub, {"tickers": "QQQ"})
+    pr = daytrade.save_preset(sub, "Tight", {"stopAtr": 0.5, "aboveVwap": True})
+    assert pr[0]["name"] == "Tight" and pr[0]["cfg"]["stopAtr"] == 0.5
+    assert daytrade.delete_preset(sub, "tight") == []
+    bars = _dt_bars(6)
+    calls = []
+    saved = (daytrade.minute_bars, daytrade.walls_by_day)
+    try:
+        daytrade.minute_bars = lambda s, sym, days, now=None, feed=None: calls.append(sym) or bars
+        daytrade.walls_by_day = lambda *a, **k: {}
+        r = daytrade.compare(sub, 30, [{"name": "A", "cfg": {"stopAtr": 0.5}}, {"name": "B", "cfg": {"stopAtr": 2}},
+                                       {"name": "C", "cfg": {"stopAtr": 2, "peerAgree": True}}])
+        assert [v["name"] for v in r["variants"]] == ["A", "B", "C"] and r["daysFound"] == 6
+        assert calls.count("QQQ") == 1 and calls.count("SPY") == 1          # candles loaded once; SPY = the other ticker
+        assert r["variants"][0]["all"]["n"] > 0 and r["variants"][0]["changes"]["stopAtr"] == 0.5
+        daytrade.compare_job(sub, {"days": 30, "variants": [{"name": "A", "cfg": {}}]})
+        assert daytrade.compare_result(sub)["variants"][0]["name"] == "A"
+    finally:
+        daytrade.minute_bars, daytrade.walls_by_day = saved
+    assert dtoptions.occ("QQQ", "2026-03-06", "P", 600) == "QQQ260306P00600000"
+    assert dtoptions.expiries("QQQ", "2026-03-04")[0] == "2026-03-04" and dtoptions.expiries("AAPL", "2026-03-04")[0] == "2026-03-06"
+    got = []
+    def ob(c, syms, tf, start, end):
+        got.append(syms[0])
+        if "C00500000" in syms[0] or "P00500000" in syms[0]:
+            return {syms[0]: [{"t": f"2026-03-04T{14 + h}:{m:02d}:00Z", "c": 1.0 + 0.01 * (h * 60 + m)} for h in range(0, 2) for m in range(60)]}
+        return {}
+    o_b, o_c = optiontest.bars, daytrade.data_creds
+    try:
+        optiontest.bars, daytrade.data_creds = ob, lambda sub: {"key": "k", "secret": "s"}
+        rows = [{"sym": "QQQ", "at": "2026-03-04T09:40", "exitAt": "2026-03-04T10:00", "entry": 500.1, "side": 1, "dir": "long"},
+                {"sym": "QQQ", "at": "2026-03-04T09:45", "exitAt": "2026-03-04T09:50", "entry": 499.9, "side": -1, "dir": "short"},
+                {"sym": "QQQ", "at": "2023-03-04T09:45", "exitAt": "2023-03-04T09:50", "entry": 499.9, "side": -1, "dir": "short"}]
+        st = dtoptions.price("u", rows, {"on": True, "slip": 0})
+        assert rows[0]["optSym"] == "QQQ260304C00500000" and rows[1]["optSym"] == "QQQ260304P00500000"
+        assert rows[0]["optIn"] == 1.4 and rows[0]["optOut"] == 1.6 and st["n"] == 2 and st["before2024"] == 1
+        assert rows[2].get("optPct") is None
+    finally:
+        optiontest.bars, daytrade.data_creds = o_b, o_c
+
+
+def test_nearest_expiration_walls():
+    """Walls of the nearest expiration only: SPY tries the same day first, others the coming Friday; flip from the
+    running net gamma; daytrade.walls_by_day follows the wallNear setting."""
+    import flowdata
+    import daytrade
+    assert flowdata._exp_candidates("SPY", "2026-10-13")[0] == "2026-10-13"
+    assert flowdata._exp_candidates("AAPL", "2026-10-13")[0] == "2026-10-16"
+    assert flowdata.flip_from_strikes([[95, 0, -50], [100, 30, -10], [105, 80, 0]], 95, 105) == 105
+    calls = []
+    def fake_uw(key, path, params=None, attempts=4):
+        calls.append((path, params))
+        if "strike-expiry" in path and params["expiry"] == params["date"]:
+            return {"data": [{"strike": "580", "call_gex": "10", "put_gex": "-900"}, {"strike": "590", "call_gex": "50", "put_gex": "-20"},
+                             {"strike": "600", "call_gex": "1700", "put_gex": "-5"}]}
+        return {"data": []}
+    o_uw, o_key = flowdata._uw, flowdata._key
+    flowdata._uw, flowdata._key = fake_uw, lambda sub: "k"
+    try:
+        g = flowdata.gex_near_day("k", "SPY", "2026-10-13")
+        assert g["expiry"] == "2026-10-13" and g["callWall"] == 600 and g["putWall"] == 580 and g["flip"] == 600
+        n = len(calls)
+        assert flowdata.gex_near_day("k", "SPY", "2026-10-13")["callWall"] == 600 and len(calls) == n   # cached
+        sub = "u-near"
+        daytrade.save_config(sub, {"wallNear": True})
+        w = daytrade.walls_by_day(sub, "SPY", ["2026-10-13"])
+        assert w["2026-10-13"]["putWall"] == 580 and w["2026-10-13"]["expiry"] == "2026-10-13"
+    finally:
+        flowdata._uw, flowdata._key = o_uw, o_key
 
 
 if __name__ == "__main__":

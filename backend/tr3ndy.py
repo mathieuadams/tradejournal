@@ -131,21 +131,22 @@ def pmz(bars5, lines):
     return out
 
 
-def fibs(bars, lines):
-    """Daily auto fibs: the day's high / low (the previous close included), and 127.2% / 61.8% / 50% / 38.2% /
-    -27.2% levels."""
+def fibs(bars, lines=None):
+    """Daily auto fibs, known at the open: each day gets the levels of the PREVIOUS session's high / low (regular
+    hours): high, low, 127.2% / 38.2% / 50% / 61.8% / -27.2%. Fixed for the whole day."""
     out, by = {}, {}
     for b in bars:
         if "09:30" <= b["t"][11:16] < "16:00":
             by.setdefault(b["t"][:10], []).append(b)
-    for d, bs in by.items():
+    days = sorted(by)
+    for k in range(1, len(days)):
+        d, bs = days[k], by[days[k - 1]]
         h, l = max(b["h"] for b in bs), min(b["l"] for b in bs)
-        if lines.get(d) is not None:
-            h, l = max(h, lines[d]), min(l, lines[d])
         r = h - l
-        out[d] = [["127.2%", round(h + r * 0.272, 4)], ["high", round(h, 4)], ["38.2%", round(h - r * 0.382, 4)],
+        out[d] = [["200%", round(h + r * 1.0, 4)], ["161.8%", round(h + r * 0.618, 4)], ["127.2%", round(h + r * 0.272, 4)],
+                  ["high", round(h, 4)], ["38.2%", round(h - r * 0.382, 4)],
                   ["50%", round(h - r * 0.5, 4)], ["61.8%", round(h - r * 0.618, 4)], ["low", round(l, 4)],
-                  ["-27.2%", round(h - r * 1.272, 4)]]
+                  ["-27.2%", round(h - r * 1.272, 4)], ["-61.8%", round(h - r * 1.618, 4)], ["-100%", round(h - r * 2.0, 4)]]
     return out
 
 

@@ -1918,6 +1918,20 @@ def handler(event, context_):
                     db.put({**(db.get(db.upk(sub), backtest.SEARCH_SK) or {}), "PK": db.upk(sub), "SK": backtest.SEARCH_SK,
                             "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
+            elif job == "dtstudy":
+                import daystudy
+                try:
+                    out[sub] = {"n": daystudy.run(sub, event.get("params") or {}).get("nEvents")}
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), daystudy.SK) or {}), "PK": db.upk(sub), "SK": daystudy.SK, "running": None,
+                            "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
+            elif job == "dtbt":
+                import daytrade
+                out[sub] = {"n": (daytrade.backtest_job(sub, event.get("params") or {}).get("all") or {}).get("n")}
+            elif job == "dtcmp":
+                import daytrade
+                out[sub] = {"n": len(daytrade.compare_job(sub, event.get("params") or {}).get("variants") or [])}
             elif job == "daytick":
                 import daytrade
                 out[sub] = daytrade.tick(sub)

@@ -453,6 +453,110 @@ def stored_walls(ticker):
     return out
 
 
+DAILY_EXP = {"SPY", "QQQ", "IWM", "SPX", "SPXW", "XSP", "NDX", "NDXP", "RUT", "DIA"}
+
+
+def _exp_candidates(ticker, date):
+    """Expirations to try for the nearest one on `date` (the same day first for the daily-expiry ETFs / indexes,
+    the coming Friday first for the others, then the next weekdays)."""
+    from datetime import timedelta
+    d0 = datetime.strptime(date, "%Y-%m-%d").date()
+    days = [d0 + timedelta(days=i) for i in range(0, 9)]
+    days = [d for d in days if d.weekday() < 5]
+    if ticker.upper() not in DAILY_EXP:
+        days.sort(key=lambda d: (d.weekday() != 4, d))
+    return [d.isoformat() for d in days[:6]]
+
+
+def flip_from_strikes(strikes, lo=None, hi=None):
+    """Approximate gamma flip: where the running net gamma (call − |put|, from the lowest strike up) turns from
+    negative to positive; the crossing nearest the middle of [lo, hi] when there are several."""
+    run, prev, xs = 0.0, None, []
+    for k, cg, pg in sorted(strikes):
+        run += (cg or 0) - abs(pg or 0)
+        if prev is not None and prev < 0 <= run:
+            xs.append(k)
+        prev = run
+    if not xs:
+        return None
+    mid = (lo + hi) / 2 if lo and hi else None
+    return round(min(xs, key=lambda x: abs(x - mid)) if mid else xs[0], 2)
+
+
+def gex_near_day(key, ticker, date):
+    """Walls for one market date from the NEAREST expiration only (0DTE for SPY / QQQ): Unusual Whales greek exposure
+    by strike for that expiry. Flip approximated from the strikes. Cached like gex_day."""
+    import time as _t
+    ck = f"{ticker}#{date}"
+    hit = db.get("UWGEXN", ck)
+    today = now_ny().strftime("%Y-%m-%d")
+    if hit:
+        age = _t.time() - hit.get("at", 0)
+        data = hit.get("data")
+        if data and (date < today or age < 3600):
+            return data
+        if not data and (date < today and age < 7 * 86400 or age < 6 * 3600):
+            return None
+    out = None
+    for exp in _exp_candidates(ticker, date):
+        s = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/greek-exposure/strike-expiry", {"date": date, "expiry": exp}) or {}
+        raw = s.get("data") if isinstance(s, dict) else s
+        rows = [r for r in raw or [] if isinstance(r, dict) and _num(r.get("strike")) is not None]
+        if not rows:
+            continue
+        cg = lambda r: _pick(r, "call_gex", "call_gamma", "call_gamma_oi") or 0
+        pg = lambda r: _pick(r, "put_gex", "put_gamma", "put_gamma_oi") or 0
+        strikes = sorted(([_num(r["strike"]), round(cg(r)), round(pg(r))] for r in rows), key=lambda x: -(abs(x[1]) + abs(x[2])))[:120]
+        strikes.sort(key=lambda x: x[0])
+        cw, pw = walls_from_strikes(strikes)
+        if cw is None and pw is None:
+            continue
+        out = {"date": date, "expiry": exp, "callWall": cw, "putWall": pw, "strikes": strikes,
+               "flip": flip_from_strikes(strikes, pw, cw)}
+        break
+    try:
+        db.put({"PK": "UWGEXN", "SK": ck, "at": int(_t.time()), "data": out})
+    except Exception as e:
+        print("near walls cache skipped", e)
+    return out
+
+
+def stored_near_walls(ticker):
+    out = {}
+    for r in db.q_prefix("UWGEXN", f"{ticker}#"):
+        d = r.get("data")
+        if d and d.get("date"):
+            out[d["date"]] = {k: d.get(k) for k in ("callWall", "putWall", "flip", "expiry")}
+    return out
+
+
+def near_walls(sub, ticker, dates, budget_s=240):
+    """Nearest-expiration walls for each date: stored ones, the missing ones fetched (4 at a time, time-limited)."""
+    import time as _t
+    from concurrent.futures import ThreadPoolExecutor
+    t0 = _t.time()
+    have = stored_near_walls(ticker)
+    w = {d: have[d] for d in dates if d in have}
+    today = now_ny().strftime("%Y-%m-%d")
+    todo = [d for d in dates if d not in w or d == today]
+    if not todo:
+        return w
+    key = _key(sub)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for i in range(0, len(todo), 8):
+            if _t.time() - t0 > budget_s:
+                break
+            futs = {d: ex.submit(gex_near_day, key, ticker, d) for d in todo[i:i + 8]}
+            for d, f in futs.items():
+                try:
+                    g = f.result()
+                    if g:
+                        w[d] = {k: g.get(k) for k in ("callWall", "putWall", "flip", "expiry")}
+                except Exception as e:
+                    print("near walls failed", ticker, d, e)
+    return w
+
+
 def walls_backfill(sub, days=45, budget_s=480):
     """Store the walls of every day for every ticker the bot evaluated in the last `days` days (from 5 trading days
     before its first evaluation to today). Resumes where it stopped: days already stored are skipped."""

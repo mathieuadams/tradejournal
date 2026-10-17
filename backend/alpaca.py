@@ -88,16 +88,16 @@ def fills(c, after=None):
     return out
 
 
-def bars(c, sym, start_local, end_local, tf_min):
+def bars(c, sym, start_local, end_local, tf_min, max_pages=10, feed=None):
     """Bars between two US/Eastern local timestamps. Returns [{t,o,h,l,c}] with t in local time."""
     if tf_min not in TF:
         raise BadRequest("Unsupported timeframe.")
     start = ny_to_utc(parse_iso(start_local)).strftime("%Y-%m-%dT%H:%M:%SZ")
     end = ny_to_utc(parse_iso(end_local)).strftime("%Y-%m-%dT%H:%M:%SZ")
     out, token = [], None
-    for _ in range(10):
+    for _ in range(max_pages):
         q = {"timeframe": TF[tf_min], "start": start, "end": end, "limit": 10000,
-             "adjustment": "raw", "feed": c.get("feed", "iex")}
+             "adjustment": "raw", "feed": feed or c.get("feed", "iex")}
         if token:
             q["page_token"] = token
         page = _get(f"{DATA}/v2/stocks/{urllib.parse.quote(sym)}/bars?" + urllib.parse.urlencode(q), c)
