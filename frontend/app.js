@@ -1846,7 +1846,7 @@ const DT_RULES = [
   ['dayStop', 'Exit', 'Daily loss limit', 'No new entry once the day\'s closed trades reach −this R', ['dayStopR', 0.5, 3.2, 'R', 2]],
   ['bandForm', 'Entry', 'EMA band formation', 'A Tr3ndy EMA-band formation in the trade direction within the last N minutes (window under Indicators → EMA bands)'],
   ['lisForm', 'Entry', 'LIS formation', 'A 5-minute LIS formation in the trade direction, confirmed, within the last N minutes'],
-  ['lisAbove', 'Entry', 'Above the LIS', 'Close above the line in the sand = previous close (short: below)'],
+  ['lisAbove', 'Entry', 'LIS side: long above / short below', 'Close above the LIS (line in the sand = previous close) → longs only; close below the LIS → shorts only'],
   ['pmzTouch', 'Entry', 'Pre-market zone reclaim', 'Low into the pre-market zone, close above its top (short: high into it, close under its bottom)'],
   ['fibTouch', 'Entry', 'Fib level test', 'Low tests a previous-day fib level (within the wall test zone) and closes above it (short: the mirror)'],
   ['dpTouch', 'Entry', 'Dark pool level test', 'Low tests a dark pool level (top levels of the ~2 months before) and closes above it (short: the mirror)'],
