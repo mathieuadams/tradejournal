@@ -3467,6 +3467,12 @@ def test_daytrade_new_rules_filters_exits():
         tot = sum(x["R"] for x in byd.get(s["at"][:10], []))
         assert tot > -0.5 or not byd.get(s["at"][:10]), s["at"]
         byd.setdefault(s["at"][:10], []).append(s)
+    # open vs flip, reverse: long only when the day opened under the flip, short only above
+    W = {d: {"flip": 99999} for d in days}
+    ff = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "flipFade": True, "maxTrades": 1}, W)
+    assert ff and all(s0["side"] == 1 for s0 in ff) and len({s0["at"][:10] for s0 in ff}) == len(ff)
+    W = {d: {"flip": 1} for d in days}
+    assert all(s0["side"] == -1 for s0 in daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "flipFade": True}, W))
     # squeeze turn: entries only within formWin minutes after a turn in the trade direction
     st_ = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "sqTurn": True, "formWin": 3})
     reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
