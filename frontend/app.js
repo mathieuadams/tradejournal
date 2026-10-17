@@ -1806,11 +1806,11 @@ const DT_IND = [
   ['orb', 'Opening range', null, [['orbMin', 'first', 1, 3, 'minutes', 15]], 'High / low of the first minutes (values under the chart)', ['orbBreak']],
   ['pm', 'Pre-market high / low', null, [], '04:00-09:30 (values under the chart)', ['pmBreak']],
   ['walls', 'Gamma walls', 'walls', [['zoneAtr', 'test zone', 0.1, 3.2, '× ATR', 1]], 'Put wall, flip, call wall of the day', ['pwTouch', 'aboveFlip', 'flipOpen', 'lvlTarget']],
-  ['bands', 'EMA bands 9 / 22 / 44', 'bands', [['formWin', 'formation signal lasts', 1, 3, 'min', 5]], 'EMA 9 / 22 / 44 with the 22-44 cloud; arrows = candle formations when 9 > 13 > 22 (or the reverse). The window applies to the band and LIS formation rules', ['bandForm']],
+  ['bands', 'EMA bands 9 / 22 / 44', 'bands', [['formWin', 'formation signal lasts', 1, 3, 'min', 5]], 'EMA 9 / 22 / 44 with the 22-44 cloud; arrows = candle formations when 9 > 13 > 22 (or the reverse). The window applies to the band formation, LIS formation and squeeze turn rules', ['bandForm']],
   ['lis', 'LIS (line in the sand)', 'lis', [], 'Previous regular-session close; arrows = 5-minute formations off it (colored when the EMAs agree)', ['lisForm', 'lisAbove']],
   ['pmz', 'Pre-market zone', 'pmz', [], '07:25-09:30 range: 20-40% under the high on a gap up, above the low on a gap down', ['pmzTouch']],
   ['fibs', 'Auto fibs', 'fibs', [], 'The PREVIOUS day high / low, known at the open: inside 38.2% / 50% / 61.8%, above 127.2% / 161.8% / 200%, below -27.2% / -61.8% / -100%', ['fibTouch', 'lvlTarget']],
-  ['turn', 'Squeeze turns', 'turn', [], 'Momentum peaks above 0 (turn down) / bottoms below 0 (turn up)', []],
+  ['turn', 'Squeeze turns', 'turn', [], 'Momentum peaks above 0 (turn down) / bottoms below 0 (turn up), on the 1-minute squeeze (settings on the Squeeze row)', ['sqTurn']],
   ['dark', 'Dark pool', 'dark', [], 'Top dark pool price levels of the last 180 days', ['dpTouch', 'lvlTarget']],
 ];
 const DT_RULES = [
@@ -1850,6 +1850,7 @@ const DT_RULES = [
   ['pmzTouch', 'Entry', 'Pre-market zone reclaim', 'Low into the pre-market zone, close above its top (short: high into it, close under its bottom)'],
   ['fibTouch', 'Entry', 'Fib level test', 'Low tests a previous-day fib level (within the wall test zone) and closes above it (short: the mirror)'],
   ['dpTouch', 'Entry', 'Dark pool level test', 'Low tests a dark pool level (top levels of the ~2 months before) and closes above it (short: the mirror)'],
+  ['sqTurn', 'Entry', 'Squeeze turn', 'A squeeze-turn arrow in the trade direction within the last N minutes (window under Indicators → EMA bands): long = momentum below 0 bottoms (turn up), short = momentum above 0 peaks (turn down)'],
   ['prevTouch', 'Entry', 'Previous-day level test', 'Low tests the previous day high / low / close and closes above it (short: the mirror)'],
   ['gapOn', 'Filter', 'Gap size', 'Only days whose open is this far from the previous close (absolute %)', [['gapMin', 0.05, 4, '%', 0.25, '', 'from'], ['gapMax', 0.25, 4, '%', 99, '', 'to']]],
   ['gapWith', 'Filter', 'With the gap', 'Longs only on a gap up, shorts only on a gap down'],

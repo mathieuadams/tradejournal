@@ -37,7 +37,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "wallNear": False,      # gamma walls of the nearest expiration only (0DTE on SPY / QQQ) instead of all
           # entry rules from the chart studies
           "bandForm": False, "lisForm": False, "lisAbove": False, "pmzTouch": False, "fibTouch": False, "dpTouch": False,
-          "prevTouch": False, "formWin": 5,
+          "prevTouch": False, "sqTurn": False, "formWin": 5,
           # day filters
           "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False,
           "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
@@ -51,7 +51,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "beOn": False, "beR": 1.0, "scaleOn": False, "scaleR": 1.0, "timeOn": False, "timeMin": 30, "lvlTarget": False}
 ENTRY = ("aboveVwap", "vwapCross", "aboveEma", "emaStack", "greenBar", "kcNotExt", "kcLower", "sqOn", "sqFire", "sqMom",
          "inGreen", "inNotRed", "fvgTouch", "orbBreak", "pmBreak", "pwTouch", "aboveFlip",
-         "bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch")
+         "bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch", "sqTurn")
 FILTERS = ("gapOn", "gapWith", "gapFade", "flipOpen", "peerAgree", "rvolOn", "vixOn", "noLunch")
 EXITS = ("stopOn", "targetOn", "trailOn", "vwapExit", "emaExit", "sqExit", "inExit", "fvgExit", "beOn", "scaleOn", "timeOn",
          "lvlTarget", "dayStop")
@@ -288,6 +288,21 @@ def _avg_move(bars, n):
     return out
 
 
+def _sq_turns(sq):
+    """Per candle: +1 = squeeze momentum below 0 bottoms (turn up), -1 = above 0 peaks (turn down), 0 = none. As the
+    chart's squeeze-turn arrows, known at the close of the candle."""
+    out = [0] * len(sq)
+    for i in range(2, len(sq)):
+        if not (sq[i] and sq[i - 1] and sq[i - 2]):
+            continue
+        a, b, c = sq[i - 2]["mom"], sq[i - 1]["mom"], sq[i]["mom"]
+        if c < 0 and c > b and a > b:
+            out[i] = 1
+        elif c > 0 and c < b and a < b:
+            out[i] = -1
+    return out
+
+
 def _pivots(bars, k):
     """Swing lows / highs: a candle whose low is under the k candles before and not above the k after (high: the
     mirror). Known only k candles later: [(index known from, price)] in order."""
@@ -442,9 +457,10 @@ def indicators(bars, ext, P):
             orb.append(cur)
     bt, brt, nb, nbr = _fvg_scan(bars, atr, float(P["fvgMin"]), float(P["fvgNear"]), int(P["fvgDays"]))
     lo_p, hi_p = _pivots(bars, int(P.get("swingN") or 5))
+    sq = ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"]))
     return {"pivLo": lo_p, "pivHi": hi_p, "avgN": _avg_move(bars, int(P.get("volN") or 300)), "atr5": _atr5(bars), "atrD": _atr_day(bars), "rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
             "kc": ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
-            "sq": ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"])),
+            "sq": sq, "sqTurnD": _sq_turns(sq), "tt": [b["t"] for b in bars],
             "inr": ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
             "atr": atr, "pm": pm, "orb": orb, "fvgBull": bt, "fvgBear": brt, "newBull": nb, "newBear": nbr}
 
@@ -503,6 +519,7 @@ def _checks(i, b, prev, I, w, side, P):
         "fibTouch": any(_test(b, L, zone, long_) for L in X["fibs"].get(d) or []),
         "dpTouch": any(_test(b, float(L), zone, long_) for L in dps),
         "prevTouch": bool(pv) and any(_test(b, L, zone, long_) for L in (pv["h"], pv["l"], pv["c"])),
+        "sqTurn": any(I["sqTurnD"][j] == sd and I["tt"][j][:10] == d for j in range(max(0, i - int(P["formWin"]) + 1), i + 1)),
         "gapOn": gap is not None and float(P["gapMin"]) <= abs(gap) <= float(P["gapMax"]),
         "gapWith": gap is not None and gap * sd > 0,
         "gapFade": gap is not None and gap * sd < 0,
@@ -545,7 +562,7 @@ def _r(s):
 
 IND_KEYS = ("emaLen", "ema2Len", "kcLen", "kcMult", "sqLen", "sqBB", "sqKC", "sqFireN", "inN1", "inN2", "inN3", "fvgMin",
             "fvgNear", "fvgDays", "orbMin", "volN", "swingN")
-STUDY_RULES = ("bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch") + FILTERS
+STUDY_RULES = ("bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch", "sqTurn") + FILTERS
 
 
 def detect(bars_all, P, walls=None, start=None, ctx=None):

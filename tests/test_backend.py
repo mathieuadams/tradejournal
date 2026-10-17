@@ -3467,6 +3467,15 @@ def test_daytrade_new_rules_filters_exits():
         tot = sum(x["R"] for x in byd.get(s["at"][:10], []))
         assert tot > -0.5 or not byd.get(s["at"][:10]), s["at"]
         byd.setdefault(s["at"][:10], []).append(s)
+    # squeeze turn: entries only within formWin minutes after a turn in the trade direction
+    st_ = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "sqTurn": True, "formWin": 3})
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    It = daytrade.indicators(reg, bars, daytrade.PARAMS)
+    tt = [b["t"] for b in reg]
+    assert st_
+    for s0 in st_:
+        i = tt.index(s0["at"])
+        assert any(It["sqTurnD"][j] == s0["side"] for j in range(i - 2, i + 1))
     # stop unit: 1-min ATR vs 5-min ATR vs daily ATR vs % of price
     d1 = daytrade.detect(bars, {**base, "stopAtr": 1.0})
     d5 = daytrade.detect(bars, {**base, "stopAtr": 1.0, "stopBase": "atr5"})
