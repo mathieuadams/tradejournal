@@ -2250,6 +2250,9 @@ def dp_floor(daily, pct=0.25):
     return adv, price, min_sh, dollars, floor
 
 
+DP_LEVEL_DAYS = 180
+
+
 def darkpool(sub, sym, min_pct=None, days=45):
     """Dark pool prints of the last `days` trading days whose size is at least `min_pct` % of the 30-day average daily
     volume (default 0.25%), with the side (bought at the ask / sold at the bid) and the top levels."""
@@ -2261,11 +2264,17 @@ def darkpool(sub, sym, min_pct=None, days=45):
     daily = _yahoo(sym.replace(".", "-"), "1d", now - timedelta(days=60), now + timedelta(days=1)) or []
     daily = [b for b in daily if b["t"][:10] < now.strftime("%Y-%m-%d") and b.get("v")]
     adv, price, min_sh, dollars, floor = dp_floor(daily, pct)
-    out = flowdata.darkpool(sub, sym, _weekdays(days, now_ny().date()), floor)     # fetched with a round $ floor (cached)
-    prints = [p for p in out.get("prints") or [] if not min_sh or p["size"] >= min_sh]
+    # the levels always come from the last DP_LEVEL_DAYS calendar days (the same lines whatever the chart shows);
+    # the prints drawn are the ones of the chart's period
+    span = _weekdays(DP_LEVEL_DAYS * 5 // 7, now_ny().date())
+    out = flowdata.darkpool(sub, sym, span, floor, budget_s=22, workers=8)          # fetched with a round $ floor (cached per day)
+    allp = [p for p in out.get("prints") or [] if not min_sh or p["size"] >= min_sh]
+    first = sorted(_weekdays(days, now_ny().date()))[0] if days else ""
+    prints = [p for p in allp if p["t"][:10] >= first]
     buy = sum(p["premium"] for p in prints if p.get("side") == "buy")
     sell = sum(p["premium"] for p in prints if p.get("side") == "sell")
-    return {"symbol": sym, "prints": prints, "levels": flowdata.dp_levels(prints), "profile": flowdata.dp_levels(prints, 400),
+    return {"symbol": sym, "prints": prints, "levels": flowdata.dp_levels(allp, 10), "profile": flowdata.dp_levels(allp, 400),
+            "levelDays": DP_LEVEL_DAYS, "missingDays": out.get("missing") or 0,
             "minPremium": round(dollars),
             "minPct": pct, "adv": round(adv) if adv else None, "minShares": round(min_sh) if min_sh else None,
             "buy": buy, "sell": sell, "error": out.get("error")}

@@ -1278,14 +1278,17 @@ const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls']
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
   const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark'];
-  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)}`}</span>` : ''}`;
+  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)} · lines from the last ${dp.levelDays || 180} days${dp.missingDays ? ` (loading ${dp.missingDays} more days…)` : ''}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
   S.fcDpBusy[k] = true;
   const ww = String(id).startsWith('ww-');
-  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.replace(/^ww-(lab-)?/, ""))}&pct=${S.wwDpPct ?? 0.25}&days=${S.wwDays || 45}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
+  try { S.fcDp[k] = await api(ww ? `/bot/wallwatch/darkpool?t=${encodeURIComponent(id.replace(/^ww-(lab-)?/, "").replace(/:D$/, ""))}&pct=${S.wwDpPct ?? 0.25}&days=${S.wwDays || 45}` : `/bot/${id}/darkpool?days=${S.fcDays || 5}`); } catch (e) { S.fcDp[k] = { error: e.message, prints: [], levels: [] }; }
   S.fcDpBusy[k] = false;
+  const r = S.fcDp[k] || {};                       // 180 days of history still loading: fetch again (each day is cached)
+  S.fcDpTry = S.fcDpTry || {};
+  if (r.missingDays && (S.fcDpTry[k] = (S.fcDpTry[k] || 0) + 1) <= 8) setTimeout(() => loadDarkPool(id), 2000);
   if (isBotRoute()) render();
 }
 function fcNeedDark(id) { const k = fcKey(id); if (S.fcLayers.dark && !S.fcDp[k] && !S.fcDpBusy[k]) setTimeout(() => loadDarkPool(id), 0); }
@@ -1341,7 +1344,7 @@ function fcSvg0(d, id, opts) {
   const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
   const walls = LY.walls ? (d.walls || []).filter(w => w.callWall != null || w.src === 'gap') : [];
   const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
-  const wv = walls.flatMap(w => [w.callWall, w.putWall, w.flip]).concat(dp && !dp.error ? (dp.levels || []).map(l => l.price) : [])
+  const wv = walls.flatMap(w => [w.callWall, w.putWall, w.flip]).concat(dp && !dp.error ? (dp.levels || []).slice(0, S.dpN ?? 5).map(l => l.price) : [])
     .concat(LY.mp !== false ? (d.maxPain || []).map(m => m.maxPain) : [])
 .filter(near);
   const lo0 = Math.min(pl0, ...wv), hi0 = Math.max(ph0, ...wv), pad = (hi0 - lo0) * 0.08 || 1;
@@ -1408,7 +1411,7 @@ function fcSvg0(d, id, opts) {
     const prem = v => v >= 1e9 ? `$${(v / 1e9).toFixed(1)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(0)}M` : `$${Math.round(v / 1e3)}k`;
     const bi = t => { let q = -1; for (let i = 0; i < n; i++) { if (bars[i].t <= t) q = i; else break; } return q; };   // candle of a print
     const md = t => (t || '').slice(5, 10);
-    (dp.levels || []).forEach((lv, j) => { if (!near(lv.price)) return; const y = Y(lv.price), c = 'var(--warn)';
+    (dp.levels || []).slice(0, S.dpN ?? 5).forEach((lv, j) => { if (!near(lv.price)) return; const y = Y(lv.price), c = 'var(--warn)';
       const i0 = lv.first ? bi(lv.first) : -1, before = lv.first && i0 < 0, x0 = i0 >= 0 ? X(i0) : L;
       const since = lv.first ? ` · since ${md(lv.first)}${before ? ' (before the chart)' : ''}` : '';
       const tip = `Dark pool level ${lv.price}: ${prem(lv.premium)} in ${lv.prints} prints, first ${(lv.first || '').replace('T', ' ')}, last ${(lv.last || '').replace('T', ' ')}`;
@@ -1419,7 +1422,7 @@ function fcSvg0(d, id, opts) {
       (lv.times || []).forEach(([t, pr]) => { const i = bi(t); if (i < 0) return; const h = 3 + 7 * Math.sqrt(pr / mx);
         g += `<line x1="${X(i)}" x2="${X(i)}" y1="${y - h}" y2="${y + h}" stroke="${c}" stroke-width="1.5" opacity=".8"><title>${esc(`Dark pool print ${t.replace('T', ' ')} · ${prem(pr)}`)}</title></line>`; });
       g += `<text x="${Math.max(L + 4, Math.min(x0 + 6, W - Rr - 260))}" y="${y - 4}" font-size="${fs - 1}" font-weight="600" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="4" stroke-linejoin="round">DP ${lv.price} · ${prem(lv.premium)} · ${lv.prints} prints${since}</text>`; });
-    // only the 5 levels with the most dark pool money are drawn (no single prints)
+    // only the N levels with the most dark pool money are drawn (lines setting, 0-10; no single prints)
   }
   const kcDraw = (rows, kcol, name, wid) => { const km = {}; rows.forEach(x => { km[x.t] = x; });
     ['u', 'm', 'l'].forEach(f => { let path = '', on_ = false;
@@ -1644,6 +1647,7 @@ function qHtml(x, setup) {
   return `<b style="font-size:.85rem" title="Mark">${qx.m < 10 ? qx.m.toFixed(3) : qx.m.toFixed(2)}</b><br><span class="${cls}" style="font-size:.74rem" title="Mark change · % mark change vs the previous close">${qx.ch != null ? (qx.ch > 0 ? '+' : '') + qx.ch.toFixed(2) : '—'} · ${qx.pct != null ? (qx.pct > 0 ? '+' : '') + qx.pct.toFixed(2) + '%' : '—'}</span>${sc ? '<br>' + sc : ''}`;
 }
 function wlQuotePaint() { document.querySelectorAll('[data-q]').forEach(el => { el.innerHTML = qHtml(el.dataset.q, !!el.dataset.setup); }); }
+try { const v = localStorage.getItem('dpN'); if (v !== null) S.dpN = Math.max(0, Math.min(10, +v)); } catch (e) {}
 function wlPut(body, msg) {
   api('/bot/wallwatch', { method: 'PUT', body }).then(r => { S.ww = { ...(S.ww || {}), ...r }; S.wwSw = null; toast(msg); render(); }).catch(err => toast(err.message));
 }
@@ -1696,7 +1700,7 @@ function vChartWW() {
       ${sel}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
       <span class="seg" role="group" aria-label="Candles"><button class="btn ${!S.chartDaily ? 'coachbtn' : ''}" data-chartdaily="0" style="padding:3px 10px" title="Hourly candles">1h</button><button class="btn ${S.chartDaily ? 'coachbtn' : ''}" data-chartdaily="1" style="padding:3px 10px" title="Daily candles (same signals and levels)">1D</button></span>
       <span class="seg" role="group" aria-label="Days on the chart">${[45, 90, 180].map(n => `<button class="btn ${(S.wwDays || 45) === n ? 'coachbtn' : ''}" data-wwdays="${n}" title="${n} trading days${n > 45 ? ' (signals older than 45 days are replayed with your current settings)' : ''}" style="padding:3px 9px">${n}d</button>`).join('')}</span>
-      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.fcLayers.dark ? `<label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="Dark pool prints of at least this % of the 30-day average daily volume">dark pool ≥<input id="ww-dpmin" type="number" step="0.05" min="0.01" value="${S.wwDpPct ?? 0.25}" style="width:4.6em;padding:1px 4px">% of avg daily volume</label>` : ''}<button class="btn ${S.hideSettings ? 'coachbtn' : ''}" data-hidesettings title="Hide / show the indicators and the entry / exit rules" style="padding:3px 10px">${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideStats ? 'coachbtn' : ''}" data-hidestats title="Hide / show the stats under the chart" style="padding:3px 10px">${S.hideStats ? 'Show stats' : 'Hide stats'}</button><button class="btn ${labOn ? 'coachbtn' : ''}" data-chartlab title="${labOn ? 'Back to the live strategy' : 'Try other settings on this chart without touching the live bot'}" style="padding:3px 10px">${labOn ? '✓ Strategy lab' : 'Strategy lab'}</button>
+      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}${S.fcLayers.dark ? `<label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="Dark pool prints of at least this % of the 30-day average daily volume">dark pool ≥<input id="ww-dpmin" type="number" step="0.05" min="0.01" value="${S.wwDpPct ?? 0.25}" style="width:4.6em;padding:1px 4px">% of avg daily volume</label><label class="muted" style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center" title="How many dark pool price levels to draw (the ones with the most premium first)">lines <input id="ww-dpn" type="number" step="1" min="0" max="10" value="${S.dpN ?? 5}" style="width:3.4em;padding:1px 4px"></label>` : ''}<button class="btn ${S.hideSettings ? 'coachbtn' : ''}" data-hidesettings title="Hide / show the indicators and the entry / exit rules" style="padding:3px 10px">${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideStats ? 'coachbtn' : ''}" data-hidestats title="Hide / show the stats under the chart" style="padding:3px 10px">${S.hideStats ? 'Show stats' : 'Hide stats'}</button><button class="btn ${labOn ? 'coachbtn' : ''}" data-chartlab title="${labOn ? 'Back to the live strategy' : 'Try other settings on this chart without touching the live bot'}" style="padding:3px 10px">${labOn ? '✓ Strategy lab' : 'Strategy lab'}</button>
       ${S.ww && !S.hideSettings ? (labOn ? labPanel() : wwParams(true)) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
@@ -3858,6 +3862,7 @@ document.addEventListener('change', e => {
   if (['f-setup', 'f-tag', 'f-res', 'f-acct', 'f-asset', 'f-dir'].includes(id)) { tf[id.slice(2)] = e.target.value; $('#trade-table').innerHTML = tradeTable(filtered()); }
   if (id === 'eo-mult') { S.eoMult = +e.target.value; if (S.eo) runExitOpt(); return; }
   if (id === 'ex-key') { S.exPick = e.target.value || null; render(); return; }
+  if (id === 'ww-dpn') { const v = Math.max(0, Math.min(10, Math.round(+e.target.value || 0))); S.dpN = v; try { localStorage.setItem('dpN', String(v)); } catch (x) {} render(); return; }
   if (id === 'ww-dpmin') { const v = parseFloat(e.target.value); if (v > 0) { S.wwDpPct = v; Object.keys(S.fcDp).filter(x => x.startsWith('ww-')).forEach(x => delete S.fcDp[x]); render(); } return; }
   if (id === 'ww-on') { api('/bot/wallwatch', { method: 'PUT', body: { enabled: e.target.checked } }).then(r => { S.ww = r; render(); }).catch(err => toast(err.message)); return; }
   if (id === 'ex-days') { S.exDays = +e.target.value; S.ex = null; runExplore(false); return; }

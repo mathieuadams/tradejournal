@@ -551,20 +551,29 @@ def darkpool_day(key, ticker, date, min_premium):
     return out
 
 
-def darkpool(sub, ticker, dates, min_premium=1_000_000):
-    """Dark pool prints at or above min_premium for each date, plus the price levels where the most premium traded."""
-    from concurrent.futures import ThreadPoolExecutor
+def darkpool(sub, ticker, dates, min_premium=1_000_000, budget_s=None, workers=4):
+    """Dark pool prints at or above min_premium for each date, plus the price levels where the most premium traded.
+    budget_s: stop waiting after that many seconds (the days already fetched are cached; "missing" says how many are left)."""
+    import time as _t
+    from concurrent.futures import ThreadPoolExecutor, wait
     key = _key(sub)
-    prints, err = [], None
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = [ex.submit(darkpool_day, key, ticker, d, min_premium) for d in dates]
-        for f in futs:
-            try:
-                prints += f.result()
-            except Exception as e:
-                err = str(e)[:160]
+    prints, err, missing = [], None, 0
+    t0 = _t.time()
+    ex = ThreadPoolExecutor(max_workers=workers)
+    futs = [ex.submit(darkpool_day, key, ticker, d, min_premium) for d in sorted(dates, reverse=True)]   # newest first
+    if budget_s:
+        wait(futs, timeout=max(1, budget_s - (_t.time() - t0)))
+    for f in futs:
+        if budget_s and not f.done():
+            missing += 1
+            continue
+        try:
+            prints += f.result()
+        except Exception as e:
+            err = str(e)[:160]
+    ex.shutdown(wait=False, cancel_futures=True)
     prints.sort(key=lambda x: x["t"])
-    return {"prints": prints, "levels": dp_levels(prints), "minPremium": min_premium, "error": err}
+    return {"prints": prints, "levels": dp_levels(prints, 10), "minPremium": min_premium, "error": err, "missing": missing}
 
 
 def dp_levels(prints, top_n=5):

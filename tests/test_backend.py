@@ -1418,7 +1418,10 @@ def test_repeat_buyers():
     STORE.clear()
     pk = db.upk(SUB)
     cfg = autotrader.settings(SUB)
-    assert autotrader._trading_span(1) >= 1 and autotrader._trading_span(5) >= 7 - (0 if autotrader.now_ny().weekday() < 5 else -2) - 2
+    import datetime as _dt
+    _t = autotrader.now_ny().date()
+    _wd = lambda span: sum(1 for k in range(span) if (_t - _dt.timedelta(days=k)).weekday() < 5)
+    assert autotrader._trading_span(1) >= 1 and _wd(autotrader._trading_span(5)) == 5        # any day of the week
     day = autotrader.now_ny().strftime("%Y-%m-%d")
     calls = []
     def fake(sub, min_premium, opt_type="call", *a, **k):
@@ -2091,10 +2094,10 @@ def test_wall_watch():
         pr = [{"t": "2026-10-05T10:00", "price": 100.0, "size": 4000, "premium": 400000, "side": "buy"},
               {"t": "2026-10-05T11:00", "price": 101.0, "size": 6000, "premium": 606000, "side": "buy"},
               {"t": "2026-10-06T11:00", "price": 99.0, "size": 9000, "premium": 891000, "side": "sell"}]
-        flowdata.darkpool = lambda sub, sym, dates, mp: seen_dp.append((sym, len(dates), mp)) or {"prints": pr, "levels": [], "minPremium": mp}
+        flowdata.darkpool = lambda sub, sym, dates, mp, **k: seen_dp.append((sym, len(dates), mp)) or {"prints": pr, "levels": [], "minPremium": mp}
         st, dpr = call("GET", "/bot/wallwatch/darkpool", q={"t": "brk/b", "pct": "0.5"})
         flowdata.darkpool, charts._yahoo = saved_dp, saved_y
-        assert st == 200 and dpr["symbol"] == "BRK.B" and seen_dp == [("BRK.B", 45, 250000)], (dpr, seen_dp)
+        assert st == 200 and dpr["symbol"] == "BRK.B" and seen_dp == [("BRK.B", 180 * 5 // 7, 250000)], (dpr, seen_dp)   # levels: always 180 days
         assert dpr["adv"] == 1_000_000 and dpr["minShares"] == 5000 and [p_["size"] for p_ in dpr["prints"]] == [6000, 9000]
         assert dpr["buy"] == 606000 and dpr["sell"] == 891000 and dpr["levels"][0]["sell"] == 891000
     finally:
