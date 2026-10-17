@@ -1808,7 +1808,7 @@ const DT_IND = [
   ['bands', 'EMA bands 9 / 22 / 44', 'bands', [], 'EMA 9 / 22 / 44 with the 22-44 cloud; arrows = candle formations when 9 > 13 > 22 (or the reverse)', []],
   ['lis', 'LIS (line in the sand)', 'lis', [], 'Previous regular-session close; arrows = 5-minute formations off it (colored when the EMAs agree)', []],
   ['pmz', 'Pre-market zone', 'pmz', [], '07:25-09:30 range: 20-40% under the high on a gap up, above the low on a gap down', []],
-  ['fibs', 'Auto fibs', 'fibs', [], 'Day high / low (with the previous close): 127.2%, 38.2%, 50%, 61.8%, -27.2% (last 2 days)', []],
+  ['fibs', 'Auto fibs', 'fibs', [], 'Day high / low (with the previous close): 127.2%, 38.2%, 50%, 61.8%, -27.2% (every day)', []],
   ['turn', 'Squeeze turns', 'turn', [], 'Momentum peaks above 0 (turn down) / bottoms below 0 (turn up)', []],
 ];
 const DT_RULES = [

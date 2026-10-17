@@ -430,7 +430,7 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
     lines, lisf, sent = tr3ndy.lis(b5)
     bser, bform = tr3ndy.bands(out_bars)
     sqz_h = [{"t": t, "m": I["sq"][i]["mom"]} for t, i in pick if I["sq"][i]]
-    fb = tr3ndy.fibs([b for b in allb if b["t"][:10] in show[-2:]], lines)
+    fb = tr3ndy.fibs([b for b in allb if b["t"][:10] in show], lines)          # every day shown
     pz = tr3ndy.pmz(b5, lines)
     studies = {"bands": bser, "bandsF": bform, "lis": {d: lines[d] for d in show if d in lines},
                "lisF": [x for x in lisf if x["t"][:10] >= show[0]], "lisSent": sent.get(show[-1]),
