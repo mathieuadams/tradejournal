@@ -3472,6 +3472,20 @@ def test_daytrade_new_rules_filters_exits():
     d5 = daytrade.detect(bars, {**base, "stopAtr": 1.0, "stopBase": "atr5"})
     dp = daytrade.detect(bars, {**base, "stopAtr": 0.2, "stopBase": "pct"})
     dd = daytrade.detect(bars, {**base, "stopAtr": 0.1, "stopBase": "atrD"})
+    da = daytrade.detect(bars, {**base, "stopAtr": 5, "stopBase": "avgN", "volN": 300})
+    I = daytrade.indicators([b for b in bars if "09:30" <= b["t"][11:16] < "16:00"], bars, {**daytrade.PARAMS, "volN": 300})
+    assert da and abs(da[0]["unit"] - round(I["avgN"][[b["t"] for b in bars if "09:30" <= b["t"][11:16] < "16:00"].index(da[0]["at"])], 4)) < 1e-4
+    # swing stop: under the last swing low known at entry (pivot confirmed swingN candles later), minus the buffer
+    sw = daytrade.detect(bars, {**base, "stopBase": "swing", "swingN": 5, "swingBuf": 0.05, "shorts": False, "targetOn": False})
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    Iw = daytrade.indicators(reg, bars, {**daytrade.PARAMS, "swingN": 5})
+    assert sw
+    for s0 in sw[:10]:
+        i = [b["t"] for b in reg].index(s0["at"])
+        known = [p for p in Iw["pivLo"] if p[0] <= i and p[1] < s0["entry"]]
+        if known:
+            assert abs(s0["stop0"] - round(known[-1][1] - s0["entry"] * 0.0005, 4)) < 1e-6 and s0["stop0"] < s0["entry"]
+            assert all(reg[j]["l"] >= known[-1][1] for j in range(known[-1][0] - 5 - 5, known[-1][0] - 5) if j >= 0)
     risk = lambda sg: sum(abs(s["entry"] - s["stop0"]) for s in sg) / len(sg)
     assert risk(d5) > risk(d1) and dd and all(abs(abs(s["entry"] - s["stop0"]) - s["entry"] * 0.002) < 1e-3 for s in dp)
     assert daytrade.clean_cfg(daytrade.PARAMS, {"stopBase": "atr5"})["stopBase"] == "atr5" and daytrade.clean_cfg(daytrade.PARAMS, {"stopBase": "x"})["stopBase"] == "atr1"

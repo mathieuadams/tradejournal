@@ -16,8 +16,8 @@ from util import iso, now_ny
 SK = "DTSEARCH"
 STOPS = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
 TARGETS = (1.0, 1.5, 2.0, 3.0)
-BASES = {"atr1": STOPS, "atr5": (0.75, 1.0, 1.5, 2.0, 3.0), "atrD": (0.05, 0.1, 0.15, 0.25), "pct": (0.1, 0.2, 0.3, 0.5)}
-BASE_NAME = {"atr1": "× 1-min ATR", "atr5": "× 5-min ATR", "atrD": "× daily ATR", "pct": "% of price"}
+BASES = {"atr1": STOPS, "atr5": (0.75, 1.0, 1.5, 2.0, 3.0), "atrD": (0.05, 0.1, 0.15, 0.25), "pct": (0.1, 0.2, 0.3, 0.5), "avgN": (3.0, 5.0, 8.0, 12.0)}
+BASE_NAME = {"atr1": "× 1-min ATR", "atr5": "× 5-min ATR", "atrD": "× daily ATR", "pct": "% of price", "avgN": "× avg move (N candles)"}
 EXIT_SW = ("trailOn", "vwapExit", "emaExit", "sqExit", "inExit", "fvgExit", "beOn", "scaleOn", "timeOn", "lvlTarget")
 MIN_N = 40
 
@@ -67,6 +67,9 @@ def candidates(P):
         out += [("longs only", {"shorts": False}), ("shorts only", {"longs": False})]
     elif not (P.get("longs") and P.get("shorts")):
         out.append(("longs and shorts", {"longs": True, "shorts": True}))
+    for v in (0.02, 0.05, 0.1, 0.2):
+        if P.get("stopBase") != "swing" or abs(float(P["swingBuf"]) - v) > 1e-9:
+            out.append((f"stop under the swing low − {v}%", {"stopBase": "swing", "swingBuf": v, "stopOn": True, "trailAtr": 1.0}))
     base = P.get("stopBase") or "atr1"
     for b, vals in BASES.items():
         for v in (STOPS if b == base and b == "atr1" else vals):

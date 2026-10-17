@@ -43,7 +43,9 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
           "noLunch": False, "lunchFrom": "11:30", "lunchTo": "13:30", "dayStop": False, "dayStopR": 2.0,
           # exits
-          "stopBase": "atr1",     # what the stop / trailing sizes multiply: atr1 / atr5 (5-min ATR) / atrD (daily ATR) / pct
+          "stopBase": "atr1",     # what the stop / trailing sizes multiply: atr1 / atr5 (5-min ATR) / atrD (daily ATR) / pct / avgN
+          "volN": 300,            # avgN: the average move (true range) of the last N 1-minute candles
+          "swingN": 5, "swingBuf": 0.05,   # swing: stop under the previous swing low (short: above the swing high) - buf %
           "stopOn": True, "stopAtr": 1.5, "targetOn": True, "targetR": 2.0, "trailOn": False, "trailAtr": 2.0,
           "vwapExit": False, "emaExit": False, "sqExit": False, "inExit": False, "fvgExit": False,
           "beOn": False, "beR": 1.0, "scaleOn": False, "scaleR": 1.0, "timeOn": False, "timeMin": 30, "lvlTarget": False}
@@ -55,13 +57,13 @@ EXITS = ("stopOn", "targetOn", "trailOn", "vwapExit", "emaExit", "sqExit", "inEx
          "lvlTarget", "dayStop")
 INTS = {"maxTrades": (1, 50), "qty": (1, 100000), "maxQty": (1, 100000), "emaLen": (2, 400), "ema2Len": (2, 400),
         "kcLen": (2, 400), "sqLen": (5, 400), "sqFireN": (1, 60), "inN1": (5, 800), "inN2": (5, 800), "inN3": (5, 800),
-        "fvgDays": (1, 20), "orbMin": (1, 120), "formWin": (1, 120), "timeMin": (1, 400)}
+        "fvgDays": (1, 20), "orbMin": (1, 120), "formWin": (1, 120), "timeMin": (1, 400), "volN": (20, 3000), "swingN": (1, 60)}
 FLOATS = {"kcMult": (0.1, 10), "sqBB": (0.1, 10), "sqKC": (0.1, 10), "fvgMin": (0, 10), "fvgNear": (0, 10), "zoneAtr": (0, 20),
           "stopAtr": (0.05, 50), "targetR": (0.1, 50), "trailAtr": (0.05, 50), "riskUsd": (0, 1e7),
           "gapMin": (0, 99), "gapMax": (0, 99), "rvolMin": (0, 50), "vixMin": (0, 200), "vixMax": (0, 200), "dayStopR": (0.1, 50),
-          "beR": (0.1, 20), "scaleR": (0.1, 20)}
+          "beR": (0.1, 20), "scaleR": (0.1, 20), "swingBuf": (0, 5)}
 TIMES = ("startT", "endT", "flatT", "lunchFrom", "lunchTo")
-STOP_BASES = ("atr1", "atr5", "atrD", "pct")
+STOP_BASES = ("atr1", "atr5", "atrD", "pct", "avgN", "swing")
 
 
 def config(sub):
@@ -271,6 +273,47 @@ def _atr5(bars):
     return [a5[k] for k in keys]
 
 
+def _avg_move(bars, n):
+    """Per candle: the average true range of the last n 1-minute candles (across sessions): the current volatility,
+    steadier than a 14-candle ATR."""
+    out, tot, trs = [], 0.0, []
+    for i, b in enumerate(bars):
+        pc = bars[i - 1]["c"] if i else b["o"]
+        tr = max(b["h"] - b["l"], abs(b["h"] - pc), abs(b["l"] - pc))
+        trs.append(tr)
+        tot += tr
+        if len(trs) > n:
+            tot -= trs[-n - 1]
+        out.append(tot / min(len(trs), n))
+    return out
+
+
+def _pivots(bars, k):
+    """Swing lows / highs: a candle whose low is under the k candles before and not above the k after (high: the
+    mirror). Known only k candles later: [(index known from, price)] in order."""
+    n, lo, hi = len(bars), [], []
+    for j in range(k, n - k):
+        l, h = bars[j]["l"], bars[j]["h"]
+        if all(l < bars[x]["l"] for x in range(j - k, j)) and all(l <= bars[x]["l"] for x in range(j + 1, j + k + 1)):
+            lo.append((j + k, l))
+        if all(h > bars[x]["h"] for x in range(j - k, j)) and all(h >= bars[x]["h"] for x in range(j + 1, j + k + 1)):
+            hi.append((j + k, h))
+    return lo, hi
+
+
+def swing_stop(I, i, price, side, buf_pct, max_back=60):
+    """The stop under the most recent swing low already known at candle i and below the price (short: above the most
+    recent swing high above it), minus buf_pct % of the price. None if there is none."""
+    import bisect
+    piv = I["pivLo"] if side > 0 else I["pivHi"]
+    k = bisect.bisect_right(piv, (i, float("inf"))) - 1
+    for j in range(k, max(-1, k - max_back), -1):
+        p = piv[j][1]
+        if (p < price) if side > 0 else (p > price):
+            return round(p - side * price * buf_pct / 100, 4)
+    return None
+
+
 def _atr_day(bars, n=14):
     """Per candle: the average daily range (true range) of the n sessions before its day."""
     days, order = {}, []
@@ -296,6 +339,8 @@ def stop_unit(I, i, price, P):
     base = P.get("stopBase") or "atr1"
     if base == "pct":
         return price / 100
+    if base == "avgN":
+        return I["avgN"][i] or I["atr"][i] or 0
     if base == "atr5":
         return I["atr5"][i] or I["atr"][i] or 0
     if base == "atrD":
@@ -396,7 +441,8 @@ def indicators(bars, ext, P):
                 cur = (hi_, lo_)
             orb.append(cur)
     bt, brt, nb, nbr = _fvg_scan(bars, atr, float(P["fvgMin"]), float(P["fvgNear"]), int(P["fvgDays"]))
-    return {"atr5": _atr5(bars), "atrD": _atr_day(bars), "rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
+    lo_p, hi_p = _pivots(bars, int(P.get("swingN") or 5))
+    return {"pivLo": lo_p, "pivHi": hi_p, "avgN": _avg_move(bars, int(P.get("volN") or 300)), "atr5": _atr5(bars), "atrD": _atr_day(bars), "rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
             "kc": ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
             "sq": ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"])),
             "inr": ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
@@ -498,7 +544,7 @@ def _r(s):
 
 
 IND_KEYS = ("emaLen", "ema2Len", "kcLen", "kcMult", "sqLen", "sqBB", "sqKC", "sqFireN", "inN1", "inN2", "inN3", "fvgMin",
-            "fvgNear", "fvgDays", "orbMin")
+            "fvgNear", "fvgDays", "orbMin", "volN", "swingN")
 STUDY_RULES = ("bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch") + FILTERS
 
 
@@ -611,8 +657,12 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
             ck = _checks(i, b, prev, I, w, side, P)
             if all(ck[k] for k in rules):
                 e = b["c"]
-                u = stop_unit(I, i, e, P) or a
-                st = round(e - side * float(P["stopAtr"]) * u, 4)
+                sw = swing_stop(I, i, e, side, float(P["swingBuf"])) if P.get("stopBase") == "swing" else None
+                if sw is not None:
+                    st, u = sw, abs(e - sw)                    # trailing size: x this risk
+                else:
+                    u = stop_unit(I, i, e, P) or a
+                    st = round(e - side * float(P["stopAtr"]) * u, 4)
                 tgt = round(e + side * float(P["targetR"]) * abs(e - st), 4) if on("targetOn") else None
                 lvl_t = False
                 if on("lvlTarget"):
@@ -683,6 +733,9 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
     W = walls_by_day(sub, sym, show, bool(P.get("wallNear")), budget_s=15)
     ctx = live_ctx(sub, sym, P, show, days + 3)
     sigs = detect(allb, P, W, show[0], ctx)
+    for x in sigs:                                     # the chart draws a scale-out as {at, px, frac}
+        if isinstance(x.get("scaled"), (int, float)):
+            x["scaled"] = {"at": x.get("scaledAt"), "px": x["scaled"], "frac": 0.5}
     reg = [b for b in allb if "09:30" <= b["t"][11:16] < "16:00"]
     I = indicators(reg, allb, P)
     keep = [i for i, b in enumerate(reg) if b["t"][:10] >= show[0]]

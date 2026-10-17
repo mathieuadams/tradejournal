@@ -1353,7 +1353,7 @@ function fcSvg0(d, id, opts) {
   const lo = lo0 - pad, hi = hi0 + pad;
   const X = i => L + (i + 0.5) * (W - L - Rr) / n, Y = v => T + (hi - v) / (hi - lo) * (B - T), bw = Math.max(1, (W - L - Rr) / n * 0.6);
   const idx = {}; bars.forEach((b, i) => { idx[b.t] = i; });
-  const bucket = t => { const d0 = t.slice(0, 10), hm = t.slice(11, 16); let m = (+hm.slice(0, 2)) * 60 + (+hm.slice(3, 5)); m = Math.max(570, Math.min(m, 960 - iv)); m = 570 + Math.floor((m - 570) / iv) * iv;
+  const bucket = t => { t = String(t || ''); const d0 = t.slice(0, 10), hm = t.slice(11, 16); let m = (+hm.slice(0, 2)) * 60 + (+hm.slice(3, 5)); m = Math.max(570, Math.min(m, 960 - iv)); m = 570 + Math.floor((m - 570) / iv) * iv;
     return `${d0}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
   const lastT = bars[n - 1].t;
   const at = t => { const k = bucket(t); if (idx[k] != null) return idx[k]; if (k > lastT) return null; let best = null; bars.forEach((b, i) => { if (b.t <= k) best = i; }); return best; };
@@ -1577,7 +1577,7 @@ function fcSvg0(d, id, opts) {
       if (sg.fvgZone && sg.fvgZone.hi >= lo && sg.fvgZone.lo <= hi && i0 != null) {    // the gap the entry used: a bracket at the entry candle
         const y0 = Y(Math.min(hi, sg.fvgZone.hi)), y1 = Y(Math.max(lo, sg.fvgZone.lo)), xz = xa - Math.max(bw, 4) / 2 - 3;
         g += `<path d="M${xz + 4},${y0} L${xz},${y0} L${xz},${y1} L${xz + 4},${y1}" fill="none" stroke="#15803d" stroke-width="2"><title>${esc(`Bullish FVG used by the entry ${sg.at.replace('T', ' ').slice(5)}: ${sg.fvgZone.lo}–${sg.fvgZone.hi}, formed ${sg.fvgZone.t.replace('T', ' ').slice(5)}`)}</title></path>`; }
-      if (sg.scaled) { const ip = at(sg.scaled.at); if (ip != null && sg.scaled.px >= lo && sg.scaled.px <= hi) { const xp = X(ip), yp = Y(sg.scaled.px);
+      if (sg.scaled && typeof sg.scaled === 'object' && sg.scaled.at) { const ip = at(sg.scaled.at); if (ip != null && sg.scaled.px >= lo && sg.scaled.px <= hi) { const xp = X(ip), yp = Y(sg.scaled.px);
         g += `<circle cx="${xp}" cy="${yp}" r="5.5" fill="var(--gain)" stroke="var(--surface)" stroke-width="1.5"><title>${esc(`Sold ${Math.round(sg.scaled.frac * 100)}% at ${sg.scaled.px} (${sg.scaled.at.replace('T', ' ').slice(5)}) · +${((sg.scaled.px / sg.entry - 1) * 100).toFixed(2)}%${sg.scaleBE ? ' · stop of the rest moved to the entry' : ''}`)}</title></circle>
           <text x="${xp + 7}" y="${yp - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--gain)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${Math.round(sg.scaled.frac * 100)}%</text>`; } }
       if (sg.status !== 'open' && i1 != null && sg.exit >= lo && sg.exit <= hi) { const y = Y(sg.exit);
@@ -1831,7 +1831,7 @@ const DT_RULES = [
   ['pmBreak', 'Entry', 'Pre-market break', 'Crosses the pre-market high (short: low)'],
   ['pwTouch', 'Entry', 'Wall test', 'Low tests the put wall and closes above (short: high tests the call wall, closes under)'],
   ['aboveFlip', 'Entry', 'Above the flip', 'Close above the gamma flip (short: below)'],
-  ['stopOn', 'Exit', 'Stop', 'Entry − this × the unit (short: +). Units: 1-minute ATR (tight: one minute of noise), 5-minute ATR, daily ATR (the average day range), or % of the price', [['stopAtr', 0.05, 3.4, '', 1.5], ['stopBase', 0, 0, '', 'atr1', 'sel', '×', [['atr1', '1-min ATR'], ['atr5', '5-min ATR'], ['atrD', 'daily ATR'], ['pct', '% of price']]]]],
+  ['stopOn', 'Exit', 'Stop', 'Entry − this × the unit (short: +). Units: 1-minute ATR (tight: one minute of noise), the average move (true range) of the last N 1-minute candles (the current volatility; N = 200-500), 5-minute ATR, daily ATR (the average day range), or % of the price. Swing low / high: the stop goes under the last swing low already formed (a low under the N candles before and after it; short: above the swing high) minus the swing %, the number is not used and the trailing stop is × that risk', [['stopAtr', 0.05, 3.4, '', 1.5], ['stopBase', 0, 0, '', 'atr1', 'sel', '×', [['atr1', '1-min ATR'], ['avgN', 'avg move of the last N candles'], ['atr5', '5-min ATR'], ['atrD', 'daily ATR'], ['pct', '% of price'], ['swing', 'swing low / high']]], ['volN', 1, 3.8, 'candles', 300, '', 'N ='], ['swingBuf', 0.01, 3.6, '%', 0.05, '', 'swing −'], ['swingN', 1, 3, 'candles each side', 5, '', 'pivot']]],
   ['targetOn', 'Exit', 'Target', 'Entry + this × the risk', ['targetR', 0.25, 3.4, 'R', 2]],
   ['trailOn', 'Exit', 'Trailing stop', 'Best price − this × the stop unit, never back', ['trailAtr', 0.05, 3.4, '× stop unit', 2]],
   ['vwapExit', 'Exit', 'Back through VWAP', 'A close back under the VWAP (short: above)'],
