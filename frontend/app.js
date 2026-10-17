@@ -1868,9 +1868,17 @@ function dtSettingsBox() {                       // Settings → Brokers: the se
   if (S.dt.error) return `<div class="errbox">${esc(S.dt.error)}</div>`;
   return `<p class="muted" style="margin:0 0 6px;font-size:.85rem">A SECOND Alpaca <b>paper</b> account (its own API key / secret), kept apart from the options bot. The day-trading strategy (Chart → Day trading) trades QQQ / SPY on it every minute.</p>${dtAccountBox(true)}`;
 }
+function dtUnpack(d) {                           // the server sends long series as columns + rows (candle index for the time)
+  if (!d || typeof d !== 'object') return d;
+  const un = v => v.rows.map(r => Object.fromEntries(v.cols.map((c, j) => [c, r[j]])));
+  if (d.bars && d.bars._p) d.bars = un(d.bars);
+  const ts = (d.bars || []).map(b => b.t);
+  Object.keys(d).forEach(k => { const v = d[k]; if (v && v._p && v.cols && v.cols[0] === 'i') d[k] = v.rows.map(r => { const o = { t: ts[r[0]] }; v.cols.slice(1).forEach((c, j) => { o[c] = r[j + 1]; }); return o; }); });
+  return d;
+}
 async function loadDTChart(sym) {
   const k = `dt|${sym}|${S.dtTf}|${S.dtDays}`; S.dtBusy = k; if (route() === 'botchart') render();
-  try { S.dtFc = { k, d: await api('/daytrade/chart', { method: 'POST', body: { t: sym, days: S.dtDays, tf: S.dtTf } }) }; } catch (e) { S.dtFc = { k, d: { error: e.message } }; }
+  try { S.dtFc = { k, d: dtUnpack(await api('/daytrade/chart', { method: 'POST', body: { t: sym, days: S.dtDays, tf: S.dtTf } })) }; } catch (e) { S.dtFc = { k, d: { error: e.message } }; }
   S.dtBusy = null; if (route() === 'botchart') render();
 }
 function dtCfg() { return { ...((S.dt && S.dt.config) || {}), ...(S.dtDraft || {}) }; }

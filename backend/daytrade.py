@@ -654,7 +654,7 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
     studies = {"bands": bser, "bandsF": bform, "lis": {d: lines[d] for d in show if d in lines},
                "lisF": [x for x in lisf if x["t"][:10] >= show[0]], "lisSent": sent.get(show[-1]),
                "pmz": {d: pz[d] for d in show if d in pz}, "fibs": fb, "turns": tr3ndy.turns(sqz_h)}
-    return {"symbol": sym, "bars": out_bars, "interval": tfm, "days": days, "dt": True, **studies,
+    return _pack({"symbol": sym, "bars": out_bars, "interval": tfm, "days": days, "dt": True, **studies,
             "vwap": series("vwap"), "ema": series("ema"), "ema2": series("ema2"), "emaLen": int(P["emaLen"]),
             "kch": [{"t": t, "m": r4(I["kc"][i][0]), "u": r4(I["kc"][i][1]), "l": r4(I["kc"][i][2])} for t, i in pick if I["kc"][i]],
             "inertia": [{"t": t, "s": I["inr"][i]["s"], "pts": 0} for t, i in pick if I["inr"][i]],
@@ -662,7 +662,30 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
             "pm": {d: {"h": I["pm"][d][0], "l": I["pm"][d][1]} for d in show if d in I["pm"]},
             "orbLv": {d: {"h": x[0], "l": x[1]} for d in show for x in [next((I["orb"][i] for i in keep if reg[i]["t"][:10] == d and I["orb"][i]), None)] if x},
             "walls": walls, "signals": sigs, "stats": stats(sigs), "alerts": [], "evals": [], "maxPain": [], "expirations": [],
-            "trades": [], "wallsNow": W.get(show[-1]), "cfgAt": P.get("savedAt")}
+            "trades": [], "wallsNow": W.get(show[-1]), "cfgAt": P.get("savedAt")})
+
+
+PACK = ("bars", "bands", "sqzH", "kch", "inertia", "ema", "ema2", "vwap")
+
+
+def _pack(out):
+    """Long per-candle series as columns + rows, the time as the index of the candle (the response must stay under the
+    6 MB Lambda limit on 30 days of 1-minute candles). The frontend unpacks them back to [{t, ...}]."""
+    bars = out.get("bars") or []
+    ix = {b["t"]: i for i, b in enumerate(bars)}
+    for k in PACK:
+        v = out.get(k)
+        if not isinstance(v, list) or not v or not isinstance(v[0], dict):
+            continue
+        cols = [c for c in v[0] if c != "t"]
+        if k == "bars":
+            rows = [[x["t"]] + [x.get(c) for c in cols] for x in v]
+            out[k] = {"_p": 1, "cols": ["t"] + cols, "rows": rows}
+        else:
+            if any(x.get("t") not in ix for x in v):
+                continue
+            out[k] = {"_p": 1, "cols": ["i"] + cols, "rows": [[ix[x["t"]]] + [x.get(c) for c in cols] for x in v]}
+    return out
 
 
 def live_ctx(sub, sym, P, dates, n_days, now=None, peer_bars=None):
