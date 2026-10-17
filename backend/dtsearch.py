@@ -16,6 +16,8 @@ from util import iso, now_ny
 SK = "DTSEARCH"
 STOPS = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
 TARGETS = (1.0, 1.5, 2.0, 3.0)
+BASES = {"atr1": STOPS, "atr5": (0.75, 1.0, 1.5, 2.0, 3.0), "atrD": (0.05, 0.1, 0.15, 0.25), "pct": (0.1, 0.2, 0.3, 0.5)}
+BASE_NAME = {"atr1": "× 1-min ATR", "atr5": "× 5-min ATR", "atrD": "× daily ATR", "pct": "% of price"}
 EXIT_SW = ("trailOn", "vwapExit", "emaExit", "sqExit", "inExit", "fvgExit", "beOn", "scaleOn", "timeOn", "lvlTarget")
 MIN_N = 40
 
@@ -65,9 +67,11 @@ def candidates(P):
         out += [("longs only", {"shorts": False}), ("shorts only", {"longs": False})]
     elif not (P.get("longs") and P.get("shorts")):
         out.append(("longs and shorts", {"longs": True, "shorts": True}))
-    for v in STOPS:
-        if abs(float(P["stopAtr"]) - v) > 1e-9:
-            out.append((f"stop {v} ATR", {"stopAtr": v, "stopOn": True}))
+    base = P.get("stopBase") or "atr1"
+    for b, vals in BASES.items():
+        for v in (STOPS if b == base and b == "atr1" else vals):
+            if b != base or abs(float(P["stopAtr"]) - v) > 1e-9:
+                out.append((f"stop {v} {BASE_NAME[b]}", {"stopAtr": v, "stopOn": True, "stopBase": b, "trailAtr": max(v, 0.05)}))
     for v in TARGETS:
         if not P.get("targetOn") or abs(float(P["targetR"]) - v) > 1e-9:
             out.append((f"target {v}R", {"targetR": v, "targetOn": True}))
@@ -158,7 +162,8 @@ def run(sub, params=None, budget_s=520):
             tested += 1
             tab.append({"label": label, "changes": ch, **sc})
         last_tab = tab
-        ok = [x for x in tab if x["train"]["n"] >= MIN_N and x["train"]["t"] is not None and x["train"]["t"] >= 1]
+        tmin = max(1.0, cur_s["train"]["t"] or 0)          # more R, never at the cost of a weaker t (= more risk per R)
+        ok = [x for x in tab if x["train"]["n"] >= MIN_N and x["train"]["t"] is not None and x["train"]["t"] >= tmin]
         ok.sort(key=lambda x: -x["train"]["totR"])
         if not ok or ok[0]["train"]["totR"] < cur_s["train"]["totR"] + need(cur_s["train"]):
             break

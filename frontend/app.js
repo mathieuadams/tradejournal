@@ -1831,9 +1831,9 @@ const DT_RULES = [
   ['pmBreak', 'Entry', 'Pre-market break', 'Crosses the pre-market high (short: low)'],
   ['pwTouch', 'Entry', 'Wall test', 'Low tests the put wall and closes above (short: high tests the call wall, closes under)'],
   ['aboveFlip', 'Entry', 'Above the flip', 'Close above the gamma flip (short: below)'],
-  ['stopOn', 'Exit', 'Stop', 'Entry − this × the 1-minute ATR (short: +)', ['stopAtr', 0.1, 3.4, 'ATR', 1.5]],
+  ['stopOn', 'Exit', 'Stop', 'Entry − this × the unit (short: +). Units: 1-minute ATR (tight: one minute of noise), 5-minute ATR, daily ATR (the average day range), or % of the price', [['stopAtr', 0.05, 3.4, '', 1.5], ['stopBase', 0, 0, '', 'atr1', 'sel', '×', [['atr1', '1-min ATR'], ['atr5', '5-min ATR'], ['atrD', 'daily ATR'], ['pct', '% of price']]]]],
   ['targetOn', 'Exit', 'Target', 'Entry + this × the risk', ['targetR', 0.25, 3.4, 'R', 2]],
-  ['trailOn', 'Exit', 'Trailing stop', 'Best price − this × ATR, never back', ['trailAtr', 0.25, 3.4, 'ATR', 2]],
+  ['trailOn', 'Exit', 'Trailing stop', 'Best price − this × the stop unit, never back', ['trailAtr', 0.05, 3.4, '× stop unit', 2]],
   ['vwapExit', 'Exit', 'Back through VWAP', 'A close back under the VWAP (short: above)'],
   ['emaExit', 'Exit', 'Back through fast EMA', 'A close back under the fast EMA (short: above)'],
   ['sqExit', 'Exit', 'Squeeze momentum turns', 'Momentum stops rising (short: stops falling)'],
@@ -1892,7 +1892,7 @@ function dtPanel() {
       <td style="font-size:.78rem;padding:2px 6px">${used.length ? `<span class="gain">used by</span> ${used.map(u => esc(lbl[u] || u)).join(', ')}` : '<span class="muted">not used</span>'}</td></tr>`; }).join('');
   const chip = ([k, , l, tip, f]) => { const on = !!c[k];
     return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${on ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${on ? '' : 'opacity:.55'}">
-      <button class="btn" data-dtsw="${k}" title="${esc(tip)}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button><span style="font-size:.8rem" title="${esc(tip)}">${l}</span>${(!f ? [] : Array.isArray(f[0]) ? f : [f]).map(x => ` ${x[6] ? `<span class="muted" style="font-size:.72rem">${x[6]}</span> ` : ''}${x[5] === 'time' ? `<input data-dttime="${x[0]}" value="${esc(c[x[0]] || x[4])}" style="width:${x[2]}em;padding:1px 4px">` : num(x[0], x[1], x[2], x[4])}<span class="muted" style="font-size:.75rem">${x[3]}</span>`).join('')}</span>`; };
+      <button class="btn" data-dtsw="${k}" title="${esc(tip)}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button><span style="font-size:.8rem" title="${esc(tip)}">${l}</span>${(!f ? [] : Array.isArray(f[0]) ? f : [f]).map(x => ` ${x[6] ? `<span class="muted" style="font-size:.72rem">${x[6]}</span> ` : ''}${x[5] === 'time' ? `<input data-dttime="${x[0]}" value="${esc(c[x[0]] || x[4])}" style="width:${x[2]}em;padding:1px 4px">` : x[5] === 'sel' ? `<select data-dtsel="${x[0]}" style="padding:0 2px;font-size:.78rem">${x[7].map(([v, l]) => `<option value="${v}" ${(c[x[0]] || x[4]) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>` : num(x[0], x[1], x[2], x[4])}<span class="muted" style="font-size:.75rem">${x[3]}</span>`).join('')}</span>`; };
   const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${DT_RULES.filter(r => r[1] === g).map(chip).join('')}</div>`;
   const tog = (k, l) => `<button class="btn ${c[k] ? 'coachbtn' : ''}" data-dtsw="${k}" style="font-size:.78rem;padding:1px 10px">${l}</button>`;
   const tm = (k, l) => `<span class="muted" style="font-size:.78rem">${l}</span> <input data-dttime="${k}" value="${esc(c[k] || '')}" style="width:4.2em;padding:1px 4px">`;
@@ -1969,6 +1969,7 @@ function dtBody() {                              // the settings on screen: save
   const body = { ...(S.dtDraft || {}) };
   document.querySelectorAll('[data-dtnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.dtnum] = v; });
   document.querySelectorAll('[data-dttime]').forEach(i => { body[i.dataset.dttime] = i.value; });
+  document.querySelectorAll('[data-dtsel]').forEach(i => { body[i.dataset.dtsel] = i.value; });
   const tk = document.querySelector('[data-dttk]'); if (tk) body.tickers = tk.value;
   return body;
 }
@@ -1989,7 +1990,7 @@ function dtSearchBox() {
   const head = `<div style="display:flex;gap:6px;align-items:center;margin-top:14px;flex-wrap:wrap"><b style="font-size:.95rem">Find the best settings</b>
     <select id="dt-srdays" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (S.dtSrDays || 250) ? 'selected' : ''} value="${n}">${n} trading days</option>`).join('')}</select>
     <button class="btn coachbtn" data-dtsearch ${t.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${t.running ? 'Searching… (up to 10 min)' : 'Search automatically'}</button></div>
-    <p class="muted" style="font-size:.78rem;margin:2px 0 4px">Starts from the settings on screen and tests every single change (each rule on / off, each exit, stop and target sizes). It chooses using the <b>1st half</b> of the days only: the most total R, kept only when the gain is bigger than the noise (up to 3 changes); the <b>2nd half</b> (never used to choose) shows if it holds. <b>t</b> = average R ÷ (spread ÷ √trades): under 1 = noise, 2 or more = probably real.</p>`;
+    <p class="muted" style="font-size:.78rem;margin:2px 0 4px">Starts from the settings on screen and tests every single change (each rule on / off, each exit, stop and target sizes). It chooses using the <b>1st half</b> of the days only: the most total R, kept only when the gain is bigger than the noise and t doesn't drop (up to 3 changes; stop sizes are tried in 1-min, 5-min, daily ATR and % of price); the <b>2nd half</b> (never used to choose) shows if it holds. <b>t</b> = average R ÷ (spread ÷ √trades): under 1 = noise, 2 or more = probably real.</p>`;
   if (t.error) return head + `<div class="errbox">${esc(t.error)}</div>`;
   if (!t.final) return head + ((t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : '');
   const vd = { edge: ['gain', 'Edge found: it holds on the days the search did not see (t ≥ 2).'], weak: ['', 'Weak: positive on the unseen days but it could still be luck (t between 1 and 2). Paper trade it, run again with more days.'],
@@ -4004,10 +4005,7 @@ document.addEventListener('click', e => {
   if (el.dataset.dtwexp) { S.dtDraft = { ...(S.dtDraft || {}), wallNear: el.dataset.dtwexp === 'near' }; S.dtDirty = true; render(); return; }
   if (el.dataset.dtsw) { const k = el.dataset.dtsw; S.dtDraft = { ...(S.dtDraft || {}), [k]: !dtCfg()[k] }; S.dtDirty = true; render(); return; }
   if (el.hasAttribute('data-dtapply')) {
-    const body = { ...(S.dtDraft || {}) };
-    document.querySelectorAll('[data-dtnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.dtnum] = v; });
-    document.querySelectorAll('[data-dttime]').forEach(i => { body[i.dataset.dttime] = i.value; });
-    const tk = document.querySelector('[data-dttk]'); if (tk) body.tickers = tk.value;
+    const body = dtBody();
     S.dtDraft = {}; S.dtDirty = false; dtPut(body, 'Day-trading settings saved'); return; }
   if (el.dataset.dttf) { S.dtTf = +el.dataset.dttf; try { localStorage.setItem('dtTf', S.dtTf); } catch (x) {} render(); return; }
   if (el.dataset.dtdays) { S.dtDays = +el.dataset.dtdays; try { localStorage.setItem('dtDays', S.dtDays); } catch (x) {} render(); return; }
@@ -4293,7 +4291,7 @@ document.addEventListener('change', e => {
   dtPut({ [k]: e.target.checked }, k === 'enabled' ? (e.target.checked ? 'Day trading runs every minute' : 'Day trading stopped') : (e.target.checked ? 'Orders ON (paper day account)' : 'Orders OFF'));
 });
 document.addEventListener('input', e => {
-  if (e.target.matches && e.target.matches('[data-dtnum],[data-dttime],[data-dttk]')) { S.dtDirty = true; const b = document.querySelector('[data-dtapply]'); if (b) { b.classList.add('coachbtn'); b.textContent = 'Apply changes'; } }
+  if (e.target.matches && e.target.matches('[data-dtnum],[data-dttime],[data-dttk],[data-dtsel]')) { S.dtDirty = true; const b = document.querySelector('[data-dtapply]'); if (b) { b.classList.add('coachbtn'); b.textContent = 'Apply changes'; } }
 });
 document.addEventListener('submit', e => {
   if (e.target.id !== 'ww-addf') return;

@@ -43,6 +43,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
           "noLunch": False, "lunchFrom": "11:30", "lunchTo": "13:30", "dayStop": False, "dayStopR": 2.0,
           # exits
+          "stopBase": "atr1",     # what the stop / trailing sizes multiply: atr1 / atr5 (5-min ATR) / atrD (daily ATR) / pct
           "stopOn": True, "stopAtr": 1.5, "targetOn": True, "targetR": 2.0, "trailOn": False, "trailAtr": 2.0,
           "vwapExit": False, "emaExit": False, "sqExit": False, "inExit": False, "fvgExit": False,
           "beOn": False, "beR": 1.0, "scaleOn": False, "scaleR": 1.0, "timeOn": False, "timeMin": 30, "lvlTarget": False}
@@ -60,6 +61,7 @@ FLOATS = {"kcMult": (0.1, 10), "sqBB": (0.1, 10), "sqKC": (0.1, 10), "fvgMin": (
           "gapMin": (0, 99), "gapMax": (0, 99), "rvolMin": (0, 50), "vixMin": (0, 200), "vixMax": (0, 200), "dayStopR": (0.1, 50),
           "beR": (0.1, 20), "scaleR": (0.1, 20)}
 TIMES = ("startT", "endT", "flatT", "lunchFrom", "lunchTo")
+STOP_BASES = ("atr1", "atr5", "atrD", "pct")
 
 
 def config(sub):
@@ -112,6 +114,8 @@ def clean_cfg(cur, body):
     for k in TIMES:
         if k in body:
             cur[k] = _hm(body[k], cur[k])
+    if body.get("stopBase") in STOP_BASES:
+        cur["stopBase"] = body["stopBase"]
     if "tickers" in body:
         tk = body["tickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -248,6 +252,57 @@ def _fvg_scan(bars, atr, min_atr, near, max_days):
     return bull_t, bear_t, new_bull, new_bear
 
 
+def _atr5(bars):
+    """Per 1-minute candle: the 14-period ATR of the 5-minute candles finished before it (the current one included
+    as it forms)."""
+    import wallwatch as ww
+    out, cur, b5, keys = [], None, [], []
+    for b in bars:
+        hm = int(b["t"][11:13]) * 60 + int(b["t"][14:16])
+        k = b["t"][:11] + str(hm // 5)
+        if k != cur:
+            cur = k
+            b5.append({"o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"]})
+        else:
+            x = b5[-1]
+            x["h"], x["l"], x["c"] = max(x["h"], b["h"]), min(x["l"], b["l"]), b["c"]
+        keys.append(len(b5) - 1)
+    a5 = ww.atr14(b5)
+    return [a5[k] for k in keys]
+
+
+def _atr_day(bars, n=14):
+    """Per candle: the average daily range (true range) of the n sessions before its day."""
+    days, order = {}, []
+    for b in bars:
+        d = b["t"][:10]
+        if d not in days:
+            days[d] = [b["h"], b["l"], b["c"]]
+            order.append(d)
+        x = days[d]
+        x[0], x[1], x[2] = max(x[0], b["h"]), min(x[1], b["l"]), b["c"]
+    trs, by, pc = [], {}, None
+    for d in order:
+        h, l, c = days[d]
+        by[d] = sum(trs[-n:]) / len(trs[-n:]) if trs else None
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)) if pc is not None else h - l)
+        pc = c
+    return [by[b["t"][:10]] for b in bars]
+
+
+def stop_unit(I, i, price, P):
+    """What the stop and trailing sizes multiply at candle i: the 1-minute ATR, the 5-minute ATR, the daily ATR, or
+    1% of the price."""
+    base = P.get("stopBase") or "atr1"
+    if base == "pct":
+        return price / 100
+    if base == "atr5":
+        return I["atr5"][i] or I["atr"][i] or 0
+    if base == "atrD":
+        return I["atrD"][i] or (I["atr5"][i] or 0) * 6
+    return I["atr"][i] or 0
+
+
 def _rvol(bars, look=10):
     """Relative volume: today's volume so far vs the average volume at the same minute of the session over the
     previous `look` days (cumulative). None for the first days."""
@@ -341,7 +396,7 @@ def indicators(bars, ext, P):
                 cur = (hi_, lo_)
             orb.append(cur)
     bt, brt, nb, nbr = _fvg_scan(bars, atr, float(P["fvgMin"]), float(P["fvgNear"]), int(P["fvgDays"]))
-    return {"rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
+    return {"atr5": _atr5(bars), "atrD": _atr_day(bars), "rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
             "kc": ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
             "sq": ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"])),
             "inr": ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
@@ -488,7 +543,7 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
         last_of_day = hm >= "15:59" or (i + 1 < len(bars) and bars[i + 1]["t"][:10] != day)   # end of data != end of day (live)
         if open_:
             s = open_
-            side, a = s["side"], I["atr"][i] or s["atr"]
+            side, a = s["side"], s["unit"]
             risk = abs(s["entry"] - s["stop0"])
             exit_ = None
             if on("stopOn") and ((b["l"] <= s["stop"]) if side > 0 else (b["h"] >= s["stop"])):
@@ -556,7 +611,8 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
             ck = _checks(i, b, prev, I, w, side, P)
             if all(ck[k] for k in rules):
                 e = b["c"]
-                st = round(e - side * float(P["stopAtr"]) * a, 4)
+                u = stop_unit(I, i, e, P) or a
+                st = round(e - side * float(P["stopAtr"]) * u, 4)
                 tgt = round(e + side * float(P["targetR"]) * abs(e - st), 4) if on("targetOn") else None
                 lvl_t = False
                 if on("lvlTarget"):
@@ -565,6 +621,7 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
                         tgt, lvl_t = round(min(beyond, key=lambda L: abs(L - e)), 4), True
                 s = {"at": b["t"], "kind": "day", "side": side, "dir": "long" if side > 0 else "short", "entry": e,
                      "stop0": st, "stop": st if on("stopOn") else (0.0 if side > 0 else 1e12), "target": tgt, "atr": round(a, 4),
+                     "unit": round(u, 4),
                      "status": "open", "last": e, "lastAt": b["t"], "o": b["o"], "h": b["h"], "l": b["l"],
                      "rules": rules, "level": st, "levelName": "stop"}
                 if lvl_t:

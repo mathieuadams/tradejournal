@@ -3467,6 +3467,14 @@ def test_daytrade_new_rules_filters_exits():
         tot = sum(x["R"] for x in byd.get(s["at"][:10], []))
         assert tot > -0.5 or not byd.get(s["at"][:10]), s["at"]
         byd.setdefault(s["at"][:10], []).append(s)
+    # stop unit: 1-min ATR vs 5-min ATR vs daily ATR vs % of price
+    d1 = daytrade.detect(bars, {**base, "stopAtr": 1.0})
+    d5 = daytrade.detect(bars, {**base, "stopAtr": 1.0, "stopBase": "atr5"})
+    dp = daytrade.detect(bars, {**base, "stopAtr": 0.2, "stopBase": "pct"})
+    dd = daytrade.detect(bars, {**base, "stopAtr": 0.1, "stopBase": "atrD"})
+    risk = lambda sg: sum(abs(s["entry"] - s["stop0"]) for s in sg) / len(sg)
+    assert risk(d5) > risk(d1) and dd and all(abs(abs(s["entry"] - s["stop0"]) - s["entry"] * 0.002) < 1e-3 for s in dp)
+    assert daytrade.clean_cfg(daytrade.PARAMS, {"stopBase": "atr5"})["stopBase"] == "atr5" and daytrade.clean_cfg(daytrade.PARAMS, {"stopBase": "x"})["stopBase"] == "atr1"
     # cache: same indicator settings computed once
     cache = {}
     daytrade.detect(bars, base, {}, None, {"cache": cache})
@@ -3546,7 +3554,7 @@ def test_daytrade_auto_search():
         assert t1 == sorted(t1, reverse=True)
         prev = r["start"]["train"]
         for p in r["path"]:                                    # each kept change beat the previous by more than the noise
-            assert p["train"]["totR"] >= prev["totR"] + dtsearch.need(prev) and p["train"]["t"] >= 1
+            assert p["train"]["totR"] >= prev["totR"] + dtsearch.need(prev) and p["train"]["t"] >= max(1, prev["t"] or 0)
             prev = p["train"]
         assert dtsearch.result(sub)["tested"] == r["tested"]
     finally:
