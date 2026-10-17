@@ -3899,13 +3899,28 @@ function render() {
   document.querySelectorAll('.nav .nav-sub').forEach(x => { x.hidden = grp !== (x.dataset.group || 'trades'); });
   document.querySelectorAll('[data-acct]').forEach(b => b.classList.toggle('on', grp === 'settings'));
   const keep = {};                                      // scroll positions survive the redraw (watchlists, side panel, chart page)
-  document.querySelectorAll('[data-wlbox],.fcf-side,.fcf').forEach(el => { keep[el.dataset.wlbox ? 'wl:' + el.dataset.wlbox : el.className.split(' ')[0]] = el.scrollTop; });
+  document.querySelectorAll('[data-wlbox],.fcf-side').forEach(el => { keep[el.dataset.wlbox ? 'wl:' + el.dataset.wlbox : el.className.split(' ')[0]] = el.scrollTop; });
+  const f0 = document.querySelector('.fcf'), fh = f0 ? f0.scrollHeight : 0;
+  if (f0 && S.fcfY == null) S.fcfY = f0.scrollTop;
+  const winY = window.scrollY;
+  S.renderAt = Date.now();
   try { $('#view').innerHTML = subnav(v) + VIEWS[v][0](); } catch (e) { console.error(e); $('#view').innerHTML = `<div class="errbox">This page failed to load: ${esc(e.message)}</div>`; }
-  document.querySelectorAll('[data-wlbox],.fcf-side,.fcf').forEach(el => { const k = el.dataset.wlbox ? 'wl:' + el.dataset.wlbox : el.className.split(' ')[0]; if (keep[k]) el.scrollTop = keep[k]; });
+  document.querySelectorAll('[data-wlbox],.fcf-side').forEach(el => { const k = el.dataset.wlbox ? 'wl:' + el.dataset.wlbox : el.className.split(' ')[0]; if (keep[k]) el.scrollTop = keep[k]; });
+  const f1 = document.querySelector('.fcf');
+  if (f1 && S.fcfY) {                                   // the full-screen chart page: keep the place even while parts reload
+    const body = f1.querySelector('.fcf-body');
+    if (body && fh) { body.style.minHeight = (fh - (f1.querySelector('.fcf-head') || {}).offsetHeight || 0) + 'px'; clearTimeout(S.fcfMinT); S.fcfMinT = setTimeout(() => { const b = document.querySelector('.fcf-body'); if (b) b.style.minHeight = ''; }, 4000); }
+    f1.scrollTop = S.fcfY;
+    requestAnimationFrame(() => { const f = document.querySelector('.fcf'); if (f && S.fcfY) f.scrollTop = S.fcfY; });
+  } else if (!f1 && winY) window.scrollTo(0, winY);
   if (VIEWS[v][1]) VIEWS[v][1]();
 }
+document.addEventListener('scroll', e => {             // remember where the chart page is scrolled (not the jumps caused by a redraw)
+  const t = e.target;
+  if (t && t.classList && t.classList.contains('fcf') && Date.now() - (S.renderAt || 0) > 400) S.fcfY = t.scrollTop;
+}, true);
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
-window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-chartdaily],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
