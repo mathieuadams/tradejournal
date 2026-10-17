@@ -25,20 +25,20 @@ def _kms():
     return boto3.client("kms")
 
 
-def save_creds(sub, key_id, secret, env, feed="iex"):
+def save_creds(sub, key_id, secret, env, feed="iex", sk="BROKER#alpaca"):
     if env not in TRADING:
         raise BadRequest("Environment must be paper or live.")
     creds = {"key": key_id.strip(), "secret": secret.strip(), "env": env, "feed": feed}
     _get(TRADING[env] + "/v2/account", creds)  # fails with a clear message if the keys are wrong
     blob = _kms().encrypt(KeyId=os.environ["KMS_KEY_ID"], Plaintext=json.dumps(creds).encode())["CiphertextBlob"]
-    old = db.get(db.upk(sub), "BROKER#alpaca") or {}
-    db.put({"PK": db.upk(sub), "SK": "BROKER#alpaca", "enc": base64.b64encode(blob).decode(),
+    old = db.get(db.upk(sub), sk) or {}
+    db.put({"PK": db.upk(sub), "SK": sk, "enc": base64.b64encode(blob).decode(),
             "env": env, "feed": feed, "keyHint": key_id.strip()[-4:], "lastSync": old.get("lastSync"),
             "status": "connected"})
 
 
-def creds(sub):
-    item = db.get(db.upk(sub), "BROKER#alpaca")
+def creds(sub, sk="BROKER#alpaca"):
+    item = db.get(db.upk(sub), sk)
     if not item:
         return None
     raw = _kms().decrypt(CiphertextBlob=base64.b64decode(item["enc"]))["Plaintext"]

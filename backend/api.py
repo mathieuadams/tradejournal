@@ -427,6 +427,51 @@ def bot_wallwatch(sub, claims, body, q):
     return wallwatch.view(sub)
 
 
+@route("GET", "/daytrade")
+def daytrade_get(sub, claims, body, q):
+    import daytrade
+    return daytrade.view(sub)
+
+
+@route("PUT", "/daytrade")
+def daytrade_put(sub, claims, body, q):
+    import daytrade
+    daytrade.save_config(sub, body or {})
+    return daytrade.view(sub)
+
+
+@route("PUT", "/daytrade/account")
+def daytrade_account(sub, claims, body, q):
+    import daytrade
+    key, secret = _str((body or {}).get("key"), "Key", 100), _str((body or {}).get("secret"), "Secret", 200)
+    if not key or not secret:
+        raise BadRequest("Enter both the API key and the secret of the second (paper) account.")
+    return daytrade.connect(sub, key, secret)
+
+
+@route("DELETE", "/daytrade/account")
+def daytrade_account_del(sub, claims, body, q):
+    import daytrade
+    db.delete(db.upk(sub), daytrade.CRED_SK)
+    return daytrade.view(sub)
+
+
+@route("POST", "/daytrade/chart")
+def daytrade_chart(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else None
+    return daytrade.chart(sub, b.get("t"), b.get("days") or 3, b.get("tf") or 1, cfg)
+
+
+@route("POST", "/daytrade/backtest")
+def daytrade_backtest(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else None
+    return daytrade.backtest(sub, b.get("days") or 20, cfg)
+
+
 @route("GET", "/bot/wallwatch/quotes")
 def bot_wallwatch_quotes(sub, claims, body, q):
     import flowdata

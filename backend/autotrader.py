@@ -1855,6 +1855,8 @@ def handler(event, context_):
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed", "closed"))})
     elif job == "review":  # end of day: users with open bot positions
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
+    elif job == "daytick":     # every minute: users with day trading on
+        subs = [p["PK"][5:] for p in db.scan_sk("DTCFG") if p.get("enabled")]
     elif job == "wallwatch":   # every hour: users with the wall watchlist on
         subs = [p["PK"][5:] for p in db.scan_sk("WWCFG") if p.get("enabled", True)]
     elif job == "tick":   # every minute: users with open bot trades or flow trading on
@@ -1916,6 +1918,9 @@ def handler(event, context_):
                     db.put({**(db.get(db.upk(sub), backtest.SEARCH_SK) or {}), "PK": db.upk(sub), "SK": backtest.SEARCH_SK,
                             "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
+            elif job == "daytick":
+                import daytrade
+                out[sub] = daytrade.tick(sub)
             elif job == "wwoptsym":
                 import optiontest
                 pr = event.get("params") or {}

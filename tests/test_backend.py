@@ -3256,6 +3256,96 @@ def test_stock_quotes():
         flowdata.urllib.request.urlopen, alpaca.creds = saved
 
 
+def _dt_bars(days=3, seed=1):
+    import math, datetime as dt
+    out, k = [], 0
+    d0 = dt.date(2026, 9, 14)
+    for di in range(days):
+        day = d0 + dt.timedelta(days=di)
+        for m in range(4 * 60, 16 * 60):
+            if m < 9 * 60 + 30 and m % 5:
+                continue                                   # sparse pre-market
+            px = 500 + 3 * math.sin(k / 40.0) + 0.5 * math.sin(k / 7.0) + di * 2
+            out.append({"t": f"{day.isoformat()}T{m // 60:02d}:{m % 60:02d}", "o": px - 0.05, "h": px + 0.2, "l": px - 0.2,
+                        "c": px + (0.04 if math.cos(k / 40.0) > 0 else -0.04), "v": 1000})
+            k += 1
+    return out
+
+
+def test_daytrade_engine():
+    """1-minute engine: rules ON must all pass, long and short, stop / target / time exits, one trade at a time,
+    max trades a day, flat by the flat time; 5-minute aggregation for the chart."""
+    import daytrade
+    bars = _dt_bars(3)
+    P = {**daytrade.PARAMS, "aboveVwap": True, "emaStack": True, "greenBar": True, "maxTrades": 3}
+    sg = daytrade.detect(bars, P)
+    assert sg and all(s["status"] in ("stop", "target", "time", "trail") for s in sg[:-1])
+    days = {}
+    for s in sg:
+        days[s["at"][:10]] = days.get(s["at"][:10], 0) + 1
+        assert "09:35" <= s["at"][11:16] < "15:30" and (s["exitAt"] or "")[11:16] <= "15:59"
+    assert max(days.values()) <= 3 and {s["dir"] for s in sg} <= {"long", "short"}
+    for a, b in zip(sg, sg[1:]):
+        assert b["at"] >= (a["exitAt"] or "")                 # one at a time
+    for s in sg:
+        if s["status"] == "target":
+            assert abs(s["R"] - 2.0) < 0.3, s
+        if s["status"] == "stop":
+            assert s["R"] <= -0.9, s
+    lo = daytrade.detect(bars, {**P, "shorts": False})
+    assert lo and all(s["side"] == 1 for s in lo)
+    assert daytrade.detect(bars, {**P, **{k: False for k in daytrade.ENTRY}}) == []      # no rule on: no entry
+    agg = daytrade._agg([b for b in bars if "09:30" <= b["t"][11:16] < "16:00"][:12], 5)
+    assert [x["t"][11:16] for x in agg] == ["09:30", "09:35", "09:40"] and agg[0]["h"] == max(b["h"] for b in bars if "09:30" <= b["t"][11:16] < "09:35" and b["t"][:10] == "2026-09-14")
+    st = daytrade.stats(sg)
+    assert st["n"] == len(sg) and "exits" in st
+    c = daytrade.save_config("dt-user", {"stopAtr": 2, "aboveVwap": False, "startT": "09:45", "tickers": "qqq spy iwm"})
+    assert c["stopAtr"] == 2 and c["aboveVwap"] is False and c["startT"] == "09:45" and c["tickers"] == ["QQQ", "SPY", "IWM"]
+
+
+def test_daytrade_live_tick():
+    """Live: the engine's new trade on the last finished candle is sent to the day account; closed when the engine
+    closes it."""
+    import daytrade, datetime as dt
+    bars = _dt_bars(2)
+    P = {**daytrade.PARAMS, "aboveVwap": True, "emaStack": True, "greenBar": True, "enabled": True, "trade": True, "tickers": ["QQQ"]}
+    sg = daytrade.detect(bars, P, None, "2026-09-15")
+    s0 = next(s for s in sg if s["at"][:10] == "2026-09-15" and s["status"] != "open")
+    calls = []
+    saved = (daytrade.minute_bars, daytrade.creds, daytrade._alp, daytrade.walls_by_day, daytrade.config)
+    try:
+        daytrade.minute_bars = lambda sub, sym, days, now=None: [b for b in bars if b["t"] < (now or dt.datetime.now()).strftime("%Y-%m-%dT%H:%M")]
+        daytrade.creds = lambda sub: {"key": "k", "secret": "s"}
+        held = {}
+        def alp(c, m, path, body=None):
+            calls.append((m, path, body))
+            if m == "GET" and path.startswith("/v2/positions/"):
+                return held.get(path.rsplit("/", 1)[1])
+            if m == "POST":
+                held[body["symbol"]] = {"qty": body["qty"]}
+                return {"id": "o1"}
+            if m == "DELETE":
+                held.pop(path.rsplit("/", 1)[1], None)
+                return {"id": "o2"}
+            return {}
+        daytrade._alp = alp
+        daytrade.walls_by_day = lambda sub, sym, dates: {}
+        daytrade.config = lambda sub: P
+        t_in = dt.datetime.strptime(s0["at"], "%Y-%m-%dT%H:%M") + dt.timedelta(minutes=1, seconds=5)
+        r = daytrade.tick("dt-live", t_in)
+        assert any(m == "POST" for m, *_ in calls), (r, calls)
+        post = next(b for m, p_, b in calls if m == "POST")
+        assert post["side"] == ("buy" if s0["side"] > 0 else "sell") and post["qty"] == "10"
+        calls.clear()
+        t_out = dt.datetime.strptime(s0["exitAt"], "%Y-%m-%dT%H:%M") + dt.timedelta(minutes=1, seconds=5)
+        daytrade.tick("dt-live", t_out)
+        assert any(m == "DELETE" and p_ == "/v2/positions/QQQ" for m, p_, b in calls), calls
+        rec = [x for x in db.q_prefix(db.upk("dt-live"), "DTPOS#QQQ#") if x["at"] == s0["at"]][0]
+        assert rec["status"] == "closed" and s0["status"] in rec["exitReason"]
+    finally:
+        daytrade.minute_bars, daytrade.creds, daytrade._alp, daytrade.walls_by_day, daytrade.config = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

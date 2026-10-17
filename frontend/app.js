@@ -1336,7 +1336,7 @@ function fcSvg0(d, id, opts) {
   const dp = LY.dark ? S.fcDp[fcKey(id)] : null;
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
-  const SH = LY.sqz && ((d.sqzH || []).length || (d.sqzD || []).length) && !(opts && opts.noAcc) ? (full ? Math.max(80, Math.round(opts.H * 0.18)) : narrow ? 110 : 80) : 0;
+  const SH = LY.sqz && ((d.sqzH || []).length || (d.sqzD || []).length) && !(opts && opts.noSqz) ? (full ? Math.max(80, Math.round(opts.H * 0.18)) : narrow ? 110 : 80) : 0;
   const W = full ? opts.W : narrow ? 560 : 960, PH = (full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340) - (SH ? SH + 10 : 0);
   const L = 8, Rr = narrow ? 72 : full ? 64 : 58, T = 16, B = PH - (narrow ? 44 : 40);
   const H = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
@@ -1432,7 +1432,7 @@ function fcSvg0(d, id, opts) {
     const last = km[bars[n - 1].t];
     if (last && last.u >= lo && last.u <= hi) g += `<text x="${X(n - 1) - 4}" y="${Y(last.u) - 4}" text-anchor="end" font-size="${fs - 2}" font-weight="700" fill="${kcol}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${name}</text>`; };
   if (LY.kc && (d.kc || []).length) kcDraw(d.kc, '#475569', d.kcDaily === false ? 'Keltner (hourly)' : 'Keltner daily', 1.6);   // over-extension
-  if (LY.kch && (d.kch || []).length && d.kcDaily !== false) kcDraw(d.kch, '#d97706', 'Keltner hourly', 1);                  // entry fine tuning
+  if (LY.kch && (d.kch || []).length && d.kcDaily !== false) kcDraw(d.kch, '#d97706', d.dt ? 'Keltner' : 'Keltner hourly', 1);                  // entry fine tuning
   if (LY.orb && (d.orb || []).length) {              // opening range (09:30–10:30 candle) for the rest of each day
     const om = {}; d.orb.forEach(x => { om[x.d] = x; });
     let curD = null, i0 = null;
@@ -1534,8 +1534,8 @@ function fcSvg0(d, id, opts) {
         g += `<line x1="${s0}" x2="${Math.max(s0, e0)}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--loss)" stroke-width="2" opacity=".85"><title>${q ? 'trailing stop' : 'stop'} ${v}</title></line>`;
         if (nx && nx[1] >= lo && nx[1] <= hi) g += `<line x1="${e0}" x2="${e0}" y1="${Y(v)}" y2="${Y(nx[1])}" stroke="var(--loss)" stroke-width="1" opacity=".6"/>`; });
       if (i0 != null && sg.entry >= lo && sg.entry <= hi) { const y = Y(sg.entry);
-        g += `<path data-wwsel="${esc(d.symbol)}|${esc(sg.at)}" d="M${xa},${y + 5} L${xa - 8},${y + 18} L${xa + 8},${y + 18} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"><title>${sg.kind === 'flip' ? 'Flip setup' : sg.kind === 'merged' ? 'Merged walls setup' : sg.kind === 'retest' ? `Flow retest of the ${sg.levelName || 'level'} ${sg.level}` : 'PW setup'} ${esc(sg.at.replace('T', ' ').slice(5))} · entry ${(+sg.entry).toFixed(2)} · put wall ${sg.pw} · flip ${sg.flip} · call wall ${sg.cw}</title></path>
-          <text x="${xa}" y="${y + 31}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.kind === 'flip' ? 'FLIP' : sg.kind === 'merged' ? 'MRG' : sg.kind === 'retest' ? 'RT' : 'IN'}</text>`; }
+        g += `<path data-wwsel="${esc(d.symbol)}|${esc(sg.at)}" d="M${xa},${y + 5} L${xa - 8},${y + 18} L${xa + 8},${y + 18} Z" fill="var(--coach,#5b5bd6)" stroke="var(--surface)" stroke-width="1.5" style="cursor:pointer"><title>${sg.kind === 'day' ? `Day trade ${sg.dir} · rules: ${(sg.rules || []).join(', ')}` : sg.kind === 'flip' ? 'Flip setup' : sg.kind === 'merged' ? 'Merged walls setup' : sg.kind === 'retest' ? `Flow retest of the ${sg.levelName || 'level'} ${sg.level}` : 'PW setup'} ${esc(sg.at.replace('T', ' ').slice(5))} · entry ${(+sg.entry).toFixed(2)} · put wall ${sg.pw} · flip ${sg.flip} · call wall ${sg.cw}</title></path>
+          <text x="${xa}" y="${y + 31}" text-anchor="middle" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sg.kind === 'day' ? (sg.side < 0 ? 'SHORT' : 'LONG') : sg.kind === 'flip' ? 'FLIP' : sg.kind === 'merged' ? 'MRG' : sg.kind === 'retest' ? 'RT' : 'IN'}</text>`; }
       if (sg.kind === 'retest' && sg.armedAt) { const ia = at(sg.armedAt); if (ia != null && sg.level >= lo && sg.level <= hi) { const xa2 = X(ia), yl = Y(sg.level);
         g += `<line x1="${xa2}" x2="${xa}" y1="${yl}" y2="${yl}" stroke="var(--coach,#5b5bd6)" stroke-width="1.5" stroke-dasharray="3 3"><title>Waiting for the retest of the ${esc(sg.levelName || 'level')} ${sg.level}</title></line>
           <text x="${xa2}" y="${yl - 6}" font-size="${fs - 2}" font-weight="700" fill="var(--coach,#5b5bd6)" paint-order="stroke" stroke="var(--surface)" stroke-width="3">⚑ ${money(sg.armPremium || 0, false)} calls${sg.armX ? ` · ${sg.armX}× usual` : ''}</text>`; } }
@@ -1580,7 +1580,7 @@ function fcSvg0(d, id, opts) {
     const vals = bars.map(get).filter(Boolean).map(x => Math.abs(x.m)), mx = Math.max(1e-9, ...vals);
     const Z = (ST + 14 + SB) / 2, MY = v => Z - v / mx * ((SB - ST - 14) / 2), cw = Math.max(1, (W - L - Rr) / n), hw = Math.max(1, cw * 0.7);
     g += `<line x1="${L}" x2="${W - Rr}" y1="${SB}" y2="${SB}" stroke="var(--line)"/><line x1="${L}" x2="${W - Rr}" y1="${Z}" y2="${Z}" stroke="var(--line)"/>`
-      + `<text x="${L + 2}" y="${ST + 10}" font-size="${fs}" fill="var(--muted)">Squeeze ${daily ? 'daily' : '1h'} momentum · dots: red = squeeze on, green = off${daily ? '' : ' · top strip: daily squeeze'}</text>`;
+      + `<text x="${L + 2}" y="${ST + 10}" font-size="${fs}" fill="var(--muted)">Squeeze ${daily ? 'daily' : d.dt ? (d.interval || 1) + 'm' : '1h'} momentum · dots: red = squeeze on, green = off${daily || d.dt ? '' : ' · top strip: daily squeeze'}</text>`;
     bars.forEach((b, i) => { const x = get(b); if (!x) return;
       const col = x.m >= 0 ? (x.u ? '#06b6d4' : '#1d4ed8') : (x.u ? '#eab308' : '#dc2626'), y = MY(x.m);
       g += `<rect x="${X(i) - hw / 2}" y="${Math.min(y, Z)}" width="${hw}" height="${Math.max(1, Math.abs(y - Z))}" fill="${col}"><title>${esc(b.t.replace('T', ' ').slice(5))} · squeeze ${x.on ? 'ON' : 'off'}${x.f ? ' · fired' : ''} · momentum ${x.m} ${x.u ? 'rising' : 'falling'}</title></rect>`
@@ -1610,7 +1610,7 @@ async function loadTickers() {
   S.tkBusy = false;
   if (route() === 'botchart') render();
 }
-S.fcfMode = 'ww';                         // the Chart tab shows the wall watch list only
+try { S.fcfMode = localStorage.getItem('fcfMode') === 'dt' ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
 function wwReviewBox() {
   const r = S.wwRev;
@@ -1663,7 +1663,7 @@ async function loadWwChart(sym) {
   try { S.fc[k] = await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`); } catch (e) { S.fc[k] = { error: e.message }; }
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
-const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
@@ -1700,7 +1700,7 @@ function vChartWW() {
       ${sel}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
       <span class="seg" role="group" aria-label="Candles"><button class="btn ${!S.chartDaily ? 'coachbtn' : ''}" data-chartdaily="0" style="padding:3px 10px" title="Hourly candles">1h</button><button class="btn ${S.chartDaily ? 'coachbtn' : ''}" data-chartdaily="1" style="padding:3px 10px" title="Daily candles (same signals and levels)">1D</button></span>
       <span class="seg" role="group" aria-label="Days on the chart">${[45, 90, 180].map(n => `<button class="btn ${(S.wwDays || 45) === n ? 'coachbtn' : ''}" data-wwdays="${n}" title="${n} trading days${n > 45 ? ' (signals older than 45 days are replayed with your current settings)' : ''}" style="padding:3px 9px">${n}d</button>`).join('')}</span>
-      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}<button class="btn ${S.hideSettings ? 'coachbtn' : ''}" data-hidesettings title="Hide / show the indicators and the entry / exit rules" style="padding:3px 10px">${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideStats ? 'coachbtn' : ''}" data-hidestats title="Hide / show the stats under the chart" style="padding:3px 10px">${S.hideStats ? 'Show stats' : 'Hide stats'}</button><button class="btn ${labOn ? 'coachbtn' : ''}" data-chartlab title="${labOn ? 'Back to the live strategy' : 'Try other settings on this chart without touching the live bot'}" style="padding:3px 10px">${labOn ? '✓ Strategy lab' : 'Strategy lab'}</button>
+      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}<button class="btn ${S.hideSettings ? 'coachbtn' : ''}" data-hidesettings title="Hide / show the indicators and the entry / exit rules" style="padding:3px 10px">${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideStats ? 'coachbtn' : ''}" data-hidestats title="Hide / show the stats under the chart" style="padding:3px 10px">${S.hideStats ? 'Show stats' : 'Hide stats'}</button><button class="btn ${labOn ? 'coachbtn' : ''}" data-chartlab title="${labOn ? 'Back to the live strategy' : 'Try other settings on this chart without touching the live bot'}" style="padding:3px 10px">${labOn ? '✓ Strategy lab' : 'Strategy lab'}</button><button class="btn" data-fcfmode="dt" title="1-minute day trading on QQQ / SPY (second Alpaca paper account)">Day trading</button>
       ${S.ww && !S.hideSettings ? (labOn ? labPanel() : wwParams(true)) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
@@ -1760,7 +1760,148 @@ function fcfSymbol() {
   const t = (hashParam('t') || '').toUpperCase();
   return items.find(x => x.symbol === t) ? t : (items[0] && items[0].symbol) || t;
 }
+/* ---------- day trading: 1-minute strategy on a second Alpaca paper account ---------- */
+const DT_IND = [
+  ['vwap', 'Session VWAP', 'vwap', [], 'Volume-weighted average price from 09:30', ['aboveVwap', 'vwapCross', 'vwapExit']],
+  ['ema', 'EMA fast / slow', 'ema', [['emaLen', 'fast', 1, 3.2, '', 9], ['ema2Len', 'slow', 1, 3.2, '', 21]], 'Exponential averages of the 1-minute closes', ['aboveEma', 'emaStack', 'emaExit']],
+  ['kc', 'Keltner', 'kch', [['kcLen', 'EMA', 1, 3.2, '', 20], ['kcMult', '±', 0.1, 3, '× ATR', 2]], 'Keltner channel on 1-minute candles', ['kcNotExt', 'kcLower']],
+  ['sq', 'Squeeze (TTM)', 'sqz', [['sqLen', 'length', 1, 3.2, '', 20], ['sqBB', 'BB', 0.1, 3, '× SD', 2], ['sqKC', 'KC', 0.1, 3, '× ATR', 1.5], ['sqFireN', 'fired within', 1, 3, 'candles', 3]], 'Momentum pane under the chart', ['sqOn', 'sqFire', 'sqMom', 'sqExit']],
+  ['in', 'Inertia', 'inertia', [['inN1', 'lengths', 1, 3.2, '', 70], ['inN2', '', 1, 3.2, '', 40], ['inN3', '', 1, 3.2, 'candles', 20]], 'Linear regression of the closes, 3 lengths (strip under the candles)', ['inGreen', 'inNotRed', 'inExit']],
+  ['fvg', 'Fair value gaps', null, [['fvgMin', 'min size', 0.05, 3.2, '× ATR', 0.3], ['fvgNear', 'margin', 0.05, 3.2, '× ATR', 0.25], ['fvgDays', 'max age', 1, 3, 'days', 1]], '3-candle gaps on 1-minute candles', ['fvgTouch', 'fvgExit']],
+  ['orb', 'Opening range', null, [['orbMin', 'first', 1, 3, 'minutes', 15]], 'High / low of the first minutes (values under the chart)', ['orbBreak']],
+  ['pm', 'Pre-market high / low', null, [], '04:00-09:30 (values under the chart)', ['pmBreak']],
+  ['walls', 'Gamma walls', 'walls', [['zoneAtr', 'test zone', 0.1, 3.2, '× ATR', 1]], 'Put wall, flip, call wall of the day', ['pwTouch', 'aboveFlip']],
+];
+const DT_RULES = [
+  ['aboveVwap', 'Entry', 'Above VWAP', 'Close above the session VWAP (short: below)'],
+  ['vwapCross', 'Entry', 'VWAP cross', 'This candle crosses the VWAP (up for a long, down for a short)'],
+  ['aboveEma', 'Entry', 'Above fast EMA', 'Close above the fast EMA (short: below)'],
+  ['emaStack', 'Entry', 'Fast EMA > slow', 'Fast EMA above the slow EMA (short: under)'],
+  ['greenBar', 'Entry', 'Green candle', 'The entry candle closes green (short: red)'],
+  ['kcNotExt', 'Entry', 'Inside the KC', 'Not past the outer Keltner band in the trade direction'],
+  ['kcLower', 'Entry', 'KC pullback half', 'Close at or under the middle of the Keltner (short: at or above)'],
+  ['sqOn', 'Entry', 'Squeeze on', 'Bollinger bands inside the Keltner channel'],
+  ['sqFire', 'Entry', 'Squeeze fired', 'The squeeze turned off within the last N candles, momentum in the trade direction'],
+  ['sqMom', 'Entry', 'Squeeze momentum', 'Momentum above 0 and rising (short: below 0 and falling)'],
+  ['inGreen', 'Entry', 'Inertia with the trade', 'All 3 inertias rising (short: all falling)'],
+  ['inNotRed', 'Entry', 'Inertia not against', 'Not all 3 inertias against the trade'],
+  ['fvgTouch', 'Entry', 'In an FVG', 'Trades into an open bullish gap and closes above its bottom (short: bearish gap)'],
+  ['orbBreak', 'Entry', 'Opening range break', 'Crosses the opening range high (short: low)'],
+  ['pmBreak', 'Entry', 'Pre-market break', 'Crosses the pre-market high (short: low)'],
+  ['pwTouch', 'Entry', 'Wall test', 'Low tests the put wall and closes above (short: high tests the call wall, closes under)'],
+  ['aboveFlip', 'Entry', 'Above the flip', 'Close above the gamma flip (short: below)'],
+  ['stopOn', 'Exit', 'Stop', 'Entry − this × the 1-minute ATR (short: +)', ['stopAtr', 0.1, 3.4, 'ATR', 1.5]],
+  ['targetOn', 'Exit', 'Target', 'Entry + this × the risk', ['targetR', 0.25, 3.4, 'R', 2]],
+  ['trailOn', 'Exit', 'Trailing stop', 'Best price − this × ATR, never back', ['trailAtr', 0.25, 3.4, 'ATR', 2]],
+  ['vwapExit', 'Exit', 'Back through VWAP', 'A close back under the VWAP (short: above)'],
+  ['emaExit', 'Exit', 'Back through fast EMA', 'A close back under the fast EMA (short: above)'],
+  ['sqExit', 'Exit', 'Squeeze momentum turns', 'Momentum stops rising (short: stops falling)'],
+  ['inExit', 'Exit', 'Inertia turns', 'Inertia no longer all with the trade'],
+  ['fvgExit', 'Exit', 'FVG against', 'A new gap against the trade'],
+];
+try { S.dtTf = +(localStorage.getItem('dtTf') || 1) || 1; S.dtDays = +(localStorage.getItem('dtDays') || 3) || 3; } catch (e) { S.dtTf = 1; S.dtDays = 3; }
+async function loadDT() { try { S.dt = await api('/daytrade'); } catch (e) { S.dt = { error: e.message }; } if (route() === 'botchart') render(); }
+async function loadDTChart(sym) {
+  const k = `dt|${sym}|${S.dtTf}|${S.dtDays}`; S.dtBusy = k; if (route() === 'botchart') render();
+  try { S.dtFc = { k, d: await api('/daytrade/chart', { method: 'POST', body: { t: sym, days: S.dtDays, tf: S.dtTf } }) }; } catch (e) { S.dtFc = { k, d: { error: e.message } }; }
+  S.dtBusy = null; if (route() === 'botchart') render();
+}
+function dtCfg() { return { ...((S.dt && S.dt.config) || {}), ...(S.dtDraft || {}) }; }
+function dtPanel() {
+  const c = dtCfg(), num = (k, step, w, def) => `<input data-dtnum="${k}" type="number" step="${step}" value="${c[k] ?? def}" style="width:${w}em;padding:1px 4px">`;
+  const lbl = Object.fromEntries(DT_RULES.map(r => [r[0], r[2]]));
+  const rows = DT_IND.map(([k, name, layer, ps, tip, uses]) => { const used = uses.filter(u => c[u]);
+    const eye = layer ? `<button class="btn ${S.fcLayers[layer] ? 'coachbtn' : ''}" data-fclayer="${layer}" style="font-size:.72rem;padding:0 7px">${S.fcLayers[layer] ? 'shown' : 'hidden'}</button>` : '<span class="muted" style="font-size:.72rem">—</span>';
+    return `<tr style="${used.length ? '' : 'opacity:.6'}"><td style="padding:2px 6px">${eye}</td><td style="padding:2px 6px" title="${esc(tip)}"><b style="font-size:.82rem">${esc(name)}</b></td>
+      <td style="white-space:nowrap;padding:2px 6px">${ps.map(([pk, pl, st, w, suf, def]) => `<span class="muted" style="font-size:.78rem">${esc(pl)}</span> ${num(pk, st, w, def)}<span class="muted" style="font-size:.75rem">${esc(suf)}</span>`).join(' &nbsp;') || '<span class="muted" style="font-size:.75rem">no setting</span>'}</td>
+      <td style="font-size:.78rem;padding:2px 6px">${used.length ? `<span class="gain">used by</span> ${used.map(u => esc(lbl[u] || u)).join(', ')}` : '<span class="muted">not used</span>'}</td></tr>`; }).join('');
+  const chip = ([k, , l, tip, f]) => { const on = !!c[k];
+    return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${on ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${on ? '' : 'opacity:.55'}">
+      <button class="btn" data-dtsw="${k}" title="${esc(tip)}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button><span style="font-size:.8rem">${l}</span>${f ? ` ${num(f[0], f[1], f[2], f[4])}<span class="muted" style="font-size:.75rem">${f[3]}</span>` : ''}</span>`; };
+  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${DT_RULES.filter(r => r[1] === g).map(chip).join('')}</div>`;
+  const tog = (k, l) => `<button class="btn ${c[k] ? 'coachbtn' : ''}" data-dtsw="${k}" style="font-size:.78rem;padding:1px 10px">${l}</button>`;
+  const tm = (k, l) => `<span class="muted" style="font-size:.78rem">${l}</span> <input data-dttime="${k}" value="${esc(c[k] || '')}" style="width:4.2em;padding:1px 4px">`;
+  return `<div style="display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">Trades</b>${tog('longs', 'Longs')}${tog('shorts', 'Shorts')}
+      ${tm('startT', 'entries from')} ${tm('endT', 'to')} ${tm('flatT', 'flat at')}
+      <span class="muted" style="font-size:.78rem">max/day</span> ${num('maxTrades', 1, 3, 3)} <span class="muted" style="font-size:.78rem">shares</span> ${num('qty', 1, 4.5, 10)}
+      <span class="muted" style="font-size:.78rem" title="If set, shares = this $ ÷ (entry − stop), capped by max shares">or risk $</span> ${num('riskUsd', 10, 4.5, 0)} <span class="muted" style="font-size:.78rem">max shares</span> ${num('maxQty', 1, 4.5, 500)}
+      <span class="muted" style="font-size:.78rem">tickers</span> <input data-dttk value="${esc((c.tickers || ['QQQ', 'SPY']).join(' '))}" style="width:8em;padding:1px 4px"></div>
+    <details open style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Indicators</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin:4px 0"><tbody>${rows}</tbody></table></div></details>
+    <div style="display:flex;flex-direction:column;gap:6px">${grp('Entry')}${grp('Exit')}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn ${S.dtDirty ? 'coachbtn' : ''}" data-dtapply style="font-size:.8rem;padding:1px 12px">${S.dtDirty ? 'Apply changes' : 'Apply'}</button>
+      <span class="muted" style="font-size:.75rem">Every rule that is ON must pass on the 1-minute entry candle (shorts: the mirror). Nothing changes until you click Apply. Settings apply to the backtest and to the live day-trading account.</span></div></div>`;
+}
+function dtAccountBox() {
+  const a = (S.dt && S.dt.account) || {}, c = dtCfg();
+  if (!a.connected) return `<div style="border:1px dashed var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:.85rem"><b>Day-trading account</b> — connect a SECOND Alpaca paper account (its own API key / secret), kept apart from the options bot.
+    <form id="dt-acct" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"><input id="dt-key" placeholder="API key" style="width:14em" autocomplete="off"><input id="dt-secret" placeholder="Secret" type="password" style="width:18em" autocomplete="off"><button class="btn coachbtn" type="submit">Connect</button></form></div>`;
+  const pos = a.positions || [];
+  return `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:.85rem;margin:4px 0">
+    <b>Day account</b> <span class="muted">paper ··${esc(a.keyHint || '')}${a.equity ? ` · equity ${money(+a.equity)} · buying power ${money(+a.buyingPower)}` : ''}${a.error ? ` · <span class="loss">${esc(a.error)}</span>` : ''}</span>
+    <label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-dtlive="enabled" ${c.enabled ? 'checked' : ''}>run every minute</label>
+    <label style="display:inline-flex;gap:4px;align-items:center" title="Place the orders on the day account (off: only follow the signals)"><input type="checkbox" data-dtlive="trade" ${c.trade ? 'checked' : ''}>place orders</label>
+    <button class="btn" data-dtdisconnect style="font-size:.75rem;padding:0 8px">Disconnect</button>
+    ${pos.length ? `<span>Positions: ${pos.map(p0 => `<b>${esc(p0.symbol)}</b> ${esc(p0.side)} ${esc(p0.qty)} @ ${(+p0.entry).toFixed(2)} <span class="${+p0.pl >= 0 ? 'gain' : 'loss'}">${+p0.pl >= 0 ? '+' : ''}${money(+p0.pl)}</span>`).join(' · ')}</span>` : '<span class="muted">no position</span>'}</div>`;
+}
+function dtBtBox() {
+  const t = S.dtBt;
+  const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const head = `<div style="display:flex;gap:6px;align-items:center;margin-top:10px"><b style="font-size:.95rem">Backtest</b> <select id="dt-btdays" style="padding:1px 4px">${[5, 10, 20, 40, 60].map(n => `<option ${n === (S.dtBtDays || 20) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select>
+    <button class="btn coachbtn" data-dtbt ${S.dtBtBusy ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${S.dtBtBusy ? 'Running…' : 'Run on all day tickers'}</button><span class="muted" style="font-size:.78rem">1-minute candles (Alpaca), the settings above${S.dtDirty ? ' (pending changes included)' : ''}</span></div>`;
+  if (!t) return head;
+  if (t.error) return head + `<div class="errbox">${esc(t.error)}</div>`;
+  const a = t.all || {};
+  const row = (l, x) => `<tr><td>${l}</td><td class="r">${x.n || 0}</td><td class="r">${x.win ?? '—'}%</td><td class="r">${R(x.avgR)}</td><td class="r">${R(x.totR)}</td><td class="r">${x.pf ?? '—'}</td><td class="r">${x.longs ?? 0} / ${x.shorts ?? 0}</td></tr>`;
+  const days = Object.entries(t.byDay || {});
+  return head + `<div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">Long / short</th></tr></thead><tbody>
+    ${row('<b>All</b>', a)}${Object.entries(t.byTicker || {}).map(([k, x]) => row(esc(k), x)).join('')}</tbody></table></div>
+    <p class="muted" style="font-size:.8rem;margin:4px 0">Exits: ${Object.entries(a.exits || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')} · green days ${days.filter(([, v]) => v > 0).length} / ${days.length}</p>
+    ${days.length ? `<div style="display:flex;flex-wrap:wrap;gap:3px">${days.map(([d0, v]) => `<span class="exchip" style="font-size:.72rem;${v > 0 ? 'color:var(--gain)' : v < 0 ? 'color:var(--loss)' : ''}">${esc(d0.slice(5))} ${v > 0 ? '+' : ''}${v}R</span>`).join('')}</div>` : ''}
+    ${(t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+}
+function vChartDT() {
+  if (S.dt === undefined) { S.dt = null; setTimeout(loadDT, 0); }
+  const cfg = dtCfg(), tickers = cfg.tickers || ['QQQ', 'SPY'], t0 = (hashParam('t') || '').toUpperCase();
+  const sym = tickers.includes(t0) ? t0 : tickers[0];
+  const k = `dt|${sym}|${S.dtTf}|${S.dtDays}`, d = S.dtFc && S.dtFc.k === k ? S.dtFc.d : null;
+  if (!d && S.dtBusy !== k) setTimeout(() => loadDTChart(sym), 0);
+  const narrow = window.innerWidth < 800, headH = S.fcfHeadH || 58;
+  const W = Math.max(320, window.innerWidth - 20), H = Math.max(420, window.innerHeight - headH - 90);   // settings / backtest below: scroll
+  const id = 'dt-' + sym + '-' + S.dtTf;
+  const sigs = (d && d.signals) || [], st = (d && d.stats) || {};
+  const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const zb = (q, l) => `<button class="btn" data-fczoom="${id}|${q}" style="padding:3px 10px">${l}</button>`;
+  const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym)}</b> ${fcModeSeg()}
+    <span class="seg">${tickers.map(x => `<a class="btn ${x === sym ? 'coachbtn' : ''}" href="#botchart?t=${encodeURIComponent(x)}" style="padding:3px 10px">${esc(x)}</a>`).join('')}</span>
+    <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
+    <span class="seg">${[1, 3, 5, 10].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
+    ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
+    <span class="seg">${[['sig', 'Signals'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <button class="btn" data-dtreload style="padding:3px 10px" title="Reload the candles">↻</button>
+    <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button></div>`;
+  let main;
+  if (!d) main = '<p class="loading">Loading 1-minute candles…</p>';
+  else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
+  else {
+    const dd = { ...d, ema: (S.fcLayers.ema ? d.ema : []) };
+    main = fcSvg(dd, id, { W, H: Math.max(380, H - 40), noAcc: true });
+    const f2 = v => v == null ? '—' : (+v).toFixed(2), lv = Object.entries(d.pm || {}).map(([dy, x]) => `${dy.slice(5)} pre-market ${f2(x.h)} / ${f2(x.l)}`).concat(Object.entries(d.orbLv || {}).map(([dy, x]) => `${dy.slice(5)} opening range ${f2(x.h)} / ${f2(x.l)}`));
+    main += `<div class="fcf-info" style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.84rem">
+      <span><b>This view</b> ${sigs.length} trade${sigs.length === 1 ? '' : 's'} · win ${st.win ?? 0}% · avg ${R(st.avgR)} · total ${R(st.totR)} · PF ${st.pf ?? '—'} · ${Object.entries(st.exits || {}).map(([a, b]) => `${esc(a)} ${b}`).join(' · ')}</span>
+      <span class="muted">${esc(lv.slice(-4).join(' · '))}</span>
+      <span>${sigs.slice(-40).map(x => `<span class="exchip" style="font-size:.72rem">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.side < 0 ? 'S' : 'L'} ${x.status === 'open' ? 'open' : R(x.R)}</span>`).join(' ')}</span></div>`;
+  }
+  const live = (S.dt && S.dt.trades) || [];
+  const info = `${dtAccountBox()}
+    ${live.length ? `<details style="margin:4px 0"><summary style="font-size:.85rem;cursor:pointer">Live day trades (${live.length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Ticker</th><th>Entry</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th><th>Exit</th></tr></thead><tbody>
+      ${live.slice().reverse().map(r0 => `<tr><td>${esc(r0.symbol)}</td><td>${esc((r0.at || '').replace('T', ' ').slice(5))}</td><td>${esc(r0.dir || '')}</td><td class="r">${r0.qty ?? ''}</td><td class="r">${r0.entry ?? ''}</td><td>${esc(r0.status || '')}</td><td>${esc(r0.exitReason || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+    ${S.hideSettings ? '' : dtPanel()}${dtBtBox()}`;
+  return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${main}${info}</div></div></div>`;
+}
+function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {
+  if (S.fcfMode === 'dt') return vChartDT();
   if (S.fcfMode === 'ww') return vChartWW();
   const L = S.tickers, items = (L && L.items) || [], sym = fcfSymbol(), cur0 = items.find(x => x.symbol === sym), evId = hashParam('id');
   const cur = cur0 && evId ? { ...cur0, id: evId } : cur0;      // a specific evaluation (backtest replay) or the latest one
@@ -3538,7 +3679,7 @@ function render() {
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -3617,6 +3758,22 @@ document.addEventListener('click', e => {
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }
   if (el.dataset.wltoggle) { S.wlClosed = { ...(S.wlClosed || {}), [el.dataset.wltoggle]: !(S.wlClosed || {})[el.dataset.wltoggle] }; try { localStorage.setItem('wlClosed', JSON.stringify(S.wlClosed)); } catch (x) {} render(); return; }
+  if (el.dataset.dtsw) { const k = el.dataset.dtsw; S.dtDraft = { ...(S.dtDraft || {}), [k]: !dtCfg()[k] }; S.dtDirty = true; render(); return; }
+  if (el.hasAttribute('data-dtapply')) {
+    const body = { ...(S.dtDraft || {}) };
+    document.querySelectorAll('[data-dtnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.dtnum] = v; });
+    document.querySelectorAll('[data-dttime]').forEach(i => { body[i.dataset.dttime] = i.value; });
+    const tk = document.querySelector('[data-dttk]'); if (tk) body.tickers = tk.value;
+    S.dtDraft = {}; S.dtDirty = false; dtPut(body, 'Day-trading settings saved'); return; }
+  if (el.dataset.dttf) { S.dtTf = +el.dataset.dttf; try { localStorage.setItem('dtTf', S.dtTf); } catch (x) {} render(); return; }
+  if (el.dataset.dtdays) { S.dtDays = +el.dataset.dtdays; try { localStorage.setItem('dtDays', S.dtDays); } catch (x) {} render(); return; }
+  if (el.hasAttribute('data-dtreload')) { S.dtFc = null; render(); return; }
+  if (el.hasAttribute('data-dtdisconnect')) { if (!confirm('Disconnect the day-trading account?')) return; api('/daytrade/account', { method: 'DELETE' }).then(r => { S.dt = r; render(); }).catch(err => toast(err.message)); return; }
+  if (el.hasAttribute('data-dtbt')) {
+    const days = +((document.getElementById('dt-btdays') || {}).value || 20); S.dtBtDays = days; S.dtBtBusy = true; render();
+    const cfg = { ...(S.dtDraft || {}) }; document.querySelectorAll('[data-dtnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) cfg[i.dataset.dtnum] = v; });
+    api('/daytrade/backtest', { method: 'POST', body: { days, cfg } }).then(r => { S.dtBt = r; }).catch(err => { S.dtBt = { error: err.message }; }).finally(() => { S.dtBtBusy = false; render(); });
+    return; }
   if (el.hasAttribute('data-wwreview')) { wwReview(); return; }
   if (el.hasAttribute('data-wwrevhide')) { S.wwRev = null; render(); return; }
   if (el.hasAttribute('data-wwrevcloseall')) {
@@ -3849,6 +4006,19 @@ document.addEventListener('input', e => {
     S.evQ = v; await loadEvals(1);
     const i = $('#ev-q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
   }, 350);
+});
+document.addEventListener('submit', e => {
+  if (e.target.id !== 'dt-acct') return;
+  e.preventDefault();
+  const key = (($('#dt-key') || {}).value || '').trim(), secret = (($('#dt-secret') || {}).value || '').trim();
+  api('/daytrade/account', { method: 'PUT', body: { key, secret } }).then(r => { S.dt = r; toast('Day-trading account connected'); render(); }).catch(err => toast(err.message));
+});
+document.addEventListener('change', e => {
+  const k = e.target.dataset && e.target.dataset.dtlive; if (!k) return;
+  dtPut({ [k]: e.target.checked }, k === 'enabled' ? (e.target.checked ? 'Day trading runs every minute' : 'Day trading stopped') : (e.target.checked ? 'Orders ON (paper day account)' : 'Orders OFF'));
+});
+document.addEventListener('input', e => {
+  if (e.target.matches && e.target.matches('[data-dtnum],[data-dttime],[data-dttk]')) { S.dtDirty = true; const b = document.querySelector('[data-dtapply]'); if (b) { b.classList.add('coachbtn'); b.textContent = 'Apply changes'; } }
 });
 document.addEventListener('submit', e => {
   if (e.target.id !== 'ww-addf') return;
