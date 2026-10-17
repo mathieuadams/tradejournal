@@ -954,7 +954,8 @@ def compare(sub, days=60, variants=None, opt=None, budget_s=540):
         if ob:
             import dtoptions
             o = dtoptions.summary([r["optPct"] for r in rr[i] if r.get("optPct") is not None])
-        out.append({"name": v["name"], "all": ds.get("all"), "h1": ds.get("h1"), "h2": ds.get("h2"), "maxDD": ds.get("maxDD"),
+        import dtsearch
+        out.append({"name": v["name"], "t": dtsearch.tstat([r["R"] for r in rr[i] if r.get("R") is not None]), "all": ds.get("all"), "h1": ds.get("h1"), "h2": ds.get("h2"), "maxDD": ds.get("maxDD"),
                     "maxLosing": ds.get("maxLosing"), "greenDays": ds.get("greenDays"), "daysTraded": ds.get("daysTraded"),
                     "dailySharpe": ds.get("dailySharpe"), "avgDayR": ds.get("avgDayR"), "curve": (ds.get("curve") or [])[-200:],
                     "byTicker": per[i], "byDir": ds.get("byDir"), "opt": o,

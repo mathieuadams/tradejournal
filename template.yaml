@@ -386,7 +386,7 @@ Resources:
     Properties:
       Handler: autotrader.handler
       Timeout: 600
-      MemorySize: 1024
+      MemorySize: 2048                             # more CPU for the backtests and the settings search
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - Statement:                                   # the rule tester's history loader continues in a new run of itself

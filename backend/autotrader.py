@@ -1929,6 +1929,14 @@ def handler(event, context_):
             elif job == "dtbt":
                 import daytrade
                 out[sub] = {"n": (daytrade.backtest_job(sub, event.get("params") or {}).get("all") or {}).get("n")}
+            elif job == "dtsearch":
+                import dtsearch
+                try:
+                    out[sub] = {"tested": dtsearch.run(sub, event.get("params") or {}).get("tested")}
+                except Exception as e:
+                    db.put({**(db.get(db.upk(sub), dtsearch.SK) or {}), "PK": db.upk(sub), "SK": dtsearch.SK, "running": None,
+                            "errors": [str(e)[:160]], "at": iso(now_ny())})
+                    raise
             elif job == "dtcmp":
                 import daytrade
                 out[sub] = {"n": len(daytrade.compare_job(sub, event.get("params") or {}).get("variants") or [])}

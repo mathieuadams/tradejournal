@@ -514,6 +514,23 @@ def daytrade_compare_get(sub, claims, body, q):
     return daytrade.compare_result(sub)
 
 
+@route("POST", "/daytrade/search")
+def daytrade_search(sub, claims, body, q):
+    import dtsearch
+    b = body or {}
+    db.put({"PK": db.upk(sub), "SK": dtsearch.SK, **dtsearch.result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtsearch", "params": {"days": b.get("days") or 250, "rounds": b.get("rounds") or 3,
+                                                                                  "cfg": b.get("cfg") if isinstance(b.get("cfg"), dict) else None}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/search")
+def daytrade_search_get(sub, claims, body, q):
+    import dtsearch
+    return dtsearch.result(sub)
+
+
 @route("POST", "/daytrade/study")
 def daytrade_study(sub, claims, body, q):
     import daystudy

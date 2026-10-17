@@ -3521,6 +3521,38 @@ def test_daytrade_compare_presets_options():
         optiontest.bars, daytrade.data_creds = o_b, o_c
 
 
+def test_daytrade_auto_search():
+    """Automatic search: candles loaded once, every single change scored on the 1st half only (t-stat), the best kept
+    only when clearly better, the 2nd half reported (never used to choose)."""
+    import daytrade
+    import dtsearch
+    assert dtsearch.tstat([1, 1, 1]) is None and dtsearch.tstat([1, -1, 1, -1]) == 0 and dtsearch.tstat([2, 1, 2, 1]) > 2
+    bars = _dt_bars(10)
+    calls = []
+    saved = (daytrade.minute_bars, daytrade.walls_by_day, daytrade.vix_map)
+    try:
+        daytrade.minute_bars = lambda s, sym, days, now=None, feed=None: calls.append(sym) or bars
+        daytrade.walls_by_day = lambda *a, **k: {}
+        daytrade.vix_map = lambda: {}
+        sub = "srch-user"
+        daytrade.save_config(sub, {"tickers": "QQQ", "aboveVwap": True, "emaStack": True, "greenBar": True})
+        old_min = dtsearch.MIN_N
+        dtsearch.MIN_N = 5
+        r = dtsearch.run(sub, {"days": 30, "rounds": 2})
+        dtsearch.MIN_N = old_min
+        assert calls.count("QQQ") == 1 and r["daysFound"] == 10 and r["tested"] > 30
+        assert r["verdict"] in ("edge", "weak", "none") and r["table"]
+        t1 = [x["train"]["totR"] for x in r["table"]]
+        assert t1 == sorted(t1, reverse=True)
+        prev = r["start"]["train"]
+        for p in r["path"]:                                    # each kept change beat the previous by more than the noise
+            assert p["train"]["totR"] >= prev["totR"] + dtsearch.need(prev) and p["train"]["t"] >= 1
+            prev = p["train"]
+        assert dtsearch.result(sub)["tested"] == r["tested"]
+    finally:
+        daytrade.minute_bars, daytrade.walls_by_day, daytrade.vix_map = saved
+
+
 def test_nearest_expiration_walls():
     """Walls of the nearest expiration only: SPY tries the same day first, others the coming Friday; flip from the
     running net gamma; daytrade.walls_by_day follows the wallNear setting."""
