@@ -425,7 +425,17 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
     series = lambda key: [{"t": t, "v": r4(I[key][i])} for t, i in pick if I[key][i] is not None]
     walls = [{"t": f"{d}T09:30", "callWall": (W.get(d) or {}).get("callWall"), "putWall": (W.get(d) or {}).get("putWall"),
               "flip": (W.get(d) or {}).get("flip"), "src": "uw" if W.get(d) else "gap"} for d in show]
-    return {"symbol": sym, "bars": out_bars, "interval": tfm, "days": days, "dt": True,
+    import tr3ndy
+    b5 = tr3ndy.agg(allb, 5)
+    lines, lisf, sent = tr3ndy.lis(b5)
+    bser, bform = tr3ndy.bands(out_bars)
+    sqz_h = [{"t": t, "m": I["sq"][i]["mom"]} for t, i in pick if I["sq"][i]]
+    fb = tr3ndy.fibs([b for b in allb if b["t"][:10] in show[-2:]], lines)
+    pz = tr3ndy.pmz(b5, lines)
+    studies = {"bands": bser, "bandsF": bform, "lis": {d: lines[d] for d in show if d in lines},
+               "lisF": [x for x in lisf if x["t"][:10] >= show[0]], "lisSent": sent.get(show[-1]),
+               "pmz": {d: pz[d] for d in show if d in pz}, "fibs": fb, "turns": tr3ndy.turns(sqz_h)}
+    return {"symbol": sym, "bars": out_bars, "interval": tfm, "days": days, "dt": True, **studies,
             "vwap": series("vwap"), "ema": series("ema"), "ema2": series("ema2"), "emaLen": int(P["emaLen"]),
             "kch": [{"t": t, "m": r4(I["kc"][i][0]), "u": r4(I["kc"][i][1]), "l": r4(I["kc"][i][2])} for t, i in pick if I["kc"][i]],
             "inertia": [{"t": t, "s": I["inr"][i]["s"], "pts": 0} for t, i in pick if I["inr"][i]],

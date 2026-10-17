@@ -966,6 +966,7 @@ function vSettings() {
     <p class="muted" style="margin-top:-4px">Connected brokers sync your fills automatically. Each broker account shows up as its own account in the journal, and every page can show one account or all of them together.</p>
     <div class="broker-card"><h3>Charles Schwab</h3>${schwabHtml()}</div>
     <div class="broker-card"><h3>Alpaca</h3><div id="broker">${brokerHtml}</div></div>
+    <div class="broker-card"><h3>Alpaca — day trading account</h3>${dtSettingsBox()}</div>
     <div class="broker-card"><h3>Other brokers</h3><p class="muted" style="margin:0">Interactive Brokers, Tradovate, NinjaTrader, TradeStation, Webull, Robinhood and others: import a CSV of your fills on the <a href="#import">Import</a> page. Direct connections are added one broker at a time.</p></div>
   </section>`;
 }
@@ -1273,12 +1274,12 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark'];
-  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)} · lines from the last ${dp.levelDays || 180} days${dp.missingDays ? ` (loading ${dp.missingDays} more days…)` : ''}`}</span>` : ''}`;
+  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark'];
+  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)} · lines from the last ${dp.levelDays || 180} days${dp.missingDays ? ` (loading ${dp.missingDays} more days…)` : ''}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
@@ -1508,6 +1509,39 @@ function fcSvg0(d, id, opts) {
         g += `<path d="M${x},${y + 14} L${x + 8},${y + 6} L${x},${y - 2} L${x - 8},${y + 6} Z" fill="${c}" stroke="var(--ink)" stroke-width="1.5"><title>SOLD at ${tr.exit ?? '—'} · ${esc(tr.exitReason || '')}</title></path>
           <text x="${x}" y="${y + 28}" text-anchor="middle" font-size="${fs - 2}" font-weight="800" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">SELL @${tr.exit ?? '—'}${tr.plPct != null ? ` ${tr.plPct >= 0 ? '+' : ''}${tr.plPct}%` : ''}</text>`; }
     });
+  }
+  {                                                    // day-trading studies: EMA bands, line in the sand, pre-market zone, fibs, squeeze turns
+    const span = {}; bars.forEach((b, i) => { const dd = b.t.slice(0, 10); if (!span[dd]) span[dd] = [i, i]; else span[dd][1] = i; });
+    const hline = (dd, v, col, wid, dash, lab, op) => { const sp = span[dd]; if (!sp || v == null || v < lo || v > hi) return; const x0 = X(sp[0]) - bw, x1 = X(sp[1]) + bw;
+      g += `<line x1="${x0}" x2="${x1}" y1="${Y(v)}" y2="${Y(v)}" stroke="${col}" stroke-width="${wid}" ${dash ? `stroke-dasharray="${dash}"` : ''} opacity="${op || .8}"><title>${esc(lab)} ${v}</title></line>`
+        + (lab ? `<text x="${x1 - 4}" y="${Y(v) - 3}" text-anchor="end" font-size="${fs - 2}" fill="${col}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${esc(lab)}</text>` : ''); };
+    const arrow = (i, up, y, col, tip) => { const x = X(i), z = Math.max(4, Math.min(7, bw));
+      g += `<path d="${up ? `M${x},${y} L${x - z},${y + z * 1.6} L${x + z},${y + z * 1.6} Z` : `M${x},${y} L${x - z},${y - z * 1.6} L${x + z},${y - z * 1.6} Z`}" fill="${col}" stroke="var(--surface)" stroke-width="1"><title>${esc(tip)}</title></path>`; };
+    if (LY.pmz && d.pmz) Object.entries(d.pmz).forEach(([dd, z]) => { const sp = span[dd]; if (!sp) return; const y0 = Y(Math.min(hi, Math.max(z.up, z.lo))), y1 = Y(Math.max(lo, Math.min(z.up, z.lo)));
+      if (y1 <= y0) return; g += `<rect x="${X(sp[0]) - bw}" y="${y0}" width="${X(sp[1]) - X(sp[0]) + 2 * bw}" height="${y1 - y0}" fill="${z.gap ? '#06b6d4' : '#dc2626'}" opacity=".14"><title>${esc(`Pre-market zone ${dd.slice(5)}: ${z.lo} – ${z.up} (pre-market ${z.l} – ${z.h}, gap ${z.gap ? 'up' : 'down'}) · risk ${(Math.abs(z.up - z.lo)).toFixed(2)}`)}</title></rect>`; });
+    if (LY.fibs && d.fibs) Object.entries(d.fibs).forEach(([dd, lv]) => lv.forEach(([nm, v]) => hline(dd, v, 'var(--muted)', 1, nm === 'high' || nm === 'low' ? '' : '4 3', nm, .7)));
+    if (LY.bands && (d.bands || []).length) {
+      const bi = d.bands.map(x => [idx[x.t], x]).filter(([i]) => i != null);
+      for (let q = 1; q < bi.length; q++) { const [i0, a] = bi[q - 1], [i1, b] = bi[q];
+        g += `<path d="M${X(i0)},${Y(a.sl)} L${X(i1)},${Y(b.sl)} L${X(i1)},${Y(b.tr)} L${X(i0)},${Y(a.tr)} Z" fill="${b.sl >= b.tr ? '#16a34a' : '#dc2626'}" opacity=".1"/>`; }
+      [['sf', '#16a34a', 'EMA 9'], ['sl', '#ca8a04', 'EMA 22'], ['tr', '#a855f7', 'EMA 44']].forEach(([f, col, nm]) => {
+        g += `<path d="${bi.map(([i, x], q) => `${q ? 'L' : 'M'}${X(i).toFixed(1)},${Y(x[f]).toFixed(1)}`).join('')}" fill="none" stroke="${col}" stroke-width="1.3" opacity=".85"><title>${nm}</title></path>`; });
+      (d.bandsF || []).forEach(x => { const i = idx[x.t]; if (i == null) return; const b = bars[i];
+        arrow(i, x.dir > 0, x.dir > 0 ? Y(b.l) + 4 : Y(b.h) - 4, x.dir > 0 ? '#16a34a' : '#dc2626', `${x.dir > 0 ? 'Bullish' : 'Bearish'} candle formation (EMA bands aligned) ${x.t.replace('T', ' ').slice(5)}`); });
+    }
+    if (LY.lis && d.lis) {
+      Object.entries(d.lis).forEach(([dd, v]) => hline(dd, v, '#0891b2', 2, '', 'LIS ' + (+v).toFixed(2), .9));
+      (d.lisF || []).forEach(x => { const i = at(x.t); if (i == null) return; const b = bars[i];
+        arrow(i, x.dir > 0, x.dir > 0 ? Y(b.l) + 14 : Y(b.h) - 14, x.strong ? (x.dir > 0 ? '#16a34a' : '#dc2626') : '#94a3b8', `${x.dir > 0 ? 'Bullish' : 'Bearish'} formation off the LIS (5-min) ${x.t.replace('T', ' ').slice(5)}${x.strong ? ' · EMAs aligned' : ''}`); });
+    }
+    if (LY.turn) {
+      let tu = d.turns;
+      if (!tu && (d.sqzH || d.sqzD)) { const src = d.daily ? (d.sqzD || []) : (d.sqzH || []); tu = [];
+        for (let q = 2; q < src.length; q++) { const a = src[q - 2].m, b = src[q - 1].m, c = src[q].m;
+          if (c > 0 && c < b && a < b) tu.push({ t: src[q].t, dir: -1 }); else if (c < 0 && c > b && a > b) tu.push({ t: src[q].t, dir: 1 }); } }
+      (tu || []).forEach(x => { const i = d.daily ? bars.findIndex(b => b.t.slice(0, 10) === x.t.slice(0, 10)) : idx[x.t] ?? at(x.t); if (i == null || i < 0) return; const b = bars[i];
+        arrow(i, x.dir > 0, x.dir > 0 ? Y(b.l) + 26 : Y(b.h) - 26, x.dir > 0 ? '#eab308' : '#06b6d4', `Squeeze turn ${x.dir > 0 ? 'up' : 'down'} ${x.t.replace('T', ' ').slice(5)}`); });
+    }
   }
   if (LY.sig !== false && (d.misses || []).length) {    // candles at the support that didn't enter: why
     const byBar = {};
@@ -1771,6 +1805,11 @@ const DT_IND = [
   ['orb', 'Opening range', null, [['orbMin', 'first', 1, 3, 'minutes', 15]], 'High / low of the first minutes (values under the chart)', ['orbBreak']],
   ['pm', 'Pre-market high / low', null, [], '04:00-09:30 (values under the chart)', ['pmBreak']],
   ['walls', 'Gamma walls', 'walls', [['zoneAtr', 'test zone', 0.1, 3.2, '× ATR', 1]], 'Put wall, flip, call wall of the day', ['pwTouch', 'aboveFlip']],
+  ['bands', 'EMA bands 9 / 22 / 44', 'bands', [], 'EMA 9 / 22 / 44 with the 22-44 cloud; arrows = candle formations when 9 > 13 > 22 (or the reverse)', []],
+  ['lis', 'LIS (line in the sand)', 'lis', [], 'Previous regular-session close; arrows = 5-minute formations off it (colored when the EMAs agree)', []],
+  ['pmz', 'Pre-market zone', 'pmz', [], '07:25-09:30 range: 20-40% under the high on a gap up, above the low on a gap down', []],
+  ['fibs', 'Auto fibs', 'fibs', [], 'Day high / low (with the previous close): 127.2%, 38.2%, 50%, 61.8%, -27.2% (last 2 days)', []],
+  ['turn', 'Squeeze turns', 'turn', [], 'Momentum peaks above 0 (turn down) / bottoms below 0 (turn up)', []],
 ];
 const DT_RULES = [
   ['aboveVwap', 'Entry', 'Above VWAP', 'Close above the session VWAP (short: below)'],
@@ -1800,7 +1839,13 @@ const DT_RULES = [
   ['fvgExit', 'Exit', 'FVG against', 'A new gap against the trade'],
 ];
 try { S.dtTf = +(localStorage.getItem('dtTf') || 1) || 1; S.dtDays = +(localStorage.getItem('dtDays') || 3) || 3; } catch (e) { S.dtTf = 1; S.dtDays = 3; }
-async function loadDT() { try { S.dt = await api('/daytrade'); } catch (e) { S.dt = { error: e.message }; } if (route() === 'botchart') render(); }
+async function loadDT() { try { S.dt = await api('/daytrade'); } catch (e) { S.dt = { error: e.message }; } if (['botchart', 'settings'].includes(route())) render(); }
+function dtSettingsBox() {                       // Settings → Brokers: the second Alpaca paper account for the 1-minute day trading
+  if (S.dt === undefined) { S.dt = null; setTimeout(loadDT, 0); }
+  if (!S.dt) return '<p class="loading" style="padding:0">Loading…</p>';
+  if (S.dt.error) return `<div class="errbox">${esc(S.dt.error)}</div>`;
+  return `<p class="muted" style="margin:0 0 6px;font-size:.85rem">A SECOND Alpaca <b>paper</b> account (its own API key / secret), kept apart from the options bot. The day-trading strategy (Chart → Day trading) trades QQQ / SPY on it every minute.</p>${dtAccountBox(true)}`;
+}
 async function loadDTChart(sym) {
   const k = `dt|${sym}|${S.dtTf}|${S.dtDays}`; S.dtBusy = k; if (route() === 'botchart') render();
   try { S.dtFc = { k, d: await api('/daytrade/chart', { method: 'POST', body: { t: sym, days: S.dtDays, tf: S.dtTf } }) }; } catch (e) { S.dtFc = { k, d: { error: e.message } }; }
@@ -1832,8 +1877,9 @@ function dtPanel() {
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn ${S.dtDirty ? 'coachbtn' : ''}" data-dtapply style="font-size:.8rem;padding:1px 12px">${S.dtDirty ? 'Apply changes' : 'Apply'}</button>
       <span class="muted" style="font-size:.75rem">Every rule that is ON must pass on the 1-minute entry candle (shorts: the mirror). Nothing changes until you click Apply. Settings apply to the backtest and to the live day-trading account.</span></div></div>`;
 }
-function dtAccountBox() {
+function dtAccountBox(full) {
   const a = (S.dt && S.dt.account) || {}, c = dtCfg();
+  if (!a.connected && !full) return '<p class="muted" style="font-size:.85rem;margin:6px 0">Day-trading account not connected: connect a second Alpaca paper account in <a href="#settings">Settings → Brokers</a> to trade this live.</p>';
   if (!a.connected) return `<div style="border:1px dashed var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:.85rem"><b>Day-trading account</b> — connect a SECOND Alpaca paper account (its own API key / secret), kept apart from the options bot.
     <form id="dt-acct" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"><input id="dt-key" placeholder="API key" style="width:14em" autocomplete="off"><input id="dt-secret" placeholder="Secret" type="password" style="width:18em" autocomplete="off"><button class="btn coachbtn" type="submit">Connect</button></form></div>`;
   const pos = a.positions || [];
@@ -1877,7 +1923,7 @@ function vChartDT() {
     <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
     <span class="seg">${[1, 3, 5, 10].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
-    <span class="seg">${[['sig', 'Signals'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-dtreload style="padding:3px 10px" title="Reload the candles">↻</button>
     <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button></div>`;
   let main;

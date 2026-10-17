@@ -3346,6 +3346,25 @@ def test_daytrade_live_tick():
         daytrade.minute_bars, daytrade.creds, daytrade._alp, daytrade.walls_by_day, daytrade.config = saved
 
 
+def test_tr3ndy_studies():
+    """Day-trading chart studies: LIS = previous regular close, PM zone 20-40% from the gap side, fibs, turns, bands."""
+    import tr3ndy
+    bars = _dt_bars(3)
+    b5 = tr3ndy.agg(bars, 5)
+    lines, lf, sent = tr3ndy.lis(b5)
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    assert lines["2026-09-15"] == [b for b in reg if b["t"][:10] == "2026-09-14"][-1]["c"] and "2026-09-14" not in lines
+    pz = tr3ndy.pmz(b5, lines)["2026-09-15"]
+    r = pz["h"] - pz["l"]
+    assert (abs(pz["up"] - (pz["h"] - .2 * r)) < 1e-3 and abs(pz["lo"] - (pz["h"] - .4 * r)) < 1e-3) if pz["gap"] else (abs(pz["lo"] - (pz["l"] + .2 * r)) < 1e-3)
+    fb = dict((k, v) for k, v in tr3ndy.fibs(bars, lines)["2026-09-15"])
+    assert abs(fb["50%"] - (fb["high"] + fb["low"]) / 2) < 1e-3 and fb["127.2%"] > fb["high"] and fb["-27.2%"] < fb["low"]
+    tu = tr3ndy.turns([{"t": str(i), "m": m} for i, m in enumerate([1, 3, 2, 1, -1, -3, -2])])
+    assert tu == [{"t": "2", "dir": -1}, {"t": "6", "dir": 1}]
+    ser, fm = tr3ndy.bands(reg)
+    assert len(ser) == len(reg) and all(x["dir"] in (1, -1) for x in fm)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
