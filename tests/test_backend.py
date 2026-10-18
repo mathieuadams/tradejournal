@@ -3026,6 +3026,21 @@ def test_daily_above_pw_rule():
     b = wallwatch.detect_retest(hb, w, None, {**cfg, "abovePW": True}, None)[0]
     assert a and b and a[0]["at"][:10] < days[60] and all(x["at"][:10] >= days[60] for x in b)
     assert wallwatch.version({**wallwatch.PARAMS, "abovePW": True}) != wallwatch.version(wallwatch.PARAMS)
+    c = wallwatch.detect_retest(hb, w, None, {**cfg, "belowPW": True}, None)[0]
+    assert c and all(x["at"][:10] < days[60] for x in c)
+    dbars = wallwatch.daily_bars(hb)
+    cv = wallwatch.cvd_roll(dbars, 5)
+    one = []
+    for i, b in enumerate(dbars):
+        v, r = b["v"], b["h"] - b["l"]
+        pc = dbars[i - 1]["c"] if i else b["o"]
+        one.append(2 * (v * (b["c"] - b["l"]) / r if r > 0 else (v if b["c"] > pc else 0 if b["c"] < pc else v / 2)) - v)
+    assert all(abs(cv[i] - sum(one[max(0, i - 4):i + 1])) < 1e-6 for i in range(len(dbars)))
+    up = wallwatch.detect_retest(hb, w, None, {**cfg, "cvdUp": True, "cvdN": 5}, None)[0]
+    dn = wallwatch.detect_retest(hb, w, None, {**cfg, "cvdDn": True, "cvdN": 5}, None)[0]
+    at = {b["t"][:10]: cv[i] for i, b in enumerate(dbars)}
+    assert up and all(at[x["at"][:10]] > 0 for x in up) and all(at[x["at"][:10]] < 0 for x in dn)
+    assert not wallwatch.detect_retest(hb, w, None, {**cfg, "cvdUp": True, "cvdDn": True}, None)[0]
 
 
 def test_no_support_any_candle():

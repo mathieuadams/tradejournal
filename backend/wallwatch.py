@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False, "abovePW": False,
+          "inYExit": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -131,8 +131,8 @@ def version(cfg):
 
 
 # rules added later: in the version only when one is on (signals made before them stay valid)
-EXTRA_SW = ("abovePW", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
-EXTRA_NUM = ("inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
+EXTRA_SW = ("abovePW", "belowPW", "cvdUp", "cvdDn", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
+EXTRA_NUM = ("cvdN", "inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
 
 
 SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower", "inGreen", "inNotRed", "inRedExit")
@@ -156,7 +156,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("inN1", 5, 250), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
+    for k, lo_, hi_ in (("inN1", 5, 250), ("cvdN", 1, 500), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
@@ -175,7 +175,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -266,6 +266,29 @@ def setup_kind(w):
     if abs(cw - pw) <= cw * 0.0005 and fl > cw:
         return "merged"
     return "pw" if cw > fl > pw else "flip" if cw > pw > fl else None
+
+
+def cvd_roll(bars, n=20):
+    """Per candle: the estimated volume delta (buy - sell) summed over the last n candles, this one included. Each
+    candle's volume is split by where it closes in its range (close at the high = all buying). Same on the chart."""
+    n = max(1, int(n or 20))
+    d, out, run = [], [], 0.0
+    for i, b in enumerate(bars):
+        v, r = float(b.get("v") or 0), b["h"] - b["l"]
+        pc = bars[i - 1]["c"] if i else b["o"]
+        buy = v * (b["c"] - b["l"]) / r if r > 0 else (v if b["c"] > pc else 0 if b["c"] < pc else v / 2)
+        d.append(2 * buy - v)
+        run += d[-1]
+        if i >= n:
+            run -= d[i - n]
+        out.append(run)
+    return out
+
+
+def cvd_ok(P, v):
+    """CVD > 0 / CVD < 0 filters (both on: never)."""
+    on = lambda k: bool(P.get(k, PARAMS[k]))
+    return not ((on("cvdUp") and not (v is not None and v > 0)) or (on("cvdDn") and not (v is not None and v < 0)))
 
 
 def atr14(bars):
@@ -902,7 +925,7 @@ def unusual_calls(alerts, fallback=500_000, mult=3.0):
     return out
 
 
-SEARCH_RULES = ["alertReq", "relFlow", "greenOnly", "aboveFlip", "abovePW", "vwapOn", "emaOn", "emaOverVwap", "kcNotExt", "kcdLower",
+SEARCH_RULES = ["alertReq", "relFlow", "greenOnly", "aboveFlip", "abovePW", "belowPW", "vwapOn", "emaOn", "emaOverVwap", "kcNotExt", "kcdLower",
                 "kchLower", "orbAbove", "fvgOn", "noAboveCW", "cwRoomOn", "vwapReset", "pwNeCw", "spyUp", "skewOn", "inGreen", "inNotRed"]
 
 
@@ -946,6 +969,7 @@ def _search_candidates(bars, walls, start, P, out, mk, a_of, alerts, vmin, ndays
         f = {"alertReq": armed(fixed, didx[day], end), "relFlow": armed(rel, didx[day], end), "greenOnly": b["c"] > b["o"],
              "aboveFlip": bool(w.get("flip") and b["c"] > float(w["flip"])),
              "abovePW": bool(w.get("putWall") and b["c"] > float(w["putWall"])),
+             "belowPW": bool(w.get("putWall") and b["c"] < float(w["putWall"])),
              "vwapOn": vwap[i] is not None and b["c"] > vwap[i], "emaOn": ema[i] is not None and b["c"] > ema[i],
              "emaOverVwap": ema[i] is not None and vwap[i] is not None and ema[i] > vwap[i],
              "kcNotExt": bool(kc[i] and b["c"] < kc[i][1]), "kcdLower": bool(kc[i] and b["c"] <= kc[i][0]),
@@ -993,6 +1017,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     if not on("earnOn"):
         earnings = None
     sup_keys = tuple(x for x, k in ((("putWall", "put wall"), "usePW"), (("flip", "flip"), "useFlip")) if on(k))
+    cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if (on("cvdUp") or on("cvdDn")) else None
     ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     extra = extra or {}
     kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
@@ -1160,6 +1185,12 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             if on("abovePW") and not (w.get("putWall") and b["c"] > float(w["putWall"])):
                 miss(b, f"close under the put wall {w.get('putWall')} (Above the PW rule)")
                 continue                               # only above the put wall
+            if on("belowPW") and not (w.get("putWall") and b["c"] < float(w["putWall"])):
+                miss(b, f"close above the put wall {w.get('putWall')} (Below the PW rule)")
+                continue
+            if cvr is not None and not cvd_ok(P, cvr[i]):
+                miss(b, f"CVD of the last {int(P.get('cvdN') or 20)} candles {cvr[i]:,.0f} (CVD rule)")
+                continue
             if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
                 miss(b, f"earnings {str(earnings)[:10]} within {earn_days} days")
                 continue                               # earnings within the next N days: no entry
@@ -1315,6 +1346,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
     for z in zones:
         if z["type"] == "bear":
             bear[z["i"]] = True
+    cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if (on("cvdUp") or on("cvdDn")) else None
     ver = version(P) + "|1D"
     sigs, open_ = [], None
     for i, b in enumerate(bars):
@@ -1359,6 +1391,10 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
         if P.get("aboveFlip") and not (fl and b["c"] > fl):
             continue
         if on("abovePW") and not (pw and b["c"] > pw):
+            continue
+        if on("belowPW") and not (pw and b["c"] < pw):
+            continue
+        if cvr is not None and not cvd_ok(P, cvr[i]):
             continue
         if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
             continue

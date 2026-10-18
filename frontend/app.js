@@ -1642,7 +1642,9 @@ function fcSvg0(d, id, opts) {
         nReal++; return { buy, sell, d: buy - sell, real: true }; }
       const buy = r > 0 ? v * (b.c - b.l) / r : (b.c > pc ? v : b.c < pc ? 0 : v / 2); return { buy, sell: v - buy, d: 2 * buy - v }; });
     const day = b => d.daily ? '' : b.t.slice(0, 10);
-    let cum = 0, lastDay = null; const cdAll = all.map((b, i) => { if (day(b) !== lastDay) { cum = 0; lastDay = day(b); } cum += prAll[i].d; return cum; });
+    const rollN = opts && opts.cvdN ? Math.max(1, Math.round(opts.cvdN)) : 0;   // swing charts: sum of the last N candles (= the CVD rules)
+    let cum = 0, lastDay = null; const cdAll = all.map((b, i) => { if (rollN) { cum += prAll[i].d - (i >= rollN ? prAll[i - rollN].d : 0); return cum; }
+      if (day(b) !== lastDay) { cum = 0; lastDay = day(b); } cum += prAll[i].d; return cum; });
     const pr = prAll.slice(za, zb + 1), cd = cdAll.slice(za, zb + 1);   // from each day's open even when zoomed in
     nReal = pr.filter(x => x.real).length;
     const mx = Math.max(1e-9, ...pr.map(x => Math.abs(x.d))), cmn = Math.min(0, ...cd), cmx = Math.max(0, ...cd);
@@ -1651,7 +1653,7 @@ function fcSvg0(d, id, opts) {
     const tb = last.reduce((a, x) => a + x.buy, 0), ts = last.reduce((a, x) => a + x.sell, 0), share = tb + ts > 0 ? Math.round(tb / (tb + ts) * 100) : 50;
     const who = share >= 55 ? `<tspan fill="var(--gain)" font-weight="700">buyers in charge ${share}%</tspan>` : share <= 45 ? `<tspan fill="var(--loss)" font-weight="700">sellers in charge ${100 - share}%</tspan>` : `<tspan font-weight="700">balanced ${share}% buy</tspan>`;
     g += `<line x1="${L}" x2="${W - Rr}" y1="${VB}" y2="${VB}" stroke="var(--line)"/><line x1="${L}" x2="${W - Rr}" y1="${Z}" y2="${Z}" stroke="var(--line)" stroke-dasharray="2 3"/>`
-      + `<text x="${L + 2}" y="${VT + 10}" font-size="${fs}" fill="var(--muted)">${nReal ? (nReal === n ? 'Cumulative volume delta (REAL: every trade classified buy / sell by the tick rule)' : 'Cumulative volume delta (real where loaded, estimated elsewhere)') : 'Buy / sell pressure (estimated: volume split by where each candle closes in its range)'}${d.flowLoading ? ' · loading the trades…' : ''} · bars = buy − sell · line = running total${d.daily ? '' : ' (from each day\'s open)'}, green above 0 / red below, dots = the entries · last 20 candles: ${who}</text>`;
+      + `<text x="${L + 2}" y="${VT + 10}" font-size="${fs}" fill="var(--muted)">${nReal ? (nReal === n ? 'Cumulative volume delta (REAL: every trade classified buy / sell by the tick rule)' : 'Cumulative volume delta (real where loaded, estimated elsewhere)') : 'Buy / sell pressure (estimated: volume split by where each candle closes in its range)'}${d.flowLoading ? ' · loading the trades…' : ''} · bars = buy − sell · line = ${rollN ? `sum of the last ${rollN} candles` : `running total${d.daily ? '' : ' (from each day\'s open)'}`}, green above 0 / red below, dots = the entries · last 20 candles: ${who}</text>`;
     bars.forEach((b, i) => { const x = pr[i], y = DY(x.d);
       g += `<rect x="${X(i) - hw / 2}" y="${Math.min(y, Z)}" width="${hw}" height="${Math.max(1, Math.abs(y - Z))}" fill="${x.d >= 0 ? '#16a34a' : '#dc2626'}" opacity=".55"><title>${esc(b.t.replace('T', ' ').slice(5))} · volume ${Math.round(+b.v || 0).toLocaleString()} · buy ≈ ${Math.round(x.buy).toLocaleString()} · sell ≈ ${Math.round(x.sell).toLocaleString()} · running total ${Math.round(cd[i]).toLocaleString()}</title></rect>`; });
     const y0 = CY(0), pth = cd.map((v, i) => `${i && day(bars[i]) === day(bars[i - 1]) ? 'L' : 'M'}${X(i).toFixed(1)},${CY(v).toFixed(1)}`).join(''), cid = 'cvd' + Math.random().toString(36).slice(2, 8);
@@ -1784,7 +1786,7 @@ function vChartWW() {
   else if (d.error) main = `<div class="errbox" style="margin:16px">${esc(d.error)}</div>`;
   else {
     const w = d.wallsNow, pc = v => `<b class="${v >= 0 ? 'gain' : 'loss'}">${v >= 0 ? '+' : ''}${v}%</b>`;
-    main = fcSvg(S.chartDaily ? S.fc[fcKey(did)] : d, vid, { W, H }) + `<div class="fcf-info" ${S.hideStats ? 'hidden style="display:none"' : ''}>
+    main = fcSvg(S.chartDaily ? S.fc[fcKey(did)] : d, vid, { W, H, cvdN: +((labCfg() || {}).cvdN) || 20 }) + `<div class="fcf-info" ${S.hideStats ? 'hidden style="display:none"' : ''}>
       ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b> · <b class="loss">put ${w.putWall}</b></span>` : ''}
       ${(d.trades || []).length ? `<span><b style="color:var(--coach)">Option trades</b> ${d.trades.map(tr => `${esc((tr.at || '').slice(5, 16).replace('T', ' '))} ${esc(tr.contract || '')} ×${tr.qty ?? ''} @${tr.fill ?? tr.limit ?? '—'} · ${esc(tr.status || '')}${tr.plPct != null ? ` <b class="${tr.plPct >= 0 ? 'gain' : 'loss'}">${tr.plPct >= 0 ? '+' : ''}${tr.plPct}%</b>` : ''}`).join(' | ')}</span>` : ''}
       ${(() => { const m = (d.maxPain || []).slice(-1)[0], nx = (d.expirations || []).find(e => e >= new Date().toISOString().slice(0, 10)); return m || nx ? `<span style="color:var(--warn,#d97706)"><b>${nx ? `Next monthly exp ${esc(nx)}` : ''}${m ? ` · max pain ${m.maxPain}${m.exp !== nx ? ` (${esc(m.exp)})` : ''}` : ''}</b></span>` : ''; })()}
@@ -3209,6 +3211,9 @@ const WW_RULES = [
   ['greenOnly', 'Entry', 'Green candle', 'The retest candle must close green (close > open)'],
   ['aboveFlip', 'Entry', 'Above the flip', 'The entry candle must close above the gamma flip'],
   ['abovePW', 'Entry', 'Above the PW', 'The entry candle must close above the put wall of the day'],
+  ['belowPW', 'Entry', 'Below the PW', 'The entry candle must close below the put wall of the day'],
+  ['cvdUp', 'Entry', 'CVD > 0', 'Buyers in charge: the volume delta (buy − sell, estimated from each candle) summed over the last N candles is above 0 (N in the CVD row)'],
+  ['cvdDn', 'Entry', 'CVD < 0', 'Sellers in charge: the volume delta summed over the last N candles is below 0'],
   ['vwapOn', 'Entry', 'Above VWAP', 'The entry candle must close above the anchored VWAP'],
   ['emaOn', 'Entry', 'Above EMA', 'The entry candle must close above the hourly EMA (length in the EMA row)'],
   ['emaOverVwap', 'Entry', 'EMA > VWAP', 'The EMA must be above the anchored VWAP on the entry candle (uptrend)'],
@@ -3254,7 +3259,7 @@ const WW_RULES = [
 ];
 // indicators: [key, name, chart layer, parameters [key, label, step, width, suffix, default, scale], what it is, rules that use it]
 const WW_IND = [
-  ['walls', 'Gamma walls', 'walls', [['retestZone', 'retest zone', 0.05, 4, '× ATR', 0.25]], 'Put wall, call wall and gamma flip of each day; a candle retests a wall when its low comes within the zone', ['usePW', 'useFlip', 'aboveFlip', 'abovePW', 'noAboveCW', 'cwRoomOn', 'pwNeCw', 'targetOn', 'flipExit', 'cwLost', 'pvEod']],
+  ['walls', 'Gamma walls', 'walls', [['retestZone', 'retest zone', 0.05, 4, '× ATR', 0.25]], 'Put wall, call wall and gamma flip of each day; a candle retests a wall when its low comes within the zone', ['usePW', 'useFlip', 'aboveFlip', 'abovePW', 'belowPW', 'noAboveCW', 'cwRoomOn', 'pwNeCw', 'targetOn', 'flipExit', 'cwLost', 'pvEod']],
   ['flow', 'Options flow', 'flow', [['retestMin', 'call alert ≥ $', 50, 4.2, 'K', 500000, 1000], ['retestDays', 'wait', 1, 3, 'days', 5], ['relMult', 'unusual', 0.5, 3, '× median', 3]], 'Call alerts bought at the ask (Unusual Whales); the retest must come within the wait', ['alertReq', 'relFlow']],
   ['vwap', 'Anchored VWAP', 'vwap', [['vwapDays', 'reset on highest volume of', 1, 3.2, 'days', 10]], 'VWAP restarted on the hourly candle with the highest volume of the period', ['vwapOn', 'vwapReset', 'emaOverVwap', 'vwapExit']],
   ['ema', 'EMA (hourly)', 'ema', [['emaLen', 'length', 1, 3.4, '', 20]], 'Exponential average of the hourly closes', ['emaOn', 'emaOverVwap', 'emaExit']],
@@ -3265,6 +3270,7 @@ const WW_IND = [
   ['inertiah', 'Hourly inertia', 'inertiah', [['inhN1', 'lengths', 1, 3.2, '', 70], ['inhN2', '', 1, 3.2, '', 40], ['inhN3', '', 1, 3.2, 'candles', 20]], 'The same regression on the hourly closes (lengths in hourly candles); thin strip above the daily one (1h chart view)', ['inhGreen', 'inhNotRed', 'inhYExit']],
   ['sqzh', 'Squeeze hourly', 'sqz', [['sqhLen', 'length', 1, 3.2, '', 20], ['sqhBB', 'BB', 0.1, 3, '× SD', 2], ['sqhKC', 'KC', 0.1, 3, '× ATR', 1.5], ['sqFireN', 'fired within', 1, 3, 'candles', 3]], 'TTM squeeze on hourly candles: red dot = squeeze on (BB inside KC), green = off; strip at the bottom of the chart', ['sqhOn', 'sqhFire', 'sqhMom', 'sqhExit']],
   ['sqzd', 'Squeeze daily', 'sqz', [['sqdLen', 'length', 1, 3.2, '', 20], ['sqdBB', 'BB', 0.1, 3, '× SD', 2], ['sqdKC', 'KC', 0.1, 3, '× ATR', 1.5]], 'TTM squeeze on daily candles (same dots, lower strip)', ['sqdOn', 'sqdFire', 'sqdMom', 'sqdExit']],
+  ['cvd', 'CVD (volume delta)', 'pres', [['cvdN', 'sum of the last', 1, 3.2, 'candles', 20]], 'Buy − sell volume of each candle, estimated from where it closes in its range (close at the high = all buying), summed over the last N candles of the timeframe (1h: hourly candles, 1D: days). The Buy / sell pressure pane draws the same line', ['cvdUp', 'cvdDn']],
   ['dark', 'Dark pool', 'dark', [], 'Top dark pool price levels of the last 2 months', ['dpLost']],
   ['orb', 'Opening range', 'orb', [], 'High / low of the 09:30–10:30 candle', ['orbAbove']],
   ['spy', 'SPY trend', 'spy', [], 'SPY vs its close 6 sessions ago', ['spyUp']],
@@ -3294,7 +3300,7 @@ function wwRulePanel(vals, sw, mode, shown) {
 }
 const LAB_ONLY = ['pwTest'];   // daily-timeframe only: the live bot runs on hourly candles   // rules the live bot can't do yet: shown in the Strategy lab only
 const WW_CORE = ['earnExit', 'alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
-const WW_DEF_ON = { sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, abovePW: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
+const WW_DEF_ON = { sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, abovePW: false, belowPW: false, cvdUp: false, cvdDn: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 try { S.rtUseLab = localStorage.getItem('rtUseLab') === '1'; } catch (e) { S.rtUseLab = false; }
 try { S.chartDaily = localStorage.getItem('chartDaily') === '1'; } catch (e) { S.chartDaily = false; }
@@ -3388,7 +3394,7 @@ async function loadRuleTest(poll) {
   clearTimeout(S.rtPoll);
   if ((t.running || hs.running || rb.running || pv.running || rgm.running || srch.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
 }
-const SEARCH_RULES = ['inGreen', 'inNotRed', 'alertReq', 'relFlow', 'greenOnly', 'aboveFlip', 'abovePW', 'vwapOn', 'emaOn', 'emaOverVwap', 'kcNotExt', 'kcdLower', 'kchLower', 'orbAbove', 'fvgOn', 'noAboveCW', 'cwRoomOn', 'vwapReset', 'pwNeCw', 'spyUp', 'skewOn'];
+const SEARCH_RULES = ['inGreen', 'inNotRed', 'alertReq', 'relFlow', 'greenOnly', 'aboveFlip', 'abovePW', 'belowPW', 'vwapOn', 'emaOn', 'emaOverVwap', 'kcNotExt', 'kcdLower', 'kchLower', 'orbAbove', 'fvgOn', 'noAboveCW', 'cwRoomOn', 'vwapReset', 'pwNeCw', 'spyUp', 'skewOn'];
 function wwSearchBox(x) {
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
   const lbl = Object.fromEntries(WW_RULES.map(r => [r[0], r[2]]));
@@ -3582,7 +3588,7 @@ function labRedraw() { labSave(); const sym = labSymbol(); Object.keys(S.fc).fil
 function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return t || l[0] || ''; }
 try { S.chartLab = localStorage.getItem('chartLab') === '1'; } catch (e) { S.chartLab = false; }
 const HOURLY_ONLY = ['alertReq', 'relFlow', 'vwapReset', 'usePW', 'useFlip', 'vwapOn', 'emaOverVwap', 'skewOn', 'spyUp', 'kchLower', 'orbAbove', 'pvEod', 'vwapExit', 'dpLost'];
-const DAILY_PRESET = { tf: '1D', pwTest: true, inGreen: true, fvgOn: true, inYExit: true, greenOnly: false, inNotRed: false, emaOn: false, kcdLower: false, kcNotExt: false, aboveFlip: false, abovePW: false, noAboveCW: false, cwRoomOn: false, earnOn: false, pwNeCw: false, stopOn: true, trailOn: false, targetOn: false, flipExit: false, kcRide: false, cwLost: false, fvgExit: false, scaleOn: false, inRedExit: false, emaExit: false };
+const DAILY_PRESET = { tf: '1D', pwTest: true, inGreen: true, fvgOn: true, inYExit: true, greenOnly: false, inNotRed: false, emaOn: false, kcdLower: false, kcNotExt: false, aboveFlip: false, abovePW: false, belowPW: false, cvdUp: false, cvdDn: false, noAboveCW: false, cwRoomOn: false, earnOn: false, pwNeCw: false, stopOn: true, trailOn: false, targetOn: false, flipExit: false, kcRide: false, cwLost: false, fvgExit: false, scaleOn: false, inRedExit: false, emaExit: false };
 function labPanel() {
   const L = labCfg() || {};
   const tf = (S.labDraft && S.labDraft.tf) || L.tf || '1h';
