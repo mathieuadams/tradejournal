@@ -3475,6 +3475,13 @@ def test_daytrade_new_rules_filters_exits():
     assert ff and all(s0["side"] == 1 for s0 in ff) and len({s0["at"][:10] for s0 in ff}) == len(ff)
     W = {d: {"flip": 1} for d in days}
     assert all(s0["side"] == -1 for s0 in daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "flipFade": True}, W))
+    # previous day's walls: day k uses the flip of day k-1 (the first day has none)
+    W = {d: {"flip": (99999 if i % 2 else 1)} for i, d in enumerate(days)}
+    pv = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "flipFade": True, "flipPrev": True, "maxTrades": 1}, W)
+    assert pv and days[0] not in {s0["at"][:10] for s0 in pv}
+    for s0 in pv:
+        k = days.index(s0["at"][:10])
+        assert s0["side"] == (1 if (k - 1) % 2 else -1)
     # squeeze turn: entries only within formWin minutes after a turn in the trade direction
     st_ = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "sqTurn": True, "formWin": 3})
     reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]

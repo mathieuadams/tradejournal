@@ -39,7 +39,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "bandForm": False, "lisForm": False, "lisAbove": False, "pmzTouch": False, "fibTouch": False, "dpTouch": False,
           "prevTouch": False, "sqTurn": False, "formWin": 5,
           # day filters
-          "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False, "flipFade": False,
+          "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False, "flipFade": False, "flipPrev": False,
           "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
           "noLunch": False, "lunchFrom": "11:30", "lunchTo": "13:30", "dayStop": False, "dayStopR": 2.0,
           # exits
@@ -110,7 +110,7 @@ def clean_cfg(cur, body):
                 cur[k] = max(lo, min(hi, round(float(body[k]), 4)))
             except (TypeError, ValueError):
                 pass
-    for k in ("enabled", "trade", "longs", "shorts", "wallNear") + ENTRY + FILTERS + EXITS:
+    for k in ("enabled", "trade", "longs", "shorts", "wallNear", "flipPrev") + ENTRY + FILTERS + EXITS:
         if k in body:
             cur[k] = bool(body[k])
     for k in TIMES:
@@ -587,6 +587,9 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
     (indicators reused across settings that share them, for the same candles)}. Returns [signal]."""
     P = {**PARAMS, **(P or {})}
     walls = walls or {}
+    if P.get("flipPrev") and walls:                    # the walls / flip of the PREVIOUS stored day (surely known at the open)
+        ds = sorted(walls)
+        walls = {ds[k]: walls[ds[k - 1]] for k in range(1, len(ds))}
     ctx = ctx or {}
     on = lambda k: bool(P.get(k))
     cache = ctx.get("cache")
@@ -763,7 +766,7 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
         return {"symbol": sym, "bars": [], "error": "No minute candles."}
     dates = sorted({b["t"][:10] for b in allb})
     show = dates[-days:]
-    W = walls_by_day(sub, sym, show, bool(P.get("wallNear")), budget_s=15)
+    W = walls_by_day(sub, sym, dates[-days - 1:] if P.get("flipPrev") else show, bool(P.get("wallNear")), budget_s=15)
     ctx = live_ctx(sub, sym, P, show, days + 3)
     sigs = detect(allb, P, W, show[0], ctx)
     for x in sigs:                                     # the chart draws a scale-out as {at, px, frac}
@@ -1219,7 +1222,7 @@ def tick(sub, now=None):
             allb = loaded[sym]
             pbars = {k: v for k, v in loaded.items()}
             ctx = live_ctx(sub, sym, P, [today], 3, now, pbars)
-            sigs = detect(allb, P, walls_by_day(sub, sym, [today], bool(P.get("wallNear")), budget_s=10), today, ctx)
+            sigs = detect(allb, P, walls_by_day(sub, sym, sorted({b["t"][:10] for b in allb} | {today})[-2:] if P.get("flipPrev") else [today], bool(P.get("wallNear")), budget_s=10), today, ctx)
             recs = {r["at"]: r for r in db.q_prefix(pk, f"DTPOS#{sym}#") if r.get("at", "")[:10] == today}
             last_t = allb[-1]["t"] if allb else ""
             for s in sigs:
