@@ -1302,7 +1302,7 @@ def _wallwatch_exit(sub, rec, p):
                 return f"daily inertia red at the close ({last['c']:.2f})"
         except Exception as e:
             print("inertia exit check failed", rec.get("symbol"), e)
-    if any(ww.get(k) for k in ("inYExit", "sqdExit", "inhYExit", "sqhExit")):
+    if any(ww.get(k) for k in ("inYExit", "sqdExit", "inhYExit", "sqhExit", "inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX")):
         try:
             import wallwatch
             hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=150), now + timedelta(hours=1)) or [],
@@ -1314,20 +1314,42 @@ def _wallwatch_exit(sub, rec, p):
                     x = wallwatch.inertia_hourly(hb, tuple(ww.get("inhNs") or (70, 40, 20)))[-1]
                     if x and x["s"] != "G":
                         return f"hourly inertia {'red' if x['s'] == 'R' else 'yellow'} at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
-                if ww.get("sqhExit"):
+                if ww.get("inhRiseX") or ww.get("inhRedX"):
+                    x = wallwatch.inertia_hourly(hb, tuple(ww.get("inhNs") or (70, 40, 20)))[-1]
+                    if x and ((ww.get("inhRiseX") and x["s"] == "G") or (ww.get("inhRedX") and x["s"] == "R")):
+                        return f"hourly inertia {'rising' if x['s'] == 'G' else 'falling'} at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
+                if ww.get("sqhExit") or ww.get("sqhRiseX"):
                     x = wallwatch.squeeze(hb, *(ww.get("sqh") or (20, 2.0, 1.5)), fire_n)[-1]
-                    if x and not x["up"]:
+                    if x and ww.get("sqhExit") and not x["up"]:
                         return f"hourly squeeze momentum falling at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
+                    if x and ww.get("sqhRiseX") and x["up"]:
+                        return f"hourly squeeze momentum rising at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
+                if (ww.get("cvdRiseX") or ww.get("cvdFallX")) and ww.get("tf") != "1D" and len(hb) > 2:
+                    cv = wallwatch.cvd_roll(hb, int(ww.get("cvdN") or 20))
+                    if (ww.get("cvdRiseX") and cv[-1] > cv[-2]) or (ww.get("cvdFallX") and cv[-1] < cv[-2]):
+                        return f"CVD {'rising' if cv[-1] > cv[-2] else 'falling'} at the {hb[-1]['t'][11:16]} close ({cv[-2]:,.0f} → {cv[-1]:,.0f})"
             if now.hour * 60 + now.minute >= 15 * 60 + 50:   # daily: at the close, today's candle so far included
                 hd = hb + [{"t": now.strftime("%Y-%m-%dT%H:%M"), "o": last["c"], "h": last["c"], "l": last["c"], "c": last["c"]}]
                 if ww.get("inYExit"):
                     rg = wallwatch.inertia_regime(hd, tuple(ww.get("inNs") or (70, 40, 20)))[-1]
                     if rg and rg["s"] != "G":
                         return f"daily inertia {'red' if rg['s'] == 'R' else 'yellow'} at the close ({last['c']:.2f})"
-                if ww.get("sqdExit"):
+                if ww.get("inRiseX"):
+                    rg = wallwatch.inertia_regime(hd, tuple(ww.get("inNs") or (70, 40, 20)))[-1]
+                    if rg and rg["s"] == "G":
+                        return f"daily inertia rising at the close ({last['c']:.2f})"
+                if ww.get("sqdExit") or ww.get("sqdRiseX"):
                     x = wallwatch.squeeze(wallwatch.daily_bars(hd), *(ww.get("sqd") or (20, 2.0, 1.5)), fire_n)[-1]
-                    if x and not x["up"]:
+                    if x and ww.get("sqdExit") and not x["up"]:
                         return f"daily squeeze momentum falling at the close ({last['c']:.2f})"
+                    if x and ww.get("sqdRiseX") and x["up"]:
+                        return f"daily squeeze momentum rising at the close ({last['c']:.2f})"
+                if (ww.get("cvdRiseX") or ww.get("cvdFallX")) and ww.get("tf") == "1D":
+                    dd_ = wallwatch.daily_bars(hd)
+                    if len(dd_) > 2:
+                        cv = wallwatch.cvd_roll(dd_, int(ww.get("cvdN") or 20))
+                        if (ww.get("cvdRiseX") and cv[-1] > cv[-2]) or (ww.get("cvdFallX") and cv[-1] < cv[-2]):
+                            return f"daily CVD {'rising' if cv[-1] > cv[-2] else 'falling'} at the close ({last['c']:.2f})"
         except Exception as e:
             print("inertia / squeeze exit check failed", rec.get("symbol"), e)
     if ww.get("fvgExit"):                              # the last finished hourly candle completes a new bearish FVG

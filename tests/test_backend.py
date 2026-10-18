@@ -3100,24 +3100,46 @@ def test_swing_close_under_pw_exit():
     assert st["status"] == "pwlost" and st["exit"] == 204
 
 
-def test_swing_cvd_turn_rule():
-    """CVD turn up: the rolling CVD under 0, falling then rising; entry on the turn candle or within N candles."""
+def test_swing_rising_falling_rules():
+    """Inertia / squeeze / CVD rising or falling: entry rules and exits (first close where it holds)."""
     import wallwatch, math, datetime as dt
-    assert wallwatch.cvd_turn_ago([5, -1, -3, -2, -4, -5, -1]) == [None, None, None, 0, 1, 2, 0]
     H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
-    cl = [200 + 20 * math.sin(d / 5) for d in range(120)]
+    cl = [200 + 20 * math.sin(d / 6) + 5 * math.sin(d / 2) for d in range(160)]
     days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
-    hb = [{"t": f"{d}T{h}", "o": c - 0.2 * math.cos(j / 5), "h": c + 0.5, "l": c - 0.5, "c": c + 0.3 * math.cos(j / 5) if k == 6 else c, "v": 10}
+    hb = [{"t": f"{d}T{h}", "o": c - 0.3 * math.cos(j), "h": c + 0.6, "l": c - 0.6, "c": c + 0.3 * math.cos(j * 1.7) if k == 6 else c + 0.1 * k * math.sin(j), "v": 10 + k}
           for j, (d, c) in enumerate(zip(days, cl)) for k, h in enumerate(H)]
     w = {d: {"putWall": 1, "callWall": 9999, "flip": 1} for d in days}
     cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
-           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopAtr": 0.2,
-           "usePW": False, "useFlip": False, "cvdN": 5}
-    dbars = wallwatch.daily_bars(hb)
-    ago = dict(zip([b["t"][:10] for b in dbars], wallwatch.cvd_turn_ago(wallwatch.cvd_roll(dbars, 5))))
-    for n in (1, 3):
-        sg = wallwatch.detect_retest(hb, w, None, {**cfg, "cvdTurn": True, "cvdTurnN": n}, None)[0]
-        assert sg and all(ago[x["at"][:10]] is not None and ago[x["at"][:10]] < n for x in sg)
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopOn": False, "stopAtr": 0.5,
+           "usePW": False, "useFlip": False, "cvdN": 5, "inN1": 20, "inN2": 10, "inN3": 5}
+    db_ = wallwatch.daily_bars(hb)
+    dd = [b["t"][:10] for b in db_]
+    sq = dict(zip(dd, wallwatch.squeeze(db_)))
+    cv = wallwatch.cvd_roll(db_, 5)
+    cvd = {d: (cv[i], cv[i - 1] if i else None) for i, d in enumerate(dd)}
+    rg = dict(zip(dd, wallwatch.inertia_regime(db_, (20, 10, 5))))
+    run = lambda **k: wallwatch.detect_retest(hb, w, None, {**cfg, **k}, None)[0]
+    checks = {"sqdRise": lambda d: sq[d] and sq[d]["up"], "sqdFall": lambda d: sq[d] and not sq[d]["up"],
+              "cvdRise": lambda d: cvd[d][0] > cvd[d][1], "cvdFall": lambda d: cvd[d][0] < cvd[d][1],
+              "inFall": lambda d: rg[d] and rg[d]["s"] == "R"}
+    for k, ok in checks.items():
+        sg = run(**{k: True})
+        assert sg and all(ok(x["at"][:10]) for x in sg), k
+    exits = {"cvdFallX": ("cvd", lambda d: cvd[d][0] < cvd[d][1]), "cvdRiseX": ("cvd", lambda d: cvd[d][0] > cvd[d][1]),
+             "sqdRiseX": ("squeeze", lambda d: bool(sq[d] and sq[d]["up"])), "inRiseX": ("inertia", lambda d: rg[d] and rg[d]["s"] == "G")}
+    for k, (st, ok) in exits.items():
+        sg = [x for x in run(**{k: True}) if x["status"] != "open"]
+        assert sg, k
+        for x in sg:
+            assert x["status"] == st and x["exitWhy"] == k and ok(x["exitAt"][:10]), k
+            assert not any(ok(d) for d in dd if x["at"][:10] < d < x["exitAt"][:10]), k     # the first one
+    h = {**cfg, "tf": "1h", "alertReq": False, "relFlow": False}
+    for k in ("inhFall", "sqhRise", "sqhFall", "cvdRise", "inhRiseX", "inhRedX", "sqhRiseX", "cvdFallX", "sqdRiseX", "inRiseX"):
+        wallwatch.detect_retest(hb, w, None, {**h, k: True}, None)          # no error on the hourly timeframe
+    hs = [x for x in wallwatch.detect_retest(hb, w, None, {**h, "cvdFallX": True}, None)[0] if x["status"] != "open"]
+    hc = wallwatch.cvd_roll([b for b in hb], 5)
+    at = {b["t"][:16]: (hc[i], hc[i - 1]) for i, b in enumerate(hb) if i}
+    assert hs and all(x["status"] == "cvd" and at[x["exitAt"]][0] < at[x["exitAt"]][1] for x in hs)
 
 
 def test_no_support_any_candle():
