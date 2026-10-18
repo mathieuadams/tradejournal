@@ -1948,6 +1948,9 @@ def handler(event, context_):
             elif job == "daytick":
                 import daytrade
                 out[sub] = daytrade.tick(sub)
+            elif job == "oflow":
+                import orderflow
+                out[sub] = orderflow.job(sub, event.get("params") or {})
             elif job == "sdtick":
                 import stockday
                 out[sub] = stockday.tick(sub)

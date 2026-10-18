@@ -602,6 +602,28 @@ def stockday_chart(sub, claims, body, q):
     return stockday.chart(sub, b.get("t"), b.get("date"))
 
 
+@route("POST", "/flow")
+def flow_days(sub, claims, body, q):
+    """Real order flow (CVD + largest trades) of a symbol for the days on a 1-minute chart."""
+    import orderflow
+    b = body or {}
+    sym = str(b.get("t") or "").upper().strip()[:10]
+    dates = sorted({str(x)[:10] for x in (b.get("dates") or []) if str(x)[:4].isdigit()})[-10:]
+    if not sym or not dates:
+        raise BadRequest("Give a ticker and the days.")
+    days, missing = orderflow.get_days(sub, sym, dates)
+    running = False
+    if missing:
+        st = db.get(db.upk(sub), f"{orderflow.SK_JOB}#{sym}") or {}
+        running = bool(st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=10)))
+        if not running:
+            db.put({"PK": db.upk(sub), "SK": f"{orderflow.SK_JOB}#{sym}", "running": iso(now_ny())})
+            _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                             Payload=json.dumps({"sub": sub, "job": "oflow", "params": {"sym": sym, "dates": missing}}))
+            running = True
+    return {"symbol": sym, "days": days, "missing": missing, "running": running}
+
+
 @route("POST", "/daytrade/study")
 def daytrade_study(sub, claims, body, q):
     import daystudy

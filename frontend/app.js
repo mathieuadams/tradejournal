@@ -1275,12 +1275,12 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'Buy / sell pressure']];
+S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'Buy / sell pressure'], ['cvd', 'Order flow (real CVD)']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
   const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark', 'pres'];
-  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)} · lines from the last ${dp.levelDays || 180} days${dp.missingDays ? ` (loading ${dp.missingDays} more days…)` : ''}`}</span>` : ''}`;
+  return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['cvd', 'sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)} · lines from the last ${dp.levelDays || 180} days${dp.missingDays ? ` (loading ${dp.missingDays} more days…)` : ''}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
   const k = fcKey(id);
@@ -1339,7 +1339,7 @@ function fcSvg0(d, id, opts) {
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
   const SH = LY.sqz && ((d.sqzH || []).length || (d.sqzD || []).length) && !(opts && opts.noSqz) ? (full ? Math.max(80, Math.round(opts.H * 0.18)) : narrow ? 110 : 80) : 0;
-  const VH = LY.pres && bars.some(b => +b.v > 0) ? (full ? Math.max(70, Math.round(opts.H * 0.14)) : narrow ? 100 : 70) : 0;   // buy / sell pressure pane
+  const VH = (LY.pres || (LY.cvd && d.cvd)) && bars.some(b => +b.v > 0) ? (full ? Math.max(70, Math.round(opts.H * 0.14)) : narrow ? 100 : 70) : 0;   // buy / sell pressure pane
   const W = full ? opts.W : narrow ? 560 : 960, PH = (full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340) - (SH ? SH + 10 : 0) - (VH ? VH + 10 : 0);
   const L = 8, Rr = narrow ? 72 : full ? 64 : 58, T = 16, B = PH - (narrow ? 44 : 40);
   const H = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0) + (VH ? VH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
@@ -1626,8 +1626,20 @@ function fcSvg0(d, id, opts) {
     if (!daily) bars.forEach((b, i) => { const x = dm[b.t.slice(0, 10)]; if (x) g += `<rect x="${X(i) - cw / 2}" y="${ST + 13}" width="${cw}" height="3" fill="${x.on ? '#dc2626' : '#16a34a'}" opacity=".6"/>`; });
     g += `<text x="${W - Rr + 6}" y="${MY(mx) + 8}" font-size="${fs - 1}" fill="var(--muted)">+${+mx.toPrecision(3)}</text><text x="${W - Rr + 6}" y="${Z + 4}" font-size="${fs - 1}" fill="var(--muted)">0</text>`;
   }
+  if (LY.cvd && (d.big || []).length) {               // the largest trades of each day (real order flow)
+    const mxn = Math.max(...d.big.map(x => x[1] * x[2]));
+    d.big.forEach(([t, p, sz, side]) => { const i = at(t); if (i == null || p < lo || p > hi) return;
+      const r = 3 + 9 * Math.sqrt(p * sz / mxn), c = side > 0 ? '#16a34a' : '#dc2626';
+      g += `<circle cx="${X(i)}" cy="${Y(p)}" r="${r.toFixed(1)}" fill="${c}" fill-opacity=".28" stroke="${c}" stroke-width="1.2"><title>${esc(`${t.replace('T', ' ').slice(5)} · ${side > 0 ? 'BUY' : 'SELL'} ${sz.toLocaleString()} @ ${p} · $${(p * sz / 1e6).toFixed(2)}M`)}</title></circle>`; });
+  }
   if (VH) {                                            // buy / sell pressure, estimated from each candle: the close's place in its range
+    const real = LY.cvd && d.cvd ? d.cvd : null;           // real order flow: trades classified one by one (per minute)
+    const addMin = (t, k) => { const dt0 = new Date(t + ':00Z'); dt0.setUTCMinutes(dt0.getUTCMinutes() + k); return dt0.toISOString().slice(0, 16); };
+    let nReal = 0;
     const pr = bars.map((b, i) => { const v = +b.v || 0, r = b.h - b.l, pc = i ? bars[i - 1].c : b.o;
+      if (real && real[b.t.slice(0, 10)]) { let buy = 0, sell = 0; const mm = real[b.t.slice(0, 10)];
+        for (let k = 0; k < (d.interval || 1); k++) { const x = mm[addMin(b.t, k)]; if (x) { buy += x[0]; sell += x[1]; } }
+        nReal++; return { buy, sell, d: buy - sell, real: true }; }
       const buy = r > 0 ? v * (b.c - b.l) / r : (b.c > pc ? v : b.c < pc ? 0 : v / 2); return { buy, sell: v - buy, d: 2 * buy - v }; });
     const day = b => d.daily ? '' : b.t.slice(0, 10);
     let cum = 0, lastDay = null; const cd = bars.map((b, i) => { if (day(b) !== lastDay) { cum = 0; lastDay = day(b); } cum += pr[i].d; return cum; });
@@ -1637,7 +1649,7 @@ function fcSvg0(d, id, opts) {
     const tb = last.reduce((a, x) => a + x.buy, 0), ts = last.reduce((a, x) => a + x.sell, 0), share = tb + ts > 0 ? Math.round(tb / (tb + ts) * 100) : 50;
     const who = share >= 55 ? `<tspan fill="var(--gain)" font-weight="700">buyers in charge ${share}%</tspan>` : share <= 45 ? `<tspan fill="var(--loss)" font-weight="700">sellers in charge ${100 - share}%</tspan>` : `<tspan font-weight="700">balanced ${share}% buy</tspan>`;
     g += `<line x1="${L}" x2="${W - Rr}" y1="${VB}" y2="${VB}" stroke="var(--line)"/><line x1="${L}" x2="${W - Rr}" y1="${Z}" y2="${Z}" stroke="var(--line)" stroke-dasharray="2 3"/>`
-      + `<text x="${L + 2}" y="${VT + 10}" font-size="${fs}" fill="var(--muted)">Buy / sell pressure (volume split by where each candle closes in its range) · bars = buy − sell · line = running total${d.daily ? '' : ' (from each day\'s open)'} · last 20 candles: ${who}</text>`;
+      + `<text x="${L + 2}" y="${VT + 10}" font-size="${fs}" fill="var(--muted)">${nReal ? (nReal === n ? 'Cumulative volume delta (REAL: every trade classified buy / sell by the tick rule)' : 'Cumulative volume delta (real where loaded, estimated elsewhere)') : 'Buy / sell pressure (estimated: volume split by where each candle closes in its range)'}${d.flowLoading ? ' · loading the trades…' : ''} · bars = buy − sell · line = running total${d.daily ? '' : ' (from each day\'s open)'} · last 20 candles: ${who}</text>`;
     bars.forEach((b, i) => { const x = pr[i], y = DY(x.d);
       g += `<rect x="${X(i) - hw / 2}" y="${Math.min(y, Z)}" width="${hw}" height="${Math.max(1, Math.abs(y - Z))}" fill="${x.d >= 0 ? '#16a34a' : '#dc2626'}" opacity=".55"><title>${esc(b.t.replace('T', ' ').slice(5))} · volume ${Math.round(+b.v || 0).toLocaleString()} · buy ≈ ${Math.round(x.buy).toLocaleString()} · sell ≈ ${Math.round(x.sell).toLocaleString()} · running total ${Math.round(cd[i]).toLocaleString()}</title></rect>`; });
     g += `<path d="${cd.map((v, i) => `${i && day(bars[i]) === day(bars[i - 1]) ? 'L' : 'M'}${X(i).toFixed(1)},${CY(v).toFixed(1)}`).join('')}" fill="none" stroke="var(--coach,#5b5bd6)" stroke-width="1.6"/>`;
@@ -2145,7 +2157,7 @@ function vChartDT() {
     <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
     <span class="seg">${[1, 3, 5, 10, 20, 30].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
-    <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['pres', 'Pressure']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['pres', 'Pressure'], ['cvd', 'Order flow']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-dtreload style="padding:3px 10px" title="Reload the candles">↻</button>
     <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button>
     <span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen" title="Close">✕</a></div>`;
@@ -2153,7 +2165,7 @@ function vChartDT() {
   if (!d) main = '<p class="loading">Loading 1-minute candles…</p>';
   else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
   else {
-    const dd = { ...d, ema: (S.fcLayers.ema ? d.ema : []) };
+    const dd = withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []) });
     main = fcSvg(dd, id, { W, H: Math.max(380, H - 40), noAcc: true });
     const f2 = v => v == null ? '—' : (+v).toFixed(2), lv = Object.entries(d.pm || {}).map(([dy, x]) => `${dy.slice(5)} pre-market ${f2(x.h)} / ${f2(x.l)}`).concat(Object.entries(d.orbLv || {}).map(([dy, x]) => `${dy.slice(5)} opening range ${f2(x.h)} / ${f2(x.l)}`));
     main += `<div class="fcf-info" style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.84rem">
@@ -2266,7 +2278,7 @@ function vChartSD() {
   const id = 'sd-' + (sel ? sel.sym : 'none');
   const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sel ? sel.sym : 'Stocks in play')}</b> ${fcModeSeg()}
     <form id="sd-sym" style="display:inline-flex;gap:4px"><input id="sd-symin" placeholder="ticker" value="${esc(sel ? sel.sym : '')}" style="width:6em;padding:3px 6px"><input id="sd-datein" type="date" value="${esc(sel && sel.date ? sel.date : '')}" style="padding:2px 4px"><button class="btn" type="submit" style="padding:3px 10px">Chart</button></form>
-    <span class="seg">${[['sig', 'Signals'], ['vwap', 'VWAP'], ['fibs', 'Opening range'], ['pres', 'Pressure']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <span class="seg">${[['sig', 'Signals'], ['vwap', 'VWAP'], ['fibs', 'Opening range'], ['pres', 'Pressure'], ['cvd', 'Order flow']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button>
     <span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen" title="Close">✕</a></div>`;
   let main = '';
@@ -2274,7 +2286,7 @@ function vChartSD() {
     if (!d) main = '<p class="loading">Loading 1-minute candles…</p>';
     else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
     else if (!(d.bars || []).length) main = '<p class="muted">No candles for this day.</p>';
-    else { main = fcSvg(d, id, { W, H: Math.max(360, H - 40), noAcc: true });
+    else { main = fcSvg(withFlow(sel.sym, d), id, { W, H: Math.max(360, H - 40), noAcc: true });
       const sg = (d.signals || [])[0];
       main += `<div class="fcf-info" style="font-size:.84rem"><span><b>${esc(d.date)}</b> pre-market volume ${(d.pmVol || 0).toLocaleString()}${d.orb ? ` · opening range ${(+d.orb.h).toFixed(2)} / ${(+d.orb.l).toFixed(2)} (${d.orb.c > d.orb.o ? 'green' : d.orb.c < d.orb.o ? 'red' : 'doji'})` : ''}${sg ? ` · ${esc(sg.dir)} ${esc(sg.at.slice(11))} @ ${(+sg.entry).toFixed(2)} → ${esc(sg.status)} ${esc((sg.exitAt || '').slice(11))} @ ${(+sg.exit).toFixed(2)} <b class="${sg.R > 0 ? 'gain' : 'loss'}">${sg.R > 0 ? '+' : ''}${sg.R}R</b>` : ' · no trade with these settings'}</span></div>`; }
   } else main = '<p class="muted" style="padding:10px">Pick a stock from today\'s stocks in play or the backtest trades, or type a ticker and a date.</p>';
@@ -2284,6 +2296,22 @@ function vChartSD() {
       ${live.slice().reverse().map(r0 => `<tr><td>${esc(r0.symbol)}</td><td>${esc((r0.at || '').replace('T', ' ').slice(5))}</td><td>${esc(r0.dir || '')}</td><td class="r">${r0.qty ?? ''}</td><td class="r">${r0.level ?? ''}</td><td class="r">${r0.stop ?? ''}</td><td class="r">${r0.rvol ?? ''}</td><td>${esc(r0.status || '')}</td><td>${esc(r0.exitReason || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${S.hideSettings ? '' : sdPanel()}${sdPrepBox()}${sdBtBox()}`;
   return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${main}${info}</div></div></div>`;
+}
+S.flow = {};
+async function loadFlow2(sym, dates) {
+  const k = sym + '|' + dates.join(','); if (S.flowBusy2 === k) return; S.flowBusy2 = k;
+  try { S.flow[sym] = { k, ...(await api('/flow', { method: 'POST', body: { t: sym, dates } })) }; } catch (e) { S.flow[sym] = { k, error: e.message, days: {} }; }
+  S.flowBusy2 = null; if (route() === 'botchart') render();
+  clearTimeout(S.flowPoll2); if (S.flow[sym] && S.flow[sym].running && route() === 'botchart') S.flowPoll2 = setTimeout(() => { S.flow[sym] = { ...S.flow[sym], k: '' }; loadFlow2(sym, dates); }, 15000);
+}
+function withFlow(sym, d) {                       // the real order flow of the days on the chart (layer 'Order flow')
+  if (!S.fcLayers.cvd || !d || !(d.bars || []).length) return d;
+  const dates = [...new Set(d.bars.map(b => b.t.slice(0, 10)))].slice(-10), k = sym + '|' + dates.join(','), f = S.flow[sym];
+  if ((!f || f.k !== k) && S.flowBusy2 !== k) setTimeout(() => loadFlow2(sym, dates), 0);
+  if (!f || !f.days) return { ...d, flowLoading: true };
+  const cvd = {}, big = [];
+  Object.entries(f.days).forEach(([dy, x]) => { if (dates.includes(dy)) { cvd[dy] = x.min || {}; (x.big || []).forEach(r => big.push(r)); } });
+  return { ...d, cvd: Object.keys(cvd).length ? cvd : null, big, flowLoading: !!(f.missing || []).length };
 }
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {

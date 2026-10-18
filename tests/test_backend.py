@@ -3784,6 +3784,27 @@ def test_stockday_live_tick():
         stockday.scan_today, stockday._alp, stockday.creds = saved
 
 
+def test_order_flow_tick_rule():
+    """Real order flow: trades classified by the tick rule, per minute buy / sell, the largest trades, stored days."""
+    import orderflow
+    pages = [{"trades": {"SPY": [
+        {"t": "2026-03-04T14:30:01.1Z", "p": 500.0, "s": 100}, {"t": "2026-03-04T14:30:02Z", "p": 500.1, "s": 200},
+        {"t": "2026-03-04T14:30:03Z", "p": 500.1, "s": 50}, {"t": "2026-03-04T14:31:00Z", "p": 499.9, "s": 300}]}, "next_page_token": "x"},
+        {"trades": {"SPY": [{"t": "2026-03-04T14:31:30Z", "p": 499.9, "s": 10000}]}, "next_page_token": None}]
+    calls = []
+    def get(c, url, q):
+        calls.append(q.get("page_token"))
+        return pages[len(calls) - 1]
+    x = orderflow.day_flow({"key": "k"}, "SPY", "2026-03-04", get=get)
+    assert x["done"] and x["n"] == 5 and calls == [None, "x"]
+    assert x["min"]["2026-03-04T09:30"] == [350, 0]           # first trade: buy; uptick: buy; unchanged: same side
+    assert x["min"]["2026-03-04T09:31"] == [0, 10300]          # downtick: sell; unchanged: sell
+    assert x["big"][0] == ["2026-03-04T09:31", 499.9, 10000, -1]
+    orderflow.store("SPY", "2026-03-04", x)
+    days, missing = orderflow.get_days("u", "SPY", ["2026-03-04", "2026-03-05"])
+    assert list(days) == ["2026-03-04"] and missing == ["2026-03-05"]
+
+
 def test_nearest_expiration_walls():
     """Walls of the nearest expiration only: SPY tries the same day first, others the coming Friday; flip from the
     running net gamma; daytrade.walls_by_day follows the wallNear setting."""
