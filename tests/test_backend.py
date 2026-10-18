@@ -3421,6 +3421,33 @@ def test_day_scenario_study():
     assert sm["gaps"] and sm["levels"] and sum(v["n"] for v in sm["gaps"].values()) == 5 and "flip · from below" in str(sm["confluence"]) or sm["confluence"] is not None
 
 
+def test_day_scenario_study_cvd():
+    """Scenario study with CVD: CVD at 10:00 etc. -> move to the close, level touches split by CVD with / against the
+    approach (CVD of the candle before the touch); real order flow used for the minutes it covers."""
+    import daystudy, daytrade
+    bars = _dt_bars(6)
+    walls = {d: {"putWall": 499, "flip": 501, "callWall": 504} for d in {b["t"][:10] for b in bars}}
+    days, ev = daystudy.study_ticker(bars, walls, {})
+    d0 = days[0]
+    rb = [b for b in bars if b["t"][:10] == d0["d"] and "09:30" <= b["t"][11:16] < "16:00"]
+    est = daytrade._cvd_est(rb)
+    j = next(i for i, b in enumerate(rb) if b["t"][11:16] >= "10:00")
+    assert d0["cvdAt"]["10:00"]["cvd"] == round(est[j - 1])
+    assert abs(d0["cvdAt"]["10:00"]["move"] - round((rb[-1]["c"] / rb[j - 1]["c"] - 1) * 100, 3)) < 1e-9
+    e = next(x for x in ev if x["cvdWith"] is not None)
+    rbe = [b for b in bars if b["t"][:10] == e["d"] and "09:30" <= b["t"][11:16] < "16:00"]
+    cv = daytrade._cvd_est(rbe)[e["minute"] - 1]
+    assert e["cvdWith"] == (cv * (1 if e["side"] == "from below" else -1) > 0)
+    real = {rb[j - 1]["t"][:16]: 123456.0}
+    days2, _ = daystudy.study_ticker(bars, walls, {}, real_cvd=real)
+    assert next(x for x in days2 if x["d"] == d0["d"])["cvdAt"]["10:00"]["cvd"] == 123456
+    sm = daystudy.summarize(days, ev)
+    assert sm["cvdTime"] and sm["cvdLevels"]
+    for k, x in sm["cvdTime"].items():
+        assert x["n"] > 0 and 0 <= x["same"] <= 100
+    assert sum(x["n"] for k, x in sm["cvdTime"].items() if k.startswith("10:00") and k.endswith("all days")) == len([x for x in days if x["cvdAt"].get("10:00", {}).get("cvd")])
+
+
 def test_daytrade_new_rules_filters_exits():
     """Study rules, day filters (gap, VIX, other ticker, lunch, daily loss), breakeven / scale-out / time stop /
     level target; indicators reused across settings (cache)."""

@@ -2154,8 +2154,21 @@ function dtStudyBox() {
   const flip = fg.length ? `<b style="font-size:.88rem;display:block;margin:10px 0 4px">Gamma flip × gap</b><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th(['Open', 'Days', 'Green close', 'Open → close'])}<tbody>
     ${fg.map(([k, x]) => `<tr><td>${esc(k)}</td><td class="r">${x.n}</td><td class="r">${x.greenClose}%</td><td class="r">${P(x.oc)}</td></tr>`).join('')}</tbody></table></div>` : '';
   return head + `<p class="muted" style="font-size:.8rem;margin:4px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${esc((t.tickers || []).join(', '))} · ${t.nDays} days · ${t.nEvents} level touches · gamma walls (${t.wallNear ? 'nearest expiration' : 'all expirations'}) on ${t.wallDays} days, dark pool levels on ${t.dpDays} days · data ${esc(Object.entries(t.feed || {}).map(([k, v]) => `${k} ${v.toUpperCase()}`).join(', '))}</p>
-    <b style="font-size:.88rem;display:block;margin:6px 0 4px">Gaps</b>${gaps}${levels}${conf}${flip}
+    <b style="font-size:.88rem;display:block;margin:6px 0 4px">Gaps</b>${gaps}${levels}${conf}${flip}${dtStudyCvd(t, P)}
     ${(t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+}
+function dtStudyCvd(t, P) {
+  const th = cols => `<thead><tr>${cols.map((c, i) => `<th${i ? ' class="r"' : ''}>${c}</th>`).join('')}</tr></thead>`;
+  const ct = Object.entries(t.cvdTime || {}), cl = Object.entries(t.cvdLevels || {});
+  if (!ct.length && !cl.length) return '<p class="muted" style="font-size:.8rem;margin:10px 0 0">CVD: run the study again to get the CVD tables.</p>';
+  const src = `<span class="muted" style="font-weight:400;font-size:.75rem">real order flow on ${t.cvdRealDays ?? 0} days (loaded on the chart), estimated from the candles on the others</span>`;
+  const time = ct.length ? `<b style="font-size:.88rem;display:block;margin:10px 0 4px">CVD at a time → rest of the day ${src}</b>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th(['Time · CVD · day', 'Days', 'Close moved the CVD way', 'Avg move to the close'])}<tbody>
+    ${ct.map(([k, x]) => `<tr><td>${esc(k)}</td><td class="r">${x.n}</td><td class="r">${x.same}%</td><td class="r">${P(x.move)}</td></tr>`).join('')}</tbody></table></div>`: '';
+  const lv = cl.length ? `<b style="font-size:.88rem;display:block;margin:10px 0 4px">Level touches × CVD <span class="muted" style="font-weight:400;font-size:.75rem">with = CVD on the side of the approach (> 0 on a test from below, < 0 from above) just before the touch</span></b>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th(['Level · approach', 'With: touches', 'held', '+30 min', 'close', 'Against: touches', 'held', '+30 min', 'close'])}<tbody>
+    ${cl.map(([k, x]) => `<tr><td>${esc(k)}</td><td class="r">${x.with.n}</td><td class="r">${x.with.n ? x.with.held + '%' : '—'}</td><td class="r">${P(x.with.f30)}</td><td class="r">${P(x.with.fc)}</td><td class="r">${x.against.n}</td><td class="r">${x.against.n ? x.against.held + '%' : '—'}</td><td class="r">${P(x.against.f30)}</td><td class="r">${P(x.against.fc)}</td></tr>`).join('')}</tbody></table></div>` : '';
+  return time + lv;
 }
 function vChartDT() {
   if (S.dt === undefined) { S.dt = null; setTimeout(loadDT, 0); }

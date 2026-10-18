@@ -31,9 +31,21 @@ def gap_bucket(g):
     return "gap up > 1%" if g > 1 else "gap up 0.25-1%" if g > 0.25 else "gap down > 1%" if g < -1 else "gap down 0.25-1%" if g < -0.25 else "flat (±0.25%)"
 
 
-def study_ticker(bars, walls=None, dp_map=None, orb_min=15, start=None):
+CVD_AT = ("10:00", "10:30", "11:00", "12:00", "14:00")
+
+
+def _cvd_day(rb, real=None):
+    """Cumulative volume delta from the open for each regular-session candle: the real one (order flow loaded) when
+    there is one for that minute, else estimated from the candle (volume split by where it closes in its range)."""
+    import daytrade
+    est = daytrade._cvd_est(rb)
+    real = real or {}
+    return [real.get(b["t"][:16], est[i]) for i, b in enumerate(rb)]
+
+
+def study_ticker(bars, walls=None, dp_map=None, orb_min=15, start=None, real_cvd=None):
     """bars: 1-minute candles (pre-market included). Returns (days [...], events [...])."""
-    walls, dp_map = walls or {}, dp_map or {}
+    walls, dp_map, real_cvd = walls or {}, dp_map or {}, real_cvd or {}
     by = _days(bars)
     dates = sorted(by)
     reg = {d: [b for b in by[d] if "09:30" <= b["t"][11:16] < "16:00"] for d in dates}
@@ -58,11 +70,18 @@ def study_ticker(bars, walls=None, dp_map=None, orb_min=15, start=None):
         oh, ol = max(b["h"] for b in orb), min(b["l"] for b in orb)
         w = walls.get(d) or {}
         flip = float(w["flip"]) if w.get("flip") else None
+        cvd = _cvd_day(rb, real_cvd)
+        cvd_at = {}
+        for hm in CVD_AT:
+            j = next((i for i, b in enumerate(rb) if b["t"][11:16] >= hm), None)
+            if j and j > 0:                                   # CVD at the close of the candle before hm, move hm -> close
+                cvd_at[hm] = {"cvd": round(cvd[j - 1]), "move": round((c / rb[j - 1]["c"] - 1) * 100, 3)}
         days.append({"d": d, "gap": round(gap, 3), "gapAtr": round((o - pc) / atr, 2) if atr else None, "bucket": gap_bucket(gap),
                      "filled": fill_i is not None, "fillMin": fill_i, "oc": round((c / o - 1) * 100, 3),
                      "upOpen": round((hi / o - 1) * 100, 3), "dnOpen": round((lo / o - 1) * 100, 3),
                      "closeVsPrev": "above prev high" if c > ph else "below prev low" if c < pl else "inside prev range",
-                     "aboveFlip": (o > flip) if flip else None})
+                     "aboveFlip": (o > flip) if flip else None, "cvdAt": cvd_at,
+                     "cvdReal": any(b["t"][:16] in real_cvd for b in rb[:5])})
         gw = [("put wall", w.get("putWall")), ("flip", w.get("flip")), ("call wall", w.get("callWall"))]
         gw = [(n, float(v)) for n, v in gw if v]
         dps = [float(x) for x in (dp_map.get(d) or [])]
@@ -90,8 +109,10 @@ def study_ticker(bars, walls=None, dp_map=None, orb_min=15, start=None):
                 held = len(beyond) >= 15 and all((x - L) * side > 0 for x in beyond[14:30]) and any((x - L) * side > L * 0.0005 for x in beyond[:15])
                 mfe = max(((x["h"] if side > 0 else -x["l"]) for x in after[:31]), default=0)
                 mae = min(((x["l"] if side > 0 else -x["h"]) for x in after[:31]), default=0)
+                cv = cvd[i - 1]                         # CVD before the touch candle: known at that time
                 events.append({"d": d, "t": b["t"], "level": name, "price": round(L, 4), "side": "from below" if side > 0 else "from above",
                                "bucket": days[-1]["bucket"], "conf": conf, "held": bool(held),
+                               "cvdWith": (cv * side > 0) if cv else None,
                                "f5": fwd(5), "f15": fwd(15), "f30": fwd(30), "f60": fwd(60), "fc": fwd(len(after) - 1),
                                "mfe30": round(((mfe if side > 0 else -mfe) / L - 1) * 100 * side, 3),
                                "mae30": round(((mae if side > 0 else -mae) / L - 1) * 100 * side, 3),
@@ -144,7 +165,24 @@ def summarize(days, events):
         flip_gap.setdefault(k, []).append(x)
     flip = {k: {"n": len(v), "greenClose": round(sum(1 for x in v if x["oc"] > 0) / len(v) * 100, 1),
                 "oc": round(sum(x["oc"] for x in v) / len(v), 3)} for k, v in sorted(flip_gap.items())}
-    return {"gaps": gaps, "levels": levels, "byGap": by_gap, "confluence": conf, "flipGap": flip}
+    cvd_lv = {}
+    for k in sorted({key(e) for e in events}):
+        ev = [e for e in events if key(e) == k]
+        cvd_lv[k] = {"with": _agg([e for e in ev if e.get("cvdWith") is True]), "against": _agg([e for e in ev if e.get("cvdWith") is False])}
+    cvd_time = {}
+    for hm in CVD_AT:
+        for lab, f in (("all days", lambda x: True), ("above the flip at the open", lambda x: x["aboveFlip"] is True),
+                       ("below the flip at the open", lambda x: x["aboveFlip"] is False)):
+            for sg, nm in ((1, "CVD > 0"), (-1, "CVD < 0")):
+                xs = [x["cvdAt"][hm] for x in days if f(x) and hm in (x.get("cvdAt") or {}) and x["cvdAt"][hm]["cvd"] * sg > 0]
+                if not xs:
+                    continue
+                n = len(xs)
+                cvd_time[f"{hm} · {nm} · {lab}"] = {
+                    "hm": hm, "n": n, "same": round(sum(1 for x in xs if x["move"] * sg > 0) / n * 100, 1),
+                    "move": round(sum(x["move"] for x in xs) / n, 3)}
+    return {"gaps": gaps, "levels": levels, "byGap": by_gap, "confluence": conf, "flipGap": flip,
+            "cvdLevels": cvd_lv, "cvdTime": cvd_time, "cvdRealDays": sum(1 for x in days if x.get("cvdReal"))}
 
 
 def run(sub, params=None, budget_s=540):
@@ -178,7 +216,11 @@ def run(sub, params=None, budget_s=540):
                 dpm = wallwatch.dp_level_map(backtest.stored_darkpool(sym), dates)
             except Exception:
                 dpm = {}
-            ds, ev = study_ticker(bars, walls, dpm, int(p.get("orbMin") or cfg.get("orbMin") or 15), dates[0] if dates else None)
+            try:
+                rc = daytrade.real_cvd(sym, dates)
+            except Exception:
+                rc = {}
+            ds, ev = study_ticker(bars, walls, dpm, int(p.get("orbMin") or cfg.get("orbMin") or 15), dates[0] if dates else None, rc)
             del bars
             for x in ds:
                 x["sym"] = sym
