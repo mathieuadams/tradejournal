@@ -1915,9 +1915,17 @@ function dtUnpack(d) {                           // the server sends long series
   Object.keys(d).forEach(k => { const v = d[k]; if (v && v._p && v.cols && v.cols[0] === 'i') d[k] = v.rows.map(r => { const o = { t: ts[r[0]] }; v.cols.slice(1).forEach((c, j) => { o[c] = r[j + 1]; }); return o; }); });
   return d;
 }
+const dtTfEff = () => (S.dtTf === 1 && S.dtDays >= 20 ? 5 : S.dtTf);   // 20-30 days of 1-minute candles: drawn as 5-minute (12,000 candles freeze the page)
+function svgCached(slot, ref, key, draw) {        // the chart SVG is rebuilt only when its data / view changes, not on every page refresh
+  const c = S._svg && S._svg[slot];
+  if (c && c.ref === ref && c.key === key) return c.html;
+  const html = draw();
+  S._svg = { ...(S._svg || {}), [slot]: { ref, key, html } };
+  return html;
+}
 async function loadDTChart(sym) {
-  const k = `dt|${sym}|${S.dtTf}|${S.dtDays}`; S.dtBusy = k; if (route() === 'botchart') render();
-  try { S.dtFc = { k, d: dtUnpack(await api('/daytrade/chart', { method: 'POST', body: { t: sym, days: S.dtDays, tf: S.dtTf } })) }; } catch (e) { S.dtFc = { k, d: { error: e.message } }; }
+  const k = `dt|${sym}|${dtTfEff()}|${S.dtDays}`; S.dtBusy = k; if (route() === 'botchart') render();
+  try { S.dtFc = { k, d: dtUnpack(await api('/daytrade/chart', { method: 'POST', body: { t: sym, days: S.dtDays, tf: dtTfEff() } })) }; } catch (e) { S.dtFc = { k, d: { error: e.message } }; }
   S.dtBusy = null; if (route() === 'botchart') render();
 }
 function dtCfg() { return { ...((S.dt && S.dt.config) || {}), ...(S.dtDraft || {}) }; }
@@ -2146,7 +2154,7 @@ function vChartDT() {
   if (S.dt === undefined) { S.dt = null; setTimeout(loadDT, 0); }
   const cfg = dtCfg(), tickers = cfg.tickers || ['QQQ', 'SPY'], t0 = (hashParam('t') || '').toUpperCase();
   const sym = tickers.includes(t0) ? t0 : tickers[0];
-  const k = `dt|${sym}|${S.dtTf}|${S.dtDays}`, d = S.dtFc && S.dtFc.k === k ? S.dtFc.d : null;
+  const k = `dt|${sym}|${dtTfEff()}|${S.dtDays}`, d = S.dtFc && S.dtFc.k === k ? S.dtFc.d : null;
   if (!d && S.dtBusy !== k) setTimeout(() => loadDTChart(sym), 0);
   const narrow = window.innerWidth < 800, headH = S.fcfHeadH || 58;
   const W = Math.max(320, window.innerWidth - 20), H = Math.max(420, window.innerHeight - headH - 90);   // settings / backtest below: scroll
@@ -2168,8 +2176,9 @@ function vChartDT() {
   if (!d) main = '<p class="loading">Loading 1-minute candles…</p>';
   else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
   else {
-    const dd = withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []) });
-    main = fcSvg(dd, id, { W, H: Math.max(380, H - 40), noAcc: true });
+    const fl = S.flow[sym] || {}, ck = [JSON.stringify(S.fcLayers), JSON.stringify(S.fcZoom[fcKey(id)] || null), W, H, fl.k, (fl.missing || []).length, Object.keys(fl.days || {}).length, S.dpN, (() => { const x = S.fcDp[fcKey(id)]; return x ? `${(x.levels || []).length}/${(x.prints || []).length}/${x.error || ''}` : '-'; })()].join('|');
+    main = svgCached('dt', d, ck, () => fcSvg(withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []) }), id, { W, H: Math.max(380, H - 40), noAcc: true }));
+    if (S.dtTf === 1 && S.dtDays >= 20) main += '<p class="muted" style="font-size:.78rem;margin:2px 4px">20-30 days: shown with 5-minute candles (the signals still come from the 1-minute engine). Pick 10 days or less for 1-minute candles.</p>';
     const f2 = v => v == null ? '—' : (+v).toFixed(2), lv = Object.entries(d.pm || {}).map(([dy, x]) => `${dy.slice(5)} pre-market ${f2(x.h)} / ${f2(x.l)}`).concat(Object.entries(d.orbLv || {}).map(([dy, x]) => `${dy.slice(5)} opening range ${f2(x.h)} / ${f2(x.l)}`));
     main += `<div class="fcf-info" style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.84rem">
       <span><b>This view</b> ${sigs.length} trade${sigs.length === 1 ? '' : 's'} · win ${st.win ?? 0}% · avg ${R(st.avgR)} · total ${R(st.totR)} · PF ${st.pf ?? '—'} · ${Object.entries(st.exits || {}).map(([a, b]) => `${esc(a)} ${b}`).join(' · ')}</span>
@@ -2289,7 +2298,8 @@ function vChartSD() {
     if (!d) main = '<p class="loading">Loading 1-minute candles…</p>';
     else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
     else if (!(d.bars || []).length) main = '<p class="muted">No candles for this day.</p>';
-    else { main = fcSvg(withFlow(sel.sym, d), id, { W, H: Math.max(360, H - 40), noAcc: true });
+    else { const fl = S.flow[sel.sym] || {}, ck = [JSON.stringify(S.fcLayers), JSON.stringify(S.fcZoom[fcKey(id)] || null), W, H, fl.k, (fl.missing || []).length, Object.keys(fl.days || {}).length].join('|');
+      main = svgCached('sd', d, ck, () => fcSvg(withFlow(sel.sym, d), id, { W, H: Math.max(360, H - 40), noAcc: true }));
       const sg = (d.signals || [])[0];
       main += `<div class="fcf-info" style="font-size:.84rem"><span><b>${esc(d.date)}</b> pre-market volume ${(d.pmVol || 0).toLocaleString()}${d.orb ? ` · opening range ${(+d.orb.h).toFixed(2)} / ${(+d.orb.l).toFixed(2)} (${d.orb.c > d.orb.o ? 'green' : d.orb.c < d.orb.o ? 'red' : 'doji'})` : ''}${sg ? ` · ${esc(sg.dir)} ${esc(sg.at.slice(11))} @ ${(+sg.entry).toFixed(2)} → ${esc(sg.status)} ${esc((sg.exitAt || '').slice(11))} @ ${(+sg.exit).toFixed(2)} <b class="${sg.R > 0 ? 'gain' : 'loss'}">${sg.R > 0 ? '+' : ''}${sg.R}R</b>` : ' · no trade with these settings'}</span></div>`; }
   } else main = '<p class="muted" style="padding:10px">Pick a stock from today\'s stocks in play or the backtest trades, or type a ticker and a date.</p>';
