@@ -1272,6 +1272,14 @@ def _wallwatch_exit(sub, rec, p):
     if ww.get("pvEodPw") and str(ww.get("signalAt") or "")[:10] == now.strftime("%Y-%m-%d") \
             and now.hour * 60 + now.minute >= 15 * 60 + 50 and last["c"] < float(ww["pvEodPw"]):
         return f"entry day closing under the put wall {ww['pvEodPw']} ({last['c']:.2f})"
+    if ww.get("pwExit") and now.hour * 60 + now.minute >= 15 * 60 + 50:
+        try:                                           # closing under today's put wall: out before the bell
+            import flowdata
+            pw_ = (flowdata.stored_walls(rec["symbol"]).get(now.strftime("%Y-%m-%d")) or {}).get("putWall")
+            if pw_ and last["c"] < float(pw_):
+                return f"closing under the put wall {pw_} ({last['c']:.2f})"
+        except Exception as e:
+            print("put wall exit check failed", rec.get("symbol"), e)
     if ww.get("flipExit") and ww.get("aboveFlipAtEntry") and now.hour * 60 + now.minute >= 15 * 60 + 50:
         try:                                           # closing under today's gamma flip: out before the bell
             import flowdata

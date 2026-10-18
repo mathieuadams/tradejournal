@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1,
+          "inYExit": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -131,7 +131,7 @@ def version(cfg):
 
 
 # rules added later: in the version only when one is on (signals made before them stay valid)
-EXTRA_SW = ("abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
+EXTRA_SW = ("pwExit", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
 EXTRA_NUM = ("cvdN", "sqTurnN", "inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
 
 
@@ -175,7 +175,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "pwExit", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -420,6 +420,10 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
     if s.get("pvEod") and is_last and b["t"][:10] == s["at"][:10] and s.get("level") and b["c"] < float(s["level"]):
         s.update(status="eodpw", exitAt=b["t"][:16], exit=b["c"])        # the entry day closed under the support: out
         return
+    pw_d = (walls.get(b["t"][:10]) or {}).get("putWall")
+    if s.get("pwExit") and is_last and pw_d and b["c"] < float(pw_d):
+        s.update(status="pwlost", exitAt=b["t"][:16], exit=b["c"], lostLevel=f"put wall {float(pw_d):g}")
+        return                                         # the day closed under the day's put wall: out
     if s.get("sqhExit") and sqh and not sqh["up"]:
         s.update(status="squeeze", exitAt=b["t"][:16], exit=b["c"])     # hourly squeeze momentum falling: out at this close
         return
@@ -1099,7 +1103,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
              "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
              "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
-             "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"),
+             "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"), "pwExit": on("pwExit"),
              "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
              "inRedExit": on("inRedExit"), "inYExit": on("inYExit"), "inhYExit": on("inhYExit"), "sqhExit": on("sqhExit"), "sqdExit": on("sqdExit"),
              "inhSt": (inh[i] or {}).get("s") if inh else None, "inSt": (inr[i] or {}).get("s") if inr else None,
@@ -1428,7 +1432,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
              "stop": st if on("stopOn") else 0.0, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
              "last": b["c"], "lastAt": b["t"], "aboveFlipAtEntry": bool(fl and b["c"] > fl), "flipChg": _flip_chg(walls, day),
              "ema": round(ema[i], 4) if ema[i] is not None else None, "emaExit": on("emaExit"), "kcRide": on("kcRide"),
-             "cwLost": on("cwLost"), "fvgExit": on("fvgExit"), "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1),
+             "cwLost": on("cwLost"), "fvgExit": on("fvgExit"), "pwExit": on("pwExit"), "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1),
              "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "inRedExit": on("inRedExit"),
              "inYExit": on("inYExit"), "inhYExit": on("inhYExit"), "inhSt": (inh[i] or {}).get("s"),
              "sqhExit": on("sqhExit"), "sqdExit": on("sqdExit"),
@@ -1500,7 +1504,7 @@ def pv_long_trades(bars, walls, events, cfg=None, datr=None, vwap=None, ema=None
              "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])),
              "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"), "cwLost": on("cwLost"), "dpLost": on("dpLost"),
-             "pvEod": on("pvEod"), "fvgExit": on("fvgExit"),
+             "pvEod": on("pvEod"), "fvgExit": on("fvgExit"), "pwExit": on("pwExit"),
              "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "kc": list(kc[i]) if kc[i] else None,
              "kcPos": e.get("kcPos"), "above": e.get("above"), "green": e.get("green")}
         if fvg_t is not None and fvg_t[i]:
@@ -1778,7 +1782,7 @@ def enter(sub, sym, sg):
               "vwapExit": bool(cfg.get("vwapExit")), "emaExit": bool(cfg.get("emaExit")), "emaLen": int(cfg.get("emaLen") or 20),
               "kcRide": bool(cfg.get("kcRide")), "kcLen": int(cfg.get("kcLen") or 21), "kcMult": float(cfg.get("kcMult") or 3),
               "kcDaily": bool(cfg.get("kcDaily", True)),
-              "cwLost": bool(cfg.get("cwLost")), "dpLost": bool(cfg.get("dpLost")),
+              "cwLost": bool(cfg.get("cwLost")), "dpLost": bool(cfg.get("dpLost")), "pwExit": bool(cfg.get("pwExit")),
               "vwapDays": int(cfg.get("vwapDays") or VWAP_DAYS),
               "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),

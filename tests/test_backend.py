@@ -3073,6 +3073,33 @@ def test_swing_squeeze_turn_rule():
     assert wallwatch._sq_ok({"tAgo": 2}, "turn", 3) and not wallwatch._sq_ok({"tAgo": 3}, "turn", 3) and not wallwatch._sq_ok({"tAgo": None}, "turn", 5)
 
 
+def test_swing_close_under_pw_exit():
+    """Close under PW exit: sold at the first daily close under that day's put wall (1D and the hourly step)."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [200 + 20 * math.sin(d / 7) for d in range(120)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = [{"t": f"{d}T{h}", "o": c - 0.2, "h": c + 0.3, "l": c - 0.3, "c": c, "v": 1} for d, c in zip(days, cl) for h in H]
+    w = {d: {"putWall": 205, "callWall": 9999, "flip": 1} for d in days}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopOn": False, "stopAtr": 0.5,
+           "usePW": False, "useFlip": False, "abovePW": True}
+    sg = wallwatch.detect_retest(hb, w, None, {**cfg, "pwExit": True}, None)[0]
+    done = [x for x in sg if x["status"] != "open"]
+    assert done and all(x["status"] == "pwlost" and x["exit"] < 205 for x in done)
+    close = {d: c for d, c in zip(days, cl)}
+    for x in done:                                      # the FIRST daily close under the put wall after the entry
+        between = [d for d in days if x["at"][:10] < d < x["exitAt"][:10]]
+        assert all(close[d] >= 205 for d in between)
+    off = wallwatch.detect_retest(hb, w, None, cfg, None)[0]
+    assert all(x["status"] != "pwlost" for x in off)
+    st = {"kind": "retest", "entry": 210, "stop": 0.0, "stop0": 200, "pwExit": True, "at": "2026-01-01T10:30"}
+    wallwatch._step(st, {"t": "2026-01-02T14:30", "o": 206, "h": 206, "l": 204, "c": 204}, w, 0.0, False, False)
+    assert "exitAt" not in st                           # not the daily close yet
+    wallwatch._step(st, {"t": "2026-01-02T15:30", "o": 204, "h": 204.5, "l": 203, "c": 204}, w, 0.0, False, True)
+    assert st["status"] == "pwlost" and st["exit"] == 204
+
+
 def test_no_support_any_candle():
     """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
     import wallwatch, datetime as dt
