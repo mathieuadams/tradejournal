@@ -531,6 +531,12 @@ def daytrade_search_get(sub, claims, body, q):
     return dtsearch.result(sub)
 
 
+@route("GET", "/daytrade/flipcheck")
+def daytrade_flipcheck(sub, claims, body, q):
+    import daytrade
+    return daytrade.flip_check(sub)
+
+
 @route("POST", "/daytrade/study")
 def daytrade_study(sub, claims, body, q):
     import daystudy

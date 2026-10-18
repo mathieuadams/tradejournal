@@ -414,6 +414,12 @@ Resources:
             ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "tick"}'
+        FlipSnap:           # the flip / walls as Unusual Whales shows them before / at the open (look-ahead check)
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(20,32,40 9 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "flipsnap"}'
         DayTrade:           # every minute: the day-trading account (1-minute strategy on QQQ / SPY)
           Type: ScheduleV2
           Properties:

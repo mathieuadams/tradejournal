@@ -1270,3 +1270,74 @@ def tick(sub, now=None):
         except Exception as e:
             acts.append(f"{sym}: {str(e)[:120]}")
     return {"actions": acts}
+
+
+# ---------- morning flip check: the flip as seen before / at the open vs the one the backtest uses ----------
+
+SNAP_TIMES = ("09:20", "09:32", "09:40")
+
+
+def flip_snap_job(now=None):
+    """Scheduled 09:20 / 09:32 / 09:40 ET: one Unusual Whales key (the first user with day trading set up, else any
+    key), the day tickers of every day-trading user (QQQ / SPY at least)."""
+    import flowdata
+    now = now or now_ny()
+    users = [p["PK"][5:] for p in db.scan_sk(SK)]
+    tickers = {"QQQ", "SPY"}
+    for u in users:
+        try:
+            tickers |= set(config(u)["tickers"])
+        except Exception:
+            pass
+    keyed = users + [r["PK"][5:] for r in db.scan_sk(flowdata.SK)]
+    key, sub = None, None
+    for u in keyed:
+        try:
+            key, sub = flowdata._key(u), u
+            break
+        except Exception:
+            continue
+    if not key:
+        return {"skipped": "no Unusual Whales key"}
+
+    def price(sym):
+        try:
+            if now.strftime("%H:%M") < "09:31":
+                return None
+            bs = minute_bars(sub, sym, 1, now.replace(tzinfo=None), feed="iex")
+            reg = [b for b in bs if b["t"][:10] == now.strftime("%Y-%m-%d") and b["t"][11:16] >= "09:30"]
+            return reg[0]["o"] if reg else None                 # the day's open
+        except Exception:
+            return None
+    return flowdata.flip_snapshot(key, sorted(tickers), now, price)
+
+
+def flip_check(sub, days=60):
+    """Per day and ticker: the flip at 09:20 / 09:32 / 09:40 (as it was then), the stored one (what the backtest
+    uses), the open, and whether 'opened above / below the flip' agrees. Summary: how often it agrees."""
+    import flowdata
+    snaps = flowdata.flip_snapshots()
+    by = {}
+    for r in snaps:
+        by.setdefault((r["date"], r["sym"]), {})[r["hm"]] = r
+    rows, agree, n = [], 0, 0
+    stored = {}
+    for (d, sym) in sorted(by, reverse=True)[: days * 4]:
+        if sym not in stored:
+            try:
+                stored[sym] = flowdata.stored_walls(sym)
+            except Exception:
+                stored[sym] = {}
+        s = by[(d, sym)]
+        st = (stored[sym].get(d) or {})
+        op = next((float(x["price"]) for x in s.values() if x.get("price")), None)
+        morning = next((float(s[h]["flip"]) for h in ("09:40", "09:32", "09:20") if h in s and s[h].get("flip")), None)
+        sf = float(st["flip"]) if st.get("flip") else None
+        side = lambda f: None if (f is None or op is None) else ("above" if op > f else "below")
+        ok = side(morning) is not None and side(sf) is not None and side(morning) == side(sf)
+        if side(morning) is not None and side(sf) is not None:
+            n += 1
+            agree += ok
+        rows.append({"date": d, "sym": sym, "open": op, "snaps": {h: (float(s[h]["flip"]) if s.get(h, {}).get("flip") else None) for h in SNAP_TIMES},
+                     "stored": sf, "sideMorning": side(morning), "sideStored": side(sf), "agree": ok if side(morning) and side(sf) else None})
+    return {"rows": rows[:200], "n": n, "agree": agree, "pct": round(agree / n * 100, 1) if n else None}

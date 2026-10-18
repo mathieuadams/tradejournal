@@ -3615,6 +3615,28 @@ def test_day_walls_fetch_missing_days():
         flowdata.stored_walls, flowdata.gex_day, flowdata._key = saved
 
 
+def test_morning_flip_check():
+    """Morning snapshots of the flip (fresh from Unusual Whales) and the check against the stored flip."""
+    import datetime as dt
+    import daytrade
+    import flowdata
+    saved = (flowdata.snap_walls, flowdata.stored_walls)
+    try:
+        vals = {"09:20": 500.0, "09:32": 501.0, "09:40": 502.0}
+        flowdata.snap_walls = lambda key, sym, d: {"callWall": 510, "putWall": 490, "flip": vals[cur[0]]}
+        cur = ["09:20"]
+        for hm in ("09:20", "09:32", "09:40"):
+            cur[0] = hm
+            flowdata.flip_snapshot("k", ["QQQ"], dt.datetime(2026, 3, 4, int(hm[:2]), int(hm[3:])), lambda sym: (None if hm == "09:20" else 505.0))
+        flowdata.stored_walls = lambda sym: {"2026-03-04": {"flip": 508.0}}
+        r = daytrade.flip_check("u")
+        row = next(x for x in r["rows"] if x["date"] == "2026-03-04" and x["sym"] == "QQQ")
+        assert row["snaps"] == {"09:20": 500.0, "09:32": 501.0, "09:40": 502.0} and row["open"] == 505.0
+        assert row["sideMorning"] == "above" and row["sideStored"] == "below" and row["agree"] is False and r["pct"] == 0.0
+    finally:
+        flowdata.snap_walls, flowdata.stored_walls = saved
+
+
 def test_nearest_expiration_walls():
     """Walls of the nearest expiration only: SPY tries the same day first, others the coming Friday; flip from the
     running net gamma; daytrade.walls_by_day follows the wallNear setting."""

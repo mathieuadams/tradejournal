@@ -706,3 +706,49 @@ def dp_levels(prints, top_n=5):
         for lv in out:
             lv.pop("times", None)
     return out
+
+
+# ---------- morning flip snapshots: the walls / flip exactly as Unusual Whales shows them before / at the open ----------
+
+SNAP_PK = "FLIPSNAP"
+
+
+def snap_walls(key, ticker, date):
+    """Fresh (no cache) walls + flip for `date` as Unusual Whales returns them right now."""
+    s = _uw(key, f"/api/stock/{urllib.parse.quote(ticker)}/greek-exposure/strike", {"date": date}) or {}
+    raw = s.get("data") if isinstance(s, dict) else s
+    rows = [r for r in raw or [] if isinstance(r, dict) and _num(r.get("strike")) is not None]
+    cw = pw = None
+    if rows:
+        cg = lambda r: _pick(r, "call_gex", "call_gamma", "call_gamma_oi") or 0
+        pg = lambda r: _pick(r, "put_gex", "put_gamma", "put_gamma_oi") or 0
+        cw, pw = walls_from_strikes([[_num(r["strike"]), round(cg(r)), round(pg(r))] for r in rows])
+    return {"callWall": cw, "putWall": pw, "flip": _flip(key, ticker, date)}
+
+
+def flip_snapshot(key, tickers, now=None, price=None):
+    """Store the walls / flip of today for each ticker, stamped with the time (FLIPSNAP / ticker#date#HH:MM)."""
+    import time as _t
+    from decimal import Decimal
+    now = now or now_ny()
+    d, hm = now.strftime("%Y-%m-%d"), now.strftime("%H:%M")
+    out = {}
+    for sym in tickers:
+        try:
+            w = snap_walls(key, sym, d)
+            px = price(sym) if price else None
+            item = {"PK": SNAP_PK, "SK": f"{sym}#{d}#{hm}", "sym": sym, "date": d, "hm": hm, "at": int(_t.time()),
+                    **{k: Decimal(str(v)) for k, v in w.items() if v is not None}}
+            if px:
+                item["price"] = Decimal(str(round(px, 4)))
+            db.put(item)
+            out[sym] = {**w, "price": px}
+        except Exception as e:
+            out[sym] = {"error": str(e)[:120]}
+    return out
+
+
+def flip_snapshots(ticker=None):
+    from decimal import Decimal
+    rows = db.q_prefix(SNAP_PK, f"{ticker}#" if ticker else "")
+    return [{k: (float(v) if isinstance(v, Decimal) else v) for k, v in r.items() if k not in ("PK", "SK")} for r in rows]

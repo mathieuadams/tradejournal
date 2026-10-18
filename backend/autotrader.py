@@ -1855,6 +1855,9 @@ def handler(event, context_):
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed", "closed"))})
     elif job == "review":  # end of day: users with open bot positions
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
+    elif job == "flipsnap":    # 09:20 / 09:32 / 09:40 ET: the flip as Unusual Whales shows it before / at the open
+        import daytrade
+        return {"flipsnap": daytrade.flip_snap_job()}
     elif job == "daytick":     # every minute: users with day trading on
         subs = [p["PK"][5:] for p in db.scan_sk("DTCFG") if p.get("enabled")]
     elif job == "wallwatch":   # every hour: users with the wall watchlist on

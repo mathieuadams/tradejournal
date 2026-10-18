@@ -2010,6 +2010,19 @@ function dtSearchBox() {
     <details style="margin:4px 0"><summary style="font-size:.84rem;cursor:pointer">Every change tested in the last round (most total R on the 1st half first)</summary><div style="overflow-x:auto;max-height:380px;overflow-y:auto"><table class="pos" style="font-size:.78rem">${th}<tbody>${(t.table || []).map(x => row(lab(x.label), x)).join('')}</tbody></table></div></details>
     ${(t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
 }
+async function loadFlipCheck() { try { S.flipChk = await api('/daytrade/flipcheck'); } catch (e) { S.flipChk = { error: e.message }; } if (route() === 'botchart') render(); }
+function flipCheckBox() {
+  if (S.flipChk === undefined) { S.flipChk = null; setTimeout(loadFlipCheck, 0); }
+  const t = S.flipChk || {}, rows = t.rows || [];
+  const f2 = v => v == null ? '—' : (+v).toFixed(2);
+  const head = `<div style="display:flex;gap:6px;align-items:center;margin-top:14px;flex-wrap:wrap"><b style="font-size:.95rem">Morning flip check</b>
+    <span class="muted" style="font-size:.78rem">the flip recorded every trading day at 09:20 / 09:32 / 09:40 ET (as Unusual Whales showed it then) vs the stored one the backtest uses. If “opened above / below the flip” agrees almost every day, the backtest's same-day flip is safe to trust.</span></div>`;
+  if (t.error) return head + `<div class="errbox">${esc(t.error)}</div>`;
+  if (!rows.length) return head + '<p class="muted" style="font-size:.82rem">No recording yet: the first one is taken on the next trading morning.</p>';
+  return head + `<p style="font-size:.86rem;margin:4px 0">Same side of the flip (morning vs stored): <b class="${t.pct >= 90 ? 'gain' : t.pct != null && t.pct < 75 ? 'loss' : ''}">${t.pct ?? '—'}%</b> of ${t.n} day${t.n === 1 ? '' : 's'}</p>
+    <div style="overflow-x:auto;max-height:320px;overflow-y:auto"><table class="pos" style="font-size:.78rem"><thead><tr><th>Day</th><th>Ticker</th><th class="r">Open</th><th class="r">Flip 09:20</th><th class="r">09:32</th><th class="r">09:40</th><th class="r">Stored (backtest)</th><th>Morning side</th><th>Stored side</th><th></th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${esc(r.date)}</td><td>${esc(r.sym)}</td><td class="r">${f2(r.open)}</td><td class="r">${f2(r.snaps['09:20'])}</td><td class="r">${f2(r.snaps['09:32'])}</td><td class="r">${f2(r.snaps['09:40'])}</td><td class="r">${f2(r.stored)}</td><td>${esc(r.sideMorning || '—')}</td><td>${esc(r.sideStored || '—')}</td><td>${r.agree == null ? '' : r.agree ? '<span class="gain">✓</span>' : '<b class="loss">✗</b>'}</td></tr>`).join('')}</tbody></table></div>`;
+}
 async function loadDTCmp() {
   try { S.dtCmp = await api('/daytrade/compare'); } catch (e) { S.dtCmp = { error: e.message }; }
   if (route() === 'botchart') render();
@@ -2131,7 +2144,7 @@ function vChartDT() {
   const info = `${dtAccountBox()}
     ${live.length ? `<details style="margin:4px 0"><summary style="font-size:.85rem;cursor:pointer">Live day trades (${live.length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Ticker</th><th>Entry</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th><th>Exit</th></tr></thead><tbody>
       ${live.slice().reverse().map(r0 => `<tr><td>${esc(r0.symbol)}</td><td>${esc((r0.at || '').replace('T', ' ').slice(5))}</td><td>${esc(r0.dir || '')}</td><td class="r">${r0.qty ?? ''}</td><td class="r">${r0.entry ?? ''}</td><td>${esc(r0.status || '')}</td><td>${esc(r0.exitReason || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
-    ${S.hideSettings ? '' : dtPanel()}${dtBtBox()}${dtSearchBox()}${dtCmpBox()}${dtStudyBox()}`;
+    ${S.hideSettings ? '' : dtPanel()}${dtBtBox()}${flipCheckBox()}${dtSearchBox()}${dtCmpBox()}${dtStudyBox()}`;
   return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${main}${info}</div></div></div>`;
 }
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
