@@ -39,7 +39,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "bandForm": False, "lisForm": False, "lisAbove": False, "pmzTouch": False, "fibTouch": False, "dpTouch": False,
           "prevTouch": False, "sqTurn": False, "formWin": 5,
           # day filters
-          "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False, "flipFade": False, "flipPrev": False,
+          "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False, "flipFade": False, "flipPrev": False, "cvdSide": False, "cvdReal": False,
           "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
           "noLunch": False, "lunchFrom": "11:30", "lunchTo": "13:30", "dayStop": False, "dayStopR": 2.0,
           # exits
@@ -52,7 +52,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
 ENTRY = ("aboveVwap", "vwapCross", "aboveEma", "emaStack", "greenBar", "kcNotExt", "kcLower", "sqOn", "sqFire", "sqMom",
          "inGreen", "inNotRed", "fvgTouch", "orbBreak", "pmBreak", "pwTouch", "aboveFlip",
          "bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch", "sqTurn")
-FILTERS = ("gapOn", "gapWith", "gapFade", "flipOpen", "flipFade", "peerAgree", "rvolOn", "vixOn", "noLunch")
+FILTERS = ("gapOn", "gapWith", "gapFade", "flipOpen", "flipFade", "cvdSide", "peerAgree", "rvolOn", "vixOn", "noLunch")
 EXITS = ("stopOn", "targetOn", "trailOn", "vwapExit", "emaExit", "sqExit", "inExit", "fvgExit", "beOn", "scaleOn", "timeOn",
          "lvlTarget", "dayStop")
 INTS = {"maxTrades": (1, 50), "qty": (1, 100000), "maxQty": (1, 100000), "emaLen": (2, 400), "ema2Len": (2, 400),
@@ -110,7 +110,7 @@ def clean_cfg(cur, body):
                 cur[k] = max(lo, min(hi, round(float(body[k]), 4)))
             except (TypeError, ValueError):
                 pass
-    for k in ("enabled", "trade", "longs", "shorts", "wallNear", "flipPrev") + ENTRY + FILTERS + EXITS:
+    for k in ("enabled", "trade", "longs", "shorts", "wallNear", "flipPrev", "cvdReal") + ENTRY + FILTERS + EXITS:
         if k in body:
             cur[k] = bool(body[k])
     for k in TIMES:
@@ -267,6 +267,37 @@ def _fvg_scan(bars, atr, min_atr, near, max_days):
         if len(act) > 300:
             act = act[-300:]
     return bull_t, bear_t, new_bull, new_bear
+
+
+def _cvd_est(bars):
+    """Cumulative volume delta from each day's open, estimated from the candles: the volume split by where each candle
+    closes in its range (close at the high = all buying)."""
+    out, cum, day = [], 0.0, None
+    for i, b in enumerate(bars):
+        if b["t"][:10] != day:
+            day, cum = b["t"][:10], 0.0
+        v, r = float(b.get("v") or 0), b["h"] - b["l"]
+        pc = bars[i - 1]["c"] if i and bars[i - 1]["t"][:10] == day else b["o"]
+        buy = v * (b["c"] - b["l"]) / r if r > 0 else (v if b["c"] > pc else 0 if b["c"] < pc else v / 2)
+        cum += 2 * buy - v
+        out.append(cum)
+    return out
+
+
+def real_cvd(sym, dates):
+    """{minute: cumulative delta from the open} from the stored real order flow (orderflow.py), days that are loaded."""
+    import orderflow
+    out = {}
+    for d in dates:
+        x = orderflow.cached(sym, d)
+        if not x or not x.get("done"):
+            continue
+        cum = 0.0
+        for m in sorted(x.get("min") or {}):
+            b, s_ = x["min"][m]
+            cum += b - s_
+            out[m] = cum
+    return out
 
 
 def _atr5(bars):
@@ -473,7 +504,7 @@ def indicators(bars, ext, P):
     bt, brt, nb, nbr = _fvg_scan(bars, atr, float(P["fvgMin"]), float(P["fvgNear"]), int(P["fvgDays"]))
     lo_p, hi_p = _pivots(bars, int(P.get("swingN") or 5))
     sq = ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"]))
-    return {"pivLo": lo_p, "pivHi": hi_p, "avgN": _avg_move(bars, int(P.get("volN") or 300)), "atr5": _atr5(bars), "atrD": _atr_day(bars), "rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
+    return {"cvdE": _cvd_est(bars), "pivLo": lo_p, "pivHi": hi_p, "avgN": _avg_move(bars, int(P.get("volN") or 300)), "atr5": _atr5(bars), "atrD": _atr_day(bars), "rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
             "kc": ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
             "sq": sq, "sqTurnD": _sq_turns(sq), "tt": [b["t"] for b in bars],
             "inr": ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
@@ -540,6 +571,8 @@ def _checks(i, b, prev, I, w, side, P):
         "gapFade": gap is not None and gap * sd < 0,
         "flipOpen": fl is not None and bool(inf) and ((inf["open"] > fl) if long_ else (inf["open"] < fl)),
         "flipFade": fl is not None and bool(inf) and ((inf["open"] < fl) if long_ else (inf["open"] > fl)),
+        "cvdSide": (lambda v: v is not None and (v > 0 if long_ else v < 0))(
+            (ctx.get("cvd") or {}).get(b["t"], I["cvdE"][i]) if P.get("cvdReal") else I["cvdE"][i]),
         "peerAgree": peer == sd,
         "rvolOn": rv is not None and rv >= float(P["rvolMin"]),
         "vixOn": vix is not None and float(P["vixMin"]) <= vix <= float(P["vixMax"]),
@@ -861,6 +894,11 @@ def live_ctx(sub, sym, P, dates, n_days, now=None, peer_bars=None):
             ctx["vix"] = vix_map()
         except Exception as e:
             print("vix failed", e)
+    if on("cvdReal"):
+        try:
+            ctx["cvd"] = real_cvd(sym, dates)
+        except Exception as e:
+            print("real cvd failed", e)
     return ctx
 
 
@@ -1000,6 +1038,8 @@ def run_variants(sub, days, variants, budget_s=540, tickers=None):
                 except Exception as e:
                     print("dark pool levels failed", sym, e)
             ctx = {"dp": dp, "vix": vix, "peer": peers.get(peer_of(sym, tickers)) or {}, "cache": {}}
+            if on("cvdReal"):
+                ctx["cvd"] = real_cvd(sym, show)
             W = {}
             for i, P in enumerate(variants):
                 if time.time() - t0 > budget_s + 30:

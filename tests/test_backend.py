@@ -3482,6 +3482,15 @@ def test_daytrade_new_rules_filters_exits():
     for s0 in pv:
         k = days.index(s0["at"][:10])
         assert s0["side"] == (1 if (k - 1) % 2 else -1)
+    # CVD side: estimated from the candles; the real one (stored order flow) when switched on
+    reg_ = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    Ic = daytrade.indicators(reg_, bars, daytrade.PARAMS)
+    tt_ = [b["t"] for b in reg_]
+    cv = daytrade.detect(bars, {**base, "cvdSide": True})
+    assert cv and all((Ic["cvdE"][tt_.index(s0["at"])] > 0) == (s0["side"] > 0) for s0 in cv)
+    fake = {b["t"]: -1.0 for b in reg_}
+    cr = daytrade.detect(bars, {**base, "cvdSide": True, "cvdReal": True, "shorts": False}, {}, None, {"cvd": fake})
+    assert cr == []
     # squeeze turn: entries only within formWin minutes after a turn in the trade direction
     st_ = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "sqTurn": True, "formWin": 3})
     reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]

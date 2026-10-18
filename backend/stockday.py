@@ -39,12 +39,12 @@ TRADING = "https://paper-api.alpaca.markets"
 PARAMS = {"enabled": False, "trade": False, "longs": True, "shorts": True,
           "minPrice": 5.0, "minAvgVol": 1000000, "minAtr": 0.5, "minRvol": 1.0, "topN": 20, "rvolMode": "orb",
           "orbMin": 5, "dirLock": True, "dojiPct": 10.0, "stopAtrPct": 10.0, "entryEnd": "11:30", "flatT": "15:55",
-          "vwapSide": False, "vwapExit": False, "skipMid": False, "vwapCap": 0, "riskPct": 1.0, "maxLev": 4.0,
+          "vwapSide": False, "cvdSide": False, "vwapExit": False, "skipMid": False, "vwapCap": 0, "riskPct": 1.0, "maxLev": 4.0,
           "exclude": []}
 INTS = {"minAvgVol": (0, 10 ** 10), "topN": (1, 100), "orbMin": (5, 30), "vwapCap": (0, 50)}
 FLOATS = {"minPrice": (0, 10000), "minAtr": (0, 1000), "minRvol": (0, 1000), "dojiPct": (0, 100), "stopAtrPct": (0.5, 500),
           "riskPct": (0.05, 10), "maxLev": (0.1, 10)}
-BOOLS = ("enabled", "trade", "longs", "shorts", "dirLock", "vwapSide", "vwapExit", "skipMid")
+BOOLS = ("enabled", "trade", "longs", "shorts", "dirLock", "vwapSide", "cvdSide", "vwapExit", "skipMid")
 ORBS = (5, 15, 30)
 RV_BUCKETS = ((0, 1, "< 1x"), (1, 2, "1-2x"), (2, 5, "2-5x"), (5, 10, "5-10x"), (10, 30, "10-30x"), (30, 1e12, "> 30x"))
 
@@ -443,6 +443,8 @@ def simulate(pick, bars, P):
     if not bars:
         return None
     vw = vwap_series(bars)
+    import daytrade
+    cvd = daytrade._cvd_est(bars)
     lvl = pick["h"] if side > 0 else pick["l"]
     risk = float(P["stopAtrPct"]) / 100 * pick["atr"]
     if risk <= 0:
@@ -463,6 +465,8 @@ def simulate(pick, bars, P):
             px = max(b["o"], lvl) if side > 0 else min(b["o"], lvl)
             if P.get("vwapSide") and ((px < vw[i - 1] if i else False) if side > 0 else (px > vw[i - 1] if i else False)):
                 return None                             # the breakout is on the wrong side of the VWAP
+            if P.get("cvdSide") and i and (cvd[i - 1] * side <= 0):
+                return None                             # the cumulative volume delta is against the breakout
             tr = {"sym": pick["sym"], "at": b["t"], "side": side, "dir": "long" if side > 0 else "short", "entry": round(px, 4),
                   "stop0": round(px - side * risk, 4), "rvol": pick["rvol"], "pmRvol": pick["pmRvol"], "atr": pick["atr"]}
             stop = tr["stop0"]
