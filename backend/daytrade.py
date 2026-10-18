@@ -1044,7 +1044,20 @@ def backtest(sub, days=20, cfg=None, budget_s=540, opt=None):
     ds = deep_stats(rows, all_days)
     return {"at": iso(now_ny()), "days": days, "daysFound": len(all_days), "first": all_days[0] if all_days else None,
             "all": ds.pop("all"), **ds, "byTicker": per[0], "byDay": byday, "feed": feed_used, "secs": round(time.time() - t0),
-            "opt": optst, "trades": [{k: s.get(k) for k in TRADE_KEYS} for s in rows][-300:], "errors": errors}
+            "opt": optst, "used": used_summary(P), "trades": [{k: s.get(k) for k in TRADE_KEYS} for s in rows][-300:], "errors": errors}
+
+
+def used_summary(P):
+    """The settings a run used, in short (shown with the result)."""
+    on = lambda k: bool(P.get(k))
+    unit = {"atr1": "× 1-min ATR", "atr5": "× 5-min ATR", "atrD": "× daily ATR", "pct": "% of price", "avgN": f"× avg move {P.get('volN')}",
+            "swing": "swing"}.get(P.get("stopBase") or "atr1", "")
+    stop = (f"swing low −{P.get('swingBuf')}%" if P.get("stopBase") == "swing" else f"{P.get('stopAtr')} {unit}") if on("stopOn") else "no stop"
+    return {"entry": [k for k in ENTRY if on(k)], "filter": [k for k in FILTERS if on(k)], "exit": [k for k in EXITS if on(k) and k != "stopOn"],
+            "stop": stop, "target": f"{P.get('targetR')}R" if on("targetOn") else None,
+            "sides": "longs + shorts" if on("longs") and on("shorts") else "longs only" if on("longs") else "shorts only",
+            "time": f"{P.get('startT')}-{P.get('endT')}, flat {P.get('flatT')}, max {P.get('maxTrades')}/day",
+            "walls": ("previous day's" if on("flipPrev") else "same day") + (", nearest expiration" if on("wallNear") else "")}
 
 
 PRE = "DTPRE#"
