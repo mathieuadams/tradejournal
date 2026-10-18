@@ -3821,6 +3821,32 @@ def test_order_flow_tick_rule():
     assert list(days) == ["2026-03-04"] and missing == ["2026-03-05"]
 
 
+def test_daytrade_why_and_5min_turns():
+    """Why (no) trade at a minute: each rule ON, long and short, and the notes; squeeze turns of 5-minute candles."""
+    import datetime as dt
+    import daytrade
+    bars = _dt_bars(6)
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    t1 = daytrade.indicators(reg, bars, daytrade.PARAMS)["sqTurnD"]
+    t5 = daytrade.indicators(reg, bars, {**daytrade.PARAMS, "sqTurnTf": 5})["sqTurnD"]
+    assert any(t5) and t5 != t1 and all(int(reg[i]["t"][15]) % 5 == 4 for i, v in enumerate(t5) if v)   # at the last minute of a 5-min candle
+    saved = (daytrade.minute_bars, daytrade.walls_by_day, daytrade.config, daytrade.now_ny)
+    try:
+        daytrade.minute_bars = lambda *a, **k: bars
+        daytrade.walls_by_day = lambda *a, **k: {}
+        daytrade.config = lambda sub: {**daytrade.PARAMS, "tickers": ["QQQ"], "aboveVwap": True, "greenBar": True, "emaStack": False}
+        daytrade.now_ny = lambda: dt.datetime(2026, 9, 21, 12, 0)
+        at = reg[200]["t"]
+        w = daytrade.why("u", "QQQ", at.replace("T", " "))
+        assert w["at"] == at and {r["rule"] for r in w["rules"]} == {"aboveVwap", "greenBar"} and len(w["rules"]) == 4
+        sigs = daytrade.detect(bars, daytrade.config("u"))
+        hit = sigs[0]
+        w2 = daytrade.why("u", "QQQ", hit["at"])
+        assert "a trade was taken on this candle" in w2["notes"] and all(r["ok"] for r in w2["rules"] if r["side"] == hit["dir"])
+    finally:
+        daytrade.minute_bars, daytrade.walls_by_day, daytrade.config, daytrade.now_ny = saved
+
+
 def test_nearest_expiration_walls():
     """Walls of the nearest expiration only: SPY tries the same day first, others the coming Friday; flip from the
     running net gamma; daytrade.walls_by_day follows the wallNear setting."""

@@ -37,7 +37,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "wallNear": False,      # gamma walls of the nearest expiration only (0DTE on SPY / QQQ) instead of all
           # entry rules from the chart studies
           "bandForm": False, "lisForm": False, "lisAbove": False, "pmzTouch": False, "fibTouch": False, "dpTouch": False,
-          "prevTouch": False, "sqTurn": False, "formWin": 5,
+          "prevTouch": False, "sqTurn": False, "sqTurnTf": 1, "formWin": 5,
           # day filters
           "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False, "flipFade": False, "flipPrev": False, "cvdSide": False, "cvdReal": False, "pwSide": False,
           "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
@@ -57,7 +57,7 @@ EXITS = ("stopOn", "targetOn", "trailOn", "vwapExit", "emaExit", "sqExit", "inEx
          "lvlTarget", "dayStop")
 INTS = {"maxTrades": (1, 50), "qty": (1, 100000), "maxQty": (1, 100000), "emaLen": (2, 400), "ema2Len": (2, 400),
         "kcLen": (2, 400), "sqLen": (5, 400), "sqFireN": (1, 60), "inN1": (5, 800), "inN2": (5, 800), "inN3": (5, 800),
-        "fvgDays": (1, 20), "orbMin": (1, 120), "formWin": (1, 120), "timeMin": (1, 400), "volN": (20, 3000), "swingN": (1, 60)}
+        "fvgDays": (1, 20), "orbMin": (1, 120), "formWin": (1, 120), "timeMin": (1, 400), "volN": (20, 3000), "swingN": (1, 60), "sqTurnTf": (1, 30)}
 FLOATS = {"kcMult": (0.1, 10), "sqBB": (0.1, 10), "sqKC": (0.1, 10), "fvgMin": (0, 10), "fvgNear": (0, 10), "zoneAtr": (0, 20),
           "stopAtr": (0.05, 50), "targetR": (0.1, 50), "trailAtr": (0.05, 50), "riskUsd": (0, 1e7),
           "gapMin": (0, 99), "gapMax": (0, 99), "rvolMin": (0, 50), "vixMin": (0, 200), "vixMax": (0, 200), "dayStopR": (0.1, 50),
@@ -349,6 +349,32 @@ def _sq_turns(sq):
     return out
 
 
+def _sq_turns_tf(bars, sq, P):
+    """Squeeze turns on 1-minute candles, or on m-minute candles (sqTurnTf = m, as the 5m chart shows them): a turn
+    of an m-minute candle counts at its last minute (when that candle is complete)."""
+    import wallwatch as ww
+    m = int(P.get("sqTurnTf") or 1)
+    if m <= 1:
+        return _sq_turns(sq)
+    groups, key = [], None
+    for i, b in enumerate(bars):
+        hm = int(b["t"][11:13]) * 60 + int(b["t"][14:16])
+        k = b["t"][:10] + str(570 + (hm - 570) // m * m)
+        if k != key:
+            key = k
+            groups.append({"t": b["t"], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v") or 0, "last": i})
+        else:
+            g = groups[-1]
+            g.update(h=max(g["h"], b["h"]), l=min(g["l"], b["l"]), c=b["c"], last=i)
+    sqm = ww.squeeze(groups, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"]))
+    tm = _sq_turns(sqm)
+    out = [0] * len(bars)
+    for g, t in zip(groups, tm):
+        if t:
+            out[g["last"]] = t
+    return out
+
+
 def _pivots(bars, k):
     """Swing lows / highs: a candle whose low is under the k candles before and not above the k after (high: the
     mirror). Known only k candles later: [(index known from, price)] in order."""
@@ -506,7 +532,7 @@ def indicators(bars, ext, P):
     sq = ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"]))
     return {"cvdE": _cvd_est(bars), "pivLo": lo_p, "pivHi": hi_p, "avgN": _avg_move(bars, int(P.get("volN") or 300)), "atr5": _atr5(bars), "atrD": _atr_day(bars), "rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
             "kc": ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
-            "sq": sq, "sqTurnD": _sq_turns(sq), "tt": [b["t"] for b in bars],
+            "sq": sq, "sqTurnD": _sq_turns_tf(bars, sq, P), "tt": [b["t"] for b in bars],
             "inr": ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
             "atr": atr, "pm": pm, "orb": orb, "fvgBull": bt, "fvgBear": brt, "newBull": nb, "newBear": nbr}
 
@@ -611,7 +637,7 @@ def _r(s):
 
 
 IND_KEYS = ("emaLen", "ema2Len", "kcLen", "kcMult", "sqLen", "sqBB", "sqKC", "sqFireN", "inN1", "inN2", "inN3", "fvgMin",
-            "fvgNear", "fvgDays", "orbMin", "volN", "swingN")
+            "fvgNear", "fvgDays", "orbMin", "volN", "swingN", "sqTurnTf")
 STUDY_RULES = ("bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch", "sqTurn") + FILTERS
 
 
@@ -833,7 +859,8 @@ def chart(sub, sym, days=3, tf=1, cfg=None):
     pz = tr3ndy.pmz(b5, lines)
     studies = {"bands": bser, "bandsF": bform, "lis": {d: lines[d] for d in show if d in lines},
                "lisF": [x for x in lisf if x["t"][:10] >= show[0]], "lisSent": sent.get(show[-1]),
-               "pmz": {d: pz[d] for d in show if d in pz}, "fibs": fb, "turns": tr3ndy.turns(sqz_h)}
+               "pmz": {d: pz[d] for d in show if d in pz}, "fibs": fb,
+               "turns": [{"t": reg[i]["t"], "dir": I["sqTurnD"][i]} for i in keep if I["sqTurnD"][i]]}   # the turns the rule uses
     return _pack({"symbol": sym, "bars": out_bars, "interval": tfm, "days": days, "dt": True, **studies,
             "vwap": series("vwap"), "ema": series("ema"), "ema2": series("ema2"), "emaLen": int(P["emaLen"]),
             "kch": [{"t": t, "m": r4(I["kc"][i][0]), "u": r4(I["kc"][i][1]), "l": r4(I["kc"][i][2])} for t, i in pick if I["kc"][i]],
@@ -901,6 +928,65 @@ def live_ctx(sub, sym, P, dates, n_days, now=None, peer_bars=None):
         except Exception as e:
             print("real cvd failed", e)
     return ctx
+
+
+def why(sub, sym, at, cfg=None):
+    """Why a trade was / was not taken at one minute: every rule that is ON, long and short, plus the time window,
+    the trades of the day and an open trade."""
+    sym = (sym or "QQQ").upper()
+    P = clean_cfg(config(sub), cfg or {})
+    at = str(at or "")[:16].replace(" ", "T")
+    try:
+        when = datetime.strptime(at, "%Y-%m-%dT%H:%M")
+    except ValueError:
+        raise BadRequest("Give the minute as YYYY-MM-DD HH:MM.")
+    back = max(3, min(40, (now_ny().replace(tzinfo=None) - when).days + 4))
+    allb = minute_bars(sub, sym, back)
+    bars = [b for b in allb if "09:30" <= b["t"][11:16] < "16:00"]
+    tt = [b["t"] for b in bars]
+    if at not in tt:
+        raise BadRequest(f"No 1-minute candle at {at.replace('T', ' ')} (regular session only).")
+    i = tt.index(at)
+    d = at[:10]
+    dates = sorted({b["t"][:10] for b in allb})
+    W = walls_by_day(sub, sym, dates[-back:], bool(P.get("wallNear")), budget_s=15)
+    ctx = live_ctx(sub, sym, P, dates[-back:], back)
+    ctx["cache"] = {}
+    sigs = detect(allb, P, W, None, ctx)
+    I = ctx["cache"].get(tuple(P[k] for k in IND_KEYS)) or indicators(bars, allb, P)
+    X = ctx["cache"].get(("X", int(P["formWin"]))) or studies(bars, allb, P)
+    I = {**I, "X": X, "ctx": ctx}
+    w = W.get(d) or {}
+    if P.get("flipPrev") and W:
+        ds = sorted(W)
+        w = W.get(ds[ds.index(d) - 1]) if d in ds and ds.index(d) > 0 else {}
+    rules = [k for k in ENTRY + FILTERS if P.get(k)]
+    out = {"at": at, "symbol": sym, "close": bars[i]["c"], "rules": []}
+    for side in (1, -1):
+        ck = _checks(i, bars[i], bars[i - 1] if i else None, I, w, side, P)
+        for k in rules:
+            out["rules"].append({"rule": k, "side": "long" if side > 0 else "short", "ok": bool(ck.get(k))})
+    hm = at[11:16]
+    notes = []
+    if not (P["startT"] <= hm < P["endT"]):
+        notes.append(f"outside the entry window {P['startT']}-{P['endT']}")
+    if not P.get("longs"):
+        notes.append("longs are OFF")
+    if not P.get("shorts"):
+        notes.append("shorts are OFF")
+    day_sigs = [x for x in sigs if x["at"][:10] == d]
+    before = [x for x in day_sigs if x["at"] < at]
+    if len(before) >= int(P["maxTrades"]):
+        notes.append(f"max {P['maxTrades']} trades a day already taken")
+    open_ = next((x for x in day_sigs if x["at"] < at and (x.get("exitAt") or "9999") >= at), None)
+    if open_:
+        notes.append(f"already in a {open_['dir']} trade since {open_['at'][11:16]}")
+    if any(x["at"] == at for x in day_sigs):
+        notes.append("a trade was taken on this candle")
+    out["notes"] = notes
+    out["cvd"] = round(I["cvdE"][i])
+    out["walls"] = {k: w.get(k) for k in ("putWall", "flip", "callWall")}
+    return out
 
 
 BT_SK = "DTBT"

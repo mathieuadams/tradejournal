@@ -1850,7 +1850,7 @@ const DT_IND = [
   ['lis', 'LIS (line in the sand)', 'lis', [], 'Previous regular-session close; arrows = 5-minute formations off it (colored when the EMAs agree)', ['lisForm', 'lisAbove']],
   ['pmz', 'Pre-market zone', 'pmz', [], '07:25-09:30 range: 20-40% under the high on a gap up, above the low on a gap down', ['pmzTouch']],
   ['fibs', 'Auto fibs', 'fibs', [], 'The PREVIOUS day high / low, known at the open: inside 38.2% / 50% / 61.8%, above 127.2% / 161.8% / 200%, below -27.2% / -61.8% / -100%', ['fibTouch', 'lvlTarget']],
-  ['turn', 'Squeeze turns', 'turn', [], 'Momentum peaks above 0 (turn down) / bottoms below 0 (turn up), on the 1-minute squeeze (settings on the Squeeze row)', ['sqTurn']],
+  ['turn', 'Squeeze turns', 'turn', [['sqTurnTf', 'turns of the', 1, 3, '-minute squeeze (1 = engine default, 5 = the turns of the 5m chart)', 1]], 'Momentum peaks above 0 (turn down) / bottoms below 0 (turn up). Settings on the Squeeze row; the rule can use 1-minute or 5-minute turns', ['sqTurn']],
   ['dark', 'Dark pool', 'dark', [], 'Top dark pool price levels of the last 180 days', ['dpTouch', 'lvlTarget']],
 ];
 const DT_RULES = [
@@ -2186,6 +2186,7 @@ function vChartDT() {
     const fl = S.flow[sym] || {}, ck = [JSON.stringify(S.fcLayers), JSON.stringify(S.fcZoom[fcKey(id)] || null), W, H, fl.k, (fl.missing || []).length, Object.keys(fl.days || {}).length, S.dpN, (() => { const x = S.fcDp[fcKey(id)]; return x ? `${(x.levels || []).length}/${(x.prints || []).length}/${x.error || ''}` : '-'; })()].join('|');
     main = svgCached('dt', d, ck, () => fcSvg(withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []) }), id, { W, H: Math.max(380, H - 40), noAcc: true }));
     if (S.dtTf === 1 && S.dtDays >= 20) main += '<p class="muted" style="font-size:.78rem;margin:2px 4px">20-30 days: shown with 5-minute candles (the signals still come from the 1-minute engine). Pick 10 days or less for 1-minute candles.</p>';
+    main += dtWhyBox();
     const f2 = v => v == null ? '—' : (+v).toFixed(2), lv = Object.entries(d.pm || {}).map(([dy, x]) => `${dy.slice(5)} pre-market ${f2(x.h)} / ${f2(x.l)}`).concat(Object.entries(d.orbLv || {}).map(([dy, x]) => `${dy.slice(5)} opening range ${f2(x.h)} / ${f2(x.l)}`));
     main += `<div class="fcf-info" style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.84rem">
       <span><b>This view</b> ${sigs.length} trade${sigs.length === 1 ? '' : 's'} · win ${st.win ?? 0}% · avg ${R(st.avgR)} · total ${R(st.totR)} · PF ${st.pf ?? '—'} · ${Object.entries(st.exits || {}).map(([a, b]) => `${esc(a)} ${b}`).join(' · ')}</span>
@@ -2333,6 +2334,28 @@ function withFlow(sym, d) {                       // the real order flow of the 
   const cvd = {}, big = [];
   Object.entries(f.days).forEach(([dy, x]) => { if (dates.includes(dy)) { cvd[dy] = x.min || {}; (x.big || []).forEach(r => big.push(r)); } });
   return { ...d, cvd: Object.keys(cvd).length ? cvd : null, big, flowLoading: !!(f.missing || []).length };
+}
+async function dtWhy(sym, t) {
+  S.dtWhy = { sym, at: t, busy: true }; if (route() === 'botchart') render();
+  try { S.dtWhy = { sym, at: t, ...(await api('/daytrade/why', { method: 'POST', body: { t: sym, at: t, cfg: dtBody() } })) }; } catch (e) { S.dtWhy = { sym, at: t, error: e.message }; }
+  if (route() === 'botchart') render();
+}
+function dtWhyBox() {
+  const w = S.dtWhy;
+  const form = `<form id="dt-why" style="display:inline-flex;gap:4px;align-items:center;font-size:.8rem"><span class="muted">Why (no) trade at</span><input id="dt-whyat" placeholder="YYYY-MM-DD HH:MM" value="${esc(w && w.at ? w.at.replace('T', ' ') : '')}" style="width:10.5em;padding:1px 4px"><button class="btn" type="submit" style="font-size:.75rem;padding:0 8px">Check</button><span class="muted">or click a candle (1-minute view)</span></form>`;
+  if (!w) return `<div style="margin:4px 0">${form}</div>`;
+  if (w.busy) return `<div style="margin:4px 0">${form} <span class="loading" style="padding:0">checking ${esc(w.at.replace('T', ' '))}…</span></div>`;
+  if (w.error) return `<div style="margin:4px 0">${form} <span class="loss" style="font-size:.8rem">${esc(w.error)}</span></div>`;
+  const names = Object.fromEntries(DT_RULES.map(r => [r[0], r[2]]));
+  const rules = [...new Set((w.rules || []).map(r => r.rule))];
+  const ok = side => (w.rules || []).filter(r => r.side === side).every(r => r.ok);
+  const cell = (k, side) => { const r = (w.rules || []).find(x => x.rule === k && x.side === side); return r ? (r.ok ? '<span class="gain">✓</span>' : '<b class="loss">✗</b>') : ''; };
+  const wl = w.walls || {};
+  return `<div style="margin:4px 0;border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:.8rem">${form}
+    <div style="margin:4px 0"><b>${esc(w.symbol)} ${esc(w.at.replace('T', ' '))}</b> close ${(+w.close).toFixed(2)} · CVD ${(+w.cvd).toLocaleString()} · put wall ${wl.putWall ?? '—'} · flip ${wl.flip ?? '—'} · call wall ${wl.callWall ?? '—'}
+      · long <b class="${ok('long') ? 'gain' : 'loss'}">${ok('long') ? 'all rules pass' : 'blocked'}</b> · short <b class="${ok('short') ? 'gain' : 'loss'}">${ok('short') ? 'all rules pass' : 'blocked'}</b>
+      ${(w.notes || []).length ? ` · <span class="loss">${esc(w.notes.join(' · '))}</span>` : ''}</div>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.78rem;width:auto"><thead><tr><th>Rule</th><th class="r">Long</th><th class="r">Short</th></tr></thead><tbody>${rules.map(k => `<tr><td>${esc(names[k] || k)}</td><td class="r">${cell(k, 'long')}</td><td class="r">${cell(k, 'short')}</td></tr>`).join('')}</tbody></table></div></div>`;
 }
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {
@@ -4507,6 +4530,9 @@ document.addEventListener('submit', e => {
   if (e.target.id === 'sd-acct') { e.preventDefault();
     const key = (($('#sd-key') || {}).value || '').trim(), secret = (($('#sd-secret') || {}).value || '').trim();
     api('/stockday/account', { method: 'PUT', body: { key, secret } }).then(r => { S.sd = r; toast('Stock day-trading account connected'); render(); }).catch(err => toast(err.message)); return; }
+  if (e.target.id === 'dt-why') { e.preventDefault();
+    const v = (($('#dt-whyat') || {}).value || '').trim().replace(' ', 'T'), sym = (S.dtFc && S.dtFc.d && S.dtFc.d.symbol) || 'QQQ';
+    if (v) dtWhy(sym, v); return; }
   if (e.target.id === 'sd-sym') { e.preventDefault();
     const sym = (($('#sd-symin') || {}).value || '').trim().toUpperCase(), date = (($('#sd-datein') || {}).value || '').trim();
     if (sym) { S.sdSel = { sym, date }; render(); } }
@@ -4625,7 +4651,12 @@ $('#signin').addEventListener('click', () => Auth.login());
       const now = document.querySelector(`svg[data-fcz="${CSS.escape(d0.id)}"]`);
       if (now) d0.svg = now;
     }
-    if (!d0.moved) { endDrag(); return; }
+    if (!d0.moved) {                               // a click on a day-trading chart: why a trade was / wasn't taken at that minute
+      if (String(d0.id).startsWith('dt-') && S.dtFc && S.dtFc.d && S.dtFc.d.bars && !(ev.target.closest && ev.target.closest('title,circle,rect[data-fce]'))) {
+        const f = info(d0.svg), i = barAt(f, vx(d0.svg, ev)), b = fcClean(S.dtFc.d).bars[i];
+        if (b) { const sym = String(d0.id).replace(/^dt-/, '').replace(/-\d+$/, ''); setTimeout(() => dtWhy(sym, b.t), 0); }
+      }
+      endDrag(); return; }
     const pend = S.renderPending; S.fczDrag = false; S.renderPending = false;     // the zoom below redraws
     suppress = true; setTimeout(() => { suppress = false; }, 50);      // a drag that ends on a dot doesn't select it
     const f = info(d0.svg), x = vx(d0.svg, ev);

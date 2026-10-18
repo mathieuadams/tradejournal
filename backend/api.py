@@ -624,6 +624,13 @@ def flow_days(sub, claims, body, q):
     return {"symbol": sym, "days": days, "missing": missing, "running": running}
 
 
+@route("POST", "/daytrade/why")
+def daytrade_why(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    return daytrade.why(sub, b.get("t"), b.get("at"), b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
+
+
 @route("POST", "/daytrade/study")
 def daytrade_study(sub, claims, body, q):
     import daystudy
