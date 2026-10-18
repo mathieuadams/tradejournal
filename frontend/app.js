@@ -1275,11 +1275,11 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total']];
+S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'Buy / sell pressure']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark'];
+  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark', 'pres'];
   return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)} · lines from the last ${dp.levelDays || 180} days${dp.missingDays ? ` (loading ${dp.missingDays} more days…)` : ''}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
@@ -1339,10 +1339,12 @@ function fcSvg0(d, id, opts) {
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
   const SH = LY.sqz && ((d.sqzH || []).length || (d.sqzD || []).length) && !(opts && opts.noSqz) ? (full ? Math.max(80, Math.round(opts.H * 0.18)) : narrow ? 110 : 80) : 0;
-  const W = full ? opts.W : narrow ? 560 : 960, PH = (full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340) - (SH ? SH + 10 : 0);
+  const VH = LY.pres && bars.some(b => +b.v > 0) ? (full ? Math.max(70, Math.round(opts.H * 0.14)) : narrow ? 100 : 70) : 0;   // buy / sell pressure pane
+  const W = full ? opts.W : narrow ? 560 : 960, PH = (full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340) - (SH ? SH + 10 : 0) - (VH ? VH + 10 : 0);
   const L = 8, Rr = narrow ? 72 : full ? 64 : 58, T = 16, B = PH - (narrow ? 44 : 40);
-  const H = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
-  const ST = PH + (AH ? AH + 10 : 0) + 6, SB = ST + SH - 6, XB = SH ? SB : AB;   // squeeze momentum pane (bottom)
+  const H = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0) + (VH ? VH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
+  const ST = PH + (AH ? AH + 10 : 0) + 6, SB = ST + SH - 6;   // squeeze momentum pane
+  const VT = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0) + 6, VB = VT + VH - 6, XB = VH ? VB : SH ? SB : AB;   // pressure pane (bottom)
   const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
   const walls = LY.walls ? (d.walls || []).filter(w => w.callWall != null || w.src === 'gap') : [];
   const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
@@ -1624,6 +1626,24 @@ function fcSvg0(d, id, opts) {
     if (!daily) bars.forEach((b, i) => { const x = dm[b.t.slice(0, 10)]; if (x) g += `<rect x="${X(i) - cw / 2}" y="${ST + 13}" width="${cw}" height="3" fill="${x.on ? '#dc2626' : '#16a34a'}" opacity=".6"/>`; });
     g += `<text x="${W - Rr + 6}" y="${MY(mx) + 8}" font-size="${fs - 1}" fill="var(--muted)">+${+mx.toPrecision(3)}</text><text x="${W - Rr + 6}" y="${Z + 4}" font-size="${fs - 1}" fill="var(--muted)">0</text>`;
   }
+  if (VH) {                                            // buy / sell pressure, estimated from each candle: the close's place in its range
+    const pr = bars.map((b, i) => { const v = +b.v || 0, r = b.h - b.l, pc = i ? bars[i - 1].c : b.o;
+      const buy = r > 0 ? v * (b.c - b.l) / r : (b.c > pc ? v : b.c < pc ? 0 : v / 2); return { buy, sell: v - buy, d: 2 * buy - v }; });
+    const day = b => d.daily ? '' : b.t.slice(0, 10);
+    let cum = 0, lastDay = null; const cd = bars.map((b, i) => { if (day(b) !== lastDay) { cum = 0; lastDay = day(b); } cum += pr[i].d; return cum; });
+    const mx = Math.max(1e-9, ...pr.map(x => Math.abs(x.d))), cmn = Math.min(0, ...cd), cmx = Math.max(0, ...cd);
+    const Z = (VT + 14 + VB) / 2, DY = v => Z - v / mx * ((VB - VT - 14) / 2), CY = v => VB - (v - cmn) / ((cmx - cmn) || 1) * (VB - VT - 14);
+    const cw = Math.max(1, (W - L - Rr) / n), hw = Math.max(1, cw * 0.7), last = pr.slice(-20);
+    const tb = last.reduce((a, x) => a + x.buy, 0), ts = last.reduce((a, x) => a + x.sell, 0), share = tb + ts > 0 ? Math.round(tb / (tb + ts) * 100) : 50;
+    const who = share >= 55 ? `<tspan fill="var(--gain)" font-weight="700">buyers in charge ${share}%</tspan>` : share <= 45 ? `<tspan fill="var(--loss)" font-weight="700">sellers in charge ${100 - share}%</tspan>` : `<tspan font-weight="700">balanced ${share}% buy</tspan>`;
+    g += `<line x1="${L}" x2="${W - Rr}" y1="${VB}" y2="${VB}" stroke="var(--line)"/><line x1="${L}" x2="${W - Rr}" y1="${Z}" y2="${Z}" stroke="var(--line)" stroke-dasharray="2 3"/>`
+      + `<text x="${L + 2}" y="${VT + 10}" font-size="${fs}" fill="var(--muted)">Buy / sell pressure (volume split by where each candle closes in its range) · bars = buy − sell · line = running total${d.daily ? '' : ' (from each day\'s open)'} · last 20 candles: ${who}</text>`;
+    bars.forEach((b, i) => { const x = pr[i], y = DY(x.d);
+      g += `<rect x="${X(i) - hw / 2}" y="${Math.min(y, Z)}" width="${hw}" height="${Math.max(1, Math.abs(y - Z))}" fill="${x.d >= 0 ? '#16a34a' : '#dc2626'}" opacity=".55"><title>${esc(b.t.replace('T', ' ').slice(5))} · volume ${Math.round(+b.v || 0).toLocaleString()} · buy ≈ ${Math.round(x.buy).toLocaleString()} · sell ≈ ${Math.round(x.sell).toLocaleString()} · running total ${Math.round(cd[i]).toLocaleString()}</title></rect>`; });
+    g += `<path d="${cd.map((v, i) => `${i && day(bars[i]) === day(bars[i - 1]) ? 'L' : 'M'}${X(i).toFixed(1)},${CY(v).toFixed(1)}`).join('')}" fill="none" stroke="var(--coach,#5b5bd6)" stroke-width="1.6"/>`;
+    const fmt = v => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : Math.round(v);
+    g += `<text x="${W - Rr + 6}" y="${CY(cd[cd.length - 1]) + 4}" font-size="${fs - 1}" fill="var(--coach,#5b5bd6)">${cd[cd.length - 1] >= 0 ? '+' : ''}${fmt(cd[cd.length - 1])}</text>`;
+  }
   if (LY.pwv !== false && (d.pwVwap || []).length) {  // VWAP reset candle touching the put wall: highlighted on top of everything
     d.pwVwap.forEach(e => { const i = idx[e.t]; if (i == null) return;
       const sh = e.side === 'short', lv = sh ? e.cw : e.pw, x = X(i), c = sh ? '#dc2626' : '#16a34a', cw = Math.max(6, bw + 4);
@@ -1646,7 +1666,7 @@ async function loadTickers() {
   S.tkBusy = false;
   if (route() === 'botchart') render();
 }
-try { S.fcfMode = localStorage.getItem('fcfMode') === 'dt' ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
+try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = ['dt', 'sd'].includes(m0) ? m0 : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
 function wwReviewBox() {
   const r = S.wwRev;
@@ -2125,7 +2145,7 @@ function vChartDT() {
     <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
     <span class="seg">${[1, 3, 5, 10, 20, 30].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
-    <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['pres', 'Pressure']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-dtreload style="padding:3px 10px" title="Reload the candles">↻</button>
     <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button>
     <span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen" title="Close">✕</a></div>`;
@@ -2246,7 +2266,7 @@ function vChartSD() {
   const id = 'sd-' + (sel ? sel.sym : 'none');
   const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sel ? sel.sym : 'Stocks in play')}</b> ${fcModeSeg()}
     <form id="sd-sym" style="display:inline-flex;gap:4px"><input id="sd-symin" placeholder="ticker" value="${esc(sel ? sel.sym : '')}" style="width:6em;padding:3px 6px"><input id="sd-datein" type="date" value="${esc(sel && sel.date ? sel.date : '')}" style="padding:2px 4px"><button class="btn" type="submit" style="padding:3px 10px">Chart</button></form>
-    <span class="seg">${[['sig', 'Signals'], ['vwap', 'VWAP'], ['fibs', 'Opening range']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <span class="seg">${[['sig', 'Signals'], ['vwap', 'VWAP'], ['fibs', 'Opening range'], ['pres', 'Pressure']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button>
     <span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen" title="Close">✕</a></div>`;
   let main = '';
