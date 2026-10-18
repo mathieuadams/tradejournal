@@ -3005,6 +3005,29 @@ def test_daily_strategy():
     assert not wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False, "inhGreen": True, "inhN1": 12, "inhN2": 8, "inhN3": 4}, None)[0]   # never green here
 
 
+def test_daily_above_pw_rule():
+    """Above the PW: the daily entry close must be above the put wall of that day."""
+    import wallwatch, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [100 + 2 * d for d in range(86)] + [270 - 3 * k for k in range(1, 15)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = []
+    for d, c in zip(days, cl):
+        for k, h in enumerate(H):
+            px = c - 0.5 + k / 12
+            hb.append({"t": f"{d}T{h}", "o": px, "h": px + 0.1, "l": px - 0.1, "c": c if k == 6 else px + 0.05, "v": 1})
+    w = {d: {"putWall": 999, "callWall": 9999, "flip": 40} for d in days}
+    for d in days[60:]:
+        w[d] = {"putWall": 50, "callWall": 9999, "flip": 40}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopAtr": 5,
+           "usePW": False, "useFlip": False}
+    a = wallwatch.detect_retest(hb, w, None, cfg, None)[0]
+    b = wallwatch.detect_retest(hb, w, None, {**cfg, "abovePW": True}, None)[0]
+    assert a and b and a[0]["at"][:10] < days[60] and all(x["at"][:10] >= days[60] for x in b)
+    assert wallwatch.version({**wallwatch.PARAMS, "abovePW": True}) != wallwatch.version(wallwatch.PARAMS)
+
+
 def test_no_support_any_candle():
     """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
     import wallwatch, datetime as dt

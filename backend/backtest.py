@@ -319,11 +319,11 @@ def continue_history(sub):
 # ---------------- rule tester ----------------
 
 RULES = [  # (switch, label)
-    ("greenOnly", "Green candle"), ("aboveFlip", "Above the flip"), ("vwapOn", "Above VWAP"), ("emaOn", "Above EMA"),
+    ("greenOnly", "Green candle"), ("aboveFlip", "Above the flip"), ("abovePW", "Above the put wall"), ("vwapOn", "Above VWAP"), ("emaOn", "Above EMA"),
     ("emaOverVwap", "EMA > VWAP"), ("noAboveCW", "Not above CW"), ("cwRoomOn", "Room to CW"),
     ("skewOn", "Skew normal (middle third of 6 months)"), ("spyUp", "SPY trend up (6 days)"), ("kcNotExt", "Under the upper Keltner band"), ("orbAbove", "Above the opening range high"),
 ]
-OFF = {"usePW": True, "useFlip": True, "greenOnly": False, "aboveFlip": False, "vwapOn": False, "emaOn": False,
+OFF = {"usePW": True, "useFlip": True, "greenOnly": False, "aboveFlip": False, "abovePW": False, "vwapOn": False, "emaOn": False,
        "emaOverVwap": False, "noAboveCW": False, "cwRoomOn": False, "earnOn": False,
        "spyUp": False, "kcNotExt": False, "orbAbove": False, "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False,
        "stopOn": True, "trailOn": False, "targetOn": False, "flipExit": False, "vwapExit": False, "emaExit": False}
@@ -495,7 +495,7 @@ def rule_test(sub, params=None, budget_s=480):
     common = {k: cfg.get(k) for k in ("retestDays", "retestZone", "cwRoom", "emaLen", "vwapDays", "trailAtr", "tgtBuf", "kcLen", "kcMult", "relFlow", "relMult")}
     base = {**common, **OFF, "stopAtr": stop, "retestMin": vmin, **fixed}
     mine_entry = {k: cfg.get(k) for k in wallwatch.SWITCHES if k not in EXIT_KEYS}
-    mine_entry.update(aboveFlip=cfg.get("aboveFlip"), earnOn=False)      # no earnings history: off in the test
+    mine_entry.update(aboveFlip=cfg.get("aboveFlip"), abovePW=cfg.get("abovePW"), earnOn=False)      # no earnings history: off in the test
     full = bool(P.get("full"))
     variants = [("base", "Base: alert + retest of PW / flip", base)]
     if full:                                           # every rule alone (slower); the default run is base vs your settings

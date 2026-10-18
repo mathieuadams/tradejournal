@@ -1659,7 +1659,7 @@ function fcSvg0(d, id, opts) {
       + `<line x1="${L}" x2="${W - Rr}" y1="${y0}" y2="${y0}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="5 3"/><text x="${W - Rr + 6}" y="${y0 + 4}" font-size="${fs - 1}" fill="var(--muted)">CVD 0</text>`
       + `<path d="${pth}" fill="none" stroke="#16a34a" stroke-width="1.8" clip-path="url(#${cid}a)"/><path d="${pth}" fill="none" stroke="#dc2626" stroke-width="1.8" clip-path="url(#${cid}b)"/>`;
     if (d.signals && LY.sig !== false) d.signals.forEach(sg => { const i = idx[sg.at] ?? at(sg.at); if (i == null) return;   // where the CVD was at each entry
-      g += `<circle cx="${X(i)}" cy="${CY(cd[i])}" r="3.5" fill="${sg.side > 0 ? '#16a34a' : '#dc2626'}" stroke="var(--surface)" stroke-width="1"><title>${esc(`${sg.dir || ''} ${sg.at.replace('T', ' ').slice(5)} · CVD ${Math.round(cd[i]).toLocaleString()} (${cd[i] > 0 ? 'above' : 'below'} 0)`)}</title></circle>`; });
+      g += `<circle cx="${X(i)}" cy="${CY(cd[i])}" r="3.5" fill="${sg.side < 0 ? '#dc2626' : '#16a34a'}" stroke="var(--surface)" stroke-width="1"><title>${esc(`${sg.side < 0 ? 'SHORT entry' : 'LONG entry'}${sg.kind && sg.kind !== 'day' ? ' (' + ({ retest: 'retest', flip: 'flip', merged: 'merged' }[sg.kind] || sg.kind) + ')' : ''} ${sg.at.replace('T', ' ').slice(5)} · CVD ${Math.round(cd[i]).toLocaleString()} (${cd[i] > 0 ? 'above' : 'below'} 0)`)}</title></circle>`; });
     const fmt = v => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : Math.round(v);
     g += `<text x="${W - Rr + 6}" y="${CY(cd[cd.length - 1]) + 4}" font-size="${fs - 1}" fill="var(--coach,#5b5bd6)">${cd[cd.length - 1] >= 0 ? '+' : ''}${fmt(cd[cd.length - 1])}</text>`;
   }
@@ -3208,6 +3208,7 @@ const WW_RULES = [
   ['pwTest', 'Entry', 'Put wall test (daily)', 'Daily timeframe: the day\'s low comes within the retest zone of the put wall and the day closes above it (stop under the put wall)'],
   ['greenOnly', 'Entry', 'Green candle', 'The retest candle must close green (close > open)'],
   ['aboveFlip', 'Entry', 'Above the flip', 'The entry candle must close above the gamma flip'],
+  ['abovePW', 'Entry', 'Above the PW', 'The entry candle must close above the put wall of the day'],
   ['vwapOn', 'Entry', 'Above VWAP', 'The entry candle must close above the anchored VWAP'],
   ['emaOn', 'Entry', 'Above EMA', 'The entry candle must close above the hourly EMA (length in the EMA row)'],
   ['emaOverVwap', 'Entry', 'EMA > VWAP', 'The EMA must be above the anchored VWAP on the entry candle (uptrend)'],
@@ -3253,7 +3254,7 @@ const WW_RULES = [
 ];
 // indicators: [key, name, chart layer, parameters [key, label, step, width, suffix, default, scale], what it is, rules that use it]
 const WW_IND = [
-  ['walls', 'Gamma walls', 'walls', [['retestZone', 'retest zone', 0.05, 4, '× ATR', 0.25]], 'Put wall, call wall and gamma flip of each day; a candle retests a wall when its low comes within the zone', ['usePW', 'useFlip', 'aboveFlip', 'noAboveCW', 'cwRoomOn', 'pwNeCw', 'targetOn', 'flipExit', 'cwLost', 'pvEod']],
+  ['walls', 'Gamma walls', 'walls', [['retestZone', 'retest zone', 0.05, 4, '× ATR', 0.25]], 'Put wall, call wall and gamma flip of each day; a candle retests a wall when its low comes within the zone', ['usePW', 'useFlip', 'aboveFlip', 'abovePW', 'noAboveCW', 'cwRoomOn', 'pwNeCw', 'targetOn', 'flipExit', 'cwLost', 'pvEod']],
   ['flow', 'Options flow', 'flow', [['retestMin', 'call alert ≥ $', 50, 4.2, 'K', 500000, 1000], ['retestDays', 'wait', 1, 3, 'days', 5], ['relMult', 'unusual', 0.5, 3, '× median', 3]], 'Call alerts bought at the ask (Unusual Whales); the retest must come within the wait', ['alertReq', 'relFlow']],
   ['vwap', 'Anchored VWAP', 'vwap', [['vwapDays', 'reset on highest volume of', 1, 3.2, 'days', 10]], 'VWAP restarted on the hourly candle with the highest volume of the period', ['vwapOn', 'vwapReset', 'emaOverVwap', 'vwapExit']],
   ['ema', 'EMA (hourly)', 'ema', [['emaLen', 'length', 1, 3.4, '', 20]], 'Exponential average of the hourly closes', ['emaOn', 'emaOverVwap', 'emaExit']],
@@ -3293,7 +3294,7 @@ function wwRulePanel(vals, sw, mode, shown) {
 }
 const LAB_ONLY = ['pwTest'];   // daily-timeframe only: the live bot runs on hourly candles   // rules the live bot can't do yet: shown in the Strategy lab only
 const WW_CORE = ['earnExit', 'alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
-const WW_DEF_ON = { sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
+const WW_DEF_ON = { sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, abovePW: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 try { S.rtUseLab = localStorage.getItem('rtUseLab') === '1'; } catch (e) { S.rtUseLab = false; }
 try { S.chartDaily = localStorage.getItem('chartDaily') === '1'; } catch (e) { S.chartDaily = false; }
@@ -3387,7 +3388,7 @@ async function loadRuleTest(poll) {
   clearTimeout(S.rtPoll);
   if ((t.running || hs.running || rb.running || pv.running || rgm.running || srch.running) && route() === 'botwatch') S.rtPoll = setTimeout(() => loadRuleTest(true), 15000);
 }
-const SEARCH_RULES = ['inGreen', 'inNotRed', 'alertReq', 'relFlow', 'greenOnly', 'aboveFlip', 'vwapOn', 'emaOn', 'emaOverVwap', 'kcNotExt', 'kcdLower', 'kchLower', 'orbAbove', 'fvgOn', 'noAboveCW', 'cwRoomOn', 'vwapReset', 'pwNeCw', 'spyUp', 'skewOn'];
+const SEARCH_RULES = ['inGreen', 'inNotRed', 'alertReq', 'relFlow', 'greenOnly', 'aboveFlip', 'abovePW', 'vwapOn', 'emaOn', 'emaOverVwap', 'kcNotExt', 'kcdLower', 'kchLower', 'orbAbove', 'fvgOn', 'noAboveCW', 'cwRoomOn', 'vwapReset', 'pwNeCw', 'spyUp', 'skewOn'];
 function wwSearchBox(x) {
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
   const lbl = Object.fromEntries(WW_RULES.map(r => [r[0], r[2]]));
@@ -3581,7 +3582,7 @@ function labRedraw() { labSave(); const sym = labSymbol(); Object.keys(S.fc).fil
 function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return t || l[0] || ''; }
 try { S.chartLab = localStorage.getItem('chartLab') === '1'; } catch (e) { S.chartLab = false; }
 const HOURLY_ONLY = ['alertReq', 'relFlow', 'vwapReset', 'usePW', 'useFlip', 'vwapOn', 'emaOverVwap', 'skewOn', 'spyUp', 'kchLower', 'orbAbove', 'pvEod', 'vwapExit', 'dpLost'];
-const DAILY_PRESET = { tf: '1D', pwTest: true, inGreen: true, fvgOn: true, inYExit: true, greenOnly: false, inNotRed: false, emaOn: false, kcdLower: false, kcNotExt: false, aboveFlip: false, noAboveCW: false, cwRoomOn: false, earnOn: false, pwNeCw: false, stopOn: true, trailOn: false, targetOn: false, flipExit: false, kcRide: false, cwLost: false, fvgExit: false, scaleOn: false, inRedExit: false, emaExit: false };
+const DAILY_PRESET = { tf: '1D', pwTest: true, inGreen: true, fvgOn: true, inYExit: true, greenOnly: false, inNotRed: false, emaOn: false, kcdLower: false, kcNotExt: false, aboveFlip: false, abovePW: false, noAboveCW: false, cwRoomOn: false, earnOn: false, pwNeCw: false, stopOn: true, trailOn: false, targetOn: false, flipExit: false, kcRide: false, cwLost: false, fvgExit: false, scaleOn: false, inRedExit: false, emaExit: false };
 function labPanel() {
   const L = labCfg() || {};
   const tf = (S.labDraft && S.labDraft.tf) || L.tf || '1h';

@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False,
+          "inYExit": False, "abovePW": False,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -131,7 +131,7 @@ def version(cfg):
 
 
 # rules added later: in the version only when one is on (signals made before them stay valid)
-EXTRA_SW = ("inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
+EXTRA_SW = ("abovePW", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
 EXTRA_NUM = ("inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
 
 
@@ -175,7 +175,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -902,7 +902,7 @@ def unusual_calls(alerts, fallback=500_000, mult=3.0):
     return out
 
 
-SEARCH_RULES = ["alertReq", "relFlow", "greenOnly", "aboveFlip", "vwapOn", "emaOn", "emaOverVwap", "kcNotExt", "kcdLower",
+SEARCH_RULES = ["alertReq", "relFlow", "greenOnly", "aboveFlip", "abovePW", "vwapOn", "emaOn", "emaOverVwap", "kcNotExt", "kcdLower",
                 "kchLower", "orbAbove", "fvgOn", "noAboveCW", "cwRoomOn", "vwapReset", "pwNeCw", "spyUp", "skewOn", "inGreen", "inNotRed"]
 
 
@@ -945,6 +945,7 @@ def _search_candidates(bars, walls, start, P, out, mk, a_of, alerts, vmin, ndays
         cw_ = float(w["callWall"]) if w.get("callWall") else None
         f = {"alertReq": armed(fixed, didx[day], end), "relFlow": armed(rel, didx[day], end), "greenOnly": b["c"] > b["o"],
              "aboveFlip": bool(w.get("flip") and b["c"] > float(w["flip"])),
+             "abovePW": bool(w.get("putWall") and b["c"] > float(w["putWall"])),
              "vwapOn": vwap[i] is not None and b["c"] > vwap[i], "emaOn": ema[i] is not None and b["c"] > ema[i],
              "emaOverVwap": ema[i] is not None and vwap[i] is not None and ema[i] > vwap[i],
              "kcNotExt": bool(kc[i] and b["c"] < kc[i][1]), "kcdLower": bool(kc[i] and b["c"] <= kc[i][0]),
@@ -1156,6 +1157,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             if P.get("aboveFlip") and not (w.get("flip") and b["c"] > float(w["flip"])):
                 miss(b, f"close under the flip {w.get('flip')} (Above the flip rule)")
                 continue                               # only above the gamma flip (positive gamma): wait for another candle
+            if on("abovePW") and not (w.get("putWall") and b["c"] > float(w["putWall"])):
+                miss(b, f"close under the put wall {w.get('putWall')} (Above the PW rule)")
+                continue                               # only above the put wall
             if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
                 miss(b, f"earnings {str(earnings)[:10]} within {earn_days} days")
                 continue                               # earnings within the next N days: no entry
@@ -1353,6 +1357,8 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
             if not fz:
                 continue
         if P.get("aboveFlip") and not (fl and b["c"] > fl):
+            continue
+        if on("abovePW") and not (pw and b["c"] > pw):
             continue
         if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
             continue
