@@ -3388,6 +3388,8 @@ def test_daytrade_backtest_stats():
         assert r["all"]["n"] > 0 and r["h1"]["n"] + r["h2"]["n"] == r["all"]["n"]
         assert sum(x["n"] for x in r["byHour"].values()) == r["all"]["n"] and r["byWeekday"] and r["byMonth"]
         assert r["curve"][-1] == round(sum(x["R"] for x in r["trades"]), 2) and r["maxDD"] <= 0
+        r2 = daytrade.backtest("bt-user", 30, {"tickers": "QQQ SPY", "stopAtr": "2"})    # the settings on screen (text from the inputs)
+        assert set(r2["byTicker"]) == {"QQQ", "SPY"}
         daytrade.backtest_job("bt-user", {"days": 30})
         assert daytrade.backtest_result("bt-user")["all"]["n"] == r["all"]["n"]
     finally:
@@ -3588,6 +3590,22 @@ def test_daytrade_auto_search():
         assert dtsearch.result(sub)["tested"] == r["tested"]
     finally:
         daytrade.minute_bars, daytrade.walls_by_day, daytrade.vix_map = saved
+
+
+def test_day_walls_fetch_missing_days():
+    """Day walls: stored days used, the missing ones fetched from Unusual Whales (all expirations)."""
+    import daytrade
+    import flowdata
+    got = []
+    saved = (flowdata.stored_walls, flowdata.gex_day, flowdata._key)
+    try:
+        flowdata.stored_walls = lambda sym: {"2026-03-02": {"callWall": 1, "putWall": 2, "flip": 3}}
+        flowdata.gex_day = lambda key, sym, d, flip=True: got.append(d) or {"callWall": 10, "putWall": 9, "flip": 9.5}
+        flowdata._key = lambda sub: "k"
+        w = daytrade.walls_by_day("u", "SPY", ["2026-03-02", "2026-03-03", "2026-03-04"], False)
+        assert sorted(got) == ["2026-03-03", "2026-03-04"] and w["2026-03-02"]["flip"] == 3 and w["2026-03-04"]["flip"] == 9.5
+    finally:
+        flowdata.stored_walls, flowdata.gex_day, flowdata._key = saved
 
 
 def test_nearest_expiration_walls():

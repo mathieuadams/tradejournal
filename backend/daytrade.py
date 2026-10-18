@@ -188,13 +188,28 @@ def walls_by_day(sub, sym, dates, near=None, budget_s=240):
     except Exception as e:
         print("day walls failed", sym, e)
     today = now_ny().strftime("%Y-%m-%d")
-    if today in dates and today not in w:
+    todo = [d for d in dates if d not in w]
+    if todo:                                           # days not stored yet: fetched from Unusual Whales (kept for good)
+        import time as _t
+        from concurrent.futures import ThreadPoolExecutor
+        t0 = _t.time()
         try:
-            g = flowdata.gex_day(flowdata._key(sub), sym, today, True)
-            if g:
-                w[today] = {k: g.get(k) for k in ("callWall", "putWall", "flip")}
-        except Exception as e:
-            print("day walls today failed", sym, e)
+            key = flowdata._key(sub)
+        except Exception:
+            key = None
+        if key:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                for i in range(0, len(todo), 8):
+                    if _t.time() - t0 > budget_s:
+                        break
+                    futs = {d: ex.submit(flowdata.gex_day, key, sym, d, True) for d in todo[i:i + 8]}
+                    for d, f in futs.items():
+                        try:
+                            g = f.result()
+                            if g:
+                                w[d] = {k: g.get(k) for k in ("callWall", "putWall", "flip")}
+                        except Exception as e:
+                            print("day walls failed", sym, d, e)
     return w
 
 
@@ -741,7 +756,7 @@ def _agg(bars, m):
 
 def chart(sub, sym, days=3, tf=1, cfg=None):
     sym = (sym or "QQQ").upper()
-    P = {**config(sub), **(cfg or {})}
+    P = clean_cfg(config(sub), cfg or {})
     days = max(1, min(30, int(days or 3)))
     allb = minute_bars(sub, sym, days + 3)
     if not allb:
@@ -1010,7 +1025,7 @@ def backtest(sub, days=20, cfg=None, budget_s=540, opt=None):
     """The settings on the last `days` trading days of 1-minute candles (SIP history when the account allows it,
     else IEX), every day ticker, then the validation statistics; opt: price every trade on a real 0DTE option."""
     t0 = time.time()
-    P = {**config(sub), **(cfg or {})}
+    P = clean_cfg(config(sub), cfg or {})
     days = max(2, min(500, int(days or 20)))
     ob = 150 if opt and opt.get("on") else 0
     rr, per, all_days, feed_used, errors = run_variants(sub, days, [P], budget_s - ob)
