@@ -1858,6 +1858,8 @@ def handler(event, context_):
     elif job == "flipsnap":    # 09:20 / 09:32 / 09:40 ET: the flip as Unusual Whales shows it before / at the open
         import daytrade
         return {"flipsnap": daytrade.flip_snap_job()}
+    elif job in ("sdtick", "sdmorning"):   # stocks in play: users with it on
+        subs = [p["PK"][5:] for p in db.scan_sk("SDCFG") if p.get("enabled")]
     elif job == "daytick":     # every minute: users with day trading on
         subs = [p["PK"][5:] for p in db.scan_sk("DTCFG") if p.get("enabled")]
     elif job == "wallwatch":   # every hour: users with the wall watchlist on
@@ -1946,6 +1948,18 @@ def handler(event, context_):
             elif job == "daytick":
                 import daytrade
                 out[sub] = daytrade.tick(sub)
+            elif job == "sdtick":
+                import stockday
+                out[sub] = stockday.tick(sub)
+            elif job == "sdmorning":
+                import stockday
+                out[sub] = stockday.morning(sub)
+            elif job == "sdprep":
+                import stockday
+                out[sub] = stockday.prep_job(sub, event.get("params") or {})
+            elif job == "sdbt":
+                import stockday
+                out[sub] = {"n": (stockday.backtest_job(sub, event.get("params") or {}).get("all") or {}).get("n")}
             elif job == "wwoptsym":
                 import optiontest
                 pr = event.get("params") or {}

@@ -414,6 +414,18 @@ Resources:
             ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "tick"}'
+        StockDayMorning:    # stocks in play: today's universe + yesterday's opening ranges
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(5 9 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "sdmorning"}'
+        StockDayTick:       # stocks in play: scan after the opening range, entries, VWAP exit, flat
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "sdtick"}'
         FlipSnap:           # the flip / walls as Unusual Whales shows them before / at the open (look-ahead check)
           Type: ScheduleV2
           Properties:

@@ -3637,6 +3637,153 @@ def test_morning_flip_check():
         flowdata.snap_walls, flowdata.stored_walls = saved
 
 
+def _sd_day(day, o=50.0, drift=0.02, vol=1000, first_up=True):
+    """One synthetic stock day of 1-minute candles 09:30-16:00."""
+    out, px = [], o
+    for m in range(390):
+        hm = 570 + m
+        step = (drift if first_up else -drift) if m < 30 else (drift if first_up else -drift) * 0.5
+        o_, c_ = px, px + step
+        out.append({"t": f"{day}T{hm // 60:02d}:{hm % 60:02d}", "o": round(o_, 4), "h": round(max(o_, c_) + 0.01, 4),
+                    "l": round(min(o_, c_) - 0.01, 4), "c": round(c_, 4), "v": vol * (5 if m < 5 else 1)})
+        px = c_
+    return out
+
+
+def test_stockday_engine():
+    """Stocks in play: universe filter from the candles before each day, opening-range windows, RVOL ranking, the
+    direction lock (doji skipped), stop entries at the opening-range high / low, stop = % of ATR, exit at the close,
+    VWAP side / exit, the VWAP stop-out cap and the sizing."""
+    import stockday
+    # universe
+    daily = {"AAA": [{"t": f"2026-02-{d:02d}T00:00", "o": 50, "h": 51, "l": 49, "c": 50, "v": 2000000} for d in range(1, 21)],
+             "LOW": [{"t": f"2026-02-{d:02d}T00:00", "o": 3, "h": 3.5, "l": 2.9, "c": 3, "v": 5000000} for d in range(1, 21)]}
+    u = stockday.universe_from_daily(daily, ["2026-02-16", "2026-02-21"])
+    assert "AAA" in u["2026-02-16"] and "LOW" not in u["2026-02-16"] and "AAA" in u["2026-02-21"]   # the 21st: before its own candle
+    assert abs(u["2026-02-16"]["AAA"][0] - 2.0) < 1e-9 and u["2026-02-16"]["AAA"][1] == 2000000
+    # windows
+    bars = _sd_day("2026-03-02")
+    pm = [{"t": "2026-03-02T08:00", "o": 50, "h": 50, "l": 50, "c": 50, "v": 777}]
+    w = stockday.window_stats(pm, stockday.multi_agg(bars, 5) if hasattr(stockday, "multi_agg") else
+                              [{"t": b["t"], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"]} for b in bars])
+    assert w[0] == 777 and w[1] == bars[0]["o"] and w[5] == sum(b["v"] for b in bars[:5])
+    # ranking: today's opening-range volume vs the previous days
+    prev = [{"AAA": [100] + [50, 51, 49, 50.5, 1000] * 3, "BBB": [100] + [50, 51, 49, 50.5, 1000] * 3} for _ in range(6)]
+    today = {"AAA": [500] + [50, 51, 49, 50.6, 30000] * 3, "BBB": [100] + [50, 51, 49, 50.0, 1500] * 3}
+    uni = {"AAA": [2.0, 2000000, 50], "BBB": [2.0, 2000000, 50]}
+    P = {**stockday.PARAMS, "minRvol": 1.0, "topN": 5}
+    r = stockday.rank_day("2026-03-02", uni, prev + [today], P)
+    assert [x["sym"] for x in r] == ["AAA", "BBB"] and r[0]["rvol"] == 30.0 and r[0]["dir"] == 1 and r[1]["dir"] == 0   # BBB: doji
+    assert stockday.rank_day("2026-03-02", uni, prev + [today], {**P, "minRvol": 2})[0]["sym"] == "AAA"
+    assert len(stockday.rank_day("2026-03-02", uni, prev + [today], {**P, "minRvol": 2})) == 1
+    assert stockday.rank_day("2026-03-02", uni, prev + [today], {**P, "rvolMode": "pm"})[0]["pmRvol"] == 5.0
+    # simulate: long, entry at the opening-range high, exit at the close (uptrend)
+    hi = max(b["h"] for b in bars[:5]); lo = min(b["l"] for b in bars[:5])
+    pick = {"sym": "AAA", "rvol": 30, "pmRvol": 5, "atr": 2.0, "o": bars[0]["o"], "h": hi, "l": lo, "c": bars[4]["c"], "dir": 1}
+    t = stockday.simulate(pick, bars, {**stockday.PARAMS, "entryEnd": "11:30"})
+    assert t and t["side"] == 1 and t["entry"] == round(max(bars[5]["o"], hi), 4) and t["status"] == "close"
+    assert abs(t["stop0"] - (t["entry"] - 0.2)) < 1e-9 and t["R"] > 0
+    # short on a down day; stop hit when it reverses
+    dn = _sd_day("2026-03-03", first_up=False)
+    px = dn[59]["c"]
+    for b in dn[60:]:                                          # rallies after an hour
+        b.update(o=round(px, 4), c=round(px + 0.05, 4), h=round(px + 0.06, 4), l=round(px - 0.01, 4))
+        px += 0.05
+    pk2 = {**pick, "h": max(b["h"] for b in dn[:5]), "l": min(b["l"] for b in dn[:5]), "dir": -1}
+    t2 = stockday.simulate(pk2, dn, {**stockday.PARAMS})
+    assert t2["side"] == -1 and t2["status"] == "stop" and abs(t2["R"] + 1) < 0.2
+    # VWAP exit on a 1-minute close across the VWAP
+    t3 = stockday.simulate(pk2, dn, {**stockday.PARAMS, "vwapExit": True, "stopAtrPct": 500})
+    assert t3["status"] == "vwap"
+    # day: VWAP stop-out cap and sizing
+    picks = [{**pk2, "sym": f"S{i}"} for i in range(5)]
+    trs = stockday.day_trades(picks, {f"S{i}": dn for i in range(5)}, {**stockday.PARAMS, "vwapExit": True, "stopAtrPct": 500, "vwapCap": 2, "topN": 5})
+    assert all(0 < x["size"] <= 1 for x in trs) and all(abs(x["ret"] - x["R"] * x["size"]) < 1e-3 for x in trs)
+    assert stockday.bucket(0.5) == "< 1x" and stockday.bucket(31) == "> 30x"
+    # storage: compact, split over items, day index
+    rows = {f"T{i:04d}": [1.5, 2000000, 51.25] for i in range(1600)}
+    stockday.put_day("U", "2026-03-02", rows)
+    assert stockday.get_day("U", "2026-03-02")["T0007"] == [1.5, 2000000.0, 51.25] and "2026-03-02" in stockday.stored_days("U")
+    c = stockday.clean_cfg(stockday.PARAMS, {"orbMin": 7, "rvolMode": "pm", "exclude": "csx, wmb", "entryEnd": "12:00"})
+    assert c["orbMin"] == 5 and c["rvolMode"] == "pm" and c["exclude"] == ["CSX", "WMB"] and c["entryEnd"] == "12:00"
+
+
+def test_stockday_prep_and_backtest():
+    """History build (universe then opening-range windows, resumable) and the backtest on it."""
+    import stockday
+    days = [f"2026-03-{d:02d}" for d in range(2, 28) if __import__("datetime").date(2026, 3, d).weekday() < 5]
+    def mb(c, syms, tf, start, end, feed="sip", max_pages=60):
+        out = {}
+        for s in syms:
+            if tf == "1Day":
+                out[s] = [{"t": f"2026-02-{d:02d}T00:00", "o": 50, "h": 51.5, "l": 49, "c": 50, "v": 3000000} for d in range(1, 28)] + \
+                         [{"t": f"{d}T00:00", "o": 50, "h": 51.5, "l": 49, "c": 50, "v": 3000000} for d in days]
+            elif tf == "30Min":
+                out[s] = [{"t": start.strftime("%Y-%m-%dT08:00"), "o": 50, "h": 50, "l": 50, "c": 50, "v": 1000}]
+            elif tf == "5Min":
+                d0 = start.strftime("%Y-%m-%d")
+                big = 9 if (s == "HOT" and d0 >= days[10]) else 1
+                out[s] = [{"t": f"{d0}T{(570 + 5 * k) // 60:02d}:{(570 + 5 * k) % 60:02d}", "o": 50 + k * 0.05, "h": 50.1 + k * 0.05,
+                           "l": 49.95 + k * 0.05, "c": 50.05 + k * 0.05, "v": 1000 * big} for k in range(12)]
+            else:
+                d0 = start.strftime("%Y-%m-%d")
+                out[s] = _sd_day(d0)
+        return out
+    saved = (stockday.multi_bars, stockday.assets, stockday.trading_days, stockday.data_creds, stockday.now_ny)
+    try:
+        import datetime as _dt
+        stockday.multi_bars = mb
+        stockday.assets = lambda c: ["HOT", "COLD"]
+        stockday.trading_days = lambda c, a, b: days
+        stockday.data_creds = lambda sub: {"key": "k", "secret": "s"}
+        stockday.now_ny = lambda: _dt.datetime(2026, 3, 28, 8, 0)
+        st = stockday.prep("sd-user", days=len(days), budget_s=60)
+        assert st["phase"] == "done" and st["rDays"] == len(days) and st["uDays"] == len(days)
+        r = stockday.backtest("sd-user", 30, {"topN": 5, "minRvol": 1.5})
+        assert r["daysFound"] == len(days) and r["all"]["n"] > 0 and all(t["sym"] == "HOT" for t in r["trades"])
+        assert set(r["byRvol"]) <= {lbl for _, _, lbl in stockday.RV_BUCKETS} and r["retPct"] is not None
+        stockday.backtest_job("sd-user", {"days": 30, "cfg": {"topN": 5}})
+        assert stockday.backtest_result("sd-user")["daysFound"] == len(days)
+    finally:
+        stockday.multi_bars, stockday.assets, stockday.trading_days, stockday.data_creds, stockday.now_ny = saved
+
+
+def test_stockday_live_tick():
+    """Live: scan once after the opening range, stop entries with the stop loss attached (OTO), sized at 1% risk and
+    capped by the leverage; flat at the flat time."""
+    import datetime as dt
+    import stockday
+    sub = "sd-live"
+    stockday.save_config(sub, {"enabled": True, "trade": True, "topN": 2})
+    calls = []
+    saved = (stockday.scan_today, stockday._alp, stockday.creds)
+    try:
+        stockday.creds = lambda s: {"key": "k", "secret": "s"}
+        stockday.scan_today = lambda s, P, now: {"date": "2026-03-04", "at": "09:36", "candidates": 10, "picks": [
+            {"sym": "NVDA", "rvol": 40, "pmRvol": 6, "atr": 5.0, "o": 100, "h": 101, "l": 99.5, "c": 100.8, "dir": 1},
+            {"sym": "CSX", "rvol": 3, "pmRvol": 1, "atr": 1.0, "o": 30, "h": 30.2, "l": 29.6, "c": 29.7, "dir": -1}]}
+        def alp(c, method, path, body=None):
+            calls.append((method, path, body))
+            if path == "/v2/account":
+                return {"equity": "100000"}
+            if path == "/v2/positions":
+                return []
+            return {"id": "o1"}
+        stockday._alp = alp
+        r = stockday.tick(sub, dt.datetime(2026, 3, 4, 9, 36))
+        posts = [b for m, p, b in calls if m == "POST"]
+        assert len(posts) == 2 and posts[0]["order_class"] == "oto" and posts[0]["type"] == "stop" and posts[0]["stop_price"] == "101"
+        assert posts[0]["stop_loss"]["stop_price"] == "100.5" and int(posts[0]["qty"]) == min(int(100000 * 0.01 / 0.5), int(100000 * 4 / 2 / 101))
+        assert posts[1]["side"] == "sell" and posts[1]["stop_price"] == "29.6"
+        calls.clear()
+        stockday.tick(sub, dt.datetime(2026, 3, 4, 9, 37))
+        assert not [1 for m, p, b in calls if m == "POST"]                 # scanned once
+        stockday.tick(sub, dt.datetime(2026, 3, 4, 15, 55))
+        assert any(m == "DELETE" and p.startswith("/v2/positions") for m, p, b in calls)
+    finally:
+        stockday.scan_today, stockday._alp, stockday.creds = saved
+
+
 def test_nearest_expiration_walls():
     """Walls of the nearest expiration only: SPY tries the same day first, others the coming Friday; flip from the
     running net gamma; daytrade.walls_by_day follows the wallNear setting."""

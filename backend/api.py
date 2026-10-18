@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+from datetime import timedelta
 
 import alpaca
 import charts
@@ -535,6 +536,70 @@ def daytrade_search_get(sub, claims, body, q):
 def daytrade_flipcheck(sub, claims, body, q):
     import daytrade
     return daytrade.flip_check(sub)
+
+
+@route("GET", "/stockday")
+def stockday_get(sub, claims, body, q):
+    import stockday
+    return stockday.view(sub)
+
+
+@route("PUT", "/stockday")
+def stockday_put(sub, claims, body, q):
+    import stockday
+    stockday.save_config(sub, body or {})
+    return stockday.view(sub)
+
+
+@route("PUT", "/stockday/account")
+def stockday_account(sub, claims, body, q):
+    import stockday
+    b = body or {}
+    return stockday.connect(sub, b.get("key"), b.get("secret"))
+
+
+@route("DELETE", "/stockday/account")
+def stockday_account_del(sub, claims, body, q):
+    import stockday
+    db.delete(db.upk(sub), stockday.CRED_SK)
+    return stockday.view(sub)
+
+
+@route("POST", "/stockday/prep")
+def stockday_prep(sub, claims, body, q):
+    import stockday
+    b = body or {}
+    st = stockday.prep_status(sub)
+    if st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=12)):
+        return {"status": "running"}
+    db.put({"PK": db.upk(sub), "SK": stockday.PREP_SK, **st, "running": iso(now_ny()), "error": None})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "sdprep", "params": {"days": b.get("days") or 500}}, default=str))
+    return {"status": "running"}
+
+
+@route("POST", "/stockday/backtest")
+def stockday_bt(sub, claims, body, q):
+    import stockday
+    b = body or {}
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else None
+    db.put({"PK": db.upk(sub), "SK": stockday.BT_SK, **stockday.backtest_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "sdbt", "params": {"days": b.get("days") or 250, "cfg": cfg}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/stockday/backtest")
+def stockday_bt_get(sub, claims, body, q):
+    import stockday
+    return stockday.backtest_result(sub)
+
+
+@route("POST", "/stockday/chart")
+def stockday_chart(sub, claims, body, q):
+    import stockday
+    b = body or {}
+    return stockday.chart(sub, b.get("t"), b.get("date"))
 
 
 @route("POST", "/daytrade/study")

@@ -967,6 +967,7 @@ function vSettings() {
     <div class="broker-card"><h3>Charles Schwab</h3>${schwabHtml()}</div>
     <div class="broker-card"><h3>Alpaca</h3><div id="broker">${brokerHtml}</div></div>
     <div class="broker-card"><h3>Alpaca — day trading account</h3>${dtSettingsBox()}</div>
+    <div class="broker-card"><h3>Alpaca — stock day trading account</h3>${sdSettingsBox()}</div>
     <div class="broker-card"><h3>Other brokers</h3><p class="muted" style="margin:0">Interactive Brokers, Tradovate, NinjaTrader, TradeStation, Webull, Robinhood and others: import a CSV of your fills on the <a href="#import">Import</a> page. Direct connections are added one broker at a time.</p></div>
   </section>`;
 }
@@ -1698,7 +1699,7 @@ async function loadWwChart(sym) {
   try { S.fc[k] = await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`); } catch (e) { S.fc[k] = { error: e.message }; }
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
-const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['sd', 'Day trading stocks']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
@@ -2147,9 +2148,127 @@ function vChartDT() {
     ${S.hideSettings ? '' : dtPanel()}${dtBtBox()}${flipCheckBox()}${dtSearchBox()}${dtCmpBox()}${dtStudyBox()}`;
   return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${main}${info}</div></div></div>`;
 }
+/* ---------- day trading stocks in play: ORB on the top relative-volume stocks (third Alpaca paper account) ---------- */
+async function loadSD() { try { S.sd = await api('/stockday'); } catch (e) { S.sd = { error: e.message }; } if (['botchart', 'settings'].includes(route())) render();
+  clearTimeout(S.sdPoll); const pr = (S.sd && S.sd.prep) || {}; if (pr.running && route() === 'botchart') S.sdPoll = setTimeout(loadSD, 15000); }
+async function loadSDBt() { try { S.sdBt = await api('/stockday/backtest'); } catch (e) { S.sdBt = { error: e.message }; } if (route() === 'botchart') render();
+  clearTimeout(S.sdBtPoll); if (S.sdBt && S.sdBt.running && route() === 'botchart') S.sdBtPoll = setTimeout(loadSDBt, 10000); }
+async function loadSDChart(sym, date) { const k = `${sym}|${date || ''}`; S.sdBusy = k; if (route() === 'botchart') render();
+  try { const d = await api('/stockday/chart', { method: 'POST', body: { t: sym, date } }); if (d.orb) d.fibs = { [d.date]: [['ORB high', d.orb.h], ['ORB low', d.orb.l]] }; S.sdFc = { k, d }; } catch (e) { S.sdFc = { k, d: { error: e.message } }; }
+  S.sdBusy = null; if (route() === 'botchart') render(); }
+function sdCfg() { return { ...((S.sd && S.sd.config) || {}), ...(S.sdDraft || {}) }; }
+function sdPut(body, msg) { return api('/stockday', { method: 'PUT', body }).then(r => { S.sd = r; if (msg) toast(msg); render(); }).catch(err => toast(err.message)); }
+function sdBody() { const b = { ...(S.sdDraft || {}) };
+  document.querySelectorAll('[data-sdnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) b[i.dataset.sdnum] = v; });
+  document.querySelectorAll('[data-sdtxt]').forEach(i => { b[i.dataset.sdtxt] = i.value; }); return b; }
+function sdAccountBox(full) {
+  const a = (S.sd && S.sd.account) || {}, c = sdCfg();
+  if (!a.connected && !full) return '<p class="muted" style="font-size:.85rem;margin:6px 0">Stock account not connected: connect a THIRD Alpaca paper account in <a href="#settings">Settings → Brokers</a> to trade this live (the backtest works without it).</p>';
+  if (!a.connected) return `<div style="border:1px dashed var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:.85rem"><b>Stock day-trading account</b> — a THIRD Alpaca paper account (its own API key / secret), apart from the options bot and the QQQ / SPY day account.
+    <form id="sd-acct" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"><input id="sd-key" placeholder="API key" style="width:14em" autocomplete="off"><input id="sd-secret" placeholder="Secret" type="password" style="width:18em" autocomplete="off"><button class="btn coachbtn" type="submit">Connect</button></form></div>`;
+  const pos = a.positions || [];
+  return `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:.85rem;margin:4px 0">
+    <b>Stock account</b> <span class="muted">paper ··${esc(a.keyHint || '')}${a.equity ? ` · equity ${money(+a.equity)} · buying power ${money(+a.buyingPower)}` : ''}${a.error ? ` · <span class="loss">${esc(a.error)}</span>` : ''}</span>
+    <label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-sdlive="enabled" ${c.enabled ? 'checked' : ''}>run every minute</label>
+    <label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-sdlive="trade" ${c.trade ? 'checked' : ''}>place orders</label>
+    <button class="btn" data-sddisconnect style="font-size:.75rem;padding:0 8px">Disconnect</button>
+    ${pos.length ? `<span>Positions: ${pos.map(p0 => `<b>${esc(p0.symbol)}</b> ${esc(p0.side)} ${esc(p0.qty)} <span class="${+p0.pl >= 0 ? 'gain' : 'loss'}">${+p0.pl >= 0 ? '+' : ''}${money(+p0.pl)}</span>`).join(' · ')}</span>` : '<span class="muted">no position</span>'}</div>`;
+}
+function sdSettingsBox() {
+  if (S.sd === undefined) { S.sd = null; setTimeout(loadSD, 0); }
+  if (!S.sd) return '<p class="loading" style="padding:0">Loading…</p>';
+  if (S.sd.error) return `<div class="errbox">${esc(S.sd.error)}</div>`;
+  return `<p class="muted" style="margin:0 0 6px;font-size:.85rem">A THIRD Alpaca <b>paper</b> account for the stocks-in-play day trading (Chart → Day trading stocks).</p>${sdAccountBox(true)}`;
+}
+function sdPanel() {
+  const c = sdCfg(), num = (k, step, w, l, suf) => `<span class="muted" style="font-size:.78rem">${l}</span> <input data-sdnum="${k}" type="number" step="${step}" value="${c[k] ?? ''}" style="width:${w}em;padding:1px 4px"><span class="muted" style="font-size:.75rem">${suf || ''}</span>`;
+  const tog = (k, l, tip) => `<button class="btn ${c[k] ? 'coachbtn' : ''}" data-sdsw="${k}" title="${esc(tip || '')}" style="font-size:.78rem;padding:1px 10px">${c[k] ? 'ON' : 'OFF'} · ${l}</button>`;
+  const txt = (k, l, w) => `<span class="muted" style="font-size:.78rem">${l}</span> <input data-sdtxt="${k}" value="${esc(Array.isArray(c[k]) ? c[k].join(' ') : (c[k] || ''))}" style="width:${w}em;padding:1px 4px">`;
+  return `<div style="display:flex;flex-direction:column;gap:7px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:.82rem">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="min-width:5.5em">Universe</b>${num('minPrice', 0.5, 4, 'price >', '$')} ${num('minAvgVol', 100000, 7, '14-day avg volume >')} ${num('minAtr', 0.05, 4, 'ATR >', '$')} ${txt('exclude', 'never', 12)}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="min-width:5.5em">In play</b>
+      <span class="muted" style="font-size:.78rem">rank by</span> ${[['orb', 'opening-range RVOL'], ['pm', 'pre-market RVOL']].map(([v, l]) => `<button class="btn ${c.rvolMode === v ? 'coachbtn' : ''}" data-sdset="rvolMode=${v}" style="font-size:.75rem;padding:0 8px">${l}</button>`).join('')}
+      ${num('minRvol', 0.1, 3.6, 'RVOL ≥', '×')} ${num('topN', 1, 3.4, 'top', 'stocks')}
+      <span class="muted" style="font-size:.78rem">opening range</span> ${[5, 15, 30].map(m => `<button class="btn ${+c.orbMin === m ? 'coachbtn' : ''}" data-sdset="orbMin=${m}" style="font-size:.75rem;padding:0 8px">${m} min</button>`).join('')}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="min-width:5.5em">Entry</b>${tog('longs', 'Longs')} ${tog('shorts', 'Shorts')} ${tog('dirLock', 'Direction lock', 'Green opening-range candle → longs only, red → shorts only, doji → skip')} ${num('dojiPct', 1, 3.4, 'doji: body <', '% of the range')}
+      ${tog('vwapSide', 'VWAP side', 'Long only when the breakout is above the session VWAP, short only below')} ${txt('entryEnd', 'entries until', 4)} ${tog('skipMid', 'Skip 12:00-15:00', 'No entries between noon and 3 pm')}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="min-width:5.5em">Exit</b>${num('stopAtrPct', 1, 3.6, 'stop', '% of the 14-day ATR')} ${tog('vwapExit', 'VWAP exit', 'Out on a 1-minute CLOSE on the other side of the VWAP (not a wick)')} ${num('vwapCap', 1, 3, 'done after', 'VWAP stop-outs (0 = off)')} ${txt('flatT', 'flat at', 4)}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b style="min-width:5.5em">Sizing</b>${num('riskPct', 0.1, 3.4, 'risk', '% of capital per trade')} ${num('maxLev', 0.5, 3.4, 'max leverage', '× (split over the top N)')}</div>
+    <div style="display:flex;gap:6px;align-items:center"><button class="btn ${S.sdDirty ? 'coachbtn' : ''}" data-sdapply style="font-size:.8rem;padding:1px 12px">${S.sdDirty ? 'Apply changes' : 'Apply'}</button><span class="muted" style="font-size:.75rem">Exit at the close, no target (the papers). Settings apply to the backtest and to the live stock account.</span></div></div>`;
+}
+function sdPrepBox() {
+  const v = S.sd || {}, pr = v.prep || {}, cov = v.coverage || {};
+  return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:.84rem"><b style="font-size:.95rem">History</b>
+    <span>${cov.rDays || 0} days with opening ranges${cov.first ? ` (${esc(cov.first)} → ${esc(cov.last)})` : ''} · universe ${cov.uDays || 0} days</span>
+    <select id="sd-prepdays" style="padding:1px 4px">${[250, 500, 1000].map(n => `<option value="${n}" ${n === (S.sdPrepDays || 500) ? 'selected' : ''}>${n} trading days</option>`).join('')}</select>
+    <button class="btn coachbtn" data-sdprep ${pr.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${pr.running ? 'Building… (runs in the background)' : 'Build / extend history'}</button>
+    <span class="muted" style="font-size:.78rem">${esc(pr.progress || '')}${pr.error ? ` · <span class="loss">${esc(pr.error)}</span>` : ''} · daily candles of every US stock, then the pre-market + opening-range volume of the candidates of each day (Alpaca SIP, once; ~30-60 min for 500 days on the free data plan). Updated every morning at 09:05.</span></div>`;
+}
+function sdScanBox() {
+  const sc = (S.sd && S.sd.scan) || {}, pk = sc.picks || [];
+  const f2 = v => v == null ? '—' : (+v).toFixed(2);
+  if (!pk.length) return `<p class="muted" style="font-size:.82rem;margin:6px 0">Today's stocks in play appear here once the opening range is complete (live, with “run every minute” on).${sc.error ? ` <span class="loss">${esc(sc.error)}</span>` : ''}</p>`;
+  return `<b style="font-size:.9rem;display:block;margin:8px 0 4px">Stocks in play ${esc(sc.date || '')} ${esc(sc.at || '')} <span class="muted" style="font-weight:400;font-size:.75rem">${sc.candidates} in the universe${sc.feed === 'iex' ? ' · IEX volume (no real-time SIP on this data plan)' : ''}</span></b>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Stock</th><th class="r">RVOL</th><th class="r">Pre-market RVOL</th><th class="r">ATR</th><th class="r">Range high / low</th><th>Direction</th><th></th></tr></thead><tbody>
+    ${pk.map(p0 => `<tr><td><b>${esc(p0.sym)}</b></td><td class="r">${f2(p0.rvol)}×</td><td class="r">${f2(p0.pmRvol)}×</td><td class="r">${f2(p0.atr)}</td><td class="r">${f2(p0.h)} / ${f2(p0.l)}</td><td>${p0.dir > 0 ? '<span class="gain">long</span>' : p0.dir < 0 ? '<span class="loss">short</span>' : 'doji: skip'}</td><td><button class="btn" data-sdchart="${esc(p0.sym)}|${esc(sc.date || '')}" style="font-size:.72rem;padding:0 8px">chart</button></td></tr>`).join('')}</tbody></table></div>`;
+}
+function sdBtBox() {
+  if (S.sdBt === undefined) { S.sdBt = null; setTimeout(loadSDBt, 0); }
+  const t = S.sdBt || {};
+  const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const head = `<div style="display:flex;gap:6px;align-items:center;margin-top:12px;flex-wrap:wrap"><b style="font-size:.95rem">Backtest</b> <select id="sd-btdays" style="padding:1px 4px">${[60, 120, 250, 500, 1000].map(n => `<option ${n === (S.sdBtDays || 250) ? 'selected' : ''} value="${n}">${n} trading days</option>`).join('')}</select>
+    <button class="btn coachbtn" data-sdbt ${t.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${t.running ? 'Running… (a few minutes)' : 'Run'}</button><span class="muted" style="font-size:.78rem">on the stored history, the settings on screen; 1-minute candles of the top stocks of each day</span></div>`;
+  if (t.error) return head + `<div class="errbox">${esc(t.error)}</div>`;
+  if (!t.all) return head + ((t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : '');
+  const row = (l, x) => `<tr><td>${l}</td><td class="r">${x.n || 0}</td><td class="r">${x.win ?? '—'}%</td><td class="r">${R(x.avgR)}</td><td class="r">${R(x.totR)}</td><td class="r">${x.pf ?? '—'}</td><td class="r">${R(x.avgWin)} / ${R(x.avgLoss)}</td></tr>`;
+  const th = `<thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">Avg win / loss</th></tr></thead>`;
+  const cv = t.curvePct || [];
+  let svg = '';
+  if (cv.length > 1) { const W0 = 640, H0 = 120, mn = Math.min(0, ...cv), mx = Math.max(0, ...cv), sx = i => 4 + i / (cv.length - 1) * (W0 - 8), sy = v => H0 - 6 - (v - mn) / ((mx - mn) || 1) * (H0 - 12);
+    svg = `<svg viewBox="0 0 ${W0} ${H0}" style="width:100%;max-width:${W0}px;height:auto;display:block"><line x1="4" x2="${W0 - 4}" y1="${sy(0)}" y2="${sy(0)}" stroke="var(--line)"/><path d="${cv.map((v, i) => `${i ? 'L' : 'M'}${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join('')}" fill="none" stroke="${cv[cv.length - 1] >= 0 ? 'var(--gain)' : 'var(--loss)'}" stroke-width="2"/><text x="6" y="12" font-size="11" fill="var(--muted)">capital, % (sized: ${esc(String(sdCfg().riskPct))}% risk, ≤ ${esc(String(sdCfg().maxLev))}× leverage)</text></svg>`; }
+  const tk = (title, arr) => arr && arr.length ? `<details style="margin:4px 0"><summary style="font-size:.84rem;cursor:pointer">${title}</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th}<tbody>${arr.map(x => row(`<a href="javascript:void 0" data-sdchart="${esc(x.sym)}|">${esc(x.sym)}</a>`, x)).join('')}</tbody></table></div></details>` : '';
+  const tb = (title, obj) => obj && Object.keys(obj).length ? `<details style="margin:4px 0"><summary style="font-size:.84rem;cursor:pointer">${title}</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th}<tbody>${Object.entries(obj).map(([k, x]) => row(esc(k), x)).join('')}</tbody></table></div></details>` : '';
+  return head + `<p class="muted" style="font-size:.8rem;margin:4px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${t.daysFound} days from ${esc(t.first || '')} · ${t.picksPerDay} stocks in play a day · ${t.secs} s</p>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem">${th}<tbody>${row('<b>All</b>', t.all)}${t.h1 ? row(`1st half <span class="muted">(to ${esc(t.mid || '')})</span>`, t.h1) : ''}${t.h2 ? row('2nd half', t.h2) : ''}${Object.entries(t.byDir || {}).map(([k, x]) => row(esc(k), x)).join('')}</tbody></table></div>
+    <p style="font-size:.84rem;margin:4px 0">t <b class="${t.t >= 2 ? 'gain' : t.t <= 0 ? 'loss' : ''}">${t.t ?? '—'}</b> · capital <b class="${t.retPct >= 0 ? 'gain' : 'loss'}">${t.retPct >= 0 ? '+' : ''}${t.retPct}%</b>${t.annPct != null ? ` (${t.annPct >= 0 ? '+' : ''}${t.annPct}% a year)` : ''} · max drawdown <b class="loss">${t.ddPct}%</b> · ${t.maxDD}R · longest losing streak <b>${t.maxLosing ?? '—'}</b> · green days ${t.greenDays ?? 0} / ${t.daysTraded ?? 0}</p>
+    ${svg}<b style="font-size:.86rem;display:block;margin:6px 0 2px">By relative volume</b><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem">${th}<tbody>${Object.entries(t.byRvol || {}).map(([k, x]) => row(esc(k), x)).join('')}</tbody></table></div>
+    ${tk('Best stocks (3+ trades)', t.best)}${tk('Worst stocks', t.worst)}${tb('By entry hour', t.byHour)}${tb('By month', t.byMonth)}
+    ${(t.trades || []).length ? `<details style="margin:4px 0"><summary style="font-size:.84rem;cursor:pointer">Trades (last ${t.trades.length})</summary><div style="overflow-x:auto;max-height:340px;overflow-y:auto"><table class="pos" style="font-size:.78rem"><thead><tr><th>Stock</th><th>Entry</th><th>Side</th><th class="r">RVOL</th><th class="r">Price</th><th>Exit</th><th class="r">Price</th><th>Why</th><th class="r">R</th><th class="r">% capital</th></tr></thead><tbody>
+      ${t.trades.slice().reverse().map(x => `<tr><td><a href="javascript:void 0" data-sdchart="${esc(x.sym)}|${esc((x.at || '').slice(0, 10))}">${esc(x.sym)}</a></td><td>${esc((x.at || '').slice(5).replace('T', ' '))}</td><td>${esc(x.dir)}</td><td class="r">${x.rvol}×</td><td class="r">${(+x.entry).toFixed(2)}</td><td>${esc((x.exitAt || '').slice(11))}</td><td class="r">${(+x.exit).toFixed(2)}</td><td>${esc(x.status)}</td><td class="r">${R(x.R)}</td><td class="r">${(+x.ret).toFixed(2)}%</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+    ${(t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
+}
+function vChartSD() {
+  if (S.sd === undefined) { S.sd = null; setTimeout(loadSD, 0); }
+  const sel = S.sdSel || null;
+  const k = sel ? `${sel.sym}|${sel.date || ''}` : null, d = S.sdFc && S.sdFc.k === k ? S.sdFc.d : null;
+  if (sel && !d && S.sdBusy !== k) setTimeout(() => loadSDChart(sel.sym, sel.date), 0);
+  const W = Math.max(320, window.innerWidth - 20), H = Math.max(380, window.innerHeight - 200);
+  const id = 'sd-' + (sel ? sel.sym : 'none');
+  const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sel ? sel.sym : 'Stocks in play')}</b> ${fcModeSeg()}
+    <form id="sd-sym" style="display:inline-flex;gap:4px"><input id="sd-symin" placeholder="ticker" value="${esc(sel ? sel.sym : '')}" style="width:6em;padding:3px 6px"><input id="sd-datein" type="date" value="${esc(sel && sel.date ? sel.date : '')}" style="padding:2px 4px"><button class="btn" type="submit" style="padding:3px 10px">Chart</button></form>
+    <span class="seg">${[['sig', 'Signals'], ['vwap', 'VWAP'], ['fibs', 'Opening range']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button>
+    <span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen" title="Close">✕</a></div>`;
+  let main = '';
+  if (sel) {
+    if (!d) main = '<p class="loading">Loading 1-minute candles…</p>';
+    else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
+    else if (!(d.bars || []).length) main = '<p class="muted">No candles for this day.</p>';
+    else { main = fcSvg(d, id, { W, H: Math.max(360, H - 40), noAcc: true });
+      const sg = (d.signals || [])[0];
+      main += `<div class="fcf-info" style="font-size:.84rem"><span><b>${esc(d.date)}</b> pre-market volume ${(d.pmVol || 0).toLocaleString()}${d.orb ? ` · opening range ${(+d.orb.h).toFixed(2)} / ${(+d.orb.l).toFixed(2)} (${d.orb.c > d.orb.o ? 'green' : d.orb.c < d.orb.o ? 'red' : 'doji'})` : ''}${sg ? ` · ${esc(sg.dir)} ${esc(sg.at.slice(11))} @ ${(+sg.entry).toFixed(2)} → ${esc(sg.status)} ${esc((sg.exitAt || '').slice(11))} @ ${(+sg.exit).toFixed(2)} <b class="${sg.R > 0 ? 'gain' : 'loss'}">${sg.R > 0 ? '+' : ''}${sg.R}R</b>` : ' · no trade with these settings'}</span></div>`; }
+  } else main = '<p class="muted" style="padding:10px">Pick a stock from today\'s stocks in play or the backtest trades, or type a ticker and a date.</p>';
+  const live = (S.sd && S.sd.trades) || [];
+  const info = `${sdAccountBox()}${sdScanBox()}
+    ${live.length ? `<details style="margin:4px 0"><summary style="font-size:.85rem;cursor:pointer">Live stock trades (${live.length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Stock</th><th>At</th><th>Side</th><th class="r">Qty</th><th class="r">Entry stop</th><th class="r">Stop</th><th class="r">RVOL</th><th>Status</th><th>Exit</th></tr></thead><tbody>
+      ${live.slice().reverse().map(r0 => `<tr><td>${esc(r0.symbol)}</td><td>${esc((r0.at || '').replace('T', ' ').slice(5))}</td><td>${esc(r0.dir || '')}</td><td class="r">${r0.qty ?? ''}</td><td class="r">${r0.level ?? ''}</td><td class="r">${r0.stop ?? ''}</td><td class="r">${r0.rvol ?? ''}</td><td>${esc(r0.status || '')}</td><td>${esc(r0.exitReason || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+    ${S.hideSettings ? '' : sdPanel()}${sdPrepBox()}${sdBtBox()}`;
+  return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${main}${info}</div></div></div>`;
+}
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {
   if (S.fcfMode === 'dt') return vChartDT();
+  if (S.fcfMode === 'sd') return vChartSD();
   if (S.fcfMode === 'ww') return vChartWW();
   const L = S.tickers, items = (L && L.items) || [], sym = fcfSymbol(), cur0 = items.find(x => x.symbol === sym), evId = hashParam('id');
   const cur = cur0 && evId ? { ...cur0, id: evId } : cur0;      // a specific evaluation (backtest replay) or the latest one
@@ -3942,7 +4061,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-chartdaily],[data-sdsw],[data-sdset],[data-sdapply],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
@@ -4030,6 +4149,15 @@ document.addEventListener('click', e => {
   if (el.dataset.dtdays) { S.dtDays = +el.dataset.dtdays; try { localStorage.setItem('dtDays', S.dtDays); } catch (x) {} render(); return; }
   if (el.hasAttribute('data-dtreload')) { S.dtFc = null; render(); return; }
   if (el.hasAttribute('data-dtdisconnect')) { if (!confirm('Disconnect the day-trading account?')) return; api('/daytrade/account', { method: 'DELETE' }).then(r => { S.dt = r; render(); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.sdsw) { const k = el.dataset.sdsw; S.sdDraft = { ...(S.sdDraft || {}), [k]: !sdCfg()[k] }; S.sdDirty = true; render(); return; }
+  if (el.dataset.sdset) { const [k, v] = el.dataset.sdset.split('='); S.sdDraft = { ...(S.sdDraft || {}), [k]: isNaN(+v) ? v : +v }; S.sdDirty = true; render(); return; }
+  if (el.hasAttribute('data-sdapply')) { const b = sdBody(); S.sdDraft = {}; S.sdDirty = false; sdPut(b, 'Stock day-trading settings saved'); return; }
+  if (el.hasAttribute('data-sdprep')) { const days = +((document.getElementById('sd-prepdays') || {}).value || 500); S.sdPrepDays = days;
+    api('/stockday/prep', { method: 'POST', body: { days } }).then(() => { toast('Building the history in the background'); loadSD(); }).catch(err => toast(err.message)); return; }
+  if (el.hasAttribute('data-sdbt')) { const days = +((document.getElementById('sd-btdays') || {}).value || 250); S.sdBtDays = days;
+    api('/stockday/backtest', { method: 'POST', body: { days, cfg: sdBody() } }).then(() => { S.sdBt = { ...(S.sdBt || {}), running: 'now' }; render(); clearTimeout(S.sdBtPoll); S.sdBtPoll = setTimeout(loadSDBt, 10000); }).catch(err => toast(err.message)); return; }
+  if (el.dataset.sdchart) { e.preventDefault(); const [sym, date] = el.dataset.sdchart.split('|'); S.sdSel = { sym, date: date || '' }; S.fcfY = 0; render(); const f = document.querySelector('.fcf'); if (f) f.scrollTop = 0; return; }
+  if (el.hasAttribute('data-sddisconnect')) { if (!confirm('Disconnect the stock day-trading account?')) return; api('/stockday/account', { method: 'DELETE' }).then(r => { S.sd = r; render(); }).catch(err => toast(err.message)); return; }
   if (el.hasAttribute('data-dtsearch')) {
     const days = +((document.getElementById('dt-srdays') || {}).value || 250); S.dtSrDays = days;
     api('/daytrade/search', { method: 'POST', body: { days, cfg: dtBody() } }).then(() => { S.dtSrch = { ...(S.dtSrch || {}), running: 'now' }; render(); clearTimeout(S.dtSrchPoll); S.dtSrchPoll = setTimeout(loadDTSrch, 10000); }).catch(err => toast(err.message));
@@ -4305,11 +4433,22 @@ document.addEventListener('submit', e => {
   const key = (($('#dt-key') || {}).value || '').trim(), secret = (($('#dt-secret') || {}).value || '').trim();
   api('/daytrade/account', { method: 'PUT', body: { key, secret } }).then(r => { S.dt = r; toast('Day-trading account connected'); render(); }).catch(err => toast(err.message));
 });
+document.addEventListener('submit', e => {
+  if (e.target.id === 'sd-acct') { e.preventDefault();
+    const key = (($('#sd-key') || {}).value || '').trim(), secret = (($('#sd-secret') || {}).value || '').trim();
+    api('/stockday/account', { method: 'PUT', body: { key, secret } }).then(r => { S.sd = r; toast('Stock day-trading account connected'); render(); }).catch(err => toast(err.message)); return; }
+  if (e.target.id === 'sd-sym') { e.preventDefault();
+    const sym = (($('#sd-symin') || {}).value || '').trim().toUpperCase(), date = (($('#sd-datein') || {}).value || '').trim();
+    if (sym) { S.sdSel = { sym, date }; render(); } }
+});
 document.addEventListener('change', e => {
+  const sk = e.target.dataset && e.target.dataset.sdlive;
+  if (sk) { sdPut({ [sk]: e.target.checked }, sk === 'enabled' ? (e.target.checked ? 'Stock day trading runs every minute' : 'Stock day trading stopped') : (e.target.checked ? 'Orders ON (paper stock account)' : 'Orders OFF')); return; }
   const k = e.target.dataset && e.target.dataset.dtlive; if (!k) return;
   dtPut({ [k]: e.target.checked }, k === 'enabled' ? (e.target.checked ? 'Day trading runs every minute' : 'Day trading stopped') : (e.target.checked ? 'Orders ON (paper day account)' : 'Orders OFF'));
 });
 document.addEventListener('input', e => {
+  if (e.target.matches && e.target.matches('[data-sdnum],[data-sdtxt]')) { S.sdDirty = true; const b = document.querySelector('[data-sdapply]'); if (b) { b.classList.add('coachbtn'); b.textContent = 'Apply changes'; } }
   if (e.target.matches && e.target.matches('[data-dtnum],[data-dttime],[data-dttk],[data-dtsel]')) { S.dtDirty = true; const b = document.querySelector('[data-dtapply]'); if (b) { b.classList.add('coachbtn'); b.textContent = 'Apply changes'; } }
 });
 document.addEventListener('submit', e => {
