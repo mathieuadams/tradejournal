@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False,
+          "inYExit": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "cvdTurn": False, "cvdTurnN": 1,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -131,8 +131,8 @@ def version(cfg):
 
 
 # rules added later: in the version only when one is on (signals made before them stay valid)
-EXTRA_SW = ("pwExit", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
-EXTRA_NUM = ("cvdN", "sqTurnN", "inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
+EXTRA_SW = ("cvdTurn", "pwExit", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
+EXTRA_NUM = ("cvdTurnN", "cvdN", "sqTurnN", "inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
 
 
 SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower", "inGreen", "inNotRed", "inRedExit")
@@ -156,7 +156,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("inN1", 5, 250), ("cvdN", 1, 500), ("sqTurnN", 1, 20), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
+    for k, lo_, hi_ in (("inN1", 5, 250), ("cvdN", 1, 500), ("sqTurnN", 1, 20), ("cvdTurnN", 1, 20), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
@@ -175,7 +175,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "pwExit", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "pwExit", "cvdTurn", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -285,9 +285,22 @@ def cvd_roll(bars, n=20):
     return out
 
 
-def cvd_ok(P, v):
-    """CVD > 0 / CVD < 0 filters (both on: never)."""
+def cvd_turn_ago(cv):
+    """Per candle: candles since the last CVD turn up (under 0, falling then rising: the purple arrow on the chart),
+    0 = on this candle, None = none yet."""
+    out, last = [], None
+    for i, c in enumerate(cv):
+        if i >= 2 and c < 0 and c > cv[i - 1] and cv[i - 2] > cv[i - 1]:
+            last = i
+        out.append(None if last is None else i - last)
+    return out
+
+
+def cvd_ok(P, v, ago=None):
+    """CVD > 0 / CVD < 0 filters (both on: never); CVD turn up on this candle or within the last cvdTurnN."""
     on = lambda k: bool(P.get(k, PARAMS[k]))
+    if on("cvdTurn") and not (ago is not None and ago < max(1, int(P.get("cvdTurnN") or 1))):
+        return False
     return not ((on("cvdUp") and not (v is not None and v > 0)) or (on("cvdDn") and not (v is not None and v < 0)))
 
 
@@ -1029,7 +1042,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     if not on("earnOn"):
         earnings = None
     sup_keys = tuple(x for x, k in ((("putWall", "put wall"), "usePW"), (("flip", "flip"), "useFlip")) if on(k))
-    cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if (on("cvdUp") or on("cvdDn")) else None
+    cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if (on("cvdUp") or on("cvdDn") or on("cvdTurn")) else None
+    cva = cvd_turn_ago(cvr) if cvr is not None else None
     ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     extra = extra or {}
     kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
@@ -1200,8 +1214,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             if on("belowPW") and not (w.get("putWall") and b["c"] < float(w["putWall"])):
                 miss(b, f"close above the put wall {w.get('putWall')} (Below the PW rule)")
                 continue
-            if cvr is not None and not cvd_ok(P, cvr[i]):
-                miss(b, f"CVD of the last {int(P.get('cvdN') or 20)} candles {cvr[i]:,.0f} (CVD rule)")
+            if cvr is not None and not cvd_ok(P, cvr[i], cva[i]):
+                miss(b, f"CVD of the last {int(P.get('cvdN') or 20)} candles {cvr[i]:,.0f}" + (" · no CVD turn up" if on("cvdTurn") else "") + " (CVD rule)")
                 continue
             if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
                 miss(b, f"earnings {str(earnings)[:10]} within {earn_days} days")
@@ -1359,7 +1373,8 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
     for z in zones:
         if z["type"] == "bear":
             bear[z["i"]] = True
-    cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if (on("cvdUp") or on("cvdDn")) else None
+    cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if (on("cvdUp") or on("cvdDn") or on("cvdTurn")) else None
+    cva = cvd_turn_ago(cvr) if cvr is not None else None
     ver = version(P) + "|1D"
     sigs, open_ = [], None
     for i, b in enumerate(bars):
@@ -1408,7 +1423,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
             continue
         if on("belowPW") and not (pw and b["c"] < pw):
             continue
-        if cvr is not None and not cvd_ok(P, cvr[i]):
+        if cvr is not None and not cvd_ok(P, cvr[i], cva[i]):
             continue
         if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
             continue

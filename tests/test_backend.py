@@ -3100,6 +3100,26 @@ def test_swing_close_under_pw_exit():
     assert st["status"] == "pwlost" and st["exit"] == 204
 
 
+def test_swing_cvd_turn_rule():
+    """CVD turn up: the rolling CVD under 0, falling then rising; entry on the turn candle or within N candles."""
+    import wallwatch, math, datetime as dt
+    assert wallwatch.cvd_turn_ago([5, -1, -3, -2, -4, -5, -1]) == [None, None, None, 0, 1, 2, 0]
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [200 + 20 * math.sin(d / 5) for d in range(120)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = [{"t": f"{d}T{h}", "o": c - 0.2 * math.cos(j / 5), "h": c + 0.5, "l": c - 0.5, "c": c + 0.3 * math.cos(j / 5) if k == 6 else c, "v": 10}
+          for j, (d, c) in enumerate(zip(days, cl)) for k, h in enumerate(H)]
+    w = {d: {"putWall": 1, "callWall": 9999, "flip": 1} for d in days}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopAtr": 0.2,
+           "usePW": False, "useFlip": False, "cvdN": 5}
+    dbars = wallwatch.daily_bars(hb)
+    ago = dict(zip([b["t"][:10] for b in dbars], wallwatch.cvd_turn_ago(wallwatch.cvd_roll(dbars, 5))))
+    for n in (1, 3):
+        sg = wallwatch.detect_retest(hb, w, None, {**cfg, "cvdTurn": True, "cvdTurnN": n}, None)[0]
+        assert sg and all(ago[x["at"][:10]] is not None and ago[x["at"][:10]] < n for x in sg)
+
+
 def test_no_support_any_candle():
     """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
     import wallwatch, datetime as dt
