@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20,
+          "inYExit": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -131,8 +131,8 @@ def version(cfg):
 
 
 # rules added later: in the version only when one is on (signals made before them stay valid)
-EXTRA_SW = ("abovePW", "belowPW", "cvdUp", "cvdDn", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
-EXTRA_NUM = ("cvdN", "inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
+EXTRA_SW = ("abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "inYExit", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit")
+EXTRA_NUM = ("cvdN", "sqTurnN", "inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
 
 
 SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower", "inGreen", "inNotRed", "inRedExit")
@@ -156,7 +156,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("inN1", 5, 250), ("cvdN", 1, 500), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
+    for k, lo_, hi_ in (("inN1", 5, 250), ("cvdN", 1, 500), ("sqTurnN", 1, 20), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
@@ -175,7 +175,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     if "flowRule" in body:
@@ -768,20 +768,28 @@ def squeeze(bars, n=20, bb=2.0, kc=1.5, fire_n=3):
             ll = min(b["l"] for b in bars[i - n + 1:i + 1])
             dev[i] = cl[i] - ((hh + ll) / 2 + em[i]) / 2
     out = [None] * N
+    last_turn = None
     for i in range(N):
         if on[i] is None or i < n - 1 or any(v is None for v in dev[i - n + 1:i + 1]):
             continue
         mom = _linreg_end(dev[i - n + 1:i + 1])
         prev = out[i - 1]["mom"] if out[i - 1] else None
+        prev2 = out[i - 2]["mom"] if i >= 2 and out[i - 2] else None
         fired = any(on[j - 1] and on[j] is False for j in range(max(1, i - fire_n + 1), i + 1) if on[j - 1] is not None)
-        out[i] = {"on": bool(on[i]), "fired": bool(fired), "mom": round(mom, 4), "up": prev is not None and mom > prev}
+        # turn up (the yellow arrow on the chart): momentum under 0 that was falling and now rises
+        if prev is not None and prev2 is not None and mom < 0 and mom > prev and prev2 > prev:
+            last_turn = i
+        out[i] = {"on": bool(on[i]), "fired": bool(fired), "mom": round(mom, 4), "up": prev is not None and mom > prev,
+                  "tAgo": (i - last_turn) if last_turn is not None else None}
     return out
 
 
-def _sq_ok(x, kind):
+def _sq_ok(x, kind, turn_n=1):
     """A squeeze rule on one candle's squeeze state."""
     if not x:
         return False
+    if kind == "turn":                                 # turned up on this candle or within the last turn_n candles
+        return x.get("tAgo") is not None and x["tAgo"] < max(1, int(turn_n or 1))
     if kind == "on":
         return x["on"]
     if kind == "fire":
@@ -1060,9 +1068,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         if (on("inhGreen") or on("inhNotRed") or on("inhYExit")) else None
     fire_n = int(P.get("sqFireN") or 3)
     sqh = squeeze(bars, int(P.get("sqhLen") or 20), float(P.get("sqhBB") or 2), float(P.get("sqhKC") or 1.5), fire_n) \
-        if any(on(k) for k in ("sqhOn", "sqhFire", "sqhMom", "sqhExit")) else None
+        if any(on(k) for k in ("sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqhTurn")) else None
     sqd_e = squeeze_daily_prev(bars, int(P.get("sqdLen") or 20), float(P.get("sqdBB") or 2), float(P.get("sqdKC") or 1.5), fire_n) \
-        if any(on(k) for k in ("sqdOn", "sqdFire", "sqdMom")) else None      # entries: yesterday's daily squeeze
+        if any(on(k) for k in ("sqdOn", "sqdFire", "sqdMom", "sqdTurn")) else None      # entries: yesterday's daily squeeze
     sqd_x = None
     if on("sqdExit"):                                  # exits: the day's own squeeze at its close
         db0 = daily_bars(bars)
@@ -1230,8 +1238,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 continue                               # rule on: not all 3 daily inertias falling
             sq_bad = next((f"{tf_} squeeze: {nm_}" for k, tf_, kind, nm_, arr in (
                 ("sqhOn", "hourly", "on", "not on", sqh), ("sqhFire", "hourly", "fire", "not fired up", sqh), ("sqhMom", "hourly", "mom", "momentum not rising", sqh),
-                ("sqdOn", "daily", "on", "not on", sqd_e), ("sqdFire", "daily", "fire", "not fired up", sqd_e), ("sqdMom", "daily", "mom", "momentum not rising", sqd_e))
-                if on(k) and not _sq_ok(arr[i] if arr else None, kind)), None)
+                ("sqdOn", "daily", "on", "not on", sqd_e), ("sqdFire", "daily", "fire", "not fired up", sqd_e), ("sqdMom", "daily", "mom", "momentum not rising", sqd_e),
+                ("sqhTurn", "hourly", "turn", "no turn up", sqh), ("sqdTurn", "daily", "turn", "no turn up", sqd_e))
+                if on(k) and not _sq_ok(arr[i] if arr else None, kind, P.get("sqTurnN"))), None)
             if sq_bad:
                 miss(b, sq_bad)
                 continue                               # rule on: the squeeze condition must hold
@@ -1336,7 +1345,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
     fire_n = int(P.get("sqFireN") or 3)
     sqd = squeeze(bars, int(P.get("sqdLen") or 20), float(P.get("sqdBB") or 2), float(P.get("sqdKC") or 1.5), fire_n)
     sqh = [None] * len(bars)                           # hourly squeeze at each day's last hourly candle
-    if any(on(k) for k in ("sqhOn", "sqhFire", "sqhMom", "sqhExit")):
+    if any(on(k) for k in ("sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqhTurn")):
         hs_ = squeeze(hbars, int(P.get("sqhLen") or 20), float(P.get("sqhBB") or 2), float(P.get("sqhKC") or 1.5), fire_n)
         at_ = {b["t"][:16]: x for b, x in zip(hbars, hs_)}
         sqh = [at_.get(b["t"]) for b in bars]
@@ -1379,9 +1388,10 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
             continue
         if on("inhNotRed") and not (inh[i] and inh[i]["s"] != "R"):
             continue
-        if any(on(k) and not _sq_ok(arr[i], kind) for k, kind, arr in (
+        if any(on(k) and not _sq_ok(arr[i], kind, P.get("sqTurnN")) for k, kind, arr in (
                 ("sqhOn", "on", sqh), ("sqhFire", "fire", sqh), ("sqhMom", "mom", sqh),
-                ("sqdOn", "on", sqd), ("sqdFire", "fire", sqd), ("sqdMom", "mom", sqd))):
+                ("sqdOn", "on", sqd), ("sqdFire", "fire", sqd), ("sqdMom", "mom", sqd),
+                ("sqhTurn", "turn", sqh), ("sqdTurn", "turn", sqd))):
             continue
         fz = None
         if on("fvgOn"):

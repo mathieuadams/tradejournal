@@ -3043,6 +3043,36 @@ def test_daily_above_pw_rule():
     assert not wallwatch.detect_retest(hb, w, None, {**cfg, "cvdUp": True, "cvdDn": True}, None)[0]
 
 
+def test_swing_squeeze_turn_rule():
+    """Squeeze turn up (1h / daily): momentum under 0, falling then rising, on the entry candle or within N candles."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [200 + 20 * math.sin(d / 7) + d * 0.1 for d in range(160)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = []
+    for d, c in zip(days, cl):
+        for k, h in enumerate(H):
+            px = c - 0.5 + k / 12
+            hb.append({"t": f"{d}T{h}", "o": px, "h": px + 0.3, "l": px - 0.3, "c": c if k == 6 else px + 0.05, "v": 1})
+    dbars = wallwatch.daily_bars(hb)
+    sq = wallwatch.squeeze(dbars)
+    turns = [i for i, x in enumerate(sq) if x and x["tAgo"] == 0]
+    assert turns
+    for i in turns:
+        a, b, c = sq[i - 2]["mom"], sq[i - 1]["mom"], sq[i]["mom"]
+        assert c < 0 and c > b and a > b
+    w = {d: {"putWall": 1, "callWall": 9999, "flip": 1} for d in days}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopAtr": 0.3,
+           "usePW": False, "useFlip": False}
+    for n in (1, 3):
+        sg = wallwatch.detect_retest(hb, w, None, {**cfg, "sqdTurn": True, "sqTurnN": n}, None)[0]
+        assert sg
+        at = {b["t"][:10]: x for b, x in zip(dbars, sq)}
+        assert all(at[x["at"][:10]]["tAgo"] is not None and at[x["at"][:10]]["tAgo"] < n for x in sg)
+    assert wallwatch._sq_ok({"tAgo": 2}, "turn", 3) and not wallwatch._sq_ok({"tAgo": 3}, "turn", 3) and not wallwatch._sq_ok({"tAgo": None}, "turn", 5)
+
+
 def test_no_support_any_candle():
     """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
     import wallwatch, datetime as dt
