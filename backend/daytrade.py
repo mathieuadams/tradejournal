@@ -39,7 +39,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "bandForm": False, "lisForm": False, "lisAbove": False, "pmzTouch": False, "fibTouch": False, "dpTouch": False,
           "prevTouch": False, "sqTurn": False, "formWin": 5,
           # day filters
-          "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False, "flipFade": False, "flipPrev": False, "cvdSide": False, "cvdReal": False,
+          "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False, "flipFade": False, "flipPrev": False, "cvdSide": False, "cvdReal": False, "pwSide": False,
           "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
           "noLunch": False, "lunchFrom": "11:30", "lunchTo": "13:30", "dayStop": False, "dayStopR": 2.0,
           # exits
@@ -52,7 +52,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
 ENTRY = ("aboveVwap", "vwapCross", "aboveEma", "emaStack", "greenBar", "kcNotExt", "kcLower", "sqOn", "sqFire", "sqMom",
          "inGreen", "inNotRed", "fvgTouch", "orbBreak", "pmBreak", "pwTouch", "aboveFlip",
          "bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch", "sqTurn")
-FILTERS = ("gapOn", "gapWith", "gapFade", "flipOpen", "flipFade", "cvdSide", "peerAgree", "rvolOn", "vixOn", "noLunch")
+FILTERS = ("gapOn", "gapWith", "gapFade", "flipOpen", "flipFade", "cvdSide", "pwSide", "peerAgree", "rvolOn", "vixOn", "noLunch")
 EXITS = ("stopOn", "targetOn", "trailOn", "vwapExit", "emaExit", "sqExit", "inExit", "fvgExit", "beOn", "scaleOn", "timeOn",
          "lvlTarget", "dayStop")
 INTS = {"maxTrades": (1, 50), "qty": (1, 100000), "maxQty": (1, 100000), "emaLen": (2, 400), "ema2Len": (2, 400),
@@ -571,6 +571,7 @@ def _checks(i, b, prev, I, w, side, P):
         "gapFade": gap is not None and gap * sd < 0,
         "flipOpen": fl is not None and bool(inf) and ((inf["open"] > fl) if long_ else (inf["open"] < fl)),
         "flipFade": fl is not None and bool(inf) and ((inf["open"] < fl) if long_ else (inf["open"] > fl)),
+        "pwSide": pw is not None and ((c > pw) if long_ else (c < pw)),
         "cvdSide": (lambda v: v is not None and (v > 0 if long_ else v < 0))(
             (ctx.get("cvd") or {}).get(b["t"], I["cvdE"][i]) if P.get("cvdReal") else I["cvdE"][i]),
         "peerAgree": peer == sd,

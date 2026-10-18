@@ -3482,6 +3482,13 @@ def test_daytrade_new_rules_filters_exits():
     for s0 in pv:
         k = days.index(s0["at"][:10])
         assert s0["side"] == (1 if (k - 1) % 2 else -1)
+    # put wall side: put wall above the close -> shorts only
+    hiW = {d: {"putWall": 99999} for d in days}
+    nb = {**base, "aboveVwap": False, "greenBar": False}
+    pws = daytrade.detect(bars, {**nb, "pwSide": True}, hiW)
+    assert pws and all(s0["side"] == -1 for s0 in pws)
+    pwl = daytrade.detect(bars, {**nb, "pwSide": True}, {d: {"putWall": 1} for d in days})
+    assert pwl and all(s0["side"] == 1 for s0 in pwl)
     # CVD side: estimated from the candles; the real one (stored order flow) when switched on
     reg_ = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
     Ic = daytrade.indicators(reg_, bars, daytrade.PARAMS)
