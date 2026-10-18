@@ -1636,23 +1636,30 @@ function fcSvg0(d, id, opts) {
     const real = LY.cvd && d.cvd ? d.cvd : null;           // real order flow: trades classified one by one (per minute)
     const addMin = (t, k) => { const dt0 = new Date(t + ':00Z'); dt0.setUTCMinutes(dt0.getUTCMinutes() + k); return dt0.toISOString().slice(0, 16); };
     let nReal = 0;
-    const pr = bars.map((b, i) => { const v = +b.v || 0, r = b.h - b.l, pc = i ? bars[i - 1].c : b.o;
+    const prAll = all.map((b, i) => { const v = +b.v || 0, r = b.h - b.l, pc = i ? all[i - 1].c : b.o;
       if (real && real[b.t.slice(0, 10)]) { let buy = 0, sell = 0; const mm = real[b.t.slice(0, 10)];
         for (let k = 0; k < (d.interval || 1); k++) { const x = mm[addMin(b.t, k)]; if (x) { buy += x[0]; sell += x[1]; } }
         nReal++; return { buy, sell, d: buy - sell, real: true }; }
       const buy = r > 0 ? v * (b.c - b.l) / r : (b.c > pc ? v : b.c < pc ? 0 : v / 2); return { buy, sell: v - buy, d: 2 * buy - v }; });
     const day = b => d.daily ? '' : b.t.slice(0, 10);
-    let cum = 0, lastDay = null; const cd = bars.map((b, i) => { if (day(b) !== lastDay) { cum = 0; lastDay = day(b); } cum += pr[i].d; return cum; });
+    let cum = 0, lastDay = null; const cdAll = all.map((b, i) => { if (day(b) !== lastDay) { cum = 0; lastDay = day(b); } cum += prAll[i].d; return cum; });
+    const pr = prAll.slice(za, zb + 1), cd = cdAll.slice(za, zb + 1);   // from each day's open even when zoomed in
+    nReal = pr.filter(x => x.real).length;
     const mx = Math.max(1e-9, ...pr.map(x => Math.abs(x.d))), cmn = Math.min(0, ...cd), cmx = Math.max(0, ...cd);
     const Z = (VT + 14 + VB) / 2, DY = v => Z - v / mx * ((VB - VT - 14) / 2), CY = v => VB - (v - cmn) / ((cmx - cmn) || 1) * (VB - VT - 14);
     const cw = Math.max(1, (W - L - Rr) / n), hw = Math.max(1, cw * 0.7), last = pr.slice(-20);
     const tb = last.reduce((a, x) => a + x.buy, 0), ts = last.reduce((a, x) => a + x.sell, 0), share = tb + ts > 0 ? Math.round(tb / (tb + ts) * 100) : 50;
     const who = share >= 55 ? `<tspan fill="var(--gain)" font-weight="700">buyers in charge ${share}%</tspan>` : share <= 45 ? `<tspan fill="var(--loss)" font-weight="700">sellers in charge ${100 - share}%</tspan>` : `<tspan font-weight="700">balanced ${share}% buy</tspan>`;
     g += `<line x1="${L}" x2="${W - Rr}" y1="${VB}" y2="${VB}" stroke="var(--line)"/><line x1="${L}" x2="${W - Rr}" y1="${Z}" y2="${Z}" stroke="var(--line)" stroke-dasharray="2 3"/>`
-      + `<text x="${L + 2}" y="${VT + 10}" font-size="${fs}" fill="var(--muted)">${nReal ? (nReal === n ? 'Cumulative volume delta (REAL: every trade classified buy / sell by the tick rule)' : 'Cumulative volume delta (real where loaded, estimated elsewhere)') : 'Buy / sell pressure (estimated: volume split by where each candle closes in its range)'}${d.flowLoading ? ' · loading the trades…' : ''} · bars = buy − sell · line = running total${d.daily ? '' : ' (from each day\'s open)'} · last 20 candles: ${who}</text>`;
+      + `<text x="${L + 2}" y="${VT + 10}" font-size="${fs}" fill="var(--muted)">${nReal ? (nReal === n ? 'Cumulative volume delta (REAL: every trade classified buy / sell by the tick rule)' : 'Cumulative volume delta (real where loaded, estimated elsewhere)') : 'Buy / sell pressure (estimated: volume split by where each candle closes in its range)'}${d.flowLoading ? ' · loading the trades…' : ''} · bars = buy − sell · line = running total${d.daily ? '' : ' (from each day\'s open)'}, green above 0 / red below, dots = the entries · last 20 candles: ${who}</text>`;
     bars.forEach((b, i) => { const x = pr[i], y = DY(x.d);
       g += `<rect x="${X(i) - hw / 2}" y="${Math.min(y, Z)}" width="${hw}" height="${Math.max(1, Math.abs(y - Z))}" fill="${x.d >= 0 ? '#16a34a' : '#dc2626'}" opacity=".55"><title>${esc(b.t.replace('T', ' ').slice(5))} · volume ${Math.round(+b.v || 0).toLocaleString()} · buy ≈ ${Math.round(x.buy).toLocaleString()} · sell ≈ ${Math.round(x.sell).toLocaleString()} · running total ${Math.round(cd[i]).toLocaleString()}</title></rect>`; });
-    g += `<path d="${cd.map((v, i) => `${i && day(bars[i]) === day(bars[i - 1]) ? 'L' : 'M'}${X(i).toFixed(1)},${CY(v).toFixed(1)}`).join('')}" fill="none" stroke="var(--coach,#5b5bd6)" stroke-width="1.6"/>`;
+    const y0 = CY(0), pth = cd.map((v, i) => `${i && day(bars[i]) === day(bars[i - 1]) ? 'L' : 'M'}${X(i).toFixed(1)},${CY(v).toFixed(1)}`).join(''), cid = 'cvd' + Math.random().toString(36).slice(2, 8);
+    g += `<defs><clipPath id="${cid}a"><rect x="0" y="${VT}" width="${W}" height="${Math.max(0, y0 - VT)}"/></clipPath><clipPath id="${cid}b"><rect x="0" y="${y0}" width="${W}" height="${Math.max(0, VB - y0)}"/></clipPath></defs>`
+      + `<line x1="${L}" x2="${W - Rr}" y1="${y0}" y2="${y0}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="5 3"/><text x="${W - Rr + 6}" y="${y0 + 4}" font-size="${fs - 1}" fill="var(--muted)">CVD 0</text>`
+      + `<path d="${pth}" fill="none" stroke="#16a34a" stroke-width="1.8" clip-path="url(#${cid}a)"/><path d="${pth}" fill="none" stroke="#dc2626" stroke-width="1.8" clip-path="url(#${cid}b)"/>`;
+    if (d.signals && LY.sig !== false) d.signals.forEach(sg => { const i = idx[sg.at] ?? at(sg.at); if (i == null) return;   // where the CVD was at each entry
+      g += `<circle cx="${X(i)}" cy="${CY(cd[i])}" r="3.5" fill="${sg.side > 0 ? '#16a34a' : '#dc2626'}" stroke="var(--surface)" stroke-width="1"><title>${esc(`${sg.dir || ''} ${sg.at.replace('T', ' ').slice(5)} · CVD ${Math.round(cd[i]).toLocaleString()} (${cd[i] > 0 ? 'above' : 'below'} 0)`)}</title></circle>`; });
     const fmt = v => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : Math.round(v);
     g += `<text x="${W - Rr + 6}" y="${CY(cd[cd.length - 1]) + 4}" font-size="${fs - 1}" fill="var(--coach,#5b5bd6)">${cd[cd.length - 1] >= 0 ? '+' : ''}${fmt(cd[cd.length - 1])}</text>`;
   }
