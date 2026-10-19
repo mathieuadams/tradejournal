@@ -61,6 +61,10 @@ Express every idea with the catalog and formulas when the data exists; only data
 "savedStrategies" are strategies the trader already found and kept: never propose them again or near copies of
 them; the goal is OTHER strategies that make money for different reasons (another family, other days or hours), so
 the saved ones and the new ones don't lose at the same time. Only improve a saved one when the focus asks for it.
+The trader builds a BASKET of strategies: long-only ones ("longs": true, "shorts": false), short-only ones ("longs":
+false, "shorts": true) and ones that trade both sides. "buildingBlocks.basketNeeds" lists the sides with no healthy
+saved strategy yet: give most ideas of the round to those sides, and design them for that side (a long-only idea
+should have a reason to work only up; a short-only one only down).
 Follow the trader's focus request when one is given. Short, plain English."""
 
 SCHEMA = {"type": "object", "properties": {

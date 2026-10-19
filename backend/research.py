@@ -97,7 +97,9 @@ def state(sub, strategy=None):
     xs = ideas(sub, strategy)
     return {"criteria": criteria(sub), "run": run, "ideas": xs, "blocks": block_map(xs, ("h1", "h2"))[:40],
             "families": sorted(([k, v] for k, v in families(xs).items()), key=lambda z: -z[1])[:20], "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
-            "strategies": strategies(sub, strategy) if strategy else strategies(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
+            "strategies": [{**x, "checks": [{k: v for k, v in c.items() if k not in ("daily", "dayList")} for c in x.get("checks") or []]}
+                           for x in (strategies(sub, strategy) if strategy else strategies(sub))],
+            "basket": basket(sub) if strategy in (None, "day") else None, "tested": sum(1 for x in xs if x.get("status") == "tested"),
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
 
@@ -730,7 +732,8 @@ def run(sub, params=None, budget_s=540):
                                                  sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy),
                                                  {"best": bm[:15], "worst": bm[-10:][::-1] if len(bm) > 15 else [],
                                                   "exhaustedFamilies": sorted(([k, v] for k, v in fam.items() if cap and v >= cap), key=lambda z: -z[1])[:10],
-                                                  "familyCounts": sorted(([k, v] for k, v in fam.items()), key=lambda z: -z[1])[:15]})
+                                                  "familyCounts": sorted(([k, v] for k, v in fam.items()), key=lambda z: -z[1])[:15],
+                                                  "basketNeeds": _basket_needs(sub) if strategy == "day" else []})
         except Exception as e:
             run_["errors"].append(f"AI agent: {str(e)[:200]}")
             break
@@ -791,6 +794,12 @@ def _put_strat(sub, x):
     db.put({"PK": db.upk(sub), "SK": f"{STRAT}{x['id']}", "data": json.dumps(x, default=str, separators=(",", ":"))})
 
 
+def side_of(full):
+    """"long" (long only), "short" (short only) or "both"."""
+    lo, sh = (full or {}).get("longs", True) is not False, (full or {}).get("shorts", True) is not False
+    return "long" if lo and not sh else "short" if sh and not lo else "both"
+
+
 def save_strategy(sub, strategy, name, cfg=None, idea_id=None):
     """Keep a strategy: an idea of the record (its complete settings) or settings given. Re-checked every day."""
     if strategy not in STRATS:
@@ -807,6 +816,7 @@ def save_strategy(sub, strategy, name, cfg=None, idea_id=None):
          "full": full, "idea": idea_id, "hypothesis": (src or {}).get("hypothesis"), "readable": (src or {}).get("readable"),
          "baseline": {k: (src or {}).get("metrics", {}).get(k) for k in ("n", "avgR", "t", "pf", "win")} if src else None,
          "checks": [], "fp": fingerprint(strategy, {k: v for k, v in full.items() if blank_cfg(sub, strategy).get(k) != v})}
+    x["side"] = side_of(full)
     _put_strat(sub, x)
     return x
 
@@ -822,7 +832,7 @@ def keepers(sub, strategy):
     for x in strategies(sub, strategy):
         on = {k: v for k, v in (x.get("full") or {}).items() if v not in (False, "", None, 0)}
         on.update(x.get("readable") or {})
-        out.append({"name": x["name"], "hypothesis": x.get("hypothesis"), "settings": on})
+        out.append({"name": x["name"], "side": side_of(x.get("full")), "hypothesis": x.get("hypothesis"), "settings": on})
     return out
 
 
@@ -848,15 +858,180 @@ def check_strategies(sub, days=250, cost=None):
         chk = {"at": iso(now_ny()), "days": len(ds), "cost": cost, "all": {k: m.get(k) for k in ("n", "avgR", "t", "pf", "win", "maxDD")},
                "last60": {k: f(l60).get(k) for k in ("n", "avgR", "totR", "win")}, "last20": {k: f(l20).get(k) for k in ("n", "avgR", "totR", "win")},
                "errors": errors[:3]}
+        for dn in ("long", "short"):                   # each side on its own
+            sr = [r for r in rows if (r.get("dir") or "long") == dn]
+            if sr:
+                ms = metrics(sr, "9999", cost)
+                chk[dn] = {k: ms.get(k) for k in ("n", "avgR", "t", "win")}
+        daily = {}
+        for r in rows:                                 # R per day (after the cost): the basket, the correlations
+            daily[r["at"][:10]] = daily.get(r["at"][:10], 0.0) + float(r["R"]) - cost
+        chk["daily"] = {d: round(v, 3) for d, v in daily.items()}
+        chk["dayList"] = ds[-260:]
         avg, a60 = chk["all"].get("avgR"), chk["last60"].get("avgR")
         chk["status"] = ("healthy" if (avg or 0) > 0 and (a60 is None or a60 > 0) else
                          "weakening" if (avg or 0) > 0 else "failing")
+        for old in x.get("checks") or []:              # only the latest check keeps the day-by-day series (item size)
+            old.pop("daily", None)
+            old.pop("dayList", None)
         x["checks"] = (x.get("checks") or [])[-89:] + [chk]
+        x["side"] = side_of(x.get("full"))
         _put_strat(sub, x)
         out.append({"id": x["id"], "status": chk["status"]})
     r = _item(sub)
     db.put({**r, "stratCheck": iso(now_ny())})
+    try:
+        basket_switch(sub)
+    except Exception as e:
+        print("basket switch failed", e)
     return out
+
+
+# ---------------------------------------------------------------- the basket: every saved strategy, the best one in use
+BASKET = {"auto": False, "side": "any", "margin": 0.25}
+
+
+def basket_cfg(sub):
+    r = _item(sub)
+    c = json.loads(r["basket"]) if r.get("basket") else {}
+    return {**BASKET, **{k: v for k, v in c.items() if k in BASKET or k in ("active", "log")}}
+
+
+def save_basket(sub, body):
+    c = basket_cfg(sub)
+    b = body or {}
+    if "auto" in b:
+        c["auto"] = bool(b["auto"])
+    if b.get("side") in ("any", "long", "short", "both"):
+        c["side"] = b["side"]
+    if "margin" in b:
+        try:
+            c["margin"] = max(0.0, min(2.0, float(b["margin"])))
+        except (TypeError, ValueError):
+            pass
+    r = _item(sub)
+    db.put({**r, "basket": json.dumps(c, default=str)})
+    return c
+
+
+def _daily_vec(chk, days):
+    d = chk.get("daily") or {}
+    return [float(d.get(x, 0.0)) for x in days]
+
+
+def _corr(a, b):
+    n = len(a)
+    if n < 10:
+        return None
+    ma, mb = sum(a) / n, sum(b) / n
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((x - mb) ** 2 for x in b)
+    if va <= 0 or vb <= 0:
+        return None
+    return round(sum((x - ma) * (y - mb) for x, y in zip(a, b)) / math.sqrt(va * vb), 2)
+
+
+def _series_stats(v):
+    n = len(v)
+    if not n:
+        return {"days": 0}
+    m = sum(v) / n
+    sd = math.sqrt(sum((x - m) ** 2 for x in v) / max(1, n - 1))
+    eq = peak = dd = 0.0
+    for x in v:
+        eq += x
+        peak = max(peak, eq)
+        dd = min(dd, eq - peak)
+    return {"days": n, "totR": round(sum(v), 1), "avgDay": round(m, 3), "t": round(m / sd * math.sqrt(n), 2) if sd > 0 else None,
+            "maxDD": round(dd, 1), "greenPct": round(sum(1 for x in v if x > 0) / max(1, sum(1 for x in v if x != 0)) * 100)}
+
+
+def basket(sub):
+    """The saved day strategies as one basket: side (long only / short only / both), status, a score on the last 60
+    days (t of the daily R), the best one overall and per side, how much their days move together, and the basket
+    (all healthy ones, equal weight) against the best one alone."""
+    ss = [x for x in strategies(sub, "day") if x.get("checks")]
+    cfg = basket_cfg(sub)
+    rows = []
+    for x in ss:
+        c = x["checks"][-1]
+        days = c.get("dayList") or []
+        v60 = _daily_vec(c, days[-60:])
+        st60 = _series_stats(v60)
+        rows.append({"id": x["id"], "name": x["name"], "side": x.get("side") or side_of(x.get("full")), "status": c.get("status"),
+                     "score": st60.get("t"), "last60": {**(c.get("last60") or {}), **{k: st60.get(k) for k in ("totR", "t", "maxDD")}},
+                     "all": c.get("all"), "long": c.get("long"), "short": c.get("short"), "at": c.get("at"),
+                     "_days": days, "_c": c})
+    ok = [r for r in rows if r["status"] == "healthy" and (r["score"] or 0) > 0]
+    best = max(ok, key=lambda r: r["score"] or 0) if ok else None
+    by_side = {}
+    for sd in ("long", "short", "both"):
+        g = [r for r in ok if r["side"] == sd]
+        by_side[sd] = max(g, key=lambda r: r["score"] or 0)["id"] if g else None
+    common = sorted(set().union(*[set(r["_days"]) for r in rows])) if rows else []
+    common = common[-250:]
+    vec = {r["id"]: _daily_vec(r["_c"], common) for r in rows}
+    corr = [[(1.0 if a["id"] == b["id"] else _corr(vec[a["id"]], vec[b["id"]])) for b in rows] for a in rows]
+    combo = None
+    if ok and common:
+        cv = [sum(vec[r["id"]][i] for r in ok) / len(ok) for i in range(len(common))]
+        combo = {"members": len(ok), **_series_stats(cv)}
+    single = _series_stats(vec[best["id"]]) if best and common else None
+    for r in rows:
+        r.pop("_days")
+        r.pop("_c")
+    return {"rows": rows, "best": best["id"] if best else None, "bySide": by_side, "corr": corr, "combined": combo,
+            "bestAlone": single, "cfg": cfg, "missingSides": [sd for sd in ("long", "short", "both") if not by_side[sd]]}
+
+
+def _basket_needs(sub):
+    try:
+        return basket(sub)["missingSides"]
+    except Exception:
+        return []
+
+
+def basket_switch(sub, force=False):
+    """Auto-switch (when on): after the daily check, the best healthy strategy (of the chosen side) goes into the live
+    day-trading settings, when it beats the one in use by the margin or the one in use stopped being healthy."""
+    import daytrade
+    cfg = basket_cfg(sub)
+    if not cfg.get("auto") and not force:
+        return None
+    b = basket(sub)
+    ok = [r for r in b["rows"] if r["status"] == "healthy" and (r["score"] or 0) > 0 and (cfg["side"] == "any" or r["side"] == cfg["side"])]
+    if not ok:
+        return None
+    top = max(ok, key=lambda r: r["score"] or 0)
+    cur = next((r for r in b["rows"] if r["id"] == cfg.get("active")), None)
+    if cur and cur["id"] == top["id"]:
+        return None
+    if cur and cur["status"] == "healthy" and (cur["score"] or 0) > 0 and (top["score"] or 0) < (cur["score"] or 0) * (1 + float(cfg["margin"])) and not force:
+        return None
+    x = next(s for s in strategies(sub, "day") if s["id"] == top["id"])
+    keep = ("enabled", "trade", "tickers")
+    daytrade.save_config(sub, {k: v for k, v in (x.get("full") or {}).items() if k not in keep})
+    cfg["active"] = top["id"]
+    cfg["log"] = (cfg.get("log") or [])[-19:] + [{"at": iso(now_ny()), "to": top["name"], "from": cur["name"] if cur else None,
+                                                   "score": top["score"]}]
+    r = _item(sub)
+    db.put({**r, "basket": json.dumps(cfg, default=str)})
+    return top["id"]
+
+
+def use_strategy(sub, sid):
+    """Put one saved strategy into the live day-trading settings by hand (it becomes the one in use)."""
+    import daytrade
+    x = next((s for s in strategies(sub, "day") if s["id"] == sid), None)
+    if not x:
+        raise ValueError("strategy not found")
+    daytrade.save_config(sub, {k: v for k, v in (x.get("full") or {}).items() if k not in ("enabled", "trade", "tickers")})
+    cfg = basket_cfg(sub)
+    cfg["active"] = sid
+    cfg["log"] = (cfg.get("log") or [])[-19:] + [{"at": iso(now_ny()), "to": x["name"], "by": "you"}]
+    r = _item(sub)
+    db.put({**r, "basket": json.dumps(cfg, default=str)})
+    return cfg
 
 
 def strat_job(sub, params=None):

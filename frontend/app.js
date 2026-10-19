@@ -1998,7 +1998,7 @@ function researchBox(strategy) {
   const GC = { A: '#16a34a', B: '#0891b2', C: '#d97706', F: '#dc2626' };
   const badge = x => x.status === 'tested' ? `<b style="display:inline-block;min-width:1.6em;text-align:center;border-radius:5px;color:#fff;background:${GC[x.grade] || '#888'}">${x.grade}</b>` : `<span class="muted" style="font-size:.75rem">${esc({ 'needs feature': 'waiting: indicator', 'needs data': 'needs data', queued: 'queued' }[x.status] || x.status || '')}</span>`;
   const filt = S.rsFilter || 'all';
-  const all = t.ideas || [], xs = all.filter(x => filt === 'all' || (filt === 'graded' ? x.status === 'tested' : filt === 'ab' ? ['A', 'B'].includes(x.grade) : filt === 'needs' ? ['needs feature', 'needs data'].includes(x.status) : true));
+  const all = t.ideas || [], xs = all.filter(x => filt === 'all' || (filt === 'graded' ? x.status === 'tested' : filt === 'ab' ? ['A', 'B'].includes(x.grade) : filt === 'needs' ? ['needs feature', 'needs data'].includes(x.status) : ['long', 'short', 'both'].includes(filt) ? ideaSide(x) === filt : true));
   const GR = { A: 0, B: 1, C: 2, F: 3 }, srt = S.rsSort || 'best';
   if (srt === 'best') xs.sort((a, b) => {                // best first: grade, then t, then average R; untested at the bottom
     const ta = a.status === 'tested', tb = b.status === 'tested';
@@ -2064,7 +2064,7 @@ function researchBox(strategy) {
       <button class="btn" data-rx="crit|${strategy}" style="font-size:.75rem;padding:1px 10px">Save criteria</button>
       <button class="btn" data-rx="mine|${strategy}" ${busy ? 'disabled' : ''} style="font-size:.75rem;padding:1px 10px" title="Your current ${strategy === 'day' ? 'settings (with the changes not applied yet)' : 'lab settings'} vs your saved / live settings, as an idea of your own">Test my ${strategy === 'day' ? 'settings' : 'lab settings'} as an idea</button></div>
     <p class="muted" style="font-size:.74rem;margin:0 0 4px">Grade: <b style="color:${GC.A}">A</b> every criterion passes and the 2nd half alone reaches the t needed · <b style="color:${GC.B}">B</b> every criterion passes · <b style="color:${GC.C}">C</b> positive on both halves, some criteria fail · <b style="color:${GC.F}">F</b> the rest. Ideas needing data the app doesn't have are kept as feature requests.</p>
-    <div style="display:flex;gap:4px;font-size:.75rem;margin-bottom:4px;align-items:center">${[['all', 'All'], ['graded', 'Tested'], ['ab', 'A / B'], ['needs', 'Waiting / needs data']].map(([k, l]) => `<button class="btn ${filt === k ? 'coachbtn' : ''}" data-rx="filter|${k}" style="font-size:.74rem;padding:0 8px">${l}</button>`).join('')}
+    <div style="display:flex;gap:4px;font-size:.75rem;margin-bottom:4px;align-items:center">${[['all', 'All'], ['graded', 'Tested'], ['ab', 'A / B'], ['needs', 'Waiting / needs data'], ['long', 'Long only'], ['short', 'Short only'], ['both', 'Both sides']].map(([k, l]) => `<button class="btn ${filt === k ? 'coachbtn' : ''}" data-rx="filter|${k}" style="font-size:.74rem;padding:0 8px">${l}</button>`).join('')}
       <span class="muted" style="margin-left:10px">sort</span>${[['best', 'Best first'], ['new', 'Newest first']].map(([k, l]) => `<button class="btn ${srt === k ? 'coachbtn' : ''}" data-rx="sort|${k}" style="font-size:.74rem;padding:0 8px">${l}</button>`).join('')}</div>
     ${(t.blocks || []).length ? `<details style="margin:2px 0 6px" ${S.rsBlocksOpen ? 'open' : ''}><summary style="font-size:.8rem;cursor:pointer" data-rx="blocks|${strategy}"><b>What works: building blocks</b> <span class="muted">(across ${t.tested || 0} tested ideas: average R of the ideas WITH each piece minus the ideas WITHOUT it; the agent sees the 1st half only, the 2nd half shows if it holds)</span></summary>
       <div style="overflow-x:auto"><table class="pos" style="font-size:.76rem"><thead><tr><th>Piece</th><th class="r">Ideas with</th><th class="r">1st-half lift</th><th class="r">t</th><th class="r">2nd-half lift</th><th>Holds?</th></tr></thead><tbody>
@@ -2076,22 +2076,45 @@ function researchBox(strategy) {
     ${t.error ? `<div class="errbox">${esc(t.error)}</div>` : xs.length ? `<div style="overflow-x:auto;max-height:520px;overflow-y:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th></th><th>Idea</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">t / needed</th><th class="r">PF</th><th class="r">1st / 2nd half</th><th class="r">Max DD</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted" style="font-size:.8rem">No ideas yet.</p>'}</div>`;
   return rsStratBox(strategy, t) + agent + pipe;
 }
+function ideaSide(x) { const f = { ...(x.full || {}), ...(x.changes || {}) }; return f.longs === false && f.shorts !== false ? 'short' : f.shorts === false && f.longs !== false ? 'long' : 'both'; }
+function basketBox(bk, ss) {
+  const bc = bk.cfg || {}, R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const cb = bk.combined, one = bk.bestAlone, rows = bk.rows || [];
+  const st = x => x ? `${x.days} days · ${R(x.totR)} · ${R(x.avgDay)} a day · t ${x.t ?? '—'} · max drawdown ${R(x.maxDD)} · green days ${x.greenPct ?? '—'}%` : '—';
+  const need = (bk.missingSides || []).map(s0 => ({ long: 'long only', short: 'short only', both: 'both sides' }[s0]));
+  const corr = rows.length > 1 && rows.length <= 8 ? `<details style="margin-top:4px"><summary style="font-size:.78rem;cursor:pointer">How much they move together (correlation of daily R, last 250 days)</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.74rem"><thead><tr><th></th>${rows.map((r0, i) => `<th class="r">${i + 1}</th>`).join('')}</tr></thead><tbody>
+    ${rows.map((r0, i) => `<tr><td>${i + 1}. ${esc(r0.name)}</td>${(bk.corr[i] || []).map((v, j) => `<td class="r ${i !== j && v != null && v > 0.6 ? 'loss' : i !== j && v != null && v < 0.2 ? 'gain' : ''}">${v == null ? '—' : (+v).toFixed(2)}</td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="muted" style="font-size:.72rem;margin:2px 0">green: under 0.2 (they win and lose on different days: good for the basket) · red: over 0.6 (nearly the same strategy)</p></details>` : '';
+  return `<div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:6px;font-size:.8rem">
+    <b>Basket</b> <span class="muted" style="font-size:.74rem">every saved strategy above, ranked by its score on the last 60 days; one is used live at a time</span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0">
+      <label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-bkauto ${bc.auto ? 'checked' : ''}> switch automatically to the best one</label>
+      <span class="muted">side</span> ${[['any', 'any'], ['long', 'long only'], ['short', 'short only'], ['both', 'both sides']].map(([v, l]) => `<button class="btn ${bc.side === v ? 'coachbtn' : ''}" data-rx="bside|${v}|day" style="font-size:.72rem;padding:0 8px">${l}</button>`).join('')}
+      <span class="muted" style="font-size:.74rem">after the daily check (17:00 ET); it switches only when the new best scores ${Math.round((bc.margin ?? 0.25) * 100)}% above the one in use, or the one in use is no longer healthy</span></div>
+    <div>Basket (all ${cb ? cb.members : 0} healthy, equal weight): ${st(cb)}</div><div>Best one alone: ${st(one)}</div>
+    ${need.length ? `<div class="muted" style="font-size:.76rem">Missing in the basket: <b>${esc(need.join(', '))}</b> — the AI agent now aims most of its ideas there.</div>` : ''}
+    ${(bc.log || []).length ? `<div class="muted" style="font-size:.74rem">Switches: ${bc.log.slice(-5).reverse().map(l0 => `${esc((l0.at || '').slice(5, 16).replace('T', ' '))} → ${esc(l0.to)}${l0.by === 'you' ? ' (you)' : ''}`).join(' · ')}</div>` : ''}${corr}</div>`;
+}
 function rsStratBox(strategy, t) {
   const ss = t.strategies || [], R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
   const ST = { healthy: ['gain', 'healthy'], weakening: ['', 'weakening (last 60 days ≤ 0)'], failing: ['loss', 'failing'] };
-  const rows = ss.slice().reverse().map(x => { const c = (x.checks || []).slice(-1)[0], st = c ? ST[c.status] || ['', c.status] : ['muted', 'not checked yet'];
+  const bk = t.basket || {}, bc = bk.cfg || {}, brow = id => (bk.rows || []).find(r0 => r0.id === id) || {};
+  const SIDE = { long: ['gain', 'long only'], short: ['loss', 'short only'], both: ['', 'both sides'] };
+  const sideOf = x => x.side || ((x.full || {}).longs === false ? 'short' : (x.full || {}).shorts === false ? 'long' : 'both');
+  const rows = ss.slice().sort((p, q) => (brow(q.id).score ?? -99) - (brow(p.id).score ?? -99)).map(x => { const c = (x.checks || []).slice(-1)[0], st = c ? ST[c.status] || ['', c.status] : ['muted', 'not checked yet'];
+    const sd = sideOf(x), br = brow(x.id), tags = [bc.active === x.id ? '<b class="gain">● in use</b>' : '', bk.best === x.id ? '<b>best now</b>' : '', (bk.bySide || {})[sd] === x.id && bk.best !== x.id ? `best ${esc(SIDE[sd][1])}` : ''].filter(Boolean).join(' · ');
     const hist = (x.checks || []).slice(-30).map(k => (k.last60 || {}).avgR ?? 0), mx = Math.max(0.05, ...hist.map(Math.abs));
     const spark = hist.length > 1 ? `<svg width="90" height="22" viewBox="0 0 90 22" style="vertical-align:middle"><line x1="0" x2="90" y1="11" y2="11" stroke="var(--line)"/><path d="${hist.map((v, i) => `${i ? 'L' : 'M'}${(i / (hist.length - 1) * 88 + 1).toFixed(1)},${(11 - v / mx * 10).toFixed(1)}`).join('')}" fill="none" stroke="var(--coach,#5b5bd6)" stroke-width="1.5"/></svg>` : '';
-    return `<tr><td><b>${esc(x.name)}</b><div class="muted" style="font-size:.72rem">saved ${esc((x.at || '').slice(0, 10))}${x.baseline ? ` · when found: ${x.baseline.n} trades ${x.baseline.avgR > 0 ? '+' : ''}${x.baseline.avgR}R t ${x.baseline.t}` : ''}</div></td>
+    return `<tr><td><b>${esc(x.name)}</b> <span class="${SIDE[sd][0]}" style="font-size:.72rem;border:1px solid var(--line);border-radius:4px;padding:0 4px">${SIDE[sd][1]}</span>${tags ? ` <span style="font-size:.72rem">${tags}</span>` : ''}<div class="muted" style="font-size:.72rem">saved ${esc((x.at || '').slice(0, 10))}${x.baseline ? ` · when found: ${x.baseline.n} trades ${x.baseline.avgR > 0 ? '+' : ''}${x.baseline.avgR}R t ${x.baseline.t}` : ''}</div></td>
       <td class="${st[0]}" style="font-size:.78rem">${st[1]}</td><td class="r">${c ? `${(c.all || {}).n} · ${R((c.all || {}).avgR)} · t ${(c.all || {}).t ?? '—'}` : '—'}</td>
-      <td class="r">${c ? `${(c.last60 || {}).n} · ${R((c.last60 || {}).avgR)}` : '—'}</td><td class="r">${c ? `${(c.last20 || {}).n} · ${R((c.last20 || {}).avgR)}` : '—'}</td><td>${spark}</td>
-      <td style="white-space:nowrap"><button class="btn" data-rx="suse|${x.id}|${strategy}" style="font-size:.72rem;padding:0 8px">Load</button> <button class="btn" data-rx="sdel|${x.id}|${strategy}" style="font-size:.72rem;padding:0 8px">Delete</button></td></tr>`; }).join('');
+      <td class="r">${c ? `${(c.last60 || {}).n} · ${R((c.last60 || {}).avgR)}` : '—'}</td><td class="r">${c ? `${(c.last20 || {}).n} · ${R((c.last20 || {}).avgR)}` : '—'}</td>
+      <td class="r">${br.score ?? '—'}</td><td class="r" style="font-size:.74rem">${c && c.long ? `L ${c.long.n} · ${R(c.long.avgR)}` : ''}${c && c.short ? `<br>S ${c.short.n} · ${R(c.short.avgR)}` : ''}</td><td>${spark}</td>
+      <td style="white-space:nowrap">${strategy === 'day' ? `<button class="btn ${bc.active === x.id ? '' : 'coachbtn'}" data-rx="buse|${x.id}|${strategy}" style="font-size:.72rem;padding:0 8px" title="Put it in the live day-trading settings now">${bc.active === x.id ? 'In use' : 'Use live'}</button> ` : ''}<button class="btn" data-rx="suse|${x.id}|${strategy}" style="font-size:.72rem;padding:0 8px">Load</button> <button class="btn" data-rx="sdel|${x.id}|${strategy}" style="font-size:.72rem;padding:0 8px">Delete</button></td></tr>`; }).join('');
   return `<div style="border:1px solid var(--gain);border-radius:8px;padding:8px 10px;margin:14px 0 6px">
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:.95rem">Saved strategies</b>
       <span class="muted" style="font-size:.75rem">kept apart from the ideas: re-tested every day after the close on the last 250 days (all, last 60 and last 20 days, after the cost), so you see when one weakens. The AI agent knows them and looks for OTHER strategies, not copies.</span>
       ${strategy === 'day' ? `<button class="btn" data-rx="scheck|day" style="font-size:.74rem;padding:0 8px">Re-check now</button>` : ''}
       <button class="btn" data-rx="ssave|${strategy}" style="font-size:.74rem;padding:0 8px" title="Save the settings on screen as a strategy">Save the current ${strategy === 'day' ? 'settings' : 'lab settings'}</button></div>
-    ${ss.length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin-top:4px"><thead><tr><th>Strategy</th><th>Status</th><th class="r">250 days: trades · avg · t</th><th class="r">Last 60 days</th><th class="r">Last 20 days</th><th>Last 60 days, check by check</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ${ss.length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin-top:4px"><thead><tr><th>Strategy</th><th>Status</th><th class="r">250 days: trades · avg · t</th><th class="r">Last 60 days</th><th class="r">Last 20 days</th><th class="r" title="t of the daily R over the last 60 days: how the basket ranks them">Score (60 d)</th><th class="r">Long / short</th><th>Last 60 days, check by check</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${strategy === 'day' ? basketBox(bk, ss) : ''}`
       : '<p class="muted" style="font-size:.8rem;margin:4px 0 0">None yet: open a good idea below and click “Save as strategy”.</p>'}${strategy === 'swing' && ss.length ? '<p class="muted" style="font-size:.74rem;margin:4px 0 0">The daily re-check runs for day-trading strategies; swing ones are kept and shown to the agent.</p>' : ''}</div>`;
 }
 function rsAction([act, a, b]) {
@@ -2121,6 +2144,9 @@ function rsAction([act, a, b]) {
   if (act === 'ssavei') {
     const id0 = a, x0 = (((S.rs[b] || {}).ideas) || []).find(i => i.id === id0); const name = prompt('Name of the strategy', x0 ? x0.name : ''); if (!name) return;
     api('/research/strategy', { method: 'POST', body: { strategy: b, name, ideaId: id0 } }).then(() => { toast(`Saved “${name}”: first check running`); loadRs(b); setTimeout(() => loadRs(b), 90000); }).catch(err => toast(err.message)); return; }
+  if (act === 'buse' || act === 'bside') {
+    const body = act === 'buse' ? { use: a } : { side: a };
+    api('/research/basket', { method: 'PUT', body }).then(r => { S.rs.day = { ...(S.rs.day || {}), basket: r.basket }; if (act === 'buse') { S.dt = undefined; toast('In the live day-trading settings now'); } render(); }).catch(err => toast(err.message)); return; }
   if (act === 'suse' || act === 'sdel') {
     const sx = (((S.rs[b] || {}).strategies) || []).find(i => i.id === a); if (!sx) return;
     if (act === 'sdel') { if (!confirm(`Delete “${sx.name}”?`)) return; api('/research/strategy?id=' + encodeURIComponent(a), { method: 'DELETE' }).then(() => loadRs(b)).catch(err => toast(err.message)); return; }
@@ -4848,6 +4874,8 @@ document.addEventListener('submit', e => {
     if (sym) { S.sdSel = { sym, date }; render(); } }
 });
 document.addEventListener('change', e => {
+  if (e.target.hasAttribute && e.target.hasAttribute('data-bkauto')) {
+    api('/research/basket', { method: 'PUT', body: { auto: e.target.checked } }).then(r => { S.rs.day = { ...(S.rs.day || {}), basket: r.basket }; S.dt = undefined; toast(e.target.checked ? 'Auto-switch ON: the best healthy strategy goes live after each daily check' : 'Auto-switch OFF'); render(); }).catch(err => toast(err.message)); return; }
   const sk = e.target.dataset && e.target.dataset.sdlive;
   if (sk) { sdPut({ [sk]: e.target.checked }, sk === 'enabled' ? (e.target.checked ? 'Stock day trading runs every minute' : 'Stock day trading stopped') : (e.target.checked ? 'Orders ON (paper stock account)' : 'Orders OFF')); return; }
   const k = e.target.dataset && e.target.dataset.dtlive; if (!k) return;

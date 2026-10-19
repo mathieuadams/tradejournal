@@ -4646,6 +4646,54 @@ def test_research_series_not_missing():
     assert not bad and not ok and not research.library(sub)               # the built-in one is used, nothing refused
 
 
+def test_strategy_basket():
+    """Saved strategies tagged long only / short only / both, checked per side with their daily R; the basket ranks
+    them on the last 60 days, combines the healthy ones, shows correlations; auto-switch puts the best one live and
+    only switches again past the margin; a side with no strategy is reported to the agent."""
+    import research, daytrade
+    sub = "rs-basket"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    saved = daytrade.config, daytrade.run_variants, daytrade.save_config
+    applied = []
+    try:
+        daytrade.config = lambda s_: {**daytrade.PARAMS, "tickers": ["QQQ"]}
+        daytrade.save_config = lambda s_, body: applied.append(body) or body
+        a = research.save_strategy(sub, "day", "Longs A", cfg={"aboveVwap": True, "shorts": False})
+        b = research.save_strategy(sub, "day", "Shorts B", cfg={"vwapCross": True, "longs": False})
+        assert a["side"] == "long" and b["side"] == "short"
+        ds = [f"2026-{m:02d}-{d:02d}" for m in range(1, 11) for d in range(1, 29) if __import__("datetime").date(2026, m, d).weekday() < 5][-120:]
+
+        def rv(sub_, days, variants, budget_s=540, tickers=None):
+            out = {}
+            for i, v in enumerate(variants):
+                good = 0.6 if v.get("shorts") is False else 0.42
+                out[i] = [{"at": d + "T10:00", "R": (good if k % 3 else -0.5), "dir": "long" if v.get("shorts") is False else "short"}
+                          for k, d in enumerate(ds)]
+            return out, {}, set(ds), {}, []
+        daytrade.run_variants = rv
+        research.check_strategies(sub, 250, cost=0.05)
+        bk = research.basket(sub)
+        assert bk["best"] == a["id"] and bk["bySide"]["long"] == a["id"] and bk["bySide"]["short"] == b["id"]
+        assert bk["missingSides"] == ["both"] and bk["combined"]["members"] == 2 and bk["corr"][0][1] is not None
+        la = next(x for x in research.strategies(sub, "day") if x["id"] == a["id"])["checks"][-1]
+        assert la["long"]["n"] == 120 and "short" not in la
+        research.save_basket(sub, {"auto": True, "side": "short"})
+        research.basket_switch(sub)
+        assert research.basket_cfg(sub)["active"] == b["id"] and applied[-1].get("longs") is False and "tickers" not in applied[-1]
+        research.save_basket(sub, {"side": "any"})
+        research.basket_switch(sub)                                     # A scores far above B: past the margin
+        assert research.basket_cfg(sub)["active"] == a["id"] and len(research.basket_cfg(sub)["log"]) == 2
+        research.basket_switch(sub)
+        assert len(research.basket_cfg(sub)["log"]) == 2                 # already the best: no churn
+        research.use_strategy(sub, b["id"])
+        assert research.basket_cfg(sub)["active"] == b["id"] and research.basket_cfg(sub)["log"][-1]["by"] == "you"
+        st = research.state(sub, "day")
+        assert "daily" not in st["strategies"][0]["checks"][-1] and st["basket"]["rows"]
+    finally:
+        daytrade.config, daytrade.run_variants, daytrade.save_config = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

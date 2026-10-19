@@ -626,6 +626,23 @@ def research_strat_save(sub, claims, body, q):
     return {"strategy": x}
 
 
+@route("PUT", "/research/basket")
+def research_basket(sub, claims, body, q):
+    """Basket settings (auto-switch on / off, which side, margin) or put one strategy in use (body.use = id)."""
+    import research
+    b = body or {}
+    try:
+        if b.get("use"):
+            research.use_strategy(sub, b["use"])
+        else:
+            research.save_basket(sub, b)
+            if b.get("auto"):
+                research.basket_switch(sub)
+    except ValueError as e:
+        raise BadRequest(str(e))
+    return {"basket": research.basket(sub)}
+
+
 @route("POST", "/research/strategy/check")
 def research_strat_check(sub, claims, body, q):
     import research
