@@ -40,11 +40,18 @@ PARAMS = {"enabled": False, "trade": False, "longs": True, "shorts": True,
           "minPrice": 5.0, "minAvgVol": 1000000, "minAtr": 0.5, "minRvol": 1.0, "topN": 20, "rvolMode": "orb",
           "orbMin": 5, "dirLock": True, "dojiPct": 10.0, "stopAtrPct": 10.0, "entryEnd": "11:30", "flatT": "15:55",
           "vwapSide": False, "cvdSide": False, "vwapExit": False, "skipMid": False, "vwapCap": 0, "riskPct": 1.0, "maxLev": 4.0,
-          "exclude": []}
-INTS = {"minAvgVol": (0, 10 ** 10), "topN": (1, 100), "orbMin": (5, 30), "vwapCap": (0, 50)}
+          "exclude": [], "mode": "orb",
+          "gRetest": True, "gBounce": True, "gReject": True, "gTrend": True, "gPivot": 2, "gLvlDays": 5, "gMaxCross": 2,
+          "gImpulse": 1.5, "gTolAtr": 5.0, "gTestBars": 2, "gRetestMax": 12, "gStopBuf": 2.0, "gTargetR": 2.0, "gLvlTarget": True,
+          "gPartial": 50.0, "gTrailBars": 3, "gMaxTrades": 3, "gMaxTries": 2, "gOneDone": False, "gOneDoneR": 1.5,
+          "gMktAlign": True, "gRelStr": False, "gSkipEvents": False, "gEnd": "15:30"}
+INTS = {"minAvgVol": (0, 10 ** 10), "topN": (1, 100), "orbMin": (5, 30), "vwapCap": (0, 50), "gPivot": (1, 5), "gLvlDays": (1, 20),
+        "gMaxCross": (0, 20), "gTestBars": (1, 6), "gRetestMax": (1, 60), "gTrailBars": (1, 10), "gMaxTrades": (1, 20), "gMaxTries": (1, 5)}
 FLOATS = {"minPrice": (0, 10000), "minAtr": (0, 1000), "minRvol": (0, 1000), "dojiPct": (0, 100), "stopAtrPct": (0.5, 500),
-          "riskPct": (0.05, 10), "maxLev": (0.1, 10)}
-BOOLS = ("enabled", "trade", "longs", "shorts", "dirLock", "vwapSide", "cvdSide", "vwapExit", "skipMid")
+          "riskPct": (0.05, 10), "maxLev": (0.1, 10), "gImpulse": (0, 10), "gTolAtr": (0, 50), "gStopBuf": (0, 50),
+          "gTargetR": (0.5, 10), "gPartial": (0, 100), "gOneDoneR": (0, 10)}
+BOOLS = ("enabled", "trade", "longs", "shorts", "dirLock", "vwapSide", "cvdSide", "vwapExit", "skipMid",
+         "gRetest", "gBounce", "gReject", "gTrend", "gLvlTarget", "gOneDone", "gMktAlign", "gRelStr", "gSkipEvents")
 ORBS = (5, 15, 30)
 RV_BUCKETS = ((0, 1, "< 1x"), (1, 2, "1-2x"), (2, 5, "2-5x"), (5, 10, "5-10x"), (10, 30, "10-30x"), (30, 1e12, "> 30x"))
 
@@ -82,7 +89,9 @@ def clean_cfg(cur, body):
             cur[k] = bool(body[k])
     if body.get("rvolMode") in ("orb", "pm"):
         cur["rvolMode"] = body["rvolMode"]
-    for k in ("entryEnd", "flatT"):
+    if body.get("mode") in ("orb", "gala"):
+        cur["mode"] = body["mode"]
+    for k in ("entryEnd", "flatT", "gEnd"):
         if k in body:
             v = str(body[k] or "").strip()
             try:
@@ -558,12 +567,23 @@ def backtest(sub, days=250, cfg=None, budget_s=520):
             break
     run = [d for d in run if d in picks_by_day]
 
+    gala_on = P.get("mode") == "gala"
+
     def one(d):
         pk = picks_by_day[d]
         if not pk:
             return []
         day = datetime.strptime(d, "%Y-%m-%d")
-        bb = multi_bars(c, [p["sym"] for p in pk], "1Min", day.replace(hour=9, minute=30), day.replace(hour=16), max_pages=5)
+        syms = [p["sym"] for p in pk]
+        if gala_on:
+            import gala
+            if gala.event_skip(d, P):
+                return []
+            bb = multi_bars(c, syms + list(gala.INDEX), "1Min", day.replace(hour=9, minute=30), day.replace(hour=16), max_pages=8)
+            hist = multi_bars(c, syms, "30Min", gala.hist_start(day, P), day.replace(hour=9, minute=29), max_pages=5)
+            m = int(P["orbMin"])
+            return gala.day_trades(pk, bb, hist, P, {x: bb.get(x) or [] for x in gala.INDEX}, f"{9 + (30 + m) // 60:02d}:{(30 + m) % 60:02d}")
+        bb = multi_bars(c, syms, "1Min", day.replace(hour=9, minute=30), day.replace(hour=16), max_pages=5)
         return day_trades(pk, bb, P)
     done_days = []
     with ThreadPoolExecutor(max_workers=4) as ex:
@@ -588,6 +608,13 @@ def backtest(sub, days=250, cfg=None, budget_s=520):
     for t in rows:
         by_t.setdefault(t["sym"], []).append(t)
     tick = sorted(({"sym": s, **daytrade.stats(v)} for s, v in by_t.items() if len(v) >= 3), key=lambda x: -(x.get("totR") or 0))
+    by_setup, by_status = {}, {}
+    for t in rows:
+        if t.get("setup"):
+            by_setup.setdefault(t["setup"], []).append(t)
+        by_status.setdefault(t["status"], []).append(t)
+    by_setup = {k: daytrade.stats(v) for k, v in by_setup.items()}
+    by_status = {k: daytrade.stats(v) for k, v in by_status.items()}
     eq, peak, dd, curve = 1.0, 1.0, 0.0, []
     byday = {}
     for t in rows:
@@ -601,10 +628,11 @@ def backtest(sub, days=250, cfg=None, budget_s=520):
     import dtsearch
     out = {"at": iso(now_ny()), "days": days, "daysFound": len(done_days), "first": done_days[0] if done_days else None,
            "all": ds.pop("all"), **ds, "t": dtsearch.tstat([t["R"] for t in rows]), "byRvol": by_rv,
+           "mode": P.get("mode") or "orb", "bySetup": by_setup, "byExit": by_status,
            "best": tick[:12], "worst": tick[-12:][::-1], "retPct": round((eq - 1) * 100, 1),
            "annPct": round((eq ** (1 / yrs) - 1) * 100, 1) if yrs > 0.2 and eq > 0 else None, "ddPct": round(dd * 100, 1),
            "curvePct": curve[::max(1, len(curve) // 300)], "picksPerDay": round(sum(len(v) for v in picks_by_day.values()) / max(1, len(run)), 1),
-           "trades": [{k: t.get(k) for k in ("sym", "at", "dir", "entry", "stop0", "exit", "exitAt", "status", "R", "rvol", "ret")} for t in rows][-300:],
+           "trades": [{k: t.get(k) for k in ("sym", "at", "dir", "entry", "stop0", "exit", "exitAt", "status", "R", "rvol", "ret", "setup", "level")} for t in rows][-300:],
            "secs": round(time.time() - t0), "errors": errors}
     return out
 
@@ -733,7 +761,7 @@ def tick(sub, now=None):
     ready = f"{9 + (31 + m) // 60:02d}:{(31 + m) % 60:02d}"
     scan = db.get(pk, f"SDSCAN#{d}")
     busy = scan and scan.get("scanning") and scan["scanning"] > iso(now_ny() - timedelta(minutes=5))
-    if (not scan or scan.get("error") or scan.get("scanning")) and not busy and hm >= ready and hm < P["entryEnd"]:
+    if (not scan or scan.get("error") or scan.get("scanning")) and not busy and hm >= ready and hm < (P["gEnd"] if P.get("mode") == "gala" else P["entryEnd"]):
         db.put({"PK": pk, "SK": f"SDSCAN#{d}", "scanning": iso(now_ny())})     # the next minute's run waits
         try:
             sc = scan_today(sub, P, now)
@@ -742,7 +770,7 @@ def tick(sub, now=None):
         scan = {"PK": pk, "SK": f"SDSCAN#{d}", **json.loads(json.dumps(sc), parse_float=Decimal)}
         db.put(scan)
         db.put({**scan, "SK": "SDSCAN#last"})
-        if P.get("trade") and sc.get("picks"):
+        if P.get("trade") and sc.get("picks") and P.get("mode") != "gala":
             eq = float((_alp(c, "GET", "/v2/account") or {}).get("equity") or 0)
             for p in sc["picks"]:
                 if p["dir"] == 0 or (p["dir"] > 0 and not P["longs"]) or (p["dir"] < 0 and not P["shorts"]):
@@ -762,6 +790,12 @@ def tick(sub, now=None):
                     acts.append(f"{p['sym']} {'buy' if p['dir'] > 0 else 'sell'} stop {q} @ {lvl}")
                 except Exception as e:
                     acts.append(f"{p['sym']}: {str(e)[:100]}")
+    if P.get("mode") == "gala" and scan and scan.get("picks") and not scan.get("scanning"):
+        import gala
+        try:
+            acts += gala.live(sub, P, c, now, [{k: _f(v) if k != "sym" else v for k, v in p.items()} for p in scan["picks"]], pk, d, hm)
+        except Exception as e:
+            acts.append(f"gala: {str(e)[:120]}")
     recs = [r for r in db.q_prefix(pk, f"SDPOS#{d}#")]
     if not recs:
         return {"actions": acts}
@@ -769,7 +803,7 @@ def tick(sub, now=None):
         pos = {p["symbol"]: p for p in (_alp(c, "GET", "/v2/positions") or [])}
     except Exception:
         pos = {}
-    if hm >= P["entryEnd"]:                             # entries not triggered by the deadline: cancelled
+    if hm >= P["entryEnd"] and P.get("mode") != "gala":  # entries not triggered by the deadline: cancelled
         for r in recs:
             if r.get("status") == "ordered" and r["symbol"] not in pos and r.get("orderId"):
                 try:
@@ -777,7 +811,7 @@ def tick(sub, now=None):
                 except Exception:
                     pass
                 db.update(pk, r["SK"], {"status": "expired"})
-    if P.get("vwapExit") and pos:
+    if P.get("vwapExit") and pos and P.get("mode") != "gala":
         held = [r["symbol"] for r in recs if r["symbol"] in pos]
         try:
             day = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
@@ -848,8 +882,22 @@ def chart(sub, sym, date=None):
     w = [b for b in reg if b["t"][11:16] < end_or]
     orb = {"h": max(b["h"] for b in w), "l": min(b["l"] for b in w), "o": w[0]["o"], "c": w[-1]["c"]} if w else None
     pre = [b for b in bb if b["t"][11:16] < "09:30"]
-    sig = []
-    if orb and len(reg) > m:
+    sig, lv, trend = [], [], None
+    if P.get("mode") == "gala":
+        import gala
+        atr = float((get_day("U", d).get(sym) or [0])[0] or 0)
+        hist = multi_bars(c, [sym], "30Min", gala.hist_start(day, P), day.replace(hour=9, minute=29), max_pages=5).get(sym) or []
+        if atr > 0:
+            mk = multi_bars(c, list(gala.INDEX), "1Min", day.replace(hour=9, minute=30), min(day.replace(hour=16), now_ny().replace(tzinfo=None) - timedelta(minutes=16)), max_pages=5)
+            trs, _ = gala.simulate({"sym": sym, "atr": atr}, reg, hist, P, mk, end_or)
+            for t in trs:
+                t.update(kind="day", level=t["stop0"], levelName="stop", stop=t["stop0"], last=t["exit"], lastAt=t["exitAt"], o=0, h=0, l=0)
+            sig = trs
+            days = sorted({b["t"][:10] for b in hist if b["t"][:10] < d})[-int(P["gLvlDays"]):]
+            H = gala.agg([b for b in hist if b["t"][:10] in days], 60) + gala.agg(reg, 60)
+            lv = gala.levels(H, P, float(P["gTolAtr"]) / 100 * atr)
+            trend = gala.trend(H, int(P["gPivot"]))
+    elif orb and len(reg) > m:
         pick = {"sym": sym, "rvol": None, "pmRvol": None, "atr": float((get_day("U", d).get(sym) or [0])[0] or 0), **orb,
                 "dir": 0 if (orb["h"] - orb["l"]) <= 0 or abs(orb["c"] - orb["o"]) < float(P["dojiPct"]) / 100 * (orb["h"] - orb["l"]) else (1 if orb["c"] > orb["o"] else -1)}
         if pick["atr"] > 0:
@@ -862,5 +910,5 @@ def chart(sub, sym, date=None):
             "vwap": [{"t": b["t"], "v": round(v, 4)} for b, v in zip(reg, vw)], "orb": orb,
             "orbLv": {d: {"h": orb["h"], "l": orb["l"]}} if orb else {},
             "pm": {d: {"h": max(b["h"] for b in pre), "l": min(b["l"] for b in pre)}} if pre else {},
-            "pmVol": int(sum(b["v"] or 0 for b in pre)), "signals": sig, "stats": {}, "walls": [], "alerts": [], "evals": [],
+            "pmVol": int(sum(b["v"] or 0 for b in pre)), "signals": sig, "levels": lv, "trend": trend, "mode": P.get("mode") or "orb", "stats": {}, "walls": [], "alerts": [], "evals": [],
             "maxPain": [], "expirations": [], "trades": [], "ema": [], "ema2": [], "kch": [], "inertia": [], "sqzH": []}

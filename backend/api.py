@@ -544,7 +544,12 @@ def research_get(sub, claims, body, q):
 @route("PUT", "/research/criteria")
 def research_criteria(sub, claims, body, q):
     import research
-    return {"criteria": research.save_criteria(sub, body or {})}
+    c = research.save_criteria(sub, body or {})
+    try:
+        queued = research.rob_backfill(sub)
+    except Exception:
+        queued = 0
+    return {"criteria": c, "robQueued": queued}
 
 
 @route("POST", "/research/run")

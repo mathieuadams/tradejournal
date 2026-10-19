@@ -4318,6 +4318,8 @@ def test_stockday_prep_and_backtest():
         assert set(r["byRvol"]) <= {lbl for _, _, lbl in stockday.RV_BUCKETS} and r["retPct"] is not None
         stockday.backtest_job("sd-user", {"days": 30, "cfg": {"topN": 5}})
         assert stockday.backtest_result("sd-user")["daysFound"] == len(days)
+        g = stockday.backtest("sd-user", 30, {"topN": 5, "minRvol": 1.5, "mode": "gala", "gTrend": False, "gMktAlign": False})
+        assert g["mode"] == "gala" and g["daysFound"] == len(days) and "bySetup" in g
     finally:
         stockday.multi_bars, stockday.assets, stockday.trading_days, stockday.data_creds, stockday.now_ny = saved
 
@@ -4433,6 +4435,110 @@ def test_nearest_expiration_walls():
         assert w["2026-10-13"]["putWall"] == 580 and w["2026-10-13"]["expiry"] == "2026-10-13"
     finally:
         flowdata._uw, flowdata._key = o_uw, o_key
+
+
+
+
+def test_gala_hourly_levels():
+    import gala
+    import stockday
+
+    def mk(day, hm, o, h, l, c):
+        return {"t": f"{day}T{hm}", "o": o, "h": h, "l": l, "c": c, "v": 1000}
+
+    # hourly structure: a zig-zag up (higher highs, higher lows) over 3 days of 30-minute candles
+    hist = []
+    path = [100, 101, 102, 101, 103, 104, 103, 105, 106, 105, 107, 108, 107, 109, 110, 109, 111, 112, 111, 113]
+    days = ["2026-03-02", "2026-03-03", "2026-03-04"]
+    k = 0
+    for d in days:
+        for m in range(13):
+            t = 570 + m * 30
+            p = path[k % len(path)] + k * 0.02
+            q = path[(k + 1) % len(path)] + (k + 1) * 0.02
+            hist.append(mk(d, f"{t // 60:02d}:{t % 60:02d}", p, max(p, q) + 0.2, min(p, q) - 0.2, q))
+            k += 1
+    H = gala.agg(hist, 60)
+    assert len(H) == 21 and H[0]["t"].endswith("09:30") and H[6]["end"] == "16:00"
+    P = {**stockday.PARAMS, "gImpulse": 0}
+    lv = gala.levels(H, P, 0.05)
+    assert lv and all(x["src"] in ("pivot high", "pivot low") for x in lv)
+
+    # day: opens under a level L, a 5-min close above it, a pullback wick to it, a close above -> long retest
+    L = 110.0
+    hist2 = [mk("2026-03-04", "15:00", 111, 111.5, 110.6, 111.4), mk("2026-03-04", "15:30", 111.4, 111.6, 109.5, 109.6)]
+    bars = []
+    def run5(start, seq):
+        for i, (o, h, l, c) in enumerate(seq):
+            t = start + i
+            bars.append(mk("2026-03-05", f"{t // 60:02d}:{t % 60:02d}", o, h, l, c))
+    flat = [(109.6, 109.7, 109.5, 109.6)] * 5
+    run5(570, flat)                                          # 09:30 candle (skipped)
+    run5(575, [(109.6, 109.8, 109.5, 109.7)] * 4 + [(109.7, 110.4, 109.7, 110.3)])   # 09:35: close above L (break)
+    run5(580, [(110.3, 110.6, 110.2, 110.5)] * 5)          # 09:40 away
+    run5(585, [(110.5, 110.5, 109.95, 110.0), (110.0, 110.1, 109.9, 110.1)] + [(110.1, 110.3, 110.1, 110.25)] * 3)  # 09:45 retest
+    for m in range(590, 960):                                # then up to the target and beyond
+        p = 110.25 + (m - 590) * 0.01
+        bars.append(mk("2026-03-05", f"{m // 60:02d}:{m % 60:02d}", p, p + 0.02, p - 0.01, p + 0.01))
+    P2 = {**stockday.PARAMS, "gTrend": False, "gMktAlign": False, "gImpulse": 0, "gLvlTarget": False, "gTolAtr": 5.0, "gStopBuf": 2.0}
+    orig = gala.levels
+    gala.levels = lambda H, P, tol: [{"p": L, "src": "pivot high", "i": 0}]
+    try:
+        trs, pend = gala.simulate({"sym": "XYZ", "atr": 2.0, "rvol": 3}, bars, hist2, P2)
+    finally:
+        gala.levels = orig
+    assert trs and trs[0]["setup"] == "retest" and trs[0]["dir"] == "long"
+    t = trs[0]
+    assert t["at"].endswith("09:50") and abs(t["stop0"] - (109.9 - 0.04)) < 1e-6
+    assert t["status"] in ("target+trail", "target+close") and t["R"] > 1.0
+    # daily limits
+    a = {**t, "sym": "A", "at": "2026-03-05T09:50", "exitAt": "2026-03-05T10:30", "R": 2.0}
+    b = {**t, "sym": "B", "at": "2026-03-05T10:40", "exitAt": "2026-03-05T11:00", "R": -1.0}
+    assert len(gala.day_filter([a, b], {"gMaxTrades": 3})) == 2
+    assert len(gala.day_filter([a, b], {"gMaxTrades": 3, "gOneDone": True, "gOneDoneR": 1.5})) == 1
+    assert len(gala.day_filter([a, b], {"gMaxTrades": 1})) == 1
+    # settings
+    cfg = stockday.clean_cfg(stockday.PARAMS, {"mode": "gala", "gTargetR": 1.5, "gMaxTrades": 2, "gEnd": "14:00", "gBounce": False})
+    assert cfg["mode"] == "gala" and cfg["gTargetR"] == 1.5 and cfg["gMaxTrades"] == 2 and cfg["gEnd"] == "14:00" and not cfg["gBounce"]
+
+
+def test_research_auto_robustness():
+    """Grade C or better with t > 2 -> queued for the robustness check (500 days), run one at a time, kept on the
+    idea; the manual robustness result is not overwritten; weaker ideas are never queued."""
+    import research, dtrobust
+    sub = "rs-rob"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    calls, runs = [], []
+    saved = research._invoke, dtrobust.run, research.base_cfg
+    try:
+        research._invoke = lambda s_, job, params: calls.append(job)
+        research.base_cfg = lambda s_, st, lab=None: {"tickers": ["QQQ"]}
+
+        def fake_run(s_, params=None, budget_s=520, save=True):
+            runs.append((params["days"], save, params["cfg"].get("aboveVwap")))
+            return {"at": "2026-10-19T12:00:00", "days": params["days"], "daysFound": 498, "verdict": "robust", "share": 91, "positive": 21,
+                    "variants": 23, "median": 0.2, "base": {"n": 300, "avgR": 0.25, "t": 3.1},
+                    "rows": [{"label": "as they are", "all": {"n": 300, "avgR": 0.25}, "h1": {"n": 150, "avgR": 0.3}, "h2": {"n": 150, "avgR": 0.2}},
+                             {"label": "without x", "all": {"n": 280, "avgR": -0.02}}], "extra": [{"label": "twice the cost", "all": {"n": 300, "avgR": 0.2}}]}
+        dtrobust.run = fake_run
+        good = {"id": "g1", "at": "2026-10-19T10:00:00", "strategy": "day", "name": "good", "status": "tested", "grade": "C",
+                "full": {"aboveVwap": True}, "metrics": {"t": 2.4}}
+        weak = {"id": "w1", "at": "2026-10-19T10:01:00", "strategy": "day", "name": "weak", "status": "tested", "grade": "C", "metrics": {"t": 1.6}}
+        bad = {"id": "f1", "at": "2026-10-19T10:02:00", "strategy": "day", "name": "bad", "status": "tested", "grade": "F", "metrics": {"t": 2.6}}
+        for x in (good, weak, bad):
+            research._put_idea(sub, x)
+        assert research.rob_backfill(sub) == 1 and calls == ["rsrob"]
+        assert research.rob_kick(sub) is False                  # one at a time
+        out = research.rob_job(sub)
+        assert out == {"done": "g1", "verdict": "robust"} and runs == [(500, False, True)]
+        x = next(i for i in research.ideas(sub, "day") if i["id"] == "g1")
+        assert x["robust"]["status"] == "done" and x["robust"]["positive"] == 21 and x["robust"]["worst"][0]["label"] == "without x"
+        assert research.rob_backfill(sub) == 0 and research.rob_job(sub) == {"done": None}
+        assert research.lite(sub)["robAt"]
+        assert not any(i.get("robust") for i in research.ideas(sub, "day") if i["id"] != "g1")
+    finally:
+        research._invoke, dtrobust.run, research.base_cfg = saved
 
 
 if __name__ == "__main__":

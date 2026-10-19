@@ -1986,6 +1986,9 @@ def handler(event, context_):
             elif job == "rsstrat":
                 import research
                 out[sub] = research.strat_job(sub, event.get("params") or {})
+            elif job == "rsrob":
+                import research
+                out[sub] = research.rob_job(sub, event.get("params") or {})
             elif job == "dtrob":
                 import dtrobust
                 out[sub] = {"variants": (dtrobust.job(sub, event.get("params") or {}) or {}).get("variants")}

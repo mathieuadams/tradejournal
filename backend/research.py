@@ -26,9 +26,9 @@ from util import iso, now_ny
 SK = "RESEARCH"
 IDEA = "RIDEA#"
 CRITERIA = {"minTrades": 100, "minHalf": 40, "minT": 2.0, "minTestT": 1.0, "minPF": 1.2, "minWin": 0.0, "minAvgR": 0.05,
-            "costR": 0.05, "bothHalves": True, "adjustT": True}
+            "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500}
 LIMITS = {"minTrades": (10, 5000), "minHalf": (0, 2500), "minT": (0, 10), "minTestT": (-5, 10), "minPF": (0, 10),
-          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2)}
+          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500)}
 STRATS = ("day", "swing")
 MAX_IDEAS = 8
 
@@ -48,10 +48,10 @@ def save_criteria(sub, body):
                 cur[k] = max(lo, min(hi, float(body[k])))
             except (TypeError, ValueError):
                 pass
-    for k in ("bothHalves", "adjustT"):
+    for k in ("bothHalves", "adjustT", "autoRob"):
         if k in (body or {}):
             cur[k] = bool(body[k])
-    cur["minTrades"], cur["minHalf"] = int(cur["minTrades"]), int(cur["minHalf"])
+    cur["minTrades"], cur["minHalf"], cur["robDays"] = int(cur["minTrades"]), int(cur["minHalf"]), int(cur["robDays"])
     r = db.get(db.upk(sub), SK) or {"PK": db.upk(sub), "SK": SK}
     db.put({**r, "criteria": json.dumps(cur)})
     return cur
@@ -103,7 +103,7 @@ def lite(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None}
     n = len(db.q_prefix(db.upk(sub), IDEA))
-    return {"run": {k: run.get(k) for k in ("running", "step", "made", "testedNow", "at", "strategy", "errors")}, "nIdeas": n,
+    return {"run": {k: run.get(k) for k in ("running", "step", "made", "testedNow", "at", "strategy", "errors")}, "nIdeas": n, "robAt": r.get("robAt"),
             "autoToday": auto_today(sub), "auto": auto_cfg(sub)}
 
 
@@ -498,10 +498,93 @@ def test_queued(sub, strategy, days, lab=None, budget_s=540, t0=None, run_=None)
             test_idea(bench, base, x, c, n_tested + 1)
             n_tested += 1
             run_["testedNow"] = run_.get("testedNow", 0) + 1
+            if strategy == "day" and rob_due(x, c):
+                x["robust"] = {"status": "queued", "at": iso(now_ny())}
         except Exception as e:
             x.update(status="error", fails=[str(e)[:160]])
         _put_idea(sub, x)
+    if strategy == "day" and any((x.get("robust") or {}).get("status") == "queued" for x in q):
+        rob_kick(sub)
     return run_
+
+
+# ---------------------------------------------------------------- automatic robustness check of the good ones
+def rob_due(x, c):
+    """Grade C or better with a full-period t above robT -> the robustness check on robDays days, once."""
+    m = x.get("metrics") or {}
+    return bool(c.get("autoRob")) and x.get("status") == "tested" and x.get("grade") in ("A", "B", "C") \
+        and (m.get("t") or 0) > float(c.get("robT") or 2) and not x.get("robust")
+
+
+def rob_kick(sub, force=False):
+    """Starts the robustness job unless one is running (one idea at a time; each run starts the next)."""
+    from datetime import timedelta
+    r = db.get(db.upk(sub), SK) or {"PK": db.upk(sub), "SK": SK}
+    if not force and r.get("robRunning") and r["robRunning"] > iso(now_ny() - timedelta(minutes=12)):
+        return False
+    db.put({**r, "robRunning": iso(now_ny())})
+    _invoke(sub, "rsrob", {})
+    return True
+
+
+def _rob_summary(out):
+    def st(x):
+        return {k: x.get(k) for k in ("n", "avgR", "t", "win", "pf", "totR")}
+    return {"status": "done", "at": out.get("at"), "days": out.get("days"), "daysFound": out.get("daysFound"), "verdict": out.get("verdict"),
+            "share": out.get("share"), "positive": out.get("positive"), "variants": out.get("variants"), "median": out.get("median"),
+            "base": st(out.get("base") or {}), "h1": st((out.get("rows") or [{}])[0].get("h1") or {}) if out.get("rows") else {},
+            "h2": st((out.get("rows") or [{}])[0].get("h2") or {}) if out.get("rows") else {},
+            "worst": sorted(({"label": x["label"], "avgR": x["all"].get("avgR"), "n": x["all"].get("n")} for x in (out.get("rows") or [])[1:] if x["all"].get("n")),
+                            key=lambda y: y["avgR"] or 0)[:5],
+            "extra": [{"label": x["label"], **st(x["all"])} for x in out.get("extra") or []], "errors": (out.get("errors") or [])[:3]}
+
+
+def rob_job(sub, params=None):
+    """The next idea waiting for its robustness check: dtrobust on robDays days with the idea's full settings
+    (kept on the idea, the Backtest & tools result is not touched), then the next one."""
+    import dtrobust
+    c = criteria(sub)
+    p = params or {}
+    from datetime import timedelta
+    stale = iso(now_ny() - timedelta(minutes=12))
+
+    def waiting(x):
+        rb = x.get("robust") or {}
+        return rb.get("status") == "queued" or (rb.get("status") == "running" and (rb.get("at") or "") < stale)
+    xs = [x for x in ideas(sub, "day") if waiting(x) and (not p.get("id") or x["id"] == p["id"])]
+    r = db.get(db.upk(sub), SK) or {"PK": db.upk(sub), "SK": SK}
+    if not xs:
+        db.put({**r, "robRunning": None})
+        return {"done": None}
+    x = sorted(xs, key=lambda y: -((y.get("metrics") or {}).get("t") or 0))[0]
+    x["robust"] = {"status": "running", "at": iso(now_ny())}
+    _put_idea(sub, x)
+    try:
+        cfg = {**base_cfg(sub, "day"), **(x.get("full") or x.get("changes") or {})}
+        out = dtrobust.run(sub, {"cfg": cfg, "days": int(c.get("robDays") or 500), "cost": float(c["costR"])}, save=False)
+        x["robust"] = _rob_summary(out)
+    except Exception as e:
+        x["robust"] = {"status": "error", "at": iso(now_ny()), "errors": [str(e)[:200]]}
+    _put_idea(sub, x)
+    r = db.get(db.upk(sub), SK) or {"PK": db.upk(sub), "SK": SK}
+    db.put({**r, "robAt": iso(now_ny()), "robRunning": None})
+    if any((y.get("robust") or {}).get("status") == "queued" for y in ideas(sub, "day")):
+        rob_kick(sub)
+    return {"done": x["id"], "verdict": x["robust"].get("verdict")}
+
+
+def rob_backfill(sub):
+    """Ideas tested before the automatic check existed (or after the criteria changed): queue the ones that qualify."""
+    c = criteria(sub)
+    n = 0
+    for x in ideas(sub, "day"):
+        if rob_due(x, c):
+            x["robust"] = {"status": "queued", "at": iso(now_ny())}
+            _put_idea(sub, x)
+            n += 1
+    if n:
+        rob_kick(sub)
+    return n
 
 
 def submit(sub, strategy, name, changes, lab=None, days=250, hypothesis=""):
@@ -799,6 +882,11 @@ def auto_kick():
                     _invoke(sub, "rsstrat", {})
             except Exception as e:
                 print("strategy check kick failed", e)
+            try:                                       # robustness checks waiting (a run that died restarts the queue)
+                rob_backfill(sub) or (any((x.get("robust") or {}).get("status") in ("queued", "running") for x in ideas(sub, "day"))
+                                      and rob_kick(sub))
+            except Exception as e:
+                print("robustness kick failed", e)
             try:                                       # the market context of the last session, once it is over
                 import marketctx
                 st = marketctx.job_state(sub)

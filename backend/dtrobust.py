@@ -95,7 +95,7 @@ def _st(rs):
             "win": round(len(w) / n * 100, 1), "pf": round(sum(w) / -sum(l), 2) if l and sum(l) < 0 else None}
 
 
-def run(sub, params=None, budget_s=520):
+def run(sub, params=None, budget_s=520, save=True):
     import daytrade
     t0 = time.time()
     p = params or {}
@@ -128,7 +128,8 @@ def run(sub, params=None, budget_s=520):
     out = {"at": iso(now_ny()), "days": days, "daysFound": len(ds), "mid": mid, "cost": cost, "base": b, "rows": rows, "extra": extra,
            "positive": pos, "variants": len(others), "share": share, "median": med, "verdict": verdict,
            "used": daytrade.used_summary(P), "secs": round(time.time() - t0), "errors": errors[:6]}
-    _save(sub, out)
+    if save:
+        _save(sub, out)
     return out
 
 
