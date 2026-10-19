@@ -35,7 +35,7 @@ def messages(model, system, msgs, max_tokens=1500, tools=None, extra=None):
         req = urllib.request.Request(URL, data=data, method="POST", headers={
             "x-api-key": api_key(), "anthropic-version": "2023-06-01", "content-type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=60 if max_tokens <= 4000 else 240) as r:
+            with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 529) and attempt < 2:

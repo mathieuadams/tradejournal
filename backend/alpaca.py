@@ -25,20 +25,20 @@ def _kms():
     return boto3.client("kms")
 
 
-def save_creds(sub, key_id, secret, env, feed="iex", sk="BROKER#alpaca"):
+def save_creds(sub, key_id, secret, env, feed="iex"):
     if env not in TRADING:
         raise BadRequest("Environment must be paper or live.")
     creds = {"key": key_id.strip(), "secret": secret.strip(), "env": env, "feed": feed}
     _get(TRADING[env] + "/v2/account", creds)  # fails with a clear message if the keys are wrong
     blob = _kms().encrypt(KeyId=os.environ["KMS_KEY_ID"], Plaintext=json.dumps(creds).encode())["CiphertextBlob"]
-    old = db.get(db.upk(sub), sk) or {}
-    db.put({"PK": db.upk(sub), "SK": sk, "enc": base64.b64encode(blob).decode(),
+    old = db.get(db.upk(sub), "BROKER#alpaca") or {}
+    db.put({"PK": db.upk(sub), "SK": "BROKER#alpaca", "enc": base64.b64encode(blob).decode(),
             "env": env, "feed": feed, "keyHint": key_id.strip()[-4:], "lastSync": old.get("lastSync"),
             "status": "connected"})
 
 
-def creds(sub, sk="BROKER#alpaca"):
-    item = db.get(db.upk(sub), sk)
+def creds(sub):
+    item = db.get(db.upk(sub), "BROKER#alpaca")
     if not item:
         return None
     raw = _kms().decrypt(CiphertextBlob=base64.b64decode(item["enc"]))["Plaintext"]
@@ -88,16 +88,16 @@ def fills(c, after=None):
     return out
 
 
-def bars(c, sym, start_local, end_local, tf_min, max_pages=10, feed=None):
+def bars(c, sym, start_local, end_local, tf_min):
     """Bars between two US/Eastern local timestamps. Returns [{t,o,h,l,c}] with t in local time."""
     if tf_min not in TF:
         raise BadRequest("Unsupported timeframe.")
     start = ny_to_utc(parse_iso(start_local)).strftime("%Y-%m-%dT%H:%M:%SZ")
     end = ny_to_utc(parse_iso(end_local)).strftime("%Y-%m-%dT%H:%M:%SZ")
     out, token = [], None
-    for _ in range(max_pages):
+    for _ in range(10):
         q = {"timeframe": TF[tf_min], "start": start, "end": end, "limit": 10000,
-             "adjustment": "raw", "feed": feed or c.get("feed", "iex")}
+             "adjustment": "raw", "feed": c.get("feed", "iex")}
         if token:
             q["page_token"] = token
         page = _get(f"{DATA}/v2/stocks/{urllib.parse.quote(sym)}/bars?" + urllib.parse.urlencode(q), c)

@@ -47,136 +47,7 @@ FEATURES = {
     "extAtr": ("ATR above the 21 EMA", "num", [("<=", 0.5), ("<=", 1.0), ("<=", 1.5), (">=", 1.5)]),
     "growth30": ("% up from the 30-day low", "num", [(">=", 5), (">=", 10), (">=", 20), ("<=", 5)]),
     "hour": ("Hour of the evaluation (ET)", "num", [("<=", 10), (">=", 14)]),
-    # options volume on the ticker (alerts bought at the ask)
-    "callPrem5d": ("Call premium bought on the ticker, last 5 days ($)", "num", [(">=", 1_000_000), (">=", 5_000_000), (">=", 15_000_000)]),
-    "putPrem5d": ("Put premium bought on the ticker, last 5 days ($)", "num", [("<=", 1_000_000), (">=", 5_000_000)]),
-    "callPremToday": ("Call premium bought on the ticker that day ($)", "num", [(">=", 500_000), (">=", 2_000_000)]),
-    "callHits5d": ("Call alerts on the ticker, last 5 days", "num", [(">=", 20), (">=", 50)]),
-    # gamma walls of the evaluation day (stored by day from Unusual Whales greek exposure)
-    "cwAbovePw": ("Call wall above the put wall", "bool", None),
-    "pwDist": ("% above the put wall", "num", [("<=", 1), ("<=", 2), ("<=", 5), (">=", 5)]),
-    "cwRoom": ("% room to the call wall", "num", [(">=", 3), (">=", 5), (">=", 10), ("<=", 0)]),
-    "betweenWalls": ("Price between the put wall and the call wall", "bool", None),
-    "pwUp": ("Put wall moved up since the day before", "bool", None),
-    "pwDown": ("Put wall moved down since the day before", "bool", None),
-    "cwUp": ("Call wall moved up since the day before", "bool", None),
-    "cwDown": ("Call wall moved down since the day before", "bool", None),
-    "risingFloor": ("Put wall up, call wall flat or up", "bool", None),
-    "wallWidth": ("% gap between the put wall and the call wall", "num", [("<=", 3), ("<=", 6), (">=", 10)]),
-    "pwChg": ("Put wall change since the day before (%)", "num", [(">=", 1), (">=", 3), ("<=", -1)]),
-    "cwChg": ("Call wall change since the day before (%)", "num", [(">=", 1), (">=", 3), ("<=", -1)]),
-    "pwUp2": ("Put wall up 2 days in a row", "bool", None),
-    "belowPw": ("Price below the put wall", "bool", None),
-    "aboveCw": ("Price above the call wall", "bool", None),
-    "atPw": ("Price within 1% of the put wall", "bool", None),
-    # price / trend values at evaluation time
-    "emaDist": ("% above the 21 EMA", "num", [("<=", 0), ("<=", 2), ("<=", 5), (">=", 5)]),
-    "atrPct": ("ATR as % of price", "num", [("<=", 2), ("<=", 3), (">=", 4)]),
-    "crossAgo": ("Bars since the 21 EMA cross", "num", [("<=", 3), ("<=", 10), (">=", 20)]),
-    "momentum": ("Momentum value", "num", [(">=", 0), ("<=", 0)]),
-    "momAccel": ("Momentum change vs the bar before", "num", [(">=", 0), ("<=", 0)]),
-    "low30Age": ("Days since the 30-day low", "num", [("<=", 5), ("<=", 10), (">=", 20)]),
-    # gamma exposure at evaluation time (option chain)
-    "flipDist": ("% above the gamma flip", "num", [(">=", 0), (">=", 2), ("<=", 0), ("<=", -2)]),
-    "posGex": ("Net gamma positive", "bool", None),
-    "chainPwDist": ("% above the put wall (live chain)", "num", [("<=", 2), ("<=", 5), (">=", 5)]),
-    "chainCwRoom": ("% room to the call wall (live chain)", "num", [(">=", 3), (">=", 5), (">=", 10), ("<=", 0)]),
-    # trade plan
-    "roomRatio": ("Room to target / risk to stop", "num", [(">=", 1.5), (">=", 2), (">=", 3)]),
-    "stopDist": ("% to the stop (underlying)", "num", [("<=", 2), ("<=", 4), (">=", 6)]),
-    "targetDist": ("% to the target (underlying)", "num", [(">=", 3), (">=", 6), (">=", 10)]),
-    # chosen contract
-    "dte": ("Days to expiration of the call", "num", [("<=", 14), ("<=", 30), (">=", 30), (">=", 60)]),
-    "delta": ("Delta of the call", "num", [(">=", 0.5), (">=", 0.6), ("<=", 0.4)]),
-    "iv": ("Implied volatility of the call (%)", "num", [("<=", 40), ("<=", 60), (">=", 60), (">=", 90)]),
-    "spreadPct": ("Bid/ask spread of the call (% of mid)", "num", [("<=", 3), ("<=", 6), (">=", 10)]),
-    "oi": ("Open interest of the call", "num", [(">=", 500), (">=", 2000), ("<=", 200)]),
-    "otmPct": ("% out of the money (strike vs price)", "num", [("<=", 0), ("<=", 3), (">=", 5)]),
-    "ivEvent": ("Volatility jump between expirations (likely event)", "bool", None),
-    # the flow alert itself
-    "flowAlerts": ("Alerts in the flow trigger", "num", [(">=", 2), (">=", 4)]),
-    "topPremium": ("Biggest single alert premium ($)", "num", [(">=", 250_000), (">=", 1_000_000)]),
-    "flowOptPrice": ("Option price of the alert ($)", "num", [("<=", 1), ("<=", 3), (">=", 5)]),
-    "repeatRule": ("Unusual Whales flagged repeated hits", "bool", None),
-    "flowLagMin": ("Minutes from the alert to the evaluation", "num", [("<=", 5), ("<=", 30), (">=", 60)]),
-    # options volume on the ticker
-    "putPremToday": ("Put premium bought on the ticker that day ($)", "num", [("<=", 100_000), (">=", 1_000_000)]),
-    "callsOverPutsToday": ("Calls bought > puts bought that day", "bool", None),
-    "todayShare": ("% of the 5-day call premium bought that day", "num", [(">=", 50), (">=", 80), ("<=", 30)]),
-    "bigCalls5d": ("Big call alerts on the ticker, last 5 days", "num", [(">=", 2), (">=", 5)]),
-    "bigPuts5d": ("Big put alerts on the ticker, last 5 days", "num", [("<=", 0), (">=", 2)]),
-    "flowDays": ("Days with call buying, last 5 days", "num", [(">=", 2), (">=", 4)]),
-    "callContracts5d": ("Different call contracts bought, last 5 days", "num", [(">=", 3), (">=", 8)]),
-    "repeatQualifies": ("Repeat buying qualifies (bot rule)", "bool", None),
-    # time
-    "weekday": ("Weekday (1 = Monday … 5 = Friday)", "num", [("<=", 1), ("<=", 2), (">=", 4), (">=", 5)]),
-    "minsOpen": ("Minutes since the open", "num", [("<=", 30), ("<=", 60), (">=", 300)]),
 }
-
-CATS = [("Chart rules", [k for k, _, _ in CHECKS]),
-        ("Price & trend", ["emaDist", "atrPct", "extAtr", "crossAgo", "momentum", "momAccel", "growth30", "low30Age"]),
-        ("Gamma walls (stored by day)", ["cwAbovePw", "pwDist", "cwRoom", "betweenWalls", "atPw", "belowPw", "aboveCw", "wallWidth",
-                                         "pwUp", "pwDown", "pwUp2", "pwChg", "cwUp", "cwDown", "cwChg", "risingFloor"]),
-        ("Gamma (live chain)", ["flipDist", "posGex", "chainPwDist", "chainCwRoom"]),
-        ("Flow alert", ["sweep", "flowPremium", "topPremium", "flowAlerts", "volOi", "askPct", "flowOptPrice", "repeatRule", "flowLagMin"]),
-        ("Options volume on the ticker", ["callPut", "callPrem5d", "putPrem5d", "callPremToday", "putPremToday", "callsOverPutsToday",
-                                          "todayShare", "callHits5d", "smallCalls", "bigCalls5d", "bigPuts5d", "flowDays", "callContracts5d",
-                                          "repeatQualifies", "burstSameDay", "burst2d"]),
-        ("Contract", ["dte", "delta", "iv", "spreadPct", "oi", "otmPct", "ivEvent"]),
-        ("Trade plan", ["roomRatio", "stopDist", "targetDist"]),
-        ("Time", ["hour", "minsOpen", "weekday"]),
-        ("Bot & Claude", ["decisionBuy", "taken", "claudeApprove", "claudeReject"])]
-CAT_OF = {k: c for c, ks in CATS for k in ks}
-FLOW_KEYS = ("callPut", "flowPremium", "volOi", "askPct", "smallCalls", "sweep", "repeatBuy", "putsOk", "burstSameDay", "burst2d",
-             "callPrem5d", "putPrem5d", "callPremToday", "callHits5d", "topPremium", "flowAlerts", "flowOptPrice", "repeatRule",
-             "flowLagMin", "putPremToday", "callsOverPutsToday", "todayShare", "bigCalls5d", "bigPuts5d", "flowDays",
-             "callContracts5d", "repeatQualifies")
-WALL_KEYS = ("cwAbovePw", "pwDist", "cwRoom", "betweenWalls", "pwUp", "pwDown", "cwUp", "cwDown", "risingFloor",
-             "wallWidth", "pwChg", "cwChg", "pwUp2", "belowPw", "aboveCw", "atPw")
-GAMMA_KEYS = WALL_KEYS + ("flipDist", "posGex", "chainPwDist", "chainCwRoom", "aboveFlip")
-TREND_KEYS = ("emaDist", "atrPct", "extAtr", "crossAgo", "momentum", "momAccel", "growth30", "low30Age",
-              "bullFvg", "noBearFvg", "aboveEma", "recentCross", "momUp", "aboveAvwap", "up30", "notExtended")
-GROUPS = {"walls": ("Gamma walls", None), "flow": ("Options volume / flow", None), "wallsflow": ("Gamma walls + options volume", None),
-          "gamma": ("All gamma", None), "trend": ("Price & trend", None), "trendflow": ("Price & trend + options volume", None)}
-
-
-def wall_features(r, stored):
-    """Wall features of one evaluation from the stored walls of its ticker ({date: walls})."""
-    out = {k: None for k in WALL_KEYS}
-    d0, price = (r.get("createdAt") or "")[:10], (r.get("signals") or {}).get("price")
-    days = sorted(d for d in stored if d <= d0)
-    if not days or not price:
-        return out
-    w = stored[days[-1]]
-    if (datetime.strptime(d0, "%Y-%m-%d") - datetime.strptime(days[-1], "%Y-%m-%d")).days > 5:
-        return out                                   # too old to describe that day
-    pw, cw = w.get("putWall"), w.get("callWall")
-    if pw:
-        out["pwDist"] = round((price - pw) / pw * 100, 2)
-    if cw:
-        out["cwRoom"] = round((cw - price) / price * 100, 2)
-    if pw:
-        out["belowPw"] = price < pw
-        out["atPw"] = abs(price - pw) / pw * 100 <= 1
-    if cw:
-        out["aboveCw"] = price > cw
-    if pw and cw:
-        out["betweenWalls"] = pw <= price <= cw
-        out["cwAbovePw"] = cw > pw
-        out["wallWidth"] = round((cw - pw) / pw * 100, 2)
-    if len(days) >= 2:
-        p0 = stored[days[-2]]
-        if pw and p0.get("putWall"):
-            out["pwUp"], out["pwDown"] = pw > p0["putWall"], pw < p0["putWall"]
-            out["pwChg"] = round((pw - p0["putWall"]) / p0["putWall"] * 100, 2)
-            if len(days) >= 3 and (stored[days[-3]].get("putWall") or 0):
-                out["pwUp2"] = out["pwUp"] and p0["putWall"] > stored[days[-3]]["putWall"]
-        if cw and p0.get("callWall"):
-            out["cwUp"], out["cwDown"] = cw > p0["callWall"], cw < p0["callWall"]
-            out["cwChg"] = round((cw - p0["callWall"]) / p0["callWall"] * 100, 2)
-        if out["pwUp"] is not None and out["cwDown"] is not None:
-            out["risingFloor"] = out["pwUp"] and not out["cwDown"]
-    return out
 
 
 def bursts_by_ticker(pk):
@@ -218,10 +89,6 @@ def features_of(r, bursts):
         volOi=o.get("volOi"), askPct=o.get("askPct"),
         smallCalls=((tf.get("window") or {}).get("smallCalls") or {}).get("hits") if tf else None,
         extAtr=sig.get("extAtr"), growth30=sig.get("growth30"),
-        callPrem5d=(((tf.get("window") or {}).get("calls") or {}).get("premium")) if tf else None,
-        putPrem5d=(((tf.get("window") or {}).get("puts") or {}).get("premium")) if tf else None,
-        callPremToday=(((tf.get("today") or {}).get("calls") or {}).get("premium")) if tf else None,
-        callHits5d=(((tf.get("window") or {}).get("calls") or {}).get("hits")) if tf else None,
         hour=int(at[11:13]) if len(at) >= 13 else None,
     )
     bs = bursts.get(r.get("symbol")) or []
@@ -232,79 +99,6 @@ def features_of(r, bursts):
         prev = d0
     f["burstSameDay"] = any(d == d0 and s_ <= hm for d, s_ in bs)
     f["burst2d"] = any(prev <= d < d0 for d, s_ in bs) or f["burstSameDay"]
-    f.update(_more_features(r, at))
-    return f
-
-
-def _pct(a, b):
-    try:
-        return round((float(a) - float(b)) / float(b) * 100, 2) if a is not None and b else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _more_features(r, at):
-    """Numeric values stored with the evaluation: trend, live gamma, trade plan, contract, flow alert, ticker volume, time."""
-    sig, g, o = r.get("signals") or {}, r.get("gamma") or {}, r.get("origin") or {}
-    tf, p = r.get("tickerFlow") or {}, r.get("proposal") or r.get("altProposal") or {}
-    price = sig.get("price")
-    w, td = tf.get("window") or {}, tf.get("today") or {}
-    f = {}
-    f["emaDist"] = _pct(price, sig.get("ema21"))
-    f["atrPct"] = round(sig["atr21"] / price * 100, 2) if price and sig.get("atr21") else None
-    f["crossAgo"] = sig.get("crossAgo")
-    f["momentum"] = sig.get("momentum")
-    f["momAccel"] = round(sig["momentum"] - sig["momentumPrev"], 4) if sig.get("momentum") is not None and sig.get("momentumPrev") is not None else None
-    try:
-        f["low30Age"] = (datetime.strptime(at[:10], "%Y-%m-%d") - datetime.strptime(sig["low30Date"][:10], "%Y-%m-%d")).days if sig.get("low30Date") else None
-    except (ValueError, TypeError):
-        f["low30Age"] = None
-    f["flipDist"] = _pct(price, g.get("gammaFlip"))
-    f["posGex"] = None if g.get("netGex") is None else g["netGex"] > 0
-    f["chainPwDist"] = _pct(price, g.get("putWall"))
-    f["chainCwRoom"] = _pct(g.get("callWall"), price)
-    stp, tgt = p.get("underlyingStop"), p.get("underlyingTarget")
-    f["stopDist"] = round((price - stp) / price * 100, 2) if stp and price else None
-    f["targetDist"] = _pct(tgt, price) if tgt else None
-    f["roomRatio"] = round((tgt - price) / (price - stp), 2) if f["targetDist"] is not None and f["stopDist"] and f["targetDist"] is not None and f["stopDist"] > 0 else None
-    c = next((c for c in r.get("candidates") or [] if c.get("symbol") == p.get("contract")), None) or ((r.get("candidates") or [None])[0] or {})
-    f["dte"], f["delta"], f["spreadPct"], f["oi"] = c.get("dte"), c.get("delta"), c.get("spreadPct"), c.get("oi")
-    f["iv"] = round(c["iv"] * 100, 1) if c.get("iv") else None
-    f["otmPct"] = _pct(c.get("strike"), price) if c.get("strike") else None
-    f["ivEvent"] = bool(r.get("events")) if "events" in r else None
-    flow = o.get("type") == "flow"
-    f["flowAlerts"] = o.get("alerts") if flow else None
-    f["topPremium"] = o.get("topPremium") if flow else None
-    f["flowOptPrice"] = o.get("optPrice") if flow else None
-    f["repeatRule"] = ("repeat" in (o.get("rule") or "").lower()) if flow else None
-    f["flowLagMin"] = None
-    if flow and o.get("at"):
-        try:
-            from util import utc_to_ny
-            a = str(o["at"])[:19]
-            t0 = datetime.strptime(a, "%Y-%m-%dT%H:%M:%S")
-            if a > at[:19]:                            # alert time in UTC
-                t0 = utc_to_ny(t0).replace(tzinfo=None)
-            f["flowLagMin"] = max(0, round((datetime.strptime(at[:19], "%Y-%m-%dT%H:%M:%S") - t0).total_seconds() / 60))
-        except Exception:
-            pass
-    if tf:
-        cw_, ct_ = (w.get("calls") or {}).get("premium"), (td.get("calls") or {}).get("premium")
-        pt_ = (td.get("puts") or {}).get("premium")
-        f["putPremToday"] = pt_
-        f["callsOverPutsToday"] = None if ct_ is None else (ct_ or 0) > (pt_ or 0)
-        f["todayShare"] = round((ct_ or 0) / cw_ * 100, 1) if cw_ else None
-        f["bigCalls5d"] = (w.get("bigCalls") or {}).get("hits")
-        f["bigPuts5d"] = w.get("bigPuts")
-        f["flowDays"] = (w.get("calls") or {}).get("days")
-        f["callContracts5d"] = (w.get("calls") or {}).get("contracts")
-        f["repeatQualifies"] = tf.get("repeatQualifies")
-    try:
-        d = datetime.strptime(at[:16], "%Y-%m-%dT%H:%M")
-        f["weekday"] = d.isoweekday()
-        f["minsOpen"] = (d.hour * 60 + d.minute) - 570
-    except ValueError:
-        pass
     return f
 
 
@@ -328,8 +122,7 @@ def rows(sub, days=35):
     pk = db.upk(sub)
     cut = (now_ny() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
     bursts = bursts_by_ticker(pk)
-    out, walls = [], {}
-    import flowdata
+    out = []
     for r in db.q_prefix(pk, "BOT#"):
         at = r.get("createdAt") or ""
         if at < cut or (r.get("shadow") or {}).get("status") == "dup":
@@ -342,16 +135,7 @@ def rows(sub, days=35):
         f["_path"] = (r.get("shadow") or {}).get("path") or r.get("path")
         f["_entry"] = float(p.get("limit") or p.get("debit") or 0)
         f["_prop"] = {k: p.get(k) for k in ("exp", "underlyingStop", "underlyingTarget", "strategy", "width", "debit", "limit")}
-        cand = next((c for c in r.get("candidates") or [] if c.get("symbol") == p.get("contract")), None) or ((r.get("candidates") or [None])[0] or {})
-        f["_spread"] = cand.get("spreadPct")                     # bid/ask spread of the contract when evaluated, % of mid
         f.update(features_of(r, bursts))
-        sym = r.get("symbol")
-        if sym and sym not in walls:
-            try:
-                walls[sym] = flowdata.stored_walls(sym)
-            except Exception:
-                walls[sym] = {}
-        f.update(wall_features(r, walls.get(sym) or {}))
         out.append(f)
     return out
 
@@ -412,129 +196,37 @@ def candidates():
     return out
 
 
-def _group_keys(group):
-    if group == "walls":
-        return set(WALL_KEYS), set(WALL_KEYS)                       # (allowed, required)
-    if group == "flow":
-        return set(FLOW_KEYS), set(FLOW_KEYS)
-    if group == "wallsflow":
-        return set(WALL_KEYS) | set(FLOW_KEYS), set(WALL_KEYS)
-    if group == "gamma":
-        return set(GAMMA_KEYS), set(GAMMA_KEYS)
-    if group == "trend":
-        return set(TREND_KEYS), set(TREND_KEYS)
-    if group == "trendflow":
-        return set(TREND_KEYS) | set(FLOW_KEYS), set(TREND_KEYS)
-    return None, None
-
-
-def search(rs, min_n=15, max_depth=3, top=25, group=None, beam=250):
-    """Best combinations of up to `max_depth` conditions by average R (at least min_n ideas), with the half-split check.
-    Pairs are tried exhaustively over the most promising singles; deeper levels extend the best `beam` combinations of the
-    level before with every condition (beam search), so 4, 5 or 6 conditions stay fast.
-    group: only combinations made of that group's conditions (at least one of the group's own)."""
+def search(rs, min_n=15, max_depth=3, top=25):
+    """Best single conditions, pairs and triples by average R (at least min_n ideas), with the half-split check."""
     base = stats(rs)
-    allowed, required = _group_keys(group)
-    Rs = [r["R"] for r in rs]
-    idx = {r["id"]: i for i, r in enumerate(rs)}
-
-    nb = (len(Rs) + 7) // 8
-    tab = []                                     # sum of R for each byte value of each 8-row chunk
-    for c in range(nb):
-        part = Rs[c * 8:c * 8 + 8]
-        tab.append([sum(part[j] for j in range(len(part)) if v >> j & 1) for v in range(256)])
-
-    def summ(mask):
-        n = bin(mask).count("1")
-        if n < min_n:
-            return n, 0.0
-        return n, sum(t[b] for t, b in zip(tab, mask.to_bytes(nb, "little")) if b)
-
     singles = []
     for c in candidates():
-        if allowed and c["key"] not in allowed:
-            continue
-        mask = 0
-        for r in rs:
-            if _match(r, c):
-                mask |= 1 << idx[r["id"]]
-        n, tot = summ(mask)
-        if n >= min_n:
-            singles.append((c, mask, tot / n))
-    singles.sort(key=lambda x: -x[2])
-    pool = singles[:60]
-    if required:
-        pool += [x for x in singles[60:] if x[0]["key"] in required][:20]
-    found = {}
-
-    def add(conds, mask):
-        n, tot = summ(mask)
-        if n < min_n:
-            return None
-        key = tuple(sorted((c["key"], c.get("op"), str(c.get("value"))) for c in conds))
-        if key not in found:
-            found[key] = (conds, mask, tot / n)
-        return tot / n
-
-    level = []
-    for c, mask, avg in singles:
-        if not required or c["key"] in required:
-            add([c], mask)
-        level.append(([c], mask, avg))
-    level = [x for x in level if any(x[0][0] is p_[0] for p_ in pool)]
-    tested = len(singles)
-    for depth in range(2, max(2, min(6, max_depth)) + 1):
-        nxt = []
-        for conds, mask, _ in level:
-            keys = {c["key"] for c in conds}
-            for c, m2, _ in pool:
-                if c["key"] in keys:
-                    continue
-                if depth == 2 and id(c) <= id(conds[0]):
-                    continue                     # each pair once
-                mm = mask & m2
-                if mm == mask or mm == m2 and depth > 2:
-                    continue                     # adds nothing
-                tested += 1
-                cc = conds + [c]
-                if required and not any(x["key"] in required for x in cc):
-                    n, tot = summ(mm)
-                    if n >= min_n:
-                        nxt.append((cc, mm, tot / n))
-                    continue
-                avg = add(cc, mm)
-                if avg is not None:
-                    nxt.append((cc, mm, avg))
-        if not nxt:
-            break
-        nxt.sort(key=lambda x: -x[2])
-        seen, level = set(), []
-        for x in nxt:                            # keep the best distinct selections for the next level
-            if x[1] in seen:
+        m = filter_rows(rs, [c])
+        if len(m) >= min_n:
+            singles.append((c, m))
+    singles.sort(key=lambda x: -(stats(x[1])["avgR"] or -9))
+    pool = singles[:30]                          # combine only the 30 most promising single conditions
+    found = [([c], m) for c, m in singles]
+    for depth in range(2, max_depth + 1):
+        for combo in itertools.combinations(pool, depth):
+            keys = [c["key"] for c, _ in combo]
+            if len(set(keys)) < len(keys):       # one condition per feature
                 continue
-            seen.add(x[1])
-            level.append(x)
-            if len(level) >= beam:
-                break
+            ids = set(r["id"] for r in combo[0][1])
+            for _, m in combo[1:]:
+                ids &= set(r["id"] for r in m)
+            if len(ids) < min_n:
+                continue
+            found.append(([c for c, _ in combo], [r for r in rs if r["id"] in ids]))
     res = []
-    best = sorted(found.values(), key=lambda x: (-x[2], len(x[0])))
-    shown, picked = set(), []
-    for x in best:                               # full stats only for the best distinct selections
-        if x[1] in shown:
-            continue
-        shown.add(x[1])
-        picked.append(x)
-        if len(picked) >= top * 3:
-            break
-    for conds, mask, _ in picked:
-        m = [rs[i] for i in range(len(rs)) if mask >> i & 1]
+    for conds, m in found:
         s = stats(m)
         h1, h2 = halves(m)
-        res.append({"conds": conds, "text": " + ".join(describe(c) for c in conds), **s, "older": h1, "newer": h2, "size": len(conds),
+        res.append({"conds": conds, "text": " + ".join(describe(c) for c in conds), **s, "older": h1, "newer": h2,
                     "holds": h1 is not None and h2 is not None and h1 > (base["avgR"] or 0) and h2 > (base["avgR"] or 0)})
-    res.sort(key=lambda x: (-(x["avgR"] or -9), -x["n"], x["size"]))
+    res.sort(key=lambda x: (-(x["avgR"] or -9), -x["n"]))
     seen, uniq = set(), []
-    for x in res:                                # skip combos that select exactly the same ideas as a better (shorter) one
+    for x in res:                                # skip combos that select exactly the same ideas as a better one
         sig = (x["n"], x["totalR"])
         if sig in seen:
             continue
@@ -542,27 +234,21 @@ def search(rs, min_n=15, max_depth=3, top=25, group=None, beam=250):
         uniq.append(x)
         if len(uniq) >= top:
             break
-    return {"baseline": base, "results": uniq, "minN": min_n, "tested": len(found), "group": group, "depth": max_depth,
-            "known": {k: sum(1 for r in rs if r.get(k) is not None) for k in (required or ())}}
+    return {"baseline": base, "results": uniq, "minN": min_n, "tested": len(found)}
 
 
-def explore(sub, days=35, conds=None, do_search=False, min_n=15, group=None, depth=3):
+def explore(sub, days=35, conds=None, do_search=False, min_n=15):
     rs = rows(sub, days)
     conds = [c for c in (conds or []) if c.get("key") in FEATURES]
     m = filter_rows(rs, conds)
     h1, h2 = halves(m)
     out = {"days": days, "all": stats(rs), "match": stats(m), "older": h1, "newer": h2,
            "conds": [{**c, "text": describe(c)} for c in conds],
-           "features": [{"key": k, "label": v[0], "kind": v[1], "cat": CAT_OF.get(k, "Other"),
-                         "known": sum(1 for r in rs if r.get(k) is not None)} for k, v in FEATURES.items()],
-           "cats": [c for c, _ in CATS],
+           "features": [{"key": k, "label": v[0], "kind": v[1], "known": sum(1 for r in rs if r.get(k) is not None)} for k, v in FEATURES.items()],
            "items": sorted([{k: r[k] for k in ("id", "symbol", "at", "R", "status", "decision", "taken")} for r in m],
                            key=lambda r: -r["R"])[:200]}
     if do_search:
-        out["search"] = search(rs, min_n=min_n, max_depth=depth, group=group if group in GROUPS else None)
-    run = db.get(db.upk(sub), "WALLSRUN") or {}
-    out["walls"] = {"known": sum(1 for r in rs if r.get("pwDist") is not None), "of": len(rs),
-                    **{k: run.get(k) for k in ("at", "running", "stored", "left", "tickers", "errors")}}
+        out["search"] = search(rs, min_n=min_n)
     return out
 
 
@@ -675,7 +361,7 @@ def describe_exit(e):
     return " · ".join(parts)
 
 
-def best_exit(sub, days=35, conds=None, min_n=15, top=10, default_spread=10.0, spread_mult=1.0):
+def best_exit(sub, days=35, conds=None, min_n=15, top=10):
     """Replay every exit-rule combination on the stored price paths of the matching ideas; rank by average R."""
     import autotrader
     import shadow
@@ -687,11 +373,8 @@ def best_exit(sub, days=35, conds=None, min_n=15, top=10, default_spread=10.0, s
                          f"the 16:20 update: press Update now on Skipped & what-if, or loosen the conditions."}
     ideas.sort(key=lambda r: r["at"])
     half = len(ideas) // 2
-    sp = lambda r: (r.get("_spread") if r.get("_spread") is not None else default_spread) * spread_mult
-    avg_spread = round(sum(sp(r) for r in ideas) / len(ideas), 1)
     def run(params):
-        res = [shadow.sim_path(r["_path"], r["_entry"], r["_prop"],
-                               {**params, "timeStopDte": cfg["timeStopDte"], "halfSpread": sp(r) / 200}) for r in ideas]
+        res = [shadow.sim_path(r["_path"], r["_entry"], r["_prop"], {**params, "timeStopDte": cfg["timeStopDte"]}) for r in ideas]
         Rs = [x["R"] for x in res]
         a, b = Rs[:half], Rs[half:]
         return {"n": len(Rs), "avgR": round(sum(Rs) / len(Rs), 3), "winPct": round(sum(1 for x in Rs if x > 0) / len(Rs) * 100),
@@ -703,9 +386,8 @@ def best_exit(sub, days=35, conds=None, min_n=15, top=10, default_spread=10.0, s
     res = []
     for e in exit_grid():
         st = run(e)
-        res.append({"params": e, "text": describe_exit(e), **st, "tight": e["stop"] < 2 * avg_spread,
+        res.append({"params": e, "text": describe_exit(e), **st,
                     "holds": st["older"] is not None and st["newer"] is not None and st["older"] > current["older"] and st["newer"] > current["newer"]})
     res.sort(key=lambda x: (-x["avgR"], -x["n"]))
-    return {"n": len(ideas), "tested": len(res), "current": current, "results": res[:top], "avgSpread": avg_spread,
-            "spreadKnown": sum(1 for r in ideas if r.get("_spread") is not None), "spreadMult": spread_mult,
+    return {"n": len(ideas), "tested": len(res), "current": current, "results": res[:top],
             "conds": [{**c, "text": describe(c)} for c in (conds or []) if c.get("key") in FEATURES]}

@@ -15,61 +15,12 @@ SAFETY_PREFIXES = ("Puts not piling in", "No earnings", "Not an excluded ETF", "
                    "No call with delta", "One contract risks", "One spread risks")
 
 
-def _doc(sub):
-    return db.get(db.upk(sub), SK) or {}
-
-
 def load(sub):
-    return _doc(sub).get("items") or []
+    return (db.get(db.upk(sub), SK) or {}).get("items") or []
 
 
-def _save(sub, items, **extra):
-    d = _doc(sub)
-    doc = {"PK": db.upk(sub), "SK": SK, "items": items, "active": d.get("active") or "", "activeStop": d.get("activeStop")}
-    doc.update(extra)
-    if doc["active"] and not any(x["id"] == doc["active"] for x in items):
-        doc["active"] = ""                       # the active strategy was deleted: back to the bot rules
-    db.put(doc)
-
-
-STOPS = (10, 15, 20, 25, 30, 35, 40, 50, 60, 75)
-
-
-def active(sub):
-    """The strategy the bot trades ('' = the bot's own rules) and the chosen stop (None = the strategy's / settings')."""
-    d = _doc(sub)
-    sid = d.get("active") or ""
-    s = next((x for x in d.get("items") or [] if x["id"] == sid), None) if sid else None
-    return s, d.get("activeStop")
-
-
-def active_info(sub):
-    s, stop = active(sub)
-    return {"id": s["id"] if s else "", "name": s["name"] if s else "Bot rules", "stop": stop,
-            "exit": (s or {}).get("exit")}
-
-
-def set_active(sub, body):
-    sid = (body.get("strategy") or "").strip()
-    items = load(sub)
-    if sid and not any(x["id"] == sid for x in items):
-        raise NotFound("Strategy not found.")
-    stop = body.get("stop")
-    stop = None if stop in (None, "", 0, "0") else float(stop)
-    if stop is not None and not (5 <= stop <= 90):
-        raise BadRequest("Stop must be between 5% and 90%.")
-    _save(sub, items, active=sid, activeStop=stop)
-    return active_info(sub)
-
-
-def effective_stop(sub):
-    """Stop % used to size and protect new trades: the chosen stop, else the active strategy's own stop."""
-    s, stop = active(sub)
-    if stop:
-        return stop
-    if s and (s.get("exit") or {}).get("stop"):
-        return s["exit"]["stop"]
-    return None
+def _save(sub, items):
+    db.put({"PK": db.upk(sub), "SK": SK, "items": items})
 
 
 def _clean_exit(e):
@@ -127,19 +78,11 @@ def apply(sub, rec, cfg=None):
     """Tag a new evaluation with the strategies it matches; a 'trade' match makes it a BUY when only non-safety rules
     failed, and attaches the strategy's exit plan to the proposed order."""
     import explorer
-    act, act_stop = active(sub)
-    if act:      # one strategy selected: it is the only one that can buy, the others just watch
-        items = [{**s, "mode": "trade" if s["id"] == act["id"] else "watch"} for s in load(sub)
-                 if s["id"] == act["id"] or s.get("mode") in ("watch", "trade")]
-    else:
-        items = [s for s in load(sub) if s.get("mode") in ("watch", "trade")]
-    f = explorer.features_of(rec, explorer.bursts_by_ticker(db.upk(sub))) if items else {}
-    if items and any(c.get("key") in explorer.WALL_KEYS for s_ in items for c in s_["conds"]):
-        f.update(_wall_features_now(sub, rec))
+    items = [s for s in load(sub) if s.get("mode") in ("watch", "trade")]
+    if not items:
+        return rec
+    f = explorer.features_of(rec, explorer.bursts_by_ticker(db.upk(sub)))
     hits = [s for s in items if all(explorer._match(f, c) for c in s["conds"])]
-    if act:
-        return _apply_active(rec, cfg, act, act_stop, hits)
-    _stop_plan(rec, cfg, act_stop)
     if not hits:
         return rec
     rec["strategies"] = [{"id": s["id"], "name": s["name"], "mode": s["mode"]} for s in hits]
@@ -147,7 +90,7 @@ def apply(sub, rec, cfg=None):
     p = rec.get("proposal")
     if trade and p:
         if trade.get("exit"):
-            p["exitPlan"] = {**trade["exit"], **({"stop": act_stop} if act_stop else {})}
+            p["exitPlan"] = trade["exit"]
         safety = [b for b in rec.get("blocking") or [] if b.startswith(SAFETY_PREFIXES)]
         if rec.get("decision") != "BUY" and not safety:
             rec["ruleDecision"] = rec.get("decision")
@@ -162,93 +105,6 @@ def apply(sub, rec, cfg=None):
         if s is not trade:
             rec.setdefault("checks", []).append({"group": "strategy", "ok": True, "required": False, "text": f"Strategy “{s['name']}” matched (watching)"})
     return rec
-
-
-def _wall_features_now(sub, rec):
-    """Wall features for a new evaluation: today's and the previous days' walls (stored, fetched if missing)."""
-    import explorer
-    import flowdata
-    from datetime import timedelta
-    sym = rec.get("symbol")
-    try:
-        stored = flowdata.stored_walls(sym)
-        d = now_ny().date()
-        need = []
-        while len(need) < 3:                       # today and the two trading days before
-            if d.weekday() < 5:
-                need.append(d.isoformat())
-            d -= timedelta(days=1)
-        if any(x not in stored for x in need):
-            key = flowdata._key(sub)
-            for x in need:
-                if x not in stored:
-                    w = flowdata.gex_day(key, sym, x, False)
-                    if w:
-                        stored[x] = {k: w.get(k) for k in ("callWall", "putWall", "flip")}
-        return explorer.wall_features(rec, stored)
-    except Exception as e:
-        print("wall features failed", sym, e)
-        return {}
-
-
-def _apply_active(rec, cfg, act, act_stop, hits):
-    """A selected strategy decides alone: a match is bought whatever the bot's other rules said (chart, earnings,
-    puts, liquidity, size, Claude), and only the strategy's exit closes it. No match: not bought."""
-    rec["strategies"] = [{"id": s["id"], "name": s["name"], "mode": s["mode"]} for s in hits]
-    others = [s for s in hits if s["id"] != act["id"]]
-    for s in others:
-        rec.setdefault("checks", []).append({"group": "strategy", "ok": True, "required": False, "text": f"Strategy “{s['name']}” matched (watching)"})
-    if not any(s["id"] == act["id"] for s in hits):
-        rec["ruleDecision"] = rec.get("decision")
-        rec["decision"] = "SKIP"
-        rec["blocking"] = [f"Not a match for the selected strategy “{act['name']}”"]
-        rec.setdefault("checks", []).append({"group": "strategy", "ok": False, "required": True,
-                                             "text": f"Selected strategy “{act['name']}” not matched"})
-        rec.pop("altProposal", None)
-        return rec
-    p = rec.get("proposal") or rec.get("altProposal")
-    rec.pop("altProposal", None)
-    rec["ruleDecision"] = rec.get("decision")
-    rec["overridden"] = rec.get("blocking") or []
-    rec["strategyBuy"] = rec["strategyOnly"] = act["id"]
-    if not p:
-        rec["decision"] = "SKIP"
-        rec["blocking"] = ["No call contract to buy in the expiration / delta window"]
-        rec.setdefault("checks", []).append({"group": "strategy", "ok": False, "required": True,
-                                             "text": f"Selected strategy “{act['name']}” matched, but there is no contract to buy"})
-        return rec
-    if (p.get("qty") or 0) < 1:
-        p["qty"] = 1
-        price = p.get("debit") or p.get("limit") or 0
-        p["cost"] = round(price * 100, 2)
-    p["strategyOnly"] = act["id"]
-    plan = dict(act.get("exit") or {})
-    if not plan:
-        import autotrader
-        plan = {"stop": cfg.get("stopPct", 40) if cfg else 40, "target": autotrader.target_pct(cfg, p) if cfg else None,
-                "trail": (cfg.get("trailPct") if cfg.get("trailAfterTarget") else None) if cfg else None,
-                "maxDays": None, "invalidation": True}
-    if act_stop:
-        plan["stop"] = act_stop
-    p["exitPlan"] = plan
-    rec["proposal"] = p
-    rec["decision"] = "BUY"
-    rec["blocking"] = []
-    rec.setdefault("checks", []).append({"group": "strategy", "ok": True, "required": False,
-                                         "text": f"Selected strategy “{act['name']}” matched — buying on it (other bot rules ignored)"})
-    return rec
-
-
-def _stop_plan(rec, cfg, stop):
-    """A chosen stop is locked into the trade when it's proposed, so changing the selection later doesn't move it."""
-    p = rec.get("proposal")
-    if not p or not stop or not cfg:
-        return
-    import autotrader
-    base = p.get("exitPlan") or {"target": autotrader.target_pct(cfg, p),
-                                 "trail": cfg.get("trailPct") if cfg.get("trailAfterTarget") else None,
-                                 "maxDays": None, "invalidation": True}
-    p["exitPlan"] = {**base, "stop": stop}
 
 
 def results(sub, days=60):

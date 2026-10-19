@@ -386,13 +386,9 @@ Resources:
     Properties:
       Handler: autotrader.handler
       Timeout: 600
-      MemorySize: 2048                             # more CPU for the backtests and the settings search
+      MemorySize: 1024
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - Statement:                                   # the rule tester's history loader continues in a new run of itself
-            - Effect: Allow
-              Action: lambda:InvokeFunction
-              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*BotFunction*"
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }   # Claude's chart check
         - Statement:
             - Effect: Allow
@@ -414,48 +410,6 @@ Resources:
             ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "tick"}'
-        StockDayMorning:    # stocks in play: today's universe + yesterday's opening ranges
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(5 9 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "sdmorning"}'
-        StockDayTick:       # stocks in play: scan after the opening range, entries, VWAP exit, flat
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "sdtick"}'
-        FlipSnapDay:        # walls / flip recorded every 30 minutes during the session (intraday gamma, going forward)
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(0,30 10-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "flipsnap"}'
-        ResearchAuto:       # every hour: the AI research agent runs on its own for users with its autopilot on
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(10 * * * ? *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "rsauto"}'
-        FlipSnap:           # the flip / walls as Unusual Whales shows them before / at the open (look-ahead check)
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(20,32,40 9 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "flipsnap"}'
-        DayTrade:           # every minute: the day-trading account (1-minute strategy on QQQ / SPY)
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "daytick"}'
-        WallWatch:          # after each hourly candle: CW > flip > PW + green candle crossing the put wall
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(2,32 10-16 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "wallwatch"}'
         ShadowTracking:     # after the close: what the evaluations the bot didn't take would have done
           Type: ScheduleV2
           Properties:

@@ -18,7 +18,6 @@ def _trading_days_back(d, n):
 
 
 def build(sub, bot_id, days=5):
-    days = 45 if int(days or 5) > 10 else 5
     import autotrader
     import flowdata
     from charts import _yahoo
@@ -30,16 +29,12 @@ def build(sub, bot_id, days=5):
     ev_at = (rec.get("createdAt") or "")[:16]
     ev_day = datetime.strptime(ev_at[:10], "%Y-%m-%d").date() if ev_at else now_ny().date()
     today = now_ny().date()
-    long_view = days > 10
-    if long_view:              # the last 45 trading days to today, hourly bars
-        first, last, tf = _trading_days_back(today, days), today, "1h"
-    else:
-        first = _trading_days_back(min(ev_day, today), days)
-        if (today - first).days > 40:
-            raise BadRequest("Alert charts are available for evaluations from the last 4 weeks. Use the 45-day view.")
-        # the chart runs from `days` trading days before the evaluation to now (at most 2 weeks after it)
-        last, tf = min(today, ev_day + timedelta(days=14)), "15m"
-    bars = _yahoo(sym.replace(".", "-"), tf, datetime.combine(first, datetime.min.time()),
+    first = _trading_days_back(min(ev_day, today), days)
+    if (today - first).days > 40:
+        raise BadRequest("Alert charts are available for evaluations from the last 4 weeks.")
+    # the chart runs from `days` trading days before the evaluation to now (at most 2 weeks after it)
+    last = min(today, ev_day + timedelta(days=14))
+    bars = _yahoo(sym.replace(".", "-"), "15m", datetime.combine(first, datetime.min.time()),
                   datetime.combine(last, datetime.min.time()) + timedelta(days=1)) or []
     bars = [{"t": b["t"][:16], "o": round(b["o"], 4), "h": round(b["h"], 4), "l": round(b["l"], 4), "c": round(b["c"], 4), "v": b.get("v")}
             for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
@@ -57,108 +52,11 @@ def build(sub, bot_id, days=5):
     except Exception as e:
         note = f"Alerts unavailable: {str(e)[:120]}"
     alerts.sort(key=lambda a: a["t"])
-    cap = 800 if long_view else 400
-    if len(alerts) > cap:                     # keep the biggest prints
-        keep = set(id(a) for a in sorted(alerts, key=lambda a: -a["premium"])[:cap])
+    if len(alerts) > 400:                     # keep the biggest prints
+        keep = set(id(a) for a in sorted(alerts, key=lambda a: -a["premium"])[:400])
         alerts = [a for a in alerts if id(a) in keep]
-    walls, now_w, wnote, wsrc, winfo = [], None, None, "snapshots", None
-    uw_ok = False
-    try:                                         # day-by-day walls from each day's open interest (Unusual Whales)
-        dates, d = [], first
-        while d <= last:
-            if d.weekday() < 5:
-                dates.append(d.isoformat())
-            d += timedelta(days=1)
-        hist, uerr = flowdata.gex_history(sub, sym, dates)
-        winfo = {"days": len(hist), "of": len(dates), "error": uerr}
-        if hist:
-            uw_ok, wsrc = True, "uw"
-            walls = [{"t": f"{h['date']}T09:30", "callWall": h.get("callWall"), "putWall": h.get("putWall"), "flip": h.get("flip"), "src": "uw",
-                      "callGex": h.get("callGex"), "putGex": h.get("putGex")} for h in hist]
-            got = {h["date"] for h in hist}       # a day without data is a gap, not the previous day's walls
-            walls += [{"t": f"{dd}T09:30", "callWall": None, "putWall": None, "flip": None, "src": "gap"}
-                      for dd in dates if dd not in got and dd >= hist[0]["date"]]
-            winfo["missing"] = [dd for dd in dates if dd not in got]
-            lh = hist[-1]
-            now_w = {"t": f"{lh['date']}T09:30", "callWall": lh.get("callWall"), "putWall": lh.get("putWall"), "flip": lh.get("flip"),
-                     "source": "Unusual Whales, all expirations, open interest of " + lh["date"]}
-        if not hist:
-            wnote = (f"Unusual Whales gave no day-by-day walls for {sym}" + (f" ({uerr})" if uerr else "")
-                     + "; showing the bot's own readings (evaluations and chart openings).")
-    except Exception as e:
-        wnote = f"Day-by-day walls unavailable ({str(e)[:120]}); showing the bot's own readings (evaluations and chart openings)."
-    if not uw_ok:
-        try:
-            import gex
-            since = first.isoformat()
-            for r in db.q_prefix(db.upk(sub), "BOT#"):           # every evaluation of the ticker recorded the walls then
-                if r.get("symbol") == sym and (r.get("createdAt") or "") >= since and (r.get("gamma") or {}).get("callWall") is not None:
-                    gm = r["gamma"]
-                    walls.append({"t": r["createdAt"][:16], "callWall": gm.get("callWall"), "putWall": gm.get("putWall"),
-                                  "flip": gm.get("gammaFlip"), "src": "evaluation"})
-            walls += gex.wall_history(sym, since)
-            if last >= today:
-                now_w = gex.walls_now(sub, sym)
-                walls.append({**{k: now_w.get(k) for k in ("t", "callWall", "putWall", "flip")}, "src": "now"})
-        except Exception as e:
-            wnote = f"Gamma walls unavailable: {str(e)[:120]}"
-    if now_w and wsrc == "snapshots":
-        now_w = {**now_w, "source": f"options expiring in 45 days, {now_w.get('source') or ''} {now_w['t'].replace('T', ' ')[5:]} ET"}
-    seen, wl = set(), []
-    for w in sorted(walls, key=lambda w: w["t"]):
-        if w["t"] in seen or (w.get("callWall") is None and w.get("src") != "gap"):
-            continue
-        seen.add(w["t"])
-        if wl and all(wl[-1].get(k) == w.get(k) for k in ("callWall", "putWall", "flip")) and w["src"] != "now":
-            continue                              # unchanged: the step line already covers it
-        wl.append(w)
-    evals = []                                   # every evaluation of the ticker in the period
-    for r in db.q_prefix(db.upk(sub), "BOT#"):
-        at = (r.get("createdAt") or "")[:16]
-        if r.get("symbol") != sym or not at or at[:10] < first.isoformat() or at[:10] > last.isoformat():
-            continue
-        evals.append({"t": at, "id": r.get("id"), "decision": r.get("decision"),
-                      "taken": bool(r.get("orderId") or r.get("status") in ("submitted", "open", "closing", "closed")),
-                      "why": ((r.get("blocking") or [""])[0] or "")[:140], "price": (r.get("signals") or {}).get("price")})
-    evals.sort(key=lambda e: e["t"])
-    p_, sh = rec.get("proposal") or {}, rec.get("shadow") or {}
-    taken = bool(rec.get("orderId") or rec.get("status") in ("submitted", "open", "closing", "closed"))
-    trade = {"at": ev_at.replace(" ", "T"), "price": (rec.get("signals") or {}).get("price"), "taken": taken,
-             "stop": p_.get("underlyingStop"), "target": p_.get("underlyingTarget"),
-             "contract": f"{p_.get('exp') or ''} {p_.get('strike') or ''}c".strip(), "entryOpt": rec.get("fillPrice") or sh.get("entry") or p_.get("limit")}
-    if taken:
-        trade.update(exitAt=(rec.get("closedAt") or "")[:16] or None, R=rec.get("realizedR"), reason=rec.get("exitReason"),
-                     status="done" if rec.get("status") == "closed" else "open", exitOpt=rec.get("exitPrice") or rec.get("lastMark"))
-    elif sh.get("status") in ("done", "tracking"):
-        trade.update(exitAt=(sh.get("exitDate") or "")[:10] or None, R=sh.get("R"), reason=sh.get("exitReason"), plPct=sh.get("plPct"),
-                     status=sh.get("status"), exitOpt=sh.get("exitPrice") or sh.get("last"))
     o = rec.get("origin") or {}
-    return {"trade": trade, "evals": evals, "walls": wl, "wallsNow": now_w, "wallNote": wnote, "wallSource": wsrc, "wallInfo": winfo, "days": days, "interval": 60 if long_view else 15,
-            "symbol": sym, "evaluatedAt": ev_at.replace(" ", "T"), "from": first.isoformat(), "to": last.isoformat(),
+    return {"symbol": sym, "evaluatedAt": ev_at.replace(" ", "T"), "from": first.isoformat(), "to": last.isoformat(),
             "bars": bars, "alerts": alerts, "minPrint": cfg["repeatMinPremium"], "bigPrint": cfg["flowMinPremium"],
             "trigger": {"contract": o.get("contract"), "premium": o.get("topPremium") or o.get("premium")} if o.get("type") == "flow" else None,
             "note": note}
-
-
-def darkpool(sub, bot_id, days=5, min_premium=None):
-    import flowdata
-    rec = db.get(db.upk(sub), f"BOT#{bot_id}")
-    if not rec:
-        raise NotFound("Not found.")
-    days = 45 if int(days or 5) > 10 else 5
-    today = now_ny().date()
-    if days > 10:
-        first, last = _trading_days_back(today, days), today
-    else:
-        ev_day = datetime.strptime((rec.get("createdAt") or "")[:10], "%Y-%m-%d").date() if rec.get("createdAt") else today
-        first = _trading_days_back(min(ev_day, today), days)
-        last = min(today, ev_day + timedelta(days=14))
-    dates, d = [], first
-    while d <= last:
-        if d.weekday() < 5:
-            dates.append(d.isoformat())
-        d += timedelta(days=1)
-    mp = float(min_premium) if min_premium else (2_000_000 if days > 10 else 500_000)
-    out = flowdata.darkpool(sub, rec["symbol"], dates, mp)
-    out["symbol"] = rec["symbol"]
-    return out

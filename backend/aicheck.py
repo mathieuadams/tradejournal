@@ -331,8 +331,7 @@ def review(sub, rec, auto_close=True):
           "plPct": rec.get("lastPlPct"), "mark": rec.get("lastMark")}
     weak_hold = (rv["action"] == "hold" and rv["confidence"] < cfg["aiExitHoldMinConf"]
                  and (rec.get("lastPlPct") or 0) <= -cfg["aiExitHoldLossPct"])
-    only = bool((rec.get("proposal") or {}).get("strategyOnly"))     # selected strategy: only its own exit closes it
-    will_close = (rv["action"] == "close" and rv["confidence"] >= cfg["aiExitMinConf"] or weak_hold) and auto_close and cfg["aiExitAutoClose"] and not only
+    will_close = (rv["action"] == "close" and rv["confidence"] >= cfg["aiExitMinConf"] or weak_hold) and auto_close and cfg["aiExitAutoClose"]
     rv["closed"] = bool(will_close)
     rv["weakHold"] = bool(weak_hold)
     reviews = list(rec.get("aiReviews") or []) + [rv]
@@ -350,11 +349,6 @@ def review(sub, rec, auto_close=True):
     return rv
 
 
-def is_wallwatch(rec):
-    p = (rec or {}).get("proposal") or {}
-    return bool(p.get("wallwatch")) or p.get("strategyOnly") == "wallwatch"
-
-
 def review_all(sub, only_id=None, auto_close=True):
     import autotrader
     cfg = autotrader.settings(sub)
@@ -365,9 +359,6 @@ def review_all(sub, only_id=None, auto_close=True):
     recs = [db.get(pk, f"BOT#{only_id}")] if only_id else db.q_prefix(pk, "BOT#")
     for rec in recs:
         if not rec or rec.get("status") != "open":
-            continue
-        if is_wallwatch(rec):          # wall watch trades: only the wall watch exits manage them
-            out.append({"symbol": rec["symbol"], "skipped": "wall watch trade"})
             continue
         try:
             rv = review(sub, rec, auto_close)

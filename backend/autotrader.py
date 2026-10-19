@@ -437,13 +437,6 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
         set_earnings(sub, symbol, earnings_date.strip())
     refresh_earnings(sub, [symbol])
     cfg = settings(sub)
-    try:                                             # the stop chosen with the active strategy sizes the trade
-        import strats
-        eff = strats.effective_stop(sub)
-        if eff:
-            cfg = {**cfg, "stopPct": eff, "spreadStopPct": eff}
-    except Exception as e:
-        print("active stop failed", e)
     base = load_settings(sub)
     strategy = cfg["strategy"] if cfg.get("strategy") in STRATEGIES else "long_call"
     # the long leg: the normal call window, or the longer-dated in-the-money window for a diagonal
@@ -454,7 +447,6 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
     spot = chain["spot"] or sig["price"]
     near = [c for c in chain["contracts"] if c["exp"] <= (now_ny() + timedelta(days=45)).strftime("%Y-%m-%d")]
     g = gex.compute(near or chain["contracts"], spot)
-    gex.record_walls(symbol, g, spot)
     em = gex.expected_moves(chain["contracts"], spot, limit=16)
     em_list = em["byExpiration"]
     events = iv_events(em_list)
@@ -571,17 +563,6 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
             decision = "SKIP" if decision == "BUY" else decision
             hard_fail.append(f"One contract risks ${per_contract_loss:.0f} at the {cfg['stopPct']}% stop, more than your ${risk_amt} risk per trade")
 
-    alt = None                                       # for a selected strategy: the closest call even if it failed liquidity
-    if not proposal and cands:
-        c0 = best or cands[0]
-        per_c = c0["mid"] * 100 * cfg["stopPct"] / 100
-        q = max(1, int((base.get("riskPerTrade") or 200) // per_c) if per_c else 1)
-        alt = {"strategy": "long_call", "contract": c0["symbol"], "underlying": symbol, "exp": c0["exp"], "strike": c0["strike"],
-               "qty": q, "limit": _tick(c0["mid"]), "cost": round(q * c0["mid"] * 100, 2),
-               "optionStop": round(c0["mid"] * (1 - cfg["stopPct"] / 100), 2),
-               "optionTarget": round(c0["mid"] * (1 + cfg["targetPct"] / 100), 2),
-               "underlyingStop": round(stop_lvl, 2), "underlyingTarget": round(target_lvl, 2), "underlyingAtr": sig["atr21"],
-               "riskAtStop": round(q * per_c, 2)}
     rec = {"id": now_ny().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6], "symbol": symbol, "createdAt": iso(now_ny()),
            "decision": decision, "checks": [{"group": grp, "text": t, "ok": ok, "required": hard} for (grp, t, ok, hard) in checks],
            "blocking": hard_fail, "warnings": soft_fail, "proposal": proposal, "candidates": cands, "strategy": strategy,
@@ -590,17 +571,12 @@ def evaluate(sub, symbol, earnings_date=None, source=None):
                                  "problems": x["problems"]} for x in spreads],
            "signals": {k: sig.get(k) for k in ("price", "asOf", "ema21", "atr21", "extAtr", "crossAgo", "momentum", "momentumPrev", "growth30", "low30", "low30Date")},
            "gamma": {k: g.get(k) for k in ("gammaFlip", "callWall", "putWall", "netGex", "regime")},
-           "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}, "tickerFlow": tf,
-           "altProposal": alt}
-    ww = (source or {}).get("type") == "wallwatch" or bool((source or {}).get("watchOnly"))
-    if not ww:
-        try:                                         # saved strategies: tag the evaluation, a 'trade' match can buy
-            import strats
-            strats.apply(sub, rec, cfg)
-        except Exception as e:
-            print("strategies failed", e)
-    if not ww:                                       # a wall watch signal buys even when liquidity failed: keep the closest call
-        rec.pop("altProposal", None)
+           "events": events, "source": chain["source"], "status": "proposed", "origin": source or {"type": "manual"}, "tickerFlow": tf}
+    try:                                             # saved strategies: tag the evaluation, a 'trade' match can buy
+        import strats
+        strats.apply(sub, rec, cfg)
+    except Exception as e:
+        print("strategies failed", e)
     _carry_ai(sub, rec, cfg)
     db.put({"PK": db.upk(sub), "SK": f"BOT#{rec['id']}", **rec})
     return rec
@@ -740,7 +716,7 @@ def place(sub, bot_id, qty=None, limit=None, placed_by="manual", ai_inline=True,
         hit = next((x for x in legs if same(x.get("symbol")) and (x.get("side") == "buy" or o.get("order_class") == "mleg")), None)
         if hit:
             raise BadRequest(f"Alpaca already has an open order for {hit['symbol']}. Not placing a second order.")
-    ai_gate(sub, rec, settings(sub), ai_inline, override or bool(rec.get("strategyOnly")))   # a selected strategy decides alone
+    ai_gate(sub, rec, settings(sub), ai_inline, override)
     # 3) atomic claim so two clicks / two runs can't both submit
     if not db.claim(pk, f"BOT#{bot_id}", ["proposed"], "submitting"):
         raise BadRequest("This proposal is already being submitted.")
@@ -934,22 +910,9 @@ def _refresh(sub, c, rec):
         qty = rec.get("filledQty") or rec.get("qty") or 0
         if not rec.get("riskAtFill") and rec.get("fillPrice"):
             upd.update(_risk_at_fill(sub, rec, rec["fillPrice"]))
-        parts = [dict(x) for x in (rec.get("partials") or [])]             # contracts sold earlier (wall watch partial exit)
-        for x in parts:
-            if x.get("orderId") and not x.get("filled"):
-                try:
-                    po = _alp(c, "GET", f"/v2/orders/{x['orderId']}") or {}
-                    if po.get("filled_avg_price"):
-                        x["px"], x["filled"] = abs(float(po["filled_avg_price"])), True
-                except Exception as e:
-                    print("partial fill lookup failed", rec.get("SK"), e)
-        if parts:
-            upd["partials"] = parts
         if exit_px is not None and rec.get("fillPrice"):
-            sold = sum(float(x.get("qty") or 0) for x in parts)
-            pl_parts = sum((float(x["px"]) - rec["fillPrice"]) * float(x["qty"]) * 100 for x in parts if x.get("px") is not None)
-            upd["realizedPl"] = round((exit_px - rec["fillPrice"]) * max(0, qty - sold) * 100 + pl_parts, 2)
-            upd["realizedPct"] = round(upd["realizedPl"] / (rec["fillPrice"] * qty * 100) * 100, 1) if qty else round((exit_px / rec["fillPrice"] - 1) * 100, 1)
+            upd["realizedPl"] = round((exit_px - rec["fillPrice"]) * qty * 100, 2)
+            upd["realizedPct"] = round((exit_px / rec["fillPrice"] - 1) * 100, 1)
             risk = upd.get("riskAtFill") or rec.get("riskAtFill")
             if risk:
                 upd["realizedR"] = round(upd["realizedPl"] / risk, 2)
@@ -962,31 +925,6 @@ def _refresh(sub, c, rec):
                      + (f": {'+' if rp >= 0 else '-'}${abs(rp):,.0f} ({upd.get('realizedPct', 0):+.1f}%)" if rp is not None else "")
                      + f" | {rec.get('exitReason') or ''}", "closed")
         return rec, None
-    _n = now_ny()
-    _mkt = _n.weekday() < 5 and 9 * 60 + 31 <= _n.hour * 60 + _n.minute < 16 * 60
-    if rec["status"] == "closing" and _mkt and int(rec.get("closeRetries") or 0) < 5:   # still held: did the exit order die?
-        dead = False
-        try:
-            if rec.get("exitOrderId"):
-                o = _alp(c, "GET", f"/v2/orders/{rec['exitOrderId']}") or {}
-                dead = o.get("status") in ("canceled", "expired", "rejected", "done_for_day")
-            else:
-                dead = (rec.get("closedAt") or "9999") < iso(now_ny() - timedelta(minutes=10))
-            if (spread or diag) and rec.get("exitLegOrderIds"):
-                dead = dead or all((_alp(c, "GET", f"/v2/orders/{x}") or {}).get("status") in ("canceled", "expired", "rejected")
-                                   for x in rec["exitLegOrderIds"])
-        except Exception as e:
-            print("exit order check failed", rec.get("SK"), e)
-        if dead:                                       # back to open: the next exit check sends a new close
-            db.update(pk, rec["SK"], {"status": "open", "exitOrderId": "", "closeRetries": int(rec.get("closeRetries") or 0) + 1})
-            rec["status"] = "open"
-            _notify(sub, f"Paper bot: exit order for {_desc(rec)} did not fill ({rec.get('exitReason') or ''}): sending it again", "exit")
-            if rec.get("exitReason"):
-                try:
-                    close(sub, rec["id"], rec["exitReason"])
-                    rec = db.get(pk, rec["SK"]) or rec
-                except Exception as e:
-                    print("close retry failed", rec.get("SK"), e)
     if spread and not (lp and sp) and not (diag and lp and rec.get("rollOrderId")):   # mid-roll: the fill is handled by the roll
         # one leg is gone: the short call was assigned/exercised or a leg was closed outside the bot
         missing = p["contract"] if not lp else p["shortContract"]
@@ -1129,28 +1067,9 @@ def monitor(sub):
             close(sub, rec["id"], reason)
             actions.append((rec["symbol"], reason))
             continue
-        if p.get("wallwatch"):                           # wall watch trade: its own stop / trailing stop / call wall target
-            reason = None
-            if (p["wallwatch"] or {}).get("earnExit", True):   # sell before earnings (at 15:30 the day before / AMC day)
-                try:
-                    due, why = earnings_exit_due(earn_for(cfg, rec["symbol"])[0])
-                    if due:
-                        reason = why
-                except Exception as e:
-                    print("wallwatch earnings check failed", rec.get("symbol"), e)
-            try:
-                reason = reason or _wallwatch_exit(sub, rec, p)
-            except Exception as e:
-                reason = None
-                print("wallwatch exit check failed", rec.get("symbol"), e)
-            if reason:
-                close(sub, rec["id"], reason)
-                actions.append((rec["symbol"], reason))
-            continue
         pl_pct = rec["lastPlPct"]
         stp, tgt = stop_pct(cfg, p), target_pct(cfg, p, rec.get("fillPrice"))
         plan = p.get("exitPlan") or {}                   # a strategy's own exit rules override the settings
-        only = bool(p.get("strategyOnly"))               # selected strategy: nothing but its own exit closes it
         trail_on, trail_pct, use_inv = cfg["trailAfterTarget"], cfg["trailPct"], True
         if plan:
             stp = plan.get("stop") or stp
@@ -1180,7 +1099,7 @@ def monitor(sub):
         peak = max(rec.get("peakMark") or 0, mark)
         trailing = rec.get("trailing") or False
         profit_exits = tgt is not None        # diagonal with no take-profit: only stops/invalidation/time close it
-        if not trailing and profit_exits and trail_on and (pl_pct >= tgt or (not only and under is not None and under >= p["underlyingTarget"])):
+        if not trailing and profit_exits and trail_on and (pl_pct >= tgt or (under is not None and under >= p["underlyingTarget"])):
             trailing = True
         if peak != rec.get("peakMark") or trailing != rec.get("trailing"):
             db.update(pk, rec["SK"], {"peakMark": peak, "trailing": trailing})
@@ -1188,24 +1107,24 @@ def monitor(sub):
             reason = f"{'spread' if is_spread(p) else 'option'} stop ({pl_pct:.0f}%)"
         elif use_inv and under is not None and under < p["underlyingStop"] and (not cfg["invalidationOnClose"] or near_close):
             reason = f"{rec['symbol']} {'closing' if cfg['invalidationOnClose'] else 'trading'} below invalidation {p['underlyingStop']} ({under:.2f})"
-        elif use_inv and not only and under is not None and emergency is not None and under < emergency:
+        elif use_inv and under is not None and emergency is not None and under < emergency:
             reason = f"{rec['symbol']} fell {cfg['emergencyAtr']} ATR below invalidation ({under:.2f} < {emergency:.2f})"
         elif trailing and trail_on:
             if peak and mark <= peak * (1 - trail_pct / 100):
                 reason = f"trailing stop: option {mark:.2f} is {trail_pct:.0f}% below its peak {peak:.2f} (target was reached)"
         elif profit_exits and pl_pct >= tgt:
             reason = f"{'spread' if is_spread(p) else 'option'} target (+{pl_pct:.0f}%)"
-        elif profit_exits and not only and under is not None and under >= p["underlyingTarget"]:
+        elif profit_exits and under is not None and under >= p["underlyingTarget"]:
             reason = f"{rec['symbol']} reached target {p['underlyingTarget']}"
         held = None
         if plan.get("maxDays") and rec.get("filledAt"):
             d_in = datetime.strptime(rec["filledAt"][:10], "%Y-%m-%d").date()
             held = sum(1 for k in range((now.date() - d_in).days + 1) if (d_in + timedelta(days=k)).weekday() < 5)
-        if not reason and dte <= (0 if only else cfg["timeStopDte"]):
+        if not reason and dte <= cfg["timeStopDte"]:
             reason = f"time stop ({dte} days to expiry)"
         elif not reason and held is not None and held >= plan["maxDays"] and near_close:
             reason = f"strategy exit: held {held} trading days (max {plan['maxDays']})"
-        elif not reason and due and not only:
+        elif not reason and due:
             reason = earn_reason
         if reason:
             close(sub, rec["id"], reason)
@@ -1219,274 +1138,6 @@ def monitor(sub):
             if note:
                 actions.append((rec["symbol"], note))
     return {"actions": actions}
-
-
-def _wallwatch_exit(sub, rec, p):
-    """Stock-based exit of a wall watch trade, checked every minute on 5-minute candles since the fill:
-    stop = level - N x 30-day ATR, raised to (highest high since the fill - trail x ATR); target = the call wall."""
-    ww = p["wallwatch"]
-    pk = db.upk(sub)
-    since = (rec.get("filledAt") or rec.get("submittedAt") or "")[:16]
-    bars = _yahoo(rec["symbol"].replace(".", "-"), "5m", now_ny() - timedelta(days=5), now_ny() + timedelta(hours=1)) or []
-    bars = [b for b in bars if b["t"][:16] >= since and "09:30" <= b["t"][11:16] < "16:00"]
-    if not bars:
-        return None
-    last = bars[-1]
-    upd = {"lastUnderlying": last["c"]}
-    stop = float(p["underlyingStop"])
-    peak = max([float(rec.get("wwPeak") or 0)] + [b["h"] for b in bars[:-1]])
-    upd["wwPeak"] = round(peak, 4)
-    if ww.get("kind") == "merged":                   # merged walls: the stop follows today's call wall (up only)
-        try:
-            import flowdata
-            w = flowdata.stored_walls(rec["symbol"]).get(now_ny().strftime("%Y-%m-%d")) or {}
-            if w.get("callWall") and ww.get("atr"):
-                lvl = round(float(w["callWall"]) - float(ww.get("stopAtr") or 0.5) * float(ww["atr"]), 4)
-                if lvl > stop:
-                    stop = lvl
-                    upd["proposal"] = {**p, "underlyingStop": stop}
-        except Exception as e:
-            print("merged trail failed", rec.get("symbol"), e)
-    elif ww.get("trailAtr") and ww.get("atr") and peak:
-        lvl = round(peak - float(ww["trailAtr"]) * float(ww["atr"]), 4)
-        if lvl > stop:
-            stop = lvl
-            upd["proposal"] = {**p, "underlyingStop": stop}
-    db.update(pk, rec["SK"], upd)
-    dte = (datetime.strptime(p["exp"], "%Y-%m-%d").date() - now_ny().date()).days
-    if last["l"] <= stop:
-        return f"{'trailing stop' if stop > float(ww.get('stop0') or stop) or (ww.get('stopOn') is False and stop > 0) else 'stop'}: {rec['symbol']} {last['l']:.2f} at or under {stop:.2f}"
-    if ww.get("scaleOn") and not rec.get("wwScaled") and ww.get("entry") and ww.get("stop0"):
-        r = _partial_exit(sub, rec, p, ww, bars, stop)
-        if r:
-            return r
-    now = now_ny()
-    if ww.get("cwLost") or ww.get("dpLost"):         # passed the call wall / a dark pool level, back under it at the close
-        r = _level_lost(sub, rec, ww, last, since, now)
-        if r:
-            return r
-    if ww.get("kcRide"):                              # Keltner ride: don't sell a vertical move at the call wall
-        r = _keltner_ride(sub, rec, p, ww, last, since, now, dte)
-        if r is not False:
-            return r                                  # an exit, or None while riding / waiting for the close
-    if ww.get("pvEodPw") and str(ww.get("signalAt") or "")[:10] == now.strftime("%Y-%m-%d") \
-            and now.hour * 60 + now.minute >= 15 * 60 + 50 and last["c"] < float(ww["pvEodPw"]):
-        return f"entry day closing under the put wall {ww['pvEodPw']} ({last['c']:.2f})"
-    if ww.get("pwExit") and now.hour * 60 + now.minute >= 15 * 60 + 50:
-        try:                                           # closing under today's put wall: out before the bell
-            import flowdata
-            pw_ = (flowdata.stored_walls(rec["symbol"]).get(now.strftime("%Y-%m-%d")) or {}).get("putWall")
-            if pw_ and last["c"] < float(pw_):
-                return f"closing under the put wall {pw_} ({last['c']:.2f})"
-        except Exception as e:
-            print("put wall exit check failed", rec.get("symbol"), e)
-    if ww.get("flipExit") and ww.get("aboveFlipAtEntry") and now.hour * 60 + now.minute >= 15 * 60 + 50:
-        try:                                           # closing under today's gamma flip: out before the bell
-            import flowdata
-            fl = (flowdata.stored_walls(rec["symbol"]).get(now.strftime("%Y-%m-%d")) or {}).get("flip")
-            if fl and last["c"] < float(fl):
-                return f"closing under the gamma flip {fl} ({last['c']:.2f})"
-        except Exception as e:
-            print("flip exit check failed", rec.get("symbol"), e)
-    if p.get("underlyingTarget") and last["h"] >= float(p["underlyingTarget"]):
-        return f"call wall {p['underlyingTarget']} reached ({last['h']:.2f})"
-    if ww.get("inRedExit") and now.hour * 60 + now.minute >= 15 * 60 + 50:   # the day closes with the daily inertia red
-        try:
-            import wallwatch
-            hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=150), now + timedelta(hours=1)) or [],
-                                    now.replace(tzinfo=None))
-            hb = [b for b in hb if "09:30" <= b["t"][11:16] < "16:00"]
-            hb.append({"t": now.strftime("%Y-%m-%dT%H:%M"), "o": last["c"], "h": last["c"], "l": last["c"], "c": last["c"]})
-            rg = wallwatch.inertia_regime(hb, tuple(ww.get("inNs") or (70, 40, 20)))[-1]
-            if rg and rg["s"] == "R":
-                return f"daily inertia red at the close ({last['c']:.2f})"
-        except Exception as e:
-            print("inertia exit check failed", rec.get("symbol"), e)
-    if any(ww.get(k) for k in ("inYExit", "sqdExit", "inhYExit", "sqhExit", "inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX")):
-        try:
-            import wallwatch
-            hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=150), now + timedelta(hours=1)) or [],
-                                    now.replace(tzinfo=None))
-            hb = [b for b in hb if "09:30" <= b["t"][11:16] < "16:00"]
-            fire_n = int(ww.get("sqFireN") or 3)
-            if hb and hb[-1]["t"][:16] >= since[:13]:  # the last finished hourly candle (after the fill)
-                if ww.get("inhYExit"):
-                    x = wallwatch.inertia_hourly(hb, tuple(ww.get("inhNs") or (70, 40, 20)))[-1]
-                    if x and x["s"] != "G":
-                        return f"hourly inertia {'red' if x['s'] == 'R' else 'yellow'} at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
-                if ww.get("inhRiseX") or ww.get("inhRedX"):
-                    x = wallwatch.inertia_hourly(hb, tuple(ww.get("inhNs") or (70, 40, 20)))[-1]
-                    if x and ((ww.get("inhRiseX") and x["s"] == "G") or (ww.get("inhRedX") and x["s"] == "R")):
-                        return f"hourly inertia {'rising' if x['s'] == 'G' else 'falling'} at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
-                if ww.get("sqhExit") or ww.get("sqhRiseX"):
-                    x = wallwatch.squeeze(hb, *(ww.get("sqh") or (20, 2.0, 1.5)), fire_n)[-1]
-                    if x and ww.get("sqhExit") and not x["up"]:
-                        return f"hourly squeeze momentum falling at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
-                    if x and ww.get("sqhRiseX") and x["up"]:
-                        return f"hourly squeeze momentum rising at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
-                if (ww.get("cvdRiseX") or ww.get("cvdFallX")) and ww.get("tf") != "1D" and len(hb) > 2:
-                    cv = wallwatch.cvd_roll(hb, int(ww.get("cvdN") or 20))
-                    if (ww.get("cvdRiseX") and cv[-1] > cv[-2]) or (ww.get("cvdFallX") and cv[-1] < cv[-2]):
-                        return f"CVD {'rising' if cv[-1] > cv[-2] else 'falling'} at the {hb[-1]['t'][11:16]} close ({cv[-2]:,.0f} → {cv[-1]:,.0f})"
-            if now.hour * 60 + now.minute >= 15 * 60 + 50:   # daily: at the close, today's candle so far included
-                hd = hb + [{"t": now.strftime("%Y-%m-%dT%H:%M"), "o": last["c"], "h": last["c"], "l": last["c"], "c": last["c"]}]
-                if ww.get("inYExit"):
-                    rg = wallwatch.inertia_regime(hd, tuple(ww.get("inNs") or (70, 40, 20)))[-1]
-                    if rg and rg["s"] != "G":
-                        return f"daily inertia {'red' if rg['s'] == 'R' else 'yellow'} at the close ({last['c']:.2f})"
-                if ww.get("inRiseX"):
-                    rg = wallwatch.inertia_regime(hd, tuple(ww.get("inNs") or (70, 40, 20)))[-1]
-                    if rg and rg["s"] == "G":
-                        return f"daily inertia rising at the close ({last['c']:.2f})"
-                if ww.get("sqdExit") or ww.get("sqdRiseX"):
-                    x = wallwatch.squeeze(wallwatch.daily_bars(hd), *(ww.get("sqd") or (20, 2.0, 1.5)), fire_n)[-1]
-                    if x and ww.get("sqdExit") and not x["up"]:
-                        return f"daily squeeze momentum falling at the close ({last['c']:.2f})"
-                    if x and ww.get("sqdRiseX") and x["up"]:
-                        return f"daily squeeze momentum rising at the close ({last['c']:.2f})"
-                if (ww.get("cvdRiseX") or ww.get("cvdFallX")) and ww.get("tf") == "1D":
-                    dd_ = wallwatch.daily_bars(hd)
-                    if len(dd_) > 2:
-                        cv = wallwatch.cvd_roll(dd_, int(ww.get("cvdN") or 20))
-                        if (ww.get("cvdRiseX") and cv[-1] > cv[-2]) or (ww.get("cvdFallX") and cv[-1] < cv[-2]):
-                            return f"daily CVD {'rising' if cv[-1] > cv[-2] else 'falling'} at the close ({last['c']:.2f})"
-        except Exception as e:
-            print("inertia / squeeze exit check failed", rec.get("symbol"), e)
-    if ww.get("fvgExit"):                              # the last finished hourly candle completes a new bearish FVG
-        try:
-            import wallwatch
-            hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=30), now + timedelta(hours=1)) or [],
-                                    now.replace(tzinfo=None))
-            if len(hb) >= 3 and hb[-1]["t"][:16] >= since[:13] and wallwatch.fvg_bear_new(hb, float(ww.get("fvgMin") or 0.2))[-1]:
-                return f"new bearish FVG {hb[-1]['h']:.2f}–{hb[-3]['l']:.2f} on the {hb[-1]['t'][11:16]} candle"
-        except Exception as e:
-            print("fvg exit check failed", rec.get("symbol"), e)
-    if ww.get("vwapExit") or ww.get("emaExit"):       # hourly close under the VWAP / EMA (last finished hourly candle)
-        try:
-            import wallwatch
-            hb = _yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=60), now + timedelta(hours=1)) or []
-            hb = wallwatch.finished(hb, now.replace(tzinfo=None))
-            if hb and hb[-1]["t"][:16] >= since[:13]:
-                h = hb[-1]
-                if ww.get("vwapExit"):
-                    vv = wallwatch.anchored_vwap(hb, int(ww.get("vwapDays") or wallwatch.VWAP_DAYS))[0][-1]
-                    if vv is not None and h["c"] < vv:
-                        return f"hourly close {h['c']:.2f} under the VWAP {vv:.2f}"
-                if ww.get("emaExit"):
-                    ev = wallwatch._ema_series([b["c"] for b in hb], int(ww.get("emaLen") or 20))[-1]
-                    if ev is not None and h["c"] < ev:
-                        return f"hourly close {h['c']:.2f} under the EMA{int(ww.get('emaLen') or 20)} {ev:.2f}"
-        except Exception as e:
-            print("vwap/ema exit check failed", rec.get("symbol"), e)
-    if dte <= 0:
-        return f"time stop ({dte} days to expiry)"
-    return None
-
-
-def _partial_exit(sub, rec, p, ww, bars, stop):
-    """Wall watch partial exit, live: when the stock reaches entry + scaleR x risk, sell scalePct % of the contracts at
-    market (at least 1, never all) and, with scaleBE, move the stop of the rest to the entry price. Done once."""
-    pk = db.upk(sub)
-    entry, s0 = float(ww["entry"]), float(ww["stop0"])
-    lvl = entry + float(ww.get("scaleR") or 1) * (entry - s0)
-    if entry <= s0 or max(b["h"] for b in bars) < lvl:
-        return None
-    qty = int(float(rec.get("filledQty") or rec.get("qty") or 0))
-    n = int(qty * float(ww.get("scalePct") or 50) / 100)
-    info = {"at": iso(now_ny()), "level": round(lvl, 2), "under": bars[-1]["c"], "qty": 0}
-    upd = {}
-    if not is_spread(p) and qty >= 2:
-        n = max(1, min(qty - 1, n))
-        try:
-            o = _alp(_paper_creds(sub), "POST", "/v2/orders", {"symbol": p["contract"], "qty": str(n), "side": "sell",
-                                                                  "type": "market", "time_in_force": "day"})
-            info.update(qty=n, orderId=(o or {}).get("id"))
-            upd["partials"] = list(rec.get("partials") or []) + [{"qty": n, "orderId": (o or {}).get("id"), "px": rec.get("lastMark"), "at": info["at"]}]
-        except Exception as e:
-            print("partial sell failed", rec.get("SK"), e)
-            return None                                   # retried at the next check
-    if ww.get("scaleBE") and stop < entry:
-        upd["proposal"] = {**p, "underlyingStop": round(entry, 4)}
-    upd["wwScaled"] = info
-    db.update(pk, rec["SK"], upd)
-    _notify(sub, f"Paper bot SELL {_desc(rec)} x{info['qty']} ({float(ww.get('scalePct') or 50):g}% at +{float(ww.get('scaleR') or 1):g}R: "
-                 f"{rec['symbol']} {bars[-1]['c']:.2f} ≥ {lvl:.2f})" + ("; stop of the rest moved to the entry" if ww.get("scaleBE") else "")
-                 + ("" if info["qty"] else " — 1 contract: nothing sold, only the stop moved"), "exit")
-    return None
-
-
-def _level_lost(sub, rec, ww, last, since, now):
-    """An hourly close above today's call wall or a top dark pool level (above the entry) marks it passed; from 15:50 a
-    close back under the highest passed level sells. Returns an exit reason or None."""
-    import flowdata
-    import wallwatch
-    pk = db.upk(sub)
-    today = now.strftime("%Y-%m-%d")
-    lv = []
-    try:
-        if ww.get("cwLost"):
-            cw = (flowdata.stored_walls(rec["symbol"]).get(today) or {}).get("callWall")
-            if cw:
-                lv.append(["call wall", float(cw)])
-        if ww.get("dpLost"):
-            cache = rec.get("wwDpLv") or {}
-            if cache.get("d") != today:                # the dark pool levels once a day
-                import backtest
-                pr = backtest.stored_darkpool(rec["symbol"]) or wallwatch.darkpool(sub, rec["symbol"], None, 66).get("prints") or []
-                cache = {"d": today, "lv": wallwatch.dp_level_map(pr, [today]).get(today) or []}
-                db.update(pk, rec["SK"], {"wwDpLv": cache})
-            entry = float(ww.get("entry") or 0)
-            lv += [["dark pool level", float(x)] for x in cache.get("lv") or [] if float(x) > entry]
-        hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=5), now + timedelta(hours=1)) or [],
-                                now.replace(tzinfo=None))
-    except Exception as e:
-        print("level lost check failed", rec.get("symbol"), e)
-        return None
-    passed = [list(x) for x in rec.get("wwPassed") or []]
-    if hb and hb[-1]["t"][:16] >= (since or "")[:13]:
-        hc = hb[-1]["c"]
-        new = [x for x in lv if hc > x[1] and x not in passed]
-        if new:
-            passed += new
-            db.update(pk, rec["SK"], {"wwPassed": passed})
-    if passed and now.hour * 60 + now.minute >= 15 * 60 + 50:
-        name, px = max(passed, key=lambda x: x[1])
-        if last["c"] < px:
-            return f"passed the {name} {px:g}, closing back under it ({last['c']:.2f})"
-    return None
-
-
-def _keltner_ride(sub, rec, p, ww, last, since, now, dte):
-    """Keltner ride, live. An hourly close above the upper Keltner band (last finished hourly candle) starts the ride:
-    the target and the other exits wait, and the trade is sold at the first daily close under the band (checked from
-    15:50, the same day included). Returns an exit reason, None (hold) or False (not riding: the normal exits apply)."""
-    import wallwatch
-    pk = db.upk(sub)
-    try:
-        dly = ww.get("kcDaily", True)
-        hb = wallwatch.finished(_yahoo(rec["symbol"].replace(".", "-"), "1h", now - timedelta(days=75 if dly else 30), now + timedelta(hours=1)) or [],
-                                now.replace(tzinfo=None))
-        hb = [b for b in hb if "09:30" <= b["t"][11:16] < "16:00"]
-        kc = wallwatch.keltner(hb, int(ww.get("kcLen") or 21), float(ww.get("kcMult") or 3), bool(dly)) if hb else []
-    except Exception as e:
-        print("keltner ride check failed", rec.get("symbol"), e)
-        return False
-    if not kc or not kc[-1]:
-        return False
-    up, hc, ht = kc[-1][1], hb[-1]["c"], hb[-1]["t"][:16]
-    late = now.hour * 60 + now.minute >= 15 * 60 + 50
-    riding = bool(rec.get("wwRide"))
-    if not riding and ht >= (since or "")[:16] and hc > up:
-        db.update(pk, rec["SK"], {"wwRide": True, "wwRideAt": ht})       # an hourly close above the upper band: ride
-        riding = True
-    if riding:
-        if late and last["c"] < up:
-            return f"Keltner ride ended: closing {last['c']:.2f} under the upper band {up:.2f}"
-        return f"time stop ({dte} days to expiry)" if dte <= 0 else None
-    tgt = p.get("underlyingTarget")
-    if tgt and last["h"] >= float(tgt) and last["c"] > up:
-        return None                                   # target on a vertical move: wait for the hourly close (ride or not)
-    return False
 
 
 # ---------------- diagonal: keep shorting against the long call ----------------
@@ -1748,10 +1399,8 @@ def put_watch(sub, rec, cfg=None):
     return pt
 
 
-def flow_scan(sub, cfg=None, buy=True):
-    """Pull new unusual-flow alerts, evaluate the tickers and trade the ones that pass every rule.
-    buy=False (wall watch trading): the tickers are evaluated and put on the wall watch list; the trade comes later,
-    from a wall watch entry signal."""
+def flow_scan(sub, cfg=None):
+    """Pull new unusual-flow alerts, evaluate the tickers and trade the ones that pass every rule."""
     import flowdata
     cfg = cfg or settings(sub)
     pk = db.upk(sub)
@@ -1804,25 +1453,13 @@ def flow_scan(sub, cfg=None, buy=True):
                   "rule": top.get("rule"), "underlying": top.get("underlying"), "optPrice": top.get("price"),
                   "topPremium": round(top.get("premium") or 0)}
         try:
-            rec = evaluate(sub, sym, source={**origin, "watchOnly": True} if not buy else origin)
+            rec = evaluate(sub, sym, source=origin)
         except Exception as e:
             done.append({"symbol": sym, "error": str(e)[:120]})
             evaluated[sym] = iso(now_ny())
             continue
         evaluated[sym] = iso(now_ny())
         item = {"symbol": sym, "decision": rec["decision"]}
-        if not buy:                                    # wall watch: evaluated, then on the list until an entry signal
-            try:
-                import wallwatch
-                wallwatch.save_config(sub, {"add": sym, "addedBy": "flow", "premium": origin.get("premium")})
-            except Exception as e:
-                print("wallwatch add failed", sym, e)
-            note = "On the Wall watch list: waiting for the flow retest entry"
-            db.update(pk, f"BOT#{rec['id']}", {"ruleDecision": rec["decision"], "decision": "WATCH",
-                                               "blocking": [note] + list(rec.get("blocking") or [])})
-            item.update(decision="WATCH", watch=True)
-            done.append(item)
-            continue
         if cfg["autoSubmit"] and rec["decision"] == "BUY" and open_n < cfg["maxPositions"]:
             try:
                 place(sub, rec["id"], placed_by="auto-flow")
@@ -1851,19 +1488,7 @@ def tick(sub):
     try:
         out = {"monitor": monitor(sub)}
         cfg = settings(sub)
-        wwc = None
-        if market_open():
-            try:                                       # wall watch: tickers with unusual call flow join the list
-                import wallwatch
-                wwc = wallwatch.config(sub)
-                if db.get(db.upk(sub), "WWCFG") and wwc.get("enabled", True):
-                    out["wallwatch"] = wallwatch.flow_add(sub, wwc)
-            except Exception as e:
-                print("wallwatch flow add failed", e)
-        if wwc and wwc.get("enabled", True) and wwc.get("trade") and db.get(db.upk(sub), "WWCFG"):
-            if market_open():                          # flow tickers are evaluated and put on the list; no direct buys
-                out["flow"] = flow_scan(sub, cfg, buy=False)
-        elif cfg["flowAuto"] and market_open():
+        if cfg["flowAuto"] and market_open():
             out["flow"] = flow_scan(sub, cfg)
             try:                                       # call bursts: tracked only, never traded
                 import bursts
@@ -1885,21 +1510,8 @@ def handler(event, context_):
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed", "closed"))})
     elif job == "review":  # end of day: users with open bot positions
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
-    elif job == "rsauto":      # hourly: the AI research agent of the users with its autopilot on
-        import research
-        return {"started": research.auto_kick()}
-    elif job == "flipsnap":    # 09:20 / 09:32 / 09:40 ET: the flip as Unusual Whales shows it before / at the open
-        import daytrade
-        return {"flipsnap": daytrade.flip_snap_job()}
-    elif job in ("sdtick", "sdmorning"):   # stocks in play: users with it on
-        subs = [p["PK"][5:] for p in db.scan_sk("SDCFG") if p.get("enabled")]
-    elif job == "daytick":     # every minute: users with day trading on
-        subs = [p["PK"][5:] for p in db.scan_sk("DTCFG") if p.get("enabled")]
-    elif job == "wallwatch":   # every hour: users with the wall watchlist on
-        subs = [p["PK"][5:] for p in db.scan_sk("WWCFG") if p.get("enabled", True)]
     elif job == "tick":   # every minute: users with open bot trades or flow trading on
         flow_users = {p["PK"][5:] for p in db.scan_sk("PROFILE") if ((p.get("settings") or {}).get("autotrade") or {}).get("flowAuto")}
-        flow_users |= {p["PK"][5:] for p in db.scan_sk("WWCFG") if p.get("enabled", True) and p.get("autoAdd", True)}
         subs = sorted(flow_users | {r["PK"][5:] for r in db.scan_prefix("BOT#", ("submitted", "open", "closing"))})
     else:                 # exits are always managed for every open bot position, schedule on or off
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("submitted", "open", "closing"))})
@@ -1917,198 +1529,12 @@ def handler(event, context_):
                     bursts.forward_update(sub)
                 except Exception as e:
                     print("burst forward update failed", e)
-                try:                                     # store today's walls for every evaluated ticker
-                    import flowdata
-                    flowdata.walls_backfill(sub, budget_s=150)
-                except Exception as e:
-                    print("walls backfill failed", e)
                 try:
                     out[sub] = shadow.run(sub)
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "done", "at": iso(now_ny()), "result": out[sub]})
                 except Exception as e:
                     db.put({"PK": db.upk(sub), "SK": "SHADOWRUN", "status": "error", "at": iso(now_ny()), "result": {"error": str(e)[:200]}})
                     raise
-            elif job == "wwhist":                        # history for the rule tester: one round, then the next
-                import backtest
-                try:
-                    more = backtest.load_history(sub)
-                    out[sub] = {"more": more}
-                    if more:
-                        backtest.continue_history(sub)
-                except Exception as e:
-                    st = db.get(db.upk(sub), backtest.HIST_SK) or {}
-                    db.put({**st, "PK": db.upk(sub), "SK": backtest.HIST_SK, "running": None,
-                            "errors": (list(st.get("errors") or []) + [str(e)[:160]])[-8:], "at": iso(now_ny())})
-                    raise
-            elif job == "wwintraday":
-                import intraday
-                try:
-                    out[sub] = {"n": (intraday.run(sub, event.get("params") or {}).get("all") or {}).get("n")}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), intraday.SK) or {}), "PK": db.upk(sub), "SK": intraday.SK,
-                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwsearch":
-                import backtest
-                try:
-                    out[sub] = {"tested": backtest.rule_search(sub, event.get("params") or {}).get("tested")}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), backtest.SEARCH_SK) or {}), "PK": db.upk(sub), "SK": backtest.SEARCH_SK,
-                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "dtstudy":
-                import daystudy
-                try:
-                    out[sub] = {"n": daystudy.run(sub, event.get("params") or {}).get("nEvents")}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), daystudy.SK) or {}), "PK": db.upk(sub), "SK": daystudy.SK, "running": None,
-                            "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "dtbt":
-                import daytrade
-                out[sub] = {"n": (daytrade.backtest_job(sub, event.get("params") or {}).get("all") or {}).get("n")}
-            elif job == "dtsearch":
-                import dtsearch
-                try:
-                    out[sub] = {"tested": dtsearch.run(sub, event.get("params") or {}).get("tested")}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), dtsearch.SK) or {}), "PK": db.upk(sub), "SK": dtsearch.SK, "running": None,
-                            "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "research":
-                import research
-                try:
-                    out[sub] = {"tested": research.run(sub, event.get("params") or {}, budget_s=400).get("testedNow")}
-                except Exception as e:                 # no re-raise: a retry of the event would start a 2nd run in parallel
-                    research._set_run(sub, {"running": None, "step": "failed", "errors": [str(e)[:200]], "at": iso(now_ny())})
-                    research.log_run(sub, {"at": iso(now_ny()), "strategy": (event.get("params") or {}).get("strategy"), "errors": [str(e)[:200]]})
-                    out[sub] = {"error": str(e)[:200]}
-            elif job == "dtrob":
-                import dtrobust
-                out[sub] = {"variants": (dtrobust.job(sub, event.get("params") or {}) or {}).get("variants")}
-            elif job == "mctx":
-                import marketctx
-                out[sub] = marketctx.job(sub, event.get("params") or {})
-            elif job == "rstest":
-                import research
-                out[sub] = {"tested": research.test_job(sub, event.get("params") or {}).get("testedNow")}
-            elif job == "dtcmp":
-                import daytrade
-                out[sub] = {"n": len(daytrade.compare_job(sub, event.get("params") or {}).get("variants") or [])}
-            elif job == "daytick":
-                import daytrade
-                out[sub] = daytrade.tick(sub)
-            elif job == "oflow":
-                import orderflow
-                out[sub] = orderflow.job(sub, event.get("params") or {})
-            elif job == "sdtick":
-                import stockday
-                out[sub] = stockday.tick(sub)
-            elif job == "sdmorning":
-                import stockday
-                out[sub] = stockday.morning(sub)
-            elif job == "sdprep":
-                import stockday
-                out[sub] = stockday.prep_job(sub, event.get("params") or {})
-            elif job == "sdbt":
-                import stockday
-                out[sub] = {"n": (stockday.backtest_job(sub, event.get("params") or {}).get("all") or {}).get("n")}
-            elif job == "wwoptsym":
-                import optiontest
-                pr = event.get("params") or {}
-                try:
-                    out[sub] = {"n": (optiontest.run_sym(sub, pr.get("sym"), pr.get("trades") or [], pr.get("P") or {}).get("stats") or {}).get("n")}
-                except Exception as e:
-                    db.put({"PK": db.upk(sub), "SK": f"WWOPTSYM#{pr.get('sym')}", "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwopt":
-                import optiontest
-                try:
-                    out[sub] = {"n": (optiontest.run(sub, event.get("params") or {}).get("mine") or {}).get("n")}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), optiontest.OPT_SK) or {}), "PK": db.upk(sub), "SK": optiontest.OPT_SK,
-                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwlab":
-                import backtest
-                try:
-                    out[sub] = {"n": (backtest.lab_test(sub, event.get("params") or {}).get("lab") or {}).get("n")}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), backtest.LAB_SK) or {}), "PK": db.upk(sub), "SK": backtest.LAB_SK,
-                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwregime":
-                import backtest
-                try:
-                    out[sub] = {"sections": len(backtest.regime_study(sub, event.get("params") or {}).get("sections") or [])}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), backtest.REG_SK) or {}), "PK": db.upk(sub), "SK": backtest.REG_SK,
-                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwpvstudy":
-                import backtest
-                try:
-                    out[sub] = {"groups": len(backtest.pv_study(sub, event.get("params") or {}).get("groups") or [])}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), backtest.PV_SK) or {}), "PK": db.upk(sub), "SK": backtest.PV_SK,
-                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwrobust":
-                import backtest
-                try:
-                    out[sub] = {"rows": len(backtest.robust_test(sub, event.get("params") or {}).get("rows") or [])}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), backtest.ROB_SK) or {}), "PK": db.upk(sub), "SK": backtest.ROB_SK,
-                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwruletest":
-                import backtest
-                try:
-                    out[sub] = {"n": len(backtest.rule_test(sub, event.get("params") or {}).get("rules") or [])}
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), backtest.TEST_SK) or {}), "PK": db.upk(sub), "SK": backtest.TEST_SK,
-                            "running": None, "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwflowstudy":
-                import wallwatch
-                try:
-                    out[sub] = wallwatch.flow_study(sub, budget_s=540)
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), "WWFSTUDY") or {}), "PK": db.upk(sub), "SK": "WWFSTUDY", "running": None,
-                            "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wwfill":
-                import wallwatch
-                try:
-                    if event.get("t"):                   # one ticker: its walls, then its signals
-                        out[sub] = wallwatch.fill_walls(sub, budget_s=540, ticker=event["t"])
-                        continue
-                    out[sub] = f = wallwatch.fill_walls(sub, budget_s=420)
-                    if not f["left"]:                    # every day stored: find the signals of the last 45 days
-                        out[sub]["signals"] = wallwatch.run(sub, days=45, budget_s=150)
-                except Exception as e:
-                    sk_ = f"WWFILL#{event['t']}" if event.get("t") else "WWFILL"
-                    db.put({**(db.get(db.upk(sub), sk_) or {}), "PK": db.upk(sub), "SK": sk_, "running": None,
-                            "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "wallwatch":
-                import wallwatch
-                try:
-                    if not event.get("days"):            # hourly: keep filling missing days a little at a time
-                        fl = db.get(db.upk(sub), "WWFILL") or {}
-                        if fl.get("left") and not fl.get("running"):
-                            try:
-                                wallwatch.fill_walls(sub, budget_s=120)
-                            except Exception as e:
-                                print("wall fill failed", e)
-                    out[sub] = wallwatch.run(sub, days=int(event.get("days") or 3), budget_s=480)
-                except Exception as e:
-                    db.put({**(db.get(db.upk(sub), "WWRUN") or {}), "PK": db.upk(sub), "SK": "WWRUN", "running": None,
-                            "errors": [str(e)[:160]], "at": iso(now_ny())})
-                    raise
-            elif job == "walls":
-                import flowdata
-                out[sub] = flowdata.walls_backfill(sub, budget_s=500)
             elif job == "burstreplay":
                 import bursts
                 out[sub] = bursts.replay(sub, restart=bool(event.get("restart")))

@@ -61,8 +61,8 @@ def from_ddb(v):
 
 def q_prefix(pk, prefix, desc=False, limit=None):
     from boto3.dynamodb.conditions import Key
-    kw = {                                             # an empty prefix = the whole partition (begins_with("") is refused)
-        "KeyConditionExpression": (Key("PK").eq(pk) & Key("SK").begins_with(prefix)) if prefix else Key("PK").eq(pk),
+    kw = {
+        "KeyConditionExpression": Key("PK").eq(pk) & Key("SK").begins_with(prefix),
         "ScanIndexForward": not desc,
     }
     items = []
