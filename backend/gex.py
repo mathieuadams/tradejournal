@@ -364,3 +364,44 @@ def summary(sub, symbol, days=30, strikes=40):
             "putCallOi": g["putCallOi"], "dailyMove": em.get("daily"),
             "nextExpiryMove": next((m for m in em.get("byExpiration") or [] if m["dte"] >= 1), None),
             "source": g["source"]}
+
+
+# ---------- wall history: a snapshot of the walls each time they're computed, so the chart can show how they moved ----------
+
+def record_walls(symbol, g, spot=None):
+    """Store the call wall / put wall / gamma flip, one snapshot per symbol per 30 minutes."""
+    import db
+    try:
+        now = now_ny()
+        slot = now.replace(minute=0 if now.minute < 30 else 30, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
+        db.put({"PK": "GEXHIST", "SK": f"{symbol}#{slot}", "t": slot, "callWall": g.get("callWall"), "putWall": g.get("putWall"),
+                "flip": g.get("gammaFlip"), "spot": spot or g.get("spot")})
+    except Exception as e:
+        print("wall history skipped", e)
+
+
+def walls_now(sub, symbol):
+    """Walls from the options expiring in the next 45 days (the same window the bot's evaluation uses), cached 10 minutes."""
+    import db
+    ck = f"WALLS#{symbol}"
+    cached = db.get("CACHE", ck)
+    if cached and cached.get("at", 0) > time.time() - 600:
+        return cached["data"]
+    chain = fetch_chain(sub, symbol, 90)
+    spot = chain["spot"] or spot_price(symbol)
+    near = [c for c in chain["contracts"] if c["exp"] <= (now_ny() + timedelta(days=45)).strftime("%Y-%m-%d")]
+    g = compute(near or chain["contracts"], spot)
+    out = {"t": now_ny().strftime("%Y-%m-%dT%H:%M"), "callWall": g["callWall"], "putWall": g["putWall"], "flip": g["gammaFlip"],
+           "spot": spot, "source": chain.get("source")}
+    record_walls(symbol, g, spot)
+    try:
+        db.put({"PK": "CACHE", "SK": ck, "at": int(time.time()), "data": out})
+    except Exception:
+        pass
+    return out
+
+
+def wall_history(symbol, since):
+    import db
+    return [{"t": r["t"], "callWall": r.get("callWall"), "putWall": r.get("putWall"), "flip": r.get("flip"), "src": "snapshot"}
+            for r in db.q_prefix("GEXHIST", f"{symbol}#") if r.get("t", "") >= since]

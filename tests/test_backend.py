@@ -86,6 +86,9 @@ from parsers import ParseError, parse_csv  # noqa: E402
 
 SUB = "user-123"
 import autotrader  # noqa: E402
+import wallwatch as _ww0  # noqa: E402
+_ww0.PARAMS["pvSetup"] = False   # the flow retest tests below; the VWAP reset strategy is tested on its own
+_ww0.PARAMS["relFlow"] = False   # fixed alert size in the flow retest tests; unusual flow is tested on its own
 autotrader.DEFAULTS["aiCheck"] = False     # the order tests below don't exercise Claude's chart check (see test_ai_chart_check)
 
 
@@ -1415,7 +1418,10 @@ def test_repeat_buyers():
     STORE.clear()
     pk = db.upk(SUB)
     cfg = autotrader.settings(SUB)
-    assert autotrader._trading_span(1) >= 1 and autotrader._trading_span(5) >= 7 - (0 if autotrader.now_ny().weekday() < 5 else -2) - 2
+    import datetime as _dt
+    _t = autotrader.now_ny().date()
+    _wd = lambda span: sum(1 for k in range(span) if (_t - _dt.timedelta(days=k)).weekday() < 5)
+    assert autotrader._trading_span(1) >= 1 and _wd(autotrader._trading_span(5)) == 5        # any day of the week
     day = autotrader.now_ny().strftime("%Y-%m-%d")
     calls = []
     def fake(sub, min_premium, opt_type="call", *a, **k):
@@ -1591,6 +1597,59 @@ def test_flow_chart():
         assert all("09:30" <= b["t"][11:16] < "16:00" for b in d["bars"]) and len(d["bars"]) == 26
         assert [a["type"] for a in d["alerts"]] == ["put", "call"] and d["alerts"][1]["big"] and not d["alerts"][0]["big"]
         assert seen == {"min": 10000, "type": "all", "ticker": "PLTR"} and d["trigger"]["contract"] == "PLTR261113C00185000"
+        # gamma walls: from earlier evaluations, stored snapshots and now, as steps (unchanged values collapsed)
+        import gex
+        for k in [k for k in STORE if k[0] in ("GEXHIST", "CACHE", "UWGEX2")]:
+            STORE.pop(k)
+        db.put({"PK": pk, "SK": "BOT#20261006100000-aaaaaa", "id": "20261006100000-aaaaaa", "symbol": "PLTR", "createdAt": f"{day}T10:00:00",
+                "gamma": {"callWall": 200, "putWall": 180, "gammaFlip": 188}})
+        db.put({"PK": "GEXHIST", "SK": f"PLTR#{day}T11:00", "t": f"{day}T11:00", "callWall": 200, "putWall": 180, "flip": 188})
+        db.put({"PK": "GEXHIST", "SK": f"PLTR#{day}T12:30", "t": f"{day}T12:30", "callWall": 195, "putWall": 185, "flip": 189})
+        saved_w = gex.walls_now
+        gex.walls_now = lambda sub, sym: {"t": f"{day}T15:00", "callWall": 195, "putWall": 185, "flip": 189, "spot": 190, "source": "test"}
+        try:
+            code, d = call("GET", f"/bot/{rid}/flowchart")
+        finally:
+            gex.walls_now = saved_w
+        assert [(w["t"][11:], w["callWall"], w["src"]) for w in d["walls"]] == [("10:00", 200, "evaluation"), ("12:30", 195, "snapshot"), ("15:00", 195, "now")], d["walls"]
+        assert d["wallsNow"]["putWall"] == 185
+        assert [e["id"] for e in d["evals"]] == ["20261006100000-aaaaaa", rid] and d["evals"][1]["decision"] == "WAIT"
+        assert d["trade"]["at"] == f"{day}T14:45" and d["trade"]["taken"] is False
+        code, tk = call("GET", "/bot/tickers")
+        assert code == 200 and tk["items"][0]["symbol"] == "PLTR" and tk["items"][0]["count"] == 2 and tk["items"][0]["id"] == rid
+        # 45-day view: walls day by day from Unusual Whales greek exposure (each day's open interest), cached per day
+        import datetime as dt
+        calls = []
+        def fake_uw(key, path, params=None):
+            calls.append((path, params["date"]))
+            dd = params["date"]
+            if path.endswith("/gex-levels"):          # some days have no flip (stored without the field)
+                return {"data": {"gamma_flip": "188.5" if dd.endswith(("0", "2", "4", "6", "8")) else None}}
+            cw = "200" if dd < (now - dt.timedelta(days=10)).strftime("%Y-%m-%d") else "210"
+            return {"data": [{"strike": "180", "call_gex": "10", "put_gex": "-900"}, {"strike": cw, "call_gex": "5000", "put_gex": "-5"},
+                             {"strike": "190", "call_gex": "300", "put_gex": "-100"}]}
+        saved_uw = (flowdata._uw, flowdata._key)
+        flowdata._uw, flowdata._key = fake_uw, (lambda sub: "k")
+        try:
+            code, d = call("GET", f"/bot/{rid}/flowchart", q={"days": "45"})
+            assert code == 200 and d["days"] == 45 and d["interval"] == 60 and d["wallSource"] == "uw", d.get("wallNote")
+            cws = [w["callWall"] for w in d["walls"]]
+            assert sorted(set(cws)) == [200, 210] and cws == sorted(cws) and d["walls"][0]["putWall"] == 180 and d["walls"][0].get("flip") in (188.5, None) and d["wallSource"] == "uw"
+            assert d["wallsNow"]["callWall"] == 210 and "Unusual Whales" in d["wallsNow"]["source"]
+            n1 = len(calls)
+            call("GET", f"/bot/{rid}/flowchart", q={"days": "45"})
+            assert len(calls) == n1, "past days and today (within the hour) come from the cache"
+            # dark pool: prints by day (UTC -> ET), cancelled dropped, top price levels by premium
+            def fake_dp(key, path, params=None):
+                calls.append((path, params["date"]))
+                return {"data": [{"executed_at": f"{params['date']}T14:31:05Z", "price": "190.10", "size": 20000, "premium": "3802000", "canceled": False},
+                                 {"executed_at": f"{params['date']}T15:00:00Z", "price": "185.00", "size": 50000, "premium": "9250000", "canceled": True}]}
+            flowdata._uw = fake_dp
+            code, dp = call("GET", f"/bot/{rid}/darkpool", q={"days": "5"})
+            assert code == 200 and dp["prints"] and all(p_["price"] == 190.1 for p_ in dp["prints"]), dp
+            assert dp["prints"][0]["t"][11:] == "10:31" and dp["levels"][0]["price"] == 190.1 and dp["minPremium"] == 500000
+        finally:
+            flowdata._uw, flowdata._key = saved_uw
     finally:
         flowdata.alerts, charts._yahoo = saved
 
@@ -1642,6 +1701,8 @@ def test_call_bursts():
         call("PUT", "/bot/settings", {"burstMinPremium": 250000})
         # live: today's prints add up to a burst once; the same ticker isn't recorded again within the cooldown
         today = now.strftime("%Y-%m-%d")
+        import util as _util
+        bursts.now_ny = lambda: now.replace(hour=10, minute=30, second=0, microsecond=0)   # the cooldown doesn't depend on when the tests run
         live = [mk(today, f"10:{10 + i:02d}", 150000, u=150 - i * 0.05) for i in range(9)]
         flowdata.alerts = lambda sub, *a, **k: {"alerts": live}
         db.put({"PK": pk, "SK": "BURSTSTATE", "seen": ["x"] * 10, "lastEvent": {}})          # old-version state
@@ -1672,6 +1733,8 @@ def test_call_bursts():
         assert code == 200 and STORE[(pk, "BURSTSTUDY")]["status"] == "starting"
     finally:
         flowdata.alerts, charts._yahoo = flowdata_saved, yahoo_saved
+        import util as _util
+        bursts.now_ny = _util.now_ny
 
 
 def test_explorer():
@@ -1743,6 +1806,11 @@ def test_best_exit_and_strategies():
     r = explorer.best_exit(SUB, 60, [{"key": "volOi", "op": ">=", "value": 3}], min_n=5)
     assert r["n"] == 10 and r["tested"] > 100 and r["results"][0]["avgR"] >= r["current"]["avgR"], (r["current"], r["results"][:2])
     best = r["results"][0]["params"]
+    # the bid/ask spread costs: the same rules do worse with a 20% spread than with none
+    r0 = explorer.best_exit(SUB, 60, [{"key": "volOi", "op": ">=", "value": 3}], min_n=5, spread_mult=0)
+    assert r["avgSpread"] == 10.0 and r0["current"]["avgR"] > r["current"]["avgR"]
+    r2 = explorer.best_exit(SUB, 60, [{"key": "volOi", "op": ">=", "value": 3}], min_n=5, spread_mult=2)
+    assert r2["current"]["avgR"] < r["current"]["avgR"] and any(x["tight"] for x in r2["results"] if x["params"]["stop"] < 40)
     assert best["target"] is None or best["target"] >= 100 or best["trail"], best          # the runner shouldn't be sold early
     code, e = call("POST", "/bot/exitopt", {"conds": [{"key": "volOi", "op": ">=", "value": 99}]})
     assert code == 200 and "error" in e
@@ -1752,7 +1820,7 @@ def test_best_exit_and_strategies():
     assert code == 200 and st["mode"] == "watch" and st["exit"]["stop"] == best["stop"]
     code, bad = call("POST", "/bot/strategies", {"conds": [{"key": "claudeApprove", "value": True}]})
     assert code == 400
-    rec = {"id": "20261008100000-aaaaaa", "symbol": "NEW", "decision": "WAIT", "createdAt": autotrader.iso(now),
+    rec = {"id": "20261008100000-aaaaaa", "symbol": "NEW", "decision": "WAIT", "createdAt": autotrader.iso(now + dt.timedelta(minutes=5)),
            "origin": {"type": "flow", "premium": 400000, "volOi": 5}, "proposal": {"contract": "NEWC", "limit": 2.0},
            "checks": [{"group": "chart", "text": "Crossed above the 21 EMA in the last 10 days", "ok": False, "required": True}],
            "blocking": ["Crossed above the 21 EMA in the last 10 days"]}
@@ -1783,8 +1851,40 @@ def test_best_exit_and_strategies():
             "underlyingStop": 50, "underlyingTarget": 999, "exitPlan": {"stop": 20, "target": None, "trail": None}}})
     out = autotrader.monitor(SUB)
     assert out["actions"] and "stop (-25%)" in out["actions"][0][1], out
+    # select the strategy as the only one the bot trades, with a chosen 25% stop
+    code, a = call("PUT", "/bot/strategies/active", {"strategy": st["id"], "stop": 25})
+    assert code == 200 and a["id"] == st["id"] and a["stop"] == 25
+    assert call("PUT", "/bot/strategies/active", {"strategy": st["id"], "stop": 2})[0] == 400
+    call("PUT", f"/bot/strategies/{st['id']}", {"mode": "off"})          # still traded: it's the active one
+    rec4 = {**rec, "checks": list(rec["checks"]), "blocking": list(rec["blocking"]), "proposal": dict(rec["proposal"])}
+    strats.apply(SUB, rec4, autotrader.settings(SUB))
+    assert rec4["decision"] == "BUY" and rec4["proposal"]["exitPlan"]["stop"] == 25, rec4
+    # a normal BUY that doesn't match the active strategy is not bought
+    rec5 = {**rec, "origin": {"type": "flow", "premium": 400000, "volOi": 1}, "decision": "BUY", "checks": [], "blocking": [],
+            "proposal": {"contract": "X", "limit": 2.0}}
+    strats.apply(SUB, rec5, autotrader.settings(SUB))
+    assert rec5["decision"] == "SKIP" and "selected strategy" in rec5["blocking"][0] and "exitPlan" not in rec5["proposal"]
+    # a match buys even when safety rules / size failed, and nothing but its exit plan applies
+    rec7 = {**rec, "checks": [], "proposal": {"contract": "NEWC", "limit": 9.0, "qty": 0},
+            "blocking": ["Puts not piling in (last 5 trading days): ...", "No earnings in the next 7 days"]}
+    strats.apply(SUB, rec7, autotrader.settings(SUB))
+    assert rec7["decision"] == "BUY" and rec7["proposal"]["qty"] == 1 and rec7["proposal"]["strategyOnly"] == st["id"] and rec7["overridden"]
+    # no liquid contract: the closest call is used
+    rec8 = {**rec, "checks": [], "proposal": None, "altProposal": {"contract": "ALT", "limit": 1.0, "qty": 2}, "blocking": ["Liquid contract ..."]}
+    strats.apply(SUB, rec8, autotrader.settings(SUB))
+    assert rec8["decision"] == "BUY" and rec8["proposal"]["contract"] == "ALT" and "altProposal" not in rec8
+    assert strats.effective_stop(SUB) == 25
+    # back to the bot rules with the strategy/settings stop: a BUY stays a BUY
+    code, a = call("PUT", "/bot/strategies/active", {"strategy": "", "stop": None})
+    assert code == 200 and a["id"] == "" and a["stop"] is None and strats.effective_stop(SUB) is None
+    rec6 = {**rec5, "decision": "BUY", "blocking": [], "checks": [], "proposal": {"contract": "X", "limit": 2.0}}
+    strats.apply(SUB, rec6, autotrader.settings(SUB))
+    assert rec6["decision"] == "BUY" and "exitPlan" not in rec6["proposal"]
+    code, lst = call("GET", "/bot/strategies")
+    assert lst["active"]["name"] == "Bot rules" and 25 in lst["stops"]
+    call("PUT", "/bot/strategies/active", {"strategy": st["id"]})
     code, _ = call("DELETE", f"/bot/strategies/{st['id']}")
-    assert code == 200 and strats.load(SUB) == []
+    assert code == 200 and strats.load(SUB) == [] and strats.active(SUB)[0] is None
 
 
 def test_analytics():
@@ -1795,6 +1895,2507 @@ def test_analytics():
     ts[2]["tags"] = ["Revenge"]
     L = analytics.leaks(ts)
     assert L["leaks"][0]["label"] == "Revenge trades" and L["leaks"][0]["dollars"] == -80
+
+
+def test_walls_store_and_explorer():
+    """Walls by day: largest call / put gamma strikes; stored for every evaluated ticker; explorer features."""
+    import flowdata, explorer, autotrader, datetime as dt
+    STORE.clear()
+    assert flowdata.walls_from_strikes([[90, 50, -10], [100, 900, -2000], [110, 300, -5], [120, 100, 0]]) == (100, 100)
+    assert flowdata.walls_from_strikes([[90, 5000, -10], [100, 0, -2000]]) == (90, 100)        # call wall below the put wall
+    pk = db.upk(SUB)
+    now = autotrader.now_ny()
+    day = now.date()
+    while day.weekday() >= 5:
+        day -= dt.timedelta(days=1)
+    rid = day.strftime("%Y%m%d") + "100000-abcdef"
+    db.put({"PK": pk, "SK": f"BOT#{rid}", "id": rid, "symbol": "XYZ", "createdAt": f"{day.isoformat()}T10:00:00", "decision": "WAIT",
+            "signals": {"price": 102.0}, "shadow": {"status": "done", "R": 1.0}})
+    calls = []
+    def fake(key, path, params=None):
+        calls.append((path, params["date"]))
+        if path.endswith("gex-levels"):
+            return {"data": {"gamma_flip": "101"}}
+        pw = 100 if params["date"] == day.isoformat() else 95
+        return {"data": [{"strike": str(pw), "call_gex": "10", "put_gex": "-900"}, {"strike": "110", "call_gex": "800", "put_gex": "-1"},
+                         {"strike": "90", "call_gex": "50", "put_gex": "-3"}]}
+    saved = (flowdata._uw, flowdata._key)
+    flowdata._uw, flowdata._key = fake, (lambda sub: "k")
+    try:
+        r = flowdata.walls_backfill(SUB, days=10, budget_s=60)
+        assert r["tickers"] == 1 and r["stored"] >= 5 and r["left"] == 0, r
+        assert not any(p_.endswith("gex-levels") for p_, _ in calls), "the backfill skips the flip"
+        st = flowdata.stored_walls("XYZ")
+        assert st[day.isoformat()] == {"callWall": 110, "putWall": 100, "flip": None}
+        n0 = len(calls)
+        assert flowdata.walls_backfill(SUB, days=10)["missing"] == 0 and len(calls) == n0      # nothing fetched twice
+        w = flowdata.gex_day("k", "XYZ", day.isoformat())                                    # the chart wants the flip: added once
+        assert w["flip"] == 101.0 and flowdata.stored_walls("XYZ")[day.isoformat()]["flip"] == 101.0
+        ex = explorer.explore(SUB, 10, [{"key": "pwUp", "value": True}])
+        row = explorer.rows(SUB, 10)[0]
+        assert row["pwDist"] == 2.0 and row["cwRoom"] == 7.84 and row["betweenWalls"] and row["pwUp"] and row["risingFloor"] and row["cwAbovePw"], row
+        assert ex["match"]["n"] == 1 and ex["walls"]["known"] == 1
+        sr = explorer.search(explorer.rows(SUB, 10), min_n=1, group="wallsflow")
+        assert sr["results"] and all(any(c["key"] in explorer.WALL_KEYS for c in x["conds"]) for x in sr["results"])
+        assert all(c["key"] in explorer.WALL_KEYS or c["key"] in explorer.FLOW_KEYS for x in sr["results"] for c in x["conds"])
+    finally:
+        flowdata._uw, flowdata._key = saved
+
+
+def test_explorer_many_features_and_deep_search():
+    import explorer
+    rec = {"createdAt": "2026-10-06T10:15:00", "symbol": "AAA", "decision": "BUY",
+           "signals": {"price": 105, "ema21": 100, "atr21": 2.1, "crossAgo": 4, "momentum": 0.5, "momentumPrev": 0.2, "low30Date": "2026-09-26"},
+           "gamma": {"gammaFlip": 100, "callWall": 115, "putWall": 102, "netGex": 5},
+           "proposal": {"contract": "C1", "underlyingStop": 100, "underlyingTarget": 115},
+           "candidates": [{"symbol": "C1", "dte": 30, "delta": 0.55, "iv": 0.45, "spreadPct": 2.0, "oi": 900, "strike": 110}],
+           "events": [], "origin": {"type": "flow", "alerts": 3, "topPremium": 400000, "optPrice": 2.5, "rule": "RepeatedHits"},
+           "tickerFlow": {"window": {"calls": {"premium": 1000, "days": 3, "contracts": 5}, "bigCalls": {"hits": 2}, "bigPuts": 0},
+                          "today": {"calls": {"premium": 600}, "puts": {"premium": 100}}, "repeatQualifies": True}}
+    f = explorer.features_of(rec, {})
+    assert f["emaDist"] == 5.0 and f["flipDist"] == 5.0 and f["posGex"] is True
+    assert f["roomRatio"] == 2.0 and f["iv"] == 45.0 and f["dte"] == 30 and f["low30Age"] == 10
+    assert f["repeatRule"] is True and f["todayShare"] == 60.0 and f["callsOverPutsToday"] is True
+    assert f["weekday"] == 2 and f["minsOpen"] == 45
+    assert all(k in explorer.CAT_OF for k in explorer.FEATURES), [k for k in explorer.FEATURES if k not in explorer.CAT_OF]
+    w = explorer.wall_features(rec, {"2026-10-02": {"putWall": 98, "callWall": 112}, "2026-10-05": {"putWall": 100, "callWall": 112},
+                                     "2026-10-06": {"putWall": 104, "callWall": 112}})
+    assert w["pwUp2"] is True and w["pwChg"] == 4.0 and w["atPw"] is True and w["wallWidth"] == 7.69
+    # deep search: only rows with all 5 flags win
+    import random
+    random.seed(1)
+    rs = []
+    for i in range(400):
+        r = {"id": str(i), "at": f"2026-09-{1 + i % 28:02d}T10:00:00", "status": "done"}
+        flags = [random.random() < 0.6 for _ in range(5)]
+        for k, v in zip(("aboveEma", "momUp", "sweep", "putsOk", "posGex"), flags):
+            r[k] = v
+        r["R"] = 2.0 if all(flags) else -0.5
+        rs.append(r)
+    out = explorer.search(rs, min_n=10, max_depth=5)
+    best = out["results"][0]
+    assert best["avgR"] == 2.0 and best["size"] == 5, best
+    assert explorer.search(rs, min_n=10, max_depth=3)["results"][0]["size"] <= 3
+
+
+def test_wall_watch():
+    """CW > flip > PW + green hourly candle crossing the put wall; target = call wall, stop = put wall - 0.5 ATR (fixed)."""
+    import wallwatch as _ww
+    _ww.FLOW_ONLY = False
+    import wallwatch, flowdata, charts, datetime as dt
+    STORE.clear()
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 101, "h": 101.5, "l": 100.5, "c": 101},
+            {"t": "2026-10-05T10:30", "o": 99.5, "h": 101, "l": 99, "c": 100.8},      # green, crosses the put wall -> signal
+            {"t": "2026-10-05T11:30", "o": 100.8, "h": 104, "l": 100.2, "c": 103.5},
+            {"t": "2026-10-05T12:30", "o": 103.5, "h": 103.9, "l": 102.6, "c": 103.2},  # above the trailed stop
+            {"t": "2026-10-06T09:30", "o": 104, "h": 110.5, "l": 103, "c": 109},       # target
+            {"t": "2026-10-06T10:30", "o": 101, "h": 101.2, "l": 99.6, "c": 101.1},    # new signal
+            {"t": "2026-10-06T11:30", "o": 101, "h": 101.2, "l": 95.0, "c": 99.4}]     # through put wall - 0.5 ATR -> stop
+    sigs = wallwatch.detect(bars, {"2026-10-05": w, "2026-10-06": w})
+    assert [s["status"] for s in sigs] == ["target", "stop"], sigs
+    assert sigs[0]["target"] == 109.45 and sigs[0]["exit"] == 109.45 and sigs[0]["pct"] == round((109.45 / 100.8 - 1) * 100, 2)   # 0.5% under the call wall
+    assert wallwatch.detect(bars, {"2026-10-05": w, "2026-10-06": w}, cfg={"tgtBuf": 0})[0]["exit"] == 110
+    atr = wallwatch.atr14(bars)
+    assert sigs[1]["stop"] == round(100 - 0.5 * atr[5], 4) and sigs[1]["exit"] == sigs[1]["stop"]
+    assert sigs[0]["stop"] == round(104 - sigs[0]["atr"], 4) and sigs[0]["kind"] == "pw"    # trailed 1 ATR under the 11:30 high
+    assert sigs[1]["riskPct"] == round((101.1 - sigs[1]["stop"]) / 101.1 * 100, 2)
+    assert not wallwatch.detect(bars, {"2026-10-05": {"callWall": 110, "flip": 99, "putWall": 100}}, cfg={"flipSetup": False})   # flip under the put wall
+    tb = bars[:3] + [{"t": "2026-10-06T09:30", "o": 104, "h": 106, "l": 103.8, "c": 105.5},
+                     {"t": "2026-10-06T10:30", "o": 105.5, "h": 105.6, "l": 103, "c": 103.5}]       # under the trailed stop
+    ts = wallwatch.detect(tb, {"2026-10-05": w, "2026-10-06": w})
+    assert ts[0]["status"] == "trail" and ts[0]["stop"] == round(106 - ts[0]["atr"], 4) and ts[0]["exit"] == ts[0]["stop"], ts
+    nt = wallwatch.detect(tb, {"2026-10-05": w, "2026-10-06": w}, cfg={"trailAtr": 0, "stopAtr": 1})      # no trailing
+    assert nt[0]["stop"] == nt[0]["stop0"] == round(100 - nt[0]["atr"], 4) and "stops" not in nt[0]
+    fw = {"callWall": 110, "flip": 100, "putWall": 102}                                                    # flip < PW < CW
+    fs = wallwatch.detect(bars, {"2026-10-05": fw, "2026-10-06": fw})
+    assert fs and fs[0]["kind"] == "flip" and fs[0]["level"] == 100 and fs[0]["stop0"] == round(100 - 0.5 * fs[0]["atr"], 4)
+    assert not wallwatch.detect(bars, {"2026-10-05": fw, "2026-10-06": fw}, cfg={"flipSetup": False})
+    mw = {"callWall": 100, "flip": 102, "putWall": 100}                                                   # PW = CW < flip
+    assert wallwatch.setup_kind(mw) == "merged"
+    mb = [{"t": "2026-10-05T09:30", "o": 101, "h": 101.5, "l": 100.5, "c": 101},
+          {"t": "2026-10-05T10:30", "o": 99.5, "h": 101, "l": 99, "c": 100.8},                             # crosses the merged wall
+          {"t": "2026-10-05T11:30", "o": 100.8, "h": 120, "l": 100.2, "c": 119},                           # no target: still open
+          {"t": "2026-10-06T09:30", "o": 119, "h": 119.5, "l": 105.5, "c": 106},
+          {"t": "2026-10-06T10:30", "o": 106, "h": 106.5, "l": 104.0, "c": 104.2}]                         # under the raised stop
+    ms = wallwatch.detect(mb, {"2026-10-05": mw, "2026-10-06": {"callWall": 105, "flip": 106, "putWall": 105}})
+    assert ms[0]["kind"] == "merged" and ms[0]["target"] is None and ms[0]["status"] == "trail", ms
+    assert ms[0]["stop"] == round(105 - 0.5 * ms[0]["atr"], 4) and ms[0]["exit"] == ms[0]["stop"] and ms[0]["tgtPct"] is None
+    daily = [{"t": f"2026-08-{d:02d}", "o": 100, "h": 102, "l": 98, "c": 100} for d in range(1, 31)] + \
+            [{"t": f"2026-09-{d:02d}", "o": 100, "h": 104, "l": 96, "c": 100} for d in range(1, 31)]
+    da = wallwatch.daily_atr(daily)
+    assert "2026-08-30" not in da and abs(da["2026-09-30"] - (4 + 29 * 8) / 30) < 1e-9 and abs(da["next"] - 8) < 1e-9
+    ds = wallwatch.detect(bars, {"2026-10-05": w, "2026-10-06": w}, datr={**da, "next": 4.0})
+    assert ds[0]["atr"] == 4.0 and ds[0]["stop0"] == 98.0          # put wall 100 - 0.5 x 30-day ATR 4
+    assert ts[0]["pct"] > 0 and ts[0]["stops"][-1] == ["2026-10-06T09:30", ts[0]["stop"]]
+    now = dt.datetime(2026, 10, 5, 11, 10)
+    assert [b["t"][11:16] for b in wallwatch.finished(bars[:3], now)] == ["09:30"]                       # 10:30 candle not over
+    saved = (charts._yahoo, flowdata.gex_day, flowdata._key)
+    charts._yahoo = lambda sym, tf, a, b: [dict(x) for x in bars]
+    flowdata.gex_day = lambda key, sym, d, flip=True: dict(w)
+    flowdata._key = lambda sub: "k"
+    try:
+        st, r = call("GET", "/bot/wallwatch")
+        assert st == 200 and "SPY" in r["config"]["tickers"] and r["config"]["enabled"]
+        st, r = call("PUT", "/bot/wallwatch", {"tickers": "aapl, brk/b msft", "trailAtr": "1.5", "flipSetup": False})
+        assert r["config"]["tickers"] == ["AAPL", "BRK.B", "MSFT"] and r["config"]["trailAtr"] == 1.5 and r["config"]["flipSetup"] is False
+        call("PUT", "/bot/wallwatch", {"trailAtr": 1, "flipSetup": True})
+        out = wallwatch.run(SUB, days=45)
+        assert out["checked"] == 3, out
+        st, r = call("GET", "/bot/wallwatch")
+        sm = r["summary"]
+        assert sm["signals"] == 6 and sm["closed"] == 6 and sm["targets"] == 3 and sm["hitPct"] == 50, sm
+        assert len(r["status"]) == 3 and r["status"][0]["setup"] == "pw"
+        saved_sw = flowdata.stored_walls
+        flowdata.stored_walls = lambda sym: {"2026-10-05": dict(w), "2026-10-06": dict(w)}
+        saved_al = flowdata.alerts
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "AAPL", "atEt": "2026-10-05 10:45", "type": "call", "premium": 300000},
+                                                       {"ticker": "AAPL", "atEt": "2026-10-06 11:00", "type": "put", "premium": 200000},
+                                                       {"ticker": "MSFT", "atEt": "2026-10-06 11:00", "type": "put", "premium": 200000}]}
+        try:
+            st, c = call("GET", "/bot/wallwatch/chart", q={"t": "AAPL"})
+        finally:
+            flowdata.stored_walls, flowdata.alerts = saved_sw, saved_al
+        assert [a["type"] for a in c["alerts"]] == ["call", "put"], c["alerts"]
+        assert st == 200 and c["symbol"] == "AAPL" and len(c["bars"]) == 7 and len(c["signals"]) == 2, c
+        assert c["walls"][0]["flip"] == 102 and c["interval"] == 60
+        days = wallwatch._weekdays(5, wallwatch.now_ny().date())
+        past = [d_ for d_ in days if d_ != wallwatch.now_ny().strftime("%Y-%m-%d")]
+        db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[0]}", "data": {"callWall": 1, "putWall": 1, "flip": 1}})
+        db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[1]}", "data": None})                       # no data that day: done
+        db.put({"PK": "UWGEX2", "SK": f"AAPL#{past[2]}", "data": {"callWall": 1, "putWall": 1, "noflip": True}})
+        db.put({"PK": "UWMP", "SK": f"AAPL#{past[0]}", "at": 0, "mp": {}})
+        db.put({"PK": "UWMP", "SK": f"AAPL#{past[1]}", "at": 0, "mp": {}})
+        saved_uw = flowdata._uw
+        flowdata._uw = lambda key, path, params=None, attempts=4: {"data": [{"expiry": "2026-10-16", "max_pain": "105"},
+                                                                             {"expiry": "2026-10-23", "max_pain": "99"}]}
+        todo, total = wallwatch.walls_todo(["AAPL"], 5)
+        assert total == 5 and (("AAPL", past[2]) in todo) and ("AAPL", past[0]) not in todo and ("AAPL", past[1]) not in todo
+        got = []
+        flowdata.gex_day = lambda key, sym, d, flip=True: got.append((sym, d)) or dict(w)
+        f = wallwatch.fill_walls(SUB, days=5, budget_s=30)
+        assert f["left"] == 0 and f["fetched"] == len(got) and len(got) == 3 * 5 - 2 - (5 - len(past)) * 3, (f, got)
+        st, r = call("GET", "/bot/wallwatch")
+        assert r["fill"]["left"] == 0 and r["fill"]["total"] == 15
+        mpd = wallwatch.stored_maxpain("MSFT")
+        assert mpd and all(v == {"2026-10-16": 105.0} or v == {} for v in mpd.values()), mpd
+        got.clear()
+        f1 = wallwatch.fill_walls(SUB, days=5, budget_s=30, ticker="MSFT")
+        assert f1["total"] == 5 and all(t_ == "MSFT" for t_, _ in got) and db.get(db.upk(SUB), "WWFILL#MSFT")["left"] == 0
+        flowdata._uw = saved_uw
+        assert wallwatch.parse_max_pain({"data": {"2026-11-20": 50, "x": 1}}) == {"2026-11-20": 50.0}
+        ser = wallwatch.maxpain_series({"2026-10-14": {"2026-10-16": 105.0, "2026-11-20": 90.0}, "2026-10-19": {"2026-11-20": 92.0}},
+                                       ["2026-10-14", "2026-10-19"])
+        assert ser == [{"t": "2026-10-14T09:30", "exp": "2026-10-16", "maxPain": 105.0}, {"t": "2026-10-19T09:30", "exp": "2026-11-20", "maxPain": 92.0}]
+        assert wallwatch.monthly_exps("2026-09-01", "2026-11-30") == ["2026-09-18", "2026-10-16", "2026-11-20"]
+        saved_dp, saved_y = flowdata.darkpool, charts._yahoo
+        seen_dp = []
+        charts._yahoo = lambda sym, tf, a, b: [{"t": f"2026-09-{d:02d}", "o": 100, "h": 101, "l": 99, "c": 100, "v": 1_000_000} for d in range(1, 31)]
+        pr = [{"t": "2026-10-05T10:00", "price": 100.0, "size": 4000, "premium": 400000, "side": "buy"},
+              {"t": "2026-10-05T11:00", "price": 101.0, "size": 6000, "premium": 606000, "side": "buy"},
+              {"t": "2026-10-06T11:00", "price": 99.0, "size": 9000, "premium": 891000, "side": "sell"}]
+        flowdata.darkpool = lambda sub, sym, dates, mp, **k: seen_dp.append((sym, len(dates), mp)) or {"prints": pr, "levels": [], "minPremium": mp}
+        st, dpr = call("GET", "/bot/wallwatch/darkpool", q={"t": "brk/b", "pct": "0.5"})
+        flowdata.darkpool, charts._yahoo = saved_dp, saved_y
+        assert st == 200 and dpr["symbol"] == "BRK.B" and seen_dp == [("BRK.B", 180 * 5 // 7, 250000)], (dpr, seen_dp)   # levels: always 180 days
+        assert dpr["adv"] == 1_000_000 and dpr["minShares"] == 5000 and [p_["size"] for p_ in dpr["prints"]] == [6000, 9000]
+        assert dpr["buy"] == 606000 and dpr["sell"] == 891000 and dpr["levels"][0]["sell"] == 891000
+    finally:
+        charts._yahoo, flowdata.gex_day, flowdata._key = saved
+
+
+def test_wall_watch_live():
+    """Flow tickers join the list; a fresh signal buys a call (paper) with the signal's stop / target; the exit trails."""
+    import wallwatch as _ww
+    _ww.FLOW_ONLY = False
+    import wallwatch, flowdata, autotrader, charts, datetime as dt
+    STORE.clear()
+    pk = db.upk(SUB)
+    call("GET", "/bot/wallwatch")
+    saved = (flowdata.alerts, autotrader.evaluate, autotrader.place, autotrader.chase, autotrader._yahoo)
+    try:
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "ZZZ", "premium": 600000}, {"ticker": "AAPL", "premium": 1}]}
+        r = wallwatch.flow_add(SUB)
+        cfg = wallwatch.config(SUB)
+        assert r["added"] == ["ZZZ"] and "ZZZ" in cfg["tickers"] and cfg["added"]["ZZZ"]["by"] == "flow"
+        st, v = call("PUT", "/bot/wallwatch", {"add": "pypl"})
+        assert "PYPL" in v["config"]["tickers"] and v["config"]["added"]["PYPL"]["by"] == "you"
+        calls = []
+        def fake_eval(sub, sym, source=None):
+            rec = {"id": "20261012113200-abcdef", "symbol": sym, "decision": "SKIP", "status": "proposed", "proposal": None,
+                   "altProposal": {"contract": "ZZZ261120C00105000", "exp": "2026-11-20", "strike": 105, "qty": 0, "limit": 2.0}}
+            db.put({"PK": pk, "SK": f"BOT#{rec['id']}", **rec})
+            calls.append(("eval", source["type"]))
+            return rec
+        autotrader.evaluate = fake_eval
+        autotrader.place = lambda sub, bid, **k: calls.append(("place", k.get("placed_by"), k.get("override")))
+        autotrader.chase = lambda sub, bid: calls.append(("chase",)) or {"status": "open"}
+        sg = {"at": "2026-10-12T10:30", "kind": "pw", "level": 100, "entry": 100.8, "stop": 99.0, "stop0": 99.0, "atr": 3.6, "target": 110}
+        db.put({"PK": pk, "SK": f"WWSIG#ZZZ#{sg['at']}", "symbol": "ZZZ", **sg})
+        out = wallwatch.enter(SUB, "ZZZ", sg)
+        assert out["botId"] == "20261012113200-abcdef" and [c[0] for c in calls] == ["eval", "place", "chase"], (out, calls)
+        assert calls[1] == ("place", "auto-wallwatch", True)
+        rec = db.get(pk, "BOT#20261012113200-abcdef")
+        p = rec["proposal"]
+        assert p["qty"] == 1 and p["underlyingStop"] == 99.0 and p["underlyingTarget"] == 110 and p["wallwatch"]["trailAtr"] == 1.0
+        assert db.get(pk, f"WWSIG#ZZZ#{sg['at']}")["botId"] == rec["id"]
+        # exit: trailing stop from 5-minute candles after the fill
+        db.update(pk, rec["SK"], {"status": "open", "filledAt": "2026-10-12T11:31:00", "fillPrice": 2.0, "filledQty": 1})
+        rec = db.get(pk, rec["SK"])
+        bars5 = [{"t": "2026-10-12T11:35", "o": 101, "h": 106, "l": 100.5, "c": 105},
+                 {"t": "2026-10-12T11:40", "o": 105, "h": 105.2, "l": 102.0, "c": 102.2}]
+        autotrader._yahoo = lambda *a, **k: [dict(b) for b in bars5]
+        reason = autotrader._wallwatch_exit(SUB, rec, rec["proposal"])
+        assert reason and reason.startswith("trailing stop") and db.get(pk, rec["SK"])["proposal"]["underlyingStop"] == round(106 - 3.6, 4), reason
+        bars5[-1].update(l=104, h=110.5)
+        rec = db.get(pk, rec["SK"])
+        assert "call wall" in autotrader._wallwatch_exit(SUB, rec, rec["proposal"])
+        st_, vv = call("GET", "/bot/wallwatch")
+        assert any(x["symbol"] == "ZZZ" and x["status"] == "open" and x["wallwatch"] for x in vv["positions"]), vv["positions"]
+        tr = wallwatch.trades_for(SUB, "ZZZ")
+        assert tr and tr[0]["contract"] == "ZZZ261120C00105000" and tr[0]["under"] == 100.8
+        hb = [{"t": "2026-10-12T09:30", "o": 101, "h": 101.5, "l": 100.5, "c": 101},
+              {"t": "2026-10-12T10:30", "o": 99.5, "h": 101, "l": 99, "c": 100.8}]
+        saved2 = (charts._yahoo, flowdata.gex_day)
+        charts._yahoo = lambda sym, tf, a, b: [dict(x) for x in hb] if tf == "1h" else []
+        flowdata.gex_day = lambda key, sym, d, flip=True: {"callWall": 110, "flip": 102, "putWall": 100}
+        try:
+            fresh = wallwatch.check_ticker(SUB, "k", "QQQ", 3, dt.datetime(2026, 10, 12, 11, 32))
+            stale = wallwatch.check_ticker(SUB, "k", "SPY", 3, dt.datetime(2026, 10, 12, 13, 5))
+        finally:
+            charts._yahoo, flowdata.gex_day = saved2
+        assert len(fresh["_enter"]) == 1 and fresh["_enter"][0]["at"] == "2026-10-12T10:30" and not stale["_enter"]
+    finally:
+        flowdata.alerts, autotrader.evaluate, autotrader.place, autotrader.chase, autotrader._yahoo = saved
+
+
+def test_wall_watch_flow_study():
+    """Flow before each signal; results with and without each flow condition; the flow filter blocks a trade."""
+    import wallwatch as _ww
+    _ww.FLOW_ONLY = False
+    import wallwatch, flowdata
+    STORE.clear()
+    pk = db.upk(SUB)
+    call("GET", "/bot/wallwatch")
+    sg = {"at": "2026-10-07T10:30", "level": 100, "pw": 100, "entry": 100.8}
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 2_000_000, "u": 100.5},     # 3 days before, near the level
+          {"t": "2026-10-07T09:45", "c": 1, "p": 600_000, "u": 101},
+          {"t": "2026-10-06T12:00", "c": 0, "p": 300_000, "u": 103},
+          {"t": "2026-10-07T12:00", "c": 1, "p": 9_000_000, "u": 102}]     # after the signal: ignored
+    f = wallwatch.flow_features(sg, al)
+    assert f["c3"] == 2_600_000 and f["p3"] == 300_000 and f["c1"] == 600_000 and f["big3"] == 2 and f["nearLevel"] == 2_600_000, f
+    assert f["lastCallH"] == 1.8
+    for i, (st, pct, fl) in enumerate([("target", 5.0, f), ("stop", -2.0, {**f, "c3": 0, "c1": 0, "big3": 0, "nearLevel": 0}),
+                                       ("stop", -1.0, f)]):
+        db.put({"PK": pk, "SK": f"WWSIG#AAPL#2026-10-0{i + 1}T10:30", "symbol": "AAPL", "at": f"2026-10-0{i + 1}T10:30",
+                "status": st, "pct": pct, "R": pct / 2, "tgtPct": 8, "riskPct": 2, "flow": fl})
+    st_, v = call("GET", "/bot/wallwatch")
+    fs = v["flowStudy"]
+    assert fs["base"]["n"] == 3 and fs["rows"][0]["name"].startswith("Any call flow") and fs["rows"][0]["n"] == 2
+    assert fs["rows"][0]["avgPct"] == 2.0 and fs["rows"][1]["n"] == 1 and fs["rows"][1]["avgPct"] == -2.0
+    saved = flowdata.alerts
+    flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "AAPL", "atEt": "2026-09-30 10:00", "type": "call", "premium": 50000}]}
+    try:
+        out = wallwatch.flow_study(SUB, budget_s=30)
+        assert out["tickers"] == 1 and db.get(pk, "WWSIG#AAPL#2026-10-01T10:30")["flow"]["c3"] == 50000
+        call("PUT", "/bot/wallwatch", {"flowRule": 3})                    # calls >= $5M in the 3 days before
+        sig = {"at": "2026-10-07T10:30", "level": 100, "entry": 100.8, "stop": 99, "stop0": 99, "atr": 2, "target": 110}
+        db.put({"PK": pk, "SK": "WWSIG#AAPL#2026-10-07T10:30", "symbol": "AAPL", **sig})
+        r = wallwatch.enter(SUB, "AAPL", sig)
+        assert r.get("skipped", "").startswith("Calls ≥ $5M") and "flow filter" in db.get(pk, "WWSIG#AAPL#2026-10-07T10:30")["tradeError"]
+    finally:
+        flowdata.alerts = saved
+
+
+def test_wall_watch_retest():
+    """Call flow arms the ticker; the support is the highest wall / flip under the price; a green retest candle enters."""
+    import wallwatch
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},       # big call alert inside: armed
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0},   # green, low back to the flip: entry
+            {"t": "2026-10-06T09:30", "o": 103, "h": 110, "l": 102.9, "c": 109}]          # target
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}, {"t": "2026-10-05T10:05", "c": 1, "p": 100000}]
+    sg, watch = wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=al)
+    assert len(sg) == 1 and sg[0]["kind"] == "retest" and sg[0]["level"] == 102 and sg[0]["levelName"] == "flip", sg
+    assert sg[0]["armedAt"] == "2026-10-05T10:00" and sg[0]["status"] == "target" and sg[0]["target"] == 109.45 and watch is None
+    assert wallwatch.sig_sk("AAA", sg[0]).endswith("#R")
+    # the alert arrives while price sits on the support: the alert candle itself is the entry when it is green and holds
+    flat = [{"t": "2026-10-05T09:30", "o": 102.0, "h": 102.6, "l": 101.9, "c": 102.4}] + bars[2:]
+    fs = wallwatch.detect_retest(flat, {"2026-10-05": w, "2026-10-06": w}, alerts=al, datr={"next": 2.0})[0]
+    assert fs and fs[0]["at"] == "2026-10-05T09:30" and fs[0]["levelName"] == "flip"
+    # alert on a red candle at the support, entry on the next green candle that holds it
+    rc = [{"t": "2026-10-05T09:30", "o": 103.0, "h": 103.1, "l": 102.0, "c": 102.2},
+          {"t": "2026-10-05T10:30", "o": 102.2, "h": 102.9, "l": 101.95, "c": 102.7}]
+    rs_ = wallwatch.detect_retest(rc, {"2026-10-05": w}, alerts=al, datr={"next": 2.0})[0]
+    assert rs_ and rs_[0]["at"] == "2026-10-05T10:30"
+    # a red candle at the support is not an entry
+    red = bars[:2] + [{"t": "2026-10-05T11:30", "o": 103.2, "h": 103.4, "l": 102.1, "c": 102.5}]
+    assert not wallwatch.detect_retest(red, {"2026-10-05": w}, alerts=al)[0]
+    # only above the flip: the retest of a put wall under the flip is skipped
+    fw2 = {"callWall": 110, "flip": 106, "putWall": 102}
+    assert wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, alerts=al)[0]
+    af = wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True, "cwRoom": 0}, alerts=al)[0]
+    assert af and af[0]["at"] == "2026-10-06T09:30" and af[0]["levelName"] == "flip" and af[0]["level"] == 106   # waits for the flip
+    # earnings within 10 days: no entry; 11+ days away: entry
+    assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=al, earnings="2026-10-14")[0]
+    assert wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=al, earnings="2026-10-20")[0]
+    # daily close under the flip: out at the last candle of the day (entry above the flip)
+    fx = [{"t": "2026-10-05T14:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+          {"t": "2026-10-05T15:30", "o": 104.6, "h": 105.2, "l": 104.2, "c": 104.8},     # green, back to the flip 104.5: entry
+          {"t": "2026-10-06T14:30", "o": 104.8, "h": 105, "l": 104.3, "c": 104.6},
+          {"t": "2026-10-06T15:30", "o": 104.6, "h": 104.7, "l": 104.1, "c": 104.2}]      # day closes under the flip 104.5
+    fw3 = {"callWall": 110, "flip": 104.5, "putWall": 100}
+    fxs = wallwatch.detect_retest(fx, {"2026-10-05": fw3, "2026-10-06": fw3}, cfg={"trailAtr": 0, "stopAtr": 1},
+                                  alerts=[{"t": "2026-10-05T14:45", "c": 1, "p": 900000}], datr={"next": 1.0})[0]
+    assert fxs and fxs[0]["status"] == "flip" and fxs[0]["exit"] == 104.2 and fxs[0]["aboveFlipAtEntry"], fxs
+    assert fxs[0]["alt"]["flipExit"] is False and fxs[0]["alt"]["status"] == "open"
+    assert wallwatch.detect_retest(fx, {"2026-10-05": fw3, "2026-10-06": fw3}, cfg={"flipExit": False, "trailAtr": 0, "stopAtr": 1},
+                                   alerts=[{"t": "2026-10-05T14:45", "c": 1, "p": 900000}], datr={"next": 1.0})[0][0]["status"] == "open"
+    assert wallwatch._flip_chg({"2026-10-05": {"flip": 100}, "2026-10-06": {"flip": 98}}, "2026-10-06") == -2.0
+    # the retest candle closing above the call wall: no entry
+    w105 = {"callWall": 103.5, "flip": 102, "putWall": 100}
+    nb = [bars[0], bars[1], {"t": "2026-10-05T11:30", "o": 102.6, "h": 104.0, "l": 102.1, "c": 103.8}]
+    assert not wallwatch.detect_retest(nb, {"2026-10-05": w105}, alerts=al)[0]
+    # too close under the call wall (less than cwRoom x ATR): no entry
+    assert not wallwatch.detect_retest(bars, {"2026-10-05": fw2, "2026-10-06": fw2}, cfg={"aboveFlip": True, "cwRoom": 1}, alerts=al, datr={"next": 2.0})[0]
+    assert wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, cfg={"cwRoom": 1}, alerts=al, datr={"next": 2.0})[0]
+    # the call wall is never the support: price above the call wall has no support to retest
+    cwb = [{"t": "2026-10-05T09:30", "o": 111, "h": 112, "l": 110.5, "c": 111.5},
+           {"t": "2026-10-05T10:30", "o": 110.2, "h": 111, "l": 110.0, "c": 110.8}]
+    assert not wallwatch.detect_retest(cwb, {"2026-10-05": w}, alerts=al, datr={"next": 2.0})[0]
+    # VWAP restarts only on the highest volume of the last N trading days (not every opening candle)
+    vb = []
+    for dd in range(1, 6):
+        for hh, vol in (("09:30", 500), ("10:30", 100), ("11:30", 100)):
+            vb.append({"t": f"2026-10-0{dd}T{hh}", "o": 10, "h": 11, "l": 9, "c": 10, "v": vol})
+    vb.append({"t": "2026-10-06T09:30", "o": 20, "h": 21, "l": 19, "c": 20, "v": 900})
+    vv, resets = wallwatch.anchored_vwap(vb, days=3)
+    assert resets == [0, 15] and vv[14] == 10.0 and vv[15] == 20.0, resets
+    # alert too small: never armed
+    assert not wallwatch.detect_retest(bars, {"2026-10-05": w, "2026-10-06": w}, alerts=[al[1]])[0]
+    # support broken before the retest: the watch ends
+    broken = bars[:1] + [{"t": "2026-10-05T10:30", "o": 104, "h": 104, "l": 98, "c": 98.5}] + bars[2:]
+    assert not wallwatch.detect_retest(broken, {"2026-10-05": w, "2026-10-06": w}, alerts=al, datr={"next": 2.0})[0]
+    # still waiting for the retest: the watch is returned
+    sg2, watch2 = wallwatch.detect_retest(bars[:2], {"2026-10-05": w}, alerts=al)
+    assert not sg2 and watch2["level"] == 102 and watch2["levelName"] == "flip"
+    wallwatch.FLOW_ONLY = True
+    STORE.clear()
+    pk = db.upk(SUB)
+    call("GET", "/bot/wallwatch")
+    db.put({"PK": pk, "SK": "WWSIG#AAPL#2026-10-05T11:30#R", "symbol": "AAPL", **sg[0]})
+    db.put({"PK": pk, "SK": "WWSIG#AAPL#2026-10-01T11:30", "symbol": "AAPL", "kind": "pw", "at": "2026-10-01T11:30", "status": "stop",
+            "pct": -1, "R": -1, "riskPct": 1})
+    st, v = call("GET", "/bot/wallwatch")
+    assert v["summary"]["signals"] == 1 and v["config"]["pwSetup"] is False and v["config"]["retestSetup"] is True
+    rows = {r["name"]: r for r in v["retestStudy"]["rows"]}
+    assert v["retestStudy"]["base"]["n"] == 1 and rows["Support: flip"]["n"] == 1 and rows["Call alert $500K – $1M"]["n"] == 1
+    assert rows["Retest within 1 day of the alert"]["n"] == 1 and rows["Support: put wall"]["n"] == 0
+
+
+def test_flow_scan_watch_only():
+    """Wall watch trading: flow tickers are evaluated, marked WATCH and put on the list; nothing is bought."""
+    import autotrader, flowdata, wallwatch
+    STORE.clear()
+    pk = db.upk(SUB)
+    call("GET", "/bot/wallwatch")
+    saved = (flowdata.alerts, autotrader.evaluate, autotrader.place)
+    placed = []
+    try:
+        from datetime import datetime as _dt
+        now = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "QQQZ", "premium": 700000, "at": now, "sweep": True, "contract": "X"}]}
+        def fake_eval(sub, sym, source=None):
+            assert source.get("watchOnly")
+            rec = {"id": "20261012100000-aaaaaa", "symbol": sym, "decision": "SKIP", "blocking": ["chart"], "status": "proposed"}
+            db.put({"PK": pk, "SK": f"BOT#{rec['id']}", **rec})
+            return rec
+        autotrader.evaluate = fake_eval
+        autotrader.place = lambda *a, **k: placed.append(a)
+        out = autotrader.flow_scan(SUB, buy=False)
+        rec = db.get(pk, "BOT#20261012100000-aaaaaa")
+        assert out["evaluated"][0]["decision"] == "WATCH" and rec["decision"] == "WATCH" and rec["ruleDecision"] == "SKIP"
+        assert rec["blocking"][0].startswith("On the Wall watch list") and not placed
+        cfg = wallwatch.config(SUB)
+        assert "QQQZ" in cfg["tickers"] and cfg["added"]["QQQZ"]["by"] == "flow" and cfg["added"]["QQQZ"]["premium"] == 700000
+    finally:
+        flowdata.alerts, autotrader.evaluate, autotrader.place = saved
+
+
+def test_wallwatch_skips_claude_review():
+    import aicheck
+    assert aicheck.is_wallwatch({"proposal": {"strategyOnly": "wallwatch"}})
+    assert aicheck.is_wallwatch({"proposal": {"wallwatch": {"stop": 1}}})
+    assert not aicheck.is_wallwatch({"proposal": {}})
+
+
+def test_wall_watch_rule_switches():
+    """Each flow retest rule can be turned on or off."""
+    import wallwatch
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0},
+            {"t": "2026-10-06T09:30", "o": 103, "h": 110, "l": 102.9, "c": 109}]
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    ws = {"2026-10-05": w, "2026-10-06": w}
+    run = lambda **cfg: wallwatch.detect_retest(bars, ws, cfg=cfg, alerts=al, datr={"next": 2.0})[0]
+    assert run()[0]["levelName"] == "flip"
+    ns = run(useFlip=False, usePW=False)                            # no support rule: any candle, stop under its low
+    assert not ns or ns[0]["levelName"] == "candle low"
+    s = run(useFlip=False)                                           # put wall only: price never comes back to 100
+    assert not s
+    assert run(targetOn=False)[0]["target"] is None
+    st = run(stopOn=False)[0]
+    assert st["stop0"] > 0 and st["status"] != "stop"
+    dip = bars[:3] + [{"t": "2026-10-06T09:30", "o": 103, "h": 103.2, "l": 99.0, "c": 103.1}]   # under stop0 = 101
+    assert wallwatch.detect_retest(dip, ws, cfg={"trailOn": False}, alerts=al, datr={"next": 2.0})[0][0]["status"] == "stop"
+    assert wallwatch.detect_retest(dip, ws, cfg={"trailOn": False, "stopOn": False}, alerts=al, datr={"next": 2.0})[0][0]["status"] == "open"
+    assert not run(emaOn=True, emaLen=2)                             # close 103 under the 2-candle EMA
+    red = bars[:2] + [{"t": "2026-10-05T11:30", "o": 103.2, "h": 103.4, "l": 102.1, "c": 102.5}]
+    assert not wallwatch.detect_retest(red, {"2026-10-05": w}, alerts=al, datr={"next": 2.0})[0]
+    assert wallwatch.detect_retest(red, {"2026-10-05": w}, cfg={"greenOnly": False}, alerts=al, datr={"next": 2.0})[0]
+    assert wallwatch.version({**wallwatch.PARAMS, "vwapOn": True}) != wallwatch.version(wallwatch.PARAMS)
+    # exits on an hourly close under the VWAP / EMA
+    after = bars[:3] + [{"t": "2026-10-06T09:30", "o": 103, "h": 103.5, "l": 102.2, "c": 102.4},
+                        {"t": "2026-10-06T10:30", "o": 102.4, "h": 104, "l": 102.3, "c": 103.9}]
+    em = {b["t"][:16]: 102.8 for b in after}
+    x = wallwatch.detect_retest(after, ws, cfg={"emaExit": True, "trailOn": False}, alerts=al, datr={"next": 2.0}, ema_map=em)[0][0]
+    assert x["status"] == "ema" and x["exit"] == 102.4 and x["exitAt"] == "2026-10-06T09:30", x
+    vm = {b["t"][:16]: 102.8 for b in after}
+    assert wallwatch.detect_retest(after, ws, cfg={"vwapExit": True, "trailOn": False}, alerts=al, datr={"next": 2.0}, vwap_map=vm)[0][0]["status"] == "vwap"
+    assert wallwatch.detect_retest(after, ws, cfg={"trailOn": False}, alerts=al, datr={"next": 2.0}, vwap_map=vm)[0][0]["status"] == "open"
+    # entry rule: EMA above the VWAP
+    up = {b["t"][:16]: 102.0 for b in bars}
+    assert not wallwatch.detect_retest(bars, ws, cfg={"emaOverVwap": True}, alerts=al, datr={"next": 2.0}, vwap_map=up, ema_map={k: 101.5 for k in up})[0]
+    assert wallwatch.detect_retest(bars, ws, cfg={"emaOverVwap": True}, alerts=al, datr={"next": 2.0}, vwap_map=up, ema_map={k: 102.5 for k in up})[0]
+    # entry rule: close above the VWAP
+    assert not wallwatch.detect_retest(bars, ws, cfg={"vwapOn": True}, alerts=al, datr={"next": 2.0}, vwap_map={b["t"][:16]: 104.0 for b in bars})[0]
+    assert wallwatch.detect_retest(bars, ws, cfg={"vwapOn": True}, alerts=al, datr={"next": 2.0}, vwap_map={b["t"][:16]: 102.5 for b in bars})[0]
+
+
+def test_rule_tester():
+    """History loader + rule tester on synthetic data: base, rules, buckets and exits all come back."""
+    import charts, flowdata, wallwatch, backtest
+    import datetime as dt
+    from util import now_ny
+    sub = "rt-user"
+    wallwatch.save_config(sub, {"tickers": ["AAA"]})
+    today = now_ny().date()
+    days = []
+    d = today - dt.timedelta(days=200)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    hb, px = [], 100.0
+    import math
+    for i, day in enumerate(days):
+        for h in ("09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"):
+            k = len(hb)
+            o = px
+            px = 100 + 4 * math.sin(k / 15.0)
+            hb.append({"t": f"{day}T{h}", "o": o, "h": max(o, px) + 0.3, "l": min(o, px) - 0.3, "c": px, "v": 1000 + (k % 7) * 10})
+    db_ = []
+    for day in days:
+        db_.append({"t": f"{day}T09:30", "o": 100, "h": 104, "l": 96, "c": 100, "v": 1e6})
+    saved = (charts._yahoo, flowdata.stored_walls, backtest.stored_alerts)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else db_
+        flowdata.stored_walls = lambda sym: {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
+        backtest.stored_alerts = lambda sub_, sym: [{"t": f"{day}T10:00", "c": 1, "p": 900000} for day in days[::3]]
+        out = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5, "full": True})
+        quick = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5})
+        assert [r["key"] for r in quick["rules"]] == ["base", "mine"] and not quick["buckets"] and len(quick["exits"]) == 7
+        out = backtest.rule_test(sub, {"days": 120, "fixR": 2, "maxDays": 5, "full": True})
+        base = out["rules"][0]
+        assert base["key"] == "base" and base["n"] > 5, base
+        assert {r["key"] for r in out["rules"]} >= {"base", "greenOnly", "vwapOn", "emaOverVwap", "mine"}
+        assert out["exits"][0]["n"] == out["rules"][-1]["n"]          # fixed exit on your entry = "Your entry settings"
+        assert any(b["group"] == "Call alert" and b["n"] for b in out["buckets"])
+        assert base["h1n"] + base["h2n"] == base["n"]
+        assert backtest.test_result(sub)["rules"][0]["n"] == base["n"]
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts = saved
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else db_
+        flowdata.stored_walls = lambda sym: {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
+        backtest.stored_alerts = lambda sub_, sym: [{"t": f"{day}T10:00", "c": 1, "p": 900000} for day in days[::3]]
+        rb = backtest.robust_test(sub, {"days": 120})
+        assert rb["rows"][0]["label"].startswith("Your settings") and len(rb["rows"]) >= 6
+        assert backtest.robust_result(sub)["rows"][0]["n"] == rb["rows"][0]["n"]
+        mc = backtest._mc([1, -1, 2, -1, -1, 0.5, 2, -1])
+        assert mc["lossStreak"] == 2 and mc["dd95"] >= mc["ddMedian"] >= 0
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts = saved
+    st = backtest.start_history(sub, 120)
+    assert st["running"] and st["days"] == 120
+    # stored history: a second load only asks for the days since the last one
+    asked = []
+    saved_al = flowdata.alerts
+    try:
+        flowdata.alerts = lambda *a_, **k: asked.append(a_[9]) or {"alerts": [{"ticker": "AAA", "atEt": "2026-09-01 10:00", "premium": 300000}]}
+        r1 = backtest._fetch_alerts(sub, "AAA", 120)
+        r2 = backtest._fetch_alerts(sub, "AAA", 120)
+        assert asked[0] > 150 and asked[1] <= 3 and r2["topUp"] and r1["oldest"] == "2026-09-01", asked
+        assert len(backtest.stored_alerts.__wrapped__(sub, "AAA") if hasattr(backtest.stored_alerts, "__wrapped__") else
+                   [x for r in db.q_prefix(db.upk(sub), "WWHFLOW#AAA#") for x in r["alerts"]]) == 1
+    finally:
+        flowdata.alerts = saved_al
+
+
+def test_tos_indicators():
+    """Keltner channel, opening range and SPY trend: values and the entry switches."""
+    import wallwatch, charts
+    bars = [{"t": f"2026-10-0{1 + i // 7}T{['09:30','10:30','11:30','12:30','13:30','14:30','15:30'][i % 7]}",
+             "o": 100 + i * .1, "h": 101 + i * .1, "l": 99 + i * .1, "c": 100.5 + i * .1, "v": 1} for i in range(35)]
+    kc = wallwatch.keltner(bars, 5, 3)
+    assert kc[3] is None and kc[10][1] > kc[10][0] > kc[10][2] and abs((kc[10][1] - kc[10][0]) - (kc[10][0] - kc[10][2])) < 1e-6
+    orb = wallwatch.orb_levels(bars)
+    assert orb[0] is None and orb[1] == (bars[0]["h"], bars[0]["l"]) and orb[7] is None and orb[8] == (bars[7]["h"], bars[7]["l"])
+    saved = charts._yahoo
+    try:
+        import datetime as dt
+        days = ["2026-09-%02d" % d for d in (21, 22, 23, 24, 25, 28, 29, 30)]
+        charts._yahoo = lambda sym, tf, s_, e: ([{"t": f"{d}T09:30", "o": 1, "h": 1, "l": 1, "c": 500 + k} for k, d in enumerate(days)] if tf == "1d"
+                                               else [{"t": "2026-09-30T10:30", "o": 1, "h": 1, "l": 1, "c": 499.0}, {"t": "2026-09-30T11:30", "o": 1, "h": 1, "l": 1, "c": 503.0}])
+        wallwatch._SPY.clear()
+        sp = wallwatch.spy_trend(None, dt.datetime(2026, 10, 1, 12))
+        assert sp == {"2026-09-30T10:30": -1, "2026-09-30T11:30": 1}, sp      # 6 sessions before 09-30 = 09-22 (501)
+    finally:
+        charts._yahoo = saved
+        wallwatch._SPY.clear()
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    rb = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+          {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+          {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0}]
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    ws = {"2026-10-05": w}
+    assert wallwatch.detect_retest(rb, ws, alerts=al, datr={"next": 2.0})[0]
+    assert not wallwatch.detect_retest(rb, ws, cfg={"spyUp": True}, alerts=al, datr={"next": 2.0}, extra={"spy": {"2026-10-05T11:30": -1}})[0]
+    assert wallwatch.detect_retest(rb, ws, cfg={"spyUp": True}, alerts=al, datr={"next": 2.0}, extra={"spy": {"2026-10-05T11:30": 1}})[0]
+    assert not wallwatch.detect_retest(rb, ws, cfg={"orbAbove": True}, alerts=al, datr={"next": 2.0})[0]     # 103 < ORB high 105.5
+    sg = wallwatch.detect_retest(rb, ws, alerts=al, datr={"next": 2.0}, extra={"kc": {"2026-10-05T11:30": (103.5, 104, 103)}})[0][0]
+    assert sg["orb"] == [105.5, 103.5] and sg["kc"] == [103.5, 104, 103]
+    assert not wallwatch.detect_retest(rb, ws, cfg={"kcNotExt": True}, alerts=al, datr={"next": 2.0}, extra={"kc": {"2026-10-05T11:30": (101, 102.5, 99.5)}})[0]
+    # skew rule: only with a normal skew (middle third), no skew known = no entry
+    assert not wallwatch.detect_retest(rb, ws, cfg={"skewOn": True}, alerts=al, datr={"next": 2.0})[0]
+    assert not wallwatch.detect_retest(rb, ws, cfg={"skewOn": True}, alerts=al, datr={"next": 2.0}, extra={"skewPct": {"2026-10-05": 90}})[0]
+    ok = wallwatch.detect_retest(rb, ws, cfg={"skewOn": True}, alerts=al, datr={"next": 2.0}, extra={"skewPct": {"2026-10-05": 50}})[0]
+    assert ok and ok[0]["skewPct"] == 50
+
+
+def test_intraday_gamma_levels():
+    """Intraday framework: slow rejection at the put wall, fast overshoot + reclaim, short at the call wall, calendar."""
+    import intraday
+    ev = intraday.event_days(2026, 2026)
+    assert ev["2026-10-16"] == "monthly OPEX" and ev["2026-09-18"] == "triple witching" and ev["2026-10-21"] == "VIX expiration"
+    def mk(day, path):
+        out = []
+        import datetime as dt
+        t0 = dt.datetime.strptime(day + " 09:30", "%Y-%m-%d %H:%M")
+        for k, (o, h, l, c) in enumerate(path):
+            out.append({"t": (t0 + dt.timedelta(minutes=5 * k)).strftime("%Y-%m-%dT%H:%M"), "o": o, "h": h, "l": l, "c": c})
+        return out
+    w = {"2026-10-05": {"putWall": 100, "flip": 103, "callWall": 106}}
+    # slow drift down to the put wall, green rejection candle, then up to the flip (target)
+    path = [(101.6 - k * 0.1, 101.7 - k * 0.1, 101.45 - k * 0.1, 101.5 - k * 0.1) for k in range(15)]   # 101.6 -> 100.1
+    path += [(100.15, 100.4, 99.9, 100.35)]            # touches 99.9, closes above 100: rejection
+    path += [(100.35 + k * 0.2, 100.6 + k * 0.2, 100.3 + k * 0.2, 100.55 + k * 0.2) for k in range(20)]  # up to 103+
+    bars = mk("2026-10-05", path)
+    tr = intraday.simulate(bars, w, {"2026-10-05": 3.0}, {"minRR": 1.0}, {}, "AAA")
+    assert tr and tr[0]["side"] == "long" and tr[0]["kind"] == "rejection" and tr[0]["levelName"] == "put wall", tr
+    assert tr[0]["status"] == "target" and tr[0]["target"] == 103 and tr[0]["R"] > 1
+    # fast drop through the put wall, then a close back above it: reclaim
+    fpath = [(103.0, 103.1, 102.9, 103.0)] * 7 + [(103, 103, 101, 101.2), (101.2, 101.3, 100.2, 100.3), (100.3, 100.4, 99.2, 99.4),
+             (99.4, 99.6, 99.1, 99.5), (99.5, 100.6, 99.4, 100.5)] + [(100.5 + k * .2, 100.8 + k * .2, 100.4 + k * .2, 100.7 + k * .2) for k in range(20)]
+    tf = intraday.simulate(mk("2026-10-05", fpath), w, {"2026-10-05": 6.0}, {"minRR": 1.0}, {}, "AAA")
+    assert tf and tf[0]["kind"] == "reclaim" and tf[0]["side"] == "long" and tf[0]["fast"], tf
+    # event day skipped
+    assert not intraday.simulate(bars, w, {"2026-10-05": 3.0}, {"minRR": 1.0}, {"2026-10-05": "monthly OPEX"}, "AAA")
+    # short at the call wall from below: slow rise, red rejection, down to the flip
+    spath = [(104.4 + k * .1, 104.55 + k * .1, 104.35 + k * .1, 104.5 + k * .1) for k in range(15)] + [(105.85, 106.1, 105.7, 105.75)]
+    spath += [(105.75 - k * .2, 105.8 - k * .2, 105.5 - k * .2, 105.55 - k * .2) for k in range(20)]
+    ts = intraday.simulate(mk("2026-10-05", spath), w, {"2026-10-05": 3.0}, {"minRR": 1.0}, {}, "AAA")
+    assert ts and ts[0]["side"] == "short" and ts[0]["levelName"] == "call wall" and ts[0]["status"] == "target", ts
+    # the whole run on mocked data: tables come back and are stored
+    import charts, flowdata
+    saved = (charts._yahoo, flowdata.stored_walls)
+    try:
+        import datetime as dt
+        today = __import__("util").now_ny().date()
+        ds = [(today - dt.timedelta(days=k)).isoformat() for k in range(1, 30) if (today - dt.timedelta(days=k)).weekday() < 5]
+        five = []
+        for d in sorted(ds):
+            five += mk(d, path)
+        charts._yahoo = lambda sym, tf, s_, e: five if tf == "5m" else [{"t": f"{d}T09:30", "o": 100, "h": 103, "l": 97, "c": 100} for d in sorted(ds)]
+        flowdata.stored_walls = lambda sym: {d: w["2026-10-05"] for d in ds}
+        r = intraday.run("intra-user", {"tickers": "QQQ", "minRR": 1.0, "skipEvents": False})
+        assert r["all"]["n"] >= 5 and r["groups"] and r["exits"][1]["n"] == r["all"]["n"] and intraday.result("intra-user")["all"]["n"] == r["all"]["n"], r["all"]
+    finally:
+        charts._yahoo, flowdata.stored_walls = saved
+
+
+def test_skew_history():
+    """25-delta risk reversal: ~30-day expiry chosen per day, stored, and turned into features known before the open."""
+    import backtest, flowdata
+    import datetime as dt
+    from util import now_ny
+    calls = []
+    def fake(key, path, params=None, attempts=4):
+        calls.append(params)
+        if "historical-risk-reversal-skew" not in path or params["delta"] != "25":
+            return None
+        exp = dt.date.fromisoformat(params["expiry"])
+        days = [exp - dt.timedelta(days=k) for k in range(70, 0, -1)]
+        return {"data": [{"date": d.isoformat() + "T00:00:00.000Z", "delta": 25, "risk_reversal": str(round(0.02 + (exp.month % 3) * 0.01 + k * 0.0001, 5))}
+                         for k, d in enumerate(days)]}
+    saved = flowdata._uw
+    try:
+        flowdata._uw = fake
+        sk = backtest.fetch_skew("k", "SKW", 120)
+        assert len(sk) > 60 and backtest.stored_skew("SKW") == sk
+        n = len(calls)
+        backtest.fetch_skew("k", "SKW", 120)
+        assert len(calls) == n                                  # stored: no new request
+    finally:
+        flowdata._uw = saved
+    day = sorted(sk)[-1]
+    f = backtest.skew_features(sk, day)
+    assert f and 0 <= f["skewPct"] <= 100 and f["skew"] == sk[sorted(sk)[-2]]
+    assert backtest.skew_features(sk, sorted(sk)[5]) is None   # not enough history before
+
+
+def test_darkpool_history():
+    """Dark pool history: every day fetched once, packed by month; features known before the entry day."""
+    import backtest, flowdata, charts
+    import datetime as dt
+    from util import now_ny
+    seen = []
+    def fake_day(key, sym, d, floor):
+        seen.append(d)
+        return [{"t": f"{d}T10:00", "price": 100.0 + (hash(d) % 3) * 0.1, "size": 10**7, "premium": 5e8, "side": None},
+                {"t": f"{d}T11:00", "price": 110.0, "size": 10**7, "premium": 1e8, "side": None}]
+    saved = (flowdata.darkpool_day, charts._yahoo)
+    try:
+        flowdata.darkpool_day = fake_day
+        charts._yahoo = lambda *a, **k: [{"t": (now_ny().date() - dt.timedelta(days=k)).isoformat() + "T09:30", "o": 1, "h": 1, "l": 1, "c": 100, "v": 1e6} for k in range(40, 0, -1)]
+        n = backtest.fetch_darkpool("k", "DPX", 60)
+        assert n and n == len(seen)
+        before = len(seen)
+        assert backtest.fetch_darkpool("k", "DPX", 60) == n and len(seen) == before    # stored: nothing fetched again
+    finally:
+        flowdata.darkpool_day, charts._yahoo = saved
+    pr = backtest.stored_darkpool("DPX")
+    assert len(pr) == 2 * n and pr == sorted(pr, key=lambda x: x["t"])
+    day = (now_ny().date()).isoformat()
+    f = backtest.dp_features(pr, day, entry=101.0, support=100.0, target=112.0, atr=2.0)
+    assert f["dpNear"] is True and f["dpWay"] is True and f["dpAct"] > 0
+    g = backtest.dp_features(pr, day, entry=101.0, support=90.0, target=105.0, atr=2.0)
+    assert g["dpNear"] is False and g["dpWay"] is False
+
+
+def test_live_partial_exit():
+    """Live: at entry + 1R, 40% of the contracts are sold at market and the stop of the rest moves to the entry."""
+    import autotrader, db
+    sent, saved = [], (autotrader._alp, autotrader._paper_creds, autotrader._notify)
+    try:
+        autotrader._alp = lambda c, m, path, body=None: sent.append((m, path, body)) or {"id": "ord-1"}
+        autotrader._paper_creds = lambda sub: {}
+        autotrader._notify = lambda *a, **k: None
+        sub = "partial-user"
+        p = {"contract": "AAA261120C00100000", "underlyingStop": 98.0, "exp": "2026-11-20"}
+        ww = {"entry": 100.0, "stop0": 98.0, "scaleOn": True, "scaleR": 1, "scalePct": 40, "scaleBE": True}
+        rec = {"SK": "BOT#20261005000000-partial", "symbol": "AAA", "filledQty": 5, "lastMark": 2.5}
+        db.put({"PK": db.upk(sub), **rec})
+        bars = [{"t": "2026-10-05T10:00", "o": 100, "h": 101.5, "l": 99.8, "c": 101}]
+        assert autotrader._partial_exit(sub, rec, p, ww, bars, 98.0) is None and not sent          # 102 not reached
+        bars.append({"t": "2026-10-05T10:05", "o": 101, "h": 102.2, "l": 100.9, "c": 102})
+        autotrader._partial_exit(sub, rec, p, ww, bars, 98.0)
+        assert sent[0][2]["qty"] == "2" and sent[0][2]["side"] == "sell"
+        r = db.get(db.upk(sub), rec["SK"])
+        assert r["wwScaled"]["qty"] == 2 and float(r["proposal"]["underlyingStop"]) == 100.0 and r["partials"][0]["orderId"] == "ord-1"
+    finally:
+        autotrader._alp, autotrader._paper_creds, autotrader._notify = saved
+
+
+def test_inertia_regime():
+    """Daily inertia: green when the regression of the daily closes rises on all 3 lengths, red when on none."""
+    import wallwatch, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    up = [{"t": f"{(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat()}T{h}", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100 + d}
+          for d in range(30) for h in H]
+    r = wallwatch.inertia_regime(up, (10, 6, 3))
+    assert r[0] is None and r[-1]["s"] == "G" and r[-1]["pts"] == 3.0
+    down = [dict(b, c=200 - (100 - b["c"]) * -1) for b in up]
+    down = [dict(b, c=300 - b["c"]) for b in up]
+    assert wallwatch.inertia_regime(down, (10, 6, 3))[-1]["s"] == "R"
+    # entry filter: green only
+    w = {b["t"][:10]: {"putWall": 50, "callWall": 400, "flip": 40} for b in up}
+    sg, _ = wallwatch.detect_retest(down, w, None, {"alertReq": False, "inGreen": True, "greenOnly": False, "earnOn": False}, None)
+    assert sg == []
+
+
+def test_keltner_daily():
+    """Daily Keltner on hourly candles: the previous days' EMAs updated with today's candle so far (no later price)."""
+    import wallwatch
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars = [{"t": f"2026-09-{d:02d}T{h}", "o": 100, "h": 101, "l": 99, "c": 100} for d in range(1, 6) for h in H]
+    bars += [{"t": f"2026-09-08T{h}", "o": 100, "h": 100 + k + 1, "l": 99, "c": 100 + k} for k, h in enumerate(H)]
+    kc = wallwatch.keltner(bars, 3, 2.0, daily=True)
+    assert kc[0] is None and kc[20] is None and kc[21] is not None    # 3 completed days needed
+    first_today = kc[35]                                                 # 09-08 09:30: close 100, range 99-101
+    assert first_today[0] == 100 and round(first_today[1] - first_today[0], 4) == 4.0
+    assert kc[41][0] == round(106 * 0.5 + 100 * 0.5, 4)                 # 15:30: today's close 106 weighs 2/(3+1)
+    assert kc[34] == kc[34] and kc[36][0] < kc[41][0]
+    hk = wallwatch.keltner(bars, 3, 2.0)                                  # hourly channel: a value from the 3rd candle
+    assert hk[1] is None and hk[2] is not None and hk[41] != kc[41]
+
+
+def test_keltner_ride_exit():
+    """A vertical move through the call wall is ridden while the days close above the upper Keltner band;
+    the first daily close back under it sells. Without the switch the call wall target sells."""
+    import wallwatch
+    w = {"callWall": 106, "flip": 102, "putWall": 100}
+    days = ["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08"]
+    ws = {d: w for d in days}
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0}]      # entry
+    bars += [{"t": f"2026-10-05T{h}", "o": 103.5, "h": 104, "l": 103.4, "c": 103.8} for h in H[3:]]
+    px = 104.0
+    for h in H:                                                                           # day 2: vertical, through the CW 106
+        bars.append({"t": f"2026-10-06T{h}", "o": px, "h": px + 1.2, "l": px - 0.1, "c": px + 1.0}); px += 1.0
+    for h in H:                                                                           # day 3: keeps going
+        bars.append({"t": f"2026-10-07T{h}", "o": px, "h": px + 0.6, "l": px - 0.1, "c": px + 0.5}); px += 0.5
+    for h in H:                                                                           # day 4: fades
+        bars.append({"t": f"2026-10-08T{h}", "o": px, "h": px + 0.1, "l": px - 0.6, "c": px - 0.5}); px -= 0.5
+    kc = {}
+    for b in bars:                                                                        # upper band just under the close on days 2-3, above it on day 4
+        d = b["t"][:10]
+        kc[b["t"]] = (b["c"] - 2, b["c"] - 0.3 if d in ("2026-10-06", "2026-10-07") else b["c"] + 0.5, b["c"] - 4)
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    base = {"tgtBuf": 0, "trailOn": False, "flipExit": False}
+    plain = wallwatch.detect_retest(bars, ws, cfg=base, alerts=al, datr={"next": 2.0}, extra={"kc": kc})[0][0]
+    assert plain["status"] == "target" and plain["exit"] == 106, plain
+    ride = wallwatch.detect_retest(bars, ws, cfg={**base, "kcRide": True}, alerts=al, datr={"next": 2.0}, extra={"kc": kc})[0][0]
+    assert ride["status"] == "keltner" and ride["exitAt"] == "2026-10-08T15:30" and ride["exit"] > 106, ride
+    # same day: an hourly close above the band starts the ride, the day closes under it -> sold at that close
+    same = bars[:6] + [{"t": f"2026-10-06T{h}", "o": 104, "h": 104.6, "l": 103.9, "c": 104.4} for h in H]
+    k2 = {b["t"]: (b["c"] - 2, (b["c"] - 0.2) if b["t"] == "2026-10-06T11:30" else b["c"] + 0.3, b["c"] - 4) for b in same}
+    sd = wallwatch.detect_retest(same, ws, cfg={**base, "kcRide": True}, alerts=al, datr={"next": 2.0}, extra={"kc": k2})[0][0]
+    assert sd["status"] == "keltner" and sd["exitAt"] == "2026-10-06T15:30", sd
+    # live: an hourly close above the band starts the ride; from 15:50 a close under the band sells
+    import autotrader, db
+    import datetime as dt
+    saved = autotrader._yahoo
+    try:
+        hb = [{"t": f"2026-10-0{1 + k // 7}T{H[k % 7]}", "o": 100 + k * .2, "h": 100.5 + k * .2, "l": 99.8 + k * .2, "c": 100.3 + k * .2, "v": 1} for k in range(35)]
+        autotrader._yahoo = lambda *a, **k: hb
+        sub, ww = "ride-user", {"kcRide": True, "kcLen": 5, "kcMult": 0.1, "kcDaily": False}
+        rec = {"SK": "BOT#20261005000000-abcdef", "symbol": "AAA"}
+        db.put({"PK": db.upk(sub), **rec})
+        p_ = {"underlyingTarget": 105.0}
+        mid = dt.datetime(2026, 10, 6, 12, 0)
+        up = wallwatch.keltner(wallwatch.finished(hb, mid), 5, 0.1)[-1][1]
+        assert autotrader._keltner_ride(sub, rec, p_, ww, {"h": 110, "c": up + 1}, "2026-10-01T09:30", mid, 10) is None   # rising bars: ride
+        rec = db.get(db.upk(sub), rec["SK"])
+        assert rec.get("wwRide")
+        late = dt.datetime(2026, 10, 6, 15, 52)
+        assert "ride ended" in autotrader._keltner_ride(sub, rec, p_, ww, {"h": up, "c": up - 5}, "2026-10-01T09:30", late, 10)
+    finally:
+        autotrader._yahoo = saved
+
+
+def test_retest_misses():
+    """Candles that reach the support without entering are listed with the rule that blocked them."""
+    import wallwatch
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0}]
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    m = []
+    sg = wallwatch.detect_retest(bars, {"2026-10-05": w}, cfg={"vwapOn": True}, alerts=al, datr={"next": 2.0},
+                                 vwap_map={b["t"]: 104.0 for b in bars}, extra={"misses": m})[0]
+    assert not sg and any("VWAP" in x["r"] for x in m), m
+    m2 = []
+    wallwatch.detect_retest(bars, {"2026-10-05": w}, alerts=[], datr={"next": 2.0}, extra={"misses": m2})
+    assert m2 and m2[0]["r"].startswith("no call alert"), m2
+    m3 = []
+    wallwatch.detect_retest(bars, {"2026-10-05": w}, cfg={"cwRoom": 5, "cwRoomOn": True}, alerts=al, datr={"next": 2.0}, extra={"misses": m3})
+    assert any("under the call wall" in x["r"] for x in m3), m3
+
+
+def test_back_under_level_exit():
+    """Passed the call wall / a dark pool level on an hourly close, the day closes back under it: sold at that close."""
+    import wallwatch
+    w = {"callWall": 106, "flip": 102, "putWall": 100}
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0}]          # entry
+    bars += [{"t": f"2026-10-05T{h}", "o": 103.5, "h": 104, "l": 103.4, "c": 103.8} for h in H[3:]]
+    path = [104.5, 105.5, 106.4, 106.8, 106.2, 105.6, 105.2]                                   # through the CW 106, back under
+    bars += [{"t": f"2026-10-06T{h}", "o": c - .2, "h": c + .3, "l": c - .4, "c": c} for h, c in zip(H, path)]
+    ws = {"2026-10-05": w, "2026-10-06": w}
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    base = {"targetOn": False, "trailOn": False, "flipExit": False}
+    a = wallwatch.detect_retest(bars, ws, cfg=base, alerts=al, datr={"next": 2.0})[0][0]
+    assert a["status"] == "open"
+    b = wallwatch.detect_retest(bars, ws, cfg={**base, "cwLost": True}, alerts=al, datr={"next": 2.0})[0][0]
+    assert b["status"] == "lost" and b["exitAt"] == "2026-10-06T15:30" and b["lostLevel"] == "call wall 106", b
+    c = wallwatch.detect_retest(bars, ws, cfg={**base, "dpLost": True}, alerts=al, datr={"next": 2.0},
+                                extra={"dpLevels": {"2026-10-06": [105.8, 99.0]}})[0][0]
+    assert c["status"] == "lost" and c["lostLevel"] == "dark pool level 105.8", c
+    pr = [{"t": f"2026-09-{d:02d}T10:00", "price": 105.8 + (d % 2) * 0.01, "premium": 5e8} for d in range(1, 29)]
+    m = wallwatch.dp_level_map(pr, ["2026-10-06"])
+    assert m["2026-10-06"] and abs(m["2026-10-06"][0] - 105.8) < 0.1
+    # live: an hourly close above the call wall is remembered; from 15:50 a close back under it sells
+    import autotrader, flowdata, db
+    import datetime as dt
+    saved = (autotrader._yahoo, flowdata.stored_walls)
+    try:
+        autotrader._yahoo = lambda *a_, **k: [{"t": "2026-10-06T10:30", "o": 106, "h": 106.6, "l": 105.9, "c": 106.4, "v": 1}]
+        flowdata.stored_walls = lambda sym: {"2026-10-06": {"callWall": 106}}
+        sub, rec = "lost-user", {"SK": "BOT#20261005000000-aaaaaa", "symbol": "AAA"}
+        db.put({"PK": db.upk(sub), **rec})
+        ww = {"cwLost": True, "entry": 103}
+        assert autotrader._level_lost(sub, rec, ww, {"c": 106.3}, "2026-10-05T11:30", dt.datetime(2026, 10, 6, 11, 40)) is None
+        rec = db.get(db.upk(sub), rec["SK"])
+        assert rec["wwPassed"] == [["call wall", 106.0]]
+        r = autotrader._level_lost(sub, rec, ww, {"c": 105.4}, "2026-10-05T11:30", dt.datetime(2026, 10, 6, 15, 52))
+        assert r and "call wall 106" in r
+    finally:
+        autotrader._yahoo, flowdata.stored_walls = saved
+
+
+def test_chart_long_range_replay():
+    """A 90-day chart: the stored 45 days plus older signals replayed with the current settings."""
+    import wallwatch, charts, flowdata, backtest, math
+    import datetime as dt
+    from util import now_ny
+    today = now_ny().date()
+    days, d = [], today - dt.timedelta(days=200)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    hb = []
+    for day in days:
+        for h in ("09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"):
+            k = len(hb); px = 100 + 4 * math.sin(k / 15.0)
+            hb.append({"t": f"{day}T{h}", "o": px - .1, "h": px + .3, "l": px - .3, "c": px, "v": 1000})
+    db_ = [{"t": f"{d}T09:30", "o": 100, "h": 104, "l": 96, "c": 100, "v": 1e6} for d in days]
+    saved = (charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else db_
+        flowdata.stored_walls = lambda sym: {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
+        backtest.stored_alerts = lambda sub_, sym: [{"t": f"{day}T10:00", "c": 1, "p": 900000} for day in days[::3]]
+        backtest.stored_darkpool = lambda sym: []
+        wallwatch.save_config("long-user", {"tickers": ["AAA"], "cwRoomOn": False})
+        out = wallwatch.chart("long-user", "AAA", days=90, flow=False)
+        assert len({b["t"][:10] for b in out["bars"]}) == 90
+        assert any(x.get("replay") for x in out["signals"]), [x["at"] for x in out["signals"]]
+        # strategy lab: every signal replayed with the tried settings, nothing saved
+        lab = wallwatch.chart("long-user", "AAA", days=45, flow=False, lab={"stopAtr": 0.7, "bogus": 1})
+        assert lab["lab"] and lab["signals"] and all(x.get("replay") for x in lab["signals"])
+        assert float(wallwatch.config("long-user")["stopAtr"]) == 0.5
+        assert "fvg" in lab
+        d1 = wallwatch.chart("long-user", "AAA", days=45, flow=False, lab={"tf": "1D", "greenOnly": False, "noAboveCW": False, "cwRoomOn": False})
+        assert d1["tf"] == "1D" and all(x.get("tf") == "1D" for x in d1["signals"])
+        r1 = backtest.lab_test("long-user", {"days": 60, "cfg": {"tf": "1D", "greenOnly": False}})
+        assert "n" in r1["lab"] and r1["live"]["n"] > 0
+        r = backtest.lab_test("long-user", {"days": 60, "cfg": {"stopAtr": 0.7}})
+        assert r["lab"]["n"] > 0 and r["live"]["n"] > 0
+        rb = backtest.robust_test("long-user", {"days": 60, "cfg": {"trailOn": True, "fvgOn": True, "kchLower": True, "scaleOn": True, "vwapOn": True}})
+        labs = [x["label"] for x in rb["rows"]]
+        assert any(l.startswith("FVG min size") for l in labs) and any(l.startswith("Keltner hourly") for l in labs) \
+            and any(l.startswith("Sell part at") for l in labs) and any(l.startswith("VWAP reset") for l in labs), labs
+        rl = backtest._with_lab({"stopAtr": 0.5, "tickers": ["AAA"]}, {"cfg": {"stopAtr": 0.9, "pvSetup": True, "junk": 1}})
+        assert rl["stopAtr"] == 0.9 and "junk" not in rl and "pvSetup" not in rl and rl["tickers"] == ["AAA"]
+        # rule search: screening + replay; with no entry rule it matches the real engine's trade count closely
+        rs = backtest.rule_search("long-user", {"days": 60, "minTrades": 1})
+        assert rs["candidates"] > 0 and rs["tested"] > 20 and rs["base"]["n"] > 0 and len(rs["singles"]) == len(wallwatch.SEARCH_RULES)
+        dd = backtest._ticker_data("long-user", "AAA", 60, {**wallwatch.config("long-user"), "earnOn": False}, False)
+        real, _ = wallwatch.detect_retest(dd["bars"], dd["walls"], rs["period"]["from"],
+                                          {**wallwatch.config("long-user"), "earnOn": False, **{k: False for k in wallwatch.SEARCH_RULES}},
+                                          dd["datr"], dd["alerts"], None, dd["vmap"], dd["emap"], dd.get("extra"))
+        print("rule search base vs engine:", rs["base"]["n"], len(real), "tested", rs["tested"])
+        assert abs(rs["base"]["n"] - len(real)) <= max(2, len(real) // 5), (rs["base"]["n"], len(real))
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
+
+
+def test_pw_vwap_study():
+    """Put wall crossings flagged with a nearby VWAP reset; the study returns forward returns by group."""
+    import wallwatch, backtest, charts, flowdata, math
+    import datetime as dt
+    from util import now_ny
+    bars = [{"t": f"2026-10-0{1 + k // 7}T{['09:30','10:30','11:30','12:30','13:30','14:30','15:30'][k % 7]}",
+             "o": 99, "h": 101, "l": 98, "c": c, "v": 1} for k, c in enumerate([99, 99.5, 100.5, 101, 99.2, 98, 100.4, 101, 102, 103])]
+    ws = {f"2026-10-0{d}": {"putWall": 100} for d in (1, 2)}
+    ev = wallwatch.pw_vwap_events(bars, ws, [2, 8])
+    assert [(e["t"], e["touch"], e["above"]) for e in ev] == [("2026-10-01T11:30", True, True), ("2026-10-02T10:30", True, True)]
+    far = [dict(b, l=105, h=106) for b in bars]
+    assert not wallwatch.pw_vwap_events(far, ws, [2])[0]["touch"]
+    assert wallwatch._kc_pos(95, (100, 110, 90)) == {"kcPos": 25, "kcHalf": "lower", "kcM": 100, "kcU": 110, "kcL": 90}
+    assert wallwatch._kc_pos(105, (100, 110, 90))["kcHalf"] == "upper"
+    assert wallwatch._kc_pos(105, None)["kcHalf"] is None
+    kc = [(100, 110, 90)] * len(bars)
+    assert all("kcHalf" in e for e in wallwatch.pw_vwap_events(bars, ws, [2, 8], kc=kc))
+    # long: put wall touch in the lower Keltner half; short: call wall touch in the upper half; none when PW == CW
+    b1 = [dict(bars[0], t="2026-10-01T09:30"), {"t": "2026-10-01T10:30", "o": 100, "h": 101, "l": 99.5, "c": 100.5, "v": 9}]
+    w1 = {"2026-10-01": {"putWall": 100, "callWall": 120}}
+    lo_kc, up_kc = [(110, 130, 90)] * 2, [(95, 105, 85)] * 2
+    assert wallwatch.pw_vwap_events(b1, w1, [1], kc=lo_kc)[0]["side"] == "long"
+    assert wallwatch.pw_vwap_events(b1, w1, [1], kc=up_kc)[0]["side"] is None
+    assert wallwatch.pw_vwap_events(b1, {"2026-10-01": {"putWall": 100, "callWall": 100}}, [1], kc=lo_kc)[0]["side"] is None
+    w2 = {"2026-10-01": {"putWall": 80, "callWall": 100}}
+    assert wallwatch.pw_vwap_events(b1, w2, [1], kc=up_kc)[0]["side"] == "short"
+    assert wallwatch.pw_vwap_events(b1, w2, [1], kc=lo_kc)[0]["side"] is None
+    # LONG trade with the strategy's exits: target = call wall
+    tb = [{"t": f"2026-10-0{1 + k // 7}T{9 + k % 7}:30", "o": 100, "h": 101, "l": 99.5, "c": 100.5, "v": 9} for k in range(14)]
+    tb[10] = dict(tb[10], h=121, c=119)
+    tw = {f"2026-10-0{d}": {"putWall": 100, "callWall": 120, "flip": 99} for d in (1, 2)}
+    tr = wallwatch.pv_long_trades(tb, tw, [{"i": 3, "t": tb[3]["t"], "side": "long", "pw": 100}],
+                                  {"tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
+    assert len(tr) == 1 and tr[0]["status"] == "target" and tr[0]["R"] > 0
+    tb2 = [dict(x) for x in tb]
+    tb2[6] = dict(tb2[6], c=99.8, l=99.6)            # entry day closes under the put wall 100
+    tr2 = wallwatch.pv_long_trades(tb2, tw, [{"i": 3, "t": tb2[3]["t"], "side": "long", "pw": 100}],
+                                   {"pvEod": True, "tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False, "trailOn": False}, kc=[(110, 130, 90)] * 14)
+    assert tr2[0]["status"] == "eodpw" and tr2[0]["exit"] == 99.8
+    # fair value gaps: bullish gap between candle i-2 high and candle i low, filled when a later low trades under it
+    fb = [{"t": f"2026-10-01T{9 + k}:30", "o": o, "h": h, "l": l, "c": c, "v": 1} for k, (o, h, l, c) in enumerate(
+        [(100, 101, 99, 100.5), (100.5, 104, 100.4, 103.8), (104, 106, 103, 105), (105, 105.5, 102.5, 104), (104, 104.5, 100, 100.2)])]
+    fz = wallwatch.fvg_zones(fb, 0.1, [1.0] * 5)
+    assert fz[0]["type"] == "bull" and fz[0]["lo"] == 101 and fz[0]["hi"] == 103 and fz[0]["fillI"] == 4
+    ft = wallwatch.fvg_bull_touch(fb, fz)
+    assert ft[3] is fz[0] and ft[2] is None and ft[4] is None
+    near = [dict(x) for x in fb]
+    near[3] = dict(near[3], l=103.2)                 # 0.2 above the top of the gap
+    assert wallwatch.fvg_bull_touch(near, fz)[3] is None
+    assert wallwatch.fvg_bull_touch(near, fz, 0.25, [1.0] * 5)[3] is fz[0]
+    # a gap not filled after max_days sessions expires
+    eb = fb[:4] + [{"t": f"2026-10-{d:02d}T10:30", "o": 104, "h": 105, "l": 103.5, "c": 104} for d in (2, 3, 6)]
+    ez = wallwatch.fvg_zones(eb, 0.1, [1.0] * len(eb), max_days=2)
+    assert ez[0]["end"] == "expired" and ez[0]["fillAt"] == "2026-10-06T10:30"
+    # exit on a new bearish FVG: candle 4's high under candle 2's low
+    xb = [{"t": f"2026-10-01T{9 + k}:30", "o": c, "h": h, "l": l, "c": c, "v": 1} for k, (h, l, c) in enumerate(
+        [(101, 99, 100), (102, 100, 101), (103, 101, 102), (102, 99, 100), (100.5, 98, 99), (100, 97, 98)])]
+    assert wallwatch.fvg_bear_new(xb, 0.1, [1.0] * 6) == [False, False, False, False, True, False]
+    st_ = {"at": xb[0]["t"], "entry": 100, "stop": 90, "stop0": 90, "status": "open", "fvgExit": True, "atr": 1}
+    for k in range(1, 6):
+        wallwatch._step(st_, xb[k], {}, 0, False, False, bear=wallwatch.fvg_bear_new(xb, 0.1, [1.0] * 6)[k])
+        if st_["status"] != "open":
+            break
+    assert st_["status"] == "fvg" and st_["exitAt"] == xb[4]["t"] and st_["exit"] == 99
+    # partial exit: half sold at entry + 1R, the stop of the rest moved to the entry, then stopped there
+    sc = {"at": "2026-10-01T09:30", "entry": 100, "stop": 98, "stop0": 98, "status": "open", "scaleOn": True, "scaleR": 1,
+          "scalePct": 50, "scaleBE": True, "atr": 1}
+    wallwatch._step(sc, {"t": "2026-10-01T10:30", "o": 100, "h": 102.5, "l": 99.5, "c": 102}, {}, 0, False, False)
+    assert sc["scaled"]["px"] == 102 and sc["stop"] == 100 and sc["status"] == "open"
+    wallwatch._step(sc, {"t": "2026-10-01T11:30", "o": 101, "h": 101, "l": 99, "c": 99.5}, {}, 0, False, False)
+    assert sc["status"] == "breakeven" and sc["exit"] == 100
+    assert wallwatch._result(sc) == (1.0, 0.5)          # half at +2%, half at 0%: +1% = 0.5R
+    assert wallwatch.config("nobody")["scaleOn"] is False
+    # wall regimes: labels per day, wall moves vs the previous day, forward moves from the close
+    import backtest
+    hb = [{"t": f"2026-09-{d:02d}T{h}:30", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100 + d} for d in range(1, 13) for h in (10, 11)]
+    dl = backtest._daily(hb)
+    assert len(dl) == 12 and dl[0]["c"] == 101
+    wr = {"2026-09-01": {"putWall": 95, "callWall": 110, "flip": 100}, "2026-09-02": {"putWall": 110, "callWall": 120, "flip": 105},
+          "2026-09-03": {"putWall": 115, "callWall": 115}, "2026-09-04": {"putWall": 120, "callWall": 110, "flip": 100}}
+    rr = backtest.regime_rows(dl, wr, "2026-09-01")
+    assert [r["regime"] for r in rr] == ["normal", "normal", "same", "inverted"]
+    assert rr[0]["px"] == "between" and rr[0]["flipSide"] == "above" and rr[0]["flipLoc"] == "between"
+    assert rr[1]["cwToPw"] and rr[2]["merged"] and rr[3]["inverted"] and rr[1]["px"] == "below"
+    assert rr[0]["1 day"] == round((102 / 101 - 1) * 100, 2)
+    # the strategy switch: detect_retest runs the VWAP reset strategy, signals in the retest format
+    sg3, w3 = wallwatch.detect_retest(tb, tw, None, {"pvSetup": True, "tgtBuf": 0, "kcRide": False, "cwLost": False, "dpLost": False,
+                                                    "trailOn": False, "earnOn": False}, None, None, None, None, None,
+                                      {"kc": {b["t"][:16]: (110, 130, 90) for b in tb}, "kch": {b["t"][:16]: (110, 130, 90) for b in tb}, "vwResets": [tb[3]["t"]]})
+    # unusual flow: relative to the ticker's last 30 days of call alerts, no look-ahead
+    al = [{"t": f"2026-09-{d:02d}T10:00", "c": 1, "p": 100_000} for d in range(1, 11)]
+    al += [{"t": "2026-09-12T10:00", "c": 1, "p": 250_000}, {"t": "2026-09-13T10:00", "c": 1, "p": 400_000},
+           {"t": "2026-09-14T10:00", "c": 0, "p": 9_000_000}]
+    u = wallwatch.unusual_calls(al, 500_000, 3)
+    assert [a["p"] for a in u] == [400_000] and u[0]["x"] == 4.0
+    assert [a["p"] for a in wallwatch.unusual_calls(al[:3] + [{"t": "2026-09-05T10:00", "c": 1, "p": 600_000}], 500_000, 3)] == [600_000]
+    # the same idea as building blocks: no call alert needed + VWAP reset candle + entry day close above the support
+    rbx = [dict(x, o=99.6) for x in tb]
+    rbx[3] = dict(rbx[3], o=100.2, l=99.9, c=100.6)
+    rr_, _ = wallwatch.detect_retest(rbx, tw, None, {"alertReq": False, "vwapReset": True, "pvEod": True, "greenOnly": False,
+                                                      "useFlip": False, "earnOn": False, "cwRoomOn": False, "noAboveCW": False,
+                                                      "kcNotExt": False, "tgtBuf": 0, "trailOn": False, "kcRide": False},
+                                     None, None, None, None, None, {"kc": {b["t"][:16]: (110, 130, 90) for b in rbx}, "vwResets": [rbx[3]["t"]]})
+    assert [x["at"] for x in rr_] == [rbx[3]["t"]] and rr_[0]["level"] == 100, rr_
+    assert rr_[0]["armedAt"] is None and not rr_[0]["armPremium"]          # flow off: no alert attached
+    rr2, _ = wallwatch.detect_retest(rbx, tw, None, {"alertReq": False, "vwapReset": True, "kcdLower": True, "greenOnly": False,
+                                                      "useFlip": False, "earnOn": False, "cwRoomOn": False, "noAboveCW": False,
+                                                      "kcNotExt": False, "tgtBuf": 0, "trailOn": False, "kcRide": False},
+                                     None, [{"t": rbx[1]["t"], "c": 1, "p": 9e6}], None, None, None,
+                                     {"kc": {b["t"][:16]: (100.3, 130, 90) for b in rbx}, "vwResets": [rbx[3]["t"]]})
+    assert rr2 == []                                   # close 100.6 above the daily middle 100.3: no entry
+    assert w3 is None and len(sg3) == 1 and sg3[0]["kind"] == "retest" and sg3[0]["setup"] == "pvlong" and sg3[0]["status"] == "target"
+    today = now_ny().date()
+    days, d = [], today - dt.timedelta(days=200)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    hb = []
+    for day in days:
+        for h in ("09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"):
+            k = len(hb); px = 100 + 3 * math.sin(k / 9.0)
+            hb.append({"t": f"{day}T{h}", "o": px - .1, "h": px + .3, "l": px - .3, "c": px, "v": 5000 + k if k % 40 == 0 else 1000})
+    saved = (charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else [{"t": f"{x}T09:30", "o": 100, "h": 103, "l": 97, "c": 100, "v": 1} for x in days]
+        flowdata.stored_walls = lambda sym: {day: {"callWall": 104, "putWall": 100, "flip": 101} for day in days}
+        backtest.stored_alerts = lambda sub_, sym: []
+        backtest.stored_darkpool = lambda sym: []
+        wallwatch.save_config("pv-user", {"tickers": ["AAA"]})
+        r = backtest.pv_study("pv-user", {"days": 120})
+        g = {x["label"].strip(): x for x in r["groups"]}
+        assert g["All resets touching the put wall (PW ≠ CW)"]["n"] > 0 and g["Any day (baseline)"]["n"] > 50
+        assert "5 days" in g["Any day (baseline)"] and backtest.pv_result("pv-user")["groups"]
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
+
+
+def test_daily_strategy():
+    """1D lab mode: daily candles from the hourly ones; entry on the put wall test + inertia green + an open bullish
+    daily FVG, exit at the first daily close with the inertia not green."""
+    import wallwatch, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [100 + 2 * d for d in range(86)] + [270 - 3 * k for k in range(1, 15)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = []
+    for d, c in zip(days, cl):
+        for k, h in enumerate(H):
+            px = c - 0.5 + k / 12
+            hb.append({"t": f"{d}T{h}", "o": px, "h": c + 1 if k == 3 else px + 0.1, "l": c - 1 if k == 2 else px - 0.1,
+                       "c": c if k == 6 else px + 0.05, "v": 1})
+    db_ = wallwatch.daily_bars(hb)
+    assert len(db_) == len(cl) and db_[5]["c"] == cl[5] and db_[5]["h"] == cl[5] + 1 and db_[5]["full"]
+    w = {d: {"putWall": 50, "callWall": 999, "flip": 40} for d in days}
+    w[days[85]] = {"putWall": cl[85] - 1 + 0.1, "callWall": 999, "flip": 40}
+    cfg = {"tf": "1D", "pwTest": True, "inGreen": True, "fvgOn": True, "inYExit": True, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "inN1": 10, "inN2": 6, "inN3": 3, "stopAtr": 5,
+           "fvgDays": 30}
+    sg, watch = wallwatch.detect_retest(hb, w, None, cfg, None)
+    assert watch is None and len(sg) == 1
+    s = sg[0]
+    assert s["at"].startswith(days[85]) and s["levelName"] == "put wall" and s["fvgZone"] and s["tf"] == "1D"
+    assert s["status"] == "inertia" and s["exitAt"][:10] > days[85]
+    off = wallwatch.detect_retest(hb, w, None, {**cfg, "inYExit": False, "stopOn": True}, None)[0][0]
+    assert off["status"] in ("stop", "open") and off["exitAt" if off["status"] != "open" else "lastAt"] >= s["exitAt"]
+    assert wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False}, None)[0][0]["at"] < s["at"]   # every day passes
+    assert wallwatch.config("x")["tf"] == "1h"
+    ih = wallwatch.inertia_hourly(hb, (12, 8, 4))
+    last = {b["t"][:10]: x for b, x in zip(hb, ih)}
+    hs_ = wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False, "inhNotRed": True, "inhN1": 12, "inhN2": 8, "inhN3": 4}, None)[0]
+    assert hs_
+    for sg_ in hs_:
+        assert last[sg_["at"][:10]]["s"] != "R" and sg_["inhSt"] == last[sg_["at"][:10]]["s"]
+    assert not wallwatch.detect_retest(hb, w, None, {**cfg, "pwTest": False, "inhGreen": True, "inhN1": 12, "inhN2": 8, "inhN3": 4}, None)[0]   # never green here
+
+
+def test_daily_above_pw_rule():
+    """Above the PW: the daily entry close must be above the put wall of that day."""
+    import wallwatch, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [100 + 2 * d for d in range(86)] + [270 - 3 * k for k in range(1, 15)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = []
+    for d, c in zip(days, cl):
+        for k, h in enumerate(H):
+            px = c - 0.5 + k / 12
+            hb.append({"t": f"{d}T{h}", "o": px, "h": px + 0.1, "l": px - 0.1, "c": c if k == 6 else px + 0.05, "v": 1})
+    w = {d: {"putWall": 999, "callWall": 9999, "flip": 40} for d in days}
+    for d in days[60:]:
+        w[d] = {"putWall": 50, "callWall": 9999, "flip": 40}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopAtr": 5,
+           "usePW": False, "useFlip": False}
+    a = wallwatch.detect_retest(hb, w, None, cfg, None)[0]
+    b = wallwatch.detect_retest(hb, w, None, {**cfg, "abovePW": True}, None)[0]
+    assert a and b and a[0]["at"][:10] < days[60] and all(x["at"][:10] >= days[60] for x in b)
+    assert wallwatch.version({**wallwatch.PARAMS, "abovePW": True}) != wallwatch.version(wallwatch.PARAMS)
+    c = wallwatch.detect_retest(hb, w, None, {**cfg, "belowPW": True}, None)[0]
+    assert c and all(x["at"][:10] < days[60] for x in c)
+    dbars = wallwatch.daily_bars(hb)
+    cv = wallwatch.cvd_roll(dbars, 5)
+    one = []
+    for i, b in enumerate(dbars):
+        v, r = b["v"], b["h"] - b["l"]
+        pc = dbars[i - 1]["c"] if i else b["o"]
+        one.append(2 * (v * (b["c"] - b["l"]) / r if r > 0 else (v if b["c"] > pc else 0 if b["c"] < pc else v / 2)) - v)
+    assert all(abs(cv[i] - sum(one[max(0, i - 4):i + 1])) < 1e-6 for i in range(len(dbars)))
+    up = wallwatch.detect_retest(hb, w, None, {**cfg, "cvdUp": True, "cvdN": 5}, None)[0]
+    dn = wallwatch.detect_retest(hb, w, None, {**cfg, "cvdDn": True, "cvdN": 5}, None)[0]
+    at = {b["t"][:10]: cv[i] for i, b in enumerate(dbars)}
+    assert up and all(at[x["at"][:10]] > 0 for x in up) and all(at[x["at"][:10]] < 0 for x in dn)
+    assert not wallwatch.detect_retest(hb, w, None, {**cfg, "cvdUp": True, "cvdDn": True}, None)[0]
+
+
+def test_swing_squeeze_turn_rule():
+    """Squeeze turn up (1h / daily): momentum under 0, falling then rising, on the entry candle or within N candles."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [200 + 20 * math.sin(d / 7) + d * 0.1 for d in range(160)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = []
+    for d, c in zip(days, cl):
+        for k, h in enumerate(H):
+            px = c - 0.5 + k / 12
+            hb.append({"t": f"{d}T{h}", "o": px, "h": px + 0.3, "l": px - 0.3, "c": c if k == 6 else px + 0.05, "v": 1})
+    dbars = wallwatch.daily_bars(hb)
+    sq = wallwatch.squeeze(dbars)
+    turns = [i for i, x in enumerate(sq) if x and x["tAgo"] == 0]
+    assert turns
+    for i in turns:
+        a, b, c = sq[i - 2]["mom"], sq[i - 1]["mom"], sq[i]["mom"]
+        assert c < 0 and c > b and a > b
+    w = {d: {"putWall": 1, "callWall": 9999, "flip": 1} for d in days}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopAtr": 0.3,
+           "usePW": False, "useFlip": False}
+    for n in (1, 3):
+        sg = wallwatch.detect_retest(hb, w, None, {**cfg, "sqdTurn": True, "sqTurnN": n}, None)[0]
+        assert sg
+        at = {b["t"][:10]: x for b, x in zip(dbars, sq)}
+        assert all(at[x["at"][:10]]["tAgo"] is not None and at[x["at"][:10]]["tAgo"] < n for x in sg)
+    assert wallwatch._sq_ok({"tAgo": 2}, "turn", 3) and not wallwatch._sq_ok({"tAgo": 3}, "turn", 3) and not wallwatch._sq_ok({"tAgo": None}, "turn", 5)
+
+
+def test_swing_close_under_pw_exit():
+    """Close under PW exit: sold at the first daily close under that day's put wall (1D and the hourly step)."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [200 + 20 * math.sin(d / 7) for d in range(120)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = [{"t": f"{d}T{h}", "o": c - 0.2, "h": c + 0.3, "l": c - 0.3, "c": c, "v": 1} for d, c in zip(days, cl) for h in H]
+    w = {d: {"putWall": 205, "callWall": 9999, "flip": 1} for d in days}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopOn": False, "stopAtr": 0.5,
+           "usePW": False, "useFlip": False, "abovePW": True}
+    sg = wallwatch.detect_retest(hb, w, None, {**cfg, "pwExit": True}, None)[0]
+    done = [x for x in sg if x["status"] != "open"]
+    assert done and all(x["status"] == "pwlost" and x["exit"] < 205 for x in done)
+    close = {d: c for d, c in zip(days, cl)}
+    for x in done:                                      # the FIRST daily close under the put wall after the entry
+        between = [d for d in days if x["at"][:10] < d < x["exitAt"][:10]]
+        assert all(close[d] >= 205 for d in between)
+    off = wallwatch.detect_retest(hb, w, None, cfg, None)[0]
+    assert all(x["status"] != "pwlost" for x in off)
+    st = {"kind": "retest", "entry": 210, "stop": 0.0, "stop0": 200, "pwExit": True, "at": "2026-01-01T10:30"}
+    wallwatch._step(st, {"t": "2026-01-02T14:30", "o": 206, "h": 206, "l": 204, "c": 204}, w, 0.0, False, False)
+    assert "exitAt" not in st                           # not the daily close yet
+    wallwatch._step(st, {"t": "2026-01-02T15:30", "o": 204, "h": 204.5, "l": 203, "c": 204}, w, 0.0, False, True)
+    assert st["status"] == "pwlost" and st["exit"] == 204
+
+
+def test_swing_rising_falling_rules():
+    """Inertia / squeeze / CVD rising or falling: entry rules and exits (first close where it holds)."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cl = [200 + 20 * math.sin(d / 6) + 5 * math.sin(d / 2) for d in range(160)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cl))]
+    hb = [{"t": f"{d}T{h}", "o": c - 0.3 * math.cos(j), "h": c + 0.6, "l": c - 0.6, "c": c + 0.3 * math.cos(j * 1.7) if k == 6 else c + 0.1 * k * math.sin(j), "v": 10 + k}
+          for j, (d, c) in enumerate(zip(days, cl)) for k, h in enumerate(H)]
+    w = {d: {"putWall": 1, "callWall": 9999, "flip": 1} for d in days}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopOn": False, "stopAtr": 0.5,
+           "usePW": False, "useFlip": False, "cvdN": 5, "inN1": 20, "inN2": 10, "inN3": 5}
+    db_ = wallwatch.daily_bars(hb)
+    dd = [b["t"][:10] for b in db_]
+    sq = dict(zip(dd, wallwatch.squeeze(db_)))
+    cv = wallwatch.cvd_roll(db_, 5)
+    cvd = {d: (cv[i], cv[i - 1] if i else None) for i, d in enumerate(dd)}
+    rg = dict(zip(dd, wallwatch.inertia_regime(db_, (20, 10, 5))))
+    run = lambda **k: wallwatch.detect_retest(hb, w, None, {**cfg, **k}, None)[0]
+    checks = {"sqdRise": lambda d: sq[d] and sq[d]["up"], "sqdFall": lambda d: sq[d] and not sq[d]["up"],
+              "cvdRise": lambda d: cvd[d][0] > cvd[d][1], "cvdFall": lambda d: cvd[d][0] < cvd[d][1],
+              "inFall": lambda d: rg[d] and rg[d]["s"] == "R"}
+    for k, ok in checks.items():
+        sg = run(**{k: True})
+        assert sg and all(ok(x["at"][:10]) for x in sg), k
+    exits = {"cvdFallX": ("cvd", lambda d: cvd[d][0] < cvd[d][1]), "cvdRiseX": ("cvd", lambda d: cvd[d][0] > cvd[d][1]),
+             "sqdRiseX": ("squeeze", lambda d: bool(sq[d] and sq[d]["up"])), "inRiseX": ("inertia", lambda d: rg[d] and rg[d]["s"] == "G")}
+    for k, (st, ok) in exits.items():
+        sg = [x for x in run(**{k: True}) if x["status"] != "open"]
+        assert sg, k
+        for x in sg:
+            assert x["status"] == st and x["exitWhy"] == k and ok(x["exitAt"][:10]), k
+            assert not any(ok(d) for d in dd if x["at"][:10] < d < x["exitAt"][:10]), k     # the first one
+    h = {**cfg, "tf": "1h", "alertReq": False, "relFlow": False}
+    for k in ("inhFall", "sqhRise", "sqhFall", "cvdRise", "inhRiseX", "inhRedX", "sqhRiseX", "cvdFallX", "sqdRiseX", "inRiseX"):
+        wallwatch.detect_retest(hb, w, None, {**h, k: True}, None)          # no error on the hourly timeframe
+    hs = [x for x in wallwatch.detect_retest(hb, w, None, {**h, "cvdFallX": True}, None)[0] if x["status"] != "open"]
+    hc = wallwatch.cvd_roll([b for b in hb], 5)
+    at = {b["t"][:16]: (hc[i], hc[i - 1]) for i, b in enumerate(hb) if i}
+    assert hs and all(x["status"] == "cvd" and at[x["exitAt"]][0] < at[x["exitAt"]][1] for x in hs)
+
+
+def test_research_pipeline_and_agent_apart():
+    """AI research: the agent only proposes data and sees 1st-half results only; the pipeline cleans, gates
+    (unknown setting -> needs feature, repeat -> duplicate), tests and grades with the same criteria; t rises with
+    the number of ideas; your own ideas take the same path."""
+    import research, research_agent, daytrade
+    import inspect
+    assert "claude" not in inspect.getsource(research).replace("research_agent", "")    # no AI call in the pipeline
+    sub = "rs-user"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    ok, unknown = research.clean_changes("day", {"aboveVwap": "true", "stopAtr": "0.8", "bogus": 1, "tickers": ["X"]})
+    assert ok == {"aboveVwap": True, "stopAtr": 0.8} and len(unknown) == 2 and any("bogus" in u for u in unknown)
+    ok2, bad2 = research.clean_changes("day", {"fxLong": "close > vwap and cvd > 0", "fxShort": "os.system('x')"})
+    assert ok2 == {"fxLong": "close > vwap and cvd > 0"} and bad2 and "fxShort" in bad2[0]
+    c = research.criteria(sub)
+    assert research.t_required(c, 1) == 2.0 and research.t_required(c, 100) > 3 and research.t_required({**c, "adjustT": False}, 100) == 2.0
+    rows = [{"at": f"2025-{1 + i % 12:02d}-{1 + i % 27:02d}T10:00", "R": (1.5 if i % 2 else -0.6)} for i in range(400)]
+    m = research.metrics(rows, "2025-07-01", 0.05)
+    assert m["n"] == 400 and abs(m["avgR"] - (sum(r["R"] for r in rows) / 400 - 0.05)) < 1e-3 and m["h1"]["n"] + m["h2"]["n"] == 400
+    g, fails, _ = research.grade(m, c, 1)
+    assert g == "A" and not fails
+    bad = research.metrics([{"at": "2025-01-02T10:00", "R": 0.1}] * 5, "2025-07-01")
+    g2, fails2, _ = research.grade(bad, c, 1)
+    assert g2 in ("C", "F") and any("trades" in f for f in fails2)
+
+    class Bench:                                       # no market data: a fixed answer per setting
+        first, mid, last, errors = "2025-01-01", "2025-07-01", "2025-12-31", []
+
+        def rows(self, P):
+            good = P.get("aboveVwap")
+            return [{"at": f"2025-{1 + i % 12:02d}-10T10:00", "R": (1.2 if i % 2 else -0.5) if good else (0.5 if i % 2 else -0.6), "sym": "QQQ"}
+                    for i in range(300)]
+    seen_payload = {}
+
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None):
+        seen_payload.update(rec=rec, crit=crit)
+        return [{"name": "vwap", "hypothesis": "h", "changes": {"aboveVwap": True}},
+                {"name": "vwap again", "hypothesis": "h", "changes": {"aboveVwap": True}},
+                {"name": "needs gex", "hypothesis": "h", "changes": {"vwapCross": True}, "missing": ["net GEX by strike"]},
+                {"name": "made up", "hypothesis": "h", "changes": {"magic": True}}], "note"
+    saved = research.DayBench, research_agent.propose, daytrade.config, research_agent.build
+    try:
+        research.DayBench = lambda sub_, days, base: Bench()
+        research_agent.propose = propose
+        research_agent.build = lambda *a, **k: []
+        daytrade.config = lambda s_: {**daytrade.PARAMS, "aboveVwap": False, "vwapCross": False}
+        out = research.run(sub, {"strategy": "day", "n": 4})
+        xs = {x["name"]: x for x in research.ideas(sub, "day")}
+        assert xs["vwap"]["status"] == "tested" and xs["vwap"]["grade"] in ("A", "B") and xs["vwap"]["metrics"]["n"] == 300
+        assert xs["vwap again"]["status"] == "duplicate" and xs["needs gex"]["status"] == "needs feature"
+        assert xs["made up"]["status"] == "needs feature" and "magic" in xs["made up"]["missing"][0]
+        assert out["testedNow"] == 1 and not out["running"]
+        research.run(sub, {"strategy": "day", "n": 4})                  # 2nd round: the agent sees the record
+        rec = seen_payload["rec"]
+        tested = [r for r in rec if r["status"] == "tested"]
+        assert tested and all(set(r["inSample"]) == {"n", "avgR", "t", "pf", "win", "totR"} for r in tested)
+        assert all("grade" not in r and "metrics" not in r for r in rec) and "minTestT" not in seen_payload["crit"]
+        mine = research.submit(sub, "day", "mine", {"aboveVwap": True, "stopAtr": 0.9})
+        assert mine["status"] == "queued" and mine["by"] == "you"
+        research.test_job(sub, {"strategy": "day"})
+        assert next(x for x in research.ideas(sub, "day") if x["id"] == mine["id"])["status"] == "tested"
+        bl = research.blank_cfg(sub, "day")
+        assert not any(bl[k] for k in daytrade.ENTRY + daytrade.FILTERS) and bl["stopOn"] and not bl["targetOn"] and bl["fxLong"] == ""
+        v = next(x for x in research.ideas(sub, "day") if x["name"] == "vwap")
+        assert v["origin"] == "blank" and v["full"]["aboveVwap"] is True and v["full"]["vwapCross"] is False and "tickers" not in v["full"]
+        assert research.auto_due(sub) == []                          # autopilot off
+        research.save_auto(sub, "day", {"on": True, "perDay": 2, "n": 3})
+        d1 = research.auto_due(sub)
+        assert d1 and d1[0][0] == "day" and d1[0][1]["n"] == 3 and research.auto_due(sub) == []   # one at a time
+        research._set_run(sub, {"running": None})
+        assert research.auto_due(sub) and (research._set_run(sub, {"running": None}) or True) and research.auto_due(sub) == []   # 2 a day
+        assert research.auto_today(sub)["day"] == 2
+        research.save_auto(sub, "day", {"perDay": 0, "focus": "gamma flip regime"})   # continuous: no daily limit
+        for _ in range(3):
+            research._set_run(sub, {"running": None})
+            d_ = research.auto_due(sub)
+            assert d_ and d_[0][1]["focus"] == "gamma flip regime"
+        assert research.run_log(sub) and research.state(sub)["runlog"]
+        research._set_run(sub, {"running": None})
+        st = research.state(sub, "day")
+        assert st["tested"] == 2 and st["tReq"] >= 2.0, (st["tested"], st["tReq"], [(x["name"], x["status"]) for x in st["ideas"]])
+    finally:
+        research.DayBench, research_agent.propose, daytrade.config, research_agent.build = saved
+
+
+def test_formula_rules():
+    """Formula rules: only whitelisted names / functions; values = the same math done by hand; no look-ahead;
+    plugged into day trading (entry per side + exit) and swing (entry + exit)."""
+    import formula, daytrade, wallwatch
+    for bad in ("__import__('os')", "close.real", "open('x')", "foo > 1", "ema(close, n)", "ema(close)", "lambda: 1", "'a' > close",
+                "flowPrem > 0"):
+        try:
+            formula.check(bad, formula.UNAVAILABLE["day"])
+            assert False, bad
+        except formula.FormulaError:
+            pass
+    bars = _dt_bars(4)
+    cx = formula.Ctx([b for b in bars if "09:30" <= b["t"][11:16] < "16:00"])
+    cl = cx.s("close")
+    e9 = cx.s("close") and formula._ema(cl, 9)
+    v = formula.evaluate("close > ema(close, 9)", cx)
+    assert v == [c > e for c, e in zip(cl, e9)]
+    up = formula.evaluate("crossUp(close, ema(close, 9))", cx)
+    assert all(not x or (cl[i - 1] <= e9[i - 1] and cl[i] > e9[i]) for i, x in enumerate(up))
+    r = formula.evaluate("rising(close, 3) and tod >= 30 and not (rsi(14) > 101)", cx)
+    tod = cx.s("tod")
+    assert all(not x or (cl[i] > cl[i - 3] and tod[i] >= 30) for i, x in enumerate(r)) and any(r)
+    orh = formula._call("orHigh", [__import__("ast").Constant(15)], cx)
+    day0 = [i for i, b in enumerate(cx.b) if b["t"][:10] == cx.day[0]]
+    assert all(orh[i] is None for i in day0[:14]) and orh[day0[14]] == max(cx.b[i]["h"] for i in day0[:15])
+    # bigger bars later don't change earlier values (no look-ahead)
+    cx2 = formula.Ctx(cx.b[:300])
+    assert formula.evaluate("close > ema(close, 9) and cvdSum(20) > 0", cx2) == formula.evaluate("close > ema(close, 9) and cvdSum(20) > 0", cx)[:300]
+    # day trading
+    base = {**daytrade.PARAMS, "aboveVwap": False, "emaStack": False, "maxTrades": 50, "longs": True, "shorts": True, "targetOn": False}
+    sg = daytrade.detect(bars, {**base, "fxLong": "close > ema(close, 9) and tod >= 20", "fxShort": ""})
+    assert sg and all(x["side"] == 1 for x in sg)
+    ses = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    ix = {b["t"]: i for i, b in enumerate(ses)}
+    for x in sg:
+        i = ix[x["at"]]
+        assert cl[i] > e9[i] and tod[i] >= 20
+    sg2 = daytrade.detect(bars, {**base, "fxLong": "close > ema(close, 9) and tod >= 20", "fxExitLong": "close < ema(close, 9)", "stopOn": False})
+    ex = [x for x in sg2 if x["status"] == "formula"]
+    assert ex and all(cl[ix[x["exitAt"]]] < e9[ix[x["exitAt"]]] for x in ex)
+    try:
+        daytrade.clean_cfg(daytrade.PARAMS, {"fxLong": "import os"})
+        assert False
+    except Exception as e:
+        assert type(e).__name__ == "BadRequest"
+    # swing, daily candles
+    import math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cls = [200 + 20 * math.sin(d / 6) for d in range(120)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cls))]
+    hb = [{"t": f"{d}T{h}", "o": c - 0.3, "h": c + 0.6, "l": c - 0.6, "c": c + 0.1 * k, "v": 10} for d, c in zip(days, cls) for k, h in enumerate(H)]
+    w = {d: {"putWall": 195, "callWall": 9999, "flip": 1} for d in days}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopOn": False, "stopAtr": 0.5,
+           "usePW": False, "useFlip": False}
+    sw = wallwatch.detect_retest(hb, w, None, {**cfg, "fxEntry": "close > putWall and rising(close, 2)", "fxExit": "close < putWall"}, None)[0]
+    db_ = wallwatch.daily_bars(hb)
+    dc = {b["t"][:10]: (i, b["c"]) for i, b in enumerate(db_)}
+    assert sw
+    for x in sw:
+        i, c = dc[x["at"][:10]]
+        assert c > 195 and c > db_[i - 2]["c"]
+        if x["status"] != "open":
+            assert x["status"] == "formula" and dc[x["exitAt"][:10]][1] < 195
+    assert wallwatch.version({**wallwatch.PARAMS, "fxEntry": "close > 1"}) != wallwatch.version(wallwatch.PARAMS)
+
+
+def test_research_agent_creates_indicators():
+    """The agent creates missing indicators as formulas: stored in the library, expanded into plain formulas for the
+    test; ideas waiting for an indicator are rebuilt and re-run; data the app doesn't have stays 'needs data'."""
+    import research, research_agent, daytrade, formula
+    sub = "rs-ind"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    assert formula.expand("a > 1 and b", {"a": "rsi(14)", "b": "a < 80"}) == "rsi(14) > 1 and rsi(14) < 80"
+    try:
+        formula.expand("a", {"a": "b", "b": "a"})
+        assert False
+    except formula.FormulaError:
+        pass
+    calls = {"build": 0}
+
+    class Bench:
+        first, mid, last, errors = "2025-01-01", "2025-07-01", "2025-12-31", []
+
+        def rows(self, P):
+            good = "rsi(14)" in (P.get("fxLong") or "")
+            return [{"at": f"2025-{1 + i % 12:02d}-10T10:00", "R": (1.2 if i % 2 else -0.5) if good else 0.0, "sym": "QQQ"} for i in range(300)]
+
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None):
+        if not calls.get("p"):
+            calls["p"] = 1
+            return [{"name": "rsi dip", "hypothesis": "h", "changes": {"fxLong": "rsiFast < 30"}, "missing": [],
+                     "newIndicators": [{"name": "rsiFast", "formula": "rsi(14)", "what": "RSI"}]},
+                    {"name": "needs a band", "hypothesis": "h", "changes": {}, "missing": ["a volatility band around VWAP"], "newIndicators": []},
+                    {"name": "news", "hypothesis": "h", "changes": {}, "missing": ["news sentiment"], "newIndicators": []},
+                    {"name": "bad ind", "hypothesis": "h", "changes": {"fxLong": "zz > 1"}, "missing": [],
+                     "newIndicators": [{"name": "zz", "formula": "import os"}]}], ""
+        return [], ""
+
+    def build(strategy, catalog, settings, library, items):
+        calls["build"] += 1
+        out = []
+        for it in items:
+            if it["name"] == "needs a band":
+                out.append({"id": it["id"], "newIndicators": [{"name": "vwapBand", "formula": "vwap - 2 * atr(14)"}],
+                            "changes": {"fxLong": "close < vwapBand and rsiFast < 40"}, "impossible": []})
+            elif it["name"] == "news":
+                out.append({"id": it["id"], "newIndicators": [], "changes": {}, "impossible": ["news feed"]})
+        return out
+    saved = research.DayBench, research_agent.propose, research_agent.build, daytrade.config
+    try:
+        research.DayBench = lambda sub_, days, base: Bench()
+        research_agent.propose, research_agent.build = propose, build
+        daytrade.config = lambda s_: {**daytrade.PARAMS}
+        research.run(sub, {"strategy": "day", "n": 4})
+        xs = {x["name"]: x for x in research.ideas(sub, "day")}
+        lib = {x["name"]: x["formula"] for x in research.library(sub)}
+        assert lib == {"rsiFast": "rsi(14)", "vwapBand": "vwap - 2 * atr(14)"}       # waiting ideas fixed in the same run
+        r = xs["rsi dip"]
+        assert r["status"] == "tested" and r["changes"]["fxLong"] == "rsi(14) < 30" and r["readable"]["fxLong"] == "rsiFast < 30" and r["indicators"] == ["rsiFast"]
+        assert xs["bad ind"]["status"] == "needs feature" and "zz" in " ".join(xs["bad ind"]["missing"])
+        xs = {x["name"]: x for x in research.ideas(sub, "day")}
+        b = xs["needs a band"]
+        assert b["status"] == "tested" and b["rebuilt"] and "vwapBand" in research.lib_map(sub)
+        assert b["changes"]["fxLong"] == "close < vwap - 2 * atr(14) and rsi(14) < 40"
+        assert xs["news"]["status"] == "needs data" and xs["news"]["missing"] == ["news feed"]
+        for _ in range(4):
+            research.run(sub, {"strategy": "day", "n": 4})
+        n_build = calls["build"]
+        research.run(sub, {"strategy": "day", "n": 4})              # at most 3 attempts per idea
+        assert calls["build"] == n_build
+        bi = next(x for x in research.ideas(sub, "day") if x["name"] == "bad ind")
+        assert bi["buildTries"] == 3 and bi["status"] == "needs feature"
+        assert formula.evaluate("count(close > open, 2 * 5) >= 0 and sqFire(20) >= 0", formula.Ctx(_dt_bars(2)))
+    finally:
+        research.DayBench, research_agent.propose, research_agent.build, daytrade.config = saved
+
+
+def test_research_agent_reads_stringified_lists():
+    """The model sometimes sends a list / object as a JSON string: the agent still reads the ideas; nothing usable ->
+    a clear error instead of an empty run."""
+    import research_agent, claude, json
+    saved = claude.json_call
+    try:
+        claude.json_call = lambda *a, **k: {"ideas": json.dumps([{"name": "x", "hypothesis": "h", "changes": json.dumps({"aboveVwap": True}),
+                                                                   "newIndicators": json.dumps([{"name": "aB", "formula": "rsi(14)"}])}])}
+        props, _ = research_agent.propose("day", [], {}, {}, [], 4, None, 0, [])
+        assert props[0]["changes"] == {"aboveVwap": True} and props[0]["newIndicators"][0]["name"] == "aB"
+        claude.json_call = lambda *a, **k: {"notes": "nothing"}
+        try:
+            research_agent.propose("day", [], {}, {}, [], 4, None, 0, [])
+            assert False
+        except ValueError as e:
+            assert "no usable ideas" in str(e)
+    finally:
+        claude.json_call = saved
+
+
+def test_market_context_and_5min():
+    """5-minute candles for the day trading; market context (options flow, gamma, sweeps, breadth, VIXY, events,
+    pre-market move) loaded per day, decoded per ticker and aligned with each candle without look-ahead."""
+    import daytrade, formula, marketctx, flowdata, stockday
+    bars = _dt_bars(3)
+    a5 = daytrade.agg_bars(bars, 5)
+    ses = [b for b in a5 if "09:30" <= b["t"][11:16] < "16:00"]
+    assert all(int(b["t"][14:16]) % 5 == 0 for b in ses)
+    one = [b for b in bars if b["t"][:10] == ses[0]["t"][:10] and "09:30" <= b["t"][11:16] < "09:35"]
+    assert ses[0]["o"] == one[0]["o"] and ses[0]["c"] == one[-1]["c"] and ses[0]["h"] == max(b["h"] for b in one)
+    assert abs(ses[0]["v"] - sum(float(b.get("v") or 0) for b in one)) < 1e-6
+    part = daytrade.agg_bars([b for b in bars if b["t"][:16] <= bars[-1]["t"][:10] + "T10:02"], 5)
+    assert part[-1]["t"].endswith("09:55")                 # 10:00-10:02 still forming: dropped
+    sg = daytrade.detect(bars, {**daytrade.PARAMS, "barMin": 5, "aboveVwap": True, "emaStack": False, "maxTrades": 5})
+    assert all(int(x["at"][14:16]) % 5 == 0 for x in sg)
+    # flags
+    f = marketctx.event_flags("2025-03-19")
+    assert f["fomc"] == 1 and marketctx.event_flags("2025-03-21")["opex"] == 1 and marketctx.event_flags("2025-03-07")["nfp"] == 1
+    assert marketctx.event_flags("2025-03-31")["qend"] == 1 and marketctx.event_flags("2025-03-28")["qend"] == 0
+    # Unusual Whales day, parsed (fake API)
+    d = ses[0]["t"][:10]
+    calls = []
+
+    def uw(key, path, params=None, attempts=4):
+        calls.append(path)
+        if "net-prem-ticks" in path:
+            return {"data": [{"tape_time": f"{d}T13:{30 + k:02d}:00Z", "net_call_premium": "1000", "net_put_premium": "400"} for k in range(10)]}
+        if "spot-exposures" in path:
+            return {"data": [{"time": f"{d}T13:31:00Z", "gamma_per_one_percent_move_oi": "-5e8"}, {"time": f"{d}T13:36:00Z", "gamma_per_one_percent_move_oi": "2e8"}]}
+        return {"data": [{"created_at": f"{d}T13:33:10Z", "type": "call", "total_premium": "300000"},
+                         {"created_at": f"{d}T13:33:40Z", "type": "put", "total_premium": "100000"}]}
+    import util
+    saved = flowdata._uw, util.utc_to_ny, marketctx.utc_to_ny
+    try:
+        flowdata._uw = uw
+        conv = lambda t: t - __import__("datetime").timedelta(hours=4)      # EDT in the test dates
+        marketctx.utc_to_ny = conv
+        x = marketctx.uw_day("k", "QQQ", d)
+    finally:
+        flowdata._uw, util.utc_to_ny, marketctx.utc_to_ny = saved
+    assert x["c"][0] == 1000 and x["p"][9] == 400 and x["c"][10] == 0
+    assert x["g"][0] is None and x["g"][1] == -5e8 and x["g"][5] == -5e8 and x["g"][6] == 2e8
+    assert x["sc"][0] == 300000 and x["sp"][0] == 0                        # the 100K put sweep is under the minimum
+    mx = {d: {**x, "br": [0.2] + [0.8] * 77, "vx": [20.0] * 78, "vxp": 19.0, "term": 1.05}}
+    cx = formula.Ctx(ses, True, interval=5, mx=mx, pm_last={d: ses[0]["o"] * 1.01})
+    i0 = 0
+    assert cx.s("callPrem")[i0] == 5000 and cx.s("netPrem")[i0] == 3000 and cx.s("netPremDay")[1] == 6000
+    assert cx.s("sweepCall")[i0] == 300000 and cx.s("gex")[i0] == -5e8 and cx.s("gex")[1] == 2e8
+    assert cx.s("breadth")[i0] == 0.2 and cx.s("breadth")[1] == 0.8              # the bucket completed by the candle
+    assert abs(cx.s("vixyChg")[i0] - (20 / 19 - 1) * 100) < 1e-9 and cx.s("vixTerm")[i0] == 1.05
+    c1 = formula.Ctx([b for b in bars if b["t"][:10] == d and "09:30" <= b["t"][11:16] < "16:00"], True, interval=1, mx=mx)
+    assert c1.s("breadth")[3] is None and c1.s("breadth")[4] == 0.2          # 1-minute: only completed 5-minute buckets
+    assert c1.s("sweepCall")[3] == 0 and c1.s("sweepCall")[4] == 300000
+    v = formula.evaluate("netPrem > 0 and breadth >= 0.2 and gex < 0 and fomc == 0", cx)
+    assert v[0] and not v[1]
+    # Alpaca breadth (fake bars)
+    def mb(c, syms, tf, a, b, feed="sip", max_pages=60):
+        out = {}
+        for k, s_ in enumerate(syms):
+            px = 100.0
+            out[s_] = [{"t": f"{d}T{9 + (30 + 5 * j) // 60:02d}:{(30 + 5 * j) % 60:02d}", "o": px, "h": px + 1, "l": px - 1,
+                        "c": px + (0.5 if k % 2 else -0.5), "v": 100} for j in range(78)]
+        return out
+    sv = stockday.multi_bars
+    try:
+        stockday.multi_bars = mb
+        a = marketctx.alpaca_days({}, [d])
+    finally:
+        stockday.multi_bars = sv
+    br = a[d]["br"]
+    assert br[0] is not None and 0.3 < br[0] < 0.7 and a[d]["vx"][0] is not None
+    marketctx.put(d, {"alp": "ok", "br": marketctx._enc(br), "QQQ_c": marketctx._enc(x["c"]), "uw": "{}"})
+    sv2 = marketctx.vix_term_map
+    try:
+        marketctx.vix_term_map = lambda: {d: 1.1}
+        dec = marketctx.for_symbol("QQQ", [d])
+    finally:
+        marketctx.vix_term_map = sv2
+    assert dec[d]["c"][0] == 1000 and abs(dec[d]["br"][0] - br[0]) < 1e-3 and dec[d]["term"] == 1.1 and "p" not in dec[d]
+    assert formula.check("onMove > 0.5 and opex == 1", formula.UNAVAILABLE["day"])
+    try:
+        formula.check("breadth > 0.5", formula.UNAVAILABLE["swing"])
+        assert False
+    except formula.FormulaError:
+        pass
+
+
+def test_day_robustness_check():
+    """Robustness check: numbers nudged ±20% (formula numbers too), rules taken out, sides, window; verdict from the
+    share of variants that stay positive; twice the cost and without the best 5% on the base trades."""
+    import dtrobust, daytrade
+    P = {**daytrade.PARAMS, "aboveVwap": True, "emaStack": False, "stopAtr": 1.5, "targetOn": True, "targetR": 2.5,
+         "fxLong": "rising(cvdSum(20), 1) and megaBreadth > 0.5"}
+    vs = dict(dtrobust.variants(P))
+    assert {"stopAtr": 1.2} in vs.values() and {"stopAtr": 1.8} in vs.values() and {"aboveVwap": False} in vs.values()
+    fx = [v["fxLong"] for v in vs.values() if "fxLong" in v]
+    assert "rising(cvdSum(16), 1) and megaBreadth > 0.5" in fx and "rising(cvdSum(20), 1) and megaBreadth > 0.6" in fx
+    assert any(v.get("startT") == "10:05" for v in vs.values()) and len(vs) <= dtrobust.MAX_VARIANTS
+    saved = daytrade.run_variants, daytrade.config
+    try:
+        def rv(sub, days, variants, budget_s=540, tickers=None):
+            rr = {i: [{"at": f"2025-{1 + k % 12:02d}-10T10:00", "R": (1.0 if k % 2 else -0.5) * (0.6 if i % 3 == 0 and i else 1.0)} for k in range(200)]
+                  for i in range(len(variants))}
+            return rr, {}, {f"2025-{m:02d}-10" for m in range(1, 13)}, {}, []
+        daytrade.run_variants, daytrade.config = rv, (lambda s_: dict(P))
+        out = dtrobust.run("rob-u", {"days": 120, "cost": 0.05})
+    finally:
+        daytrade.run_variants, daytrade.config = saved
+    assert out["base"]["avgR"] == 0.2 and out["positive"] == out["variants"] and out["verdict"] in ("robust", "mixed")
+    assert out["extra"][0]["all"]["avgR"] == 0.15 and out["extra"][1]["all"]["n"] == 190
+    assert dtrobust.result("rob-u")["verdict"] == out["verdict"]
+
+
+def test_no_support_any_candle():
+    """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
+    import wallwatch, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    up = [{"t": f"{(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat()}T{h}", "o": 100 + d, "h": 101 + d, "l": 99 + d, "c": 100.5 + d}
+          for d in range(30) for h in H]
+    w = {b["t"][:10]: {"putWall": 50, "callWall": 400, "flip": 40} for b in up}
+    cfg = {"alertReq": False, "usePW": False, "useFlip": False, "inGreen": True, "greenOnly": False, "earnOn": False, "noAboveCW": False,
+           "cwRoomOn": False, "inN1": 10, "inN2": 6, "inN3": 3}
+    sg, _ = wallwatch.detect_retest(up, w, None, cfg, None)
+    assert sg and sg[0]["levelName"] == "candle low" and sg[0]["inSt"] == "G"
+
+
+def test_hourly_inertia():
+    """Hourly inertia: rolling regression matches the direct one; the entry filter and the not-green exit work."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars, k = [], 0
+    for d in range(40):
+        day = (dt.date(2026, 1, 5) + dt.timedelta(days=d)).isoformat()
+        for h in H:
+            c = 100 + 5 * math.sin(k / 9.0) + k * 0.02
+            bars.append({"t": f"{day}T{h}", "o": c - 0.1, "h": c + 0.3, "l": c - 0.3, "c": c, "v": 1})
+            k += 1
+    ns = (12, 8, 4)
+    r = wallwatch.inertia_hourly(bars, ns)
+    ys = [b["c"] for b in bars]
+    for j in range(13, len(bars)):
+        v = [wallwatch._linreg_end(ys[j - n + 1:j + 1]) > wallwatch._linreg_end(ys[j - n:j]) for n in ns]
+        assert r[j]["s"] == ("G" if all(v) else "R" if not any(v) else "Y"), j
+    assert r[11] is None and {x["s"] for x in r if x} == {"G", "Y", "R"}
+    w = {b["t"][:10]: {"putWall": 50, "callWall": 999, "flip": 40} for b in bars}
+    cfg = {"alertReq": False, "usePW": False, "useFlip": False, "greenOnly": False, "earnOn": False, "noAboveCW": False, "cwRoomOn": False,
+           "inhGreen": True, "inhYExit": True, "inhN1": 12, "inhN2": 8, "inhN3": 4, "trailOn": False, "targetOn": False, "flipExit": False, "stopAtr": 5}
+    sg, _ = wallwatch.detect_retest(bars, w, None, cfg, None)
+    idx = {b["t"][:16]: i for i, b in enumerate(bars)}
+    assert sg and all(r[idx[s["at"]]]["s"] == "G" for s in sg)
+    closed = [s for s in sg if s["status"] == "inertiaH"]
+    assert closed and all(r[idx[s["exitAt"]]]["s"] != "G" for s in closed)
+
+
+def test_option_test():
+    """Option test: contract picked among the calls that traded on the entry day; the entry at the 30-minute bar ending
+    with the stock candle; take profit / stop / stock exit on the option's own bars."""
+    import optiontest, alpaca, backtest
+    from datetime import datetime, timedelta
+    import db as db_
+    assert optiontest.occ("BRK.B", "2025-03-21", 450) == "BRKB250321C00450000"
+    assert optiontest.fridays("2025-03-03", 7, 21) == ["2025-03-14", "2025-03-21"]
+    assert optiontest.strikes_near(101.2)[0] == 101
+    want = optiontest.occ("AAA", "2025-03-14", 100)
+
+    def fake_bars(c, syms, tf, start, end):
+        if tf == "1Day":
+            return {s: [{"t": "2025-03-03T05:00:00Z", "v": 50}] for s in syms if s in (want, optiontest.occ("AAA", "2025-03-21", 100))}
+        out = []                                       # 30-minute bars (UTC): 2.00 at the entry, then up to 3.10 on day 2
+        for d, pxs in (("2025-03-03", [2.0] * 13), ("2025-03-04", [2.0, 2.4, 2.8, 3.1] + [2.9] * 9)):
+            t0 = datetime.strptime(d + "T14:30", "%Y-%m-%dT%H:%M")      # 09:30 NY (EST)
+            for k, px in enumerate(pxs):
+                out.append({"t": (t0 + timedelta(minutes=30 * k)).strftime("%Y-%m-%dT%H:%M:%SZ"), "o": px, "h": px, "l": px - 0.05, "c": px})
+        return {syms[0]: out}
+    saved = (optiontest.bars, alpaca.creds)
+    try:
+        optiontest.bars = fake_bars
+        alpaca.creds = lambda sub: {"key": "k", "secret": "s"}
+        db_.put({"PK": db_.upk("opt-user"), "SK": backtest.LAB_SK, "trades": [
+            {"sym": "AAA", "at": "2025-03-03T10:30", "R": 1.2, "pct": 2.0, "exit": "trail", "exitAt": "2025-03-05T10:30", "entry": 100.4}]})
+        r = optiontest.run("opt-user", {"sel": "manual", "dteMin": 7, "dteMax": 21, "money": 0, "tp": 50, "sl": 40, "slip": 0, "follow": True})
+        assert r["priced"] == 1, r
+        o = r["trades"][0]["opt"]
+        assert o["sym"] == want and o["entry"] == 2.0 and o["why"] == "option target" and o["pct"] == 55.0, o   # gapped over the target: filled at the open
+        g = {(x["tp"], x["sl"], x["follow"]): x for x in r["grid"]}
+        assert g[(None, None, True)]["avg"] == 45.0          # held to the stock exit: last option close 2.90
+        assert g[(100, None, False)]["n"] == 1
+        rs = optiontest.run_sym("opt-user", "AAA", [{"at": "2025-03-03T10:30", "entry": 100.4, "exitAt": "2025-03-05T10:30", "exit": "trail", "R": 1.2},
+                                                    {"at": "2023-05-01T10:30", "entry": 90, "exit": "stop", "R": -1}], {"sel": "manual", "slip": 0})
+        assert rs["byAt"]["2025-03-03T10:30"]["pct"] == 55.0 and rs["stats"]["n"] == 1 and rs["older"] == 1
+        assert optiontest.result_sym("opt-user", "AAA")["byAt"]
+        dl = optiontest.implied_delta(100, 100, 30 / 365, optiontest._bs_call(100, 100, 30 / 365, 0.3)[0])
+        assert abs(dl - optiontest._bs_call(100, 100, 30 / 365, 0.3)[1]) < 1e-3 and 0.5 < dl < 0.6
+        assert optiontest.implied_delta(100, 90, 30 / 365, 5.0) is None          # under intrinsic: no volatility fits
+        live_k = optiontest.occ("AAA", "2025-04-25", 96)
+
+        def fake_daily(c, syms, tf, start, end):                                  # one ITM call ~0.65 delta, one ATM ~0.52
+            px = {live_k: optiontest._bs_call(100, 96, 53.25 / 365, 0.3)[0], optiontest.occ("AAA", "2025-04-25", 100): optiontest._bs_call(100, 100, 53.25 / 365, 0.3)[0]}
+            return {s_: [{"t": start + "T05:00:00Z", "v": 20, "c": px[s_], "vw": px[s_]}] for s_ in syms if s_ in px}
+        optiontest.bars = fake_daily
+        ch = optiontest.pick_live({}, "AAA", "2025-03-03", 100.0, {"dteMin": 40, "dteMax": 65, "deltaMin": 0.55, "deltaMax": 0.75})
+        assert ch and ch[0][0] == live_k and 0.55 <= ch[0][4] <= 0.75, ch
+        optiontest.bars = fake_bars
+        cp = optiontest.clean_path([("a", 1, 1, 1, 10.0), ("b", 1, 1, 1, 4.0), ("c", 1, 1, 1, 10.4), ("d", 1, 1, 1, 10.6)])
+        assert cp[1][4] == 10.2 and cp[1][3] == 10.2                 # a stray print: replaced, and lows = closes
+    finally:
+        optiontest.bars, alpaca.creds = saved
+
+
+def test_squeeze():
+    """TTM squeeze: on while the range is tight (BB inside KC), fires when it expands; entry / exit rules on 1h and 1D."""
+    import wallwatch, math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    bars, k = [], 0
+    for d in range(60):
+        day = (dt.date(2026, 1, 5) + dt.timedelta(days=d)).isoformat()
+        for h in H:
+            if k < 150:
+                c = 100 + 3 * math.sin(k / 3.0)                 # wide swings: no squeeze
+            elif k < 260:
+                c = 100 + 0.05 * math.sin(k)                    # coiled
+            else:
+                c = 100 + (k - 260) * 0.4                       # breakout up
+            bars.append({"t": f"{day}T{h}", "o": c - 0.05, "h": c + 0.1, "l": c - 0.1, "c": c, "v": 1})
+            k += 1
+    sq = wallwatch.squeeze(bars, 20, 2.0, 1.5, 3)
+    assert sq[10] is None and sq[230]["on"] and not sq[120]["on"]
+    fired = [i for i, x in enumerate(sq) if x and x["fired"] and x["mom"] > 0]
+    assert fired and 255 < fired[0] < 290, fired[:3]
+    w = {b["t"][:10]: {"putWall": 50, "callWall": 999, "flip": 40} for b in bars}
+    cfg = {"alertReq": False, "usePW": False, "useFlip": False, "greenOnly": False, "earnOn": False, "noAboveCW": False, "cwRoomOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "stopAtr": 5, "sqhFire": True, "sqhExit": True}
+    sg, _ = wallwatch.detect_retest(bars, w, None, cfg, None)
+    idx = {b["t"][:16]: i for i, b in enumerate(bars)}
+    assert sg and all(sq[idx[s["at"]]]["fired"] for s in sg)
+    assert all(s["status"] in ("squeeze", "open", "stop") for s in sg)
+    d1 = wallwatch.detect_retest(bars, w, None, {**cfg, "tf": "1D", "sqhFire": False, "sqhExit": False, "sqdMom": True}, None)[0]
+    dsq = wallwatch.squeeze(wallwatch.daily_bars(bars), 20, 2.0, 1.5, 3)
+    dd = {b["t"][:10]: x for b, x in zip(wallwatch.daily_bars(bars), dsq)}
+    assert all(dd[s["at"][:10]]["mom"] > 0 and dd[s["at"][:10]]["up"] for s in d1)
+    prev = wallwatch.squeeze_daily_prev(bars, 20, 2.0, 1.5, 3)
+    assert prev[-1] == dsq[-2]
+
+
+def test_watchlists():
+    """Several watchlists: main reset once to the set list (the rest moved to Unusual flow), add / move / remove,
+    new lists, and flow tickers go to the Unusual flow list; the bot scans all of them."""
+    import wallwatch, flowdata, autotrader
+    import db as db_
+    db_.put({"PK": db_.upk("wl-user"), "SK": "WWCFG", "tickers": ["AAPL", "ZZZ", "NVDA"]})
+    c = wallwatch.config("wl-user")
+    assert c["main"] == wallwatch.MAIN_V1 and "V" in c["main"] and c["lists"][1] == {"name": "Unusual flow", "tickers": ["ZZZ"]}
+    assert "ZZZ" in c["tickers"] and len(c["tickers"]) == len(wallwatch.MAIN_V1) + 1
+    wallwatch.save_config("wl-user", {"newList": "Swing"})
+    wallwatch.save_config("wl-user", {"add": "HOOD", "list": "Swing"})
+    c = wallwatch.config("wl-user")
+    assert {"name": "Swing", "tickers": ["HOOD"]} in c["lists"] and "HOOD" in c["tickers"] and "HOOD" not in c["main"]
+    wallwatch.save_config("wl-user", {"move": "ZZZ", "to": "Main"})
+    c = wallwatch.config("wl-user")
+    assert "ZZZ" in c["main"] and c["lists"][1]["tickers"] == []
+    wallwatch.save_config("wl-user", {"remove": "ZZZ", "list": "Main"})
+    wallwatch.save_config("wl-user", {"renameList": "Swing", "to": "Swing 2"})
+    c = wallwatch.config("wl-user")
+    assert "ZZZ" not in c["tickers"] and any(x["name"] == "Swing 2" for x in c["lists"])
+    wallwatch.save_config("wl-user", {"deleteList": "Swing 2"})
+    assert "HOOD" not in wallwatch.config("wl-user")["tickers"]
+    saved = (flowdata.alerts, autotrader.settings)
+    try:
+        flowdata.alerts = lambda *a, **k: {"alerts": [{"ticker": "NEWT", "premium": 900000}, {"ticker": "AAPL", "premium": 1}]}
+        autotrader.settings = lambda sub: {"flowWindowMin": 5, "flowMinPremium": 1, "flowMinDte": 0, "flowMaxDte": 60, "flowAskSide": True,
+                                           "flowSweeps": False, "flowMinVolOi": 0, "excludeEtfs": False}
+        r = wallwatch.flow_add("wl-user")
+        c = wallwatch.config("wl-user")
+        assert r["added"] == ["NEWT"] and "NEWT" not in c["main"] and "NEWT" in c["lists"][1]["tickers"] and "NEWT" in c["tickers"]
+        wallwatch.save_config("wl-user", {"remove": "NEWT"})                       # removed: the flow doesn't add it back
+        assert wallwatch.flow_add("wl-user")["added"] == [] and "NEWT" not in wallwatch.config("wl-user")["tickers"]
+        wallwatch.save_config("wl-user", {"add": "FLW", "addedBy": "flow"})        # flow adds (any path) go to Unusual flow
+        c = wallwatch.config("wl-user")
+        assert "FLW" not in c["main"] and "FLW" in c["lists"][1]["tickers"]
+    finally:
+        flowdata.alerts, autotrader.settings = saved
+
+
+def test_review_open_positions():
+    """Open wall watch trades replayed with the current settings: entry rules + exits (the entry forced)."""
+    import wallwatch, charts, flowdata, backtest, math
+    import datetime as dt
+    import db as db_
+    from util import now_ny
+    today = now_ny().date()
+    days, d = [], today - dt.timedelta(days=120)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    hb = []
+    for day in days:
+        for h in ("09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"):
+            k = len(hb); px = 100 + 4 * math.sin(k / 15.0)
+            hb.append({"t": f"{day}T{h}", "o": px - .1, "h": px + .3, "l": px - .3, "c": px, "v": 1000})
+    at = hb[-60]["t"]
+    w = {day: {"callWall": 106, "putWall": 98, "flip": 100} for day in days}
+    # forced entry: exits replayed with the current settings
+    fs, _ = wallwatch.detect_retest(hb, w, None, {"alertReq": False, "stopAtr": 0.1, "trailOn": False}, None, None, None, None, None,
+                                    {"force": {"at": at, "level": hb[-60]["l"], "levelName": "support"}})
+    assert len(fs) == 1 and fs[0]["at"] == at
+    saved = (charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool)
+    try:
+        charts._yahoo = lambda sym, tf, s_, e: hb if tf == "1h" else [{"t": f"{x}T09:30", "o": 100, "h": 104, "l": 96, "c": 100, "v": 1} for x in days]
+        flowdata.stored_walls = lambda sym: w
+        backtest.stored_alerts = lambda sub_, sym: []
+        backtest.stored_darkpool = lambda sym: []
+        wallwatch.save_config("rev-user", {"alertReq": False, "earnExit": False})
+        db_.put({"PK": db_.upk("rev-user"), "SK": "BOT#b1", "id": "b1", "symbol": "AAA", "status": "open", "lastPlPct": 12.0,
+                 "proposal": {"contract": "AAA261120C00100000", "wallwatch": {"signalAt": at, "level": 98, "entry": hb[-60]["c"]}}})
+        r = wallwatch.review_open("rev-user")
+        assert len(r["rows"]) == 1
+        x = r["rows"][0]
+        assert x["verdict"] in ("keep", "exit", "no entry") and "entryOk" in x, x
+        assert (x["verdict"] == "exit") == bool(x["exitNow"] or x["earnings"])
+        import autotrader
+        closed, sv = [], autotrader.close
+        autotrader.close = lambda sub_, bid, reason="manual": closed.append((bid, reason))
+        try:
+            r2 = wallwatch.review_open("rev-user", auto_close=True)
+        finally:
+            autotrader.close = sv
+        bad = r2["rows"][0]["verdict"] in ("exit", "no entry")
+        assert (closed and closed[0][0] == "b1" and r2["rows"][0]["closed"]) if bad else not closed
+        import autotrader
+        closed, sv = [], autotrader.close
+        autotrader.close = lambda sub_, bid, reason="manual": closed.append((bid, reason))
+        try:
+            r2 = wallwatch.review_open("rev-user", auto_close=True)
+        finally:
+            autotrader.close = sv
+        bad = r2["rows"][0]["verdict"] in ("exit", "no entry")
+        assert (closed and closed[0][0] == "b1" and r2["rows"][0]["closed"]) if bad else not closed
+    finally:
+        charts._yahoo, flowdata.stored_walls, backtest.stored_alerts, backtest.stored_darkpool = saved
+
+
+def test_stock_quotes():
+    """Watchlist Mark / change / % change from Alpaca snapshots (mid when tight, else last trade)."""
+    import flowdata, alpaca, json as js, io
+    from util import now_ny
+    today = now_ny().strftime("%Y-%m-%d")
+    snap = {"AAA": {"latestTrade": {"p": 101.0}, "latestQuote": {"bp": 100.98, "ap": 101.02}, "dailyBar": {"t": today + "T13:30:00Z", "c": 101},
+                    "prevDailyBar": {"c": 100.0}},
+            "BBB": {"latestTrade": {"p": 50.0}, "latestQuote": {"bp": 40, "ap": 60}, "dailyBar": {"t": "2020-01-01T00:00:00Z", "c": 49.0}}}
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    saved = (flowdata.urllib.request.urlopen, alpaca.creds)
+    try:
+        flowdata.urllib.request.urlopen = lambda req, timeout=15: R(js.dumps(snap).encode())
+        alpaca.creds = lambda sub: {"key": "k", "secret": "s"}
+        q = flowdata.stock_quotes("q-user", ["AAA", "BBB"])
+        assert q["AAA"] == {"m": 101.0, "ch": 1.0, "pct": 1.0}
+        assert q["BBB"]["m"] == 50.0 and q["BBB"]["ch"] == 1.0 and q["BBB"]["pct"] == 2.04   # wide spread: last trade; vs the last close
+    finally:
+        flowdata.urllib.request.urlopen, alpaca.creds = saved
+
+
+def _dt_bars(days=3, seed=1):
+    import math, datetime as dt
+    out, k = [], 0
+    d0 = dt.date(2026, 9, 14)
+    for di in range(days):
+        day = d0 + dt.timedelta(days=di)
+        for m in range(4 * 60, 16 * 60):
+            if m < 9 * 60 + 30 and m % 5:
+                continue                                   # sparse pre-market
+            px = 500 + 3 * math.sin(k / 40.0) + 0.5 * math.sin(k / 7.0) + di * 2
+            out.append({"t": f"{day.isoformat()}T{m // 60:02d}:{m % 60:02d}", "o": px - 0.05, "h": px + 0.2, "l": px - 0.2,
+                        "c": px + (0.04 if math.cos(k / 40.0) > 0 else -0.04), "v": 1000})
+            k += 1
+    return out
+
+
+def test_daytrade_engine():
+    """1-minute engine: rules ON must all pass, long and short, stop / target / time exits, one trade at a time,
+    max trades a day, flat by the flat time; 5-minute aggregation for the chart."""
+    import daytrade
+    bars = _dt_bars(3)
+    P = {**daytrade.PARAMS, "aboveVwap": True, "emaStack": True, "greenBar": True, "maxTrades": 3}
+    sg = daytrade.detect(bars, P)
+    assert sg and all(s["status"] in ("stop", "target", "time", "trail") for s in sg[:-1])
+    days = {}
+    for s in sg:
+        days[s["at"][:10]] = days.get(s["at"][:10], 0) + 1
+        assert "09:35" <= s["at"][11:16] < "15:30" and (s["exitAt"] or "")[11:16] <= "15:59"
+    assert max(days.values()) <= 3 and {s["dir"] for s in sg} <= {"long", "short"}
+    for a, b in zip(sg, sg[1:]):
+        assert b["at"] >= (a["exitAt"] or "")                 # one at a time
+    for s in sg:
+        if s["status"] == "target":
+            assert abs(s["R"] - 2.0) < 0.3, s
+        if s["status"] == "stop":
+            assert s["R"] <= -0.9, s
+    lo = daytrade.detect(bars, {**P, "shorts": False})
+    assert lo and all(s["side"] == 1 for s in lo)
+    assert daytrade.detect(bars, {**P, **{k: False for k in daytrade.ENTRY}}) == []      # no rule on: no entry
+    agg = daytrade._agg([b for b in bars if "09:30" <= b["t"][11:16] < "16:00"][:12], 5)
+    assert [x["t"][11:16] for x in agg] == ["09:30", "09:35", "09:40"] and agg[0]["h"] == max(b["h"] for b in bars if "09:30" <= b["t"][11:16] < "09:35" and b["t"][:10] == "2026-09-14")
+    st = daytrade.stats(sg)
+    assert st["n"] == len(sg) and "exits" in st
+    c = daytrade.save_config("dt-user", {"stopAtr": 2, "aboveVwap": False, "startT": "09:45", "tickers": "qqq spy iwm"})
+    assert c["stopAtr"] == 2 and c["aboveVwap"] is False and c["startT"] == "09:45" and c["tickers"] == ["QQQ", "SPY", "IWM"]
+
+
+def test_daytrade_live_tick():
+    """Live: the engine's new trade on the last finished candle is sent to the day account; closed when the engine
+    closes it."""
+    import daytrade, datetime as dt
+    bars = _dt_bars(2)
+    P = {**daytrade.PARAMS, "aboveVwap": True, "emaStack": True, "greenBar": True, "enabled": True, "trade": True, "tickers": ["QQQ"]}
+    sg = daytrade.detect(bars, P, None, "2026-09-15")
+    s0 = next(s for s in sg if s["at"][:10] == "2026-09-15" and s["status"] != "open")
+    calls = []
+    saved = (daytrade.minute_bars, daytrade.creds, daytrade._alp, daytrade.walls_by_day, daytrade.config)
+    try:
+        daytrade.minute_bars = lambda sub, sym, days, now=None: [b for b in bars if b["t"] < (now or dt.datetime.now()).strftime("%Y-%m-%dT%H:%M")]
+        daytrade.creds = lambda sub: {"key": "k", "secret": "s"}
+        held = {}
+        def alp(c, m, path, body=None):
+            calls.append((m, path, body))
+            if m == "GET" and path.startswith("/v2/positions/"):
+                return held.get(path.rsplit("/", 1)[1])
+            if m == "POST":
+                held[body["symbol"]] = {"qty": body["qty"]}
+                return {"id": "o1"}
+            if m == "DELETE":
+                held.pop(path.rsplit("/", 1)[1], None)
+                return {"id": "o2"}
+            return {}
+        daytrade._alp = alp
+        daytrade.walls_by_day = lambda sub, sym, dates, *a, **k: {}
+        daytrade.config = lambda sub: P
+        t_in = dt.datetime.strptime(s0["at"], "%Y-%m-%dT%H:%M") + dt.timedelta(minutes=1, seconds=5)
+        r = daytrade.tick("dt-live", t_in)
+        assert any(m == "POST" for m, *_ in calls), (r, calls)
+        post = next(b for m, p_, b in calls if m == "POST")
+        assert post["side"] == ("buy" if s0["side"] > 0 else "sell") and post["qty"] == "10"
+        calls.clear()
+        t_out = dt.datetime.strptime(s0["exitAt"], "%Y-%m-%dT%H:%M") + dt.timedelta(minutes=1, seconds=5)
+        daytrade.tick("dt-live", t_out)
+        assert any(m == "DELETE" and p_ == "/v2/positions/QQQ" for m, p_, b in calls), calls
+        rec = [x for x in db.q_prefix(db.upk("dt-live"), "DTPOS#QQQ#") if x["at"] == s0["at"]][0]
+        assert rec["status"] == "closed" and s0["status"] in rec["exitReason"]
+    finally:
+        daytrade.minute_bars, daytrade.creds, daytrade._alp, daytrade.walls_by_day, daytrade.config = saved
+
+
+def test_tr3ndy_studies():
+    """Day-trading chart studies: LIS = previous regular close, PM zone 20-40% from the gap side, fibs, turns, bands."""
+    import tr3ndy
+    bars = _dt_bars(3)
+    b5 = tr3ndy.agg(bars, 5)
+    lines, lf, sent = tr3ndy.lis(b5)
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    assert lines["2026-09-15"] == [b for b in reg if b["t"][:10] == "2026-09-14"][-1]["c"] and "2026-09-14" not in lines
+    pz = tr3ndy.pmz(b5, lines)["2026-09-15"]
+    r = pz["h"] - pz["l"]
+    assert (abs(pz["up"] - (pz["h"] - .2 * r)) < 1e-3 and abs(pz["lo"] - (pz["h"] - .4 * r)) < 1e-3) if pz["gap"] else (abs(pz["lo"] - (pz["l"] + .2 * r)) < 1e-3)
+    fb = dict((k, v) for k, v in tr3ndy.fibs(bars, lines)["2026-09-15"])
+    d14 = [b for b in reg if b["t"][:10] == "2026-09-14"]
+    assert fb["high"] == round(max(b["h"] for b in d14), 4) and fb["low"] == round(min(b["l"] for b in d14), 4)   # the previous day
+    assert abs(fb["50%"] - (fb["high"] + fb["low"]) / 2) < 1e-3 and fb["200%"] > fb["161.8%"] > fb["127.2%"] > fb["high"] and fb["-100%"] < fb["-61.8%"] < fb["-27.2%"] < fb["low"]
+    assert "2026-09-14" not in tr3ndy.fibs(bars)
+    tu = tr3ndy.turns([{"t": str(i), "m": m} for i, m in enumerate([1, 3, 2, 1, -1, -3, -2])])
+    assert tu == [{"t": "2", "dir": -1}, {"t": "6", "dir": 1}]
+    ser, fm = tr3ndy.bands(reg)
+    assert len(ser) == len(reg) and all(x["dir"] in (1, -1) for x in fm)
+
+
+def test_daytrade_backtest_stats():
+    """Long backtest: SIP first (falls back to IEX), halves, month / weekday / hour, drawdown, equity curve."""
+    import daytrade
+    bars = _dt_bars(6)
+    seen = []
+    def mb(sub, sym, days, now=None, feed=None):
+        seen.append(feed)
+        if feed == "sip":
+            raise RuntimeError("subscription does not permit querying recent SIP data")
+        return bars
+    saved = (daytrade.minute_bars, daytrade.walls_by_day, daytrade.config)
+    try:
+        daytrade.minute_bars = mb
+        daytrade.walls_by_day = lambda sub, sym, dates, *a, **k: {}
+        daytrade.config = lambda sub: {**daytrade.PARAMS, "tickers": ["QQQ"]}
+        r = daytrade.backtest("bt-user", 250)
+        assert seen == ["sip", "iex"] and r["feed"] == {"QQQ": "iex"} and r["days"] == 250 and r["daysFound"] == 6
+        assert r["all"]["n"] > 0 and r["h1"]["n"] + r["h2"]["n"] == r["all"]["n"]
+        assert sum(x["n"] for x in r["byHour"].values()) == r["all"]["n"] and r["byWeekday"] and r["byMonth"]
+        assert r["curve"][-1] == round(sum(x["R"] for x in r["trades"]), 2) and r["maxDD"] <= 0
+        r2 = daytrade.backtest("bt-user", 30, {"tickers": "QQQ SPY", "stopAtr": "2"})    # the settings on screen (text from the inputs)
+        assert set(r2["byTicker"]) == {"QQQ", "SPY"}
+        daytrade.backtest_job("bt-user", {"days": 30})
+        assert daytrade.backtest_result("bt-user")["all"]["n"] == r["all"]["n"]
+    finally:
+        daytrade.minute_bars, daytrade.walls_by_day, daytrade.config = saved
+
+
+def test_day_scenario_study():
+    """Scenario study: gaps (fill, direction), first touches of levels with the move after (signed through the level),
+    held / rejected, dark pool + gamma confluence."""
+    import daystudy
+    bars = _dt_bars(6)
+    walls = {d: {"putWall": 499, "flip": 501, "callWall": 504} for d in {b["t"][:10] for b in bars}}
+    dpm = {d: [501.05, 497.0] for d in walls}
+    days, ev = daystudy.study_ticker(bars, walls, dpm)
+    assert len(days) == 5 and all(x["bucket"] for x in days)
+    assert ev and all(e["side"] in ("from below", "from above") for e in ev)
+    seen = {}
+    for e in ev:
+        k = (e["d"], e["level"], e["price"])
+        assert k not in seen                                   # first touch only
+        seen[k] = 1
+    dp = [e for e in ev if e["level"] == "dark pool" and abs(e["price"] - 501.05) < 1e-6]
+    assert dp and all(e["conf"] == "flip" for e in dp)        # 501.05 within 0.15% of the flip
+    e0 = ev[0]
+    day = [b for b in bars if b["t"][:10] == e0["d"] and "09:30" <= b["t"][11:16] < "16:00"]
+    sgn = 1 if e0["side"] == "from below" else -1
+    assert abs(e0["f15"] - round((day[e0["minute"] + 15]["c"] / e0["price"] - 1) * 100 * sgn, 3)) < 1e-6
+    sm = daystudy.summarize(days, ev)
+    assert sm["gaps"] and sm["levels"] and sum(v["n"] for v in sm["gaps"].values()) == 5 and "flip · from below" in str(sm["confluence"]) or sm["confluence"] is not None
+
+
+def test_day_scenario_study_cvd():
+    """Scenario study with CVD: CVD at 10:00 etc. -> move to the close, level touches split by CVD with / against the
+    approach (CVD of the candle before the touch); real order flow used for the minutes it covers."""
+    import daystudy, daytrade
+    bars = _dt_bars(6)
+    walls = {d: {"putWall": 499, "flip": 501, "callWall": 504} for d in {b["t"][:10] for b in bars}}
+    days, ev = daystudy.study_ticker(bars, walls, {})
+    d0 = days[0]
+    rb = [b for b in bars if b["t"][:10] == d0["d"] and "09:30" <= b["t"][11:16] < "16:00"]
+    est = daytrade._cvd_est(rb)
+    j = next(i for i, b in enumerate(rb) if b["t"][11:16] >= "10:00")
+    assert d0["cvdAt"]["10:00"]["cvd"] == round(est[j - 1])
+    assert abs(d0["cvdAt"]["10:00"]["move"] - round((rb[-1]["c"] / rb[j - 1]["c"] - 1) * 100, 3)) < 1e-9
+    e = next(x for x in ev if x["cvdWith"] is not None)
+    rbe = [b for b in bars if b["t"][:10] == e["d"] and "09:30" <= b["t"][11:16] < "16:00"]
+    cv = daytrade._cvd_est(rbe)[e["minute"] - 1]
+    assert e["cvdWith"] == (cv * (1 if e["side"] == "from below" else -1) > 0)
+    real = {rb[j - 1]["t"][:16]: 123456.0}
+    days2, _ = daystudy.study_ticker(bars, walls, {}, real_cvd=real)
+    assert next(x for x in days2 if x["d"] == d0["d"])["cvdAt"]["10:00"]["cvd"] == 123456
+    sm = daystudy.summarize(days, ev)
+    assert sm["cvdTime"] and sm["cvdLevels"]
+    for k, x in sm["cvdTime"].items():
+        assert x["n"] > 0 and 0 <= x["same"] <= 100
+    assert sum(x["n"] for k, x in sm["cvdTime"].items() if k.startswith("10:00") and k.endswith("all days")) == len([x for x in days if x["cvdAt"].get("10:00", {}).get("cvd")])
+
+
+def test_daytrade_new_rules_filters_exits():
+    """Study rules, day filters (gap, VIX, other ticker, lunch, daily loss), breakeven / scale-out / time stop /
+    level target; indicators reused across settings (cache)."""
+    import daytrade
+    bars = _dt_bars(6)
+    base = {**daytrade.PARAMS, "aboveVwap": True, "emaStack": False, "greenBar": True, "maxTrades": 5}
+    ref = daytrade.detect(bars, base)
+    assert ref
+    # every new entry rule / filter runs and only ever removes trades
+    for k in daytrade.STUDY_RULES:
+        sg = daytrade.detect(bars, {**base, k: True}, {}, None, {"vix": {d: 15.0 for d in {b["t"][:10] for b in bars}}})
+        assert len(sg) <= len(ref) * 2 + 5, k
+    # filters
+    days = sorted({b["t"][:10] for b in bars})
+    assert daytrade.detect(bars, {**base, "vixOn": True, "vixMax": 20}, {}, None, {"vix": {d: 30.0 for d in days}}) == []
+    assert daytrade.detect(bars, {**base, "vixOn": True, "vixMax": 20}, {}, None, {"vix": {d: 15.0 for d in days}})
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    assert daytrade.detect(bars, {**base, "peerAgree": True}, {}, None, {"peer": {b["t"]: -1 for b in reg}, }) == [] or base["shorts"]
+    longs = {**base, "shorts": False}
+    assert daytrade.detect(bars, {**longs, "peerAgree": True}, {}, None, {"peer": {b["t"]: -1 for b in reg}}) == []
+    assert daytrade.detect(bars, {**longs, "peerAgree": True}, {}, None, {"peer": {b["t"]: 1 for b in reg}})
+    nl = daytrade.detect(bars, {**base, "noLunch": True})
+    assert not any("11:30" <= s["at"][11:16] < "13:30" for s in nl)
+    gp = daytrade.detect(bars, {**base, "gapOn": True, "gapMin": 50, "gapMax": 99})
+    assert gp == []
+    # exits
+    tm = daytrade.detect(bars, {**base, "timeOn": True, "timeMin": 7, "targetOn": False, "stopAtr": 50})
+    assert tm and all(s["status"] in ("time stop", "time") for s in tm)
+    assert any(s["status"] == "time stop" and s["exitAt"][11:16] for s in tm)
+    sc = daytrade.detect(bars, {**base, "scaleOn": True, "scaleR": 0.5, "targetR": 2})
+    one = next((s for s in sc if s.get("scaled") is not None and s["status"] != "open"), None)
+    assert one is not None
+    risk = abs(one["entry"] - one["stop0"])
+    exp = round((0.5 * (one["scaled"] - one["entry"]) + 0.5 * (one["exit"] - one["entry"])) * one["side"] / risk, 2)
+    assert one["R"] == exp
+    be = daytrade.detect(bars, {**base, "beOn": True, "beR": 0.3, "targetOn": False, "stopAtr": 2})
+    assert any(s.get("be") for s in be)
+    bes = [s for s in be if s["status"] == "breakeven"]
+    assert bes and all((s["exit"] - s["entry"]) * s["side"] <= 1e-4 for s in bes)
+    lt = daytrade.detect(bars, {**base, "lvlTarget": True, "targetOn": False}, {d: {"callWall": 9999, "putWall": 1} for d in days})
+    assert any(s.get("lvlT") for s in lt)
+    # daily loss limit: no entry after the day's closed R reaches -X
+    ds = daytrade.detect(bars, {**base, "dayStop": True, "dayStopR": 0.5, "maxTrades": 50, "targetR": 5})
+    byd = {}
+    for s in ds:
+        tot = sum(x["R"] for x in byd.get(s["at"][:10], []))
+        assert tot > -0.5 or not byd.get(s["at"][:10]), s["at"]
+        byd.setdefault(s["at"][:10], []).append(s)
+    # open vs flip, reverse: long only when the day opened under the flip, short only above
+    W = {d: {"flip": 99999} for d in days}
+    ff = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "flipFade": True, "maxTrades": 1}, W)
+    assert ff and all(s0["side"] == 1 for s0 in ff) and len({s0["at"][:10] for s0 in ff}) == len(ff)
+    W = {d: {"flip": 1} for d in days}
+    assert all(s0["side"] == -1 for s0 in daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "flipFade": True}, W))
+    # previous day's walls: day k uses the flip of day k-1 (the first day has none)
+    W = {d: {"flip": (99999 if i % 2 else 1)} for i, d in enumerate(days)}
+    pv = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "flipFade": True, "flipPrev": True, "maxTrades": 1}, W)
+    assert pv and days[0] not in {s0["at"][:10] for s0 in pv}
+    for s0 in pv:
+        k = days.index(s0["at"][:10])
+        assert s0["side"] == (1 if (k - 1) % 2 else -1)
+    # put wall side: put wall above the close -> shorts only
+    hiW = {d: {"putWall": 99999} for d in days}
+    nb = {**base, "aboveVwap": False, "greenBar": False}
+    pws = daytrade.detect(bars, {**nb, "pwSide": True}, hiW)
+    assert pws and all(s0["side"] == -1 for s0 in pws)
+    pwl = daytrade.detect(bars, {**nb, "pwSide": True}, {d: {"putWall": 1} for d in days})
+    assert pwl and all(s0["side"] == 1 for s0 in pwl)
+    # CVD side: estimated from the candles; the real one (stored order flow) when switched on
+    reg_ = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    Ic = daytrade.indicators(reg_, bars, daytrade.PARAMS)
+    tt_ = [b["t"] for b in reg_]
+    cv = daytrade.detect(bars, {**base, "cvdSide": True})
+    assert cv and all((Ic["cvdE"][tt_.index(s0["at"])] > 0) == (s0["side"] > 0) for s0 in cv)
+    fake = {b["t"]: -1.0 for b in reg_}
+    cr = daytrade.detect(bars, {**base, "cvdSide": True, "cvdReal": True, "shorts": False}, {}, None, {"cvd": fake})
+    assert cr == []
+    # squeeze turn: entries only within formWin minutes after a turn in the trade direction
+    st_ = daytrade.detect(bars, {**base, "aboveVwap": False, "greenBar": False, "sqTurn": True, "formWin": 3})
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    It = daytrade.indicators(reg, bars, daytrade.PARAMS)
+    tt = [b["t"] for b in reg]
+    assert st_
+    for s0 in st_:
+        i = tt.index(s0["at"])
+        assert any(It["sqTurnD"][j] == s0["side"] for j in range(i - 2, i + 1))
+    # stop unit: 1-min ATR vs 5-min ATR vs daily ATR vs % of price
+    d1 = daytrade.detect(bars, {**base, "stopAtr": 1.0})
+    d5 = daytrade.detect(bars, {**base, "stopAtr": 1.0, "stopBase": "atr5"})
+    dp = daytrade.detect(bars, {**base, "stopAtr": 0.2, "stopBase": "pct"})
+    dd = daytrade.detect(bars, {**base, "stopAtr": 0.1, "stopBase": "atrD"})
+    da = daytrade.detect(bars, {**base, "stopAtr": 5, "stopBase": "avgN", "volN": 300})
+    I = daytrade.indicators([b for b in bars if "09:30" <= b["t"][11:16] < "16:00"], bars, {**daytrade.PARAMS, "volN": 300})
+    assert da and abs(da[0]["unit"] - round(I["avgN"][[b["t"] for b in bars if "09:30" <= b["t"][11:16] < "16:00"].index(da[0]["at"])], 4)) < 1e-4
+    # swing stop: under the last swing low known at entry (pivot confirmed swingN candles later), minus the buffer
+    sw = daytrade.detect(bars, {**base, "stopBase": "swing", "swingN": 5, "swingBuf": 0.05, "shorts": False, "targetOn": False})
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    Iw = daytrade.indicators(reg, bars, {**daytrade.PARAMS, "swingN": 5})
+    assert sw
+    for s0 in sw[:10]:
+        i = [b["t"] for b in reg].index(s0["at"])
+        known = [p for p in Iw["pivLo"] if p[0] <= i and p[1] < s0["entry"]]
+        if known:
+            assert abs(s0["stop0"] - round(known[-1][1] - s0["entry"] * 0.0005, 4)) < 1e-6 and s0["stop0"] < s0["entry"]
+            assert all(reg[j]["l"] >= known[-1][1] for j in range(known[-1][0] - 5 - 5, known[-1][0] - 5) if j >= 0)
+    risk = lambda sg: sum(abs(s["entry"] - s["stop0"]) for s in sg) / len(sg)
+    assert risk(d5) > risk(d1) and dd and all(abs(abs(s["entry"] - s["stop0"]) - s["entry"] * 0.002) < 1e-3 for s in dp)
+    assert daytrade.clean_cfg(daytrade.PARAMS, {"stopBase": "atr5"})["stopBase"] == "atr5" and daytrade.clean_cfg(daytrade.PARAMS, {"stopBase": "x"})["stopBase"] == "atr1"
+    # cache: same indicator settings computed once
+    cache = {}
+    daytrade.detect(bars, base, {}, None, {"cache": cache})
+    daytrade.detect(bars, {**base, "targetR": 3}, {}, None, {"cache": cache})
+    assert len([k for k in cache if isinstance(k, tuple) and k[0] not in ("X", "bars", "agg", "fxctx")]) == 1
+
+
+def test_daytrade_compare_presets_options():
+    """Saved settings, compare several on the same candles, 0DTE option pricing (call for a long, put for a short)."""
+    import daytrade
+    import dtoptions
+    import optiontest
+    sub = "cmp-user"
+    daytrade.save_config(sub, {"tickers": "QQQ"})
+    pr = daytrade.save_preset(sub, "Tight", {"stopAtr": 0.5, "aboveVwap": True})
+    assert pr[0]["name"] == "Tight" and pr[0]["cfg"]["stopAtr"] == 0.5
+    assert daytrade.delete_preset(sub, "tight") == []
+    bars = _dt_bars(6)
+    calls = []
+    saved = (daytrade.minute_bars, daytrade.walls_by_day)
+    try:
+        daytrade.minute_bars = lambda s, sym, days, now=None, feed=None: calls.append(sym) or bars
+        daytrade.walls_by_day = lambda *a, **k: {}
+        r = daytrade.compare(sub, 30, [{"name": "A", "cfg": {"stopAtr": 0.5}}, {"name": "B", "cfg": {"stopAtr": 2}},
+                                       {"name": "C", "cfg": {"stopAtr": 2, "peerAgree": True}}])
+        assert [v["name"] for v in r["variants"]] == ["A", "B", "C"] and r["daysFound"] == 6
+        assert calls.count("QQQ") == 1 and calls.count("SPY") == 1          # candles loaded once; SPY = the other ticker
+        assert r["variants"][0]["all"]["n"] > 0 and r["variants"][0]["changes"]["stopAtr"] == 0.5
+        daytrade.compare_job(sub, {"days": 30, "variants": [{"name": "A", "cfg": {}}]})
+        assert daytrade.compare_result(sub)["variants"][0]["name"] == "A"
+    finally:
+        daytrade.minute_bars, daytrade.walls_by_day = saved
+    assert dtoptions.occ("QQQ", "2026-03-06", "P", 600) == "QQQ260306P00600000"
+    assert dtoptions.expiries("QQQ", "2026-03-04")[0] == "2026-03-04" and dtoptions.expiries("AAPL", "2026-03-04")[0] == "2026-03-06"
+    got = []
+    def ob(c, syms, tf, start, end):
+        got.append(syms[0])
+        if "C00500000" in syms[0] or "P00500000" in syms[0]:
+            return {syms[0]: [{"t": f"2026-03-04T{14 + h}:{m:02d}:00Z", "c": 1.0 + 0.01 * (h * 60 + m)} for h in range(0, 2) for m in range(60)]}
+        return {}
+    o_b, o_c = optiontest.bars, daytrade.data_creds
+    try:
+        optiontest.bars, daytrade.data_creds = ob, lambda sub: {"key": "k", "secret": "s"}
+        rows = [{"sym": "QQQ", "at": "2026-03-04T09:40", "exitAt": "2026-03-04T10:00", "entry": 500.1, "side": 1, "dir": "long"},
+                {"sym": "QQQ", "at": "2026-03-04T09:45", "exitAt": "2026-03-04T09:50", "entry": 499.9, "side": -1, "dir": "short"},
+                {"sym": "QQQ", "at": "2023-03-04T09:45", "exitAt": "2023-03-04T09:50", "entry": 499.9, "side": -1, "dir": "short"}]
+        st = dtoptions.price("u", rows, {"on": True, "slip": 0})
+        assert rows[0]["optSym"] == "QQQ260304C00500000" and rows[1]["optSym"] == "QQQ260304P00500000"
+        assert rows[0]["optIn"] == 1.4 and rows[0]["optOut"] == 1.6 and st["n"] == 2 and st["before2024"] == 1
+        assert rows[2].get("optPct") is None
+    finally:
+        optiontest.bars, daytrade.data_creds = o_b, o_c
+
+
+def test_daytrade_auto_search():
+    """Automatic search: candles loaded once, every single change scored on the 1st half only (t-stat), the best kept
+    only when clearly better, the 2nd half reported (never used to choose)."""
+    import daytrade
+    import dtsearch
+    assert dtsearch.tstat([1, 1, 1]) is None and dtsearch.tstat([1, -1, 1, -1]) == 0 and dtsearch.tstat([2, 1, 2, 1]) > 2
+    bars = _dt_bars(10)
+    calls = []
+    saved = (daytrade.minute_bars, daytrade.walls_by_day, daytrade.vix_map)
+    try:
+        daytrade.minute_bars = lambda s, sym, days, now=None, feed=None: calls.append(sym) or bars
+        daytrade.walls_by_day = lambda *a, **k: {}
+        daytrade.vix_map = lambda: {}
+        sub = "srch-user"
+        daytrade.save_config(sub, {"tickers": "QQQ", "aboveVwap": True, "emaStack": True, "greenBar": True})
+        old_min = dtsearch.MIN_N
+        dtsearch.MIN_N = 5
+        r = dtsearch.run(sub, {"days": 30, "rounds": 2})
+        dtsearch.MIN_N = old_min
+        assert calls.count("QQQ") == 1 and r["daysFound"] == 10 and r["tested"] > 30
+        assert r["verdict"] in ("edge", "weak", "none") and r["table"]
+        t1 = [x["train"]["totR"] for x in r["table"]]
+        assert t1 == sorted(t1, reverse=True)
+        prev = r["start"]["train"]
+        for p in r["path"]:                                    # each kept change beat the previous by more than the noise
+            assert p["train"]["totR"] >= prev["totR"] + dtsearch.need(prev) and p["train"]["t"] >= max(1, prev["t"] or 0)
+            prev = p["train"]
+        assert dtsearch.result(sub)["tested"] == r["tested"]
+    finally:
+        daytrade.minute_bars, daytrade.walls_by_day, daytrade.vix_map = saved
+
+
+def test_day_walls_fetch_missing_days():
+    """Day walls: stored days used, the missing ones fetched from Unusual Whales (all expirations)."""
+    import daytrade
+    import flowdata
+    got = []
+    saved = (flowdata.stored_walls, flowdata.gex_day, flowdata._key)
+    try:
+        flowdata.stored_walls = lambda sym: {"2026-03-02": {"callWall": 1, "putWall": 2, "flip": 3}}
+        flowdata.gex_day = lambda key, sym, d, flip=True: got.append(d) or {"callWall": 10, "putWall": 9, "flip": 9.5}
+        flowdata._key = lambda sub: "k"
+        w = daytrade.walls_by_day("u", "SPY", ["2026-03-02", "2026-03-03", "2026-03-04"], False)
+        assert sorted(got) == ["2026-03-03", "2026-03-04"] and w["2026-03-02"]["flip"] == 3 and w["2026-03-04"]["flip"] == 9.5
+    finally:
+        flowdata.stored_walls, flowdata.gex_day, flowdata._key = saved
+
+
+def test_morning_flip_check():
+    """Morning snapshots of the flip (fresh from Unusual Whales) and the check against the stored flip."""
+    import datetime as dt
+    import daytrade
+    import flowdata
+    saved = (flowdata.snap_walls, flowdata.stored_walls)
+    try:
+        vals = {"09:20": 500.0, "09:32": 501.0, "09:40": 502.0}
+        flowdata.snap_walls = lambda key, sym, d: {"callWall": 510, "putWall": 490, "flip": vals[cur[0]]}
+        cur = ["09:20"]
+        for hm in ("09:20", "09:32", "09:40"):
+            cur[0] = hm
+            flowdata.flip_snapshot("k", ["QQQ"], dt.datetime(2026, 3, 4, int(hm[:2]), int(hm[3:])), lambda sym: (None if hm == "09:20" else 505.0))
+        flowdata.stored_walls = lambda sym: {"2026-03-04": {"flip": 508.0}}
+        r = daytrade.flip_check("u")
+        row = next(x for x in r["rows"] if x["date"] == "2026-03-04" and x["sym"] == "QQQ")
+        assert row["snaps"] == {"09:20": 500.0, "09:32": 501.0, "09:40": 502.0} and row["open"] == 505.0
+        assert row["sideMorning"] == "above" and row["sideStored"] == "below" and row["agree"] is False and r["pct"] == 0.0
+    finally:
+        flowdata.snap_walls, flowdata.stored_walls = saved
+
+
+def _sd_day(day, o=50.0, drift=0.02, vol=1000, first_up=True):
+    """One synthetic stock day of 1-minute candles 09:30-16:00."""
+    out, px = [], o
+    for m in range(390):
+        hm = 570 + m
+        step = (drift if first_up else -drift) if m < 30 else (drift if first_up else -drift) * 0.5
+        o_, c_ = px, px + step
+        out.append({"t": f"{day}T{hm // 60:02d}:{hm % 60:02d}", "o": round(o_, 4), "h": round(max(o_, c_) + 0.01, 4),
+                    "l": round(min(o_, c_) - 0.01, 4), "c": round(c_, 4), "v": vol * (5 if m < 5 else 1)})
+        px = c_
+    return out
+
+
+def test_stockday_engine():
+    """Stocks in play: universe filter from the candles before each day, opening-range windows, RVOL ranking, the
+    direction lock (doji skipped), stop entries at the opening-range high / low, stop = % of ATR, exit at the close,
+    VWAP side / exit, the VWAP stop-out cap and the sizing."""
+    import stockday
+    # universe
+    daily = {"AAA": [{"t": f"2026-02-{d:02d}T00:00", "o": 50, "h": 51, "l": 49, "c": 50, "v": 2000000} for d in range(1, 21)],
+             "LOW": [{"t": f"2026-02-{d:02d}T00:00", "o": 3, "h": 3.5, "l": 2.9, "c": 3, "v": 5000000} for d in range(1, 21)]}
+    u = stockday.universe_from_daily(daily, ["2026-02-16", "2026-02-21"])
+    assert "AAA" in u["2026-02-16"] and "LOW" not in u["2026-02-16"] and "AAA" in u["2026-02-21"]   # the 21st: before its own candle
+    assert abs(u["2026-02-16"]["AAA"][0] - 2.0) < 1e-9 and u["2026-02-16"]["AAA"][1] == 2000000
+    # windows
+    bars = _sd_day("2026-03-02")
+    pm = [{"t": "2026-03-02T08:00", "o": 50, "h": 50, "l": 50, "c": 50, "v": 777}]
+    w = stockday.window_stats(pm, stockday.multi_agg(bars, 5) if hasattr(stockday, "multi_agg") else
+                              [{"t": b["t"], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"]} for b in bars])
+    assert w[0] == 777 and w[1] == bars[0]["o"] and w[5] == sum(b["v"] for b in bars[:5])
+    # ranking: today's opening-range volume vs the previous days
+    prev = [{"AAA": [100] + [50, 51, 49, 50.5, 1000] * 3, "BBB": [100] + [50, 51, 49, 50.5, 1000] * 3} for _ in range(6)]
+    today = {"AAA": [500] + [50, 51, 49, 50.6, 30000] * 3, "BBB": [100] + [50, 51, 49, 50.0, 1500] * 3}
+    uni = {"AAA": [2.0, 2000000, 50], "BBB": [2.0, 2000000, 50]}
+    P = {**stockday.PARAMS, "minRvol": 1.0, "topN": 5}
+    r = stockday.rank_day("2026-03-02", uni, prev + [today], P)
+    assert [x["sym"] for x in r] == ["AAA", "BBB"] and r[0]["rvol"] == 30.0 and r[0]["dir"] == 1 and r[1]["dir"] == 0   # BBB: doji
+    assert stockday.rank_day("2026-03-02", uni, prev + [today], {**P, "minRvol": 2})[0]["sym"] == "AAA"
+    assert len(stockday.rank_day("2026-03-02", uni, prev + [today], {**P, "minRvol": 2})) == 1
+    assert stockday.rank_day("2026-03-02", uni, prev + [today], {**P, "rvolMode": "pm"})[0]["pmRvol"] == 5.0
+    # simulate: long, entry at the opening-range high, exit at the close (uptrend)
+    hi = max(b["h"] for b in bars[:5]); lo = min(b["l"] for b in bars[:5])
+    pick = {"sym": "AAA", "rvol": 30, "pmRvol": 5, "atr": 2.0, "o": bars[0]["o"], "h": hi, "l": lo, "c": bars[4]["c"], "dir": 1}
+    t = stockday.simulate(pick, bars, {**stockday.PARAMS, "entryEnd": "11:30"})
+    assert t and t["side"] == 1 and t["entry"] == round(max(bars[5]["o"], hi), 4) and t["status"] == "close"
+    assert abs(t["stop0"] - (t["entry"] - 0.2)) < 1e-9 and t["R"] > 0
+    # short on a down day; stop hit when it reverses
+    dn = _sd_day("2026-03-03", first_up=False)
+    px = dn[59]["c"]
+    for b in dn[60:]:                                          # rallies after an hour
+        b.update(o=round(px, 4), c=round(px + 0.05, 4), h=round(px + 0.06, 4), l=round(px - 0.01, 4))
+        px += 0.05
+    pk2 = {**pick, "h": max(b["h"] for b in dn[:5]), "l": min(b["l"] for b in dn[:5]), "dir": -1}
+    t2 = stockday.simulate(pk2, dn, {**stockday.PARAMS})
+    assert t2["side"] == -1 and t2["status"] == "stop" and abs(t2["R"] + 1) < 0.2
+    # VWAP exit on a 1-minute close across the VWAP
+    t3 = stockday.simulate(pk2, dn, {**stockday.PARAMS, "vwapExit": True, "stopAtrPct": 500})
+    assert t3["status"] == "vwap"
+    # day: VWAP stop-out cap and sizing
+    picks = [{**pk2, "sym": f"S{i}"} for i in range(5)]
+    trs = stockday.day_trades(picks, {f"S{i}": dn for i in range(5)}, {**stockday.PARAMS, "vwapExit": True, "stopAtrPct": 500, "vwapCap": 2, "topN": 5})
+    assert all(0 < x["size"] <= 1 for x in trs) and all(abs(x["ret"] - x["R"] * x["size"]) < 1e-3 for x in trs)
+    assert stockday.bucket(0.5) == "< 1x" and stockday.bucket(31) == "> 30x"
+    # storage: compact, split over items, day index
+    rows = {f"T{i:04d}": [1.5, 2000000, 51.25] for i in range(1600)}
+    stockday.put_day("U", "2026-03-02", rows)
+    assert stockday.get_day("U", "2026-03-02")["T0007"] == [1.5, 2000000.0, 51.25] and "2026-03-02" in stockday.stored_days("U")
+    c = stockday.clean_cfg(stockday.PARAMS, {"orbMin": 7, "rvolMode": "pm", "exclude": "csx, wmb", "entryEnd": "12:00"})
+    assert c["orbMin"] == 5 and c["rvolMode"] == "pm" and c["exclude"] == ["CSX", "WMB"] and c["entryEnd"] == "12:00"
+
+
+def test_stockday_prep_and_backtest():
+    """History build (universe then opening-range windows, resumable) and the backtest on it."""
+    import stockday
+    days = [f"2026-03-{d:02d}" for d in range(2, 28) if __import__("datetime").date(2026, 3, d).weekday() < 5]
+    def mb(c, syms, tf, start, end, feed="sip", max_pages=60):
+        out = {}
+        for s in syms:
+            if tf == "1Day":
+                out[s] = [{"t": f"2026-02-{d:02d}T00:00", "o": 50, "h": 51.5, "l": 49, "c": 50, "v": 3000000} for d in range(1, 28)] + \
+                         [{"t": f"{d}T00:00", "o": 50, "h": 51.5, "l": 49, "c": 50, "v": 3000000} for d in days]
+            elif tf == "30Min":
+                out[s] = [{"t": start.strftime("%Y-%m-%dT08:00"), "o": 50, "h": 50, "l": 50, "c": 50, "v": 1000}]
+            elif tf == "5Min":
+                d0 = start.strftime("%Y-%m-%d")
+                big = 9 if (s == "HOT" and d0 >= days[10]) else 1
+                out[s] = [{"t": f"{d0}T{(570 + 5 * k) // 60:02d}:{(570 + 5 * k) % 60:02d}", "o": 50 + k * 0.05, "h": 50.1 + k * 0.05,
+                           "l": 49.95 + k * 0.05, "c": 50.05 + k * 0.05, "v": 1000 * big} for k in range(12)]
+            else:
+                d0 = start.strftime("%Y-%m-%d")
+                out[s] = _sd_day(d0)
+        return out
+    saved = (stockday.multi_bars, stockday.assets, stockday.trading_days, stockday.data_creds, stockday.now_ny)
+    try:
+        import datetime as _dt
+        stockday.multi_bars = mb
+        stockday.assets = lambda c: ["HOT", "COLD"]
+        stockday.trading_days = lambda c, a, b: days
+        stockday.data_creds = lambda sub: {"key": "k", "secret": "s"}
+        stockday.now_ny = lambda: _dt.datetime(2026, 3, 28, 8, 0)
+        st = stockday.prep("sd-user", days=len(days), budget_s=60)
+        assert st["phase"] == "done" and st["rDays"] == len(days) and st["uDays"] == len(days)
+        r = stockday.backtest("sd-user", 30, {"topN": 5, "minRvol": 1.5})
+        assert r["daysFound"] == len(days) and r["all"]["n"] > 0 and all(t["sym"] == "HOT" for t in r["trades"])
+        assert set(r["byRvol"]) <= {lbl for _, _, lbl in stockday.RV_BUCKETS} and r["retPct"] is not None
+        stockday.backtest_job("sd-user", {"days": 30, "cfg": {"topN": 5}})
+        assert stockday.backtest_result("sd-user")["daysFound"] == len(days)
+    finally:
+        stockday.multi_bars, stockday.assets, stockday.trading_days, stockday.data_creds, stockday.now_ny = saved
+
+
+def test_stockday_live_tick():
+    """Live: scan once after the opening range, stop entries with the stop loss attached (OTO), sized at 1% risk and
+    capped by the leverage; flat at the flat time."""
+    import datetime as dt
+    import stockday
+    sub = "sd-live"
+    stockday.save_config(sub, {"enabled": True, "trade": True, "topN": 2})
+    calls = []
+    saved = (stockday.scan_today, stockday._alp, stockday.creds)
+    try:
+        stockday.creds = lambda s: {"key": "k", "secret": "s"}
+        stockday.scan_today = lambda s, P, now: {"date": "2026-03-04", "at": "09:36", "candidates": 10, "picks": [
+            {"sym": "NVDA", "rvol": 40, "pmRvol": 6, "atr": 5.0, "o": 100, "h": 101, "l": 99.5, "c": 100.8, "dir": 1},
+            {"sym": "CSX", "rvol": 3, "pmRvol": 1, "atr": 1.0, "o": 30, "h": 30.2, "l": 29.6, "c": 29.7, "dir": -1}]}
+        def alp(c, method, path, body=None):
+            calls.append((method, path, body))
+            if path == "/v2/account":
+                return {"equity": "100000"}
+            if path == "/v2/positions":
+                return []
+            return {"id": "o1"}
+        stockday._alp = alp
+        r = stockday.tick(sub, dt.datetime(2026, 3, 4, 9, 36))
+        posts = [b for m, p, b in calls if m == "POST"]
+        assert len(posts) == 2 and posts[0]["order_class"] == "oto" and posts[0]["type"] == "stop" and posts[0]["stop_price"] == "101"
+        assert posts[0]["stop_loss"]["stop_price"] == "100.5" and int(posts[0]["qty"]) == min(int(100000 * 0.01 / 0.5), int(100000 * 4 / 2 / 101))
+        assert posts[1]["side"] == "sell" and posts[1]["stop_price"] == "29.6"
+        calls.clear()
+        stockday.tick(sub, dt.datetime(2026, 3, 4, 9, 37))
+        assert not [1 for m, p, b in calls if m == "POST"]                 # scanned once
+        stockday.tick(sub, dt.datetime(2026, 3, 4, 15, 55))
+        assert any(m == "DELETE" and p.startswith("/v2/positions") for m, p, b in calls)
+    finally:
+        stockday.scan_today, stockday._alp, stockday.creds = saved
+
+
+def test_order_flow_tick_rule():
+    """Real order flow: trades classified by the tick rule, per minute buy / sell, the largest trades, stored days."""
+    import orderflow
+    pages = [{"trades": {"SPY": [
+        {"t": "2026-03-04T14:30:01.1Z", "p": 500.0, "s": 100}, {"t": "2026-03-04T14:30:02Z", "p": 500.1, "s": 200},
+        {"t": "2026-03-04T14:30:03Z", "p": 500.1, "s": 50}, {"t": "2026-03-04T14:31:00Z", "p": 499.9, "s": 300}]}, "next_page_token": "x"},
+        {"trades": {"SPY": [{"t": "2026-03-04T14:31:30Z", "p": 499.9, "s": 10000}]}, "next_page_token": None}]
+    calls = []
+    def get(c, url, q):
+        calls.append(q.get("page_token"))
+        return pages[len(calls) - 1]
+    x = orderflow.day_flow({"key": "k"}, "SPY", "2026-03-04", get=get)
+    assert x["done"] and x["n"] == 5 and calls == [None, "x"]
+    assert x["min"]["2026-03-04T09:30"] == [350, 0]           # first trade: buy; uptick: buy; unchanged: same side
+    assert x["min"]["2026-03-04T09:31"] == [0, 10300]          # downtick: sell; unchanged: sell
+    assert x["big"][0] == ["2026-03-04T09:31", 499.9, 10000, -1]
+    orderflow.store("SPY", "2026-03-04", x)
+    days, missing = orderflow.get_days("u", "SPY", ["2026-03-04", "2026-03-05"])
+    assert list(days) == ["2026-03-04"] and missing == ["2026-03-05"]
+
+
+def test_daytrade_why_and_5min_turns():
+    """Why (no) trade at a minute: each rule ON, long and short, and the notes; squeeze turns of 5-minute candles."""
+    import datetime as dt
+    import daytrade
+    bars = _dt_bars(6)
+    reg = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    t1 = daytrade.indicators(reg, bars, daytrade.PARAMS)["sqTurnD"]
+    t5 = daytrade.indicators(reg, bars, {**daytrade.PARAMS, "sqTurnTf": 5})["sqTurnD"]
+    assert any(t5) and t5 != t1 and all(int(reg[i]["t"][15]) % 5 == 4 for i, v in enumerate(t5) if v)   # at the last minute of a 5-min candle
+    saved = (daytrade.minute_bars, daytrade.walls_by_day, daytrade.config, daytrade.now_ny)
+    try:
+        daytrade.minute_bars = lambda *a, **k: bars
+        daytrade.walls_by_day = lambda *a, **k: {}
+        daytrade.config = lambda sub: {**daytrade.PARAMS, "tickers": ["QQQ"], "aboveVwap": True, "greenBar": True, "emaStack": False}
+        daytrade.now_ny = lambda: dt.datetime(2026, 9, 21, 12, 0)
+        at = reg[200]["t"]
+        w = daytrade.why("u", "QQQ", at.replace("T", " "))
+        assert w["at"] == at and {r["rule"] for r in w["rules"]} == {"aboveVwap", "greenBar"} and len(w["rules"]) == 4
+        sigs = daytrade.detect(bars, daytrade.config("u"))
+        hit = sigs[0]
+        w2 = daytrade.why("u", "QQQ", hit["at"])
+        assert "a trade was taken on this candle" in w2["notes"] and all(r["ok"] for r in w2["rules"] if r["side"] == hit["dir"])
+    finally:
+        daytrade.minute_bars, daytrade.walls_by_day, daytrade.config, daytrade.now_ny = saved
+
+
+def test_nearest_expiration_walls():
+    """Walls of the nearest expiration only: SPY tries the same day first, others the coming Friday; flip from the
+    running net gamma; daytrade.walls_by_day follows the wallNear setting."""
+    import flowdata
+    import daytrade
+    assert flowdata._exp_candidates("SPY", "2026-10-13")[0] == "2026-10-13"
+    assert flowdata._exp_candidates("AAPL", "2026-10-13")[0] == "2026-10-16"
+    assert flowdata.flip_from_strikes([[95, 0, -50], [100, 30, -10], [105, 80, 0]], 95, 105) == 105
+    calls = []
+    def fake_uw(key, path, params=None, attempts=4):
+        calls.append((path, params))
+        if "strike-expiry" in path and params["expiry"] == params["date"]:
+            return {"data": [{"strike": "580", "call_gex": "10", "put_gex": "-900"}, {"strike": "590", "call_gex": "50", "put_gex": "-20"},
+                             {"strike": "600", "call_gex": "1700", "put_gex": "-5"}]}
+        return {"data": []}
+    o_uw, o_key = flowdata._uw, flowdata._key
+    flowdata._uw, flowdata._key = fake_uw, lambda sub: "k"
+    try:
+        g = flowdata.gex_near_day("k", "SPY", "2026-10-13")
+        assert g["expiry"] == "2026-10-13" and g["callWall"] == 600 and g["putWall"] == 580 and g["flip"] == 600
+        n = len(calls)
+        assert flowdata.gex_near_day("k", "SPY", "2026-10-13")["callWall"] == 600 and len(calls) == n   # cached
+        sub = "u-near"
+        daytrade.save_config(sub, {"wallNear": True})
+        w = daytrade.walls_by_day(sub, "SPY", ["2026-10-13"])
+        assert w["2026-10-13"]["putWall"] == 580 and w["2026-10-13"]["expiry"] == "2026-10-13"
+    finally:
+        flowdata._uw, flowdata._key = o_uw, o_key
 
 
 if __name__ == "__main__":

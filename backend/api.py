@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+from datetime import timedelta
 
 import alpaca
 import charts
@@ -242,8 +243,42 @@ def bot_home(sub, claims, body, q):
     return {"settings": autotrader.settings(sub), "summary": autotrader.summary(sub),
             "state": {k: state.get(k) for k in ("lastFlowRun", "lastFlowResult", "lastFlowAlerts", "lastFlowWindow", "lastFlowTickers",
                                                 "lastFlowSkips", "uwOkAt", "uwErrorAt", "uwError", "flowDay", "alertsToday", "evalsToday")},
-            "notifications": notify.recent(sub, 20),
+            "notifications": notify.recent(sub, 20), "active": _active(sub),
             "items": [{k: v for k, v in r.items() if k not in ("PK", "SK")} for r in recs]}
+
+
+def _active(sub):
+    try:
+        import strats
+        return strats.active_info(sub)
+    except Exception:
+        return None
+
+
+@route("GET", "/bot/tickers")
+def bot_tickers(sub, claims, body, q):
+    """Every ticker the bot has evaluated, newest first: the latest evaluation's id, time, decision, price and walls."""
+    seen, out = {}, []
+    held = set()
+    for r in db.q_prefix(db.upk(sub), "BOT#", desc=True):
+        sym = r.get("symbol")
+        if r.get("status") in ("submitting", "submitted", "open", "closing"):
+            held.add(sym)
+        if not sym:
+            continue
+        if sym in seen:
+            seen[sym]["count"] += 1
+            continue
+        g = r.get("gamma") or {}
+        seen[sym] = row = {"symbol": sym, "id": r.get("id"), "at": r.get("createdAt"), "decision": r.get("decision"), "count": 1,
+                           "status": r.get("status"), "price": (r.get("signals") or {}).get("price"),
+                           "callWall": g.get("callWall"), "putWall": g.get("putWall"), "flip": g.get("gammaFlip"),
+                           "contract": (r.get("proposal") or {}).get("contract"), "limit": (r.get("proposal") or {}).get("limit"),
+                           "exp": (r.get("proposal") or {}).get("exp"), "strike": (r.get("proposal") or {}).get("strike")}
+        out.append(row)
+    for row in out:
+        row["held"] = row["symbol"] in held
+    return {"items": out}
 
 
 @route("GET", "/bot/evaluations")
@@ -387,6 +422,623 @@ def bot_shadow_run(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("GET", "/bot/wallwatch")
+def bot_wallwatch(sub, claims, body, q):
+    import wallwatch
+    return wallwatch.view(sub)
+
+
+@route("GET", "/daytrade")
+def daytrade_get(sub, claims, body, q):
+    import daytrade
+    return daytrade.view(sub)
+
+
+@route("PUT", "/daytrade")
+def daytrade_put(sub, claims, body, q):
+    import daytrade
+    daytrade.save_config(sub, body or {})
+    return daytrade.view(sub)
+
+
+@route("PUT", "/daytrade/account")
+def daytrade_account(sub, claims, body, q):
+    import daytrade
+    key, secret = _str((body or {}).get("key"), "Key", 100), _str((body or {}).get("secret"), "Secret", 200)
+    if not key or not secret:
+        raise BadRequest("Enter both the API key and the secret of the second (paper) account.")
+    return daytrade.connect(sub, key, secret)
+
+
+@route("DELETE", "/daytrade/account")
+def daytrade_account_del(sub, claims, body, q):
+    import daytrade
+    db.delete(db.upk(sub), daytrade.CRED_SK)
+    return daytrade.view(sub)
+
+
+@route("POST", "/daytrade/chart")
+def daytrade_chart(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else None
+    return daytrade.chart(sub, b.get("t"), b.get("days") or 3, b.get("tf") or 1, cfg)
+
+
+@route("POST", "/daytrade/backtest")
+def daytrade_backtest(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else None
+    db.put({"PK": db.upk(sub), "SK": daytrade.BT_SK, **daytrade.backtest_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtbt", "params": {"days": b.get("days") or 20, "cfg": cfg, "opt": b.get("opt") if isinstance(b.get("opt"), dict) else None}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/presets")
+def daytrade_presets(sub, claims, body, q):
+    import daytrade
+    return {"presets": daytrade.presets(sub)}
+
+
+@route("PUT", "/daytrade/presets")
+def daytrade_presets_put(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    return {"presets": daytrade.save_preset(sub, b.get("name"), b.get("cfg") if isinstance(b.get("cfg"), dict) else {})}
+
+
+@route("DELETE", "/daytrade/presets")
+def daytrade_presets_del(sub, claims, body, q):
+    import daytrade
+    return {"presets": daytrade.delete_preset(sub, (q or {}).get("name") or (body or {}).get("name"))}
+
+
+@route("POST", "/daytrade/compare")
+def daytrade_compare(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    vs = [v for v in (b.get("variants") or []) if isinstance(v, dict)][:10]
+    if not vs:
+        raise BadRequest("Pick at least one setting to compare.")
+    db.put({"PK": db.upk(sub), "SK": daytrade.CMP_SK, **daytrade.compare_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtcmp", "params": {"days": b.get("days") or 60, "variants": vs,
+                                                                               "opt": b.get("opt") if isinstance(b.get("opt"), dict) else None}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/compare")
+def daytrade_compare_get(sub, claims, body, q):
+    import daytrade
+    return daytrade.compare_result(sub)
+
+
+@route("POST", "/daytrade/search")
+def daytrade_search(sub, claims, body, q):
+    import dtsearch
+    b = body or {}
+    db.put({"PK": db.upk(sub), "SK": dtsearch.SK, **dtsearch.result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtsearch", "params": {"days": b.get("days") or 250, "rounds": b.get("rounds") or 3,
+                                                                                  "cfg": b.get("cfg") if isinstance(b.get("cfg"), dict) else None}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/search")
+def daytrade_search_get(sub, claims, body, q):
+    import dtsearch
+    return dtsearch.result(sub)
+
+
+@route("GET", "/research")
+def research_get(sub, claims, body, q):
+    import research
+    st = (q or {}).get("strategy")
+    if (q or {}).get("lite"):                          # the page's status check: a few hundred bytes
+        return research.lite(sub, st if st in research.STRATS else None)
+    return research.state(sub, st if st in research.STRATS else None)
+
+
+@route("PUT", "/research/criteria")
+def research_criteria(sub, claims, body, q):
+    import research
+    return {"criteria": research.save_criteria(sub, body or {})}
+
+
+@route("POST", "/research/run")
+def research_run(sub, claims, body, q):
+    import research
+    b = body or {}
+    st = research.state(sub)
+    if (st.get("run") or {}).get("running"):
+        return {"status": "running"}
+    strategy = b.get("strategy") if b.get("strategy") in research.STRATS else "day"
+    research._set_run(sub, {"running": iso(now_ny()), "strategy": strategy, "at": iso(now_ny()), "step": "starting", "errors": []})
+    if "focus" in b:                                   # the focus is kept: autopilot runs use it too
+        research.save_auto(sub, strategy, {"focus": b.get("focus")})
+    params = {"strategy": strategy, "n": b.get("n") or 4, "rounds": b.get("rounds") or 1, "days": b.get("days") or 250,
+              "focus": str(b.get("focus") or "")[:600], "catalog": b.get("catalog") if isinstance(b.get("catalog"), list) else None,
+              "lab": b.get("lab") if isinstance(b.get("lab"), dict) else None}
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "research", "params": params}, default=str))
+    return {"status": "running"}
+
+
+@route("POST", "/research/idea")
+def research_idea(sub, claims, body, q):
+    """An idea of your own: the same pipeline (no AI involved)."""
+    import research
+    b = body or {}
+    strategy = b.get("strategy") if b.get("strategy") in research.STRATS else "day"
+    if not isinstance(b.get("changes"), dict) or not b["changes"]:
+        raise BadRequest("No settings to test.")
+    if (research.state(sub).get("run") or {}).get("running"):
+        raise BadRequest("A research run is going on: try again when it is done.")
+    lab = b.get("lab") if isinstance(b.get("lab"), dict) else None
+    x = research.submit(sub, strategy, b.get("name") or "my idea", b["changes"], lab, int(b.get("days") or 250), b.get("hypothesis") or "")
+    if x["status"] == "queued":
+        research._set_run(sub, {"running": iso(now_ny()), "strategy": strategy, "at": iso(now_ny()), "step": "starting", "errors": []})
+        _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                         Payload=json.dumps({"sub": sub, "job": "rstest", "params": {"strategy": strategy, "days": b.get("days") or 250, "lab": lab}}, default=str))
+    return {"idea": x}
+
+
+@route("PUT", "/research/auto")
+def research_auto(sub, claims, body, q):
+    """Autopilot: the agent proposes + the pipeline tests on its own, every hour, up to N runs a day."""
+    import research
+    b = body or {}
+    strategy = b.get("strategy") if b.get("strategy") in research.STRATS else "day"
+    if isinstance(b.get("catalog"), list):
+        research.save_catalog(sub, strategy, b["catalog"])
+    a = research.save_auto(sub, strategy, b)
+    if a[strategy]["on"]:                              # start now, not at the next hour
+        research._start(sub, research.auto_due(sub))
+    return {"auto": a, "autoToday": research.auto_today(sub)}
+
+
+@route("POST", "/research/marketctx")
+def research_mctx(sub, claims, body, q):
+    """Load the market context (options flow, gamma, breadth, VIXY) of the last N days in the background."""
+    import marketctx
+    n = max(20, min(500, int((body or {}).get("days") or 250)))
+    started = marketctx.kick(sub, n, retry=True)        # a click also retries the days that had nothing
+    return {"started": started, "state": marketctx.job_state(sub)}
+
+
+@route("DELETE", "/research/idea")
+def research_del(sub, claims, body, q):
+    import research
+    return {"deleted": research.delete_idea(sub, (q or {}).get("id"))}
+
+
+@route("POST", "/daytrade/robust")
+def daytrade_robust(sub, claims, body, q):
+    import dtrobust
+    b = body or {}
+    db.put({"PK": db.upk(sub), "SK": dtrobust.SK, **dtrobust.result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtrob", "params": {"days": b.get("days") or 250, "cost": b.get("cost"),
+                                                                               "cfg": b.get("cfg") if isinstance(b.get("cfg"), dict) else None}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/robust")
+def daytrade_robust_get(sub, claims, body, q):
+    import dtrobust
+    return dtrobust.result(sub)
+
+
+@route("GET", "/daytrade/flipcheck")
+def daytrade_flipcheck(sub, claims, body, q):
+    import daytrade
+    return daytrade.flip_check(sub)
+
+
+@route("GET", "/stockday")
+def stockday_get(sub, claims, body, q):
+    import stockday
+    return stockday.view(sub)
+
+
+@route("PUT", "/stockday")
+def stockday_put(sub, claims, body, q):
+    import stockday
+    stockday.save_config(sub, body or {})
+    return stockday.view(sub)
+
+
+@route("PUT", "/stockday/account")
+def stockday_account(sub, claims, body, q):
+    import stockday
+    b = body or {}
+    return stockday.connect(sub, b.get("key"), b.get("secret"))
+
+
+@route("DELETE", "/stockday/account")
+def stockday_account_del(sub, claims, body, q):
+    import stockday
+    db.delete(db.upk(sub), stockday.CRED_SK)
+    return stockday.view(sub)
+
+
+@route("POST", "/stockday/prep")
+def stockday_prep(sub, claims, body, q):
+    import stockday
+    b = body or {}
+    st = stockday.prep_status(sub)
+    if st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=12)):
+        return {"status": "running"}
+    db.put({"PK": db.upk(sub), "SK": stockday.PREP_SK, **st, "running": iso(now_ny()), "error": None})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "sdprep", "params": {"days": b.get("days") or 500}}, default=str))
+    return {"status": "running"}
+
+
+@route("POST", "/stockday/backtest")
+def stockday_bt(sub, claims, body, q):
+    import stockday
+    b = body or {}
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else None
+    db.put({"PK": db.upk(sub), "SK": stockday.BT_SK, **stockday.backtest_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "sdbt", "params": {"days": b.get("days") or 250, "cfg": cfg}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/stockday/backtest")
+def stockday_bt_get(sub, claims, body, q):
+    import stockday
+    return stockday.backtest_result(sub)
+
+
+@route("POST", "/stockday/chart")
+def stockday_chart(sub, claims, body, q):
+    import stockday
+    b = body or {}
+    return stockday.chart(sub, b.get("t"), b.get("date"))
+
+
+@route("POST", "/flow")
+def flow_days(sub, claims, body, q):
+    """Real order flow (CVD + largest trades) of a symbol for the days on a 1-minute chart."""
+    import orderflow
+    b = body or {}
+    sym = str(b.get("t") or "").upper().strip()[:10]
+    dates = sorted({str(x)[:10] for x in (b.get("dates") or []) if str(x)[:4].isdigit()})[-10:]
+    if not sym or not dates:
+        raise BadRequest("Give a ticker and the days.")
+    days, missing = orderflow.get_days(sub, sym, dates)
+    running = False
+    if missing:
+        st = db.get(db.upk(sub), f"{orderflow.SK_JOB}#{sym}") or {}
+        running = bool(st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=10)))
+        if not running:
+            db.put({"PK": db.upk(sub), "SK": f"{orderflow.SK_JOB}#{sym}", "running": iso(now_ny())})
+            _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                             Payload=json.dumps({"sub": sub, "job": "oflow", "params": {"sym": sym, "dates": missing}}))
+            running = True
+    return {"symbol": sym, "days": days, "missing": missing, "running": running}
+
+
+@route("POST", "/daytrade/why")
+def daytrade_why(sub, claims, body, q):
+    import daytrade
+    b = body or {}
+    return daytrade.why(sub, b.get("t"), b.get("at"), b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
+
+
+@route("POST", "/daytrade/study")
+def daytrade_study(sub, claims, body, q):
+    import daystudy
+    b = body or {}
+    db.put({"PK": db.upk(sub), "SK": daystudy.SK, **daystudy.result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtstudy", "params": {"days": b.get("days") or 120, "tickers": b.get("tickers"), **({"wallNear": bool(b["wallNear"])} if "wallNear" in b else {})}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/study")
+def daytrade_study_get(sub, claims, body, q):
+    import daystudy
+    return daystudy.result(sub)
+
+
+@route("GET", "/daytrade/backtest")
+def daytrade_backtest_get(sub, claims, body, q):
+    import daytrade
+    return daytrade.backtest_result(sub)
+
+
+@route("GET", "/bot/wallwatch/quotes")
+def bot_wallwatch_quotes(sub, claims, body, q):
+    import flowdata
+    import wallwatch
+    return flowdata.stock_quotes(sub, wallwatch.config(sub)["tickers"])
+
+
+@route("POST", "/bot/wallwatch/review")
+def bot_wallwatch_review(sub, claims, body, q):
+    import wallwatch
+    return wallwatch.review_open(sub, auto_close=bool((body or {}).get("close", True)))
+
+
+@route("PUT", "/bot/wallwatch")
+def bot_wallwatch_save(sub, claims, body, q):
+    import wallwatch
+    wallwatch.save_config(sub, body or {})
+    return wallwatch.view(sub)
+
+
+@route("GET", "/bot/wallwatch/chart")
+def bot_wallwatch_chart(sub, claims, body, q):
+    import wallwatch
+    try:
+        days = max(20, min(250, int((q or {}).get("days") or 45)))
+    except (TypeError, ValueError):
+        days = 45
+    return wallwatch.chart(sub, (q or {}).get("t"), days=days, flow=(q or {}).get("flow") != "0")
+
+
+@route("GET", "/bot/wallwatch/darkpool")
+def bot_wallwatch_darkpool(sub, claims, body, q):
+    import wallwatch
+    q = q or {}
+    try:
+        days = max(20, min(250, int(q.get("days") or 45)))
+    except (TypeError, ValueError):
+        days = 45
+    return wallwatch.darkpool(sub, q.get("t"), q.get("pct"), days)
+
+
+@route("POST", "/bot/wallwatch/flowstudy")
+def bot_wallwatch_flowstudy(sub, claims, body, q):
+    """Match every signal with the options flow before it (background job)."""
+    db.put({**(db.get(db.upk(sub), "WWFSTUDY") or {}), "PK": db.upk(sub), "SK": "WWFSTUDY", "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwflowstudy"}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/wallwatch/walls")
+def bot_wallwatch_walls(sub, claims, body, q):
+    """Fetch every day's call wall, put wall and flip for every watchlist ticker (45 days), then find the signals."""
+    t = ((body or {}).get("t") or "").upper().replace("/", ".")[:10]
+    sk = f"WWFILL#{t}" if t else "WWFILL"
+    fill = db.get(db.upk(sub), sk) or {}
+    db.put({**fill, "PK": db.upk(sub), "SK": sk, "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwfill", **({"t": t} if t else {})}))
+    return {"status": "running"}
+
+
+@route("GET", "/bot/wallwatch/ruletest")
+def bot_ruletest_get(sub, claims, body, q):
+    import backtest
+    return {"test": backtest.test_result(sub), "history": backtest.hist_status(sub), "robust": backtest.robust_result(sub),
+            "pv": backtest.pv_result(sub), "regime": backtest.regime_result(sub), "search": backtest.search_result(sub)}
+
+
+@route("POST", "/bot/wallwatch/pvstudy")
+def bot_pvstudy(sub, claims, body, q):
+    import backtest
+    db.put({"PK": db.upk(sub), "SK": backtest.PV_SK, **backtest.pv_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwpvstudy", "params": {"days": (body or {}).get("days") or 250}}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/wallwatch/regime")
+def bot_regime(sub, claims, body, q):
+    import backtest
+    db.put({"PK": db.upk(sub), "SK": backtest.REG_SK, **backtest.regime_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwregime", "params": {"days": (body or {}).get("days") or 250}}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/lab/chart")
+def bot_lab_chart(sub, claims, body, q):
+    import wallwatch
+    b = body or {}
+    try:
+        days = max(20, min(250, int(b.get("days") or 45)))
+    except (TypeError, ValueError):
+        days = 45
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else {}
+    return wallwatch.chart(sub, b.get("t"), days=days, flow=b.get("flow", True) is not False, lab=cfg or {"_": 1})
+
+
+@route("GET", "/bot/lab/options")
+def bot_lab_options_get(sub, claims, body, q):
+    import optiontest
+    return optiontest.result(sub)
+
+
+@route("GET", "/bot/lab/chartoptions")
+def bot_lab_chartopt_get(sub, claims, body, q):
+    import optiontest
+    return optiontest.result_sym(sub, (q.get("t") or "").upper())
+
+
+@route("POST", "/bot/lab/chartoptions")
+def bot_lab_chartopt(sub, claims, body, q):
+    import optiontest
+    b = body or {}
+    sym = str(b.get("t") or "").upper()[:10]
+    if not sym:
+        raise BadRequest("Pick a ticker.")
+    trades = [{k: x.get(k) for k in ("at", "entry", "exitAt", "exit", "R", "pct")} for x in (b.get("trades") or []) if isinstance(x, dict)][-60:]
+    P = {}
+    for k, lo, hi in (("dteMin", 0, 120), ("dteMax", 1, 180), ("money", -30, 30), ("tp", 0, 1000), ("sl", 0, 100), ("slip", 0, 20)):
+        if b.get(k) not in (None, ""):
+            try:
+                P[k] = max(lo, min(hi, float(b[k])))
+            except (TypeError, ValueError):
+                pass
+    P["follow"] = b.get("follow") is not False
+    P["sel"] = "manual" if b.get("sel") == "manual" else "live"
+    db.put({"PK": db.upk(sub), "SK": f"WWOPTSYM#{sym}", **optiontest.result_sym(sub, sym), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwoptsym", "params": {"sym": sym, "trades": trades, "P": P}}, default=str))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/lab/options")
+def bot_lab_options(sub, claims, body, q):
+    import optiontest
+    b = body or {}
+    P = {}
+    for k, lo, hi in (("dteMin", 0, 120), ("dteMax", 1, 180), ("money", -30, 30), ("tp", 0, 1000), ("sl", 0, 100), ("slip", 0, 20), ("maxTrades", 10, 400)):
+        if b.get(k) not in (None, ""):
+            try:
+                P[k] = max(lo, min(hi, float(b[k])))
+            except (TypeError, ValueError):
+                pass
+    P["follow"] = b.get("follow") is not False
+    P["sel"] = "manual" if b.get("sel") == "manual" else "live"
+    if P.get("dteMax", 21) < P.get("dteMin", 7):
+        P["dteMax"] = P.get("dteMin", 7)
+    db.put({"PK": db.upk(sub), "SK": optiontest.OPT_SK, **optiontest.result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwopt", "params": P}))
+    return {"status": "running"}
+
+
+@route("GET", "/bot/lab/test")
+def bot_lab_test_get(sub, claims, body, q):
+    import backtest
+    return backtest.lab_result(sub)
+
+
+@route("POST", "/bot/lab/test")
+def bot_lab_test(sub, claims, body, q):
+    import backtest
+    b = body or {}
+    cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else {}
+    db.put({"PK": db.upk(sub), "SK": backtest.LAB_SK, **backtest.lab_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwlab", "params": {"days": b.get("days") or 250, "cfg": cfg}}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/wallwatch/search")
+def bot_search(sub, claims, body, q):
+    import backtest
+    b = body or {}
+    db.put({"PK": db.upk(sub), "SK": backtest.SEARCH_SK, **backtest.search_result(sub), "running": iso(now_ny())})
+    params = {"days": b.get("days") or 250, "minTrades": b.get("minTrades") or 60}
+    if isinstance(b.get("cfg"), dict):
+        params["cfg"] = b["cfg"]
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwsearch", "params": params}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/wallwatch/robust")
+def bot_robust(sub, claims, body, q):
+    import backtest
+    db.put({"PK": db.upk(sub), "SK": backtest.ROB_SK, **backtest.robust_result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwrobust", "params": {"days": (body or {}).get("days") or 250,
+                                                                                    **({"cfg": body["cfg"]} if isinstance((body or {}).get("cfg"), dict) else {})}}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/wallwatch/history")
+def bot_history(sub, claims, body, q):
+    """Load the call alerts and the walls of the last `days` trading days for every watchlist ticker (background)."""
+    import backtest
+    try:
+        days = int((body or {}).get("days") or 250)
+    except (TypeError, ValueError):
+        days = 250
+    st = backtest.start_history(sub, days)
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwhist"}))
+    return st
+
+
+@route("POST", "/bot/wallwatch/ruletest")
+def bot_ruletest(sub, claims, body, q):
+    import backtest
+    b = body or {}
+    params = {}
+    params["full"] = bool(b.get("full"))
+    if isinstance(b.get("cfg"), dict):                 # Strategy lab settings (not saved)
+        params["cfg"] = b["cfg"]
+    for k, lo, hi in (("days", 30, 500), ("stopAtr", 0.1, 5), ("fixR", 0, 10), ("maxDays", 0, 30)):
+        if b.get(k) not in (None, ""):
+            try:
+                params[k] = max(lo, min(hi, float(b[k])))
+            except (TypeError, ValueError):
+                pass
+    cur = backtest.test_result(sub)
+    db.put({"PK": db.upk(sub), "SK": backtest.TEST_SK, **cur, "running": iso(now_ny()), "params": params})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwruletest", "params": params}))
+    return {"status": "running"}
+
+
+@route("GET", "/bot/wallwatch/intraday")
+def bot_intraday_get(sub, claims, body, q):
+    import intraday
+    return intraday.result(sub)
+
+
+@route("POST", "/bot/wallwatch/intraday")
+def bot_intraday(sub, claims, body, q):
+    """Intraday gamma-level test on 5-minute candles (background job)."""
+    import intraday
+    b, params = body or {}, {}
+    for k, lo, hi in (("fastK", 0.5, 20), ("appBars", 2, 24), ("zoneK", 0, 5), ("bufK", 0, 5), ("minRR", 0, 10),
+                      ("maxRiskD", 0.05, 5), ("maxTrades", 1, 10)):
+        if b.get(k) not in (None, ""):
+            try:
+                params[k] = max(lo, min(hi, float(b[k])))
+            except (TypeError, ValueError):
+                pass
+    for k in ("appBars", "maxTrades"):
+        if k in params:
+            params[k] = int(params[k])
+    for k in ("watchlist", "skipEvents", "longs", "shorts", "useFlip"):
+        if k in b:
+            params[k] = bool(b[k])
+    if b.get("tickers"):
+        params["tickers"] = str(b["tickers"])[:400]
+    if b.get("sessionEnd") and len(str(b["sessionEnd"])) == 5:
+        params["sessionEnd"] = str(b["sessionEnd"])
+    cur = intraday.result(sub)
+    db.put({"PK": db.upk(sub), "SK": intraday.SK, **cur, "running": iso(now_ny()), "params": params})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wwintraday", "params": params}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/wallwatch/run")
+def bot_wallwatch_run(sub, claims, body, q):
+    """Check the watchlist now (days=3) or backfill the last `days` trading days (background job)."""
+    try:
+        days = max(3, min(60, int((body or {}).get("days") or 3)))
+    except (TypeError, ValueError):
+        days = 3
+    db.put({**(db.get(db.upk(sub), "WWRUN") or {}), "PK": db.upk(sub), "SK": "WWRUN", "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "wallwatch", "days": days}))
+    return {"status": "running"}
+
+
+@route("POST", "/bot/walls/backfill")
+def bot_walls_backfill(sub, claims, body, q):
+    """Store the call / put walls of every day for every evaluated ticker (runs in the background)."""
+    db.put({**(db.get(db.upk(sub), "WALLSRUN") or {}), "PK": db.upk(sub), "SK": "WALLSRUN", "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "walls"}))
+    return {"status": "running"}
+
+
 @route("POST", "/bot/flow/test")
 def bot_flow_test(sub, claims, body, q):
     """Is the Unusual Whales feed alive (one request, no filters: the newest alerts), and how many alerts pass your
@@ -423,10 +1075,11 @@ def bot_explore(sub, claims, body, q):
     try:
         days = max(1, min(60, int(body.get("days") or 35)))
         min_n = max(5, min(200, int(body.get("minN") or 15)))
+        depth = max(1, min(6, int(body.get("depth") or 3)))
     except (TypeError, ValueError):
-        days, min_n = 35, 15
+        days, min_n, depth = 35, 15, 3
     conds = body.get("conds") if isinstance(body.get("conds"), list) else []
-    return explorer.explore(sub, days, conds[:8], bool(body.get("search")), min_n)
+    return explorer.explore(sub, days, conds[:25], bool(body.get("search")), min_n, body.get("group") or None, depth)
 
 
 @route("POST", "/bot/exitopt")
@@ -439,13 +1092,23 @@ def bot_exitopt(sub, claims, body, q):
     except (TypeError, ValueError):
         days, min_n = 35, 15
     conds = body.get("conds") if isinstance(body.get("conds"), list) else []
-    return explorer.best_exit(sub, days, conds[:8], min_n)
+    try:
+        mult = max(0.0, min(3.0, float(body.get("spreadMult", 1))))
+    except (TypeError, ValueError):
+        mult = 1.0
+    return explorer.best_exit(sub, days, conds[:25], min_n, spread_mult=mult)
 
 
 @route("GET", "/bot/strategies")
 def bot_strategies(sub, claims, body, q):
     import strats
-    return {"items": strats.results(sub)}
+    return {"items": strats.results(sub), "active": strats.active_info(sub), "stops": list(strats.STOPS)}
+
+
+@route("PUT", "/bot/strategies/active")
+def bot_strategy_active(sub, claims, body, q):
+    import strats
+    return strats.set_active(sub, body)
 
 
 @route("POST", "/bot/strategies")
@@ -478,7 +1141,7 @@ def bot_montecarlo(sub, claims, body, q):
     except (TypeError, ValueError):
         raise BadRequest("Check the numbers.")
     conds = body.get("conds") if isinstance(body.get("conds"), list) else []
-    return explorer.monte_carlo(sub, days, conds[:8], trades, 5000, risk, account)
+    return explorer.monte_carlo(sub, days, conds[:25], trades, 5000, risk, account)
 
 
 @route("GET", "/bot/bursts")
@@ -563,6 +1226,9 @@ def bot_aireview(sub, claims, body, q, bid):
         raise NotFound("Not found.")
     if rec.get("status") != "open":
         raise BadRequest("Only open positions can be reviewed.")
+    import aicheck
+    if aicheck.is_wallwatch(rec):
+        raise BadRequest("Wall watch trades are managed only by the wall watch exits (stop, trail, call wall, flip close).")
     db.update(db.upk(sub), f"BOT#{bid}", {"aiReviewRunning": True, "aiReviewError": ""})
     _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
                      Payload=json.dumps({"sub": sub, "job": "aireview", "id": bid}))
@@ -575,10 +1241,16 @@ def bot_reviewcharts(sub, claims, body, q, bid):
     return aicheck.review_charts(sub, bid)
 
 
+@route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/darkpool")
+def bot_darkpool(sub, claims, body, q, bid):
+    import flowchart
+    return flowchart.darkpool(sub, bid, int((q or {}).get("days") or 5), (q or {}).get("min"))
+
+
 @route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/flowchart")
 def bot_flowchart(sub, claims, body, q, bid):
     import flowchart
-    return flowchart.build(sub, bid)
+    return flowchart.build(sub, bid, int((q or {}).get("days") or 5))
 
 
 @route("GET", r"/bot/(?P<bid>[0-9]{14}-[a-f0-9]{6})/charts")
