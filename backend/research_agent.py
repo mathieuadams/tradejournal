@@ -148,7 +148,9 @@ BUILD_SYSTEM = """You are the research agent of a systematic trading desk. Some 
 tested because they need something the app doesn't have. For each one, CREATE what is missing as new indicators:
 formulas built from the series / functions given (and the indicators already created), then rewrite the idea's
 "changes" so its formulas use them. The data is limited to Alpaca candles / trades and Unusual Whales walls / flip /
-dark pool / options flow: when a missing piece truly needs other data (news, order book, fundamentals...), say so in
+dark pool / options flow. Each idea lists its "problems": the exact errors of the formula checker (an unknown name, a
+length that is not a plain whole number, ...): fix every one of them. When a missing piece truly needs other data
+(news, order book, fundamentals...), say so in
 "impossible" for that idea and give no changes. Keep each idea's intent; don't redesign it."""
 
 BUILD_SCHEMA = {"type": "object", "properties": {"ideas": {"type": "array", "items": {"type": "object", "properties": {

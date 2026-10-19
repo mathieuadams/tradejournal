@@ -3345,19 +3345,23 @@ def test_research_agent_creates_indicators():
         research.run(sub, {"strategy": "day", "n": 4})
         xs = {x["name"]: x for x in research.ideas(sub, "day")}
         lib = {x["name"]: x["formula"] for x in research.library(sub)}
-        assert lib == {"rsiFast": "rsi(14)"}
+        assert lib == {"rsiFast": "rsi(14)", "vwapBand": "vwap - 2 * atr(14)"}       # waiting ideas fixed in the same run
         r = xs["rsi dip"]
         assert r["status"] == "tested" and r["changes"]["fxLong"] == "rsi(14) < 30" and r["readable"]["fxLong"] == "rsiFast < 30" and r["indicators"] == ["rsiFast"]
         assert xs["bad ind"]["status"] == "needs feature" and "zz" in " ".join(xs["bad ind"]["missing"])
-        research.run(sub, {"strategy": "day", "n": 4})              # 2nd run: the waiting ideas get their indicators
         xs = {x["name"]: x for x in research.ideas(sub, "day")}
         b = xs["needs a band"]
         assert b["status"] == "tested" and b["rebuilt"] and "vwapBand" in research.lib_map(sub)
         assert b["changes"]["fxLong"] == "close < vwap - 2 * atr(14) and rsi(14) < 40"
         assert xs["news"]["status"] == "needs data" and xs["news"]["missing"] == ["news feed"]
+        for _ in range(4):
+            research.run(sub, {"strategy": "day", "n": 4})
         n_build = calls["build"]
-        research.run(sub, {"strategy": "day", "n": 4})              # one attempt per idea
+        research.run(sub, {"strategy": "day", "n": 4})              # at most 3 attempts per idea
         assert calls["build"] == n_build
+        bi = next(x for x in research.ideas(sub, "day") if x["name"] == "bad ind")
+        assert bi["buildTries"] == 3 and bi["status"] == "needs feature"
+        assert formula.evaluate("count(close > open, 2 * 5) >= 0 and sqFire(20) >= 0", formula.Ctx(_dt_bars(2)))
     finally:
         research.DayBench, research_agent.propose, research_agent.build, daytrade.config = saved
 

@@ -41,6 +41,7 @@ FUNCS = {
     "falling": ("falling(x, k)", "x < x k candles ago"), "abs": ("abs(x)", "absolute value"), "min": ("min(a, b)", "smaller"),
     "max": ("max(a, b)", "larger"), "between": ("between(x, a, b)", "a <= x <= b"),
     "sqMom": ("sqMom(n)", "TTM squeeze momentum (n candles)"), "sqOn": ("sqOn(n)", "1 when the TTM squeeze is on (BB inside KC)"),
+    "sqFire": ("sqFire(n)", "1 on the candle the TTM squeeze turns off (it fires), else 0"),
     "rvol": ("rvol(n)", "volume / its average of the last n candles"), "cvdSum": ("cvdSum(n)", "delta summed over the last n candles"),
     "orHigh": ("orHigh(n)", "high of the first n candles of the day (once they are done)"), "orLow": ("orLow(n)", "low of the first n candles"),
     "iff": ("iff(cond, a, b)", "a where cond is true, else b"), "sum": ("sum(x, n)", "x summed over the last n candles"),
@@ -49,11 +50,11 @@ FUNCS = {
     "count": ("count(cond, n)", "how many of the last n candles had cond true"),
 }
 NUM_ARG = {"ema": 1, "sma": 1, "highest": 1, "lowest": 1, "ref": 1, "change": 1, "pct": 1, "stdev": 1, "rising": 1,
-           "falling": 1, "rsi": 0, "atr": 0, "sqMom": 0, "sqOn": 0, "rvol": 0, "cvdSum": 0, "orHigh": 0, "orLow": 0,
+           "falling": 1, "rsi": 0, "atr": 0, "sqMom": 0, "sqOn": 0, "sqFire": 0, "rvol": 0, "cvdSum": 0, "orHigh": 0, "orLow": 0,
            "sum": 1, "wma": 1, "count": 1}
 ARITY = {"ema": 2, "sma": 2, "highest": 2, "lowest": 2, "ref": 2, "change": 2, "pct": 2, "stdev": 2, "rsi": 1, "atr": 1,
          "crossUp": 2, "crossDown": 2, "rising": 2, "falling": 2, "abs": 1, "min": 2, "max": 2, "between": 3, "sqMom": 1,
-         "sqOn": 1, "rvol": 1, "cvdSum": 1, "orHigh": 1, "orLow": 1, "iff": 3, "sum": 2, "wma": 2, "cumDay": 1,
+         "sqOn": 1, "sqFire": 1, "rvol": 1, "cvdSum": 1, "orHigh": 1, "orLow": 1, "iff": 3, "sum": 2, "wma": 2, "cumDay": 1,
          "barsSince": 1, "count": 2}
 MAX_LEN = 4000                                         # long enough for formulas with custom indicators expanded in them
 NAME_MAX = 40
@@ -108,6 +109,21 @@ def spec():
                          "rsi(14) < 30 and close > putWall", "rising(sqMom(20), 1) and sqMom(20) < 0"]}
 
 
+def _const(a):
+    """A number written as a constant or simple arithmetic of constants (e.g. 2 * 10), else None."""
+    if isinstance(a, ast.Constant) and isinstance(a.value, (int, float)) and not isinstance(a.value, bool):
+        return a.value
+    if isinstance(a, ast.UnaryOp) and isinstance(a.op, (ast.USub, ast.UAdd)):
+        v = _const(a.operand)
+        return None if v is None else (-v if isinstance(a.op, ast.USub) else v)
+    if isinstance(a, ast.BinOp) and isinstance(a.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+        x, y = _const(a.left), _const(a.right)
+        if x is None or y is None or (isinstance(a.op, ast.Div) and y == 0):
+            return None
+        return {ast.Add: x + y, ast.Sub: x - y, ast.Mult: x * y, ast.Div: x / y if y else None}[type(a.op)]
+    return None
+
+
 def check(expr, unavailable=()):
     """The parsed formula, or FormulaError saying what is wrong. unavailable: names this strategy has no data for."""
     if not isinstance(expr, str) or not expr.strip():
@@ -145,9 +161,10 @@ def check(expr, unavailable=()):
                 raise FormulaError(f"{FUNCS[f][0]} takes {ARITY[f]} argument{'s' if ARITY[f] > 1 else ''}")
             if f in NUM_ARG:
                 a = node.args[NUM_ARG[f]]
-                v = a.value if isinstance(a, ast.Constant) else -a.operand.value if (isinstance(a, ast.UnaryOp) and isinstance(a.operand, ast.Constant)) else None
+                v = _const(a)
                 if not isinstance(v, (int, float)) or isinstance(v, bool) or not (1 <= v <= 500) or int(v) != v:
-                    raise FormulaError(f"{FUNCS[f][0]}: the length must be a whole number 1–500")
+                    raise FormulaError(f"{FUNCS[f][0]}: the length must be a plain whole number 1–500 (got “{ast.unparse(a)}”)")
+                node.args[NUM_ARG[f]] = ast.Constant(int(v))
             continue
         raise FormulaError(f"“{type(node).__name__}” is not allowed in a formula")
     return tree
@@ -424,7 +441,7 @@ def _ev(node, cx):
 
 
 def _intarg(a):
-    return int(a.value)
+    return int(_const(a))
 
 
 def _call(f, args, cx):
@@ -432,7 +449,7 @@ def _call(f, args, cx):
     key = ("call", ast.dump(ast.Call(func=ast.Name(id=f), args=args, keywords=[])))
     if key in cx.memo:
         return cx.memo[key]
-    if f in ("rsi", "atr", "sqMom", "sqOn", "rvol", "cvdSum", "orHigh", "orLow"):
+    if f in ("rsi", "atr", "sqMom", "sqOn", "sqFire", "rvol", "cvdSum", "orHigh", "orLow"):
         k = _intarg(args[0])
         if f == "rsi":
             cl = cx.s("close")
@@ -451,10 +468,14 @@ def _call(f, args, cx):
             b = cx.b
             tr = [b[0]["h"] - b[0]["l"]] + [max(b[i]["h"] - b[i]["l"], abs(b[i]["h"] - b[i - 1]["c"]), abs(b[i]["l"] - b[i - 1]["c"])) for i in range(1, n)]
             v = _roll(tr, k, lambda w: sum(w) / len(w))
-        elif f in ("sqMom", "sqOn"):
+        elif f in ("sqMom", "sqOn", "sqFire"):
             import wallwatch
             sq = wallwatch.squeeze(cx.b, k)
-            v = [(x["mom"] if f == "sqMom" else (1.0 if x["on"] else 0.0)) if x else None for x in sq]
+            if f == "sqFire":
+                v = [None if (x is None or not i or sq[i - 1] is None) else (1.0 if (sq[i - 1]["on"] and not x["on"]) else 0.0)
+                     for i, x in enumerate(sq)]
+            else:
+                v = [(x["mom"] if f == "sqMom" else (1.0 if x["on"] else 0.0)) if x else None for x in sq]
         elif f == "rvol":
             vol = cx.s("volume")
             av = _roll([None] + vol[:-1], k, lambda w: sum(w) / len(w))

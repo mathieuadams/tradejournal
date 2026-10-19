@@ -537,6 +537,7 @@ def run(sub, params=None, budget_s=540):
             seen.add(x["fp"])
             _put_idea(sub, x)
             run_["made"] += 1
+        build_missing(sub, strategy, catalog, base, ideas(sub, strategy), days, run_)   # fix what can't run yet, right away
         try:
             test_queued(sub, strategy, days, None, budget_s, t0, run_)
         except Exception as e:
@@ -667,18 +668,22 @@ def auto_kick():
     return started
 
 
+BUILD_TRIES = 3
+
+
 def build_missing(sub, strategy, catalog, base, hist, days, run_, limit=4):
     """Ideas that need something the app doesn't have: the agent creates the missing indicators as formulas, the
     pipeline checks them, rebuilds the idea with them and queues it again (one attempt per idea). What truly needs
     other data stays a feature request ("needs data")."""
     import research_agent
-    todo = [x for x in hist if x.get("status") == "needs feature" and not x.get("buildTried")][:limit]
+    todo = [x for x in hist if x.get("status") == "needs feature" and int(x.get("buildTries") or (1 if x.get("buildTried") else 0)) < BUILD_TRIES][:limit]
     if not todo:
         return 0
     run_.update(step=f"the AI agent is creating indicators for {len(todo)} waiting idea{'s' if len(todo) > 1 else ''}")
     _set_run(sub, run_)
     items = [{"id": x["id"], "name": x["name"], "hypothesis": x.get("hypothesis"), "changes": {**(x.get("changes") or {}), **(x.get("readable") or {})},
-              "missing": x.get("missing")} for x in todo]
+              "problems": x.get("missing"), "attempt": int(x.get("buildTries") or 0) + 1,
+              "note": "fix every problem listed: they are the exact errors of the formula checker"} for x in todo]
     try:
         res = {r["id"]: r for r in research_agent.build(strategy, catalog, tunable(strategy, base), library(sub), items)}
     except Exception as e:
@@ -689,6 +694,7 @@ def build_missing(sub, strategy, catalog, base, hist, days, run_, limit=4):
     for x in todo:
         r = res.get(x["id"]) or {}
         x["buildTried"] = iso(now_ny())
+        x["buildTries"] = int(x.get("buildTries") or 0) + 1
         if not r or not (r.get("changes") or r.get("impossible")):
             _put_idea(sub, x)                          # the agent had nothing for it: stays waiting (no new attempt)
             continue
@@ -702,8 +708,9 @@ def build_missing(sub, strategy, catalog, base, hist, days, run_, limit=4):
         y = admit(y, seen)
         if y["status"] == "needs feature":
             y["status"] = "needs data" if r.get("impossible") else "needs feature"
-        x.update({k: y[k] for k in ("changes", "full", "readable", "missing", "fp", "status")}, indicators=made,
-                 rebuilt=True, wasMissing=x.get("missing"))
+        was = x.get("wasMissing") or x.get("missing")
+        x.update({k: y[k] for k in ("changes", "full", "readable", "missing", "fp", "status")}, indicators=made, wasMissing=was)
+        x["rebuilt"] = x["status"] not in ("needs feature", "needs data")
         seen.add(x["fp"])
         _put_idea(sub, x)
         done += x["status"] == "queued"
