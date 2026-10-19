@@ -17,6 +17,7 @@ opens on the last finished candle is bought / sold short at market on the day-tr
 engine closes it (or at flatT). Items: DTCFG (settings), DTPOS#<ticker>#<entry time> (live trades), BROKER#alpacaday.
 """
 import math
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -99,6 +100,11 @@ def save_config(sub, body):
 
 
 FORMULAS = ("fxLong", "fxShort", "fxExitLong", "fxExitShort")
+
+
+MX_NAMES = ("callPrem", "putPrem", "netPrem", "netPremDay", "sweepCall", "sweepPut", "gex", "breadth", "sectorBreadth",
+            "megaBreadth", "vixy", "vixyChg")
+MX_UW = ("callPrem", "putPrem", "netPrem", "netPremDay", "sweepCall", "sweepPut", "gex")
 
 
 def market_ctx(sym, dates):
@@ -1268,6 +1274,18 @@ def backtest(sub, days=20, cfg=None, budget_s=540, opt=None):
     ob = 150 if opt and opt.get("on") else 0
     rr, per, all_days, feed_used, errors = run_variants(sub, days, [P], budget_s - ob)
     rows = rr[0]
+    mx_used = [n for n in MX_NAMES if any(re.search(rf"\b{n}\b", P.get(k) or "") for k in FORMULAS)]
+    if mx_used and all_days:                           # formulas on market context: days without it can't trade
+        try:
+            import marketctx
+            cov = marketctx.coverage(sorted(all_days))
+            need_uw = any(n in MX_UW for n in mx_used)
+            have = min(cov["alp"], cov["uw"]) if need_uw else cov["alp"]
+            if have < len(all_days):
+                errors.insert(0, f"The formulas use market context ({', '.join(mx_used)}), loaded for {have} of {len(all_days)} days: "
+                                 f"the other days can't trade. Load more days in AI research → Market context.")
+        except Exception as e:
+            print("coverage failed", e)
     optst = None
     if ob:
         import dtoptions
@@ -1293,7 +1311,7 @@ def used_summary(P):
             "sides": "longs + shorts" if on("longs") and on("shorts") else "longs only" if on("longs") else "shorts only",
             "time": f"{P.get('startT')}-{P.get('endT')}, flat {P.get('flatT')}, max {P.get('maxTrades')}/day",
             "walls": ("previous day's" if on("flipPrev") else "same day") + (", nearest expiration" if on("wallNear") else ""),
-            "formulas": {k: P[k] for k in FORMULAS if P.get(k)} or None}
+            "formulas": {k: P[k] for k in FORMULAS if P.get(k)} or None, "barMin": int(P.get("barMin") or 1)}
 
 
 PRE = "DTPRE#"
@@ -1558,22 +1576,27 @@ def flip_check(sub, days=60):
         by.setdefault((r["date"], r["sym"]), {})[r["hm"]] = r
     rows, agree, n = [], 0, 0
     stored = {}
+    num = lambda v: (lambda x: x if x == x else None)(float(v)) if v not in (None, "", "None") else None   # bad / missing -> None
     for (d, sym) in sorted(by, reverse=True)[: days * 4]:
+      try:
         if sym not in stored:
             try:
                 stored[sym] = flowdata.stored_walls(sym)
             except Exception:
                 stored[sym] = {}
         s = by[(d, sym)]
-        st = (stored[sym].get(d) or {})
-        op = next((float(x["price"]) for x in s.values() if x.get("price")), None)
-        morning = next((float(s[h]["flip"]) for h in ("09:40", "09:32", "09:20") if h in s and s[h].get("flip")), None)
-        sf = float(st["flip"]) if st.get("flip") else None
+        st = (stored[sym].get(d) or {}) if isinstance(stored[sym], dict) else {}
+        early = {h: x for h, x in s.items() if h and h <= "09:40"}          # the morning snapshots (not the ones during the day)
+        op = next((num(x.get("price")) for h, x in sorted(early.items()) if num(x.get("price"))), None)
+        morning = next((num(early[h].get("flip")) for h in ("09:40", "09:32", "09:20") if h in early and num(early[h].get("flip"))), None)
+        sf = num(st.get("flip"))
         side = lambda f: None if (f is None or op is None) else ("above" if op > f else "below")
         ok = side(morning) is not None and side(sf) is not None and side(morning) == side(sf)
         if side(morning) is not None and side(sf) is not None:
             n += 1
             agree += ok
-        rows.append({"date": d, "sym": sym, "open": op, "snaps": {h: (float(s[h]["flip"]) if s.get(h, {}).get("flip") else None) for h in SNAP_TIMES},
+        rows.append({"date": d, "sym": sym, "open": op, "snaps": {h: num((s.get(h) or {}).get("flip")) for h in SNAP_TIMES},
                      "stored": sf, "sideMorning": side(morning), "sideStored": side(sf), "agree": ok if side(morning) and side(sf) else None})
+      except Exception as e:                           # one bad record must not break the whole check
+        print("flip check row failed", d, sym, e)
     return {"rows": rows[:200], "n": n, "agree": agree, "pct": round(agree / n * 100, 1) if n else None}

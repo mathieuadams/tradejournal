@@ -3473,6 +3473,32 @@ def test_market_context_and_5min():
         pass
 
 
+def test_day_robustness_check():
+    """Robustness check: numbers nudged ±20% (formula numbers too), rules taken out, sides, window; verdict from the
+    share of variants that stay positive; twice the cost and without the best 5% on the base trades."""
+    import dtrobust, daytrade
+    P = {**daytrade.PARAMS, "aboveVwap": True, "emaStack": False, "stopAtr": 1.5, "targetOn": True, "targetR": 2.5,
+         "fxLong": "rising(cvdSum(20), 1) and megaBreadth > 0.5"}
+    vs = dict(dtrobust.variants(P))
+    assert {"stopAtr": 1.2} in vs.values() and {"stopAtr": 1.8} in vs.values() and {"aboveVwap": False} in vs.values()
+    fx = [v["fxLong"] for v in vs.values() if "fxLong" in v]
+    assert "rising(cvdSum(16), 1) and megaBreadth > 0.5" in fx and "rising(cvdSum(20), 1) and megaBreadth > 0.6" in fx
+    assert any(v.get("startT") == "10:05" for v in vs.values()) and len(vs) <= dtrobust.MAX_VARIANTS
+    saved = daytrade.run_variants, daytrade.config
+    try:
+        def rv(sub, days, variants, budget_s=540, tickers=None):
+            rr = {i: [{"at": f"2025-{1 + k % 12:02d}-10T10:00", "R": (1.0 if k % 2 else -0.5) * (0.6 if i % 3 == 0 and i else 1.0)} for k in range(200)]
+                  for i in range(len(variants))}
+            return rr, {}, {f"2025-{m:02d}-10" for m in range(1, 13)}, {}, []
+        daytrade.run_variants, daytrade.config = rv, (lambda s_: dict(P))
+        out = dtrobust.run("rob-u", {"days": 120, "cost": 0.05})
+    finally:
+        daytrade.run_variants, daytrade.config = saved
+    assert out["base"]["avgR"] == 0.2 and out["positive"] == out["variants"] and out["verdict"] in ("robust", "mixed")
+    assert out["extra"][0]["all"]["avgR"] == 0.15 and out["extra"][1]["all"]["n"] == 190
+    assert dtrobust.result("rob-u")["verdict"] == out["verdict"]
+
+
 def test_no_support_any_candle():
     """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
     import wallwatch, datetime as dt

@@ -614,6 +614,23 @@ def research_del(sub, claims, body, q):
     return {"deleted": research.delete_idea(sub, (q or {}).get("id"))}
 
 
+@route("POST", "/daytrade/robust")
+def daytrade_robust(sub, claims, body, q):
+    import dtrobust
+    b = body or {}
+    db.put({"PK": db.upk(sub), "SK": dtrobust.SK, **dtrobust.result(sub), "running": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "dtrob", "params": {"days": b.get("days") or 250, "cost": b.get("cost"),
+                                                                               "cfg": b.get("cfg") if isinstance(b.get("cfg"), dict) else None}}, default=str))
+    return {"status": "running"}
+
+
+@route("GET", "/daytrade/robust")
+def daytrade_robust_get(sub, claims, body, q):
+    import dtrobust
+    return dtrobust.result(sub)
+
+
 @route("GET", "/daytrade/flipcheck")
 def daytrade_flipcheck(sub, claims, body, q):
     import daytrade
