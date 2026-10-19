@@ -24,6 +24,16 @@ rules off in the same idea. The ONLY limit is the data: Alpaca candles (1-minute
 estimated CVD) and trades, Unusual Whales gamma walls / flip, dark pool levels and options flow alerts. Something that
 needs other data (news, order book depth, earnings estimates, fundamentals...) goes in "missing".
 
+NEW INDICATORS: when an idea needs an indicator the app doesn't have, CREATE it: add it to "newIndicators" with a short
+camelCase name and its formula built from the series / functions (e.g. {"name": "vwapDist", "formula": "(close - vwap)
+/ atr(14)"}), then use that name in the idea's formulas. Indicators you created before are in "indicators": reuse them
+by name. Only data that does not exist goes in "missing".
+
+VARIETY: cover different families of ideas over time (trend following, mean reversion to VWAP / levels, opening range
+and gap plays, gamma wall / flip / dark pool levels, order flow / CVD divergence, volatility squeeze and expansion,
+time-of-day effects, momentum after strong days). The record shows which families were tried and how they did: don't
+spend a round on another variant of a family that keeps failing in-sample; switch family.
+
 You do not run tests and you never see the final grades. A separate pipeline tests every idea on the same history with
 the same criteria; you are shown the in-sample (1st half) results of past ideas only. The required t-stat rises with
 the number of ideas tested, so prefer a few well-reasoned ideas with a market mechanism over blind parameter fiddling.
@@ -43,7 +53,12 @@ SCHEMA = {"type": "object", "properties": {
         "hypothesis": {"type": "string", "description": "why this should work: the market mechanism, 1-3 sentences"},
         "changes": {"type": "object", "description": "catalog key -> value (true/false for rules, a number for parameters)",
                     "additionalProperties": True},
-        "missing": {"type": "array", "items": {"type": "string"}, "description": "rules / indicators needed that the catalog lacks"},
+        "newIndicators": {"type": "array", "items": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "camelCase, 2-40 characters, not a built-in name"},
+            "formula": {"type": "string", "description": "built from the series / functions / other indicators"},
+            "what": {"type": "string", "description": "what it measures, one sentence"}}, "required": ["name", "formula"]},
+            "description": "indicators this idea needs that don't exist yet, defined as formulas"},
+        "missing": {"type": "array", "items": {"type": "string"}, "description": "DATA the app doesn't have (not indicators: create those)"},
         "learnedFrom": {"type": "string", "description": "which past results this idea builds on or avoids"}},
         "required": ["name", "hypothesis", "changes"]}},
     "notes": {"type": "string", "description": "what the record shows so far, 1-3 sentences"}},
@@ -64,8 +79,10 @@ def record(xs, limit=120):
     out = []
     for x in xs[:limit]:
         h1 = (x.get("metrics") or {}).get("h1") or {}
+        ch = dict(x.get("changes") or {})
+        ch.update(x.get("readable") or {})             # formulas as written, with the indicator names
         r = {"name": x.get("name"), "by": x.get("by"), "status": x.get("status"),
-             "changes": x.get("changes") if x.get("origin", "blank") == "blank" else None,
+             "changes": ch if x.get("origin", "blank") == "blank" else None,
              "settings": None if x.get("origin", "blank") == "blank" else {k: v for k, v in (x.get("full") or {}).items() if v not in (False, "", None)}}
         if x.get("missing"):
             r["missing"] = x["missing"]
@@ -80,20 +97,62 @@ FORMULA_KEYS = {"day": {"fxLong": "extra entry condition for longs", "fxShort": 
                 "swing": {"fxEntry": "extra entry condition (long only)", "fxExit": "exit at the close of the first candle where true"}}
 
 
-def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested):
-    """-> ([{name, hypothesis, changes, missing, learnedFrom}], notes). Plain data; research.py validates it."""
-    import claude
+def _spec(strategy):
     import formula
     sp = formula.spec()
     sp["series"] = {k: v for k, v in sp["series"].items() if k not in formula.UNAVAILABLE.get(strategy, ())}
+    return sp
+
+
+def _clean(x):
+    x["changes"] = x.get("changes") if isinstance(x.get("changes"), dict) else {}
+    x["missing"] = [str(m) for m in (x.get("missing") or []) if m][:6] if isinstance(x.get("missing"), list) else []
+    x["newIndicators"] = [{"name": str(i.get("name") or "")[:40], "formula": str(i.get("formula") or "")[:600], "what": str(i.get("what") or "")[:200]}
+                          for i in (x.get("newIndicators") or []) if isinstance(i, dict)][:6] if isinstance(x.get("newIndicators"), list) else []
+    return x
+
+
+BUILD_SYSTEM = """You are the research agent of a systematic trading desk. Some of your strategy ideas could not be
+tested because they need something the app doesn't have. For each one, CREATE what is missing as new indicators:
+formulas built from the series / functions given (and the indicators already created), then rewrite the idea's
+"changes" so its formulas use them. The data is limited to Alpaca candles / trades and Unusual Whales walls / flip /
+dark pool / options flow: when a missing piece truly needs other data (news, order book, fundamentals...), say so in
+"impossible" for that idea and give no changes. Keep each idea's intent; don't redesign it."""
+
+BUILD_SCHEMA = {"type": "object", "properties": {"ideas": {"type": "array", "items": {"type": "object", "properties": {
+    "id": {"type": "string"},
+    "newIndicators": {"type": "array", "items": {"type": "object", "properties": {
+        "name": {"type": "string"}, "formula": {"type": "string"}, "what": {"type": "string"}}, "required": ["name", "formula"]}},
+    "changes": {"type": "object", "additionalProperties": True, "description": "the idea's complete changes, formulas using the new indicators"},
+    "impossible": {"type": "array", "items": {"type": "string"}, "description": "missing pieces that need data the app doesn't have"}},
+    "required": ["id"]}}}, "required": ["ideas"]}
+
+
+def build(strategy, catalog, settings, library, items):
+    """Ideas waiting for an indicator -> [{id, newIndicators, changes, impossible}]. Plain data again."""
+    import claude
     payload = {"strategy": STRATEGY_TEXT.get(strategy, strategy), "catalog": catalog or [{"key": k} for k in settings],
-               "formulas": sp, "formulaKeys": FORMULA_KEYS.get(strategy, {}),
+               "formulas": _spec(strategy), "formulaKeys": FORMULA_KEYS.get(strategy, {}), "startingPoint": settings,
+               "indicators": library, "ideas": items}
+    model = os.environ.get("RESEARCH_MODEL") or os.environ.get("COACH_MODEL", "claude-sonnet-5")
+    out = claude.json_call(model, BUILD_SYSTEM, payload, 4000, BUILD_SCHEMA)
+    res = []
+    for x in out.get("ideas") or []:
+        if isinstance(x, dict) and x.get("id"):
+            x = _clean(x)
+            x["impossible"] = [str(m) for m in (x.get("impossible") or []) if m][:6] if isinstance(x.get("impossible"), list) else []
+            res.append(x)
+    return res
+
+
+def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None):
+    """-> ([{name, hypothesis, changes, missing, learnedFrom}], notes). Plain data; research.py validates it."""
+    import claude
+    payload = {"strategy": STRATEGY_TEXT.get(strategy, strategy), "catalog": catalog or [{"key": k} for k in settings],
+               "formulas": _spec(strategy), "formulaKeys": FORMULA_KEYS.get(strategy, {}), "indicators": library or [],
                "startingPoint": settings, "criteria": crit, "ideasTestedSoFar": n_tested, "record": rec,
                "focus": focus or None, "howMany": n}
     model = os.environ.get("RESEARCH_MODEL") or os.environ.get("COACH_MODEL", "claude-sonnet-5")
     out = claude.json_call(model, SYSTEM, payload, 4000, SCHEMA)
     props = [x for x in (out.get("ideas") or []) if isinstance(x, dict)][:n]
-    for x in props:                                    # nothing but data comes back
-        x["changes"] = x.get("changes") if isinstance(x.get("changes"), dict) else {}
-        x["missing"] = [str(m) for m in (x.get("missing") or []) if m][:6] if isinstance(x.get("missing"), list) else []
-    return props, str(out.get("notes") or "")[:600]
+    return [_clean(x) for x in props], str(out.get("notes") or "")[:600]

@@ -90,7 +90,7 @@ def state(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
     xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
+    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
 
@@ -346,12 +346,77 @@ def test_idea(bench, base, x, c, n_tested):
 
 
 # ---------------------------------------------------------------- the pipeline (no AI in here)
-def new_idea(strategy, base, name, changes, by, days, hypothesis="", missing=(), learned="", focus=None, k=0, origin="blank"):
+# ---------------------------------------------------------------- indicators created by the agent (formulas)
+def library(sub):
+    r = _item(sub)
+    return json.loads(r["indicators"]) if r.get("indicators") else []
+
+
+def lib_map(sub):
+    return {x["name"]: x["formula"] for x in library(sub)}
+
+
+def lib_add(sub, inds, strategy, by="ai", idea=None):
+    """Checks and stores new indicators. -> (names added or already there, problems). A name already used with a
+    different formula is refused (the old ideas keep their meaning)."""
+    import formula
+    lib = library(sub)
+    have = {x["name"]: x for x in lib}
+    ok, bad = [], []
+    for ind in inds or []:
+        nm, fx = str(ind.get("name") or "").strip(), str(ind.get("formula") or "").strip()
+        if not formula.valid_name(nm):
+            bad.append(f"indicator name “{nm}” not allowed (camelCase, not a built-in name)")
+            continue
+        if nm in have:
+            if have[nm]["formula"].replace(" ", "") != fx.replace(" ", ""):
+                bad.append(f"indicator “{nm}” already exists with another formula: use it or pick another name")
+            else:
+                ok.append(nm)
+            continue
+        try:
+            cur = {**{k: v["formula"] for k, v in have.items()}, nm: fx}
+            formula.check(formula.expand(fx, {k: v for k, v in cur.items() if k != nm}), formula.UNAVAILABLE[strategy])
+        except formula.FormulaError as e:
+            bad.append(f"indicator “{nm}”: {e}")
+            continue
+        have[nm] = {"name": nm, "formula": fx, "what": str(ind.get("what") or "")[:200], "by": by, "at": iso(now_ny()),
+                    "strategy": strategy, "idea": idea}
+        ok.append(nm)
+    r = _item(sub)
+    db.put({**r, "indicators": json.dumps(list(have.values()), default=str)})
+    return ok, bad
+
+
+def expand_changes(strategy, changes, custom):
+    """(changes with formulas expanded, readable formulas, problems)."""
+    import formula
+    out, readable, bad = dict(changes or {}), {}, []
+    for k in FX_KEYS[strategy]:
+        v = str(out.get(k) or "").strip()
+        if not v:
+            continue
+        try:
+            e = formula.expand(v, custom)
+        except formula.FormulaError as err:
+            bad.append(f"formula {k}: {err}")
+            out.pop(k, None)
+            continue
+        if e.replace(" ", "") != v.replace(" ", ""):
+            readable[k] = v
+        out[k] = e
+    return out, readable, bad
+
+
+def new_idea(strategy, base, name, changes, by, days, hypothesis="", missing=(), learned="", focus=None, k=0, origin="blank", custom=None):
     """An idea record: only valid settings of the strategy, kept as the difference from its starting point (blank:
-    every rule off; saved: your settings), plus the complete settings it is tested with."""
+    every rule off; saved: your settings), plus the complete settings it is tested with. Formulas using indicators
+    the agent created are kept as written ("readable") and expanded into plain formulas for the test."""
+    changes, readable, bad_fx = expand_changes(strategy, changes, custom or {})
     ch, unknown = clean_changes(strategy, changes or {})
+    unknown = bad_fx + unknown
     eff = {k2: v for k2, v in ch.items() if base.get(k2) != v}
-    return {"id": uuid.uuid4().hex[:12], "at": iso(now_ny()), "by": by, "strategy": strategy, "origin": origin,
+    return {"id": uuid.uuid4().hex[:12], "at": iso(now_ny()), "by": by, "strategy": strategy, "origin": origin, "readable": readable,
             "full": tunable(strategy, {**base, **eff}),
             "name": str(name or "idea")[:80], "hypothesis": str(hypothesis or "")[:600], "learnedFrom": str(learned or "")[:300],
             "changes": eff, "focus": focus or None, "days": days, "fp": fingerprint(strategy, eff),
@@ -437,12 +502,15 @@ def run(sub, params=None, budget_s=540):
         if time.time() - t0 > budget_s * 0.5:
             break
         hist = ideas(sub, strategy)
+        rebuilt = build_missing(sub, strategy, catalog, base, hist, days, run_)       # ideas waiting for an indicator
+        if rebuilt:
+            hist = ideas(sub, strategy)
         run_.update(step=f"round {rnd + 1}: the AI agent is reading {len(hist)} past ideas")
         _set_run(sub, run_)
         try:
             props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
                                                  research_agent.public_criteria(c), research_agent.record(hist), n, p.get("focus"),
-                                                 sum(1 for x in hist if x.get("status") == "tested"))
+                                                 sum(1 for x in hist if x.get("status") == "tested"), library(sub))
         except Exception as e:
             run_["errors"].append(f"AI agent: {str(e)[:200]}")
             break
@@ -450,8 +518,10 @@ def run(sub, params=None, budget_s=540):
             notes.append(note)
         seen = {x.get("fp") for x in hist if x.get("fp") and x.get("status") in ("tested", "queued")}
         for k, pr in enumerate(props):
+            made, bad = lib_add(sub, pr.get("newIndicators"), strategy, "ai", pr.get("name"))
             x = admit(new_idea(strategy, base, pr.get("name"), pr.get("changes"), "ai", days, pr.get("hypothesis"),
-                               pr.get("missing"), pr.get("learnedFrom"), p.get("focus"), k), seen)
+                               list(pr.get("missing") or []) + bad, pr.get("learnedFrom"), p.get("focus"), k, custom=lib_map(sub)), seen)
+            x["indicators"] = made
             seen.add(x["fp"])
             _put_idea(sub, x)
             run_["made"] += 1
@@ -537,7 +607,8 @@ def auto_due(sub):
 
 def _start(sub, due):
     import boto3
-    fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    # the research job runs in the bot function: from the API it is BOT_FUNCTION, from the bot function itself
+    fn = os.environ.get("BOT_FUNCTION") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
     for strategy, params in due:
         if fn:
             boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event",
@@ -560,6 +631,49 @@ def auto_kick():
         if it.get("auto"):
             started += _start(it["PK"][5:], auto_due(it["PK"][5:]))
     return started
+
+
+def build_missing(sub, strategy, catalog, base, hist, days, run_, limit=4):
+    """Ideas that need something the app doesn't have: the agent creates the missing indicators as formulas, the
+    pipeline checks them, rebuilds the idea with them and queues it again (one attempt per idea). What truly needs
+    other data stays a feature request ("needs data")."""
+    import research_agent
+    todo = [x for x in hist if x.get("status") == "needs feature" and not x.get("buildTried")][:limit]
+    if not todo:
+        return 0
+    run_.update(step=f"the AI agent is creating indicators for {len(todo)} waiting idea{'s' if len(todo) > 1 else ''}")
+    _set_run(sub, run_)
+    items = [{"id": x["id"], "name": x["name"], "hypothesis": x.get("hypothesis"), "changes": {**(x.get("changes") or {}), **(x.get("readable") or {})},
+              "missing": x.get("missing")} for x in todo]
+    try:
+        res = {r["id"]: r for r in research_agent.build(strategy, catalog, tunable(strategy, base), library(sub), items)}
+    except Exception as e:
+        run_["errors"].append(f"AI agent (indicators): {str(e)[:160]}")
+        return 0
+    seen = {x.get("fp") for x in hist if x.get("fp") and x.get("status") in ("tested", "queued")}
+    done = 0
+    for x in todo:
+        r = res.get(x["id"]) or {}
+        x["buildTried"] = iso(now_ny())
+        if not r or not (r.get("changes") or r.get("impossible")):
+            _put_idea(sub, x)                          # the agent had nothing for it: stays waiting (no new attempt)
+            continue
+        if r.get("impossible") and not r.get("changes"):
+            x.update(status="needs data", missing=r["impossible"])
+            _put_idea(sub, x)
+            continue
+        made, bad = lib_add(sub, r.get("newIndicators"), strategy, "ai", x["name"])
+        y = new_idea(strategy, base, x["name"], r.get("changes") or x.get("changes"), x.get("by") or "ai", days, x.get("hypothesis"),
+                     list(r.get("impossible") or []) + bad, x.get("learnedFrom"), x.get("focus"), custom=lib_map(sub))
+        y = admit(y, seen)
+        if y["status"] == "needs feature":
+            y["status"] = "needs data" if r.get("impossible") else "needs feature"
+        x.update({k: y[k] for k in ("changes", "full", "readable", "missing", "fp", "status")}, indicators=made,
+                 rebuilt=True, wasMissing=x.get("missing"))
+        seen.add(x["fp"])
+        _put_idea(sub, x)
+        done += x["status"] == "queued"
+    return done
 
 
 def test_job(sub, params=None):

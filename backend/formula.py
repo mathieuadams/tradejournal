@@ -43,13 +43,57 @@ FUNCS = {
     "sqMom": ("sqMom(n)", "TTM squeeze momentum (n candles)"), "sqOn": ("sqOn(n)", "1 when the TTM squeeze is on (BB inside KC)"),
     "rvol": ("rvol(n)", "volume / its average of the last n candles"), "cvdSum": ("cvdSum(n)", "delta summed over the last n candles"),
     "orHigh": ("orHigh(n)", "high of the first n candles of the day (once they are done)"), "orLow": ("orLow(n)", "low of the first n candles"),
+    "iff": ("iff(cond, a, b)", "a where cond is true, else b"), "sum": ("sum(x, n)", "x summed over the last n candles"),
+    "wma": ("wma(x, n)", "linearly weighted average"), "cumDay": ("cumDay(x)", "x summed since the day's first candle"),
+    "barsSince": ("barsSince(cond)", "candles since cond was last true (0 = this candle)"),
+    "count": ("count(cond, n)", "how many of the last n candles had cond true"),
 }
 NUM_ARG = {"ema": 1, "sma": 1, "highest": 1, "lowest": 1, "ref": 1, "change": 1, "pct": 1, "stdev": 1, "rising": 1,
-           "falling": 1, "rsi": 0, "atr": 0, "sqMom": 0, "sqOn": 0, "rvol": 0, "cvdSum": 0, "orHigh": 0, "orLow": 0}
+           "falling": 1, "rsi": 0, "atr": 0, "sqMom": 0, "sqOn": 0, "rvol": 0, "cvdSum": 0, "orHigh": 0, "orLow": 0,
+           "sum": 1, "wma": 1, "count": 1}
 ARITY = {"ema": 2, "sma": 2, "highest": 2, "lowest": 2, "ref": 2, "change": 2, "pct": 2, "stdev": 2, "rsi": 1, "atr": 1,
          "crossUp": 2, "crossDown": 2, "rising": 2, "falling": 2, "abs": 1, "min": 2, "max": 2, "between": 3, "sqMom": 1,
-         "sqOn": 1, "rvol": 1, "cvdSum": 1, "orHigh": 1, "orLow": 1}
-MAX_LEN = 400
+         "sqOn": 1, "rvol": 1, "cvdSum": 1, "orHigh": 1, "orLow": 1, "iff": 3, "sum": 2, "wma": 2, "cumDay": 1,
+         "barsSince": 1, "count": 2}
+MAX_LEN = 4000                                         # long enough for formulas with custom indicators expanded in them
+NAME_MAX = 40
+
+
+# ---------------------------------------------------------------- custom indicators (built by the AI agent)
+def valid_name(name):
+    import re
+    return bool(re.fullmatch(r"[a-z][A-Za-z0-9_]{1,39}", name or "")) and name not in SERIES and name not in FUNCS \
+        and name not in ("True", "False", "and", "or", "not")
+
+
+def expand(expr, custom):
+    """The formula with every custom indicator name replaced by its own formula (recursively, cycles refused), so
+    the settings carry plain formulas the engines can run without the library."""
+    if not custom:
+        return expr
+
+    class T(ast.NodeTransformer):
+        def __init__(self):
+            self.stack = []
+
+        def visit_Name(self, node):
+            if node.id in custom:
+                if node.id in self.stack or len(self.stack) > 6:
+                    raise FormulaError(f"indicator “{node.id}” refers to itself")
+                self.stack.append(node.id)
+                try:
+                    sub = ast.parse(str(custom[node.id]).strip(), mode="eval").body
+                except SyntaxError as e:
+                    raise FormulaError(f"indicator “{node.id}”: {e.msg}")
+                out = self.visit(sub)
+                self.stack.pop()
+                return out
+            return node
+    try:
+        tree = ast.parse(str(expr).strip(), mode="eval")
+    except SyntaxError as e:
+        raise FormulaError(f"not a valid formula: {e.msg}")
+    return ast.unparse(T().visit(tree))
 
 
 class FormulaError(ValueError):
@@ -460,6 +504,31 @@ def _call(f, args, cx):
                 v.append(None)
             else:
                 v.append(a[i - 1] <= b[i - 1] and a[i] > b[i] if f == "crossUp" else a[i - 1] >= b[i - 1] and a[i] < b[i])
+    elif f == "iff":
+        c, a, b = _vec(_ev(args[0], cx), n), _vec(_ev(args[1], cx), n), _vec(_ev(args[2], cx), n)
+        v = [None if q is None else (x if q else y) for q, x, y in zip(c, a, b)]
+    elif f in ("sum", "wma", "count"):
+        x, k = _vec(_ev(args[0], cx), n), _intarg(args[1])
+        if f == "count":
+            v = _rollsum([None if y is None else (1.0 if y else 0.0) for y in x], k)
+        elif f == "sum":
+            v = _rollsum(x, k)
+        else:
+            wsum = k * (k + 1) / 2
+            v = _roll(x, k, lambda w: sum(y * (j + 1) for j, y in enumerate(w)) / wsum)
+    elif f == "cumDay":
+        x, v, cum, cur = _vec(_ev(args[0], cx), n), [], 0.0, None
+        for i in range(n):
+            if cx.day[i] != cur:
+                cur, cum = cx.day[i], 0.0
+            cum += x[i] or 0
+            v.append(cum)
+    elif f == "barsSince":
+        x, v, last = _vec(_ev(args[0], cx), n), [], None
+        for i in range(n):
+            if x[i]:
+                last = i
+            v.append(None if last is None else float(i - last))
     elif f == "abs":
         x = _ev(args[0], cx)
         v = [None if y is None else abs(y) for y in x] if isinstance(x, list) else abs(x)

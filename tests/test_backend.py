@@ -3176,16 +3176,17 @@ def test_research_pipeline_and_agent_apart():
                     for i in range(300)]
     seen_payload = {}
 
-    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested):
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None):
         seen_payload.update(rec=rec, crit=crit)
         return [{"name": "vwap", "hypothesis": "h", "changes": {"aboveVwap": True}},
                 {"name": "vwap again", "hypothesis": "h", "changes": {"aboveVwap": True}},
                 {"name": "needs gex", "hypothesis": "h", "changes": {"vwapCross": True}, "missing": ["net GEX by strike"]},
                 {"name": "made up", "hypothesis": "h", "changes": {"magic": True}}], "note"
-    saved = research.DayBench, research_agent.propose, daytrade.config
+    saved = research.DayBench, research_agent.propose, daytrade.config, research_agent.build
     try:
         research.DayBench = lambda sub_, days, base: Bench()
         research_agent.propose = propose
+        research_agent.build = lambda *a, **k: []
         daytrade.config = lambda s_: {**daytrade.PARAMS, "aboveVwap": False, "vwapCross": False}
         out = research.run(sub, {"strategy": "day", "n": 4})
         xs = {x["name"]: x for x in research.ideas(sub, "day")}
@@ -3221,7 +3222,7 @@ def test_research_pipeline_and_agent_apart():
         st = research.state(sub, "day")
         assert st["tested"] == 2 and st["tReq"] >= 2.0, (st["tested"], st["tReq"], [(x["name"], x["status"]) for x in st["ideas"]])
     finally:
-        research.DayBench, research_agent.propose, daytrade.config = saved
+        research.DayBench, research_agent.propose, daytrade.config, research_agent.build = saved
 
 
 def test_formula_rules():
@@ -3289,6 +3290,74 @@ def test_formula_rules():
         if x["status"] != "open":
             assert x["status"] == "formula" and dc[x["exitAt"][:10]][1] < 195
     assert wallwatch.version({**wallwatch.PARAMS, "fxEntry": "close > 1"}) != wallwatch.version(wallwatch.PARAMS)
+
+
+def test_research_agent_creates_indicators():
+    """The agent creates missing indicators as formulas: stored in the library, expanded into plain formulas for the
+    test; ideas waiting for an indicator are rebuilt and re-run; data the app doesn't have stays 'needs data'."""
+    import research, research_agent, daytrade, formula
+    sub = "rs-ind"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    assert formula.expand("a > 1 and b", {"a": "rsi(14)", "b": "a < 80"}) == "rsi(14) > 1 and rsi(14) < 80"
+    try:
+        formula.expand("a", {"a": "b", "b": "a"})
+        assert False
+    except formula.FormulaError:
+        pass
+    calls = {"build": 0}
+
+    class Bench:
+        first, mid, last, errors = "2025-01-01", "2025-07-01", "2025-12-31", []
+
+        def rows(self, P):
+            good = "rsi(14)" in (P.get("fxLong") or "")
+            return [{"at": f"2025-{1 + i % 12:02d}-10T10:00", "R": (1.2 if i % 2 else -0.5) if good else 0.0, "sym": "QQQ"} for i in range(300)]
+
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None):
+        if not calls.get("p"):
+            calls["p"] = 1
+            return [{"name": "rsi dip", "hypothesis": "h", "changes": {"fxLong": "rsiFast < 30"}, "missing": [],
+                     "newIndicators": [{"name": "rsiFast", "formula": "rsi(14)", "what": "RSI"}]},
+                    {"name": "needs a band", "hypothesis": "h", "changes": {}, "missing": ["a volatility band around VWAP"], "newIndicators": []},
+                    {"name": "news", "hypothesis": "h", "changes": {}, "missing": ["news sentiment"], "newIndicators": []},
+                    {"name": "bad ind", "hypothesis": "h", "changes": {"fxLong": "zz > 1"}, "missing": [],
+                     "newIndicators": [{"name": "zz", "formula": "import os"}]}], ""
+        return [], ""
+
+    def build(strategy, catalog, settings, library, items):
+        calls["build"] += 1
+        out = []
+        for it in items:
+            if it["name"] == "needs a band":
+                out.append({"id": it["id"], "newIndicators": [{"name": "vwapBand", "formula": "vwap - 2 * atr(14)"}],
+                            "changes": {"fxLong": "close < vwapBand and rsiFast < 40"}, "impossible": []})
+            elif it["name"] == "news":
+                out.append({"id": it["id"], "newIndicators": [], "changes": {}, "impossible": ["news feed"]})
+        return out
+    saved = research.DayBench, research_agent.propose, research_agent.build, daytrade.config
+    try:
+        research.DayBench = lambda sub_, days, base: Bench()
+        research_agent.propose, research_agent.build = propose, build
+        daytrade.config = lambda s_: {**daytrade.PARAMS}
+        research.run(sub, {"strategy": "day", "n": 4})
+        xs = {x["name"]: x for x in research.ideas(sub, "day")}
+        lib = {x["name"]: x["formula"] for x in research.library(sub)}
+        assert lib == {"rsiFast": "rsi(14)"}
+        r = xs["rsi dip"]
+        assert r["status"] == "tested" and r["changes"]["fxLong"] == "rsi(14) < 30" and r["readable"]["fxLong"] == "rsiFast < 30" and r["indicators"] == ["rsiFast"]
+        assert xs["bad ind"]["status"] == "needs feature" and "zz" in " ".join(xs["bad ind"]["missing"])
+        research.run(sub, {"strategy": "day", "n": 4})              # 2nd run: the waiting ideas get their indicators
+        xs = {x["name"]: x for x in research.ideas(sub, "day")}
+        b = xs["needs a band"]
+        assert b["status"] == "tested" and b["rebuilt"] and "vwapBand" in research.lib_map(sub)
+        assert b["changes"]["fxLong"] == "close < vwap - 2 * atr(14) and rsi(14) < 40"
+        assert xs["news"]["status"] == "needs data" and xs["news"]["missing"] == ["news feed"]
+        n_build = calls["build"]
+        research.run(sub, {"strategy": "day", "n": 4})              # one attempt per idea
+        assert calls["build"] == n_build
+    finally:
+        research.DayBench, research_agent.propose, research_agent.build, daytrade.config = saved
 
 
 def test_no_support_any_candle():
