@@ -626,6 +626,17 @@ def research_strat_save(sub, claims, body, q):
     return {"strategy": x}
 
 
+@route("POST", "/research/holdout")
+def research_holdout(sub, claims, body, q):
+    """The final check of one finalist on the holdout days (runs in the background; the result lands on the idea)."""
+    import research
+    b = body or {}
+    if not int(research.criteria(sub).get("holdoutDays") or 0):
+        raise BadRequest("No holdout: set holdout days in the criteria first.")
+    research._invoke(sub, "rshold", {"id": b.get("id"), "sid": b.get("sid")})
+    return {"status": "running"}
+
+
 @route("PUT", "/research/basket")
 def research_basket(sub, claims, body, q):
     """Basket settings (auto-switch on / off, which side, margin) or put one strategy in use (body.use = id)."""

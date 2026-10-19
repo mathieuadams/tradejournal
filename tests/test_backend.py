@@ -3184,7 +3184,7 @@ def test_research_pipeline_and_agent_apart():
                 {"name": "made up", "hypothesis": "h", "changes": {"magic": True}}], "note"
     saved = research.DayBench, research_agent.propose, daytrade.config, research_agent.build
     try:
-        research.DayBench = lambda sub_, days, base: Bench()
+        research.DayBench = lambda sub_, days, base, **k: Bench()
         research_agent.propose = propose
         research_agent.build = lambda *a, **k: []
         daytrade.config = lambda s_: {**daytrade.PARAMS, "aboveVwap": False, "vwapCross": False}
@@ -3339,7 +3339,7 @@ def test_research_agent_creates_indicators():
         return out
     saved = research.DayBench, research_agent.propose, research_agent.build, daytrade.config
     try:
-        research.DayBench = lambda sub_, days, base: Bench()
+        research.DayBench = lambda sub_, days, base, **k: Bench()
         research_agent.propose, research_agent.build = propose, build
         daytrade.config = lambda s_: {**daytrade.PARAMS}
         research.run(sub, {"strategy": "day", "n": 4})
@@ -4752,6 +4752,45 @@ def test_research_exploration_round():
     y = research.admit({"missing": [], "changes": {"x": 1}, "fp": "f2", "full": {"orbBreak": True, "fxLong": "hTrend > 0"}}, set(), banned=ban)
     assert y["status"] == "queued"
     assert research.explore_ban(sub, "day", hist, c) == []
+
+
+def test_research_retired_pieces_and_holdout():
+    """Pieces that don't hold on the 2nd half are retired (the agent can't use them); the most recent holdout days
+    are kept out of the research tests and used only by the final holdout check."""
+    import research
+    sub = "rs-retire"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    c = research.save_criteria(sub, {"retireMin": 5, "holdoutDays": 20})
+    xs = []
+    for k in range(30):
+        ff, sq = k % 2 == 0, k % 3 == 0
+        xs.append({"id": f"i{k}", "status": "tested", "full": {"flipFade": ff, "sqFire": sq, "shorts": k % 5 != 0},
+                   "metrics": {"h1": {"n": 100, "avgR": 0.05 + (0.12 if ff else 0) + (0.1 if sq else 0)},
+                               "h2": {"n": 100, "avgR": 0.05 - (0.03 if ff else 0) + (0.06 if sq else 0)}}})
+    gone = research.retired(xs, c)
+    assert "flipFade" in gone and "sqFire" not in gone and "longs only" not in gone
+    x = research.admit({"missing": [], "changes": {"flipFade": True}, "fp": "z", "full": {"flipFade": True}}, set(), banned=gone)
+    assert x["status"] == "banned piece" and "retired" in x["fails"][0]
+    assert research.retired(xs, {**c, "retire": False}) == []
+
+    import dtsearch
+    days = [f"2026-0{m}-{d:02d}" for m in (1, 2, 3) for d in range(1, 29) if __import__("datetime").date(2026, m, d).weekday() < 5]
+    saved = dtsearch.load, dtsearch.evaluate
+    try:
+        dtsearch.load = lambda sub_, n, base, errors, feed: [{"sym": "QQQ", "show": days[-n:], "ctx": {}, "allb": [], "walls": {}}]
+        dtsearch.evaluate = lambda data, P: [{"at": d + "T10:00", "R": 1.0} for d in days]
+        import daytrade
+        mc = daytrade.market_ctx
+        daytrade.market_ctx = lambda sym, ds: {}
+        try:
+            b = research.DayBench(sub, 30, {"tickers": ["QQQ"]}, holdout=20)
+        finally:
+            daytrade.market_ctx = mc
+        assert b.cut == days[-20] and b.last < b.cut and all(r["at"][:10] < b.cut for r in b.rows({}))
+        assert len(b.hold_rows({})) == 20 and all(r["at"][:10] >= b.cut for r in b.hold_rows({}))
+    finally:
+        dtsearch.load, dtsearch.evaluate = saved
 
 
 if __name__ == "__main__":

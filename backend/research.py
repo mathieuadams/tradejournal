@@ -26,9 +26,10 @@ from util import iso, now_ny
 SK = "RESEARCH"
 IDEA = "RIDEA#"
 CRITERIA = {"minTrades": 100, "minHalf": 40, "minT": 2.0, "minTestT": 1.0, "minPF": 1.2, "minWin": 0.0, "minAvgR": 0.05,
-            "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15, "exploreEvery": 10, "banTop": 5}
+            "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15, "exploreEvery": 10, "banTop": 5,
+            "retire": True, "retireMin": 10, "holdoutDays": 60}
 LIMITS = {"minTrades": (10, 5000), "minHalf": (0, 2500), "minT": (0, 10), "minTestT": (-5, 10), "minPF": (0, 10),
-          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20)}
+          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20), "retireMin": (3, 200), "holdoutDays": (0, 250)}
 STRATS = ("day", "swing")
 MAX_IDEAS = 8
 
@@ -48,11 +49,12 @@ def save_criteria(sub, body):
                 cur[k] = max(lo, min(hi, float(body[k])))
             except (TypeError, ValueError):
                 pass
-    for k in ("bothHalves", "adjustT", "autoRob"):
+    for k in ("bothHalves", "adjustT", "autoRob", "retire"):
         if k in (body or {}):
             cur[k] = bool(body[k])
     cur["minTrades"], cur["minHalf"], cur["robDays"] = int(cur["minTrades"]), int(cur["minHalf"]), int(cur["robDays"])
     cur["familyCap"], cur["exploreEvery"], cur["banTop"] = int(cur["familyCap"]), int(cur["exploreEvery"]), int(cur["banTop"])
+    cur["retireMin"], cur["holdoutDays"] = int(cur["retireMin"]), int(cur["holdoutDays"])
     if "dayTickers" in (body or {}):
         tk = body["dayTickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -95,8 +97,9 @@ def state(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
     xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "blocks": block_map(xs, ("h1", "h2"))[:40],
-            "families": sorted(([k, v] for k, v in families(xs).items()), key=lambda z: -z[1])[:20], "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
+    return {"criteria": criteria(sub), "run": run, "ideas": xs, "blocks": block_map(xs, ("h1", "h2"))[:40], "retired": retired(xs, criteria(sub)),
+            "families": sorted(([k, v] for k, v in families(xs).items()), key=lambda z: -z[1])[:20],
+            "holdoutUses": int((db.get(db.upk(sub), SK) or {}).get("holdoutUses") or 0), "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
             "strategies": [{**x, "checks": [{k: v for k, v in c.items() if k not in ("daily", "dayList")} for c in x.get("checks") or []]}
                            for x in (strategies(sub, strategy) if strategy else strategies(sub))],
             "basket": basket(sub) if strategy in (None, "day") else None, "tested": sum(1 for x in xs if x.get("status") == "tested"),
@@ -294,10 +297,11 @@ def grade(m, c, n_tested):
 class DayBench:
     """1-minute day trading: candles of every day ticker loaded once (dtsearch), each idea run on them."""
 
-    def __init__(self, sub, days, base):
+    def __init__(self, sub, days, base, holdout=0):
         import dtsearch
         self.errors, self.feed = [], {}
-        self.data = dtsearch.load(sub, days, base, self.errors, self.feed)
+        self.hold = max(0, int(holdout or 0))
+        self.data = dtsearch.load(sub, days + self.hold, base, self.errors, self.feed)
         import daytrade
         import marketctx
         for x in self.data:                            # options flow / gamma / breadth / VIXY / events for the formulas
@@ -311,11 +315,19 @@ class DayBench:
                 marketctx.kick(sub, len(ds))
         except Exception as e:
             print("market context coverage failed", e)
+        self.cut = ds[-self.hold] if self.hold and len(ds) > self.hold else None
+        ds = [d for d in ds if not self.cut or d < self.cut]   # the most recent days are kept out of the research
         self.first, self.mid, self.last = (ds[0], ds[len(ds) // 2], ds[-1]) if ds else (None, None, None)
 
     def rows(self, P):
         import dtsearch
-        return dtsearch.evaluate(self.data, P)
+        rs = dtsearch.evaluate(self.data, P)
+        return [r for r in rs if not self.cut or r["at"][:10] < self.cut]
+
+    def hold_rows(self, P):
+        """The trades of the holdout days only (the final check; never used to choose)."""
+        import dtsearch
+        return [r for r in dtsearch.evaluate(self.data, P) if self.cut and r["at"][:10] >= self.cut]
 
 
 class SwingBench:
@@ -478,7 +490,7 @@ def admit(x, seen, fam=None, cap=0, banned=None):
         x["status"] = "duplicate"
     elif banned and (blocks_of(x) & set(banned)):
         x["status"] = "banned piece"
-        x["fails"] = [f"exploration round: it uses {', '.join(sorted(blocks_of(x) & set(banned)))} (banned this round)"]
+        x["fails"] = [f"it uses {', '.join(sorted(blocks_of(x) & set(banned)))} (retired: doesn't hold on the 2nd half, or banned this exploration round)"]
     elif cap and fam is not None and fam.get(family_of(x), 0) >= cap:
         x["status"] = "family exhausted"
         x["fails"] = [f"its entry family ({family_of(x)}) has {fam[family_of(x)]} tested ideas already (cap {cap})"]
@@ -502,6 +514,61 @@ def _fx_names(expr):
 
 GENERIC_FN = {"abs", "min", "max", "iff", "between", "sum", "ref", "change", "pct", "rising", "falling", "crossUp", "crossDown",
               "count", "barsSince", "cumDay", "highest", "lowest", "stdev", "ema", "sma", "wma"}
+
+
+def retired(xs, c):
+    """Pieces that don't hold: in at least retireMin ideas, a positive lift on the 1st half but not on the 2nd, or a
+    negative lift on both. The agent may not use them any more (the 2nd half becomes the validation set: the
+    holdout days stay the clean final test)."""
+    if not c.get("retire"):
+        return []
+    mn = int(c.get("retireMin") or 10)
+    out = []
+    for b in block_map(xs, ("h1", "h2"), min_n=mn):
+        if b["block"] in ("longs only", "shorts only") or b["block"].endswith("-min candles") or b["block"] == "stopOn":
+            continue                                   # structure, not a piece of edge (sides of the basket, candle size)
+        l1, l2 = b["lift"].get("h1") or 0, b["lift"].get("h2") or 0
+        if l2 <= 0 and (l1 > 0 or l1 < 0):
+            out.append(b["block"])
+    return sorted(out)
+
+
+def holdout_check(sub, idea_id=None, sid=None):
+    """The final test: an idea (or a saved strategy) on the holdout days only, the most recent days that no research
+    test has used. Meant to be used once per finalist: every look at it makes it less clean (counted)."""
+    c = criteria(sub)
+    h = int(c.get("holdoutDays") or 0)
+    if not h:
+        raise ValueError("No holdout: set holdout days in the criteria first.")
+    if sid:
+        x = next((s for s in strategies(sub, "day") if s["id"] == sid), None)
+    else:
+        x = next((i for i in ideas(sub, "day") if i["id"] == idea_id), None)
+    if not x:
+        raise ValueError("not found")
+    base = base_cfg(sub, "day")
+    if c.get("dayTickers"):
+        base["tickers"] = list(c["dayTickers"])
+    bench = DayBench(sub, 30, base, holdout=h)
+    rows = bench.hold_rows({**base, **(x.get("full") or x.get("changes") or {})})
+    m = metrics(rows, "9999", float(c["costR"]))
+    r = _item(sub)
+    uses = int(r.get("holdoutUses") or 0) + 1
+    db.put({**r, "holdoutUses": uses, "robAt": iso(now_ny())})
+    x["holdout"] = {"at": iso(now_ny()), "days": h, "from": bench.cut, "use": uses,
+                    **{k: m.get(k) for k in ("n", "avgR", "t", "win", "pf", "totR", "maxDD")},
+                    "pass": bool(m.get("n")) and (m.get("avgR") or 0) > 0 and (m.get("t") or 0) >= 1.0}
+    (_put_strat if sid else _put_idea)(sub, x)
+    return x["holdout"]
+
+
+def hold_job(sub, params=None):
+    p = params or {}
+    try:
+        return holdout_check(sub, p.get("id"), p.get("sid"))
+    except Exception as e:
+        print("holdout check failed", e)
+        return {"error": str(e)[:200]}
 
 
 def top_ideas(xs, k):
@@ -615,7 +682,7 @@ def test_queued(sub, strategy, days, lab=None, budget_s=540, t0=None, run_=None)
         base["tickers"] = list(c["dayTickers"])        # research on a wider list than the live day tickers
     run_.update(step=f"loading {days} days of history" + (f" on {len(base.get('tickers') or [])} tickers" if strategy == "day" else ""))
     _set_run(sub, run_)
-    bench = DayBench(sub, days, base) if strategy == "day" else SwingBench(sub, days, base, budget_s=min(240, budget_s / 2))
+    bench = DayBench(sub, days, base, holdout=int(c.get("holdoutDays") or 0)) if strategy == "day" else SwingBench(sub, days, base, budget_s=min(240, budget_s / 2))
     run_["errors"] = (run_.get("errors") or []) + bench.errors[:5]
     run_["period"] = {"from": bench.first, "mid": bench.mid, "to": bench.last}
     if not bench.mid:
@@ -768,6 +835,8 @@ def run(sub, params=None, budget_s=540):
             if banned:
                 run_["explore"] = banned
                 notes.append("Exploration round: banned " + ", ".join(banned) + ".")
+            gone = retired(hist, c) if strategy == "day" else []
+            run_["retired"] = gone
             props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
                                                  research_agent.public_criteria(c), research_agent.record(hist), n, p.get("focus"),
                                                  sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy),
@@ -775,7 +844,7 @@ def run(sub, params=None, budget_s=540):
                                                   "exhaustedFamilies": sorted(([k, v] for k, v in fam.items() if cap and v >= cap), key=lambda z: -z[1])[:10],
                                                   "familyCounts": sorted(([k, v] for k, v in fam.items()), key=lambda z: -z[1])[:15],
                                                   "basketNeeds": _basket_needs(sub) if strategy == "day" else [],
-                                                  "bannedThisRound": banned})
+                                                  "bannedThisRound": banned, "retired": gone})
         except Exception as e:
             run_["errors"].append(f"AI agent: {str(e)[:200]}")
             break
@@ -787,7 +856,7 @@ def run(sub, params=None, budget_s=540):
             made, bad = lib_add(sub, pr.get("newIndicators"), strategy, "ai", pr.get("name"))
             x = admit(new_idea(strategy, base, pr.get("name"), pr.get("changes"), "ai", days, pr.get("hypothesis"),
                                list(pr.get("missing") or []) + bad, pr.get("learnedFrom"), p.get("focus"), k, custom=lib_map(sub)), seen,
-                      fam if strategy == "day" else None, cap, banned)
+                      fam if strategy == "day" else None, cap, sorted(set(banned) | set(gone)))
             x["indicators"] = made
             seen.add(x["fp"])
             _put_idea(sub, x)
