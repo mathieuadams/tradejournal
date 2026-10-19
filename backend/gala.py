@@ -77,12 +77,11 @@ def trend(H, k):
     ph, pl = pivots(H, k)
     if len(ph) < 2 or len(pl) < 2:
         return 0
-    hh = H[ph[-1]]["h"] > H[ph[-2]]["h"]
-    hl = H[pl[-1]]["l"] > H[pl[-2]]["l"]
-    if hh and hl:
-        return 1
-    if not hh and not hl:
-        return -1
+    h1, h0, l1, l0 = H[ph[-1]]["h"], H[ph[-2]]["h"], H[pl[-1]]["l"], H[pl[-2]]["l"]
+    if h1 > h0 and l1 > l0:
+        return 1                                        # higher high + higher low
+    if h1 < h0 and l1 < l0:
+        return -1                                       # lower high + lower low
     return 0
 
 
@@ -507,3 +506,125 @@ def _trail(c, P, recs, pos, bb, pk):
         except Exception as e:
             acts.append(f"{r['symbol']} trail: {str(e)[:80]}")
     return acts
+
+
+# ---------------- the pre-market watchlist (09:15 ET) ----------------
+
+def plan(price, tdir, lv, tol):
+    """Direction + the setup to wait for, from the hourly trend and the levels around the pre-market price."""
+    above = sorted((x for x in lv if x["p"] > price), key=lambda x: x["p"])
+    below = sorted((x for x in lv if x["p"] <= price), key=lambda x: -x["p"])
+    if tdir > 0:
+        if below and (not above or price - below[0]["p"] <= above[0]["p"] - price):
+            return "long", f"bounce at {below[0]['p']:.2f} (support)", below[0]["p"]
+        if above:
+            return "long", f"breaking retest above {above[0]['p']:.2f}", above[0]["p"]
+        return "long", "bounce at the next pullback (no level below)", None
+    if tdir < 0:
+        if above and (not below or above[0]["p"] - price <= price - below[0]["p"]):
+            return "short", f"rejection at {above[0]['p']:.2f} (resistance)", above[0]["p"]
+        if below:
+            return "short", f"breaking retest below {below[0]['p']:.2f}", below[0]["p"]
+        return "short", "rejection at the next rally (no level above)", None
+    return "skip", "hourly trend unclear", None
+
+
+def pick_watch(cands, hist, P, d):
+    """cands: [{sym, atr, pmRvol, price, ...}] best first -> the top gWatchN with a clear hourly trend (when gTrend),
+    each with its trend, levels, direction and setup."""
+    out = []
+    n = int(P.get("gWatchN") or 5)
+    for x in cands:
+        hs = hist.get(x["sym"]) or []
+        days = sorted({b["t"][:10] for b in hs if b["t"][:10] < d})[-int(P.get("gLvlDays") or 5):]
+        H = agg([b for b in hs if b["t"][:10] in days], 60)
+        if len(H) < 6:
+            continue
+        tol = float(P.get("gTolAtr", 5)) / 100 * float(x["atr"])
+        tdir = trend(H, int(P.get("gPivot") or 2))
+        if P.get("gTrend", True) and not tdir:
+            continue
+        if tdir > 0 and not P.get("longs", True) or tdir < 0 and not P.get("shorts", True):
+            continue
+        lv = levels(H, P, tol)
+        price = x.get("price") or H[-1]["c"]
+        direc, setup, key = plan(price, tdir, lv, tol)
+        near = sorted(lv, key=lambda y: abs(y["p"] - price))[:4]
+        out.append({**x, "trend": "up" if tdir > 0 else "down" if tdir < 0 else "unclear", "direction": direc, "setup": setup,
+                    "keyLevel": key, "levels": sorted(({"p": y["p"], "src": y["src"]} for y in near), key=lambda y: -y["p"])})
+        if len(out) >= n:
+            break
+    return out
+
+
+def watchlist(sub, now=None):
+    """09:15 ET: today's universe ranked by pre-market RVOL (pre-market volume so far vs its 14-day average), then the
+    top gWatchN with a clear hourly trend, each with its levels and the setup to wait for. Stored as SDWATCH#day."""
+    import json
+    from datetime import timedelta
+    from decimal import Decimal
+    import db
+    import stockday as sd
+    from util import iso, now_ny
+    P = sd.config(sub)
+    now = now or now_ny()
+    d = now.strftime("%Y-%m-%d")
+    pk = db.upk(sub)
+    c = sd.data_creds(sub)
+    if not c:
+        return {"error": "Connect an Alpaca account to load the stock data."}
+    uni = sd.get_day("U", d)
+    if not uni:
+        out = {"date": d, "at": now.strftime("%H:%M"), "error": "no universe for today yet (the morning prep runs at 09:05)"}
+        db.put({"PK": pk, "SK": f"SDWATCH#{d}", **out})
+        return out
+    ex = set(P.get("exclude") or [])
+    syms = sorted(s for s in uni if s not in ex)
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+    cut = min(now.replace(tzinfo=None, second=0, microsecond=0), day.replace(hour=9, minute=29))
+    pm = {}
+    for i in range(0, len(syms), 200):
+        pm.update(sd.multi_bars(c, syms[i:i + 200], "30Min", day.replace(hour=4), cut))
+    rdays = [x for x in sd.stored_days("R") if x < d][-14:]
+    avg = {}
+    for x in rdays:
+        for s, w in sd.get_day("R", x).items():
+            avg.setdefault(s, []).append(float(w[0]))
+    min_v = float(P.get("gWatchMinPmVol") or 0)
+    cands = []
+    for s in syms:
+        bs = [b for b in pm.get(s) or [] if "04:00" <= b["t"][11:16] < "09:30"]
+        v = sum(b["v"] or 0 for b in bs)
+        h = avg.get(s) or []
+        if not bs or len(h) < 5 or v < min_v:
+            continue
+        a = sum(h) / len(h)
+        if a <= 0:
+            continue
+        atr, _, pc = (float(z) for z in uni[s][:3])
+        price = bs[-1]["c"]
+        cands.append({"sym": s, "pmRvol": round(v / a, 2), "pmVol": int(v), "price": round(price, 4), "prevClose": pc,
+                      "gapPct": round((price / pc - 1) * 100, 2) if pc else None, "atr": atr, "rvol": round(v / a, 2)})
+    cands.sort(key=lambda x: -x["pmRvol"])
+    top = cands[: max(15, 3 * int(P.get("gWatchN") or 5))]
+    hist = sd.multi_bars(c, [x["sym"] for x in top], "30Min", hist_start(day, P), day.replace(hour=9, minute=29), max_pages=8) if top else {}
+    picks = pick_watch(top, hist, P, d)
+    ev = {}
+    try:
+        import marketctx
+        ev = {k: v for k, v in marketctx.event_flags(d).items() if k in ("fomc", "cpi", "nfp", "opex") and v}
+    except Exception:
+        pass
+    out = {"date": d, "at": now.strftime("%H:%M"), "picks": picks, "candidates": len(cands), "universe": len(uni),
+           "events": sorted(ev), "note": "pre-market volume 04:00 to now vs the 14-day average of the full pre-market"}
+    item = {"PK": pk, "SK": f"SDWATCH#{d}", **json.loads(json.dumps(out, default=str), parse_float=Decimal), "built": iso(now_ny())}
+    db.put(item)
+    db.put({**item, "SK": "SDWATCH#last"})
+    return out
+
+
+def watch_today(sub, d):
+    import db
+    r = db.get(db.upk(sub), f"SDWATCH#{d}") or {}
+    return [{k: (float(v) if k not in ("sym", "trend", "direction", "setup", "levels") and v is not None and not isinstance(v, (str, list)) else v)
+             for k, v in p.items()} for p in r.get("picks") or []]

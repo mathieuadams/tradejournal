@@ -4541,6 +4541,58 @@ def test_research_auto_robustness():
         research._invoke, dtrobust.run, research.base_cfg = saved
 
 
+def test_gala_premarket_watchlist():
+    """09:15: universe ranked by pre-market RVOL, only clear hourly trends kept, top N with levels and a plan; the live
+    Gala picks come from it."""
+    import gala, stockday, datetime as _dt
+    d = "2026-03-20"
+    prev = [f"2026-03-{x:02d}" for x in (9, 10, 11, 12, 13, 16, 17, 18, 19)]
+    stockday.put_day("U", d, {s: [2.0, 3000000, 100.0] for s in ("UP", "DN", "FLAT", "QUIET")})
+    for x in prev:
+        stockday.put_day("R", x, {s: [100000] + [100] * 15 for s in ("UP", "DN", "FLAT", "QUIET")})
+    def series(sym, day, k0):
+        out = []
+        for m in range(13):
+            k = k0 + m
+            tri = abs((k // 2) % 6 - 3)
+            if sym == "UP":
+                p = 90 + k * 0.08 + tri
+            elif sym == "DN":
+                p = 110 - k * 0.08 - tri
+            else:
+                p = 100 + tri * 0.5
+            q = p + 0.05
+            t = 570 + m * 30
+            out.append({"t": f"{day}T{t // 60:02d}:{t % 60:02d}", "o": p, "h": max(p, q) + 0.1, "l": min(p, q) - 0.1, "c": q, "v": 1000})
+        return out
+    def mb(c, syms, tf, start, end, feed="sip", max_pages=60):
+        out = {}
+        for s in syms:
+            if start.hour == 4:                          # pre-market so far
+                v = {"UP": 600000, "DN": 400000, "FLAT": 900000, "QUIET": 5000}[s]
+                out[s] = [{"t": f"{d}T08:00", "o": 100, "h": 100, "l": 100, "c": 101, "v": v}]
+            else:
+                out[s] = [b for j, x in enumerate(prev) for b in series(s, x, j * 13)]
+        return out
+    saved = stockday.multi_bars, stockday.data_creds, stockday.config
+    try:
+        stockday.multi_bars = mb
+        stockday.data_creds = lambda sub: {"key": "k", "secret": "s"}
+        stockday.config = lambda sub: {**stockday.PARAMS, "mode": "gala", "gWatchN": 5}
+        w = gala.watchlist("wl-user", _dt.datetime(2026, 3, 20, 9, 15))
+        syms = [p["sym"] for p in w["picks"]]
+        assert "QUIET" not in syms and "FLAT" not in syms        # too little pre-market volume / no clear trend
+        assert syms == ["UP", "DN"] and w["picks"][0]["pmRvol"] == 6.0 and w["picks"][0]["gapPct"] == 1.0
+        up, dn = w["picks"]
+        assert up["trend"] == "up" and up["direction"] == "long" and dn["trend"] == "down" and dn["direction"] == "short"
+        assert up["levels"] and ("bounce" in up["setup"] or "retest" in up["setup"])
+        wl = gala.watch_today("wl-user", d)
+        assert [p["sym"] for p in wl] == ["UP", "DN"] and isinstance(wl[0]["atr"], float)
+        assert stockday.view("wl-user")["watch"]["picks"]
+    finally:
+        stockday.multi_bars, stockday.data_creds, stockday.config = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

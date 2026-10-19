@@ -44,14 +44,16 @@ PARAMS = {"enabled": False, "trade": False, "longs": True, "shorts": True,
           "gRetest": True, "gBounce": True, "gReject": True, "gTrend": True, "gPivot": 2, "gLvlDays": 5, "gMaxCross": 2,
           "gImpulse": 1.5, "gTolAtr": 5.0, "gTestBars": 2, "gRetestMax": 12, "gStopBuf": 2.0, "gTargetR": 2.0, "gLvlTarget": True,
           "gPartial": 50.0, "gTrailBars": 3, "gMaxTrades": 3, "gMaxTries": 2, "gOneDone": False, "gOneDoneR": 1.5,
-          "gMktAlign": True, "gRelStr": False, "gSkipEvents": False, "gEnd": "15:30"}
+          "gMktAlign": True, "gRelStr": False, "gSkipEvents": False, "gEnd": "15:30",
+          "gWatch": True, "gWatchN": 5, "gWatchMinPmVol": 100000}
 INTS = {"minAvgVol": (0, 10 ** 10), "topN": (1, 100), "orbMin": (5, 30), "vwapCap": (0, 50), "gPivot": (1, 5), "gLvlDays": (1, 20),
-        "gMaxCross": (0, 20), "gTestBars": (1, 6), "gRetestMax": (1, 60), "gTrailBars": (1, 10), "gMaxTrades": (1, 20), "gMaxTries": (1, 5)}
+        "gMaxCross": (0, 20), "gTestBars": (1, 6), "gRetestMax": (1, 60), "gTrailBars": (1, 10), "gMaxTrades": (1, 20), "gMaxTries": (1, 5),
+        "gWatchN": (1, 20), "gWatchMinPmVol": (0, 10 ** 9)}
 FLOATS = {"minPrice": (0, 10000), "minAtr": (0, 1000), "minRvol": (0, 1000), "dojiPct": (0, 100), "stopAtrPct": (0.5, 500),
           "riskPct": (0.05, 10), "maxLev": (0.1, 10), "gImpulse": (0, 10), "gTolAtr": (0, 50), "gStopBuf": (0, 50),
           "gTargetR": (0.5, 10), "gPartial": (0, 100), "gOneDoneR": (0, 10)}
 BOOLS = ("enabled", "trade", "longs", "shorts", "dirLock", "vwapSide", "cvdSide", "vwapExit", "skipMid",
-         "gRetest", "gBounce", "gReject", "gTrend", "gLvlTarget", "gOneDone", "gMktAlign", "gRelStr", "gSkipEvents")
+         "gRetest", "gBounce", "gReject", "gTrend", "gLvlTarget", "gOneDone", "gMktAlign", "gRelStr", "gSkipEvents", "gWatch")
 ORBS = (5, 15, 30)
 RV_BUCKETS = ((0, 1, "< 1x"), (1, 2, "1-2x"), (2, 5, "2-5x"), (5, 10, "5-10x"), (10, 30, "10-30x"), (30, 1e12, "> 30x"))
 
@@ -418,7 +420,7 @@ def _rank(uni, today, roll, P):
         o, hh, l, cl = w[base], w[base + 1], w[base + 2], w[base + 3]
         body, rng = cl - o, hh - l
         direc = 0 if rng <= 0 or abs(body) < float(P["dojiPct"]) / 100 * rng else (1 if body > 0 else -1)
-        out.append({"sym": s, "rvol": round(rv, 2), "pmRvol": round(prv, 2), "atr": float(uni[s][0]), "o": o, "h": hh, "l": l, "c": cl, "dir": direc})
+        out.append({"sym": s, "rvol": round(rv, 2), "pmRvol": round(prv, 2), "pmVol": int(w[0]), "atr": float(uni[s][0]), "o": o, "h": hh, "l": l, "c": cl, "dir": direc})
     key = "pmRvol" if P.get("rvolMode") == "pm" else "rvol"
     out = [x for x in out if x[key] >= float(P["minRvol"])]
     out.sort(key=lambda x: -x[key])
@@ -554,9 +556,14 @@ def backtest(sub, days=250, cfg=None, budget_s=520):
             for i in range(0, len(keep), 12):
                 for x in ex.map(load, keep[i:i + 12]):
                     yield x
+    watch_on = P.get("mode") == "gala" and P.get("gWatch")
+    PW = {**P, "rvolMode": "pm", "minRvol": 0, "topN": max(15, 3 * int(P["gWatchN"]))}
     for d, today, uni in days_in_order():
         if d in runset:
-            picks_by_day[d] = _rank(uni, today, roll, P)
+            if watch_on:                                # the 09:15 pre-market list: top pre-market RVOL, clear trend later
+                picks_by_day[d] = [x for x in _rank(uni, {s: w for s, w in today.items() if float(w[0]) >= float(P["gWatchMinPmVol"])}, roll, PW)]
+            else:
+                picks_by_day[d] = _rank(uni, today, roll, P)
         for s, w in today.items():
             h = roll.setdefault(s, [])
             h.append((w[base + 4], w[0]))
@@ -581,6 +588,11 @@ def backtest(sub, days=250, cfg=None, budget_s=520):
                 return []
             bb = multi_bars(c, syms + list(gala.INDEX), "1Min", day.replace(hour=9, minute=30), day.replace(hour=16), max_pages=8)
             hist = multi_bars(c, syms, "30Min", gala.hist_start(day, P), day.replace(hour=9, minute=29), max_pages=5)
+            if watch_on:
+                pk = gala.pick_watch([{k: v for k, v in p.items() if k not in ("o", "h", "l", "c")} for p in pk], hist, P, d)
+                if not pk:
+                    return []
+                bb = {s: v for s, v in bb.items() if s in {p["sym"] for p in pk} or s in gala.INDEX}
             m = int(P["orbMin"])
             return gala.day_trades(pk, bb, hist, P, {x: bb.get(x) or [] for x in gala.INDEX}, f"{9 + (30 + m) // 60:02d}:{(30 + m) % 60:02d}")
         bb = multi_bars(c, syms, "1Min", day.replace(hour=9, minute=30), day.replace(hour=16), max_pages=5)
@@ -677,9 +689,11 @@ def view(sub):
             info["error"] = str(e)[:160]
     today = now_ny().strftime("%Y-%m-%d")
     scan = db.get(db.upk(sub), f"SDSCAN#{today}") or db.get(db.upk(sub), "SDSCAN#last") or {}
+    watch = db.get(db.upk(sub), f"SDWATCH#{today}") or db.get(db.upk(sub), "SDWATCH#last") or {}
     recs = sorted(db.q_prefix(db.upk(sub), "SDPOS#"), key=lambda r: r.get("at", ""))[-80:]
     return {"config": cfg, "account": info, "prep": prep_status(sub), "coverage": coverage(),
             "scan": {k: v for k, v in scan.items() if k not in ("PK", "SK")},
+            "watch": {k: v for k, v in watch.items() if k not in ("PK", "SK")},
             "trades": [{k: v for k, v in r.items() if k != "PK"} for r in recs]}
 
 
@@ -753,9 +767,19 @@ def tick(sub, now=None):
         return {"skipped": "no stock account"}
     now = now or now_ny()
     d, hm = now.strftime("%Y-%m-%d"), now.strftime("%H:%M")
+    pk = db.upk(sub)
+    if now.weekday() < 5 and "09:17" <= hm < "09:30":  # the pre-market watchlist missed at 09:15: retried each minute
+        w = db.get(pk, f"SDWATCH#{d}")
+        if not w or (w.get("error") and not w.get("picks")):
+            import gala
+            try:
+                w = gala.watchlist(sub, now)
+                return {"watchlist": [p["sym"] for p in w.get("picks") or []], "error": w.get("error")}
+            except Exception as e:
+                db.put({"PK": pk, "SK": f"SDWATCH#{d}", "date": d, "at": hm, "error": str(e)[:160]})
+                return {"watchlist": [], "error": str(e)[:160]}
     if now.weekday() >= 5 or not ("09:30" <= hm < "16:00"):
         return {"skipped": "market closed"}
-    pk = db.upk(sub)
     acts = []
     m = int(P["orbMin"])
     ready = f"{9 + (31 + m) // 60:02d}:{(31 + m) % 60:02d}"
@@ -790,10 +814,13 @@ def tick(sub, now=None):
                     acts.append(f"{p['sym']} {'buy' if p['dir'] > 0 else 'sell'} stop {q} @ {lvl}")
                 except Exception as e:
                     acts.append(f"{p['sym']}: {str(e)[:100]}")
-    if P.get("mode") == "gala" and scan and scan.get("picks") and not scan.get("scanning"):
+    if P.get("mode") == "gala":
         import gala
+        wl = gala.watch_today(sub, d) if P.get("gWatch") else []
+        gp = wl or ([{k: _f(v) if k != "sym" else v for k, v in p.items()} for p in scan["picks"]]
+                    if scan and scan.get("picks") and not scan.get("scanning") and not P.get("gWatch") else [])
         try:
-            acts += gala.live(sub, P, c, now, [{k: _f(v) if k != "sym" else v for k, v in p.items()} for p in scan["picks"]], pk, d, hm)
+            acts += gala.live(sub, P, c, now, gp, pk, d, hm) if gp else []
         except Exception as e:
             acts.append(f"gala: {str(e)[:120]}")
     recs = [r for r in db.q_prefix(pk, f"SDPOS#{d}#")]

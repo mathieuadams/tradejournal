@@ -708,6 +708,17 @@ def stockday_prep(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("POST", "/stockday/watch")
+def stockday_watch(sub, claims, body, q):
+    import stockday
+    d = now_ny().strftime("%Y-%m-%d")
+    db.put({"PK": db.upk(sub), "SK": f"SDWATCH#{d}", **{k: v for k, v in (db.get(db.upk(sub), f"SDWATCH#{d}") or {}).items() if k not in ("PK", "SK")},
+            "building": iso(now_ny())})
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "sdwatch", "params": {}}, default=str))
+    return stockday.view(sub)
+
+
 @route("POST", "/stockday/backtest")
 def stockday_bt(sub, claims, body, q):
     import stockday

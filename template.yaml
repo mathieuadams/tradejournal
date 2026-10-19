@@ -420,6 +420,12 @@ Resources:
             ScheduleExpression: cron(5 9 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "sdmorning"}'
+        StockDayWatch:      # 09:15 ET: top pre-market stocks with their hourly trend, levels and setup
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(15 9 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "sdwatch"}'
         StockDayTick:       # stocks in play: scan after the opening range, entries, VWAP exit, flat
           Type: ScheduleV2
           Properties:
