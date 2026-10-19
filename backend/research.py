@@ -90,7 +90,7 @@ def state(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
     xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "tested": sum(1 for x in xs if x.get("status") == "tested"),
+    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
 
@@ -110,6 +110,32 @@ def base_cfg(sub, strategy, lab=None):
     if isinstance(lab, dict):
         b.update(clean_changes("swing", lab)[0])
     return b
+
+
+KEEP = {"day": ("longs", "shorts"), "swing": ("retestSetup", "pwSetup", "flipSetup", "mergedSetup", "kcDaily", "scaleBE")}
+
+
+def blank_cfg(sub, strategy):
+    """The starting point of the agent's strategies: your tickers, every rule, filter and exit OFF (stop on, with
+    the default size), no formula. The agent builds the whole strategy on top of it."""
+    P = params_of(strategy)
+    cur = base_cfg(sub, strategy)
+    b = {**P, **{k: cur.get(k) for k in FIXED[strategy] if k in cur}}
+    for k, v in P.items():
+        if isinstance(v, bool) and k not in FIXED[strategy] and k not in KEEP[strategy]:
+            b[k] = False
+    for k in FX_KEYS[strategy]:
+        b[k] = ""
+    b["stopOn"] = True
+    if strategy == "day":
+        b["longs"] = b["shorts"] = True
+    else:
+        b["tf"], b["earnOn"] = "1h", False
+    return b
+
+
+def tunable(strategy, cfg):
+    return {k: cfg.get(k) for k in params_of(strategy) if k not in FIXED[strategy]}
 
 
 def params_of(strategy):
@@ -305,7 +331,7 @@ class SwingBench:
 
 
 def test_idea(bench, base, x, c, n_tested):
-    P = {**base, **x["changes"]}
+    P = {**base, **(x.get("full") or x["changes"])}            # the idea's complete settings, on your tickers
     t0 = time.time()
     rows = bench.rows(P)
     m = metrics(rows, bench.mid, float(c["costR"]))
@@ -320,11 +346,13 @@ def test_idea(bench, base, x, c, n_tested):
 
 
 # ---------------------------------------------------------------- the pipeline (no AI in here)
-def new_idea(strategy, base, name, changes, by, days, hypothesis="", missing=(), learned="", focus=None, k=0):
-    """An idea record: only valid settings of the strategy, kept as the difference from the base settings."""
+def new_idea(strategy, base, name, changes, by, days, hypothesis="", missing=(), learned="", focus=None, k=0, origin="blank"):
+    """An idea record: only valid settings of the strategy, kept as the difference from its starting point (blank:
+    every rule off; saved: your settings), plus the complete settings it is tested with."""
     ch, unknown = clean_changes(strategy, changes or {})
     eff = {k2: v for k2, v in ch.items() if base.get(k2) != v}
-    return {"id": uuid.uuid4().hex[:12], "at": iso(now_ny()), "by": by, "strategy": strategy,
+    return {"id": uuid.uuid4().hex[:12], "at": iso(now_ny()), "by": by, "strategy": strategy, "origin": origin,
+            "full": tunable(strategy, {**base, **eff}),
             "name": str(name or "idea")[:80], "hypothesis": str(hypothesis or "")[:600], "learnedFrom": str(learned or "")[:300],
             "changes": eff, "focus": focus or None, "days": days, "fp": fingerprint(strategy, eff),
             "missing": [str(m)[:160] for m in (missing or [])][:6] + [str(u)[:200] for u in unknown][:6]}
@@ -381,7 +409,7 @@ def submit(sub, strategy, name, changes, lab=None, days=250, hypothesis=""):
     """An idea of the trader's own (no AI): into the same queue, the same test, the same grade."""
     base = base_cfg(sub, strategy, lab)
     seen = {x.get("fp") for x in ideas(sub, strategy) if x.get("status") == "tested"}
-    x = admit(new_idea(strategy, base, name, changes, "you", days, hypothesis), seen)
+    x = admit(new_idea(strategy, base, name, changes, "you", days, hypothesis, origin="saved"), seen)
     _put_idea(sub, x)
     return x
 
@@ -400,7 +428,10 @@ def run(sub, params=None, budget_s=540):
     days = max(30, min(500, int(p.get("days") or 250)))
     c = criteria(sub)
     run_ = {"running": iso(now_ny()), "strategy": strategy, "at": iso(now_ny()), "step": "starting", "errors": [], "made": 0, "testedNow": 0}
-    base = base_cfg(sub, strategy, p.get("lab"))
+    base = blank_cfg(sub, strategy)                    # the agent builds whole strategies from scratch
+    if isinstance(p.get("catalog"), list):
+        save_catalog(sub, strategy, p["catalog"])
+    catalog = p.get("catalog") or load_catalog(sub, strategy)
     notes = []
     for rnd in range(rounds):
         if time.time() - t0 > budget_s * 0.5:
@@ -409,7 +440,7 @@ def run(sub, params=None, budget_s=540):
         run_.update(step=f"round {rnd + 1}: the AI agent is reading {len(hist)} past ideas")
         _set_run(sub, run_)
         try:
-            props, note = research_agent.propose(strategy, p.get("catalog"), {k: base.get(k) for k in params_of(strategy) if k not in FIXED[strategy]},
+            props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
                                                  research_agent.public_criteria(c), research_agent.record(hist), n, p.get("focus"),
                                                  sum(1 for x in hist if x.get("status") == "tested"))
         except Exception as e:
@@ -425,13 +456,95 @@ def run(sub, params=None, budget_s=540):
             _put_idea(sub, x)
             run_["made"] += 1
         try:
-            test_queued(sub, strategy, days, p.get("lab"), budget_s, t0, run_)
+            test_queued(sub, strategy, days, None, budget_s, t0, run_)
         except Exception as e:
             run_["errors"].append(f"testing: {str(e)[:160]}")
             break
-    run_.update(running=None, step="done", notes=notes, secs=round(time.time() - t0), days=days, errors=run_["errors"][:8])
+    run_.update(running=None, step="done", notes=notes, secs=round(time.time() - t0), days=days, errors=run_["errors"][:8],
+                auto=bool(p.get("auto")))
     _set_run(sub, run_)
     return run_
+
+
+# ---------------------------------------------------------------- autopilot: the agent runs on its own
+AUTO = {"on": False, "perDay": 4, "n": 4, "days": 250}
+
+
+def _item(sub):
+    return db.get(db.upk(sub), SK) or {"PK": db.upk(sub), "SK": SK}
+
+
+def save_catalog(sub, strategy, catalog):
+    r = _item(sub)
+    cats = json.loads(r["catalogs"]) if r.get("catalogs") else {}
+    cats[strategy] = catalog[:400]
+    db.put({**r, "catalogs": json.dumps(cats, default=str)})
+
+
+def load_catalog(sub, strategy):
+    r = _item(sub)
+    return (json.loads(r["catalogs"]) if r.get("catalogs") else {}).get(strategy)
+
+
+def auto_cfg(sub):
+    r = _item(sub)
+    a = json.loads(r["auto"]) if r.get("auto") else {}
+    return {s: {**AUTO, **(a.get(s) or {})} for s in STRATS}
+
+
+def save_auto(sub, strategy, body):
+    if strategy not in STRATS:
+        return auto_cfg(sub)
+    a = auto_cfg(sub)
+    cur = a[strategy]
+    if "on" in body:
+        cur["on"] = bool(body["on"])
+    for k, lo, hi in (("perDay", 1, 24), ("n", 1, MAX_IDEAS), ("days", 30, 500)):
+        if k in body:
+            try:
+                cur[k] = int(max(lo, min(hi, float(body[k]))))
+            except (TypeError, ValueError):
+                pass
+    r = _item(sub)
+    db.put({**r, "auto": json.dumps(a)})
+    return a
+
+
+def auto_due(sub):
+    """[(strategy, params)] to start now: autopilot on, nothing running, fewer runs today than allowed (the day
+    counts in New York time). Runs alternate between the strategies that are on."""
+    r = _item(sub)
+    run_ = json.loads(r["run"]) if r.get("run") else {}
+    if run_.get("running") and run_["running"] >= iso(now_ny() - __import__("datetime").timedelta(minutes=12)):
+        return []
+    a, today = auto_cfg(sub), now_ny().strftime("%Y-%m-%d")
+    cnt = json.loads(r["autoRuns"]) if r.get("autoRuns") else {}
+    on = [s for s in STRATS if a[s]["on"] and cnt.get(f"{today}|{s}", 0) < a[s]["perDay"]]
+    if not on:
+        return []
+    s = min(on, key=lambda x: cnt.get(f"{today}|{x}", 0))
+    cnt = {k: v for k, v in cnt.items() if k.startswith(today)}
+    cnt[f"{today}|{s}"] = cnt.get(f"{today}|{s}", 0) + 1
+    db.put({**r, "autoRuns": json.dumps(cnt), "run": json.dumps({"running": iso(now_ny()), "strategy": s, "at": iso(now_ny()),
+                                                                 "step": "autopilot: starting", "errors": [], "auto": True})})
+    return [(s, {"strategy": s, "n": a[s]["n"], "days": a[s]["days"], "rounds": 1, "auto": True})]
+
+
+def auto_kick():
+    """Hourly: start one autopilot run for every user due (each run is its own invocation of this function)."""
+    import boto3
+    fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    started = 0
+    for it in db.scan_sk(SK):
+        sub = it["PK"][5:]
+        if not it.get("auto"):
+            continue
+        for strategy, params in auto_due(sub):
+            if fn:
+                boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event",
+                                              Payload=json.dumps({"sub": sub, "job": "research", "params": params}))
+            started += 1
+    return started
 
 
 def test_job(sub, params=None):

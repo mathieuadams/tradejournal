@@ -3202,6 +3202,16 @@ def test_research_pipeline_and_agent_apart():
         assert mine["status"] == "queued" and mine["by"] == "you"
         research.test_job(sub, {"strategy": "day"})
         assert next(x for x in research.ideas(sub, "day") if x["id"] == mine["id"])["status"] == "tested"
+        bl = research.blank_cfg(sub, "day")
+        assert not any(bl[k] for k in daytrade.ENTRY + daytrade.FILTERS) and bl["stopOn"] and not bl["targetOn"] and bl["fxLong"] == ""
+        v = next(x for x in research.ideas(sub, "day") if x["name"] == "vwap")
+        assert v["origin"] == "blank" and v["full"]["aboveVwap"] is True and v["full"]["vwapCross"] is False and "tickers" not in v["full"]
+        assert research.auto_due(sub) == []                          # autopilot off
+        research.save_auto(sub, "day", {"on": True, "perDay": 2, "n": 3})
+        d1 = research.auto_due(sub)
+        assert d1 and d1[0][0] == "day" and d1[0][1]["n"] == 3 and research.auto_due(sub) == []   # one at a time
+        research._set_run(sub, {"running": None})
+        assert research.auto_due(sub) and (research._set_run(sub, {"running": None}) or True) and research.auto_due(sub) == []   # 2 a day
         st = research.state(sub, "day")
         assert st["tested"] == 2 and st["tReq"] >= 2.0, (st["tested"], st["tReq"], [(x["name"], x["status"]) for x in st["ideas"]])
     finally:

@@ -10,8 +10,11 @@ saw it, every new round would be tuned on it and it would stop being out of samp
 import os
 
 SYSTEM = """You are the research agent of a systematic trading desk. You propose NEW strategy ideas to test on
-historical data. Each idea is a set of changes to the trader's CURRENT settings: the rule keys and parameter keys of
-the catalog (exact keys; true/false for rules, numbers for parameters) AND formula rules.
+historical data. Each idea is a COMPLETE strategy that you build from scratch: you start from "startingPoint", where
+every entry rule, filter and exit is OFF (only a stop at its default size), and "changes" says what to turn on and set:
+rule keys and parameter keys of the catalog (exact keys; true/false for rules, numbers for parameters), stop / target
+/ exits, and formula rules. Give every idea at least one entry condition and the exits it needs. You design the
+strategies; nobody gives you a strategy to tweak.
 
 Formula rules let you test ANY idea the data allows, not only the built-in rules: write a condition as an expression
 with the series / functions of "formulas" (e.g. "close > vwap and crossUp(ema(close, 9), ema(close, 21)) and cvd > 0").
@@ -61,7 +64,9 @@ def record(xs, limit=120):
     out = []
     for x in xs[:limit]:
         h1 = (x.get("metrics") or {}).get("h1") or {}
-        r = {"name": x.get("name"), "by": x.get("by"), "changes": x.get("changes"), "status": x.get("status")}
+        r = {"name": x.get("name"), "by": x.get("by"), "status": x.get("status"),
+             "changes": x.get("changes") if x.get("origin", "blank") == "blank" else None,
+             "settings": None if x.get("origin", "blank") == "blank" else {k: v for k, v in (x.get("full") or {}).items() if v not in (False, "", None)}}
         if x.get("missing"):
             r["missing"] = x["missing"]
         if x.get("status") == "tested":
@@ -83,7 +88,7 @@ def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested):
     sp["series"] = {k: v for k, v in sp["series"].items() if k not in formula.UNAVAILABLE.get(strategy, ())}
     payload = {"strategy": STRATEGY_TEXT.get(strategy, strategy), "catalog": catalog or [{"key": k} for k in settings],
                "formulas": sp, "formulaKeys": FORMULA_KEYS.get(strategy, {}),
-               "currentSettings": settings, "criteria": crit, "ideasTestedSoFar": n_tested, "record": rec,
+               "startingPoint": settings, "criteria": crit, "ideasTestedSoFar": n_tested, "record": rec,
                "focus": focus or None, "howMany": n}
     model = os.environ.get("RESEARCH_MODEL") or os.environ.get("COACH_MODEL", "claude-sonnet-5")
     out = claude.json_call(model, SYSTEM, payload, 4000, SCHEMA)

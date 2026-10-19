@@ -581,6 +581,17 @@ def research_idea(sub, claims, body, q):
     return {"idea": x}
 
 
+@route("PUT", "/research/auto")
+def research_auto(sub, claims, body, q):
+    """Autopilot: the agent proposes + the pipeline tests on its own, every hour, up to N runs a day."""
+    import research
+    b = body or {}
+    strategy = b.get("strategy") if b.get("strategy") in research.STRATS else "day"
+    if isinstance(b.get("catalog"), list):
+        research.save_catalog(sub, strategy, b["catalog"])
+    return {"auto": research.save_auto(sub, strategy, b)}
+
+
 @route("DELETE", "/research/idea")
 def research_del(sub, claims, body, q):
     import research

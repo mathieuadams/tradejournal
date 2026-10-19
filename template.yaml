@@ -426,6 +426,12 @@ Resources:
             ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "sdtick"}'
+        ResearchAuto:       # every hour: the AI research agent runs on its own for users with its autopilot on
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(10 * * * ? *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "rsauto"}'
         FlipSnap:           # the flip / walls as Unusual Whales shows them before / at the open (look-ahead check)
           Type: ScheduleV2
           Properties:

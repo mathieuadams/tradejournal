@@ -1976,7 +1976,13 @@ function researchBox(strategy) {
   const num = (k, step, w, l, u) => `<label style="display:inline-flex;gap:3px;align-items:center"><span class="muted">${l}</span><input data-rscrit="${k}" type="number" step="${step}" value="${c[k] ?? ''}" style="width:${w}em;padding:1px 4px">${u ? `<span class="muted">${u}</span>` : ''}</label>`;
   const agent = `<div style="border:1px solid var(--coach,#5b5bd6);border-radius:8px;padding:8px 10px;margin:14px 0 6px">
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:.95rem">AI research agent</b>
-      <span class="muted" style="font-size:.75rem">proposes ideas only: it reads the record of every past idea (1st-half results only, never the 2nd half or the grades), writes new rules as settings or formulas over the Alpaca / Unusual Whales data, and hands them to the test pipeline below. It can't run tests, change the criteria or touch any setting.</span></div>
+      <span class="muted" style="font-size:.75rem">designs whole strategies from scratch (every rule off, then the entries, filters, exits and formulas it chooses, over the Alpaca / Unusual Whales data), after reading the record of every past idea (1st-half results only, never the 2nd half or the grades), and hands them to the test pipeline below. It can't run tests, change the criteria or touch your settings.</span></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">${(() => { const au = (t.auto || {})[strategy] || {};
+      return `<button class="btn ${au.on ? 'coachbtn' : ''}" data-rx="auto|${strategy}" style="font-size:.78rem;padding:1px 12px" title="Every hour the agent proposes new strategies and the pipeline tests them, without you clicking">Autopilot ${au.on ? 'ON' : 'OFF'}</button>
+        <label><span class="muted">up to</span> <select id="rs-aper" style="padding:1px 4px">${[1, 2, 4, 6, 8, 12, 24].map(n => `<option ${n === (au.perDay || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select> <span class="muted">runs a day</span></label>
+        <label><select id="rs-an" style="padding:1px 4px">${[2, 3, 4, 6, 8].map(n => `<option ${n === (au.n || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select> <span class="muted">ideas a run</span></label>
+        <label><span class="muted">on</span> <select id="rs-adays" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (au.days || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select></label>
+        <span class="muted" style="font-size:.74rem">${au.on ? 'runs on its own every hour (each run calls the AI once: API cost)' : 'off: runs only when you click'}</span>`; })()}</div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">
       <input id="rs-focus" placeholder="Focus (optional): e.g. use CVD and the put wall for longs, avoid lunch hours" value="${esc(S.rsFocus || '')}" style="flex:1 1 320px;padding:2px 6px">
       <label><span class="muted">ideas</span> <select id="rs-n" style="padding:1px 4px">${[2, 3, 4, 6, 8].map(n => `<option ${n === (S.rsN || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
@@ -2019,6 +2025,10 @@ function rsAction([act, a, b]) {
     S.rsFocus = val('rs-focus') || ''; S.rsN = +val('rs-n') || 4; S.rsRounds = +val('rs-rounds') || 1; S.rsDays = +val('rs-days') || 250;
     api('/research/run', { method: 'POST', body: { strategy: a, n: S.rsN, rounds: S.rsRounds, days: S.rsDays, focus: S.rsFocus, catalog: rsCatalog(a), lab: rsCur(a) } })
       .then(() => busy(a)).catch(err => toast(err.message)); return; }
+  if (act === 'auto') {
+    const au = (((S.rs[a] || {}).auto) || {})[a] || {};
+    const body = { strategy: a, on: !au.on, perDay: +val('rs-aper') || 4, n: +val('rs-an') || 4, days: +val('rs-adays') || 250, catalog: rsCatalog(a) };
+    api('/research/auto', { method: 'PUT', body }).then(r => { S.rs[a] = { ...(S.rs[a] || {}), auto: r.auto }; toast(body.on ? 'Autopilot on: the agent runs every hour' : 'Autopilot off'); render(); }).catch(err => toast(err.message)); return; }
   if (act === 'crit') {
     const body = {}; document.querySelectorAll('[data-rscrit]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.rscrit] = v; });
     document.querySelectorAll('[data-rscritb]').forEach(i => { body[i.dataset.rscritb] = i.checked; });
@@ -2032,8 +2042,9 @@ function rsAction([act, a, b]) {
       .then(r => { const x = r.idea || {}; if (x.status === 'queued') busy(a); else { toast(`Not tested: ${x.status}${(x.missing || []).length ? ' — ' + x.missing.join(' · ') : ''}`); loadRs(a); } }).catch(err => toast(err.message)); return; }
   const x = ((S.rs[b] || {}).ideas || []).find(i => i.id === a);
   if (act === 'use' && x) {
-    if (b === 'day') { S.dtDraft = { ...(S.dtDraft || {}), ...x.changes }; S.dtDirty = true; toast('Loaded into the settings: click Apply to use them'); render(); }
-    else { S.lab = { ...(labCfg() || {}), ...x.changes }; S.labDraft = {}; S.labSw = {}; S.labDirty = false; toast('Loaded into the lab (the live bot is not changed)'); labRedraw(); }
+    const full = x.full || x.changes;
+    if (b === 'day') { S.dtDraft = { ...(S.dtDraft || {}), ...full }; S.dtDirty = true; toast('Loaded into the settings: click Apply to use them'); render(); }
+    else { S.lab = { ...(labCfg() || {}), ...full }; S.labDraft = {}; S.labSw = {}; S.labDirty = false; toast('Loaded into the lab (the live bot is not changed)'); labRedraw(); }
     return; }
   if (act === 'del' && x) { if (!confirm(`Delete “${x.name}”?`)) return; api('/research/idea?id=' + encodeURIComponent(a), { method: 'DELETE' }).then(() => loadRs(b)).catch(err => toast(err.message)); }
 }

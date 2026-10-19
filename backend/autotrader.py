@@ -1885,6 +1885,9 @@ def handler(event, context_):
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed", "closed"))})
     elif job == "review":  # end of day: users with open bot positions
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
+    elif job == "rsauto":      # hourly: the AI research agent of the users with its autopilot on
+        import research
+        return {"started": research.auto_kick()}
     elif job == "flipsnap":    # 09:20 / 09:32 / 09:40 ET: the flip as Unusual Whales shows it before / at the open
         import daytrade
         return {"flipsnap": daytrade.flip_snap_job()}
