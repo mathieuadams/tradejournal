@@ -504,7 +504,7 @@ def save_auto(sub, strategy, body):
     cur = a[strategy]
     if "on" in body:
         cur["on"] = bool(body["on"])
-    for k, lo, hi in (("perDay", 1, 24), ("n", 1, MAX_IDEAS), ("days", 30, 500)):
+    for k, lo, hi in (("perDay", 0, 24), ("n", 1, MAX_IDEAS), ("days", 30, 500)):     # perDay 0 = continuous
         if k in body:
             try:
                 cur[k] = int(max(lo, min(hi, float(body[k]))))
@@ -524,7 +524,7 @@ def auto_due(sub):
         return []
     a, today = auto_cfg(sub), now_ny().strftime("%Y-%m-%d")
     cnt = json.loads(r["autoRuns"]) if r.get("autoRuns") else {}
-    on = [s for s in STRATS if a[s]["on"] and cnt.get(f"{today}|{s}", 0) < a[s]["perDay"]]
+    on = [s for s in STRATS if a[s]["on"] and (not a[s]["perDay"] or cnt.get(f"{today}|{s}", 0) < a[s]["perDay"])]
     if not on:
         return []
     s = min(on, key=lambda x: cnt.get(f"{today}|{x}", 0))

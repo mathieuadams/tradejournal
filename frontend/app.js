@@ -1970,7 +1970,7 @@ async function loadRs(strategy) {
   if (route() === 'botchart') render();
   clearTimeout(S.rsPoll);
   const r = (S.rs || {})[strategy];
-  const au = ((r && r.auto) || {})[strategy] || {}, left = au.on && (((r.autoToday || {})[strategy]) || 0) < (au.perDay || 4);
+  const au = ((r && r.auto) || {})[strategy] || {}, left = au.on && (!au.perDay || (((r.autoToday || {})[strategy]) || 0) < au.perDay);
   if (r && ((r.run && r.run.running) || left) && route() === 'botchart') S.rsPoll = setTimeout(() => loadRs(strategy), r.run && r.run.running ? 8000 : 20000);
 }
 function rsCur(strategy) { return strategy === 'day' ? dtBody() : { ...(labCfg() || {}), ...(S.labDraft || {}), ...(S.labSw || {}) }; }
@@ -1991,11 +1991,11 @@ function researchBox(strategy) {
       <span class="muted" style="font-size:.75rem">designs whole strategies from scratch (every rule off, then the entries, filters, exits and formulas it chooses, over the Alpaca / Unusual Whales data), after reading the record of every past idea (1st-half results only, never the 2nd half or the grades), and hands them to the test pipeline below. It can't run tests, change the criteria or touch your settings.</span></div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">${(() => { const au = (t.auto || {})[strategy] || {};
       return `<button class="btn ${au.on ? 'coachbtn' : ''}" data-rx="auto|${strategy}" style="font-size:.78rem;padding:1px 12px" title="Every hour the agent proposes new strategies and the pipeline tests them, without you clicking">Autopilot ${au.on ? 'ON' : 'OFF'}</button>
-        <label><span class="muted">up to</span> <select id="rs-aper" style="padding:1px 4px">${[1, 2, 4, 6, 8, 12, 24].map(n => `<option ${n === (au.perDay || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select> <span class="muted">runs a day</span></label>
+        <label><select id="rs-aper" style="padding:1px 4px">${[[0, 'continuous'], [4, 'up to 4 runs a day'], [8, 'up to 8 runs a day'], [12, 'up to 12 runs a day'], [24, 'up to 24 runs a day']].map(([n, l]) => `<option value="${n}" ${n === (au.perDay ?? 4) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         ${au.on ? `<button class="btn" data-rx="autoset|${strategy}" style="font-size:.74rem;padding:0 8px">Save</button>` : ''}
         <label><select id="rs-an" style="padding:1px 4px">${[2, 3, 4, 6, 8].map(n => `<option ${n === (au.n || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select> <span class="muted">ideas a run</span></label>
         <label><span class="muted">on</span> <select id="rs-adays" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (au.days || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select></label>
-        <span class="muted" style="font-size:.74rem">${au.on ? `runs back to back on its own: ${((t.autoToday || {})[strategy]) || 0} of ${au.perDay || 4} runs today${(((t.autoToday || {})[strategy]) || 0) >= (au.perDay || 4) ? ' — done for today, starts again after midnight ET' : ''} (each run calls the AI once: API cost)` : 'off: runs only when you click'}</span>`; })()}</div>
+        <span class="muted" style="font-size:.74rem">${au.on ? `runs back to back on its own: ${((t.autoToday || {})[strategy]) || 0}${au.perDay ? ` of ${au.perDay}` : ''} runs today${au.perDay && (((t.autoToday || {})[strategy]) || 0) >= au.perDay ? ' — done for today, starts again after midnight ET' : au.perDay ? '' : ' · continuous: until you turn it off'} (each run calls the AI once: API cost)` : 'off: runs only when you click'}</span>`; })()}</div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">
       <input id="rs-focus" placeholder="Focus (optional): e.g. use CVD and the put wall for longs, avoid lunch hours" value="${esc(S.rsFocus || '')}" style="flex:1 1 320px;padding:2px 6px">
       <label><span class="muted">ideas</span> <select id="rs-n" style="padding:1px 4px">${[2, 3, 4, 6, 8].map(n => `<option ${n === (S.rsN || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
@@ -2042,10 +2042,10 @@ function rsAction([act, a, b]) {
       .then(() => busy(a)).catch(err => toast(err.message)); return; }
   if (act === 'auto') {
     const au = (((S.rs[a] || {}).auto) || {})[a] || {};
-    const body = { strategy: a, on: !au.on, perDay: +val('rs-aper') || 4, n: +val('rs-an') || 4, days: +val('rs-adays') || 250, catalog: rsCatalog(a) };
+    const body = { strategy: a, on: !au.on, perDay: +(val('rs-aper') ?? 4), n: +val('rs-an') || 4, days: +val('rs-adays') || 250, catalog: rsCatalog(a) };
     api('/research/auto', { method: 'PUT', body }).then(r => { S.rs[a] = { ...(S.rs[a] || {}), auto: r.auto, autoToday: r.autoToday }; toast(body.on ? 'Autopilot on: starting now' : 'Autopilot off'); render(); setTimeout(() => loadRs(a), 2500); }).catch(err => toast(err.message)); return; }
   if (act === 'autoset') {
-    api('/research/auto', { method: 'PUT', body: { strategy: a, perDay: +val('rs-aper') || 4, n: +val('rs-an') || 4, days: +val('rs-adays') || 250 } })
+    api('/research/auto', { method: 'PUT', body: { strategy: a, perDay: +(val('rs-aper') ?? 4), n: +val('rs-an') || 4, days: +val('rs-adays') || 250 } })
       .then(r => { S.rs[a] = { ...(S.rs[a] || {}), auto: r.auto, autoToday: r.autoToday }; toast('Autopilot saved'); render(); setTimeout(() => loadRs(a), 2500); }).catch(err => toast(err.message)); return; }
   if (act === 'crit') {
     const body = {}; document.querySelectorAll('[data-rscrit]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.rscrit] = v; });
