@@ -104,7 +104,39 @@ def _spec(strategy):
     return sp
 
 
+def _list(v):
+    """The model sometimes sends a list as a JSON string: read it either way."""
+    import json
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError:
+            return []
+    return v if isinstance(v, list) else []
+
+
+def _ask(system, payload, schema, key):
+    """One structured call (two tries when nothing usable comes back)."""
+    import claude
+    model = os.environ.get("RESEARCH_MODEL") or os.environ.get("COACH_MODEL", "claude-sonnet-5")
+    out = {}
+    for _ in range(2):
+        out = claude.json_call(model, system, payload, 12000, schema) or {}
+        items = [x for x in _list(out.get(key)) if isinstance(x, dict)]
+        if items:
+            return out, items
+    raise ValueError(f"the AI returned no usable {key} (keys: {', '.join(out) or 'none'})")
+
+
 def _clean(x):
+    import json
+    if isinstance(x.get("changes"), str):
+        try:
+            x["changes"] = json.loads(x["changes"])
+        except ValueError:
+            x["changes"] = {}
+    x["newIndicators"] = _list(x.get("newIndicators"))
+    x["missing"] = _list(x.get("missing")) if not isinstance(x.get("missing"), list) else x["missing"]
     x["changes"] = x.get("changes") if isinstance(x.get("changes"), dict) else {}
     x["missing"] = [str(m) for m in (x.get("missing") or []) if m][:6] if isinstance(x.get("missing"), list) else []
     x["newIndicators"] = [{"name": str(i.get("name") or "")[:40], "formula": str(i.get("formula") or "")[:600], "what": str(i.get("what") or "")[:200]}
@@ -130,17 +162,15 @@ BUILD_SCHEMA = {"type": "object", "properties": {"ideas": {"type": "array", "ite
 
 def build(strategy, catalog, settings, library, items):
     """Ideas waiting for an indicator -> [{id, newIndicators, changes, impossible}]. Plain data again."""
-    import claude
     payload = {"strategy": STRATEGY_TEXT.get(strategy, strategy), "catalog": catalog or [{"key": k} for k in settings],
                "formulas": _spec(strategy), "formulaKeys": FORMULA_KEYS.get(strategy, {}), "startingPoint": settings,
                "indicators": library, "ideas": items}
-    model = os.environ.get("RESEARCH_MODEL") or os.environ.get("COACH_MODEL", "claude-sonnet-5")
-    out = claude.json_call(model, BUILD_SYSTEM, payload, 4000, BUILD_SCHEMA)
+    out, got = _ask(BUILD_SYSTEM, payload, BUILD_SCHEMA, "ideas")
     res = []
-    for x in out.get("ideas") or []:
+    for x in got:
         if isinstance(x, dict) and x.get("id"):
             x = _clean(x)
-            x["impossible"] = [str(m) for m in (x.get("impossible") or []) if m][:6] if isinstance(x.get("impossible"), list) else []
+            x["impossible"] = [str(m) for m in _list(x.get("impossible")) if m][:6]
             res.append(x)
     return res
 
@@ -152,7 +182,6 @@ def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=
                "formulas": _spec(strategy), "formulaKeys": FORMULA_KEYS.get(strategy, {}), "indicators": library or [],
                "startingPoint": settings, "criteria": crit, "ideasTestedSoFar": n_tested, "record": rec,
                "focus": focus or None, "howMany": n}
-    model = os.environ.get("RESEARCH_MODEL") or os.environ.get("COACH_MODEL", "claude-sonnet-5")
-    out = claude.json_call(model, SYSTEM, payload, 4000, SCHEMA)
-    props = [x for x in (out.get("ideas") or []) if isinstance(x, dict)][:n]
+    out, props = _ask(SYSTEM, payload, SCHEMA, "ideas")
+    props = props[:n]
     return [_clean(x) for x in props], str(out.get("notes") or "")[:600]

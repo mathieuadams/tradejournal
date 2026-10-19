@@ -534,6 +534,12 @@ def run(sub, params=None, budget_s=540):
                 auto=bool(p.get("auto")))
     _set_run(sub, run_)
     log_run(sub, {k: run_.get(k) for k in ("at", "strategy", "made", "testedNow", "secs", "errors", "auto", "notes")} | {"focus": p.get("focus") or None})
+    last3 = [x for x in run_log(sub) if x.get("strategy") == strategy][-3:]
+    if p.get("auto") and len(last3) == 3 and all(x.get("auto") and not x.get("made") for x in last3):
+        save_auto(sub, strategy, {"on": False})        # 3 autopilot runs in a row without a single idea: stop, don't burn calls
+        run_["errors"] = (run_.get("errors") or []) + ["Autopilot paused: 3 runs in a row without an idea (see Last runs); turn it on again once fixed."]
+        _set_run(sub, run_)
+        return run_
     if p.get("auto"):                                  # autopilot: the next run starts right away, up to the daily limit
         try:
             _start(sub, auto_due(sub))

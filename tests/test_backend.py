@@ -3362,6 +3362,26 @@ def test_research_agent_creates_indicators():
         research.DayBench, research_agent.propose, research_agent.build, daytrade.config = saved
 
 
+def test_research_agent_reads_stringified_lists():
+    """The model sometimes sends a list / object as a JSON string: the agent still reads the ideas; nothing usable ->
+    a clear error instead of an empty run."""
+    import research_agent, claude, json
+    saved = claude.json_call
+    try:
+        claude.json_call = lambda *a, **k: {"ideas": json.dumps([{"name": "x", "hypothesis": "h", "changes": json.dumps({"aboveVwap": True}),
+                                                                   "newIndicators": json.dumps([{"name": "aB", "formula": "rsi(14)"}])}])}
+        props, _ = research_agent.propose("day", [], {}, {}, [], 4, None, 0, [])
+        assert props[0]["changes"] == {"aboveVwap": True} and props[0]["newIndicators"][0]["name"] == "aB"
+        claude.json_call = lambda *a, **k: {"notes": "nothing"}
+        try:
+            research_agent.propose("day", [], {}, {}, [], 4, None, 0, [])
+            assert False
+        except ValueError as e:
+            assert "no usable ideas" in str(e)
+    finally:
+        claude.json_call = saved
+
+
 def test_no_support_any_candle():
     """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
     import wallwatch, datetime as dt
