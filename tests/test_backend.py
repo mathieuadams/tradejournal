@@ -4731,6 +4731,29 @@ def test_formula_hourly_structure_rs_gap():
         pass
 
 
+def test_research_exploration_round():
+    """Every exploreEvery-th agent call bans the entry pieces of the top ideas (rules, filters, formula series and
+    functions such as cvdSum); ideas using them are recorded, not tested."""
+    import research
+    sub = "rs-explore"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    c = research.save_criteria(sub, {"exploreEvery": 3, "banTop": 2})
+    hist = [{"id": "a", "status": "tested", "grade": "C", "metrics": {"t": 3.3, "avgR": 0.1},
+             "full": {"flipFade": True, "trailOn": True, "fxLong": "rising(cvdSum(20), 1) and megaBreadth > 0.5"}},
+            {"id": "b", "status": "tested", "grade": "C", "metrics": {"t": 3.1, "avgR": 0.1}, "full": {"cvdSide": True}},
+            {"id": "c", "status": "tested", "grade": "F", "metrics": {"t": 1.0}, "full": {"orbBreak": True}}]
+    assert research.explore_ban(sub, "day", hist, c) == [] and research.explore_ban(sub, "day", hist, c) == []
+    ban = research.explore_ban(sub, "day", hist, c)
+    assert "flipFade" in ban and "cvdSide" in ban and "cvdSum() (entry formula)" in ban and "megaBreadth (entry formula)" in ban
+    assert "trailOn" not in ban and "orbBreak" not in ban                     # exits stay allowed; idea c is not a top idea
+    x = research.admit({"missing": [], "changes": {"x": 1}, "fp": "f1", "full": {"fxShort": "cvdSum(10) < 0"}}, set(), banned=ban)
+    assert x["status"] == "banned piece" and "cvdSum()" in x["fails"][0]
+    y = research.admit({"missing": [], "changes": {"x": 1}, "fp": "f2", "full": {"orbBreak": True, "fxLong": "hTrend > 0"}}, set(), banned=ban)
+    assert y["status"] == "queued"
+    assert research.explore_ban(sub, "day", hist, c) == []
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

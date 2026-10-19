@@ -59,6 +59,8 @@ Before proposing, study the RECORD of every idea already tried:
   hBrokeDn: Gala's hourly trend + levels; breaking retest = "low <= hBrokeUp and close > hBrokeUp and hTrend > 0"),
   relative strength vs the other ticker (rs), the prior-day / pre-market / opening-range levels (prevHigh, prevLow,
   pmHigh, pmLow, orHigh(n), orLow(n), gap, gapFilled);
+- "bannedThisRound" (exploration rounds): pieces you must NOT use at all this round (they are the pieces of the best
+  ideas so far): build the ideas from other entry pieces; any idea using one is not tested;
 - no one-knob tweaks: an idea must differ from every tested idea by at least two pieces (a new entry piece, a new
   filter or a new exit), not by a number or a single switch. "exhaustedFamilies" are entry families tested too often
   already: ideas from them are not tested any more, so use other entry pieces ("familyCounts" shows how often each

@@ -26,9 +26,9 @@ from util import iso, now_ny
 SK = "RESEARCH"
 IDEA = "RIDEA#"
 CRITERIA = {"minTrades": 100, "minHalf": 40, "minT": 2.0, "minTestT": 1.0, "minPF": 1.2, "minWin": 0.0, "minAvgR": 0.05,
-            "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15}
+            "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15, "exploreEvery": 10, "banTop": 5}
 LIMITS = {"minTrades": (10, 5000), "minHalf": (0, 2500), "minT": (0, 10), "minTestT": (-5, 10), "minPF": (0, 10),
-          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200)}
+          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20)}
 STRATS = ("day", "swing")
 MAX_IDEAS = 8
 
@@ -52,7 +52,7 @@ def save_criteria(sub, body):
         if k in (body or {}):
             cur[k] = bool(body[k])
     cur["minTrades"], cur["minHalf"], cur["robDays"] = int(cur["minTrades"]), int(cur["minHalf"]), int(cur["robDays"])
-    cur["familyCap"] = int(cur["familyCap"])
+    cur["familyCap"], cur["exploreEvery"], cur["banTop"] = int(cur["familyCap"]), int(cur["exploreEvery"]), int(cur["banTop"])
     if "dayTickers" in (body or {}):
         tk = body["dayTickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -467,7 +467,7 @@ def new_idea(strategy, base, name, changes, by, days, hypothesis="", missing=(),
             "missing": [str(m)[:160] for m in (missing or [])][:6] + [str(u)[:200] for u in unknown][:6]}
 
 
-def admit(x, seen, fam=None, cap=0):
+def admit(x, seen, fam=None, cap=0, banned=None):
     """The gate before testing: feature requests, empty and repeated ideas are recorded, not tested; an idea of an
     entry family already tested `cap` times is recorded as "family exhausted" (no more one-knob tweaks of it)."""
     if x["missing"]:
@@ -476,6 +476,9 @@ def admit(x, seen, fam=None, cap=0):
         x["status"] = "no change"
     elif x["fp"] in seen:
         x["status"] = "duplicate"
+    elif banned and (blocks_of(x) & set(banned)):
+        x["status"] = "banned piece"
+        x["fails"] = [f"exploration round: it uses {', '.join(sorted(blocks_of(x) & set(banned)))} (banned this round)"]
     elif cap and fam is not None and fam.get(family_of(x), 0) >= cap:
         x["status"] = "family exhausted"
         x["fails"] = [f"its entry family ({family_of(x)}) has {fam[family_of(x)]} tested ideas already (cap {cap})"]
@@ -492,15 +495,49 @@ def _fx_names(expr):
     except SyntaxError:
         return set()
     calls = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-    return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in calls and n.id not in ("and", "or", "not")}
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in calls and n.id not in ("and", "or", "not")}
+    fns = {n.func.id + "()" for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id not in GENERIC_FN}
+    return names | fns
+
+
+GENERIC_FN = {"abs", "min", "max", "iff", "between", "sum", "ref", "change", "pct", "rising", "falling", "crossUp", "crossDown",
+              "count", "barsSince", "cumDay", "highest", "lowest", "stdev", "ema", "sma", "wma"}
+
+
+def top_ideas(xs, k):
+    """The k best tested ideas, ranked like the list on the page (grade, then t, then average R)."""
+    gr = {"A": 0, "B": 1, "C": 2, "F": 3}
+    ts = [x for x in xs if x.get("status") == "tested"]
+    ts.sort(key=lambda x: (gr.get(x.get("grade"), 9), -((x.get("metrics") or {}).get("t") or -99), -((x.get("metrics") or {}).get("avgR") or -99)))
+    return ts[:k]
+
+
+def explore_ban(sub, strategy, hist, c):
+    """Every exploreEvery-th call of the agent: the entry pieces (rules, filters, formula series / functions) of the
+    banTop best ideas are banned for that round, so it has to find something else. [] on a normal round."""
+    every = int(c.get("exploreEvery") or 0)
+    if not every or strategy != "day":
+        return []
+    r = _item(sub)
+    k = int(r.get("agentCalls") or 0) + 1
+    db.put({**r, "agentCalls": k})
+    if k % every:
+        return []
+    import daytrade
+    out = set()
+    for x in top_ideas(hist, int(c.get("banTop") or 5)):
+        out |= {b for b in blocks_of(x) if b in daytrade.ENTRY or b in daytrade.FILTERS or b.endswith("(entry formula)")}
+    return sorted(out)
 
 
 def blocks_of(x):
     """The pieces an idea is made of: every rule / filter / exit switched on, every series or indicator its formulas
     use (by role: entry or exit), the side and the candle size."""
     f = dict(x.get("full") or x.get("changes") or {})
-    f.update(x.get("readable") or {})
     out = set()
+    for k, v in (x.get("readable") or {}).items():    # indicator names as written (the expanded formulas count too)
+        if isinstance(v, str) and k.startswith("fx") and v.strip():
+            out |= {f"{n} ({'exit' if 'Exit' in k else 'entry'} formula)" for n in _fx_names(v)}
     for k, v in f.items():
         if v is True and k not in ("enabled", "trade", "longs", "shorts"):
             out.add(k)
@@ -727,13 +764,18 @@ def run(sub, params=None, budget_s=540):
             bm = block_map(hist, ("h1",))
             fam = families(hist)
             cap = int(c.get("familyCap") or 0)
+            banned = explore_ban(sub, strategy, hist, c)
+            if banned:
+                run_["explore"] = banned
+                notes.append("Exploration round: banned " + ", ".join(banned) + ".")
             props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
                                                  research_agent.public_criteria(c), research_agent.record(hist), n, p.get("focus"),
                                                  sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy),
                                                  {"best": bm[:15], "worst": bm[-10:][::-1] if len(bm) > 15 else [],
                                                   "exhaustedFamilies": sorted(([k, v] for k, v in fam.items() if cap and v >= cap), key=lambda z: -z[1])[:10],
                                                   "familyCounts": sorted(([k, v] for k, v in fam.items()), key=lambda z: -z[1])[:15],
-                                                  "basketNeeds": _basket_needs(sub) if strategy == "day" else []})
+                                                  "basketNeeds": _basket_needs(sub) if strategy == "day" else [],
+                                                  "bannedThisRound": banned})
         except Exception as e:
             run_["errors"].append(f"AI agent: {str(e)[:200]}")
             break
@@ -745,7 +787,7 @@ def run(sub, params=None, budget_s=540):
             made, bad = lib_add(sub, pr.get("newIndicators"), strategy, "ai", pr.get("name"))
             x = admit(new_idea(strategy, base, pr.get("name"), pr.get("changes"), "ai", days, pr.get("hypothesis"),
                                list(pr.get("missing") or []) + bad, pr.get("learnedFrom"), p.get("focus"), k, custom=lib_map(sub)), seen,
-                      fam if strategy == "day" else None, cap)
+                      fam if strategy == "day" else None, cap, banned)
             x["indicators"] = made
             seen.add(x["fp"])
             _put_idea(sub, x)
@@ -759,7 +801,7 @@ def run(sub, params=None, budget_s=540):
     run_.update(running=None, step="done", notes=notes, secs=round(time.time() - t0), days=days, errors=run_["errors"][:8],
                 auto=bool(p.get("auto")))
     _set_run(sub, run_)
-    log_run(sub, {k: run_.get(k) for k in ("at", "strategy", "made", "testedNow", "secs", "errors", "auto", "notes")} | {"focus": p.get("focus") or None})
+    log_run(sub, {k: run_.get(k) for k in ("at", "strategy", "made", "testedNow", "secs", "errors", "auto", "notes", "explore")} | {"focus": p.get("focus") or None})
     last3 = [x for x in run_log(sub) if x.get("strategy") == strategy][-3:]
     if p.get("auto") and len(last3) == 3 and all(x.get("auto") and not x.get("made") for x in last3):
         save_auto(sub, strategy, {"on": False})        # 3 autopilot runs in a row without a single idea: stop, don't burn calls
