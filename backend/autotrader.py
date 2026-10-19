@@ -1972,6 +1972,16 @@ def handler(event, context_):
                     db.put({**(db.get(db.upk(sub), dtsearch.SK) or {}), "PK": db.upk(sub), "SK": dtsearch.SK, "running": None,
                             "errors": [str(e)[:160]], "at": iso(now_ny())})
                     raise
+            elif job == "research":
+                import research
+                try:
+                    out[sub] = {"tested": research.run(sub, event.get("params") or {}).get("testedNow")}
+                except Exception as e:
+                    research._set_run(sub, {"running": None, "step": "failed", "errors": [str(e)[:200]], "at": iso(now_ny())})
+                    raise
+            elif job == "rstest":
+                import research
+                out[sub] = {"tested": research.test_job(sub, event.get("params") or {}).get("testedNow")}
             elif job == "dtcmp":
                 import daytrade
                 out[sub] = {"n": len(daytrade.compare_job(sub, event.get("params") or {}).get("variants") or [])}

@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "inFall": False, "inhFall": False, "sqhRise": False, "sqhFall": False, "sqdRise": False, "sqdFall": False, "cvdRise": False, "cvdFall": False, "inRiseX": False, "inhRiseX": False, "inhRedX": False, "sqhRiseX": False, "sqdRiseX": False, "cvdRiseX": False, "cvdFallX": False,
+          "inYExit": False, "fxEntry": "", "fxExit": "", "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "inFall": False, "inhFall": False, "sqhRise": False, "sqhFall": False, "sqdRise": False, "sqdFall": False, "cvdRise": False, "cvdFall": False, "inRiseX": False, "inhRiseX": False, "inhRedX": False, "sqhRiseX": False, "sqdRiseX": False, "cvdRiseX": False, "cvdFallX": False,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -127,7 +127,9 @@ def version(cfg):
             f"|{int(bool(cfg.get('retestSetup', True)))}|{float(cfg.get('retestMin', 500000)):g}|{int(cfg.get('retestDays', 5))}|r4|{int(bool(cfg.get('aboveFlip', False)))}|{float(cfg.get('retestZone', 0.25)):g}|{int(bool(cfg.get('flipExit', True)))}|{int(cfg.get('earnDays', 10))}|cw2|v{int(cfg.get('vwapDays', 10))}|room{float(cfg.get('cwRoom', 1.0)):g}"
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}|in{int(cfg.get('inN1', 70))}.{int(cfg.get('inN2', 40))}.{int(cfg.get('inN3', 20))}"
             + (("|x" + "".join(str(int(bool(cfg.get(k)))) for k in EXTRA_SW)
-                + "|" + ".".join(f"{float(cfg.get(k, PARAMS[k])):g}" for k in EXTRA_NUM)) if any(cfg.get(k) for k in EXTRA_SW) else ""))
+                + "|" + ".".join(f"{float(cfg.get(k, PARAMS[k])):g}" for k in EXTRA_NUM)) if any(cfg.get(k) for k in EXTRA_SW) else "")
+            + (("|fx" + __import__("hashlib").sha1(f"{cfg.get('fxEntry') or ''}|{cfg.get('fxExit') or ''}".encode()).hexdigest()[:10])
+               if (cfg.get("fxEntry") or cfg.get("fxExit")) else ""))
 
 
 # rules added later: in the version only when one is on (signals made before them stay valid)
@@ -178,6 +180,17 @@ def save_config(sub, body):
     for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "pwExit", "inFall", "inhFall", "sqhRise", "sqhFall", "sqdRise", "sqdFall", "cvdRise", "cvdFall", "inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
+    for k in ("fxEntry", "fxExit"):                   # formula rules (formula.py)
+        if k in body:
+            import formula
+            v = str(body[k] or "").strip()
+            if v:
+                try:
+                    formula.check(v, formula.UNAVAILABLE["swing"])
+                except formula.FormulaError as e:
+                    from util import BadRequest
+                    raise BadRequest(f"{'Entry' if k == 'fxEntry' else 'Exit'} formula: {e}")
+            cur[k] = v
     if "flowRule" in body:
         try:
             v = body["flowRule"]
@@ -286,6 +299,16 @@ def cvd_roll(bars, n=20):
 
 
 RISE_FALL_EXITS = ("inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX")
+
+
+def fx_series(bars, P, walls, intraday=True, vwap=None, dpl=None, alerts=None):
+    """(entry, exit) [bool per candle] of the formula rules that are set, else None."""
+    if not (P.get("fxEntry") or P.get("fxExit")):
+        return None, None
+    import formula
+    cx = formula.Ctx(bars, intraday, walls, None, dpl or {}, None, None, vwap, alerts)
+    ev = lambda e: formula.evaluate(e, cx, formula.UNAVAILABLE["swing"]) if e else None
+    return ev(P.get("fxEntry")), ev(P.get("fxExit"))
 
 
 def cvd_ok(P, v, ago=None, prev=None):
@@ -398,7 +421,7 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
-def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False, reg=None, hreg=None, sqh=None, sqd=None, cv=None):
+def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False, reg=None, hreg=None, sqh=None, sqd=None, cv=None, fx=False):
     """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
     Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held).
     kcRide (kcu = upper Keltner band of this candle): an hourly close above the upper band starts a ride -> the target,
@@ -436,6 +459,9 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
           ("inRiseX", is_last and reg and reg.get("s") == "G", "inertia"), ("sqdRiseX", is_last and sqd and sqd["up"], "squeeze"),
           ("cvdRiseX", cv and cv[0] is not None and cv[1] is not None and cv[0] > cv[1], "cvd"),
           ("cvdFallX", cv and cv[0] is not None and cv[1] is not None and cv[0] < cv[1], "cvd"))
+    if s.get("fxExit") and fx:
+        s.update(status="formula", exitAt=b["t"][:16], exit=b["c"], exitWhy="formula")
+        return                                         # the exit formula is true at this close
     for k_, hit, st_ in rf:                            # rising / falling exits: at this candle's close
         if s.get(k_) and hit:
             s.update(status=st_, exitAt=b["t"][:16], exit=b["c"], exitWhy=k_)
@@ -1036,7 +1062,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     if P.get("tf") == "1D":                            # lab: the strategy on daily candles
         if P.get("_collect") is not None:
             return [], None
-        return detect_daily(bars, walls, start, P, earnings), None
+        return detect_daily(bars, walls, start, P, earnings, alerts, (extra or {}).get("dpLevels")), None
     if P.get("pvSetup"):                               # the VWAP reset on the put wall strategy
         return detect_pvlong(bars, walls, start, P, datr, earnings, vwap_map, ema_map, extra), None
     k_stop, k_trail, buf = float(P["stopAtr"]), float(P["trailAtr"]), float(P.get("tgtBuf") or 0)
@@ -1085,6 +1111,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
     fvg_t = fvg_bull_touch(bars, fvg_zones(bars, float(P.get("fvgMin") or 0.2), atr, int(P.get("fvgDays") or 10)),
                            float(P.get("fvgNear") if P.get("fvgNear") is not None else 0.25), atr) if on("fvgOn") else None
     bear = fvg_bear_new(bars, float(P.get("fvgMin") or 0.2), atr) if on("fvgExit") else [False] * len(bars)
+    fxe, fxx = fx_series(bars, P, walls, True, vwap, dplv, alerts)
     in_ns = (int(P.get("inN1") or 70), int(P.get("inN2") or 40), int(P.get("inN3") or 20))
     inr = (extra.get("inr") and [extra["inr"].get(b["t"][:16]) for b in bars]) or \
         (inertia_regime(bars, in_ns) if (on("inGreen") or on("inNotRed") or on("inRedExit") or on("inFall") or on("inRiseX") or P.get("_collect") is not None) else None)
@@ -1123,7 +1150,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
              "aboveFlipAtEntry": bool(w.get("flip") and b["c"] > float(w["flip"])), "flipChg": _flip_chg(walls, day),
              "vwap": vwap[i], "ema": round(ema[i], 4) if ema[i] is not None else None,
              "vwapExit": on("vwapExit"), "emaExit": on("emaExit"), "kcRide": on("kcRide"),
-             "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"), "pwExit": on("pwExit"), **{k_: on(k_) for k_ in RISE_FALL_EXITS},
+             "cwLost": on("cwLost"), "dpLost": on("dpLost"), "fvgExit": on("fvgExit"), "pvEod": on("pvEod"), "pwExit": on("pwExit"), **{k_: on(k_) for k_ in RISE_FALL_EXITS}, "fxExit": bool(P.get("fxExit")),
              "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1), "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"),
              "inRedExit": on("inRedExit"), "inYExit": on("inYExit"), "inhYExit": on("inhYExit"), "sqhExit": on("sqhExit"), "sqdExit": on("sqdExit"),
              "inhSt": (inh[i] or {}).get("s") if inh else None, "inSt": (inr[i] or {}).get("s") if inr else None,
@@ -1159,7 +1186,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i],
                   kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day), bear=bear[i], reg=inr[i] if inr else None, hreg=inh[i] if inh else None,
-                  sqh=sqh[i] if sqh else None, sqd=sqd_x[i] if sqd_x else None, cv=(cvr[i], cvr[i - 1] if i else None) if cvr else None)
+                  sqh=sqh[i] if sqh else None, sqd=sqd_x[i] if sqd_x else None, cv=(cvr[i], cvr[i - 1] if i else None) if cvr else None,
+                  fx=bool(fxx and fxx[i]))
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -1219,6 +1247,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 continue                               # only above the put wall
             if on("belowPW") and not (w.get("putWall") and b["c"] < float(w["putWall"])):
                 miss(b, f"close above the put wall {w.get('putWall')} (Below the PW rule)")
+                continue
+            if fxe is not None and not fxe[i]:
+                miss(b, f"entry formula false ({P.get('fxEntry')})")
                 continue
             if cvr is not None and not cvd_ok(P, cvr[i], None, cvr[i - 1] if i else None):
                 miss(b, f"CVD of the last {int(P.get('cvdN') or 20)} candles {cvr[i]:,.0f}" + (" · not rising" if on("cvdRise") else "") + (" · not falling" if on("cvdFall") else "") + " (CVD rule)")
@@ -1319,7 +1350,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         for j in range(i0 + 1, len(bars)):
             _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j],
                   kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j], reg=inr[j] if inr else None, hreg=inh[j] if inh else None,
-                  sqh=sqh[j] if sqh else None, sqd=sqd_x[j] if sqd_x else None, cv=(cvr[j], cvr[j - 1] if j else None) if cvr else None)
+                  sqh=sqh[j] if sqh else None, sqd=sqd_x[j] if sqd_x else None, cv=(cvr[j], cvr[j - 1] if j else None) if cvr else None,
+                  fx=bool(fxx and fxx[j]))
             if alt["status"] != "open":
                 break
         ap, ar = _result(alt)
@@ -1343,7 +1375,7 @@ def daily_bars(bars):
     return out
 
 
-def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
+def detect_daily(hbars, walls, start=None, cfg=None, earnings=None, alerts=None, dpl=None):
     """The lab strategy on DAILY candles (built from the hourly ones). Entry at the close of a finished day that passes
     the rules that are on: pwTest (low within the zone of the put wall, close above it), inGreen / inNotRed (daily
     inertia), fvgOn (an open bullish daily FVG at or under the close: formed before, not filled, not expired),
@@ -1388,6 +1420,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
         if z["type"] == "bear":
             bear[z["i"]] = True
     cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if any(on(k) for k in ("cvdUp", "cvdDn", "cvdRise", "cvdFall", "cvdRiseX", "cvdFallX")) else None
+    fxe, fxx = fx_series(bars, P, walls, False, None, dpl, alerts)
     ver = version(P) + "|1D"
     sigs, open_ = [], None
     for i, b in enumerate(bars):
@@ -1395,7 +1428,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, True, em=ema[i] if on("emaExit") else None,
                   kcu=kc[i][1] if kc[i] else None, bear=bear[i] and on("fvgExit"), reg=inr[i], hreg=inh[i],
-                  sqh=sqh[i], sqd=sqd[i], cv=(cvr[i], cvr[i - 1] if i else None) if cvr else None)
+                  sqh=sqh[i], sqd=sqd[i], cv=(cvr[i], cvr[i - 1] if i else None) if cvr else None, fx=bool(fxx and fxx[i]))
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -1443,6 +1476,8 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
             continue
         if cvr is not None and not cvd_ok(P, cvr[i], None, cvr[i - 1] if i else None):
             continue
+        if fxe is not None and not fxe[i]:
+            continue
         if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
             continue
         if on("kcdLower") and not (kc[i] and b["c"] <= kc[i][0]):
@@ -1465,7 +1500,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None):
              "stop": st if on("stopOn") else 0.0, "stop0": st, "v": ver, "o": b["o"], "h": b["h"], "l": b["l"], "status": "open",
              "last": b["c"], "lastAt": b["t"], "aboveFlipAtEntry": bool(fl and b["c"] > fl), "flipChg": _flip_chg(walls, day),
              "ema": round(ema[i], 4) if ema[i] is not None else None, "emaExit": on("emaExit"), "kcRide": on("kcRide"),
-             "cwLost": on("cwLost"), "fvgExit": on("fvgExit"), "pwExit": on("pwExit"), **{k_: on(k_) for k_ in RISE_FALL_EXITS}, "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1),
+             "cwLost": on("cwLost"), "fvgExit": on("fvgExit"), "pwExit": on("pwExit"), **{k_: on(k_) for k_ in RISE_FALL_EXITS}, "fxExit": bool(P.get("fxExit")), "scaleOn": on("scaleOn"), "scaleR": float(P.get("scaleR") or 1),
              "scalePct": float(P.get("scalePct") or 50), "scaleBE": on("scaleBE"), "inRedExit": on("inRedExit"),
              "inYExit": on("inYExit"), "inhYExit": on("inhYExit"), "inhSt": (inh[i] or {}).get("s"),
              "sqhExit": on("sqhExit"), "sqdExit": on("sqdExit"),

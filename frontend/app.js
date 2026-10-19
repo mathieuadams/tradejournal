@@ -1803,7 +1803,7 @@ function vChartWW() {
           + (sa ? `<span><b>${esc(sa.t.replace('T', ' ').slice(5))} ET · ${sa.type === 'call' ? '<span class="gain">CALL</span>' : '<span class="loss">PUT</span>'} ${money(sa.premium, false)}</b> · ${esc(sa.contract || '')}${sa.sweep ? ' · sweep' : ''}</span>` : '')
           + (d.note ? `<span class="muted">${esc(d.note)}</span>` : ''); })()}
       <span>${sigs.length ? sigs.map((x, q) => `<button class="btn ${q === selK ? 'coachbtn' : ''}" data-wwsel="${esc(sym)}|${esc(x.at)}" style="font-size:.75rem;padding:1px 7px">${esc(x.at.slice(5, 16).replace('T', ' '))} ${x.status === 'open' ? 'open' : q === selK ? `${x.pct >= 0 ? '+' : ''}${x.pct}%` : pc(x.pct)}${labOn ? optTag(sym, x) : ''}</button>`).join(' ') : '<span class="muted">No signal in this period</span>'}</span>
-      ${labOn ? labStats(sigs) + optSymBox(sym, sigs, selK >= 0 ? sigs[selK] : null) + labTestBox() + optTestBox() : ''}
+      ${labOn ? labStats(sigs) + optSymBox(sym, sigs, selK >= 0 ? sigs[selK] : null) + labTestBox() + researchBox('swing') + optTestBox() : ''}
       <span class="muted">IN = PW setup, FLIP = flip setup, MRG = merged walls, RT = flow retest · green line = target (call wall) · red line = stop, trailing under the highest high · square = exit · × = reached the support but no entry (hover for the reason; grey = no call alert) · ◆ = VWAP reset candle touching the put wall (purple: closed above it, pink: under it) · ↑ ↓ ticker</span>
       ${d.wallNote ? `<span class="muted">${esc(d.wallNote)}</span>` : ''}</div>`;
   }
@@ -1938,6 +1938,105 @@ async function loadDTChart(sym) {
   S.dtBusy = null; if (route() === 'botchart') render();
 }
 function dtCfg() { return { ...((S.dt && S.dt.config) || {}), ...(S.dtDraft || {}) }; }
+function fxRow(keys, c, attr) {                    // formula rules: any condition the data allows (formula.py)
+  const tip = 'Formula rule: an expression over the candles, VWAP, CVD, walls, flip, dark pool… e.g. close > vwap and crossUp(ema(close, 9), ema(close, 21)) and cvd > 0 — entry: an extra condition (AND); exit: sell at the close of the first candle where it is true. Empty = off.';
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em" title="${esc(tip)}">Formula</b>
+    ${keys.map(([k, l]) => `<label style="display:inline-flex;gap:4px;align-items:center;font-size:.78rem;flex:1 1 260px"><span class="muted" style="white-space:nowrap">${l}</span><input data-${attr}="${k}" value="${esc(c[k] || '')}" placeholder="off" spellcheck="false" style="flex:1;min-width:10em;padding:1px 5px;font-family:ui-monospace,monospace;font-size:.78rem"></label>`).join('')}
+    <span class="muted" style="font-size:.72rem" title="${esc(tip)}">names: open high low close volume vwap delta cvd tod dow dayOpen dayHigh dayLow prevClose prevHigh prevLow gap pmHigh pmLow putWall callWall flip dpAbove dpBelow flowPrem vix peer · ema sma highest lowest ref change pct stdev rsi atr crossUp crossDown rising falling abs min max between sqMom sqOn rvol cvdSum orHigh orLow</span></div>`;
+}
+// ---------------- research: the AI agent (proposes) and the test pipeline (tests + grades) are two separate boxes
+function rsCatalog(strategy) {
+  const rules = strategy === 'day' ? DT_RULES : WW_RULES, inds = strategy === 'day' ? DT_IND : WW_IND, out = [];
+  rules.forEach(r => { out.push({ key: r[0], kind: 'rule', group: r[1], label: r[2], what: r[3] });
+    [r[4], r[5]].forEach(f => (!f ? [] : Array.isArray(f[0]) ? f : [f]).forEach(x => { const k = strategy === 'day' ? x[0] : x[1];
+      if (typeof k === 'string' && x[5] !== 'time') out.push({ key: k, kind: 'number', of: r[0], unit: strategy === 'day' ? x[3] : x[4] }); })); });
+  inds.forEach(x => x[3].forEach(p0 => out.push({ key: p0[0], kind: 'number', indicator: x[1], label: p0[1], unit: p0[4], default: p0[5] })));
+  return out;
+}
+function rsLabel(strategy) { const m = {}; (strategy === 'day' ? DT_RULES : WW_RULES).forEach(r => { m[r[0]] = r[2]; }); return m; }
+async function loadRs(strategy) {
+  try { S.rs = { ...(S.rs || {}), [strategy]: await api('/research?strategy=' + strategy) }; } catch (e) { S.rs = { ...(S.rs || {}), [strategy]: { error: e.message } }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.rsPoll);
+  const r = (S.rs || {})[strategy];
+  if (r && r.run && r.run.running && route() === 'botchart') S.rsPoll = setTimeout(() => loadRs(strategy), 8000);
+}
+function rsCur(strategy) { return strategy === 'day' ? dtBody() : { ...(labCfg() || {}), ...(S.labDraft || {}), ...(S.labSw || {}) }; }
+function researchBox(strategy) {
+  S.rs = S.rs || {};
+  if (S.rs[strategy] === undefined) { S.rs[strategy] = null; setTimeout(() => loadRs(strategy), 0); }
+  const t = S.rs[strategy] || {}, c = t.criteria || {}, run = t.run || {}, busy = !!run.running;
+  const lab = rsLabel(strategy), R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const ch = x => Object.entries(x.changes || {}).map(([k, v]) => typeof v === 'boolean' ? `${v ? '+' : '−'} ${esc(lab[k] || k)}` : String(k).startsWith('fx') ? `<code style="font-size:.74rem">${esc(k)}: ${esc(v)}</code>` : `${esc(lab[k] || k)} = ${esc(v)}`).join(' · ');
+  const GC = { A: '#16a34a', B: '#0891b2', C: '#d97706', F: '#dc2626' };
+  const badge = x => x.status === 'tested' ? `<b style="display:inline-block;min-width:1.6em;text-align:center;border-radius:5px;color:#fff;background:${GC[x.grade] || '#888'}">${x.grade}</b>` : `<span class="muted" style="font-size:.75rem">${esc(x.status || '')}</span>`;
+  const filt = S.rsFilter || 'all';
+  const all = t.ideas || [], xs = all.filter(x => filt === 'all' || (filt === 'graded' ? x.status === 'tested' : filt === 'ab' ? ['A', 'B'].includes(x.grade) : filt === 'needs' ? x.status === 'needs feature' : true));
+  const nA = all.filter(x => x.grade === 'A').length, nB = all.filter(x => x.grade === 'B').length;
+  const num = (k, step, w, l, u) => `<label style="display:inline-flex;gap:3px;align-items:center"><span class="muted">${l}</span><input data-rscrit="${k}" type="number" step="${step}" value="${c[k] ?? ''}" style="width:${w}em;padding:1px 4px">${u ? `<span class="muted">${u}</span>` : ''}</label>`;
+  const agent = `<div style="border:1px solid var(--coach,#5b5bd6);border-radius:8px;padding:8px 10px;margin:14px 0 6px">
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:.95rem">AI research agent</b>
+      <span class="muted" style="font-size:.75rem">proposes ideas only: it reads the record of every past idea (1st-half results only, never the 2nd half or the grades), writes new rules as settings or formulas over the Alpaca / Unusual Whales data, and hands them to the test pipeline below. It can't run tests, change the criteria or touch any setting.</span></div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">
+      <input id="rs-focus" placeholder="Focus (optional): e.g. use CVD and the put wall for longs, avoid lunch hours" value="${esc(S.rsFocus || '')}" style="flex:1 1 320px;padding:2px 6px">
+      <label><span class="muted">ideas</span> <select id="rs-n" style="padding:1px 4px">${[2, 3, 4, 6, 8].map(n => `<option ${n === (S.rsN || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label><span class="muted">rounds</span> <select id="rs-rounds" style="padding:1px 4px">${[1, 2, 3].map(n => `<option ${n === (S.rsRounds || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label><span class="muted">history</span> <select id="rs-days" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (S.rsDays || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select></label>
+      <button class="btn coachbtn" data-rx="run|${strategy}" ${busy ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${busy ? 'Working…' : 'Propose & test'}</button></div>
+    ${busy ? `<p style="font-size:.8rem;margin:6px 0 0"><b>${esc(run.step || '')}</b> <span class="muted">· ${run.made || 0} proposed · ${run.testedNow || 0} tested so far</span></p>` : ''}
+    ${(run.notes || []).length && !busy ? `<p style="font-size:.8rem;margin:6px 0 0"><b>Agent notes:</b> ${esc(run.notes.join(' '))}</p>` : ''}
+    ${(run.errors || []).length ? `<p class="loss" style="font-size:.78rem;margin:4px 0 0">${esc(run.errors.join(' · '))}</p>` : ''}</div>`;
+  const rows = xs.map(x => { const m = x.metrics || {}, open = S.rsOpen === x.id;
+    return `<tr data-rx="open|${x.id}" style="cursor:pointer"><td>${badge(x)}</td><td><b style="font-size:.8rem">${esc(x.name)}</b> <span class="muted" style="font-size:.72rem">${x.by === 'you' ? 'yours' : 'AI'} · ${esc((x.at || '').slice(5, 16).replace('T', ' '))}</span></td>
+      <td class="r">${m.n ?? '—'}</td><td class="r">${m.win != null ? m.win + '%' : '—'}</td><td class="r">${R(m.avgR)}</td><td class="r">${m.t ?? '—'}${x.tReq ? ` <span class="muted">/ ${x.tReq}</span>` : ''}</td><td class="r">${m.pf ?? '—'}</td>
+      <td class="r">${R((m.h1 || {}).avgR)} / ${R((m.h2 || {}).avgR)}</td><td class="r">${m.maxDD != null ? m.maxDD + 'R' : '—'}</td>
+      <td style="font-size:.75rem">${x.status === 'tested' ? ((x.fails || []).length ? `<span class="loss">${esc(x.fails.join(' · '))}</span>` : '<span class="gain">all criteria pass</span>') : esc((x.missing || []).join(' · ') || x.status || '')}</td></tr>`
+      + (open ? `<tr><td></td><td colspan="9" style="font-size:.8rem;background:var(--sunk);padding:6px 8px">
+        ${x.hypothesis ? `<div><b>Why:</b> ${esc(x.hypothesis)}</div>` : ''}${x.learnedFrom ? `<div><b>Builds on:</b> ${esc(x.learnedFrom)}</div>` : ''}
+        <div><b>Changes:</b> ${ch(x) || '—'}</div>${(x.missing || []).length ? `<div><b>Needs:</b> ${esc(x.missing.join(' · '))}</div>` : ''}
+        ${x.status === 'tested' ? `<div class="muted">${esc((x.period || {}).from || '')} → ${esc((x.period || {}).to || '')}, halves split at ${esc((x.period || {}).mid || '')} · cost ${m.cost}R a trade taken off · 1st half ${(m.h1 || {}).n} trades t ${(m.h1 || {}).t ?? '—'} · 2nd half ${(m.h2 || {}).n} trades t ${(m.h2 || {}).t ?? '—'}${(x.bySym || []).length ? ' · ' + x.bySym.map(r => `${esc(r.sym)} ${r.totR > 0 ? '+' : ''}${r.totR}R`).join(' ') : ''}</div>` : ''}
+        <div style="display:flex;gap:6px;margin-top:4px">${Object.keys(x.changes || {}).length ? `<button class="btn coachbtn" data-rx="use|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px">Load into ${strategy === 'day' ? 'the settings' : 'the lab'}</button>` : ''}<button class="btn" data-rx="del|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px">Delete</button></div></td></tr>` : ''); }).join('');
+  const pipe = `<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0">
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:.95rem">Test pipeline</b>
+      <span class="muted" style="font-size:.75rem">plain code, no AI: every idea (the agent's or yours) runs on the same history with the same criteria · ${t.tested || 0} ideas tested · t needed now ${t.tReq ?? '—'}${c.adjustT ? ' (raised for the number of ideas)' : ''} · ${nA} A · ${nB} B</span></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:.78rem;margin:6px 0">
+      ${num('minTrades', 10, 4.2, 'trades ≥')}${num('minHalf', 5, 3.6, 'each half ≥')}${num('minT', 0.1, 3.4, 't ≥')}${num('minTestT', 0.1, 3.4, '2nd-half t ≥')}${num('minPF', 0.05, 3.4, 'PF ≥')}${num('minWin', 1, 3.2, 'win ≥', '%')}${num('minAvgR', 0.01, 3.6, 'avg ≥', 'R')}${num('costR', 0.01, 3.6, 'cost', 'R / trade')}
+      <label><input type="checkbox" data-rscritb="bothHalves" ${c.bothHalves ? 'checked' : ''}> positive on both halves</label>
+      <label title="Bonferroni: the t needed rises with the number of ideas tested, so a long search doesn't pass luck"><input type="checkbox" data-rscritb="adjustT" ${c.adjustT ? 'checked' : ''}> raise t with the number of ideas</label>
+      <button class="btn" data-rx="crit|${strategy}" style="font-size:.75rem;padding:1px 10px">Save criteria</button>
+      <button class="btn" data-rx="mine|${strategy}" ${busy ? 'disabled' : ''} style="font-size:.75rem;padding:1px 10px" title="Your current ${strategy === 'day' ? 'settings (with the changes not applied yet)' : 'lab settings'} vs your saved / live settings, as an idea of your own">Test my ${strategy === 'day' ? 'settings' : 'lab settings'} as an idea</button></div>
+    <p class="muted" style="font-size:.74rem;margin:0 0 4px">Grade: <b style="color:${GC.A}">A</b> every criterion passes and the 2nd half alone reaches the t needed · <b style="color:${GC.B}">B</b> every criterion passes · <b style="color:${GC.C}">C</b> positive on both halves, some criteria fail · <b style="color:${GC.F}">F</b> the rest. Ideas needing data the app doesn't have are kept as feature requests.</p>
+    <div style="display:flex;gap:4px;font-size:.75rem;margin-bottom:4px">${[['all', 'All'], ['graded', 'Tested'], ['ab', 'A / B'], ['needs', 'Needs data']].map(([k, l]) => `<button class="btn ${filt === k ? 'coachbtn' : ''}" data-rx="filter|${k}" style="font-size:.74rem;padding:0 8px">${l}</button>`).join('')}</div>
+    ${t.error ? `<div class="errbox">${esc(t.error)}</div>` : xs.length ? `<div style="overflow-x:auto;max-height:520px;overflow-y:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th></th><th>Idea</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">t / needed</th><th class="r">PF</th><th class="r">1st / 2nd half</th><th class="r">Max DD</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted" style="font-size:.8rem">No ideas yet.</p>'}</div>`;
+  return agent + pipe;
+}
+function rsAction([act, a, b]) {
+  const val = id => (document.getElementById(id) || {}).value;
+  const busy = st => { S.rs[st] = { ...(S.rs[st] || {}), run: { running: 'now', step: 'starting', made: 0, testedNow: 0 } }; render(); setTimeout(() => loadRs(st), 2500); };
+  if (act === 'filter') { S.rsFilter = a; render(); return; }
+  if (act === 'open') { S.rsOpen = S.rsOpen === a ? null : a; render(); return; }
+  if (act === 'run') {
+    S.rsFocus = val('rs-focus') || ''; S.rsN = +val('rs-n') || 4; S.rsRounds = +val('rs-rounds') || 1; S.rsDays = +val('rs-days') || 250;
+    api('/research/run', { method: 'POST', body: { strategy: a, n: S.rsN, rounds: S.rsRounds, days: S.rsDays, focus: S.rsFocus, catalog: rsCatalog(a), lab: rsCur(a) } })
+      .then(() => busy(a)).catch(err => toast(err.message)); return; }
+  if (act === 'crit') {
+    const body = {}; document.querySelectorAll('[data-rscrit]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.rscrit] = v; });
+    document.querySelectorAll('[data-rscritb]').forEach(i => { body[i.dataset.rscritb] = i.checked; });
+    api('/research/criteria', { method: 'PUT', body }).then(() => { toast('Criteria saved: they apply to the next tests'); loadRs(a); }).catch(err => toast(err.message)); return; }
+  if (act === 'mine') {
+    const cur = rsCur(a), saved = a === 'day' ? ((S.dt && S.dt.config) || {}) : ((S.ww && S.ww.config) || {}), skip = ['tickers', 'enabled', 'trade', 'main', 'lists', 'autoAdd', 'pvSetup'];
+    const changes = Object.fromEntries(Object.entries(cur).filter(([k, v]) => !skip.includes(k) && v !== undefined && JSON.stringify(v) !== JSON.stringify(saved[k])));
+    if (!Object.keys(changes).length) { toast(a === 'day' ? 'No change vs your saved settings' : 'The lab is the same as the live settings'); return; }
+    const name = prompt('Name of this idea', 'my idea'); if (name === null) return;
+    api('/research/idea', { method: 'POST', body: { strategy: a, name, changes, days: S.rsDays || 250 } })
+      .then(r => { const x = r.idea || {}; if (x.status === 'queued') busy(a); else { toast(`Not tested: ${x.status}${(x.missing || []).length ? ' — ' + x.missing.join(' · ') : ''}`); loadRs(a); } }).catch(err => toast(err.message)); return; }
+  const x = ((S.rs[b] || {}).ideas || []).find(i => i.id === a);
+  if (act === 'use' && x) {
+    if (b === 'day') { S.dtDraft = { ...(S.dtDraft || {}), ...x.changes }; S.dtDirty = true; toast('Loaded into the settings: click Apply to use them'); render(); }
+    else { S.lab = { ...(labCfg() || {}), ...x.changes }; S.labDraft = {}; S.labSw = {}; S.labDirty = false; toast('Loaded into the lab (the live bot is not changed)'); labRedraw(); }
+    return; }
+  if (act === 'del' && x) { if (!confirm(`Delete “${x.name}”?`)) return; api('/research/idea?id=' + encodeURIComponent(a), { method: 'DELETE' }).then(() => loadRs(b)).catch(err => toast(err.message)); }
+}
 function dtPanel() {
   const c = dtCfg(), num = (k, step, w, def) => `<input data-dtnum="${k}" type="number" step="${step}" value="${c[k] ?? def}" style="width:${w}em;padding:1px 4px">`;
   const lbl = Object.fromEntries(DT_RULES.map(r => [r[0], r[2]]));
@@ -1960,6 +2059,7 @@ function dtPanel() {
       <span class="muted" style="font-size:.78rem">tickers</span> <input data-dttk value="${esc((c.tickers || ['QQQ', 'SPY']).join(' '))}" style="width:8em;padding:1px 4px"></div>
     <details open style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Indicators</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin:4px 0"><tbody>${rows}</tbody></table></div></details>
     <div style="display:flex;flex-direction:column;gap:6px">${grp('Entry')}${grp('Filter')}${grp('Exit')}</div>
+    ${fxRow([['fxLong', 'Long entry'], ['fxShort', 'Short entry'], ['fxExitLong', 'Long exit'], ['fxExitShort', 'Short exit']], c, 'dtfx')}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn ${S.dtDirty ? 'coachbtn' : ''}" data-dtapply style="font-size:.8rem;padding:1px 12px">${S.dtDirty ? 'Apply changes' : 'Apply'}</button>
       <span class="muted" style="font-size:.75rem">Every rule that is ON must pass on the 1-minute entry candle (shorts: the mirror). Nothing changes until you click Apply. Settings apply to the backtest and to the live day-trading account.</span></div></div>`;
 }
@@ -1999,7 +2099,7 @@ function dtBtBox() {
   if (cv.length > 1) { const W0 = 640, H0 = 120, mn = Math.min(0, ...cv), mx = Math.max(0, ...cv), sx = i => 4 + i / (cv.length - 1) * (W0 - 8), sy = v => H0 - 6 - (v - mn) / ((mx - mn) || 1) * (H0 - 12);
     svg = `<svg viewBox="0 0 ${W0} ${H0}" style="width:100%;max-width:${W0}px;height:auto;display:block"><line x1="4" x2="${W0 - 4}" y1="${sy(0)}" y2="${sy(0)}" stroke="var(--line)"/><path d="${cv.map((v, i) => `${i ? 'L' : 'M'}${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join('')}" fill="none" stroke="${cv[cv.length - 1] >= 0 ? 'var(--gain)' : 'var(--loss)'}" stroke-width="2"/><text x="6" y="12" font-size="11" fill="var(--muted)">equity curve (R, trade by trade)</text></svg>`; }
   const nm = Object.fromEntries(DT_RULES.map(r => [r[0], r[2]])), u = t.used;
-  const usedLine = u ? `<p style="font-size:.8rem;margin:4px 0;padding:4px 8px;background:var(--sunk);border-radius:6px"><b>Settings used:</b> ${esc(u.sides)} · entry: ${esc((u.entry || []).map(k => nm[k] || k).join(' + ') || '—')}${(u.filter || []).length ? ` · filter: ${esc(u.filter.map(k => nm[k] || k).join(' + '))}` : ''} · stop ${esc(u.stop)}${u.target ? ` · target ${esc(u.target)}` : ''}${(u.exit || []).length ? ` · exits: ${esc(u.exit.map(k => nm[k] || k).join(', '))}` : ''} · ${esc(u.time)} · walls: <b>${esc(u.walls)}</b></p>` : '';
+  const usedLine = u ? `<p style="font-size:.8rem;margin:4px 0;padding:4px 8px;background:var(--sunk);border-radius:6px"><b>Settings used:</b> ${u.formulas ? `formulas: ${Object.entries(u.formulas).map(([k, v]) => `<code style="font-size:.74rem">${esc(k)}: ${esc(v)}</code>`).join(' · ')} · ` : ''}${esc(u.sides)} · entry: ${esc((u.entry || []).map(k => nm[k] || k).join(' + ') || '—')}${(u.filter || []).length ? ` · filter: ${esc(u.filter.map(k => nm[k] || k).join(' + '))}` : ''} · stop ${esc(u.stop)}${u.target ? ` · target ${esc(u.target)}` : ''}${(u.exit || []).length ? ` · exits: ${esc(u.exit.map(k => nm[k] || k).join(', '))}` : ''} · ${esc(u.time)} · walls: <b>${esc(u.walls)}</b></p>` : '';
   return head + usedLine + `<p class="muted" style="font-size:.8rem;margin:4px 0">Run ${esc((t.at || '').slice(5, 16).replace('T', ' '))} · ${t.daysFound ?? '—'} trading days from ${esc(t.first || '')} · data ${esc(Object.entries(t.feed || {}).map(([k, v]) => `${k} ${v.toUpperCase()}`).join(', '))} · ${t.secs ?? '—'} s</p>
     <div style="overflow-x:auto"><table class="pos" style="font-size:.84rem"><thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">Total R</th><th class="r">PF</th><th class="r">Avg win / loss</th></tr></thead><tbody>
     ${row('<b>All</b>', a)}${t.h1 ? row(`1st half <span class="muted">(to ${esc(t.mid || '')})</span>`, t.h1) : ''}${t.h2 ? row('2nd half', t.h2) : ''}${Object.entries(t.byTicker || {}).map(([k, x]) => row(esc(k), x)).join('')}${Object.entries(t.byDir || {}).map(([k, x]) => row(esc(k), x)).join('')}</tbody></table></div>
@@ -2028,6 +2128,7 @@ function dtBody() {                              // the settings on screen: save
   document.querySelectorAll('[data-dtnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.dtnum] = v; });
   document.querySelectorAll('[data-dttime]').forEach(i => { body[i.dataset.dttime] = i.value; });
   document.querySelectorAll('[data-dtsel]').forEach(i => { body[i.dataset.dtsel] = i.value; });
+  document.querySelectorAll('[data-dtfx]').forEach(i => { body[i.dataset.dtfx] = i.value.trim(); });
   const tk = document.querySelector('[data-dttk]'); if (tk) body.tickers = tk.value;
   return body;
 }
@@ -2212,7 +2313,7 @@ function vChartDT() {
   const info = `${dtAccountBox()}
     ${live.length ? `<details style="margin:4px 0"><summary style="font-size:.85rem;cursor:pointer">Live day trades (${live.length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Ticker</th><th>Entry</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th><th>Exit</th></tr></thead><tbody>
       ${live.slice().reverse().map(r0 => `<tr><td>${esc(r0.symbol)}</td><td>${esc((r0.at || '').replace('T', ' ').slice(5))}</td><td>${esc(r0.dir || '')}</td><td class="r">${r0.qty ?? ''}</td><td class="r">${r0.entry ?? ''}</td><td>${esc(r0.status || '')}</td><td>${esc(r0.exitReason || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
-    ${S.hideSettings ? '' : dtPanel()}${S.hideAnalysis ? '' : dtBtBox() + flipCheckBox() + dtSearchBox() + dtCmpBox() + dtStudyBox()}`;
+    ${S.hideSettings ? '' : dtPanel()}${S.hideAnalysis ? '' : dtBtBox() + flipCheckBox() + dtSearchBox() + researchBox('day') + dtCmpBox() + dtStudyBox()}`;
   return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${main}${info}</div></div></div>`;
 }
 /* ---------- day trading stocks in play: ORB on the top relative-volume stocks (third Alpaca paper account) ---------- */
@@ -3618,6 +3719,7 @@ function labPanel() {
       <button class="btn" data-labpreset="daily" style="font-size:.75rem;padding:1px 9px" title="Daily candles · entry: put wall test + daily inertia green + an open bullish daily FVG under the close · exits: stop, inertia not green">Daily preset: Green + FVG + PW test → exit on yellow</button>
       ${tf === '1D' ? '<span class="muted" style="font-size:.75rem">Daily: FVG = an open bullish daily gap at or under the close (min size / max age in the FVG row, in days); the hourly-only rules are hidden.</span>' : ''}</div>
     ${wwRulePanel({ ...L, ...(S.labDraft || {}) }, { ...L, ...(S.labSw || {}) }, 'lab', shown)}
+    ${fxRow([['fxEntry', 'Entry'], ['fxExit', 'Exit']], { ...L, ...(S.labDraft || {}) }, 'labfx')}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><button class="btn coachbtn" data-labapply data-applybtn="lab" style="font-size:.8rem;padding:1px 12px">${S.labDirty ? 'Apply changes' : 'Apply'}</button>
     <button class="btn" data-labtest ${S.labTest && S.labTest.running ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px" title="These settings vs your live settings, on every ticker of the watchlist">${S.labTest && S.labTest.running ? 'Testing…' : 'Test on all tickers'}</button>
     <button class="btn" data-optshow style="font-size:.8rem;padding:1px 12px" title="Price the lab trades with real call options (results under the chart)">Option test ↓</button>
@@ -4191,8 +4293,9 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
+  if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
   if (el.dataset.botsave) { botSaveSettings(); return; }
@@ -4266,6 +4369,7 @@ document.addEventListener('click', e => {
   if (el.dataset.labsw) { const k = el.dataset.labsw; S.labSw = { ...(S.labSw || {}) }; const L = labCfg(); S.labSw[k] = !((k in S.labSw) ? S.labSw[k] : L[k]); S.labDirty = true; render(); return; }
   if (el.hasAttribute('data-labapply')) { const L = labCfg();
     document.querySelectorAll('[data-labnum]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) L[i.dataset.labnum] = i.dataset.scale ? v * +i.dataset.scale : v; });
+    document.querySelectorAll('[data-labfx]').forEach(i => { L[i.dataset.labfx] = i.value.trim(); });
     Object.assign(L, S.labDraft || {}, S.labSw || {}); S.labDraft = {}; S.labSw = {}; S.labDirty = false;
     if (L.tf === '1D' && !S.chartDaily) { S.chartDaily = true; try { localStorage.setItem('chartDaily', '1'); } catch (e) {} }
     labRedraw(); return; }

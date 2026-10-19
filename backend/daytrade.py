@@ -42,6 +42,8 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "gapOn": False, "gapMin": 0.25, "gapMax": 99.0, "gapWith": False, "gapFade": False, "flipOpen": False, "flipFade": False, "flipPrev": False, "cvdSide": False, "cvdReal": False, "pwSide": False,
           "peerAgree": False, "rvolOn": False, "rvolMin": 1.5, "vixOn": False, "vixMin": 0.0, "vixMax": 25.0,
           "noLunch": False, "lunchFrom": "11:30", "lunchTo": "13:30", "dayStop": False, "dayStopR": 2.0,
+          # formula rules (formula.py): an extra condition per side, written as an expression ("" = off)
+          "fxLong": "", "fxShort": "", "fxExitLong": "", "fxExitShort": "",
           # exits
           "stopBase": "atr1",     # what the stop / trailing sizes multiply: atr1 / atr5 (5-min ATR) / atrD (daily ATR) / pct / avgN
           "volN": 300,            # avgN: the average move (true range) of the last N 1-minute candles
@@ -95,6 +97,28 @@ def save_config(sub, body):
     return cur
 
 
+FORMULAS = ("fxLong", "fxShort", "fxExitLong", "fxExitShort")
+
+
+def fx_series(bars, I, walls, ctx, P):
+    """{key: [bool per candle]} of the formula rules that are set (computed once per formula and candles)."""
+    import formula
+    out = {k: None for k in FORMULAS}
+    if not any(P.get(k) for k in FORMULAS):
+        return out
+    cache = (ctx or {}).get("cache")
+    cx = cache.get(("fxctx", bool(P.get("flipPrev")))) if cache is not None else None
+    if cx is None:
+        cx = formula.Ctx(bars, True, walls, I.get("pm") or {}, (ctx or {}).get("dp") or {}, (ctx or {}).get("vix") or {},
+                         (ctx or {}).get("peer") or {}, I.get("vwap"))
+        if cache is not None:
+            cache[("fxctx", bool(P.get("flipPrev")))] = cx
+    for k in FORMULAS:
+        if P.get(k):
+            out[k] = formula.evaluate(P[k], cx, formula.UNAVAILABLE["day"])
+    return out
+
+
 def clean_cfg(cur, body):
     """cur (a full config) updated with the valid values of body."""
     cur = dict(cur)
@@ -118,6 +142,16 @@ def clean_cfg(cur, body):
             cur[k] = _hm(body[k], cur[k])
     if body.get("stopBase") in STOP_BASES:
         cur["stopBase"] = body["stopBase"]
+    for k in FORMULAS:
+        if k in body:
+            import formula
+            v = str(body[k] or "").strip()
+            if v:
+                try:
+                    formula.check(v, formula.UNAVAILABLE["day"])
+                except formula.FormulaError as e:
+                    raise BadRequest(f"Formula {k}: {e}")
+            cur[k] = v
     if "tickers" in body:
         tk = body["tickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -677,6 +711,9 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
                 cache[xk] = X
         I = {**I, "X": X, "ctx": ctx}
     rules = [k for k in ENTRY + FILTERS if on(k)]
+    fx = fx_series(bars, I, walls, ctx, P)
+    fx_in = {1: fx["fxLong"], -1: fx["fxShort"]}
+    fx_out = {1: fx["fxExitLong"], -1: fx["fxExitShort"]}
     sides = ([1] if on("longs") else []) + ([-1] if on("shorts") else [])
     st_t, en_t, fl_t = P["startT"], P["endT"], P["flatT"]
     sigs, open_, per_day, day_r = [], None, {}, {}
@@ -714,6 +751,8 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
                     exit_ = ("inertia", c)
                 elif on("fvgExit") and (I["newBear"][i] if side > 0 else I["newBull"][i]):
                     exit_ = ("fvg", c)
+                elif fx_out[side] is not None and fx_out[side][i]:
+                    exit_ = ("formula", c)
                 elif on("timeOn") and mins >= int(P["timeMin"]):
                     exit_ = ("time stop", c)
                 elif hm >= fl_t or last_of_day:
@@ -738,7 +777,7 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
                         s.setdefault("stops", [[s["at"], s["stop0"]]]).append([b["t"], s["stop"]])
                     s["be"] = True
             continue
-        if not rules or not sides or hm < st_t or hm >= en_t or last_of_day or (start and day < start):
+        if not (rules or fx_in[1] is not None or fx_in[-1] is not None) or not sides or hm < st_t or hm >= en_t or last_of_day or (start and day < start):
             continue
         if per_day.get(day, 0) >= int(P["maxTrades"]):
             continue
@@ -750,6 +789,11 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
         w = walls.get(day) or {}
         prev = bars[i - 1] if i else None
         for side in sides:
+            if fx_in[side] is not None:
+                if not fx_in[side][i]:
+                    continue                               # the formula rule of this side
+            elif not rules:
+                continue                                   # a formula for the other side only
             ck = _checks(i, b, prev, I, w, side, P)
             if all(ck[k] for k in rules):
                 e = b["c"]
@@ -1184,7 +1228,8 @@ def used_summary(P):
             "stop": stop, "target": f"{P.get('targetR')}R" if on("targetOn") else None,
             "sides": "longs + shorts" if on("longs") and on("shorts") else "longs only" if on("longs") else "shorts only",
             "time": f"{P.get('startT')}-{P.get('endT')}, flat {P.get('flatT')}, max {P.get('maxTrades')}/day",
-            "walls": ("previous day's" if on("flipPrev") else "same day") + (", nearest expiration" if on("wallNear") else "")}
+            "walls": ("previous day's" if on("flipPrev") else "same day") + (", nearest expiration" if on("wallNear") else ""),
+            "formulas": {k: P[k] for k in FORMULAS if P.get(k)} or None}
 
 
 PRE = "DTPRE#"

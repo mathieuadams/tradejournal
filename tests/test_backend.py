@@ -3142,6 +3142,139 @@ def test_swing_rising_falling_rules():
     assert hs and all(x["status"] == "cvd" and at[x["exitAt"]][0] < at[x["exitAt"]][1] for x in hs)
 
 
+def test_research_pipeline_and_agent_apart():
+    """AI research: the agent only proposes data and sees 1st-half results only; the pipeline cleans, gates
+    (unknown setting -> needs feature, repeat -> duplicate), tests and grades with the same criteria; t rises with
+    the number of ideas; your own ideas take the same path."""
+    import research, research_agent, daytrade
+    import inspect
+    assert "claude" not in inspect.getsource(research).replace("research_agent", "")    # no AI call in the pipeline
+    sub = "rs-user"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    ok, unknown = research.clean_changes("day", {"aboveVwap": "true", "stopAtr": "0.8", "bogus": 1, "tickers": ["X"]})
+    assert ok == {"aboveVwap": True, "stopAtr": 0.8} and len(unknown) == 2 and any("bogus" in u for u in unknown)
+    ok2, bad2 = research.clean_changes("day", {"fxLong": "close > vwap and cvd > 0", "fxShort": "os.system('x')"})
+    assert ok2 == {"fxLong": "close > vwap and cvd > 0"} and bad2 and "fxShort" in bad2[0]
+    c = research.criteria(sub)
+    assert research.t_required(c, 1) == 2.0 and research.t_required(c, 100) > 3 and research.t_required({**c, "adjustT": False}, 100) == 2.0
+    rows = [{"at": f"2025-{1 + i % 12:02d}-{1 + i % 27:02d}T10:00", "R": (1.5 if i % 2 else -0.6)} for i in range(400)]
+    m = research.metrics(rows, "2025-07-01", 0.05)
+    assert m["n"] == 400 and abs(m["avgR"] - (sum(r["R"] for r in rows) / 400 - 0.05)) < 1e-3 and m["h1"]["n"] + m["h2"]["n"] == 400
+    g, fails, _ = research.grade(m, c, 1)
+    assert g == "A" and not fails
+    bad = research.metrics([{"at": "2025-01-02T10:00", "R": 0.1}] * 5, "2025-07-01")
+    g2, fails2, _ = research.grade(bad, c, 1)
+    assert g2 in ("C", "F") and any("trades" in f for f in fails2)
+
+    class Bench:                                       # no market data: a fixed answer per setting
+        first, mid, last, errors = "2025-01-01", "2025-07-01", "2025-12-31", []
+
+        def rows(self, P):
+            good = P.get("aboveVwap")
+            return [{"at": f"2025-{1 + i % 12:02d}-10T10:00", "R": (1.2 if i % 2 else -0.5) if good else (0.5 if i % 2 else -0.6), "sym": "QQQ"}
+                    for i in range(300)]
+    seen_payload = {}
+
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested):
+        seen_payload.update(rec=rec, crit=crit)
+        return [{"name": "vwap", "hypothesis": "h", "changes": {"aboveVwap": True}},
+                {"name": "vwap again", "hypothesis": "h", "changes": {"aboveVwap": True}},
+                {"name": "needs gex", "hypothesis": "h", "changes": {"vwapCross": True}, "missing": ["net GEX by strike"]},
+                {"name": "made up", "hypothesis": "h", "changes": {"magic": True}}], "note"
+    saved = research.DayBench, research_agent.propose, daytrade.config
+    try:
+        research.DayBench = lambda sub_, days, base: Bench()
+        research_agent.propose = propose
+        daytrade.config = lambda s_: {**daytrade.PARAMS, "aboveVwap": False, "vwapCross": False}
+        out = research.run(sub, {"strategy": "day", "n": 4})
+        xs = {x["name"]: x for x in research.ideas(sub, "day")}
+        assert xs["vwap"]["status"] == "tested" and xs["vwap"]["grade"] in ("A", "B") and xs["vwap"]["metrics"]["n"] == 300
+        assert xs["vwap again"]["status"] == "duplicate" and xs["needs gex"]["status"] == "needs feature"
+        assert xs["made up"]["status"] == "needs feature" and "magic" in xs["made up"]["missing"][0]
+        assert out["testedNow"] == 1 and not out["running"]
+        research.run(sub, {"strategy": "day", "n": 4})                  # 2nd round: the agent sees the record
+        rec = seen_payload["rec"]
+        tested = [r for r in rec if r["status"] == "tested"]
+        assert tested and all(set(r["inSample"]) == {"n", "avgR", "t", "pf", "win", "totR"} for r in tested)
+        assert all("grade" not in r and "metrics" not in r for r in rec) and "minTestT" not in seen_payload["crit"]
+        mine = research.submit(sub, "day", "mine", {"aboveVwap": True, "stopAtr": 0.9})
+        assert mine["status"] == "queued" and mine["by"] == "you"
+        research.test_job(sub, {"strategy": "day"})
+        assert next(x for x in research.ideas(sub, "day") if x["id"] == mine["id"])["status"] == "tested"
+        st = research.state(sub, "day")
+        assert st["tested"] == 2 and st["tReq"] >= 2.0, (st["tested"], st["tReq"], [(x["name"], x["status"]) for x in st["ideas"]])
+    finally:
+        research.DayBench, research_agent.propose, daytrade.config = saved
+
+
+def test_formula_rules():
+    """Formula rules: only whitelisted names / functions; values = the same math done by hand; no look-ahead;
+    plugged into day trading (entry per side + exit) and swing (entry + exit)."""
+    import formula, daytrade, wallwatch
+    for bad in ("__import__('os')", "close.real", "open('x')", "foo > 1", "ema(close, n)", "ema(close)", "lambda: 1", "'a' > close",
+                "flowPrem > 0"):
+        try:
+            formula.check(bad, formula.UNAVAILABLE["day"])
+            assert False, bad
+        except formula.FormulaError:
+            pass
+    bars = _dt_bars(4)
+    cx = formula.Ctx([b for b in bars if "09:30" <= b["t"][11:16] < "16:00"])
+    cl = cx.s("close")
+    e9 = cx.s("close") and formula._ema(cl, 9)
+    v = formula.evaluate("close > ema(close, 9)", cx)
+    assert v == [c > e for c, e in zip(cl, e9)]
+    up = formula.evaluate("crossUp(close, ema(close, 9))", cx)
+    assert all(not x or (cl[i - 1] <= e9[i - 1] and cl[i] > e9[i]) for i, x in enumerate(up))
+    r = formula.evaluate("rising(close, 3) and tod >= 30 and not (rsi(14) > 101)", cx)
+    tod = cx.s("tod")
+    assert all(not x or (cl[i] > cl[i - 3] and tod[i] >= 30) for i, x in enumerate(r)) and any(r)
+    orh = formula._call("orHigh", [__import__("ast").Constant(15)], cx)
+    day0 = [i for i, b in enumerate(cx.b) if b["t"][:10] == cx.day[0]]
+    assert all(orh[i] is None for i in day0[:14]) and orh[day0[14]] == max(cx.b[i]["h"] for i in day0[:15])
+    # bigger bars later don't change earlier values (no look-ahead)
+    cx2 = formula.Ctx(cx.b[:300])
+    assert formula.evaluate("close > ema(close, 9) and cvdSum(20) > 0", cx2) == formula.evaluate("close > ema(close, 9) and cvdSum(20) > 0", cx)[:300]
+    # day trading
+    base = {**daytrade.PARAMS, "aboveVwap": False, "emaStack": False, "maxTrades": 50, "longs": True, "shorts": True, "targetOn": False}
+    sg = daytrade.detect(bars, {**base, "fxLong": "close > ema(close, 9) and tod >= 20", "fxShort": ""})
+    assert sg and all(x["side"] == 1 for x in sg)
+    ses = [b for b in bars if "09:30" <= b["t"][11:16] < "16:00"]
+    ix = {b["t"]: i for i, b in enumerate(ses)}
+    for x in sg:
+        i = ix[x["at"]]
+        assert cl[i] > e9[i] and tod[i] >= 20
+    sg2 = daytrade.detect(bars, {**base, "fxLong": "close > ema(close, 9) and tod >= 20", "fxExitLong": "close < ema(close, 9)", "stopOn": False})
+    ex = [x for x in sg2 if x["status"] == "formula"]
+    assert ex and all(cl[ix[x["exitAt"]]] < e9[ix[x["exitAt"]]] for x in ex)
+    try:
+        daytrade.clean_cfg(daytrade.PARAMS, {"fxLong": "import os"})
+        assert False
+    except Exception as e:
+        assert type(e).__name__ == "BadRequest"
+    # swing, daily candles
+    import math, datetime as dt
+    H = ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"]
+    cls = [200 + 20 * math.sin(d / 6) for d in range(120)]
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=d)).isoformat() for d in range(len(cls))]
+    hb = [{"t": f"{d}T{h}", "o": c - 0.3, "h": c + 0.6, "l": c - 0.6, "c": c + 0.1 * k, "v": 10} for d, c in zip(days, cls) for k, h in enumerate(H)]
+    w = {d: {"putWall": 195, "callWall": 9999, "flip": 1} for d in days}
+    cfg = {"tf": "1D", "pwTest": False, "inGreen": False, "fvgOn": False, "inYExit": False, "greenOnly": False, "earnOn": False,
+           "trailOn": False, "targetOn": False, "flipExit": False, "noAboveCW": False, "cwRoomOn": False, "stopOn": False, "stopAtr": 0.5,
+           "usePW": False, "useFlip": False}
+    sw = wallwatch.detect_retest(hb, w, None, {**cfg, "fxEntry": "close > putWall and rising(close, 2)", "fxExit": "close < putWall"}, None)[0]
+    db_ = wallwatch.daily_bars(hb)
+    dc = {b["t"][:10]: (i, b["c"]) for i, b in enumerate(db_)}
+    assert sw
+    for x in sw:
+        i, c = dc[x["at"][:10]]
+        assert c > 195 and c > db_[i - 2]["c"]
+        if x["status"] != "open":
+            assert x["status"] == "formula" and dc[x["exitAt"][:10]][1] < 195
+    assert wallwatch.version({**wallwatch.PARAMS, "fxEntry": "close > 1"}) != wallwatch.version(wallwatch.PARAMS)
+
+
 def test_no_support_any_candle():
     """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
     import wallwatch, datetime as dt

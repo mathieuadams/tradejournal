@@ -532,6 +532,61 @@ def daytrade_search_get(sub, claims, body, q):
     return dtsearch.result(sub)
 
 
+@route("GET", "/research")
+def research_get(sub, claims, body, q):
+    import research
+    st = (q or {}).get("strategy")
+    return research.state(sub, st if st in research.STRATS else None)
+
+
+@route("PUT", "/research/criteria")
+def research_criteria(sub, claims, body, q):
+    import research
+    return {"criteria": research.save_criteria(sub, body or {})}
+
+
+@route("POST", "/research/run")
+def research_run(sub, claims, body, q):
+    import research
+    b = body or {}
+    st = research.state(sub)
+    if (st.get("run") or {}).get("running"):
+        return {"status": "running"}
+    strategy = b.get("strategy") if b.get("strategy") in research.STRATS else "day"
+    research._set_run(sub, {"running": iso(now_ny()), "strategy": strategy, "at": iso(now_ny()), "step": "starting", "errors": []})
+    params = {"strategy": strategy, "n": b.get("n") or 4, "rounds": b.get("rounds") or 1, "days": b.get("days") or 250,
+              "focus": str(b.get("focus") or "")[:600], "catalog": b.get("catalog") if isinstance(b.get("catalog"), list) else None,
+              "lab": b.get("lab") if isinstance(b.get("lab"), dict) else None}
+    _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                     Payload=json.dumps({"sub": sub, "job": "research", "params": params}, default=str))
+    return {"status": "running"}
+
+
+@route("POST", "/research/idea")
+def research_idea(sub, claims, body, q):
+    """An idea of your own: the same pipeline (no AI involved)."""
+    import research
+    b = body or {}
+    strategy = b.get("strategy") if b.get("strategy") in research.STRATS else "day"
+    if not isinstance(b.get("changes"), dict) or not b["changes"]:
+        raise BadRequest("No settings to test.")
+    if (research.state(sub).get("run") or {}).get("running"):
+        raise BadRequest("A research run is going on: try again when it is done.")
+    lab = b.get("lab") if isinstance(b.get("lab"), dict) else None
+    x = research.submit(sub, strategy, b.get("name") or "my idea", b["changes"], lab, int(b.get("days") or 250), b.get("hypothesis") or "")
+    if x["status"] == "queued":
+        research._set_run(sub, {"running": iso(now_ny()), "strategy": strategy, "at": iso(now_ny()), "step": "starting", "errors": []})
+        _lambda().invoke(FunctionName=os.environ["BOT_FUNCTION"], InvocationType="Event",
+                         Payload=json.dumps({"sub": sub, "job": "rstest", "params": {"strategy": strategy, "days": b.get("days") or 250, "lab": lab}}, default=str))
+    return {"idea": x}
+
+
+@route("DELETE", "/research/idea")
+def research_del(sub, claims, body, q):
+    import research
+    return {"deleted": research.delete_idea(sub, (q or {}).get("id"))}
+
+
 @route("GET", "/daytrade/flipcheck")
 def daytrade_flipcheck(sub, claims, body, q):
     import daytrade
