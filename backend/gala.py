@@ -529,18 +529,82 @@ def plan(price, tdir, lv, tol):
     return "skip", "hourly trend unclear", None
 
 
-def pick_watch(cands, hist, P, d):
-    """cands: [{sym, atr, pmRvol, price, ...}] best first -> the top gWatchN with a clear hourly trend (when gTrend),
-    each with its trend, levels, direction and setup."""
+def _hourly(hs, d, P):
+    days = sorted({b["t"][:10] for b in hs if b["t"][:10] < d})[-int(P.get("gLvlDays") or 5):]
+    return agg([b for b in hs if b["t"][:10] in days], 60)
+
+
+def market(hist, d, P, pm_last=None):
+    """The indices before the open: {SPY: {trend, gapPct}, QQQ: {...}, "bias": +1 / -1 / 0}."""
+    out, ts = {}, []
+    for x in INDEX:
+        H = _hourly(hist.get(x) or [], d, P)
+        t = trend(H, int(P.get("gPivot") or 2)) if len(H) >= 6 else 0
+        pc = H[-1]["c"] if H else None
+        last = (pm_last or {}).get(x)
+        out[x] = {"trend": "up" if t > 0 else "down" if t < 0 else "unclear",
+                  "gapPct": round((last / pc - 1) * 100, 2) if last and pc else None}
+        ts.append(t)
+    out["bias"] = 1 if all(t > 0 for t in ts) else -1 if all(t < 0 for t in ts) else 0
+    return out
+
+
+def level_quality(H, lvl, atr, tol):
+    """Grade of one level: the move away from it (strong rejection / breakout, in ATR), the hourly candles that
+    touched it since (limited testing), the bodies that went through it."""
+    i = lvl["i"]
+    p = lvl["p"]
+    after = H[i + 1: i + 4]
+    if lvl["src"] == "pivot low":
+        move = max((b["h"] for b in after), default=p) - p
+    elif lvl["src"] == "pivot high":
+        move = p - min((b["l"] for b in after), default=p)
+    else:
+        move = abs(H[i]["c"] - H[i]["o"])
+    tests = sum(1 for b in H[i + 1:] if b["l"] - tol <= p <= b["h"] + tol)
+    cross = sum(1 for b in H[i + 1:] if min(b["o"], b["c"]) < p < max(b["o"], b["c"]))
+    strength = move / atr if atr else 0
+    g = "A" if strength >= 0.5 and tests <= 2 and cross == 0 else "B" if strength >= 0.25 and tests <= 4 and cross <= 1 else "C"
+    return {"grade": g, "move": round(strength, 2), "tests": tests, "cross": cross}
+
+
+def cleanliness(H, atr):
+    """Clean structure: hourly bodies that carry the range (not wicks / chop) and candles not far wider than usual."""
+    w = H[-14:]
+    if not w:
+        return {"ok": False, "body": 0, "wide": 0}
+    body = sum(abs(b["c"] - b["o"]) / (b["h"] - b["l"]) for b in w if b["h"] > b["l"]) / len(w)
+    wide = max((b["h"] - b["l"]) for b in w) / atr if atr else 0
+    return {"ok": body >= 0.4 and wide <= 1.0, "body": round(body, 2), "wide": round(wide, 2)}
+
+
+def room(lv, key, direc, tol, stop_est):
+    """Space from the planned level to the next hourly level the trade would run into, in R (stop_est = the usual stop)."""
+    if key is None or direc not in ("long", "short"):
+        return None
+    s = 1 if direc == "long" else -1
+    nxt = sorted((y["p"] for y in lv if (y["p"] - key) * s > tol), key=lambda q: (q - key) * s)
+    if not nxt:
+        return 9.9                                     # nothing in the way
+    return round(abs(nxt[0] - key) / stop_est, 2) if stop_est > 0 else None
+
+
+def pick_watch(cands, hist, P, d, mkt=None, events=None):
+    """cands: [{sym, atr, pmRvol, price, gapPct...}] best first -> the gWatchN cleanest plans. Every stock gets the
+    pre-market checks of the strategy: clear hourly trend, a planned level and its quality, clean structure, room to
+    the next level, the indices on the same side (or relative strength), no major news; ranked by the checks passed,
+    then pre-market RVOL."""
     out = []
     n = int(P.get("gWatchN") or 5)
+    mkt = mkt or {}
+    bias = mkt.get("bias", 0)
+    events = events or []
     for x in cands:
-        hs = hist.get(x["sym"]) or []
-        days = sorted({b["t"][:10] for b in hs if b["t"][:10] < d})[-int(P.get("gLvlDays") or 5):]
-        H = agg([b for b in hs if b["t"][:10] in days], 60)
+        H = _hourly(hist.get(x["sym"]) or [], d, P)
         if len(H) < 6:
             continue
-        tol = float(P.get("gTolAtr", 5)) / 100 * float(x["atr"])
+        atr = float(x["atr"])
+        tol = float(P.get("gTolAtr", 5)) / 100 * atr
         tdir = trend(H, int(P.get("gPivot") or 2))
         if P.get("gTrend", True) and not tdir:
             continue
@@ -549,12 +613,40 @@ def pick_watch(cands, hist, P, d):
         lv = levels(H, P, tol)
         price = x.get("price") or H[-1]["c"]
         direc, setup, key = plan(price, tdir, lv, tol)
+        kl = next((y for y in lv if key is not None and abs(y["p"] - key) < 1e-9), None)
+        q = level_quality(H, kl, atr, tol) if kl else None
+        cl = cleanliness(H, atr)
+        stop_est = 2 * tol + float(P.get("gStopBuf", 2)) / 100 * atr
+        rm = room(lv, key, direc, tol, stop_est)
+        s = 1 if direc == "long" else -1 if direc == "short" else 0
+        idx_gap = [(mkt.get(i) or {}).get("gapPct") for i in INDEX]
+        idx_gap = [g for g in idx_gap if g is not None]
+        rs = None
+        if idx_gap and x.get("gapPct") is not None:
+            rs = round(x["gapPct"] - sum(idx_gap) / len(idx_gap), 2)
+        index_ok = bias == 0 and bool(mkt) or bias == s or (rs is not None and rs * s > 1.0)
+        gap_atr = abs(price - (x.get("prevClose") or price)) / atr if atr else 0
+        checks = [
+            {"k": "trend", "ok": bool(tdir), "txt": f"1h {'up' if tdir > 0 else 'down' if tdir < 0 else 'unclear'}"},
+            {"k": "level", "ok": bool(q) and q["grade"] in ("A", "B"),
+             "txt": f"level {q['grade']} · move {q['move']} ATR · {q['tests']} tests" if q else "no planned level"},
+            {"k": "clean", "ok": cl["ok"] and gap_atr <= 1.5,
+             "txt": f"bodies {int(cl['body'] * 100)}% of range" + (f" · gap {gap_atr:.1f} ATR" if gap_atr > 1.5 else "")},
+            {"k": "room", "ok": rm is not None and rm >= float(P.get("gTargetR") or 2),
+             "txt": "room: open" if rm == 9.9 else f"room {rm}R to the next level" if rm is not None else "room —"},
+            {"k": "index", "ok": bool(index_ok),
+             "txt": ("indices " + ("up" if bias > 0 else "down" if bias < 0 else "mixed")) + (f" · RS {rs:+.1f}%" if rs is not None else "")},
+            {"k": "news", "ok": not events, "txt": "news: " + (", ".join(e.upper() for e in events) if events else "none major")},
+        ]
+        score = sum(1 for c in checks if c["ok"])
+        grade = "A" if score == 6 else "B" if score >= 5 else "C" if score >= 4 else "D"
         near = sorted(lv, key=lambda y: abs(y["p"] - price))[:4]
         out.append({**x, "trend": "up" if tdir > 0 else "down" if tdir < 0 else "unclear", "direction": direc, "setup": setup,
-                    "keyLevel": key, "levels": sorted(({"p": y["p"], "src": y["src"]} for y in near), key=lambda y: -y["p"])})
-        if len(out) >= n:
-            break
-    return out
+                    "keyLevel": key, "levelGrade": q["grade"] if q else None, "room": rm, "rs": rs, "checks": checks,
+                    "score": score, "grade": grade,
+                    "levels": sorted(({"p": y["p"], "src": y["src"]} for y in near), key=lambda y: -y["p"])})
+    out.sort(key=lambda y: (-y["score"], -(y.get("pmRvol") or 0)))
+    return out[:n]
 
 
 def watchlist(sub, now=None):
@@ -609,19 +701,28 @@ def watchlist(sub, now=None):
                       "gapPct": round((price / pc - 1) * 100, 2) if pc else None, "atr": atr, "rvol": round(v / a, 2)})
     cands.sort(key=lambda x: -x["pmRvol"])
     top = cands[: max(15, 3 * int(P.get("gWatchN") or 5))]
-    hist = sd.multi_bars(c, [x["sym"] for x in top], "30Min", hist_start(day, P), day.replace(hour=9, minute=29), max_pages=8) if top else {}
-    picks = pick_watch(top, hist, P, d)
+    hist = sd.multi_bars(c, [x["sym"] for x in top] + list(INDEX), "30Min", hist_start(day, P), day.replace(hour=9, minute=29), max_pages=8)
+    ipm = sd.multi_bars(c, list(INDEX), "30Min", day.replace(hour=4), cut)
+    pm_last = {i: [b for b in ipm.get(i) or [] if "04:00" <= b["t"][11:16] < "09:30"][-1]["c"] for i in INDEX
+               if [b for b in ipm.get(i) or [] if "04:00" <= b["t"][11:16] < "09:30"]}
+    mk = market(hist, d, P, pm_last)
+    ev = []
+    try:
+        import marketctx
+        ev = sorted(k for k, v in marketctx.event_flags(d).items() if k in ("fomc", "cpi", "nfp") and v)
+    except Exception:
+        pass
+    picks = pick_watch(top, hist, P, d, mk, ev)
     if not picks:
         why = ("no stock traded enough pre-market volume" if not cands else
                f"none of the top {len(top)} pre-market stocks has a clear hourly trend")
-    ev = {}
     try:
         import marketctx
-        ev = {k: v for k, v in marketctx.event_flags(d).items() if k in ("fomc", "cpi", "nfp", "opex") and v}
+        opex = bool(marketctx.event_flags(d).get("opex"))
     except Exception:
-        pass
+        opex = False
     out = {"date": d, "at": now.strftime("%H:%M"), "picks": picks, "candidates": len(cands), "universe": len(uni),
-           "events": sorted(ev), "note": "pre-market volume 04:00 to now vs the 14-day average of the full pre-market",
+           "events": ev + (["opex"] if opex else []), "market": mk, "reviewed": len(top), "note": "pre-market volume 04:00 to now vs the 14-day average of the full pre-market",
            "error": None if picks else why}
     item = {"PK": pk, "SK": f"SDWATCH#{d}", **json.loads(json.dumps(out, default=str), parse_float=Decimal), "built": iso(now_ny())}
     db.put(item)

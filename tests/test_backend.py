@@ -4569,7 +4569,7 @@ def test_gala_premarket_watchlist():
         out = {}
         for s in syms:
             if start.hour == 4:                          # pre-market so far
-                v = {"UP": 600000, "DN": 400000, "FLAT": 900000, "QUIET": 5000}[s]
+                v = {"UP": 600000, "DN": 400000, "FLAT": 900000, "QUIET": 5000}.get(s, 1000000)
                 out[s] = [{"t": f"{d}T08:00", "o": 100, "h": 100, "l": 100, "c": 101, "v": v}]
             else:
                 out[s] = [b for j, x in enumerate(prev) for b in series(s, x, j * 13)]
@@ -4582,12 +4582,16 @@ def test_gala_premarket_watchlist():
         w = gala.watchlist("wl-user", _dt.datetime(2026, 3, 20, 9, 15))
         syms = [p["sym"] for p in w["picks"]]
         assert "QUIET" not in syms and "FLAT" not in syms        # too little pre-market volume / no clear trend
-        assert syms == ["UP", "DN"] and w["picks"][0]["pmRvol"] == 6.0 and w["picks"][0]["gapPct"] == 1.0
-        up, dn = w["picks"]
+        assert sorted(syms) == ["DN", "UP"]
+        up = next(p for p in w["picks"] if p["sym"] == "UP")
+        dn = next(p for p in w["picks"] if p["sym"] == "DN")
+        assert up["pmRvol"] == 6.0 and up["gapPct"] == 1.0
+        assert [c["k"] for c in up["checks"]] == ["trend", "level", "clean", "room", "index", "news"] and up["grade"] in "ABCD"
+        assert "SPY" in w["market"] and w["reviewed"] >= 2
         assert up["trend"] == "up" and up["direction"] == "long" and dn["trend"] == "down" and dn["direction"] == "short"
         assert up["levels"] and ("bounce" in up["setup"] or "retest" in up["setup"])
         wl = gala.watch_today("wl-user", d)
-        assert [p["sym"] for p in wl] == ["UP", "DN"] and isinstance(wl[0]["atr"], float)
+        assert sorted(p["sym"] for p in wl) == ["DN", "UP"] and isinstance(wl[0]["atr"], float) and wl[0]["checks"]
         assert stockday.view("wl-user")["watch"]["picks"]
     finally:
         stockday.multi_bars, stockday.data_creds, stockday.config = saved

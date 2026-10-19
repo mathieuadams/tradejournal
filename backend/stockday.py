@@ -587,9 +587,11 @@ def backtest(sub, days=250, cfg=None, budget_s=520):
             if gala.event_skip(d, P):
                 return []
             bb = multi_bars(c, syms + list(gala.INDEX), "1Min", day.replace(hour=9, minute=30), day.replace(hour=16), max_pages=8)
-            hist = multi_bars(c, syms, "30Min", gala.hist_start(day, P), day.replace(hour=9, minute=29), max_pages=5)
+            hist = multi_bars(c, syms + (list(gala.INDEX) if watch_on else []), "30Min", gala.hist_start(day, P), day.replace(hour=9, minute=29), max_pages=5)
             if watch_on:
-                pk = gala.pick_watch([{k: v for k, v in p.items() if k not in ("o", "h", "l", "c")} for p in pk], hist, P, d)
+                ev = [k for k, v in __import__("marketctx").event_flags(d).items() if k in ("fomc", "cpi", "nfp") and v]
+                pk = gala.pick_watch([{k: v for k, v in p.items() if k not in ("o", "h", "l", "c")} for p in pk], hist, P, d,
+                                     gala.market(hist, d, P), ev)
                 if not pk:
                     return []
                 bb = {s: v for s, v in bb.items() if s in {p["sym"] for p in pk} or s in gala.INDEX}
