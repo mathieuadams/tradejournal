@@ -1945,7 +1945,7 @@ function fxRow(keys, c, attr) {                    // formula rules: any conditi
     <span class="muted" style="font-size:.72rem" title="${esc(tip)}">names: open high low close volume vwap delta cvd tod dow dayOpen dayHigh dayLow prevClose prevHigh prevLow gap pmHigh pmLow putWall callWall flip dpAbove dpBelow flowPrem vix peer · day context: callPrem putPrem netPrem netPremDay sweepCall sweepPut gex breadth sectorBreadth megaBreadth vixy vixyChg vixTerm fomc cpi nfp opex qend eventDay onMove pmRange putWallNow callWallNow flipNow · ema sma highest lowest ref change pct stdev rsi atr crossUp crossDown rising falling abs min max between sqMom sqOn rvol cvdSum orHigh orLow</span></div>`;
 }
 // ---------------- research: the AI agent (proposes) and the test pipeline (tests + grades) are two separate boxes
-try { S.rsTab = localStorage.getItem('rsTab') || 'tools'; } catch (e) { S.rsTab = 'tools'; }
+try { S.rsTab = localStorage.getItem('rsTab') || 'tools'; S.rsSort = localStorage.getItem('rsSort') || 'best'; } catch (e) { S.rsTab = 'tools'; }
 function rsTabs(strategy) {                       // the AI research agent gets its own tab, apart from the other tools
   S.rs = S.rs || {};
   if (S.rs[strategy] === undefined) { S.rs[strategy] = null; setTimeout(() => loadRs(strategy), 0); }
@@ -1999,6 +1999,14 @@ function researchBox(strategy) {
   const badge = x => x.status === 'tested' ? `<b style="display:inline-block;min-width:1.6em;text-align:center;border-radius:5px;color:#fff;background:${GC[x.grade] || '#888'}">${x.grade}</b>` : `<span class="muted" style="font-size:.75rem">${esc({ 'needs feature': 'waiting: indicator', 'needs data': 'needs data', queued: 'queued' }[x.status] || x.status || '')}</span>`;
   const filt = S.rsFilter || 'all';
   const all = t.ideas || [], xs = all.filter(x => filt === 'all' || (filt === 'graded' ? x.status === 'tested' : filt === 'ab' ? ['A', 'B'].includes(x.grade) : filt === 'needs' ? ['needs feature', 'needs data'].includes(x.status) : true));
+  const GR = { A: 0, B: 1, C: 2, F: 3 }, srt = S.rsSort || 'best';
+  if (srt === 'best') xs.sort((a, b) => {                // best first: grade, then t, then average R; untested at the bottom
+    const ta = a.status === 'tested', tb = b.status === 'tested';
+    if (ta !== tb) return ta ? -1 : 1;
+    if (!ta) return (b.at || '').localeCompare(a.at || '');
+    const ma = a.metrics || {}, mb = b.metrics || {};
+    return (GR[a.grade] ?? 9) - (GR[b.grade] ?? 9) || (mb.t ?? -99) - (ma.t ?? -99) || (mb.avgR ?? -99) - (ma.avgR ?? -99); });
+  else xs.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
   const nA = all.filter(x => x.grade === 'A').length, nB = all.filter(x => x.grade === 'B').length;
   const num = (k, step, w, l, u) => `<label style="display:inline-flex;gap:3px;align-items:center"><span class="muted">${l}</span><input data-rscrit="${k}" type="number" step="${step}" value="${c[k] ?? ''}" style="width:${w}em;padding:1px 4px">${u ? `<span class="muted">${u}</span>` : ''}</label>`;
   const agent = `<div style="border:1px solid var(--coach,#5b5bd6);border-radius:8px;padding:8px 10px;margin:14px 0 6px">
@@ -2050,7 +2058,8 @@ function researchBox(strategy) {
       <button class="btn" data-rx="crit|${strategy}" style="font-size:.75rem;padding:1px 10px">Save criteria</button>
       <button class="btn" data-rx="mine|${strategy}" ${busy ? 'disabled' : ''} style="font-size:.75rem;padding:1px 10px" title="Your current ${strategy === 'day' ? 'settings (with the changes not applied yet)' : 'lab settings'} vs your saved / live settings, as an idea of your own">Test my ${strategy === 'day' ? 'settings' : 'lab settings'} as an idea</button></div>
     <p class="muted" style="font-size:.74rem;margin:0 0 4px">Grade: <b style="color:${GC.A}">A</b> every criterion passes and the 2nd half alone reaches the t needed · <b style="color:${GC.B}">B</b> every criterion passes · <b style="color:${GC.C}">C</b> positive on both halves, some criteria fail · <b style="color:${GC.F}">F</b> the rest. Ideas needing data the app doesn't have are kept as feature requests.</p>
-    <div style="display:flex;gap:4px;font-size:.75rem;margin-bottom:4px">${[['all', 'All'], ['graded', 'Tested'], ['ab', 'A / B'], ['needs', 'Waiting / needs data']].map(([k, l]) => `<button class="btn ${filt === k ? 'coachbtn' : ''}" data-rx="filter|${k}" style="font-size:.74rem;padding:0 8px">${l}</button>`).join('')}</div>
+    <div style="display:flex;gap:4px;font-size:.75rem;margin-bottom:4px;align-items:center">${[['all', 'All'], ['graded', 'Tested'], ['ab', 'A / B'], ['needs', 'Waiting / needs data']].map(([k, l]) => `<button class="btn ${filt === k ? 'coachbtn' : ''}" data-rx="filter|${k}" style="font-size:.74rem;padding:0 8px">${l}</button>`).join('')}
+      <span class="muted" style="margin-left:10px">sort</span>${[['best', 'Best first'], ['new', 'Newest first']].map(([k, l]) => `<button class="btn ${srt === k ? 'coachbtn' : ''}" data-rx="sort|${k}" style="font-size:.74rem;padding:0 8px">${l}</button>`).join('')}</div>
     ${(t.indicators || []).length ? `<details style="margin:2px 0 6px"><summary style="font-size:.8rem;cursor:pointer"><b>Indicators the agent created</b> <span class="muted">(${t.indicators.length}: formulas over the Alpaca / Unusual Whales data, reused by later ideas)</span></summary>
       <div style="overflow-x:auto"><table class="pos" style="font-size:.78rem"><thead><tr><th>Name</th><th>Formula</th><th>What</th><th>For</th></tr></thead><tbody>${t.indicators.slice().reverse().map(i => `<tr><td><code>${esc(i.name)}</code></td><td><code style="font-size:.74rem">${esc(i.formula)}</code></td><td>${esc(i.what || '')}</td><td class="muted">${esc(i.idea || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${t.error ? `<div class="errbox">${esc(t.error)}</div>` : xs.length ? `<div style="overflow-x:auto;max-height:520px;overflow-y:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th></th><th>Idea</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">t / needed</th><th class="r">PF</th><th class="r">1st / 2nd half</th><th class="r">Max DD</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted" style="font-size:.8rem">No ideas yet.</p>'}</div>`;
@@ -2061,6 +2070,7 @@ function rsAction([act, a, b]) {
   const busy = st => { S.rs[st] = { ...(S.rs[st] || {}), run: { running: 'now', step: 'starting', made: 0, testedNow: 0 } }; render(); setTimeout(() => loadRs(st), 2500); };
   if (act === 'tab') { S.rsTab = a; try { localStorage.setItem('rsTab', a); } catch (e) {} if (a === 'ai') Object.keys(S.rs || {}).forEach(k => loadRs(k)); else clearTimeout(S.rsPoll); render(); return; }
   if (act === 'filter') { S.rsFilter = a; render(); return; }
+  if (act === 'sort') { S.rsSort = a; try { localStorage.setItem('rsSort', a); } catch (e) {} render(); return; }
   if (act === 'open') { S.rsOpen = S.rsOpen === a ? null : a; render(); return; }
   if (act === 'run') {
     S.rsFocus = val('rs-focus') || ''; S.rsN = +val('rs-n') || 4; S.rsRounds = +val('rs-rounds') || 1; S.rsDays = +val('rs-days') || 250;
@@ -2221,7 +2231,7 @@ function dtRobBox() {
   const row = (x, b) => `<tr${b ? ' style="font-weight:700"' : ''}><td>${esc(x.label)}</td><td class="r">${x.all.n || 0}</td><td class="r">${x.all.win ?? '—'}%</td><td class="r">${R(x.all.avgR)}</td><td class="r">${x.all.t ?? '—'}</td><td class="r">${x.all.pf ?? '—'}</td><td class="r">${x.h1 ? R(x.h1.avgR) + ' / ' + R(x.h2.avgR) : ''}</td></tr>`;
   return head + `<p style="font-size:.85rem;margin:6px 0"><b class="${V[0]}">${V[1]}</b> · ${t.positive} of ${t.variants} variants positive (${t.share ?? '—'}%) · median variant ${R(t.median)} vs ${R((t.base || {}).avgR)} as they are · cost ${t.cost}R a trade · ${t.daysFound} days · ${t.secs ?? '—'} s</p>
     <div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Variant</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">t</th><th class="r">PF</th><th class="r">1st / 2nd half</th></tr></thead><tbody>
-    ${t.rows.map((x, i) => row(x, i === 0)).join('')}${(t.extra || []).map(x => row(x)).join('')}</tbody></table></div>
+    ${row(t.rows[0], true)}${(t.extra || []).map(x => row(x)).join('')}${t.rows.slice(1).sort((a, b) => ((b.all || {}).avgR ?? -99) - ((a.all || {}).avgR ?? -99)).map(x => row(x)).join('')}</tbody></table></div>
     ${(t.errors || []).length ? `<p class="loss" style="font-size:.8rem">${esc(t.errors.join(' · '))}</p>` : ''}`;
 }
 async function loadDTSrch() {
