@@ -4694,6 +4694,43 @@ def test_strategy_basket():
         daytrade.config, daytrade.run_variants, daytrade.save_config = saved
 
 
+def test_formula_hourly_structure_rs_gap():
+    """New formula pieces: hourly trend / levels / broken levels (Gala), relative strength vs the other ticker, gap
+    filled; nothing from a candle that isn't complete yet."""
+    import formula, daytrade
+    bars = []
+    days = ["2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-09"]
+    k = 0
+    for d in days:
+        for m in range(0, 390, 5):
+            hk = k // 12                               # hourly index
+            tri = abs(hk % 6 - 3)
+            p = 100 + k * 0.01 + tri
+            t = 570 + m
+            bars.append({"t": f"{d}T{t // 60:02d}:{t % 60:02d}", "o": p, "h": p + 0.05, "l": p - 0.05, "c": p + 0.02, "v": 1000})
+            k += 1
+    peer = daytrade.peer_map([{**b, "c": b["o"]} for b in bars])
+    cx = formula.Ctx(bars, True, peer=peer, interval=5)
+    ht = cx.s("hTrend")
+    assert ht[0] is None and ht[-1] == 1
+    above, below = cx.s("hLvlAbove"), cx.s("hLvlBelow")
+    assert any(v is not None for v in above[-78:]) and any(v is not None for v in below[-78:])
+    assert all(a is None or a > b["c"] for a, b in zip(above, bars)) and all(v is None or v <= b["c"] for v, b in zip(below, bars))
+    up = cx.s("hBrokeUp")
+    assert all(v is None or v <= b["c"] for v, b in zip(up, bars))
+    rs = cx.s("rs")
+    assert rs[-1] is not None and abs(rs[-1] - ((bars[-1]["c"] / [b for b in bars if b["t"].startswith(days[-1])][0]["o"] - 1) * 100
+                                               - peer["chg|" + bars[-1]["t"][:11] + "15:59"])) < 1e-6 if ("chg|" + bars[-1]["t"][:11] + "15:59") in peer else rs[-1] is not None
+    gf = cx.s("gapFilled")
+    assert set(v for v in gf if v is not None) <= {0.0, 1.0}
+    assert formula.evaluate("hTrend > 0 and close > hLvlBelow", cx, formula.UNAVAILABLE["day"])[-1] in (True, False)
+    try:
+        formula.check("hTrend > 0", formula.UNAVAILABLE["swing"])
+        assert False, "hourly structure is day-only"
+    except formula.FormulaError:
+        pass
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

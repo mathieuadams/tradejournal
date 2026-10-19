@@ -45,6 +45,15 @@ SERIES = {
     "onMove": "pre-market move: last pre-market price vs the previous close, %", "pmRange": "pre-market range (high − low) vs the previous close, %",
     "putWallNow": "put wall as recorded during the day (every 30 min, recorded days only; else the day's)",
     "callWallNow": "call wall recorded during the day", "flipNow": "gamma flip recorded during the day",
+    # hourly structure (Gala): pivots of the completed 1-hour candles of the last ~5 days, levels at the candle bodies
+    "hTrend": "1-hour market structure: +1 higher highs + higher lows, −1 lower highs + lower lows, 0 unclear",
+    "hLvlAbove": "nearest hourly level above the close (pivot bodies / impulsive candle opens; levels traded through often are dropped)",
+    "hLvlBelow": "nearest hourly level at or below the close",
+    "hBrokeUp": "the hourly level the price broke ABOVE today (a candle close through it), while it holds; else none — retest: low <= hBrokeUp and close > hBrokeUp",
+    "hBrokeDn": "the hourly level the price broke BELOW today, while it holds; else none — retest: high >= hBrokeDn and close < hBrokeDn",
+    # relative strength and gap
+    "rs": "relative strength: this ticker's % change since the open minus the other ticker's (QQQ vs SPY, a stock vs QQQ), in %",
+    "gapFilled": "1 once today's range has touched the previous close (the gap is filled), else 0",
 }
 FUNCS = {
     "ema": ("ema(x, n)", "exponential average of x over n candles"), "sma": ("sma(x, n)", "simple average"),
@@ -336,6 +345,76 @@ class Ctx:
 
     def _eventDay(self):
         return self._ev("eventDay")
+
+    # ---------------- hourly structure (gala.py rules on the completed hourly candles)
+    def _hourly(self):
+        if "_hr" in self.memo:
+            return self.memo["_hr"]
+        import gala
+        H = gala.agg(self.b, 60)
+        P = {"gPivot": 2, "gImpulse": 1.5, "gMaxCross": 2}
+        out, cache, j = [], {}, 0
+        for b in self.b:
+            d = b["t"][:10]
+            m = int(b["t"][11:13]) * 60 + int(b["t"][14:16]) + self.iv
+            hm = f"{m // 60:02d}:{m % 60:02d}"
+            while j < len(H) and (H[j]["t"][:10] < d or (H[j]["t"][:10] == d and H[j]["end"] <= hm)):
+                j += 1
+            if j not in cache:
+                w = H[max(0, j - 35):j]
+                if len(w) < 8:
+                    cache[j] = (None, [])
+                else:
+                    rng = sum(x["h"] - x["l"] for x in w) / len(w)
+                    cache[j] = (gala.trend(w, 2), sorted(x["p"] for x in gala.levels(w, P, 0.15 * rng)))
+            out.append(cache[j])
+        self.memo["_hr"] = out
+        return out
+
+    def _hTrend(self):
+        return [t for t, _ in self._hourly()]
+
+    def _hLvlAbove(self):
+        return [min((x for x in lv if x > b["c"]), default=None) for b, (_, lv) in zip(self.b, self._hourly())]
+
+    def _hLvlBelow(self):
+        return [max((x for x in lv if x <= b["c"]), default=None) for b, (_, lv) in zip(self.b, self._hourly())]
+
+    def _broke(self, s):
+        out, cur, held, pc = [], None, None, None
+        for i, (b, (_, lv)) in enumerate(zip(self.b, self._hourly())):
+            if self.day[i] != cur:
+                cur, held = self.day[i], None
+            p = pc if pc is not None else b["o"]
+            hit = [x for x in lv if (p <= x < b["c"]) if s > 0] if s > 0 else [x for x in lv if b["c"] < x <= p]
+            if hit:
+                held = max(hit) if s > 0 else min(hit)
+            elif held is not None and ((b["c"] < held) if s > 0 else (b["c"] > held)):
+                held = None                            # back through: the break failed
+            out.append(held)
+            pc = b["c"]
+        return out
+
+    def _hBrokeUp(self):
+        return self._broke(1)
+
+    def _hBrokeDn(self):
+        return self._broke(-1)
+
+    def _rs(self):
+        do = self.s("dayOpen")
+        out = []
+        for b, o in zip(self.b, do):
+            m = int(b["t"][11:13]) * 60 + int(b["t"][14:16]) + self.iv - 1
+            pg = self.peerm.get(f"chg|{b['t'][:11]}{m // 60:02d}:{m % 60:02d}")
+            if pg is None:
+                pg = self.peerm.get(f"chg|{b['t']}")
+            out.append(None if pg is None or not o else (b["c"] / o - 1) * 100 - pg)
+        return out
+
+    def _gapFilled(self):
+        pc, lo, hi = self.s("prevClose"), self.s("dayLow"), self.s("dayHigh")
+        return [None if c is None else (1.0 if l <= c <= h else 0.0) for c, l, h in zip(pc, lo, hi)]
 
     def _onMove(self):
         pc = self.s("prevClose")
@@ -728,4 +807,4 @@ def evaluate(expr, cx, unavailable=()):
     return [bool(x) if x is not None else False for x in v]
 
 
-UNAVAILABLE = {"day": ("flowPrem",), "swing": ("pmHigh", "pmLow", "vix", "peer", "callPrem", "putPrem", "netPrem", "netPremDay", "sweepCall", "sweepPut", "gex", "breadth", "sectorBreadth", "megaBreadth", "vixy", "vixyChg", "vixTerm", "onMove", "pmRange", "putWallNow", "callWallNow", "flipNow")}
+UNAVAILABLE = {"day": ("flowPrem",), "swing": ("hTrend", "hLvlAbove", "hLvlBelow", "hBrokeUp", "hBrokeDn", "rs", "gapFilled", "pmHigh", "pmLow", "vix", "peer", "callPrem", "putPrem", "netPrem", "netPremDay", "sweepCall", "sweepPut", "gex", "breadth", "sectorBreadth", "megaBreadth", "vixy", "vixyChg", "vixTerm", "onMove", "pmRange", "putWallNow", "callWallNow", "flipNow")}

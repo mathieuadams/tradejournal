@@ -1151,7 +1151,14 @@ def peer_map(bars_all):
     """{minute: +1 / -1}: the close above / under its session VWAP (for the 'other ticker agrees' filter)."""
     reg = [b for b in bars_all if "09:30" <= b["t"][11:16] < "16:00"]
     vw = _session_vwap(reg)
-    return {b["t"]: (1 if b["c"] > v else -1 if b["c"] < v else 0) for b, v in zip(reg, vw)}
+    out = {b["t"]: (1 if b["c"] > v else -1 if b["c"] < v else 0) for b, v in zip(reg, vw)}
+    day, o = None, None
+    for b in reg:                                      # "chg|minute": % since the day's open (relative strength, rs)
+        if b["t"][:10] != day:
+            day, o = b["t"][:10], b["o"]
+        if o:
+            out["chg|" + b["t"]] = round((b["c"] / o - 1) * 100, 4)
+    return out
 
 
 def vix_map():

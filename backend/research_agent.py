@@ -52,6 +52,13 @@ Before proposing, study the RECORD of every idea already tried:
   the in-sample average R (ideas with it minus ideas without it, with a t). "best" are the pieces that help, "worst"
   the ones that hurt. Build new strategies by COMBINING pieces with a positive lift from DIFFERENT families, and drop
   the ones in "worst". Say which blocks each idea uses in learnedFrom;
+- every idea must trade often enough to be judged: at least ~2 trades a week per ticker (100+ trades over the
+  history). Don't stack filters until an idea trades a few times a month: such ideas can never pass, whatever their
+  result (look at "n" in the record: ideas under 50 trades taught nothing);
+- NEW pieces to use (few ideas tried them yet): the hourly structure (hTrend, hLvlAbove, hLvlBelow, hBrokeUp,
+  hBrokeDn: Gala's hourly trend + levels; breaking retest = "low <= hBrokeUp and close > hBrokeUp and hTrend > 0"),
+  relative strength vs the other ticker (rs), the prior-day / pre-market / opening-range levels (prevHigh, prevLow,
+  pmHigh, pmLow, orHigh(n), orLow(n), gap, gapFilled);
 - no one-knob tweaks: an idea must differ from every tested idea by at least two pieces (a new entry piece, a new
   filter or a new exit), not by a number or a single switch. "exhaustedFamilies" are entry families tested too often
   already: ideas from them are not tested any more, so use other entry pieces ("familyCounts" shows how often each
