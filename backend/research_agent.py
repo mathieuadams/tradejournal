@@ -27,7 +27,8 @@ series: options flow of QQQ / SPY during the candle (callPrem, putPrem, netPrem,
 dealer gamma now (gex), market breadth (breadth, sectorBreadth, megaBreadth), volatility (vixy, vixyChg, vixTerm),
 event days (fomc, cpi, nfp, opex, qend, eventDay), the pre-market / overnight move (onMove, pmRange) and intraday walls
 (putWallNow, callWallNow, flipNow). This is information the price alone doesn't have: prefer ideas that use it. Something that
-needs other data (news, order book depth, earnings estimates, fundamentals...) goes in "missing".
+needs other data (news, order book depth, earnings estimates, fundamentals...) goes in "missing". Every name in
+formulas.series exists: use it directly; never redefine one as a new indicator or list it as missing.
 
 NEW INDICATORS: when an idea needs an indicator the app doesn't have, CREATE it: add it to "newIndicators" with a short
 camelCase name and its formula built from the series / functions (e.g. {"name": "vwapDist", "formula": "(close - vwap)
@@ -205,7 +206,9 @@ formulas built from the series / functions given (and the indicators already cre
 dark pool / options flow. Each idea lists its "problems": the exact errors of the formula checker (an unknown name, a
 length that is not a plain whole number, ...): fix every one of them. When a missing piece truly needs other data
 (news, order book, fundamentals...), say so in
-"impossible" for that idea and give no changes. Keep each idea's intent; don't redesign it."""
+"impossible" for that idea and give no changes. Every name in formulas.series EXISTS (vixTerm, vixy, gex, breadth,
+netPrem, fomc...): use it directly, never redefine it as an indicator and never call it missing. Keep each idea's
+intent; don't redesign it."""
 
 BUILD_SCHEMA = {"type": "object", "properties": {"ideas": {"type": "array", "items": {"type": "object", "properties": {
     "id": {"type": "string"},

@@ -405,6 +405,8 @@ def lib_add(sub, inds, strategy, by="ai", idea=None):
     ok, bad = [], []
     for ind in inds or []:
         nm, fx = str(ind.get("name") or "").strip(), str(ind.get("formula") or "").strip()
+        if nm in formula.SERIES and nm not in formula.UNAVAILABLE[strategy]:
+            continue                                   # it exists already as a built-in series: the formulas use that one
         if not formula.valid_name(nm):
             bad.append(f"indicator name “{nm}” not allowed (camelCase, not a built-in name)")
             continue
@@ -1003,11 +1005,33 @@ def auto_kick():
 BUILD_TRIES = 3
 
 
+def available_named(strategy, texts):
+    """[(series, description)] of the built-in series that a "missing data" text names (the agent claiming data is
+    missing when the app has it)."""
+    import re
+    import formula
+    out = []
+    blob = " ".join(str(t) for t in texts or [])
+    for k, d in formula.SERIES.items():
+        if k in formula.UNAVAILABLE[strategy] or len(k) < 4:
+            continue
+        if re.search(rf"\b{re.escape(k)}\b", blob):
+            out.append((k, d))
+    return out
+
+
 def build_missing(sub, strategy, catalog, base, hist, days, run_, limit=4):
     """Ideas that need something the app doesn't have: the agent creates the missing indicators as formulas, the
     pipeline checks them, rebuilds the idea with them and queues it again (one attempt per idea). What truly needs
     other data stays a feature request ("needs data")."""
     import research_agent
+    for x in hist:                                     # wrongly parked as "needs data" for a series the app has: reopened
+        fake = available_named(strategy, x.get("missing")) if x.get("status") == "needs data" else []
+        if fake:
+            x.update(status="needs feature", buildTries=0, buildTried=None,
+                     missing=[f"“{n}” IS available as a built-in series ({d}): use it directly in the formula, don't create it or call it missing"
+                              for n, d in fake])
+            _put_idea(sub, x)
     todo = [x for x in hist if x.get("status") == "needs feature" and int(x.get("buildTries") or (1 if x.get("buildTried") else 0)) < BUILD_TRIES][:limit]
     if not todo:
         return 0
@@ -1029,6 +1053,12 @@ def build_missing(sub, strategy, catalog, base, hist, days, run_, limit=4):
         x["buildTries"] = int(x.get("buildTries") or 0) + 1
         if not r or not (r.get("changes") or r.get("impossible")):
             _put_idea(sub, x)                          # the agent had nothing for it: stays waiting (no new attempt)
+            continue
+        fake = available_named(strategy, r.get("impossible"))
+        if fake:                                       # "missing" data that the app has: back to the agent, said plainly
+            x.update(status="needs feature", missing=[f"“{n}” IS available as a built-in series ({d}): use it directly in the formula, "
+                                                      f"don't create it or call it missing" for n, d in fake])
+            _put_idea(sub, x)
             continue
         if r.get("impossible") and not r.get("changes"):
             x.update(status="needs data", missing=r["impossible"])

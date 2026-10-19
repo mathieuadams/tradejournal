@@ -4633,6 +4633,19 @@ def test_research_building_blocks_and_families():
     assert c["dayTickers"] == ["QQQ", "SPY", "AAPL"] and c["familyCap"] == 12
 
 
+def test_research_series_not_missing():
+    """The agent calling a built-in series missing (vixTerm) or redefining it: caught, sent back, not parked."""
+    import research
+    got = research.available_named("day", ["vixTerm (VIX / VIX3M backwardation ratio) requires the VIX3M series"])
+    assert got and got[0][0] == "vixTerm"
+    assert not research.available_named("swing", ["vixTerm needed"])     # not available for swing: a real gap
+    sub = "rs-series"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    ok, bad = research.lib_add(sub, [{"name": "vixTerm", "formula": "vix / 20"}], "day")
+    assert not bad and not ok and not research.library(sub)               # the built-in one is used, nothing refused
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
