@@ -572,11 +572,13 @@ def watchlist(sub, now=None):
     pk = db.upk(sub)
     c = sd.data_creds(sub)
     if not c:
-        return {"error": "Connect an Alpaca account to load the stock data."}
+        out = {"date": d, "at": now.strftime("%H:%M"), "error": "Connect an Alpaca account to load the stock data."}
+        db.put({"PK": pk, "SK": f"SDWATCH#{d}", **out, "built": iso(now_ny())})
+        return out
     uni = sd.get_day("U", d)
     if not uni:
-        out = {"date": d, "at": now.strftime("%H:%M"), "error": "no universe for today yet (the morning prep runs at 09:05)"}
-        db.put({"PK": pk, "SK": f"SDWATCH#{d}", **out})
+        out = {"date": d, "at": now.strftime("%H:%M"), "error": "no universe for today yet: the morning prep (09:05) or the history build hasn't finished — try again in a few minutes"}
+        db.put({"PK": pk, "SK": f"SDWATCH#{d}", **out, "built": iso(now_ny())})
         return out
     ex = set(P.get("exclude") or [])
     syms = sorted(s for s in uni if s not in ex)
@@ -609,6 +611,9 @@ def watchlist(sub, now=None):
     top = cands[: max(15, 3 * int(P.get("gWatchN") or 5))]
     hist = sd.multi_bars(c, [x["sym"] for x in top], "30Min", hist_start(day, P), day.replace(hour=9, minute=29), max_pages=8) if top else {}
     picks = pick_watch(top, hist, P, d)
+    if not picks:
+        why = ("no stock traded enough pre-market volume" if not cands else
+               f"none of the top {len(top)} pre-market stocks has a clear hourly trend")
     ev = {}
     try:
         import marketctx
@@ -616,7 +621,8 @@ def watchlist(sub, now=None):
     except Exception:
         pass
     out = {"date": d, "at": now.strftime("%H:%M"), "picks": picks, "candidates": len(cands), "universe": len(uni),
-           "events": sorted(ev), "note": "pre-market volume 04:00 to now vs the 14-day average of the full pre-market"}
+           "events": sorted(ev), "note": "pre-market volume 04:00 to now vs the 14-day average of the full pre-market",
+           "error": None if picks else why}
     item = {"PK": pk, "SK": f"SDWATCH#{d}", **json.loads(json.dumps(out, default=str), parse_float=Decimal), "built": iso(now_ny())}
     db.put(item)
     db.put({**item, "SK": "SDWATCH#last"})
@@ -628,3 +634,16 @@ def watch_today(sub, d):
     r = db.get(db.upk(sub), f"SDWATCH#{d}") or {}
     return [{k: (float(v) if k not in ("sym", "trend", "direction", "setup", "levels") and v is not None and not isinstance(v, (str, list)) else v)
              for k, v in p.items()} for p in r.get("picks") or []]
+
+
+def watch_job(sub):
+    """The watchlist, with any failure stored on the day's item (shown on the page) instead of lost in the logs."""
+    import db
+    from util import iso, now_ny
+    d = now_ny().strftime("%Y-%m-%d")
+    try:
+        w = watchlist(sub)
+        return {"watchlist": [p["sym"] for p in w.get("picks") or []], "error": w.get("error")}
+    except Exception as e:
+        db.put({"PK": db.upk(sub), "SK": f"SDWATCH#{d}", "date": d, "at": now_ny().strftime("%H:%M"), "error": str(e)[:200], "built": iso(now_ny())})
+        return {"error": str(e)[:200]}

@@ -2014,7 +2014,7 @@ def handler(event, context_):
                 out[sub] = stockday.tick(sub)
             elif job == "sdwatch":
                 import gala
-                out[sub] = {"watchlist": [p["sym"] for p in gala.watchlist(sub).get("picks") or []]}
+                out[sub] = gala.watch_job(sub)
             elif job == "sdmorning":
                 import stockday
                 out[sub] = stockday.morning(sub)
