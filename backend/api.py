@@ -589,7 +589,10 @@ def research_auto(sub, claims, body, q):
     strategy = b.get("strategy") if b.get("strategy") in research.STRATS else "day"
     if isinstance(b.get("catalog"), list):
         research.save_catalog(sub, strategy, b["catalog"])
-    return {"auto": research.save_auto(sub, strategy, b)}
+    a = research.save_auto(sub, strategy, b)
+    if a[strategy]["on"]:                              # start now, not at the next hour
+        research._start(sub, research.auto_due(sub))
+    return {"auto": a, "autoToday": research.auto_today(sub)}
 
 
 @route("DELETE", "/research/idea")

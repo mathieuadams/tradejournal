@@ -90,7 +90,7 @@ def state(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
     xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
+    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
 
@@ -463,6 +463,11 @@ def run(sub, params=None, budget_s=540):
     run_.update(running=None, step="done", notes=notes, secs=round(time.time() - t0), days=days, errors=run_["errors"][:8],
                 auto=bool(p.get("auto")))
     _set_run(sub, run_)
+    if p.get("auto"):                                  # autopilot: the next run starts right away, up to the daily limit
+        try:
+            _start(sub, auto_due(sub))
+        except Exception as e:
+            print("autopilot chain failed", e)
     return run_
 
 
@@ -530,20 +535,30 @@ def auto_due(sub):
     return [(s, {"strategy": s, "n": a[s]["n"], "days": a[s]["days"], "rounds": 1, "auto": True})]
 
 
-def auto_kick():
-    """Hourly: start one autopilot run for every user due (each run is its own invocation of this function)."""
+def _start(sub, due):
     import boto3
     fn = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    for strategy, params in due:
+        if fn:
+            boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event",
+                                          Payload=json.dumps({"sub": sub, "job": "research", "params": params}))
+    return len(due)
+
+
+def auto_today(sub):
+    r = _item(sub)
+    cnt = json.loads(r["autoRuns"]) if r.get("autoRuns") else {}
+    today = now_ny().strftime("%Y-%m-%d")
+    return {s: cnt.get(f"{today}|{s}", 0) for s in STRATS}
+
+
+def auto_kick():
+    """Hourly: start an autopilot run for every user due (each run starts the next one when it is done; this hourly
+    kick restarts the chain after the daily reset or a failed run)."""
     started = 0
     for it in db.scan_sk(SK):
-        sub = it["PK"][5:]
-        if not it.get("auto"):
-            continue
-        for strategy, params in auto_due(sub):
-            if fn:
-                boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event",
-                                              Payload=json.dumps({"sub": sub, "job": "research", "params": params}))
-            started += 1
+        if it.get("auto"):
+            started += _start(it["PK"][5:], auto_due(it["PK"][5:]))
     return started
 
 

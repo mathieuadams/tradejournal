@@ -3212,6 +3212,7 @@ def test_research_pipeline_and_agent_apart():
         assert d1 and d1[0][0] == "day" and d1[0][1]["n"] == 3 and research.auto_due(sub) == []   # one at a time
         research._set_run(sub, {"running": None})
         assert research.auto_due(sub) and (research._set_run(sub, {"running": None}) or True) and research.auto_due(sub) == []   # 2 a day
+        assert research.auto_today(sub)["day"] == 2
         st = research.state(sub, "day")
         assert st["tested"] == 2 and st["tReq"] >= 2.0, (st["tested"], st["tReq"], [(x["name"], x["status"]) for x in st["ideas"]])
     finally:
