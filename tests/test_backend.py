@@ -3176,7 +3176,7 @@ def test_research_pipeline_and_agent_apart():
                     for i in range(300)]
     seen_payload = {}
 
-    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None):
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None, blocks=None):
         seen_payload.update(rec=rec, crit=crit)
         return [{"name": "vwap", "hypothesis": "h", "changes": {"aboveVwap": True}},
                 {"name": "vwap again", "hypothesis": "h", "changes": {"aboveVwap": True}},
@@ -3316,7 +3316,7 @@ def test_research_agent_creates_indicators():
             good = "rsi(14)" in (P.get("fxLong") or "")
             return [{"at": f"2025-{1 + i % 12:02d}-10T10:00", "R": (1.2 if i % 2 else -0.5) if good else 0.0, "sym": "QQQ"} for i in range(300)]
 
-    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None):
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None, blocks=None):
         if not calls.get("p"):
             calls["p"] = 1
             return [{"name": "rsi dip", "hypothesis": "h", "changes": {"fxLong": "rsiFast < 30"}, "missing": [],
@@ -4595,6 +4595,42 @@ def test_gala_premarket_watchlist():
         assert stockday.view("wl-user")["watch"]["picks"]
     finally:
         stockday.multi_bars, stockday.data_creds, stockday.config = saved
+
+
+def test_research_building_blocks_and_families():
+    """What each piece adds across ideas (with minus without), per half; entry families counted and capped; research
+    tickers wider than the live day tickers; the agent gets the 1st-half map only."""
+    import research
+    xs = []
+    for k in range(30):
+        cvd = k % 2 == 0
+        vix = k % 3 == 0
+        h1 = 0.05 + (0.15 if cvd else 0) + (0.0 if vix else 0.01)
+        h2 = 0.02 + (0.10 if cvd else 0)
+        xs.append({"id": f"i{k}", "status": "tested", "name": f"n{k}",
+                   "full": {"flipFade": True, "cvdSide": cvd, "vixOn": vix, "longs": True, "shorts": True,
+                            "fxLong": "megaBreadth > 0.5" if k < 20 else ""},
+                   "metrics": {"h1": {"n": 100, "avgR": h1}, "h2": {"n": 100, "avgR": h2}}})
+    bm = research.block_map(xs, ("h1", "h2"))
+    top = bm[0]
+    assert top["block"] == "cvdSide" and top["lift"]["h1"] == 0.15 and top["lift"]["h2"] == 0.1 and top["t"] > 5
+    assert not any(b["block"] == "flipFade" for b in bm)              # in every idea: nothing to compare with
+    assert any(b["block"] == "megaBreadth (entry formula)" for b in bm)
+    agent = research.block_map(xs, ("h1",))
+    assert all(set(b["lift"]) == {"h1"} for b in agent)              # the agent never sees the 2nd half
+    fam = research.families(xs)
+    assert fam["cvdSide + flipFade + megaBreadth"] == 7 or sum(fam.values()) == 30
+    new = {"id": "z", "full": {"flipFade": True, "cvdSide": True, "vixOn": True, "fxLong": "megaBreadth > 0.5"},
+           "changes": {"flipFade": True}, "missing": [], "fp": "new"}
+    f = research.family_of(new)
+    x = research.admit(dict(new), set(), {f: 15}, 15)
+    assert x["status"] == "family exhausted" and "15" in x["fails"][0]
+    assert research.admit(dict(new), set(), {f: 3}, 15)["status"] == "queued"
+    sub = "rs-blocks"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    c = research.save_criteria(sub, {"dayTickers": "qqq, spy aapl", "familyCap": 12})
+    assert c["dayTickers"] == ["QQQ", "SPY", "AAPL"] and c["familyCap"] == 12
 
 
 if __name__ == "__main__":

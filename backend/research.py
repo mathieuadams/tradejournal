@@ -26,9 +26,9 @@ from util import iso, now_ny
 SK = "RESEARCH"
 IDEA = "RIDEA#"
 CRITERIA = {"minTrades": 100, "minHalf": 40, "minT": 2.0, "minTestT": 1.0, "minPF": 1.2, "minWin": 0.0, "minAvgR": 0.05,
-            "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500}
+            "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15}
 LIMITS = {"minTrades": (10, 5000), "minHalf": (0, 2500), "minT": (0, 10), "minTestT": (-5, 10), "minPF": (0, 10),
-          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500)}
+          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200)}
 STRATS = ("day", "swing")
 MAX_IDEAS = 8
 
@@ -52,6 +52,11 @@ def save_criteria(sub, body):
         if k in (body or {}):
             cur[k] = bool(body[k])
     cur["minTrades"], cur["minHalf"], cur["robDays"] = int(cur["minTrades"]), int(cur["minHalf"]), int(cur["robDays"])
+    cur["familyCap"] = int(cur["familyCap"])
+    if "dayTickers" in (body or {}):
+        tk = body["dayTickers"]
+        tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
+        cur["dayTickers"] = [str(t).strip().upper()[:10] for t in tk or [] if str(t).strip()][:30]
     r = db.get(db.upk(sub), SK) or {"PK": db.upk(sub), "SK": SK}
     db.put({**r, "criteria": json.dumps(cur)})
     return cur
@@ -90,7 +95,8 @@ def state(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
     xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
+    return {"criteria": criteria(sub), "run": run, "ideas": xs, "blocks": block_map(xs, ("h1", "h2"))[:40],
+            "families": sorted(([k, v] for k, v in families(xs).items()), key=lambda z: -z[1])[:20], "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
             "strategies": strategies(sub, strategy) if strategy else strategies(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
@@ -457,17 +463,102 @@ def new_idea(strategy, base, name, changes, by, days, hypothesis="", missing=(),
             "missing": [str(m)[:160] for m in (missing or [])][:6] + [str(u)[:200] for u in unknown][:6]}
 
 
-def admit(x, seen):
-    """The gate before testing: feature requests, empty and repeated ideas are recorded, not tested."""
+def admit(x, seen, fam=None, cap=0):
+    """The gate before testing: feature requests, empty and repeated ideas are recorded, not tested; an idea of an
+    entry family already tested `cap` times is recorded as "family exhausted" (no more one-knob tweaks of it)."""
     if x["missing"]:
         x["status"] = "needs feature"
     elif not x["changes"]:
         x["status"] = "no change"
     elif x["fp"] in seen:
         x["status"] = "duplicate"
+    elif cap and fam is not None and fam.get(family_of(x), 0) >= cap:
+        x["status"] = "family exhausted"
+        x["fails"] = [f"its entry family ({family_of(x)}) has {fam[family_of(x)]} tested ideas already (cap {cap})"]
     else:
         x["status"] = "queued"
     return x
+
+
+# ---------------------------------------------------------------- building blocks: what each piece adds, across all ideas
+def _fx_names(expr):
+    import ast
+    try:
+        tree = ast.parse(str(expr), mode="eval")
+    except SyntaxError:
+        return set()
+    calls = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in calls and n.id not in ("and", "or", "not")}
+
+
+def blocks_of(x):
+    """The pieces an idea is made of: every rule / filter / exit switched on, every series or indicator its formulas
+    use (by role: entry or exit), the side and the candle size."""
+    f = dict(x.get("full") or x.get("changes") or {})
+    f.update(x.get("readable") or {})
+    out = set()
+    for k, v in f.items():
+        if v is True and k not in ("enabled", "trade", "longs", "shorts"):
+            out.add(k)
+        elif isinstance(v, str) and k.startswith("fx") and v.strip():
+            role = "exit" if "Exit" in k else "entry"
+            out |= {f"{n} ({role} formula)" for n in _fx_names(v)}
+    if f.get("longs") is False:
+        out.add("shorts only")
+    if f.get("shorts") is False:
+        out.add("longs only")
+    if f.get("barMin"):
+        out.add(f"{int(f['barMin'])}-min candles")
+    return out
+
+
+def family_of(x):
+    """The entry family: the entry rules and the series of the entry formulas (exits and numbers don't count)."""
+    import daytrade
+    b = blocks_of(x)
+    ent = sorted(k for k in b if k in daytrade.ENTRY or k in daytrade.FILTERS or k.endswith("(entry formula)"))
+    return " + ".join(k.replace(" (entry formula)", "") for k in ent) or "no entry rule"
+
+
+def families(xs):
+    out = {}
+    for x in xs:
+        if x.get("status") == "tested":
+            out[family_of(x)] = out.get(family_of(x), 0) + 1
+    return out
+
+
+def block_map(xs, halves=("h1",), min_n=5):
+    """[{block, n, nOut, lift: {h1, h2}, t}] best first: the average R of the ideas WITH the block minus the ideas
+    WITHOUT it (cost included), and the t of that difference on the 1st half. halves=("h1",) for the agent (it never
+    sees the 2nd half); ("h1", "h2") for the trader, to see which pieces still help on the unseen half."""
+    ts = [x for x in xs if x.get("status") == "tested" and (x.get("metrics") or {}).get("h1", {}).get("n")]
+    bl = {x["id"]: blocks_of(x) for x in ts}
+    allb = {b for v in bl.values() for b in v}
+
+    def av(v):
+        return sum(v) / len(v) if v else 0.0
+
+    def var(v):
+        m = av(v)
+        return sum((y - m) ** 2 for y in v) / max(1, len(v) - 1)
+    out = []
+    for b in allb:
+        w = [x for x in ts if b in bl[x["id"]]]
+        o = [x for x in ts if b not in bl[x["id"]]]
+        if len(w) < min_n or len(o) < min_n:
+            continue
+        row = {"block": b, "n": len(w), "nOut": len(o), "lift": {}}
+        for h in halves:
+            vw = [((x["metrics"].get(h) or {}).get("avgR") or 0) for x in w]
+            vo = [((x["metrics"].get(h) or {}).get("avgR") or 0) for x in o]
+            row["lift"][h] = round(av(vw) - av(vo), 3)
+            if h == "h1":
+                se = math.sqrt(var(vw) / len(vw) + var(vo) / len(vo)) or 1e-9
+                row["t"] = round((av(vw) - av(vo)) / se, 2)
+        out.append(row)
+    out.sort(key=lambda r: -(r["t"] or 0))
+    return out
 
 
 def test_queued(sub, strategy, days, lab=None, budget_s=540, t0=None, run_=None):
@@ -479,7 +570,9 @@ def test_queued(sub, strategy, days, lab=None, budget_s=540, t0=None, run_=None)
         return run_
     c = criteria(sub)
     base = base_cfg(sub, strategy, lab)
-    run_.update(step=f"loading {days} days of history")
+    if strategy == "day" and c.get("dayTickers"):
+        base["tickers"] = list(c["dayTickers"])        # research on a wider list than the live day tickers
+    run_.update(step=f"loading {days} days of history" + (f" on {len(base.get('tickers') or [])} tickers" if strategy == "day" else ""))
     _set_run(sub, run_)
     bench = DayBench(sub, days, base) if strategy == "day" else SwingBench(sub, days, base, budget_s=min(240, budget_s / 2))
     run_["errors"] = (run_.get("errors") or []) + bench.errors[:5]
@@ -561,6 +654,8 @@ def rob_job(sub, params=None):
     _put_idea(sub, x)
     try:
         cfg = {**base_cfg(sub, "day"), **(x.get("full") or x.get("changes") or {})}
+        if c.get("dayTickers"):
+            cfg["tickers"] = list(c["dayTickers"])
         out = dtrobust.run(sub, {"cfg": cfg, "days": int(c.get("robDays") or 500), "cost": float(c["costR"])}, save=False)
         x["robust"] = _rob_summary(out)
     except Exception as e:
@@ -625,9 +720,15 @@ def run(sub, params=None, budget_s=540):
         run_.update(step=f"round {rnd + 1}: the AI agent is reading {len(hist)} past ideas")
         _set_run(sub, run_)
         try:
+            bm = block_map(hist, ("h1",))
+            fam = families(hist)
+            cap = int(c.get("familyCap") or 0)
             props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
                                                  research_agent.public_criteria(c), research_agent.record(hist), n, p.get("focus"),
-                                                 sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy))
+                                                 sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy),
+                                                 {"best": bm[:15], "worst": bm[-10:][::-1] if len(bm) > 15 else [],
+                                                  "exhaustedFamilies": sorted(([k, v] for k, v in fam.items() if cap and v >= cap), key=lambda z: -z[1])[:10],
+                                                  "familyCounts": sorted(([k, v] for k, v in fam.items()), key=lambda z: -z[1])[:15]})
         except Exception as e:
             run_["errors"].append(f"AI agent: {str(e)[:200]}")
             break
@@ -638,7 +739,8 @@ def run(sub, params=None, budget_s=540):
         for k, pr in enumerate(props):
             made, bad = lib_add(sub, pr.get("newIndicators"), strategy, "ai", pr.get("name"))
             x = admit(new_idea(strategy, base, pr.get("name"), pr.get("changes"), "ai", days, pr.get("hypothesis"),
-                               list(pr.get("missing") or []) + bad, pr.get("learnedFrom"), p.get("focus"), k, custom=lib_map(sub)), seen)
+                               list(pr.get("missing") or []) + bad, pr.get("learnedFrom"), p.get("focus"), k, custom=lib_map(sub)), seen,
+                      fam if strategy == "day" else None, cap)
             x["indicators"] = made
             seen.add(x["fp"])
             _put_idea(sub, x)

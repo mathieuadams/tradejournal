@@ -47,7 +47,14 @@ Before proposing, study the RECORD of every idea already tried:
 - never repeat an idea or a trivial variant of one that did badly (same rules, nearby numbers);
 - build on what worked in-sample and say what you learned from; avoid rules that keep showing up in poor results;
 - too few trades -> looser filters; many trades with t near 0 -> a real entry filter, not another exit tweak;
-- change one theme at a time so the result teaches something.
+- read "buildingBlocks" FIRST: across every idea tested, what each piece (rule, filter, exit, formula series) adds to
+  the in-sample average R (ideas with it minus ideas without it, with a t). "best" are the pieces that help, "worst"
+  the ones that hurt. Build new strategies by COMBINING pieces with a positive lift from DIFFERENT families, and drop
+  the ones in "worst". Say which blocks each idea uses in learnedFrom;
+- no one-knob tweaks: an idea must differ from every tested idea by at least two pieces (a new entry piece, a new
+  filter or a new exit), not by a number or a single switch. "exhaustedFamilies" are entry families tested too often
+  already: ideas from them are not tested any more, so use other entry pieces ("familyCounts" shows how often each
+  entry family was tried).
 Express every idea with the catalog and formulas when the data exists; only data that does not exist goes in
 "missing" (the idea is then recorded as a feature request and not tested).
 "savedStrategies" are strategies the trader already found and kept: never propose them again or near copies of
@@ -224,13 +231,13 @@ def build(strategy, catalog, settings, library, items):
     return res
 
 
-def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None):
+def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None, blocks=None):
     """-> ([{name, hypothesis, changes, missing, learnedFrom}], notes). Plain data; research.py validates it.
     keepers: strategies the trader saved (found and kept): find NEW families, don't re-propose them."""
     payload = {"strategy": STRATEGY_TEXT.get(strategy, strategy), "catalog": catalog or [{"key": k} for k in settings],
                "formulas": _spec(strategy), "formulaKeys": FORMULA_KEYS.get(strategy, {}), "indicators": library or [],
                "startingPoint": settings, "criteria": crit, "ideasTestedSoFar": n_tested, "record": rec,
-               "savedStrategies": keepers or [], "focus": focus or None, "howMany": n}
+               "savedStrategies": keepers or [], "buildingBlocks": blocks or {}, "focus": focus or None, "howMany": n}
     out, props = _ask(SYSTEM, payload, SCHEMA, "ideas")
     props = props[:n]
     return [_clean(x) for x in props], str(out.get("notes") or "")[:600]
