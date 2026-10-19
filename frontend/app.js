@@ -2047,7 +2047,7 @@ function researchBox(strategy) {
         ${x.rebuilt ? `<div class="gain">Rebuilt by the agent with new indicators (it was waiting for: ${esc((x.wasMissing || []).join(' · '))})</div>` : ''}
         ${(x.missing || []).length ? `<div><b>${x.status === 'needs data' ? 'Needs data the app doesn\'t have' : 'Needs'}:</b> ${esc(x.missing.join(' · '))}${x.status === 'needs feature' && !x.buildTried ? ' <span class="muted">(the agent will create the indicators on its next run)</span>' : ''}</div>` : ''}
         ${x.status === 'tested' ? `<div class="muted">${esc((x.period || {}).from || '')} → ${esc((x.period || {}).to || '')}, halves split at ${esc((x.period || {}).mid || '')} · cost ${m.cost}R a trade taken off · 1st half ${(m.h1 || {}).n} trades t ${(m.h1 || {}).t ?? '—'} · 2nd half ${(m.h2 || {}).n} trades t ${(m.h2 || {}).t ?? '—'}${(x.bySym || []).length ? ' · ' + x.bySym.map(r => `${esc(r.sym)} ${r.totR > 0 ? '+' : ''}${r.totR}R`).join(' ') : ''}</div>` : ''}
-        <div style="display:flex;gap:6px;margin-top:4px">${Object.keys(x.changes || {}).length ? `<button class="btn coachbtn" data-rx="use|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px">Load into ${strategy === 'day' ? 'the settings' : 'the lab'}</button>` : ''}${strategy === 'day' && x.status === 'tested' ? `<button class="btn" data-rx="rob|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px" title="Load it into the settings and run the robustness check (Backtest & tools tab)">Robustness check</button>` : ''}<button class="btn" data-rx="del|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px">Delete</button></div></td></tr>` : ''); }).join('');
+        <div style="display:flex;gap:6px;margin-top:4px">${Object.keys(x.changes || {}).length ? `<button class="btn coachbtn" data-rx="use|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px">Load into ${strategy === 'day' ? 'the settings' : 'the lab'}</button>` : ''}${x.status === 'tested' ? `<button class="btn coachbtn" data-rx="ssavei|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px" title="Keep it: re-tested every day, and the agent looks for other strategies">Save as strategy</button>` : ''}${strategy === 'day' && x.status === 'tested' ? `<button class="btn" data-rx="rob|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px" title="Load it into the settings and run the robustness check (Backtest & tools tab)">Robustness check</button>` : ''}<button class="btn" data-rx="del|${x.id}|${strategy}" style="font-size:.75rem;padding:1px 10px">Delete</button></div></td></tr>` : ''); }).join('');
   const pipe = `<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0">
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:.95rem">Test pipeline</b>
       <span class="muted" style="font-size:.75rem">plain code, no AI: every idea (the agent's or yours) runs on the same history with the same criteria · ${t.tested || 0} ideas tested · t needed now ${t.tReq ?? '—'}${c.adjustT ? ' (raised for the number of ideas)' : ''} · ${nA} A · ${nB} B</span></div>
@@ -2063,7 +2063,25 @@ function researchBox(strategy) {
     ${(t.indicators || []).length ? `<details style="margin:2px 0 6px"><summary style="font-size:.8rem;cursor:pointer"><b>Indicators the agent created</b> <span class="muted">(${t.indicators.length}: formulas over the Alpaca / Unusual Whales data, reused by later ideas)</span></summary>
       <div style="overflow-x:auto"><table class="pos" style="font-size:.78rem"><thead><tr><th>Name</th><th>Formula</th><th>What</th><th>For</th></tr></thead><tbody>${t.indicators.slice().reverse().map(i => `<tr><td><code>${esc(i.name)}</code></td><td><code style="font-size:.74rem">${esc(i.formula)}</code></td><td>${esc(i.what || '')}</td><td class="muted">${esc(i.idea || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${t.error ? `<div class="errbox">${esc(t.error)}</div>` : xs.length ? `<div style="overflow-x:auto;max-height:520px;overflow-y:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th></th><th>Idea</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">t / needed</th><th class="r">PF</th><th class="r">1st / 2nd half</th><th class="r">Max DD</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted" style="font-size:.8rem">No ideas yet.</p>'}</div>`;
-  return agent + pipe;
+  return rsStratBox(strategy, t) + agent + pipe;
+}
+function rsStratBox(strategy, t) {
+  const ss = t.strategies || [], R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const ST = { healthy: ['gain', 'healthy'], weakening: ['', 'weakening (last 60 days ≤ 0)'], failing: ['loss', 'failing'] };
+  const rows = ss.slice().reverse().map(x => { const c = (x.checks || []).slice(-1)[0], st = c ? ST[c.status] || ['', c.status] : ['muted', 'not checked yet'];
+    const hist = (x.checks || []).slice(-30).map(k => (k.last60 || {}).avgR ?? 0), mx = Math.max(0.05, ...hist.map(Math.abs));
+    const spark = hist.length > 1 ? `<svg width="90" height="22" viewBox="0 0 90 22" style="vertical-align:middle"><line x1="0" x2="90" y1="11" y2="11" stroke="var(--line)"/><path d="${hist.map((v, i) => `${i ? 'L' : 'M'}${(i / (hist.length - 1) * 88 + 1).toFixed(1)},${(11 - v / mx * 10).toFixed(1)}`).join('')}" fill="none" stroke="var(--coach,#5b5bd6)" stroke-width="1.5"/></svg>` : '';
+    return `<tr><td><b>${esc(x.name)}</b><div class="muted" style="font-size:.72rem">saved ${esc((x.at || '').slice(0, 10))}${x.baseline ? ` · when found: ${x.baseline.n} trades ${x.baseline.avgR > 0 ? '+' : ''}${x.baseline.avgR}R t ${x.baseline.t}` : ''}</div></td>
+      <td class="${st[0]}" style="font-size:.78rem">${st[1]}</td><td class="r">${c ? `${(c.all || {}).n} · ${R((c.all || {}).avgR)} · t ${(c.all || {}).t ?? '—'}` : '—'}</td>
+      <td class="r">${c ? `${(c.last60 || {}).n} · ${R((c.last60 || {}).avgR)}` : '—'}</td><td class="r">${c ? `${(c.last20 || {}).n} · ${R((c.last20 || {}).avgR)}` : '—'}</td><td>${spark}</td>
+      <td style="white-space:nowrap"><button class="btn" data-rx="suse|${x.id}|${strategy}" style="font-size:.72rem;padding:0 8px">Load</button> <button class="btn" data-rx="sdel|${x.id}|${strategy}" style="font-size:.72rem;padding:0 8px">Delete</button></td></tr>`; }).join('');
+  return `<div style="border:1px solid var(--gain);border-radius:8px;padding:8px 10px;margin:14px 0 6px">
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:.95rem">Saved strategies</b>
+      <span class="muted" style="font-size:.75rem">kept apart from the ideas: re-tested every day after the close on the last 250 days (all, last 60 and last 20 days, after the cost), so you see when one weakens. The AI agent knows them and looks for OTHER strategies, not copies.</span>
+      ${strategy === 'day' ? `<button class="btn" data-rx="scheck|day" style="font-size:.74rem;padding:0 8px">Re-check now</button>` : ''}
+      <button class="btn" data-rx="ssave|${strategy}" style="font-size:.74rem;padding:0 8px" title="Save the settings on screen as a strategy">Save the current ${strategy === 'day' ? 'settings' : 'lab settings'}</button></div>
+    ${ss.length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin-top:4px"><thead><tr><th>Strategy</th><th>Status</th><th class="r">250 days: trades · avg · t</th><th class="r">Last 60 days</th><th class="r">Last 20 days</th><th>Last 60 days, check by check</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : '<p class="muted" style="font-size:.8rem;margin:4px 0 0">None yet: open a good idea below and click “Save as strategy”.</p>'}${strategy === 'swing' && ss.length ? '<p class="muted" style="font-size:.74rem;margin:4px 0 0">The daily re-check runs for day-trading strategies; swing ones are kept and shown to the agent.</p>' : ''}</div>`;
 }
 function rsAction([act, a, b]) {
   const val = id => (document.getElementById(id) || {}).value;
@@ -2085,6 +2103,19 @@ function rsAction([act, a, b]) {
     S.rsFocus = val('rs-focus') ?? S.rsFocus;
     api('/research/auto', { method: 'PUT', body: { strategy: a, perDay: +(val('rs-aper') ?? 4), n: +val('rs-an') || 4, days: +val('rs-adays') || 250, focus: S.rsFocus || '' } })
       .then(r => { S.rs[a] = { ...(S.rs[a] || {}), auto: r.auto, autoToday: r.autoToday }; toast('Autopilot saved'); render(); setTimeout(() => loadRs(a), 2500); }).catch(err => toast(err.message)); return; }
+  if (act === 'scheck') { api('/research/strategy/check', { method: 'POST', body: {} }).then(() => { toast('Re-checking the saved strategies (a few minutes)'); setTimeout(() => loadRs(a), 60000); }).catch(err => toast(err.message)); return; }
+  if (act === 'ssave') {
+    const name = prompt('Name of the strategy', ''); if (!name) return;
+    api('/research/strategy', { method: 'POST', body: { strategy: a, name, cfg: rsCur(a) } }).then(() => { toast(`Saved “${name}”: first check running`); loadRs(a); setTimeout(() => loadRs(a), 90000); }).catch(err => toast(err.message)); return; }
+  if (act === 'ssavei') {
+    const id0 = a, x0 = (((S.rs[b] || {}).ideas) || []).find(i => i.id === id0); const name = prompt('Name of the strategy', x0 ? x0.name : ''); if (!name) return;
+    api('/research/strategy', { method: 'POST', body: { strategy: b, name, ideaId: id0 } }).then(() => { toast(`Saved “${name}”: first check running`); loadRs(b); setTimeout(() => loadRs(b), 90000); }).catch(err => toast(err.message)); return; }
+  if (act === 'suse' || act === 'sdel') {
+    const sx = (((S.rs[b] || {}).strategies) || []).find(i => i.id === a); if (!sx) return;
+    if (act === 'sdel') { if (!confirm(`Delete “${sx.name}”?`)) return; api('/research/strategy?id=' + encodeURIComponent(a), { method: 'DELETE' }).then(() => loadRs(b)).catch(err => toast(err.message)); return; }
+    if (b === 'day') { S.dtDraft = { ...(S.dtDraft || {}), ...sx.full }; S.dtDirty = true; toast('Loaded into the settings: click Apply to use them'); render(); }
+    else { S.lab = { ...(labCfg() || {}), ...sx.full }; S.labDraft = {}; S.labSw = {}; toast('Loaded into the lab'); labRedraw(); }
+    return; }
   if (act === 'mctx') {
     api('/research/marketctx', { method: 'POST', body: { days: +(b || S.rsDays || 250) } }).then(r => { S.rs[a] = { ...(S.rs[a] || {}), mctx: r.state }; toast(r.started ? 'Loading the market context in the background (a few runs of ~7 min)' : 'Already loading'); render(); }).catch(err => toast(err.message)); return; }
   if (act === 'crit') {

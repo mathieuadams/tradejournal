@@ -1983,6 +1983,9 @@ def handler(event, context_):
                     research._set_run(sub, {"running": None, "step": "failed", "errors": [str(e)[:200]], "at": iso(now_ny())})
                     research.log_run(sub, {"at": iso(now_ny()), "strategy": (event.get("params") or {}).get("strategy"), "errors": [str(e)[:200]]})
                     out[sub] = {"error": str(e)[:200]}
+            elif job == "rsstrat":
+                import research
+                out[sub] = research.strat_job(sub, event.get("params") or {})
             elif job == "dtrob":
                 import dtrobust
                 out[sub] = {"variants": (dtrobust.job(sub, event.get("params") or {}) or {}).get("variants")}

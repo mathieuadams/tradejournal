@@ -50,6 +50,9 @@ Before proposing, study the RECORD of every idea already tried:
 - change one theme at a time so the result teaches something.
 Express every idea with the catalog and formulas when the data exists; only data that does not exist goes in
 "missing" (the idea is then recorded as a feature request and not tested).
+"savedStrategies" are strategies the trader already found and kept: never propose them again or near copies of
+them; the goal is OTHER strategies that make money for different reasons (another family, other days or hours), so
+the saved ones and the new ones don't lose at the same time. Only improve a saved one when the focus asks for it.
 Follow the trader's focus request when one is given. Short, plain English."""
 
 SCHEMA = {"type": "object", "properties": {
@@ -127,10 +130,49 @@ def _ask(system, payload, schema, key):
     out = {}
     for _ in range(2):
         out = claude.json_call(model, system, payload, 12000, schema) or {}
-        items = [x for x in _list(out.get(key)) if isinstance(x, dict)]
+        v = out.get(key)
+        if isinstance(v, str) and not _list(v):        # a list inside a sentence / code fence
+            v = _first_json_list(v)
+        raw = [v] if isinstance(v, dict) else _list(v)
+        items = []
+        for x in raw:                                  # each item may itself come as JSON text
+            if isinstance(x, str):
+                x = _first_json(x)
+            if isinstance(x, dict):
+                items.append(x)
+            elif isinstance(x, list):
+                items += [y for y in x if isinstance(y, dict)]
         if items:
             return out, items
-    raise ValueError(f"the AI returned no usable {key} (keys: {', '.join(out) or 'none'})")
+        kind = type(out.get(key)).__name__
+        sample = str(out.get(key))[:120]
+    raise ValueError(f"the AI returned no usable {key} ({kind}: {sample})")
+
+
+def _first_json_list(t):
+    import json
+    t = str(t)
+    i, j = t.find("["), t.rfind("]")
+    if i >= 0 and j > i:
+        try:
+            return json.loads(t[i:j + 1])
+        except ValueError:
+            pass
+    return _first_json(t)
+
+
+def _first_json(t):
+    """A JSON object / list inside a text (the model sometimes wraps it in words or code fences)."""
+    import json
+    t = str(t).strip()
+    for a, b in (("{", "}"), ("[", "]")):
+        i, j = t.find(a), t.rfind(b)
+        if i >= 0 and j > i:
+            try:
+                return json.loads(t[i:j + 1])
+            except ValueError:
+                continue
+    return None
 
 
 def _clean(x):
@@ -182,13 +224,13 @@ def build(strategy, catalog, settings, library, items):
     return res
 
 
-def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None):
-    """-> ([{name, hypothesis, changes, missing, learnedFrom}], notes). Plain data; research.py validates it."""
-    import claude
+def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None):
+    """-> ([{name, hypothesis, changes, missing, learnedFrom}], notes). Plain data; research.py validates it.
+    keepers: strategies the trader saved (found and kept): find NEW families, don't re-propose them."""
     payload = {"strategy": STRATEGY_TEXT.get(strategy, strategy), "catalog": catalog or [{"key": k} for k in settings],
                "formulas": _spec(strategy), "formulaKeys": FORMULA_KEYS.get(strategy, {}), "indicators": library or [],
                "startingPoint": settings, "criteria": crit, "ideasTestedSoFar": n_tested, "record": rec,
-               "focus": focus or None, "howMany": n}
+               "savedStrategies": keepers or [], "focus": focus or None, "howMany": n}
     out, props = _ask(SYSTEM, payload, SCHEMA, "ideas")
     props = props[:n]
     return [_clean(x) for x in props], str(out.get("notes") or "")[:600]

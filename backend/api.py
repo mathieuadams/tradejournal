@@ -608,6 +608,32 @@ def research_mctx(sub, claims, body, q):
     return {"started": started, "state": marketctx.job_state(sub)}
 
 
+@route("POST", "/research/strategy")
+def research_strat_save(sub, claims, body, q):
+    """Save a strategy (an idea of the record, or settings): kept, shown to the agent, re-checked every day."""
+    import research
+    b = body or {}
+    try:
+        x = research.save_strategy(sub, b.get("strategy") or "day", b.get("name"), b.get("cfg") if isinstance(b.get("cfg"), dict) else None, b.get("ideaId"))
+    except ValueError as e:
+        raise BadRequest(str(e))
+    research._invoke(sub, "rsstrat", {})              # first check right away
+    return {"strategy": x}
+
+
+@route("POST", "/research/strategy/check")
+def research_strat_check(sub, claims, body, q):
+    import research
+    research._invoke(sub, "rsstrat", {"days": (body or {}).get("days") or 250})
+    return {"status": "running"}
+
+
+@route("DELETE", "/research/strategy")
+def research_strat_del(sub, claims, body, q):
+    import research
+    return {"deleted": research.delete_strategy(sub, (q or {}).get("id"))}
+
+
 @route("DELETE", "/research/idea")
 def research_del(sub, claims, body, q):
     import research

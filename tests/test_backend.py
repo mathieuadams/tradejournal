@@ -3176,7 +3176,7 @@ def test_research_pipeline_and_agent_apart():
                     for i in range(300)]
     seen_payload = {}
 
-    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None):
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None):
         seen_payload.update(rec=rec, crit=crit)
         return [{"name": "vwap", "hypothesis": "h", "changes": {"aboveVwap": True}},
                 {"name": "vwap again", "hypothesis": "h", "changes": {"aboveVwap": True}},
@@ -3316,7 +3316,7 @@ def test_research_agent_creates_indicators():
             good = "rsi(14)" in (P.get("fxLong") or "")
             return [{"at": f"2025-{1 + i % 12:02d}-10T10:00", "R": (1.2 if i % 2 else -0.5) if good else 0.0, "sym": "QQQ"} for i in range(300)]
 
-    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None):
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None):
         if not calls.get("p"):
             calls["p"] = 1
             return [{"name": "rsi dip", "hypothesis": "h", "changes": {"fxLong": "rsiFast < 30"}, "missing": [],
@@ -3497,6 +3497,43 @@ def test_day_robustness_check():
     assert out["base"]["avgR"] == 0.2 and out["positive"] == out["variants"] and out["verdict"] in ("robust", "mixed")
     assert out["extra"][0]["all"]["avgR"] == 0.15 and out["extra"][1]["all"]["n"] == 190
     assert dtrobust.result("rob-u")["verdict"] == out["verdict"]
+
+
+def test_saved_strategies():
+    """Saved strategies: kept from an idea, shown to the agent (no results), never re-proposed (fingerprint), re-checked
+    on all / last 60 / last 20 days with a status; the agent's answer is read even when items come as JSON text."""
+    import research, research_agent, daytrade, claude, json
+    sub = "rs-strat"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    saved = daytrade.config, daytrade.run_variants, claude.json_call
+    try:
+        daytrade.config = lambda s_: {**daytrade.PARAMS}
+        x = {"id": "i1", "at": "2026-10-19T10:00:00", "strategy": "day", "name": "flip fade", "status": "tested", "hypothesis": "h",
+             "full": research.tunable("day", {**research.blank_cfg(sub, "day"), "aboveVwap": True, "fxLong": "megaBreadth > 0.5"}),
+             "metrics": {"n": 239, "avgR": 0.21, "t": 2.08, "pf": 1.35, "win": 40}}
+        research._put_idea(sub, x)
+        st = research.save_strategy(sub, "day", "Flip fade", idea_id="i1")
+        assert st["full"]["aboveVwap"] and st["baseline"]["avgR"] == 0.21
+        kp = research.keepers(sub, "day")
+        assert kp[0]["name"] == "Flip fade" and kp[0]["settings"]["fxLong"] == "megaBreadth > 0.5" and "baseline" not in kp[0]
+
+        def rv(sub_, days, variants, budget_s=540, tickers=None):
+            ds = [f"2026-{m:02d}-{d:02d}" for m in range(1, 13) for d in (5, 12, 19, 26)][:48] + [f"2026-12-{d:02d}" for d in range(1, 29)]
+            rows = [{"at": d + "T10:00", "R": (0.8 if k % 2 else -0.4) if d < "2026-11" else -0.5} for k, d in enumerate(ds)]
+            return {0: rows}, {}, set(ds), {}, []
+        daytrade.run_variants = rv
+        research.check_strategies(sub, 250, cost=0.05)
+        c = research.strategies(sub, "day")[0]["checks"][-1]
+        assert c["all"]["n"] == 76 and c["last20"]["avgR"] == -0.55 and c["status"] in ("weakening", "failing")
+        claude.json_call = lambda *a, **k: {"ideas": [json.dumps({"name": "n", "hypothesis": "h", "changes": {"aboveVwap": True}})]}
+        props, _ = research_agent.propose("day", [], {}, {}, [], 4, None, 0, [], kp)
+        assert props and props[0]["name"] == "n"
+        claude.json_call = lambda *a, **k: {"ideas": "Here they are: [{\"name\": \"m\", \"hypothesis\": \"h\", \"changes\": {}}]"}
+        assert research_agent.propose("day", [], {}, {}, [], 4, None, 0)[0][0]["name"] == "m"
+        assert research.delete_strategy(sub, st["id"]) and not research.strategies(sub)
+    finally:
+        daytrade.config, daytrade.run_variants, claude.json_call = saved
 
 
 def test_no_support_any_candle():

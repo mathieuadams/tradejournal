@@ -90,7 +90,8 @@ def state(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
     xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
+    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
+            "strategies": strategies(sub, strategy) if strategy else strategies(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
 
@@ -543,13 +544,14 @@ def run(sub, params=None, budget_s=540):
         try:
             props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
                                                  research_agent.public_criteria(c), research_agent.record(hist), n, p.get("focus"),
-                                                 sum(1 for x in hist if x.get("status") == "tested"), library(sub))
+                                                 sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy))
         except Exception as e:
             run_["errors"].append(f"AI agent: {str(e)[:200]}")
             break
         if note:
             notes.append(note)
         seen = {x.get("fp") for x in hist if x.get("fp") and x.get("status") in ("tested", "queued")}
+        seen |= {x.get("fp") for x in strategies(sub, strategy) if x.get("fp")}
         for k, pr in enumerate(props):
             made, bad = lib_add(sub, pr.get("newIndicators"), strategy, "ai", pr.get("name"))
             x = admit(new_idea(strategy, base, pr.get("name"), pr.get("changes"), "ai", days, pr.get("hypothesis"),
@@ -580,6 +582,102 @@ def run(sub, params=None, budget_s=540):
         except Exception as e:
             print("autopilot chain failed", e)
     return run_
+
+
+# ---------------------------------------------------------------- saved strategies (kept, re-checked every day)
+STRAT = "RSTRAT#"
+
+
+def strategies(sub, strategy=None):
+    out = []
+    for r in db.q_prefix(db.upk(sub), STRAT):
+        try:
+            x = json.loads(r["data"])
+        except (KeyError, ValueError):
+            continue
+        if not strategy or x.get("strategy") == strategy:
+            out.append(x)
+    return sorted(out, key=lambda x: x.get("at") or "")
+
+
+def _put_strat(sub, x):
+    db.put({"PK": db.upk(sub), "SK": f"{STRAT}{x['id']}", "data": json.dumps(x, default=str, separators=(",", ":"))})
+
+
+def save_strategy(sub, strategy, name, cfg=None, idea_id=None):
+    """Keep a strategy: an idea of the record (its complete settings) or settings given. Re-checked every day."""
+    if strategy not in STRATS:
+        raise ValueError("unknown strategy")
+    src, base = None, None
+    if idea_id:
+        src = next((x for x in ideas(sub, strategy) if x.get("id") == idea_id), None)
+        if not src:
+            raise ValueError("idea not found")
+        full = dict(src.get("full") or {})
+    else:
+        full = tunable(strategy, {**base_cfg(sub, strategy), **(clean_changes(strategy, cfg or {})[0])})
+    x = {"id": uuid.uuid4().hex[:10], "at": iso(now_ny()), "strategy": strategy, "name": str(name or (src or {}).get("name") or "strategy")[:80],
+         "full": full, "idea": idea_id, "hypothesis": (src or {}).get("hypothesis"), "readable": (src or {}).get("readable"),
+         "baseline": {k: (src or {}).get("metrics", {}).get(k) for k in ("n", "avgR", "t", "pf", "win")} if src else None,
+         "checks": [], "fp": fingerprint(strategy, {k: v for k, v in full.items() if blank_cfg(sub, strategy).get(k) != v})}
+    _put_strat(sub, x)
+    return x
+
+
+def delete_strategy(sub, sid):
+    db.delete(db.upk(sub), f"{STRAT}{sid}")
+    return True
+
+
+def keepers(sub, strategy):
+    """The saved strategies as the agent may see them: name, idea, settings that are on (no results)."""
+    out = []
+    for x in strategies(sub, strategy):
+        on = {k: v for k, v in (x.get("full") or {}).items() if v not in (False, "", None, 0)}
+        on.update(x.get("readable") or {})
+        out.append({"name": x["name"], "hypothesis": x.get("hypothesis"), "settings": on})
+    return out
+
+
+def check_strategies(sub, days=250, cost=None):
+    """Every saved day strategy on the last `days` days (one load for all): full period, last 60 and last 20 trading
+    days. Kept as a history (the last 90 checks) so a strategy that weakens shows it."""
+    import daytrade
+    ss = strategies(sub, "day")
+    if not ss:
+        return []
+    c = criteria(sub)
+    cost = float(c["costR"] if cost is None else cost)
+    tickers = daytrade.config(sub)["tickers"]
+    vs = [{**daytrade.PARAMS, **x["full"], "tickers": tickers} for x in ss]
+    rr, per, all_days, feed, errors = daytrade.run_variants(sub, days, vs, 500, tickers)
+    ds = sorted(all_days)
+    l60, l20 = (ds[-60] if len(ds) >= 60 else ds[0] if ds else ""), (ds[-20] if len(ds) >= 20 else ds[0] if ds else "")
+    out = []
+    for i, x in enumerate(ss):
+        rows = [r for r in rr.get(i, []) if r.get("R") is not None]
+        f = lambda since: metrics([r for r in rows if r["at"][:10] >= since], "9999", cost) if since else {"n": 0}
+        m = metrics(rows, ds[len(ds) // 2] if ds else "", cost)
+        chk = {"at": iso(now_ny()), "days": len(ds), "cost": cost, "all": {k: m.get(k) for k in ("n", "avgR", "t", "pf", "win", "maxDD")},
+               "last60": {k: f(l60).get(k) for k in ("n", "avgR", "totR", "win")}, "last20": {k: f(l20).get(k) for k in ("n", "avgR", "totR", "win")},
+               "errors": errors[:3]}
+        avg, a60 = chk["all"].get("avgR"), chk["last60"].get("avgR")
+        chk["status"] = ("healthy" if (avg or 0) > 0 and (a60 is None or a60 > 0) else
+                         "weakening" if (avg or 0) > 0 else "failing")
+        x["checks"] = (x.get("checks") or [])[-89:] + [chk]
+        _put_strat(sub, x)
+        out.append({"id": x["id"], "status": chk["status"]})
+    r = _item(sub)
+    db.put({**r, "stratCheck": iso(now_ny())})
+    return out
+
+
+def strat_job(sub, params=None):
+    try:
+        return {"checked": check_strategies(sub, int((params or {}).get("days") or 250))}
+    except Exception as e:
+        print("strategy check failed", e)
+        return {"error": str(e)[:200]}
 
 
 # ---------------------------------------------------------------- autopilot: the agent runs on its own
@@ -679,6 +777,13 @@ def auto_today(sub):
     return {s: cnt.get(f"{today}|{s}", 0) for s in STRATS}
 
 
+def _invoke(sub, job, params):
+    import boto3
+    fn = os.environ.get("BOT_FUNCTION") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    if fn:
+        boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event", Payload=json.dumps({"sub": sub, "job": job, "params": params}))
+
+
 def auto_kick():
     """Hourly: start an autopilot run for every user due (each run starts the next one when it is done; this hourly
     kick restarts the chain after the daily reset or a failed run)."""
@@ -687,6 +792,13 @@ def auto_kick():
         if it.get("auto"):
             sub = it["PK"][5:]
             started += _start(sub, auto_due(sub))
+            try:                                       # the saved strategies, once a day after the close
+                if now_ny().strftime("%H:%M") >= "17:00" and (it.get("stratCheck") or "")[:10] < now_ny().strftime("%Y-%m-%d") \
+                        and strategies(sub, "day"):
+                    db.put({**_item(sub), "stratCheck": iso(now_ny())})
+                    _invoke(sub, "rsstrat", {})
+            except Exception as e:
+                print("strategy check kick failed", e)
             try:                                       # the market context of the last session, once it is over
                 import marketctx
                 st = marketctx.job_state(sub)
