@@ -1992,12 +1992,12 @@ function researchBox(strategy) {
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">${(() => { const au = (t.auto || {})[strategy] || {};
       return `<button class="btn ${au.on ? 'coachbtn' : ''}" data-rx="auto|${strategy}" style="font-size:.78rem;padding:1px 12px" title="Every hour the agent proposes new strategies and the pipeline tests them, without you clicking">Autopilot ${au.on ? 'ON' : 'OFF'}</button>
         <label><select id="rs-aper" style="padding:1px 4px">${[[0, 'continuous'], [4, 'up to 4 runs a day'], [8, 'up to 8 runs a day'], [12, 'up to 12 runs a day'], [24, 'up to 24 runs a day']].map(([n, l]) => `<option value="${n}" ${n === (au.perDay ?? 4) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-        ${au.on ? `<button class="btn" data-rx="autoset|${strategy}" style="font-size:.74rem;padding:0 8px">Save</button>` : ''}
+        <button class="btn" data-rx="autoset|${strategy}" style="font-size:.74rem;padding:0 8px" title="Save these autopilot settings and the focus">Save</button>
         <label><select id="rs-an" style="padding:1px 4px">${[2, 3, 4, 6, 8].map(n => `<option ${n === (au.n || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select> <span class="muted">ideas a run</span></label>
         <label><span class="muted">on</span> <select id="rs-adays" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (au.days || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select></label>
         <span class="muted" style="font-size:.74rem">${au.on ? `runs back to back on its own: ${((t.autoToday || {})[strategy]) || 0}${au.perDay ? ` of ${au.perDay}` : ''} runs today${au.perDay && (((t.autoToday || {})[strategy]) || 0) >= au.perDay ? ' — done for today, starts again after midnight ET' : au.perDay ? '' : ' · continuous: until you turn it off'} (each run calls the AI once: API cost)` : 'off: runs only when you click'}</span>`; })()}</div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">
-      <input id="rs-focus" placeholder="Focus (optional): e.g. use CVD and the put wall for longs, avoid lunch hours" value="${esc(S.rsFocus || '')}" style="flex:1 1 320px;padding:2px 6px">
+      <input id="rs-focus" placeholder="Focus (optional): e.g. use CVD and the put wall for longs, avoid lunch hours" value="${esc(S.rsFocus ?? ((((t.auto || {})[strategy]) || {}).focus || ''))}" style="flex:1 1 320px;padding:2px 6px">
       <label><span class="muted">ideas</span> <select id="rs-n" style="padding:1px 4px">${[2, 3, 4, 6, 8].map(n => `<option ${n === (S.rsN || 4) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <label><span class="muted">rounds</span> <select id="rs-rounds" style="padding:1px 4px">${[1, 2, 3].map(n => `<option ${n === (S.rsRounds || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <label><span class="muted">history</span> <select id="rs-days" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (S.rsDays || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select></label>
@@ -2005,7 +2005,9 @@ function researchBox(strategy) {
     ${busy ? `<p style="font-size:.8rem;margin:6px 0 0"><b>${esc(run.step || '')}</b> <span class="muted">· ${run.made || 0} proposed · ${run.testedNow || 0} tested so far</span></p>` : ''}
     ${!busy && run.at && run.step === 'done' ? `<p class="muted" style="font-size:.78rem;margin:6px 0 0">Last run ${esc((run.at || '').slice(5, 16).replace('T', ' '))}${run.auto ? ' (autopilot)' : ''}: ${run.made || 0} proposed · ${run.testedNow || 0} tested${run.secs ? ` · ${run.secs} s` : ''}</p>` : ''}
     ${(run.notes || []).length && !busy ? `<p style="font-size:.8rem;margin:6px 0 0"><b>Agent notes:</b> ${esc(run.notes.join(' '))}</p>` : ''}
-    ${(run.errors || []).length ? `<p class="loss" style="font-size:.78rem;margin:4px 0 0">${esc(run.errors.join(' · '))}</p>` : ''}</div>`;
+    ${(run.errors || []).length ? `<p class="loss" style="font-size:.78rem;margin:4px 0 0">${esc(run.errors.join(' · '))}</p>` : ''}
+    ${(t.runlog || []).length ? `<details style="margin-top:6px"><summary style="font-size:.78rem;cursor:pointer">Last runs (${t.runlog.length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.76rem"><thead><tr><th>When (ET)</th><th></th><th class="r">Proposed</th><th class="r">Tested</th><th class="r">Secs</th><th>Focus</th><th>Errors</th></tr></thead><tbody>
+      ${t.runlog.slice().reverse().map(r0 => `<tr><td>${esc((r0.at || '').slice(5, 16).replace('T', ' '))}</td><td>${r0.strategy === 'swing' ? 'swing' : 'day'}${r0.auto ? ' · auto' : ''}</td><td class="r">${r0.made ?? '—'}</td><td class="r">${r0.testedNow ?? '—'}</td><td class="r">${r0.secs ?? '—'}</td><td>${esc(r0.focus || '')}</td><td class="loss">${esc((r0.errors || []).join(' · '))}</td></tr>`).join('')}</tbody></table></div></details>` : ''}</div>`;
   const rows = xs.map(x => { const m = x.metrics || {}, open = S.rsOpen === x.id;
     return `<tr data-rx="open|${x.id}" style="cursor:pointer"><td>${badge(x)}</td><td><b style="font-size:.8rem">${esc(x.name)}</b> <span class="muted" style="font-size:.72rem">${x.by === 'you' ? 'yours' : 'AI'} · ${esc((x.at || '').slice(5, 16).replace('T', ' '))}</span></td>
       <td class="r">${m.n ?? '—'}</td><td class="r">${m.win != null ? m.win + '%' : '—'}</td><td class="r">${R(m.avgR)}</td><td class="r">${m.t ?? '—'}${x.tReq ? ` <span class="muted">/ ${x.tReq}</span>` : ''}</td><td class="r">${m.pf ?? '—'}</td>
@@ -2047,10 +2049,12 @@ function rsAction([act, a, b]) {
       .then(() => busy(a)).catch(err => toast(err.message)); return; }
   if (act === 'auto') {
     const au = (((S.rs[a] || {}).auto) || {})[a] || {};
-    const body = { strategy: a, on: !au.on, perDay: +(val('rs-aper') ?? 4), n: +val('rs-an') || 4, days: +val('rs-adays') || 250, catalog: rsCatalog(a) };
+    S.rsFocus = val('rs-focus') ?? S.rsFocus;
+    const body = { strategy: a, on: !au.on, perDay: +(val('rs-aper') ?? 4), n: +val('rs-an') || 4, days: +val('rs-adays') || 250, focus: S.rsFocus || '', catalog: rsCatalog(a) };
     api('/research/auto', { method: 'PUT', body }).then(r => { S.rs[a] = { ...(S.rs[a] || {}), auto: r.auto, autoToday: r.autoToday }; toast(body.on ? 'Autopilot on: starting now' : 'Autopilot off'); render(); setTimeout(() => loadRs(a), 2500); }).catch(err => toast(err.message)); return; }
   if (act === 'autoset') {
-    api('/research/auto', { method: 'PUT', body: { strategy: a, perDay: +(val('rs-aper') ?? 4), n: +val('rs-an') || 4, days: +val('rs-adays') || 250 } })
+    S.rsFocus = val('rs-focus') ?? S.rsFocus;
+    api('/research/auto', { method: 'PUT', body: { strategy: a, perDay: +(val('rs-aper') ?? 4), n: +val('rs-an') || 4, days: +val('rs-adays') || 250, focus: S.rsFocus || '' } })
       .then(r => { S.rs[a] = { ...(S.rs[a] || {}), auto: r.auto, autoToday: r.autoToday }; toast('Autopilot saved'); render(); setTimeout(() => loadRs(a), 2500); }).catch(err => toast(err.message)); return; }
   if (act === 'crit') {
     const body = {}; document.querySelectorAll('[data-rscrit]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.rscrit] = v; });

@@ -554,6 +554,8 @@ def research_run(sub, claims, body, q):
         return {"status": "running"}
     strategy = b.get("strategy") if b.get("strategy") in research.STRATS else "day"
     research._set_run(sub, {"running": iso(now_ny()), "strategy": strategy, "at": iso(now_ny()), "step": "starting", "errors": []})
+    if "focus" in b:                                   # the focus is kept: autopilot runs use it too
+        research.save_auto(sub, strategy, {"focus": b.get("focus")})
     params = {"strategy": strategy, "n": b.get("n") or 4, "rounds": b.get("rounds") or 1, "days": b.get("days") or 250,
               "focus": str(b.get("focus") or "")[:600], "catalog": b.get("catalog") if isinstance(b.get("catalog"), list) else None,
               "lab": b.get("lab") if isinstance(b.get("lab"), dict) else None}

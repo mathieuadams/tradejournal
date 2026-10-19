@@ -1978,10 +1978,11 @@ def handler(event, context_):
             elif job == "research":
                 import research
                 try:
-                    out[sub] = {"tested": research.run(sub, event.get("params") or {}).get("testedNow")}
-                except Exception as e:
+                    out[sub] = {"tested": research.run(sub, event.get("params") or {}, budget_s=400).get("testedNow")}
+                except Exception as e:                 # no re-raise: a retry of the event would start a 2nd run in parallel
                     research._set_run(sub, {"running": None, "step": "failed", "errors": [str(e)[:200]], "at": iso(now_ny())})
-                    raise
+                    research.log_run(sub, {"at": iso(now_ny()), "strategy": (event.get("params") or {}).get("strategy"), "errors": [str(e)[:200]]})
+                    out[sub] = {"error": str(e)[:200]}
             elif job == "rstest":
                 import research
                 out[sub] = {"tested": research.test_job(sub, event.get("params") or {}).get("testedNow")}

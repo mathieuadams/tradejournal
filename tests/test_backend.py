@@ -3214,10 +3214,12 @@ def test_research_pipeline_and_agent_apart():
         research._set_run(sub, {"running": None})
         assert research.auto_due(sub) and (research._set_run(sub, {"running": None}) or True) and research.auto_due(sub) == []   # 2 a day
         assert research.auto_today(sub)["day"] == 2
-        research.save_auto(sub, "day", {"perDay": 0})                 # continuous: no daily limit
+        research.save_auto(sub, "day", {"perDay": 0, "focus": "gamma flip regime"})   # continuous: no daily limit
         for _ in range(3):
             research._set_run(sub, {"running": None})
-            assert research.auto_due(sub)
+            d_ = research.auto_due(sub)
+            assert d_ and d_[0][1]["focus"] == "gamma flip regime"
+        assert research.run_log(sub) and research.state(sub)["runlog"]
         research._set_run(sub, {"running": None})
         st = research.state(sub, "day")
         assert st["tested"] == 2 and st["tReq"] >= 2.0, (st["tested"], st["tReq"], [(x["name"], x["status"]) for x in st["ideas"]])

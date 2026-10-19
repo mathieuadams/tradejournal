@@ -90,7 +90,7 @@ def state(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
     xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
+    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "tested": sum(1 for x in xs if x.get("status") == "tested"),
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
 
@@ -533,6 +533,7 @@ def run(sub, params=None, budget_s=540):
     run_.update(running=None, step="done", notes=notes, secs=round(time.time() - t0), days=days, errors=run_["errors"][:8],
                 auto=bool(p.get("auto")))
     _set_run(sub, run_)
+    log_run(sub, {k: run_.get(k) for k in ("at", "strategy", "made", "testedNow", "secs", "errors", "auto", "notes")} | {"focus": p.get("focus") or None})
     if p.get("auto"):                                  # autopilot: the next run starts right away, up to the daily limit
         try:
             _start(sub, auto_due(sub))
@@ -542,7 +543,20 @@ def run(sub, params=None, budget_s=540):
 
 
 # ---------------------------------------------------------------- autopilot: the agent runs on its own
-AUTO = {"on": False, "perDay": 4, "n": 4, "days": 250}
+AUTO = {"on": False, "perDay": 4, "n": 4, "days": 250, "focus": ""}
+
+
+def log_run(sub, entry):
+    """The last 40 runs, for the 'Last runs' list (what each run did, its errors)."""
+    r = _item(sub)
+    lg = json.loads(r["runlog"]) if r.get("runlog") else []
+    lg = (lg + [entry])[-40:]
+    db.put({**r, "runlog": json.dumps(lg, default=str)})
+
+
+def run_log(sub):
+    r = _item(sub)
+    return json.loads(r["runlog"]) if r.get("runlog") else []
 
 
 def _item(sub):
@@ -574,6 +588,8 @@ def save_auto(sub, strategy, body):
     cur = a[strategy]
     if "on" in body:
         cur["on"] = bool(body["on"])
+    if "focus" in body:
+        cur["focus"] = str(body["focus"] or "")[:600]
     for k, lo, hi in (("perDay", 0, 24), ("n", 1, MAX_IDEAS), ("days", 30, 500)):     # perDay 0 = continuous
         if k in body:
             try:
@@ -602,7 +618,7 @@ def auto_due(sub):
     cnt[f"{today}|{s}"] = cnt.get(f"{today}|{s}", 0) + 1
     db.put({**r, "autoRuns": json.dumps(cnt), "run": json.dumps({"running": iso(now_ny()), "strategy": s, "at": iso(now_ny()),
                                                                  "step": "autopilot: starting", "errors": [], "auto": True})})
-    return [(s, {"strategy": s, "n": a[s]["n"], "days": a[s]["days"], "rounds": 1, "auto": True})]
+    return [(s, {"strategy": s, "n": a[s]["n"], "days": a[s]["days"], "rounds": 1, "auto": True, "focus": a[s].get("focus") or ""})]
 
 
 def _start(sub, due):
