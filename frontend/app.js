@@ -1965,13 +1965,25 @@ function rsCatalog(strategy) {
   return out;
 }
 function rsLabel(strategy) { const m = {}; (strategy === 'day' ? DT_RULES : WW_RULES).forEach(r => { m[r[0]] = r[2]; }); return m; }
-async function loadRs(strategy) {
-  try { S.rs = { ...(S.rs || {}), [strategy]: await api('/research?strategy=' + strategy) }; } catch (e) { S.rs = { ...(S.rs || {}), [strategy]: { error: e.message } }; }
-  if (route() === 'botchart') render();
+async function loadRs(strategy, lite) {
+  clearTimeout(S.rsPoll);
+  try {
+    if (lite && S.rs && S.rs[strategy] && !S.rs[strategy].error) {   // status only; the full list when something changed
+      const x = await api(`/research?strategy=${strategy}&lite=1`), cur = S.rs[strategy];
+      const changed = x.nIdeas !== cur.nIdeas || !!(x.run || {}).running !== !!(cur.run || {}).running || (x.run || {}).testedNow !== (cur.run || {}).testedNow || (x.run || {}).step !== (cur.run || {}).step;
+      S.rs[strategy] = { ...cur, run: { ...(cur.run || {}), ...x.run }, autoToday: x.autoToday, auto: x.auto };
+      if (x.nIdeas !== cur.nIdeas || (!x.run.running && (cur.run || {}).running)) { S.rs[strategy] = { ...(await api('/research?strategy=' + strategy)), nIdeas: x.nIdeas }; }
+      if (changed && route() === 'botchart' && S.rsTab === 'ai') render();
+    } else {
+      const x = await api('/research?strategy=' + strategy);
+      S.rs = { ...(S.rs || {}), [strategy]: { ...x, nIdeas: (x.ideas || []).length } };
+      if (route() === 'botchart') render();
+    }
+  } catch (e) { S.rs = { ...(S.rs || {}), [strategy]: { error: e.message } }; if (route() === 'botchart') render(); }
   clearTimeout(S.rsPoll);
   const r = (S.rs || {})[strategy];
   const au = ((r && r.auto) || {})[strategy] || {}, left = au.on && (!au.perDay || (((r.autoToday || {})[strategy]) || 0) < au.perDay);
-  if (r && ((r.run && r.run.running) || left) && route() === 'botchart') S.rsPoll = setTimeout(() => loadRs(strategy), r.run && r.run.running ? 8000 : 20000);
+  if (r && ((r.run && r.run.running) || left) && route() === 'botchart' && S.rsTab === 'ai') S.rsPoll = setTimeout(() => loadRs(strategy, true), r.run && r.run.running ? 15000 : 60000);
 }
 function rsCur(strategy) { return strategy === 'day' ? dtBody() : { ...(labCfg() || {}), ...(S.labDraft || {}), ...(S.labSw || {}) }; }
 function researchBox(strategy) {
@@ -2040,7 +2052,7 @@ function researchBox(strategy) {
 function rsAction([act, a, b]) {
   const val = id => (document.getElementById(id) || {}).value;
   const busy = st => { S.rs[st] = { ...(S.rs[st] || {}), run: { running: 'now', step: 'starting', made: 0, testedNow: 0 } }; render(); setTimeout(() => loadRs(st), 2500); };
-  if (act === 'tab') { S.rsTab = a; try { localStorage.setItem('rsTab', a); } catch (e) {} render(); return; }
+  if (act === 'tab') { S.rsTab = a; try { localStorage.setItem('rsTab', a); } catch (e) {} if (a === 'ai') Object.keys(S.rs || {}).forEach(k => loadRs(k)); else clearTimeout(S.rsPoll); render(); return; }
   if (act === 'filter') { S.rsFilter = a; render(); return; }
   if (act === 'open') { S.rsOpen = S.rsOpen === a ? null : a; render(); return; }
   if (act === 'run') {

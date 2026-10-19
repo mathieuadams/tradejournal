@@ -94,6 +94,18 @@ def state(sub, strategy=None):
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
 
+def lite(sub, strategy=None):
+    """Run status + how many ideas there are (the page reloads the list only when this changes)."""
+    from datetime import timedelta
+    r = db.get(db.upk(sub), SK) or {}
+    run = json.loads(r["run"]) if r.get("run") else {}
+    if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
+        run = {**run, "running": None}
+    n = len(db.q_prefix(db.upk(sub), IDEA))
+    return {"run": {k: run.get(k) for k in ("running", "step", "made", "testedNow", "at", "strategy", "errors")}, "nIdeas": n,
+            "autoToday": auto_today(sub), "auto": auto_cfg(sub)}
+
+
 def _set_run(sub, run):
     r = db.get(db.upk(sub), SK) or {"PK": db.upk(sub), "SK": SK}
     db.put({**r, "run": json.dumps(run, default=str)})

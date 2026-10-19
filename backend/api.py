@@ -536,6 +536,8 @@ def daytrade_search_get(sub, claims, body, q):
 def research_get(sub, claims, body, q):
     import research
     st = (q or {}).get("strategy")
+    if (q or {}).get("lite"):                          # the page's status check: a few hundred bytes
+        return research.lite(sub, st if st in research.STRATS else None)
     return research.state(sub, st if st in research.STRATS else None)
 
 
