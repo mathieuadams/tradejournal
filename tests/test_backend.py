@@ -3386,6 +3386,93 @@ def test_research_agent_reads_stringified_lists():
         claude.json_call = saved
 
 
+def test_market_context_and_5min():
+    """5-minute candles for the day trading; market context (options flow, gamma, sweeps, breadth, VIXY, events,
+    pre-market move) loaded per day, decoded per ticker and aligned with each candle without look-ahead."""
+    import daytrade, formula, marketctx, flowdata, stockday
+    bars = _dt_bars(3)
+    a5 = daytrade.agg_bars(bars, 5)
+    ses = [b for b in a5 if "09:30" <= b["t"][11:16] < "16:00"]
+    assert all(int(b["t"][14:16]) % 5 == 0 for b in ses)
+    one = [b for b in bars if b["t"][:10] == ses[0]["t"][:10] and "09:30" <= b["t"][11:16] < "09:35"]
+    assert ses[0]["o"] == one[0]["o"] and ses[0]["c"] == one[-1]["c"] and ses[0]["h"] == max(b["h"] for b in one)
+    assert abs(ses[0]["v"] - sum(float(b.get("v") or 0) for b in one)) < 1e-6
+    part = daytrade.agg_bars([b for b in bars if b["t"][:16] <= bars[-1]["t"][:10] + "T10:02"], 5)
+    assert part[-1]["t"].endswith("09:55")                 # 10:00-10:02 still forming: dropped
+    sg = daytrade.detect(bars, {**daytrade.PARAMS, "barMin": 5, "aboveVwap": True, "emaStack": False, "maxTrades": 5})
+    assert all(int(x["at"][14:16]) % 5 == 0 for x in sg)
+    # flags
+    f = marketctx.event_flags("2025-03-19")
+    assert f["fomc"] == 1 and marketctx.event_flags("2025-03-21")["opex"] == 1 and marketctx.event_flags("2025-03-07")["nfp"] == 1
+    assert marketctx.event_flags("2025-03-31")["qend"] == 1 and marketctx.event_flags("2025-03-28")["qend"] == 0
+    # Unusual Whales day, parsed (fake API)
+    d = ses[0]["t"][:10]
+    calls = []
+
+    def uw(key, path, params=None, attempts=4):
+        calls.append(path)
+        if "net-prem-ticks" in path:
+            return {"data": [{"tape_time": f"{d}T13:{30 + k:02d}:00Z", "net_call_premium": "1000", "net_put_premium": "400"} for k in range(10)]}
+        if "spot-exposures" in path:
+            return {"data": [{"time": f"{d}T13:31:00Z", "gamma_per_one_percent_move_oi": "-5e8"}, {"time": f"{d}T13:36:00Z", "gamma_per_one_percent_move_oi": "2e8"}]}
+        return {"data": [{"created_at": f"{d}T13:33:10Z", "type": "call", "total_premium": "300000"},
+                         {"created_at": f"{d}T13:33:40Z", "type": "put", "total_premium": "100000"}]}
+    import util
+    saved = flowdata._uw, util.utc_to_ny, marketctx.utc_to_ny
+    try:
+        flowdata._uw = uw
+        conv = lambda t: t - __import__("datetime").timedelta(hours=4)      # EDT in the test dates
+        marketctx.utc_to_ny = conv
+        x = marketctx.uw_day("k", "QQQ", d)
+    finally:
+        flowdata._uw, util.utc_to_ny, marketctx.utc_to_ny = saved
+    assert x["c"][0] == 1000 and x["p"][9] == 400 and x["c"][10] == 0
+    assert x["g"][0] is None and x["g"][1] == -5e8 and x["g"][5] == -5e8 and x["g"][6] == 2e8
+    assert x["sc"][0] == 300000 and x["sp"][0] == 0                        # the 100K put sweep is under the minimum
+    mx = {d: {**x, "br": [0.2] + [0.8] * 77, "vx": [20.0] * 78, "vxp": 19.0, "term": 1.05}}
+    cx = formula.Ctx(ses, True, interval=5, mx=mx, pm_last={d: ses[0]["o"] * 1.01})
+    i0 = 0
+    assert cx.s("callPrem")[i0] == 5000 and cx.s("netPrem")[i0] == 3000 and cx.s("netPremDay")[1] == 6000
+    assert cx.s("sweepCall")[i0] == 300000 and cx.s("gex")[i0] == -5e8 and cx.s("gex")[1] == 2e8
+    assert cx.s("breadth")[i0] == 0.2 and cx.s("breadth")[1] == 0.8              # the bucket completed by the candle
+    assert abs(cx.s("vixyChg")[i0] - (20 / 19 - 1) * 100) < 1e-9 and cx.s("vixTerm")[i0] == 1.05
+    c1 = formula.Ctx([b for b in bars if b["t"][:10] == d and "09:30" <= b["t"][11:16] < "16:00"], True, interval=1, mx=mx)
+    assert c1.s("breadth")[3] is None and c1.s("breadth")[4] == 0.2          # 1-minute: only completed 5-minute buckets
+    assert c1.s("sweepCall")[3] == 0 and c1.s("sweepCall")[4] == 300000
+    v = formula.evaluate("netPrem > 0 and breadth >= 0.2 and gex < 0 and fomc == 0", cx)
+    assert v[0] and not v[1]
+    # Alpaca breadth (fake bars)
+    def mb(c, syms, tf, a, b, feed="sip", max_pages=60):
+        out = {}
+        for k, s_ in enumerate(syms):
+            px = 100.0
+            out[s_] = [{"t": f"{d}T{9 + (30 + 5 * j) // 60:02d}:{(30 + 5 * j) % 60:02d}", "o": px, "h": px + 1, "l": px - 1,
+                        "c": px + (0.5 if k % 2 else -0.5), "v": 100} for j in range(78)]
+        return out
+    sv = stockday.multi_bars
+    try:
+        stockday.multi_bars = mb
+        a = marketctx.alpaca_days({}, [d])
+    finally:
+        stockday.multi_bars = sv
+    br = a[d]["br"]
+    assert br[0] is not None and 0.3 < br[0] < 0.7 and a[d]["vx"][0] is not None
+    marketctx.put(d, {"alp": "ok", "br": marketctx._enc(br), "QQQ_c": marketctx._enc(x["c"]), "uw": "{}"})
+    sv2 = marketctx.vix_term_map
+    try:
+        marketctx.vix_term_map = lambda: {d: 1.1}
+        dec = marketctx.for_symbol("QQQ", [d])
+    finally:
+        marketctx.vix_term_map = sv2
+    assert dec[d]["c"][0] == 1000 and abs(dec[d]["br"][0] - br[0]) < 1e-3 and dec[d]["term"] == 1.1 and "p" not in dec[d]
+    assert formula.check("onMove > 0.5 and opex == 1", formula.UNAVAILABLE["day"])
+    try:
+        formula.check("breadth > 0.5", formula.UNAVAILABLE["swing"])
+        assert False
+    except formula.FormulaError:
+        pass
+
+
 def test_no_support_any_candle():
     """Support: put wall and flip both OFF -> any candle can enter (here: only the daily inertia green rule)."""
     import wallwatch, datetime as dt
@@ -3941,7 +4028,7 @@ def test_daytrade_new_rules_filters_exits():
     cache = {}
     daytrade.detect(bars, base, {}, None, {"cache": cache})
     daytrade.detect(bars, {**base, "targetR": 3}, {}, None, {"cache": cache})
-    assert len([k for k in cache if isinstance(k, tuple) and k[0] != "X"]) == 1
+    assert len([k for k in cache if isinstance(k, tuple) and k[0] not in ("X", "bars", "agg", "fxctx")]) == 1
 
 
 def test_daytrade_compare_presets_options():

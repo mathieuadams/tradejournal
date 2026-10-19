@@ -1942,7 +1942,7 @@ function fxRow(keys, c, attr) {                    // formula rules: any conditi
   const tip = 'Formula rule: an expression over the candles, VWAP, CVD, walls, flip, dark pool… e.g. close > vwap and crossUp(ema(close, 9), ema(close, 21)) and cvd > 0 — entry: an extra condition (AND); exit: sell at the close of the first candle where it is true. Empty = off.';
   return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em" title="${esc(tip)}">Formula</b>
     ${keys.map(([k, l]) => `<label style="display:inline-flex;gap:4px;align-items:center;font-size:.78rem;flex:1 1 260px"><span class="muted" style="white-space:nowrap">${l}</span><input data-${attr}="${k}" value="${esc(c[k] || '')}" placeholder="off" spellcheck="false" style="flex:1;min-width:10em;padding:1px 5px;font-family:ui-monospace,monospace;font-size:.78rem"></label>`).join('')}
-    <span class="muted" style="font-size:.72rem" title="${esc(tip)}">names: open high low close volume vwap delta cvd tod dow dayOpen dayHigh dayLow prevClose prevHigh prevLow gap pmHigh pmLow putWall callWall flip dpAbove dpBelow flowPrem vix peer · ema sma highest lowest ref change pct stdev rsi atr crossUp crossDown rising falling abs min max between sqMom sqOn rvol cvdSum orHigh orLow</span></div>`;
+    <span class="muted" style="font-size:.72rem" title="${esc(tip)}">names: open high low close volume vwap delta cvd tod dow dayOpen dayHigh dayLow prevClose prevHigh prevLow gap pmHigh pmLow putWall callWall flip dpAbove dpBelow flowPrem vix peer · day context: callPrem putPrem netPrem netPremDay sweepCall sweepPut gex breadth sectorBreadth megaBreadth vixy vixyChg vixTerm fomc cpi nfp opex qend eventDay onMove pmRange putWallNow callWallNow flipNow · ema sma highest lowest ref change pct stdev rsi atr crossUp crossDown rising falling abs min max between sqMom sqOn rvol cvdSum orHigh orLow</span></div>`;
 }
 // ---------------- research: the AI agent (proposes) and the test pipeline (tests + grades) are two separate boxes
 try { S.rsTab = localStorage.getItem('rsTab') || 'tools'; } catch (e) { S.rsTab = 'tools'; }
@@ -1962,6 +1962,9 @@ function rsCatalog(strategy) {
     [r[4], r[5]].forEach(f => (!f ? [] : Array.isArray(f[0]) ? f : [f]).forEach(x => { const k = strategy === 'day' ? x[0] : x[1];
       if (typeof k === 'string' && x[5] !== 'time') out.push({ key: k, kind: 'number', of: r[0], unit: strategy === 'day' ? x[3] : x[4] }); })); });
   inds.forEach(x => x[3].forEach(p0 => out.push({ key: p0[0], kind: 'number', indicator: x[1], label: p0[1], unit: p0[4], default: p0[5] })));
+  if (strategy === 'day') out.push({ key: 'barMin', kind: 'number', label: 'candle size in minutes: 1 or 5 (the strategy runs on these candles)', default: 5 },
+    { key: 'startT', kind: 'time', label: 'entries from (HH:MM)' }, { key: 'endT', kind: 'time', label: 'entries until (HH:MM)' }, { key: 'flatT', kind: 'time', label: 'flat at (HH:MM)' },
+    { key: 'maxTrades', kind: 'number', label: 'max trades a day' }, { key: 'longs', kind: 'rule', label: 'take longs' }, { key: 'shorts', kind: 'rule', label: 'take shorts' });
   return out;
 }
 function rsLabel(strategy) { const m = {}; (strategy === 'day' ? DT_RULES : WW_RULES).forEach(r => { m[r[0]] = r[2]; }); return m; }
@@ -2015,6 +2018,9 @@ function researchBox(strategy) {
       <label><span class="muted">history</span> <select id="rs-days" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (S.rsDays || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select></label>
       <button class="btn coachbtn" data-rx="run|${strategy}" ${busy ? 'disabled' : ''} style="font-size:.8rem;padding:1px 12px">${busy ? 'Working…' : 'Propose & test'}</button></div>
     ${busy ? `<p style="font-size:.8rem;margin:6px 0 0"><b>${esc(run.step || '')}</b> <span class="muted">· ${run.made || 0} proposed · ${run.testedNow || 0} tested so far</span></p>` : ''}
+    ${strategy === 'day' ? (() => { const m = t.mctx || {};
+      return `<p style="font-size:.78rem;margin:6px 0 0"><b>Market context</b> <span class="muted">(options flow, dealer gamma, breadth, VIXY, events for the formulas)</span>: ${m.running ? '<b>loading…</b> ' : ''}${m.days ? `options flow / gamma on <b>${(m.cov || {}).uw ?? '—'}</b> of ${m.days} days · breadth / VIXY on <b>${(m.cov || {}).alp ?? '—'}</b>${m.left ? ` · ${m.left} left to load` : ''}${m.uwKey === false ? ' · <span class="loss">no Unusual Whales key</span>' : ''}${m.days && (m.cov || {}).uw === 0 && !m.left ? ' · <span class="loss">Unusual Whales returned nothing for these days (plan / history limit?)</span>' : ''}` : 'not loaded yet'}
+        <button class="btn" data-rx="mctx|day" ${m.running ? 'disabled' : ''} style="font-size:.74rem;padding:0 8px">${m.days ? 'Load the missing days' : 'Load 250 days'}</button></p>`; })() : ''}
     ${!busy && run.at && run.step === 'done' ? `<p class="muted" style="font-size:.78rem;margin:6px 0 0">Last run ${esc((run.at || '').slice(5, 16).replace('T', ' '))}${run.auto ? ' (autopilot)' : ''}: ${run.made || 0} proposed · ${run.testedNow || 0} tested${run.secs ? ` · ${run.secs} s` : ''}</p>` : ''}
     ${(run.notes || []).length && !busy ? `<p style="font-size:.8rem;margin:6px 0 0"><b>Agent notes:</b> ${esc(run.notes.join(' '))}</p>` : ''}
     ${(run.errors || []).length ? `<p class="loss" style="font-size:.78rem;margin:4px 0 0">${esc(run.errors.join(' · '))}</p>` : ''}
@@ -2068,6 +2074,8 @@ function rsAction([act, a, b]) {
     S.rsFocus = val('rs-focus') ?? S.rsFocus;
     api('/research/auto', { method: 'PUT', body: { strategy: a, perDay: +(val('rs-aper') ?? 4), n: +val('rs-an') || 4, days: +val('rs-adays') || 250, focus: S.rsFocus || '' } })
       .then(r => { S.rs[a] = { ...(S.rs[a] || {}), auto: r.auto, autoToday: r.autoToday }; toast('Autopilot saved'); render(); setTimeout(() => loadRs(a), 2500); }).catch(err => toast(err.message)); return; }
+  if (act === 'mctx') {
+    api('/research/marketctx', { method: 'POST', body: { days: S.rsDays || 250 } }).then(r => { S.rs[a] = { ...(S.rs[a] || {}), mctx: r.state }; toast(r.started ? 'Loading the market context in the background (a few runs of ~7 min)' : 'Already loading'); render(); }).catch(err => toast(err.message)); return; }
   if (act === 'crit') {
     const body = {}; document.querySelectorAll('[data-rscrit]').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) body[i.dataset.rscrit] = v; });
     document.querySelectorAll('[data-rscritb]').forEach(i => { body[i.dataset.rscritb] = i.checked; });
@@ -2106,6 +2114,7 @@ function dtPanel() {
       ${tm('startT', 'entries from')} ${tm('endT', 'to')} ${tm('flatT', 'flat at')}
       <span class="muted" style="font-size:.78rem">max/day</span> ${num('maxTrades', 1, 3, 3)} <span class="muted" style="font-size:.78rem">shares</span> ${num('qty', 1, 4.5, 10)}
       <span class="muted" style="font-size:.78rem" title="If set, shares = this $ ÷ (entry − stop), capped by max shares">or risk $</span> ${num('riskUsd', 10, 4.5, 0)} <span class="muted" style="font-size:.78rem">max shares</span> ${num('maxQty', 1, 4.5, 500)}
+      <span class="muted" style="font-size:.78rem">candles</span> <select data-dtsel="barMin" style="padding:1px 4px">${[1, 5].map(m => `<option value="${m}" ${+(c.barMin || 1) === m ? 'selected' : ''}>${m} min</option>`).join('')}</select>
       <span class="muted" style="font-size:.78rem">tickers</span> <input data-dttk value="${esc((c.tickers || ['QQQ', 'SPY']).join(' '))}" style="width:8em;padding:1px 4px"></div>
     <details open style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Indicators</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin:4px 0"><tbody>${rows}</tbody></table></div></details>
     <div style="display:flex;flex-direction:column;gap:6px">${grp('Entry')}${grp('Filter')}${grp('Exit')}</div>

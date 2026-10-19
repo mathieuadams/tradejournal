@@ -599,6 +599,15 @@ def research_auto(sub, claims, body, q):
     return {"auto": a, "autoToday": research.auto_today(sub)}
 
 
+@route("POST", "/research/marketctx")
+def research_mctx(sub, claims, body, q):
+    """Load the market context (options flow, gamma, breadth, VIXY) of the last N days in the background."""
+    import marketctx
+    n = max(20, min(500, int((body or {}).get("days") or 250)))
+    started = marketctx.kick(sub, n, retry=True)        # a click also retries the days that had nothing
+    return {"started": started, "state": marketctx.job_state(sub)}
+
+
 @route("DELETE", "/research/idea")
 def research_del(sub, claims, body, q):
     import research

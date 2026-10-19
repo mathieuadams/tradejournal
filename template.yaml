@@ -426,6 +426,12 @@ Resources:
             ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "sdtick"}'
+        FlipSnapDay:        # walls / flip recorded every 30 minutes during the session (intraday gamma, going forward)
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(0,30 10-15 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "flipsnap"}'
         ResearchAuto:       # every hour: the AI research agent runs on its own for users with its autopilot on
           Type: ScheduleV2
           Properties:

@@ -90,7 +90,7 @@ def state(sub, strategy=None):
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
     xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "tested": sum(1 for x in xs if x.get("status") == "tested"),
+    return {"criteria": criteria(sub), "run": run, "ideas": xs, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub), "tested": sum(1 for x in xs if x.get("status") == "tested"),
             "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
 
 
@@ -104,6 +104,14 @@ def lite(sub, strategy=None):
     n = len(db.q_prefix(db.upk(sub), IDEA))
     return {"run": {k: run.get(k) for k in ("running", "step", "made", "testedNow", "at", "strategy", "errors")}, "nIdeas": n,
             "autoToday": auto_today(sub), "auto": auto_cfg(sub)}
+
+
+def _mctx_state(sub):
+    try:
+        import marketctx
+        return marketctx.job_state(sub)
+    except Exception:
+        return {}
 
 
 def _set_run(sub, run):
@@ -141,6 +149,7 @@ def blank_cfg(sub, strategy):
     b["stopOn"] = True
     if strategy == "day":
         b["longs"] = b["shorts"] = True
+        b["barMin"] = 5                                # the research runs on 5-minute candles (the agent may pick 1)
     else:
         b["tf"], b["earnOn"] = "1h", False
     return b
@@ -280,7 +289,19 @@ class DayBench:
         import dtsearch
         self.errors, self.feed = [], {}
         self.data = dtsearch.load(sub, days, base, self.errors, self.feed)
+        import daytrade
+        import marketctx
+        for x in self.data:                            # options flow / gamma / breadth / VIXY / events for the formulas
+            x["ctx"].update(daytrade.market_ctx(x["sym"], x["show"]))
         ds = sorted({d for x in self.data for d in x["show"]})
+        try:
+            cov = marketctx.coverage(ds)
+            self.coverage = cov
+            if ds and (cov["alp"] < 0.9 * len(ds) or cov["uw"] < 0.9 * len(ds)):
+                self.errors.append(f"market context loaded for {min(cov['alp'], cov['uw'])} of {len(ds)} days (loading the rest in the background)")
+                marketctx.kick(sub, len(ds))
+        except Exception as e:
+            print("market context coverage failed", e)
         self.first, self.mid, self.last = (ds[0], ds[len(ds) // 2], ds[-1]) if ds else (None, None, None)
 
     def rows(self, P):
@@ -664,7 +685,16 @@ def auto_kick():
     started = 0
     for it in db.scan_sk(SK):
         if it.get("auto"):
-            started += _start(it["PK"][5:], auto_due(it["PK"][5:]))
+            sub = it["PK"][5:]
+            started += _start(sub, auto_due(sub))
+            try:                                       # the market context of the last session, once it is over
+                import marketctx
+                st = marketctx.job_state(sub)
+                if not st.get("running") and (st.get("left") or st.get("at", "")[:10] < now_ny().strftime("%Y-%m-%d")) \
+                        and now_ny().strftime("%H:%M") >= "16:30":
+                    marketctx.kick(sub)
+            except Exception as e:
+                print("market context kick failed", e)
     return started
 
 

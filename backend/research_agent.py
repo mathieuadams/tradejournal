@@ -21,7 +21,12 @@ with the series / functions of "formulas" (e.g. "close > vwap and crossUp(ema(cl
 The formula keys are listed in "formulaKeys": an entry formula is an extra condition (AND) on the entry candle, an exit
 formula sells at the close of the first candle where it is true. To test a formula on its own, switch the other entry
 rules off in the same idea. The ONLY limit is the data: Alpaca candles (1-minute / hourly / daily, with volume, so an
-estimated CVD) and trades, Unusual Whales gamma walls / flip, dark pool levels and options flow alerts. Something that
+estimated CVD) and trades, Unusual Whales gamma walls / flip, dark pool levels and options flow alerts.
+Day trading runs on 5-minute candles ("barMin": 5; 1 is allowed) and its formulas can also use the MARKET CONTEXT
+series: options flow of QQQ / SPY during the candle (callPrem, putPrem, netPrem, netPremDay, sweepCall, sweepPut),
+dealer gamma now (gex), market breadth (breadth, sectorBreadth, megaBreadth), volatility (vixy, vixyChg, vixTerm),
+event days (fomc, cpi, nfp, opex, qend, eventDay), the pre-market / overnight move (onMove, pmRange) and intraday walls
+(putWallNow, callWallNow, flipNow). This is information the price alone doesn't have: prefer ideas that use it. Something that
 needs other data (news, order book depth, earnings estimates, fundamentals...) goes in "missing".
 
 NEW INDICATORS: when an idea needs an indicator the app doesn't have, CREATE it: add it to "newIndicators" with a short

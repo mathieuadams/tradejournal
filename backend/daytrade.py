@@ -44,6 +44,7 @@ PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": 
           "noLunch": False, "lunchFrom": "11:30", "lunchTo": "13:30", "dayStop": False, "dayStopR": 2.0,
           # formula rules (formula.py): an extra condition per side, written as an expression ("" = off)
           "fxLong": "", "fxShort": "", "fxExitLong": "", "fxExitShort": "",
+          "barMin": 1,            # candle size the strategy runs on: 1 or 5 minutes (the 1-minute candles grouped)
           # exits
           "stopBase": "atr1",     # what the stop / trailing sizes multiply: atr1 / atr5 (5-min ATR) / atrD (daily ATR) / pct / avgN
           "volN": 300,            # avgN: the average move (true range) of the last N 1-minute candles
@@ -59,7 +60,7 @@ EXITS = ("stopOn", "targetOn", "trailOn", "vwapExit", "emaExit", "sqExit", "inEx
          "lvlTarget", "dayStop")
 INTS = {"maxTrades": (1, 50), "qty": (1, 100000), "maxQty": (1, 100000), "emaLen": (2, 400), "ema2Len": (2, 400),
         "kcLen": (2, 400), "sqLen": (5, 400), "sqFireN": (1, 60), "inN1": (5, 800), "inN2": (5, 800), "inN3": (5, 800),
-        "fvgDays": (1, 20), "orbMin": (1, 120), "formWin": (1, 120), "timeMin": (1, 400), "volN": (20, 3000), "swingN": (1, 60), "sqTurnTf": (1, 30)}
+        "fvgDays": (1, 20), "orbMin": (1, 120), "formWin": (1, 120), "timeMin": (1, 400), "volN": (20, 3000), "swingN": (1, 60), "sqTurnTf": (1, 30), "barMin": (1, 15)}
 FLOATS = {"kcMult": (0.1, 10), "sqBB": (0.1, 10), "sqKC": (0.1, 10), "fvgMin": (0, 10), "fvgNear": (0, 10), "zoneAtr": (0, 20),
           "stopAtr": (0.05, 50), "targetR": (0.1, 50), "trailAtr": (0.05, 50), "riskUsd": (0, 1e7),
           "gapMin": (0, 99), "gapMax": (0, 99), "rvolMin": (0, 50), "vixMin": (0, 200), "vixMax": (0, 200), "dayStopR": (0.1, 50),
@@ -100,6 +101,41 @@ def save_config(sub, body):
 FORMULAS = ("fxLong", "fxShort", "fxExitLong", "fxExitShort")
 
 
+def market_ctx(sym, dates):
+    """Options flow / gamma / breadth / VIXY / VIX term (marketctx.py) and the intraday wall snapshots for formulas."""
+    import marketctx
+    try:
+        return {"mx": marketctx.for_symbol(sym, dates), "snaps": marketctx.snaps_map(sym)}
+    except Exception as e:
+        print("market context failed", sym, e)
+        return {}
+
+
+def agg_bars(bars, n):
+    """1-minute candles -> n-minute candles (t = the first minute; pre-market grouped too). The last group is dropped
+    when it isn't complete yet (live)."""
+    if n <= 1:
+        return bars
+    out, key = [], None
+    for b in bars:
+        mm = int(b["t"][11:13]) * 60 + int(b["t"][14:16])
+        base = mm - (mm - 570) % n if mm >= 570 else mm - mm % n
+        k = (b["t"][:10], base)
+        if k != key:
+            key = k
+            out.append({"t": f"{b['t'][:11]}{base // 60:02d}:{base % 60:02d}", "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"],
+                        "v": float(b.get("v") or 0), "_last": mm, "_base": base})
+        else:
+            x = out[-1]
+            x["h"], x["l"], x["c"], x["v"], x["_last"] = max(x["h"], b["h"]), min(x["l"], b["l"]), b["c"], x["v"] + float(b.get("v") or 0), mm
+    if out and out[-1]["_last"] < out[-1]["_base"] + n - 1 and out[-1]["_last"] < 959:
+        out.pop()                                      # still forming
+    for x in out:
+        x.pop("_last", None)
+        x.pop("_base", None)
+    return out
+
+
 def fx_series(bars, I, walls, ctx, P):
     """{key: [bool per candle]} of the formula rules that are set (computed once per formula and candles)."""
     import formula
@@ -107,12 +143,15 @@ def fx_series(bars, I, walls, ctx, P):
     if not any(P.get(k) for k in FORMULAS):
         return out
     cache = (ctx or {}).get("cache")
-    cx = cache.get(("fxctx", bool(P.get("flipPrev")))) if cache is not None else None
+    ck = ("fxctx", bool(P.get("flipPrev")), int(P.get("barMin") or 1))
+    cx = cache.get(ck) if cache is not None else None
     if cx is None:
-        cx = formula.Ctx(bars, True, walls, I.get("pm") or {}, (ctx or {}).get("dp") or {}, (ctx or {}).get("vix") or {},
-                         (ctx or {}).get("peer") or {}, I.get("vwap"))
+        c_ = ctx or {}
+        cx = formula.Ctx(bars, True, walls, I.get("pm") or {}, c_.get("dp") or {}, c_.get("vix") or {},
+                         c_.get("peer") or {}, I.get("vwap"), interval=int(P.get("barMin") or 1), mx=c_.get("mx"),
+                         snaps=c_.get("snaps"), pm_last=I.get("pmLast"))
         if cache is not None:
-            cache[("fxctx", bool(P.get("flipPrev")))] = cx
+            cache[ck] = cx
     for k in FORMULAS:
         if P.get(k):
             out[k] = formula.evaluate(P[k], cx, formula.UNAVAILABLE["day"])
@@ -539,12 +578,13 @@ def indicators(bars, ext, P):
     import wallwatch as ww
     cl = [b["c"] for b in bars]
     atr = ww.atr14(bars)
-    pm = {}
+    pm, pm_last = {}, {}
     for b in ext:
         if "04:00" <= b["t"][11:16] < "09:30":
             d = b["t"][:10]
             h, l = pm.get(d, (None, None))
             pm[d] = (max(h, b["h"]) if h is not None else b["h"], min(l, b["l"]) if l is not None else b["l"])
+            pm_last[d] = b["c"]
     orb, cur, day = [], None, None
     om = int(P["orbMin"])
     end_m = 9 * 60 + 30 + om
@@ -568,7 +608,7 @@ def indicators(bars, ext, P):
             "kc": ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
             "sq": sq, "sqTurnD": _sq_turns_tf(bars, sq, P), "tt": [b["t"] for b in bars],
             "inr": ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
-            "atr": atr, "pm": pm, "orb": orb, "fvgBull": bt, "fvgBear": brt, "newBull": nb, "newBear": nbr}
+            "atr": atr, "pm": pm, "pmLast": pm_last, "orb": orb, "fvgBull": bt, "fvgBear": brt, "newBull": nb, "newBear": nbr}
 
 
 # ---------------- engine ----------------
@@ -671,7 +711,7 @@ def _r(s):
 
 
 IND_KEYS = ("emaLen", "ema2Len", "kcLen", "kcMult", "sqLen", "sqBB", "sqKC", "sqFireN", "inN1", "inN2", "inN3", "fvgMin",
-            "fvgNear", "fvgDays", "orbMin", "volN", "swingN", "sqTurnTf")
+            "fvgNear", "fvgDays", "orbMin", "volN", "swingN", "sqTurnTf", "barMin")
 STUDY_RULES = ("bandForm", "lisForm", "lisAbove", "pmzTouch", "fibTouch", "dpTouch", "prevTouch", "sqTurn") + FILTERS
 
 
@@ -687,12 +727,20 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
     ctx = ctx or {}
     on = lambda k: bool(P.get(k))
     cache = ctx.get("cache")
-    if cache is not None and "bars" in cache:
-        bars = cache["bars"]
+    bm = int(P.get("barMin") or 1)
+    if bm > 1:                                         # the strategy on n-minute candles
+        if cache is not None and ("agg", bm) in cache:
+            bars_all = cache[("agg", bm)]
+        else:
+            bars_all = agg_bars(bars_all, bm)
+            if cache is not None:
+                cache[("agg", bm)] = bars_all
+    if cache is not None and ("bars", bm) in cache:
+        bars = cache[("bars", bm)]
     else:
         bars = [b for b in bars_all if "09:30" <= b["t"][11:16] < "16:00"]
         if cache is not None:
-            cache["bars"] = bars
+            cache[("bars", bm)] = bars
     if len(bars) < 30:
         return []
     ik = tuple(P[k] for k in IND_KEYS)
@@ -703,7 +751,7 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
             cache[ik] = I
     need_x = any(on(k) for k in STUDY_RULES) or on("lvlTarget")
     if need_x:
-        xk = ("X", int(P["formWin"]))
+        xk = ("X", int(P["formWin"]), bm)
         X = cache.get(xk) if cache is not None else None
         if X is None:
             X = studies(bars, bars_all, P)
@@ -940,9 +988,22 @@ def _pack(out):
 
 
 def live_ctx(sub, sym, P, dates, n_days, now=None, peer_bars=None):
-    """Context for the chart / the live tick: dark pool levels, the other ticker vs its VWAP, VIX (only when used)."""
-    on = lambda k: bool(P.get(k))
+    """Context for the chart / the live tick: dark pool levels, the other ticker vs its VWAP, VIX (only when used);
+    with formula rules: everything, plus the market context (today's live)."""
+    fx_on = any(P.get(k) for k in FORMULAS)
+    on = lambda k: fx_on or bool(P.get(k))
     ctx = {}
+    if fx_on:
+        ctx.update(market_ctx(sym, dates))
+        try:
+            import marketctx
+            today = (now or now_ny()).strftime("%Y-%m-%d")
+            if today in dates:
+                live = marketctx.live_day(sub, sym, today)
+                if live:
+                    ctx.setdefault("mx", {})[today] = live
+        except Exception as e:
+            print("live market context failed", sym, e)
     if on("dpTouch") or on("lvlTarget"):
         try:
             import backtest as _bt
@@ -1129,7 +1190,8 @@ def run_variants(sub, days, variants, budget_s=540, tickers=None):
     t0 = time.time()
     days = max(2, min(500, int(days or 20)))
     tickers = tickers or variants[0]["tickers"]
-    on = lambda k: any(v.get(k) for v in variants)
+    fx_on = any(v.get(k) for v in variants for k in FORMULAS)     # formulas may use any context
+    on = lambda k: fx_on or any(v.get(k) for v in variants)
     rows = {i: [] for i in range(len(variants))}
     per = {i: {} for i in range(len(variants))}
     errors, all_days, feed_used = [], set(), {}
@@ -1169,6 +1231,8 @@ def run_variants(sub, days, variants, budget_s=540, tickers=None):
                 except Exception as e:
                     print("dark pool levels failed", sym, e)
             ctx = {"dp": dp, "vix": vix, "peer": peers.get(peer_of(sym, tickers)) or {}, "cache": {}}
+            if fx_on:
+                ctx.update(market_ctx(sym, show))
             if on("cvdReal"):
                 ctx["cvd"] = real_cvd(sym, show)
             W = {}

@@ -29,6 +29,22 @@ SERIES = {
     "dpAbove": "nearest dark pool level above the close", "dpBelow": "nearest dark pool level below the close",
     "flowPrem": "call alert premium ($) of the last 5 days, before this candle (swing only, Unusual Whales flow)",
     "vix": "previous VIX close (day trading)", "peer": "the other ticker vs its VWAP: +1 above, −1 below (day trading)",
+    # market context (marketctx.py; day trading, days loaded by the market-context loader)
+    "callPrem": "net call premium traded during the candle ($, Unusual Whales, this ticker's options)",
+    "putPrem": "net put premium traded during the candle ($)", "netPrem": "callPrem − putPrem of the candle ($)",
+    "netPremDay": "callPrem − putPrem since 09:30 ($)",
+    "sweepCall": "premium of call sweeps ≥ $250K during the candle ($)", "sweepPut": "premium of put sweeps ≥ $250K during the candle ($)",
+    "gex": "dealer gamma exposure now ($ per 1% move; > 0 dealers long gamma = dampening, < 0 = amplifying)",
+    "breadth": "share (0–1) of 11 sector ETFs + 8 mega caps above their session VWAP (last completed 5 minutes)",
+    "sectorBreadth": "share (0–1) of the 11 sector ETFs above their VWAP", "megaBreadth": "share (0–1) of AAPL MSFT NVDA AMZN GOOGL META AVGO TSLA above their VWAP",
+    "vixy": "VIXY price (volatility ETF, last completed 5 minutes)", "vixyChg": "VIXY vs its previous close, %",
+    "vixTerm": "VIX / VIX3M at the previous close (> 1 = backwardation: fear)",
+    "fomc": "1 on FOMC decision days", "cpi": "1 on CPI release days", "nfp": "1 on jobs report days (first Friday)",
+    "opex": "1 on monthly options expiration (third Friday)", "qend": "1 on the last trading day of a quarter",
+    "eventDay": "1 on FOMC / CPI / jobs report days",
+    "onMove": "pre-market move: last pre-market price vs the previous close, %", "pmRange": "pre-market range (high − low) vs the previous close, %",
+    "putWallNow": "put wall as recorded during the day (every 30 min, recorded days only; else the day's)",
+    "callWallNow": "call wall recorded during the day", "flipNow": "gamma flip recorded during the day",
 }
 FUNCS = {
     "ema": ("ema(x, n)", "exponential average of x over n candles"), "sma": ("sma(x, n)", "simple average"),
@@ -203,12 +219,151 @@ def _rollsum(xs, n):
 class Ctx:
     """The series of one set of candles, computed when a formula asks for them (and kept)."""
 
-    def __init__(self, bars, intraday=True, walls=None, pre=None, dp=None, vix=None, peer=None, vwap=None, alerts=None):
+    def __init__(self, bars, intraday=True, walls=None, pre=None, dp=None, vix=None, peer=None, vwap=None, alerts=None,
+                 interval=1, mx=None, snaps=None, pm_last=None):
         self.b, self.intraday = bars, intraday
         self.walls, self.pre, self.dpm = walls or {}, pre or {}, dp or {}
         self.vixm, self.peerm, self.vw, self.alerts = vix or {}, peer or {}, vwap, alerts
+        self.iv, self.mx, self.snaps, self.pml = max(1, int(interval or 1)), mx or {}, snaps or {}, pm_last or {}
         self.memo = {}
         self.day = [b["t"][:10] for b in bars]
+
+    # ---------------- market context: minute index of the candle (since 09:30), its end (exclusive)
+    def _span(self, b):
+        m0 = int(b["t"][11:13]) * 60 + int(b["t"][14:16]) - 570
+        return m0, m0 + self.iv
+
+    def _mx_sum(self, key):
+        out = []
+        for b, d in zip(self.b, self.day):
+            arr = (self.mx.get(d) or {}).get(key)
+            m0, m1 = self._span(b)
+            out.append(None if not arr or m0 < 0 else sum(x or 0 for x in arr[max(0, m0):min(len(arr), m1)]))
+        return out
+
+    def _mx_5sum(self, key):
+        """5-minute buckets that END inside the candle (so a 1-minute candle gets the bucket on its last minute)."""
+        out = []
+        for b, d in zip(self.b, self.day):
+            arr = (self.mx.get(d) or {}).get(key)
+            m0, m1 = self._span(b)
+            if not arr or m0 < 0:
+                out.append(None)
+                continue
+            out.append(sum(arr[k] or 0 for k in range(len(arr)) if m0 < (k + 1) * 5 <= m1))
+        return out
+
+    def _mx_last5(self, key):
+        """The last 5-minute value completed by the candle's close."""
+        out = []
+        for b, d in zip(self.b, self.day):
+            arr = (self.mx.get(d) or {}).get(key)
+            k = self._span(b)[1] // 5 - 1
+            out.append(arr[k] if arr and 0 <= k < len(arr) else None)
+        return out
+
+    def _callPrem(self):
+        return self._mx_sum("c")
+
+    def _putPrem(self):
+        return self._mx_sum("p")
+
+    def _netPrem(self):
+        return [None if a is None or b is None else a - b for a, b in zip(self.s("callPrem"), self.s("putPrem"))]
+
+    def _netPremDay(self):
+        out = []
+        for b, d in zip(self.b, self.day):
+            x = self.mx.get(d) or {}
+            m1 = self._span(b)[1]
+            out.append(None if not x.get("c") or not x.get("p") or m1 <= 0 else sum(v or 0 for v in x["c"][:m1]) - sum(v or 0 for v in x["p"][:m1]))
+        return out
+
+    def _sweepCall(self):
+        return self._mx_5sum("sc")
+
+    def _sweepPut(self):
+        return self._mx_5sum("sp")
+
+    def _gex(self):
+        out = []
+        for b, d in zip(self.b, self.day):
+            arr = (self.mx.get(d) or {}).get("g")
+            m1 = self._span(b)[1]
+            out.append(arr[min(len(arr), m1) - 1] if arr and m1 > 0 else None)
+        return out
+
+    def _breadth(self):
+        return self._mx_last5("br")
+
+    def _sectorBreadth(self):
+        return self._mx_last5("brS")
+
+    def _megaBreadth(self):
+        return self._mx_last5("brM")
+
+    def _vixy(self):
+        return self._mx_last5("vx")
+
+    def _vixyChg(self):
+        return [None if v is None or not (self.mx.get(d) or {}).get("vxp") else (v / self.mx[d]["vxp"] - 1) * 100
+                for v, d in zip(self.s("vixy"), self.day)]
+
+    def _vixTerm(self):
+        return [(self.mx.get(d) or {}).get("term") for d in self.day]
+
+    def _ev(self, k):
+        import marketctx
+        if "_evd" not in self.memo:
+            tds = sorted(set(self.day))
+            self.memo["_evd"] = {d: marketctx.event_flags(d, tds) for d in tds}
+        return [self.memo["_evd"][d][k] for d in self.day]
+
+    def _fomc(self):
+        return self._ev("fomc")
+
+    def _cpi(self):
+        return self._ev("cpi")
+
+    def _nfp(self):
+        return self._ev("nfp")
+
+    def _opex(self):
+        return self._ev("opex")
+
+    def _qend(self):
+        return self._ev("qend")
+
+    def _eventDay(self):
+        return self._ev("eventDay")
+
+    def _onMove(self):
+        pc = self.s("prevClose")
+        return [None if not c or self.pml.get(d) is None else (self.pml[d] / c - 1) * 100 for c, d in zip(pc, self.day)]
+
+    def _pmRange(self):
+        pc = self.s("prevClose")
+        return [None if not c or not self.pre.get(d) or None in self.pre[d] else (self.pre[d][0] - self.pre[d][1]) / c * 100
+                for c, d in zip(pc, self.day)]
+
+    def _now(self, j, fallback):
+        day_v = self.s(fallback)
+        out = []
+        for b, d, dv in zip(self.b, self.day, day_v):
+            m1 = self._span(b)[1] + 570
+            hm = f"{m1 // 60:02d}:{m1 % 60:02d}"
+            got = [x[j] for x in self.snaps.get(d) or [] if x[0] and x[0] <= hm and x[j] is not None]
+            out.append(float(got[-1]) if got else dv)
+        return out
+
+    def _putWallNow(self):
+        return self._now(1, "putWall")
+
+    def _callWallNow(self):
+        return self._now(2, "callWall")
+
+    def _flipNow(self):
+        return self._now(3, "flip")
 
     def s(self, name):
         if name in self.memo:
@@ -573,4 +728,4 @@ def evaluate(expr, cx, unavailable=()):
     return [bool(x) if x is not None else False for x in v]
 
 
-UNAVAILABLE = {"day": ("flowPrem",), "swing": ("pmHigh", "pmLow", "vix", "peer")}
+UNAVAILABLE = {"day": ("flowPrem",), "swing": ("pmHigh", "pmLow", "vix", "peer", "callPrem", "putPrem", "netPrem", "netPremDay", "sweepCall", "sweepPut", "gex", "breadth", "sectorBreadth", "megaBreadth", "vixy", "vixyChg", "vixTerm", "onMove", "pmRange", "putWallNow", "callWallNow", "flipNow")}
