@@ -62,6 +62,15 @@ GRAMMAR = [
     ("rsi(14) < {p}", "rsi(14) > {q}", {"p": [30, 40]}),
     ("close > flip", "close < flip", {}),
     ("eventDay == 0", "eventDay == 0", {}),
+    # the chart structure of the 30 sessions before the day
+    ("dTrend > 0", "dTrend < 0", {}),
+    ("close > supZone and close - supZone < {p} * dAtr", "close < resZone and resZone - close < {p} * dAtr", {"p": [0.1, 0.25]}),
+    ("inZone == 1 and zoneTouches >= {p}", "inZone == 1 and zoneTouches >= {p}", {"p": [4, 8]}),
+    ("rangePos < {p}", "rangePos > {q}", {"p": [0.2, 0.35]}),
+    ("rangePos > {q}", "rangePos < {p}", {"p": [0.2, 0.35]}),
+    ("close > vaHigh", "close < vaLow", {}),
+    ("close < poc30 and close > vaLow", "close > poc30 and close < vaHigh", {}),
+    ("resZone - close > {p} * dAtr", "close - supZone > {p} * dAtr", {"p": [0.5, 1]}),
 ]
 STOPS = [1.0, 1.3, 1.6, 2.0]
 TARGETS = [1.5, 2.0, 2.5, 3.0, "trail1.5", "trail2.5"]   # a target in R, or a trailing stop (ATR) instead

@@ -58,7 +58,9 @@ Before proposing, study the RECORD of every idea already tried:
 - NEW pieces to use (few ideas tried them yet): the hourly structure (hTrend, hLvlAbove, hLvlBelow, hBrokeUp,
   hBrokeDn: Gala's hourly trend + levels; breaking retest = "low <= hBrokeUp and close > hBrokeUp and hTrend > 0"),
   relative strength vs the other ticker (rs), the prior-day / pre-market / opening-range levels (prevHigh, prevLow,
-  pmHigh, pmLow, orHigh(n), orLow(n), gap, gapFilled);
+  pmHigh, pmLow, orHigh(n), orLow(n), gap, gapFilled) and the CHART STRUCTURE of the 30 sessions before the day
+  (dTrend, rangePos, supZone, resZone, inZone, zoneTouches, poc30, vaHigh, vaLow, dAtr): trade from a level that
+  mattered for weeks (e.g. long near a 30-day support zone in a daily uptrend), not only from today's candles;
 - "buildingBlocks.universe" says what the strategies trade: "fixed tickers", or each day's stocks in play (then
   the options-flow / gamma series are the market's, walls / dark pool don't exist, and rs = the stock vs QQQ: prefer
   the stock's own candles, levels, volume, relative strength, hourly structure and the market context);

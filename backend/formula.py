@@ -54,6 +54,16 @@ SERIES = {
     # relative strength and gap
     "rs": "relative strength: this ticker's % change since the open minus the other ticker's (QQQ vs SPY, a stock vs QQQ), in %",
     "gapFilled": "1 once today's range has touched the previous close (the gap is filled), else 0",
+    # chart structure of the 30 sessions BEFORE the day (structure.py): what is marked on the chart before the open
+    "dTrend": "daily trend over the prior sessions: +1 above the 20-day average and higher than 5 days ago, -1 the opposite, 0 unclear",
+    "dAtr": "14-day ATR of the prior sessions ($)",
+    "rangePos": "where the price is in the 30-session range: 0 = at its low, 1 = at its high (can go past)",
+    "supZone": "top of the nearest 30-day support zone at or below the price (clustered hourly levels)",
+    "resZone": "bottom of the nearest 30-day resistance zone above the price",
+    "inZone": "1 when the price is inside a 30-day support / resistance zone, else 0",
+    "zoneTouches": "hourly candles that traded inside the zone the price is in (or the nearest one) over 30 days: how much it mattered",
+    "poc30": "30-day volume point of control (the price with the most volume)",
+    "vaHigh": "top of the 30-day value area (70% of the volume)", "vaLow": "bottom of the 30-day value area",
 }
 FUNCS = {
     "ema": ("ema(x, n)", "exponential average of x over n candles"), "sma": ("sma(x, n)", "simple average"),
@@ -229,12 +239,13 @@ class Ctx:
     """The series of one set of candles, computed when a formula asks for them (and kept)."""
 
     def __init__(self, bars, intraday=True, walls=None, pre=None, dp=None, vix=None, peer=None, vwap=None, alerts=None,
-                 interval=1, mx=None, snaps=None, pm_last=None):
+                 interval=1, mx=None, snaps=None, pm_last=None, struct=None):
         self.b, self.intraday = bars, intraday
         self.walls, self.pre, self.dpm = walls or {}, pre or {}, dp or {}
         self.vixm, self.peerm, self.vw, self.alerts = vix or {}, peer or {}, vwap, alerts
         self.iv, self.mx, self.snaps, self.pml = max(1, int(interval or 1)), mx or {}, snaps or {}, pm_last or {}
         self.memo = {}
+        self.structm = struct or {}                    # {day: structure of the sessions before it} when precomputed
         self.day = [b["t"][:10] for b in bars]
 
     # ---------------- market context: minute index of the candle (since 09:30), its end (exclusive)
@@ -370,6 +381,69 @@ class Ctx:
             out.append(cache[j])
         self.memo["_hr"] = out
         return out
+
+    # ---------------- chart structure of the prior sessions (structure.py), per day
+    def _struct(self):
+        if "_st" in self.memo:
+            return self.memo["_st"]
+        import structure
+        ds = sorted(set(self.day))
+        by = {}
+        for b in self.b:
+            by.setdefault(b["t"][:10], []).append(b)
+        out = {}
+        for k, d in enumerate(ds):
+            if d in self.structm:
+                out[d] = self.structm[d]
+                continue
+            prior = [b for dd in ds[max(0, k - 30):k] for b in by[dd]]
+            out[d] = structure.build(prior) if len(ds[max(0, k - 30):k]) >= 10 else None
+        self.memo["_st"] = out
+        return out
+
+    def _sv(self, fn):
+        st = self._struct()
+        return [fn(st.get(d), b) if st.get(d) else None for b, d in zip(self.b, self.day)]
+
+    def _dTrend(self):
+        return self._sv(lambda s, b: float(s["trend"]))
+
+    def _dAtr(self):
+        return self._sv(lambda s, b: s["atr"])
+
+    def _rangePos(self):
+        return self._sv(lambda s, b: (b["c"] - s["lo"]) / (s["hi"] - s["lo"]) if s["hi"] > s["lo"] else None)
+
+    def _zones(self, s):
+        import structure
+        return structure.zones_of(s)
+
+    def _supZone(self):
+        return self._sv(lambda s, b: max((z[1] for z in self._zones(s) if z[1] <= b["c"]), default=None))
+
+    def _resZone(self):
+        return self._sv(lambda s, b: min((z[0] for z in self._zones(s) if z[0] > b["c"]), default=None))
+
+    def _inZone(self):
+        return self._sv(lambda s, b: 1.0 if any(z[0] <= b["c"] <= z[1] for z in self._zones(s)) else 0.0)
+
+    def _zoneTouches(self):
+        def f(s, b):
+            zs = self._zones(s)
+            if not zs:
+                return None
+            z = min(zs, key=lambda z: 0 if z[0] <= b["c"] <= z[1] else min(abs(b["c"] - z[0]), abs(b["c"] - z[1])))
+            return float(z[2])
+        return self._sv(f)
+
+    def _poc30(self):
+        return self._sv(lambda s, b: s.get("poc"))
+
+    def _vaHigh(self):
+        return self._sv(lambda s, b: s.get("vaHi"))
+
+    def _vaLow(self):
+        return self._sv(lambda s, b: s.get("vaLo"))
 
     def _hTrend(self):
         return [t for t, _ in self._hourly()]
@@ -807,4 +881,5 @@ def evaluate(expr, cx, unavailable=()):
     return [bool(x) if x is not None else False for x in v]
 
 
-UNAVAILABLE = {"day": ("flowPrem",), "swing": ("hTrend", "hLvlAbove", "hLvlBelow", "hBrokeUp", "hBrokeDn", "rs", "gapFilled", "pmHigh", "pmLow", "vix", "peer", "callPrem", "putPrem", "netPrem", "netPremDay", "sweepCall", "sweepPut", "gex", "breadth", "sectorBreadth", "megaBreadth", "vixy", "vixyChg", "vixTerm", "onMove", "pmRange", "putWallNow", "callWallNow", "flipNow")}
+UNAVAILABLE = {"day": ("flowPrem",), "swing": ("hTrend", "hLvlAbove", "hLvlBelow", "hBrokeUp", "hBrokeDn", "rs", "gapFilled", "dTrend", "dAtr", "rangePos",
+                                           "supZone", "resZone", "inZone", "zoneTouches", "poc30", "vaHigh", "vaLow", "pmHigh", "pmLow", "vix", "peer", "callPrem", "putPrem", "netPrem", "netPremDay", "sweepCall", "sweepPut", "gex", "breadth", "sectorBreadth", "megaBreadth", "vixy", "vixyChg", "vixTerm", "onMove", "pmRange", "putWallNow", "callWallNow", "flipNow")}

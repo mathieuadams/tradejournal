@@ -155,7 +155,7 @@ def fx_series(bars, I, walls, ctx, P):
         c_ = ctx or {}
         cx = formula.Ctx(bars, True, walls, I.get("pm") or {}, c_.get("dp") or {}, c_.get("vix") or {},
                          c_.get("peer") or {}, I.get("vwap"), interval=int(P.get("barMin") or 1), mx=c_.get("mx"),
-                         snaps=c_.get("snaps"), pm_last=I.get("pmLast"))
+                         snaps=c_.get("snaps"), pm_last=I.get("pmLast"), struct=c_.get("struct"))
         if cache is not None:
             cache[ck] = cx
     for k in FORMULAS:

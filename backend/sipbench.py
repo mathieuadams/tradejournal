@@ -110,7 +110,7 @@ def picks_history(days_wanted, top=SIP_TOP):
 # ---------------------------------------------------------------- build / extend the history
 def prep_state(sub=None):
     r = db.get(PK, STATE_SK) or {}
-    return {k: r.get(k) for k in ("running", "progress", "error", "days", "at")} | {"stored": len(stored_days())}
+    return {k: r.get(k) for k in ("running", "progress", "error", "days", "at")} | {"stored": len(stored_days()), "structured": len(struct_days())}
 
 
 def prep(sub, days=500, budget_s=470):
@@ -128,8 +128,10 @@ def prep(sub, days=500, budget_s=470):
     want = [d for d in rdays[-days:] if d not in have]
     db.put({"PK": PK, "SK": STATE_SK, "running": iso(now_ny()), "progress": f"{len(want)} days to load", "days": days, "error": None})
     if not want:
-        db.put({"PK": PK, "SK": STATE_SK, "running": None, "progress": "up to date", "days": days, "at": iso(now_ny())})
-        return {"left": 0}
+        left = backfill_struct(sub, budget_s, t0)
+        db.put({"PK": PK, "SK": STATE_SK, "running": iso(now_ny()) if left else None,
+                "progress": f"chart structure: {left} days left (continuing)" if left else "up to date", "days": days, "at": iso(now_ny())})
+        return {"left": left}
     picks = picks_history(want)
 
     def one(d):
@@ -140,8 +142,10 @@ def prep(sub, days=500, budget_s=470):
         day = datetime.strptime(d, "%Y-%m-%d")
         syms = [p["sym"] for p in pk]
         b5 = stockday.multi_bars(c, syms + ["QQQ"], "5Min", day.replace(hour=9, minute=30), day.replace(hour=16), max_pages=5)
-        h = stockday.multi_bars(c, syms, "30Min", (day - timedelta(days=9)).replace(hour=4), day.replace(hour=9, minute=29), max_pages=8)
+        h = stockday.multi_bars(c, syms, "30Min", (day - timedelta(days=46)).replace(hour=4), day.replace(hour=9, minute=29), max_pages=12)
         h30 = {}
+        for p in pk:                                   # the chart structure of the 30 sessions before (zones, trend, ...)
+            p["st"] = _struct_of(h.get(p["sym"]) or [], d)
         for s in syms:
             prior = [b for b in h.get(s) or [] if b["t"][:10] < d and "09:30" <= b["t"][11:16] < "16:00"]
             ds = sorted({b["t"][:10] for b in prior})[-5:]
@@ -158,11 +162,56 @@ def prep(sub, days=500, budget_s=470):
             for _ in ex.map(one, want[i:i + 6]):
                 done += 1
             db.put({"PK": PK, "SK": STATE_SK, "running": iso(now_ny()), "progress": f"{done} of {len(want)} days loaded", "days": days, "error": None})
-    left = len(want) - done
+    if done:
+        idx = db.get(PK, "DAYS") or {}
+        sd_ = db.get(PK, "STRUCTDAYS") or {}
+        db.put({"PK": PK, "SK": "STRUCTDAYS", "days": sorted(set(sd_.get("days") or []) | set(want[:done]))})
+    left = len(want) - done + (len(stored_days()) - len(struct_days()))
     db.put({"PK": PK, "SK": STATE_SK, "running": iso(now_ny()) if left else None,
             "progress": f"{len(stored_days())} days stored" + (f", {left} left (continuing)" if left else ""), "days": days,
             "at": iso(now_ny()), "error": None})
     return {"left": left}
+
+
+def _struct_of(bars30, d):
+    import structure
+    prior = [b for b in bars30 if b["t"][:10] < d]
+    return structure.compact(structure.build(prior))
+
+
+def struct_days():
+    return set((db.get(PK, "STRUCTDAYS") or {}).get("days") or [])
+
+
+def backfill_struct(sub, budget_s, t0):
+    """Days stored before the chart structure existed: their picks get it (one request a day). -> days left."""
+    import stockday
+    c = stockday.data_creds(sub)
+    have = struct_days()
+    todo = [d for d in stored_days() if d not in have]
+    done = []
+
+    def one(d):
+        rows = db.q_prefix(PK, f"B#{d}#")
+        syms = [p["sym"] for r in rows for p in json.loads(r.get("picks") or "[]")]
+        if syms:
+            day = datetime.strptime(d, "%Y-%m-%d")
+            h = stockday.multi_bars(c, syms, "30Min", (day - timedelta(days=46)).replace(hour=4), day.replace(hour=9, minute=29), max_pages=12)
+            for r in rows:
+                ps = json.loads(r.get("picks") or "[]")
+                for p in ps:
+                    p["st"] = _struct_of(h.get(p["sym"]) or [], d)
+                db.put({**r, "picks": json.dumps(ps)})
+        return d
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for i in range(0, len(todo), 6):
+            if time.time() - t0 > budget_s:
+                break
+            done += list(ex.map(one, todo[i:i + 6]))
+            idx = db.get(PK, "STRUCTDAYS") or {}
+            db.put({"PK": PK, "SK": "STRUCTDAYS", "days": sorted(set(idx.get("days") or []) | set(done))})
+            db.put({"PK": PK, "SK": STATE_SK, "running": iso(now_ny()), "progress": f"chart structure: {len(have) + len(done)} of {len(stored_days())} days", "error": None})
+    return len(todo) - len(done)
 
 
 def prep_job(sub, params=None):
@@ -215,7 +264,8 @@ class SipBench:
                 if len(today) < 20:
                     continue
                 self.data.append({"sym": s, "allb": (x["h"].get(s) or []) + today, "show": [d], "walls": {}, "pick": p,
-                                  "ctx": {"dp": {}, "vix": vix, "peer": peer, "cache": {}, **mx}})
+                                  "ctx": {"dp": {}, "vix": vix, "peer": peer, "cache": {}, **mx,
+                                          "struct": {d: p["st"]} if p.get("st") else {}}})
         days_all = sorted({x["show"][0] for x in self.data})
         self.cut = days_all[-self.hold] if self.hold and len(days_all) > self.hold else None
         rd = [d for d in days_all if not self.cut or d < self.cut]

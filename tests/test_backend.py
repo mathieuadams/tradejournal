@@ -5051,6 +5051,7 @@ def test_stocks_in_play_research_bench():
         assert r["left"] == 0 and len(sipbench.stored_days()) == len(days) - 15
         d0 = sipbench.get_day(days[-1])
         assert {p["sym"] for p in d0["picks"]} == {"HOT", "COLD"} and len(d0["b"]["HOT"]) == 78 and d0["q"]
+        assert all(p.get("st") and p["st"]["zones"] is not None for p in d0["picks"])          # chart structure stored
         assert any(b["t"][11:16] < "09:30" for b in d0["h"]["HOT"]) and all(b["t"][:10] <= days[-1] for b in d0["h"]["HOT"])
         c = {**research.CRITERIA, "universe": "inplay", "sipTop": 5, "holdoutDays": 5}
         bench = research.make_bench("sip-user", 100, research.base_cfg("sip-user", "day"), c)
@@ -5159,6 +5160,33 @@ def test_ticker_30_day_context():
         assert x["walls"]["putWall"] == 160.0 and any("flip" in n for n in x["notes"])
     finally:
         stockday.multi_bars, stockday.data_creds, daytrade.walls_by_day = saved
+
+
+def test_chart_structure_series():
+    """The chart structure of the sessions BEFORE each day (zones, daily trend, range position, volume profile) as
+    formula series; nothing from the day itself; precomputed structures (stocks in play) are used as given."""
+    import formula, structure
+    bars = []
+    days = [f"2026-0{m}-{d:02d}" for m in (1, 2, 3) for d in range(1, 29) if __import__("datetime").date(2026, m, d).weekday() < 5][:45]
+    for k, d in enumerate(days):
+        base = 100 + k * 1.5
+        for m in range(570, 960, 30):
+            j = (m - 570) // 30
+            p = base + abs(((k * 13 + j) // 2) % 6 - 3)
+            bars.append({"t": f"{d}T{m // 60:02d}:{m % 60:02d}", "o": p, "h": p + 0.5, "l": p - 0.5, "c": p + 0.1, "v": 1000 + j})
+    st = structure.build([b for b in bars if b["t"][:10] < days[40]])
+    assert st and st["days"] == 30 and st["trend"] == 1 and st["zones"] and st["poc"] is not None and st["atr"] > 0
+    cx = formula.Ctx(bars, True, interval=30)
+    dt, rp, inz, sup = cx.s("dTrend"), cx.s("rangePos"), cx.s("inZone"), cx.s("supZone")
+    assert dt[0] is None and dt[-1] == 1.0 and rp[-1] is not None
+    assert all(v is None or v <= b["c"] for v, b in zip(sup, bars)) and set(v for v in inz if v is not None) <= {0.0, 1.0}
+    # the structure of a day only uses the days before it: changing the last day doesn't change its own structure
+    bars2 = [dict(b, h=b["h"] + 50) if b["t"][:10] == days[-1] else b for b in bars]
+    cx2 = formula.Ctx(bars2, True, interval=30)
+    assert cx2.s("dAtr")[-1] == cx.s("dAtr")[-1]
+    comp = structure.compact(st)
+    cx3 = formula.Ctx([b for b in bars if b["t"][:10] == days[40]], True, interval=30, struct={days[40]: comp})
+    assert cx3.s("dTrend")[0] == 1.0 and cx3.s("poc30")[0] == comp["poc"]
 
 
 if __name__ == "__main__":
