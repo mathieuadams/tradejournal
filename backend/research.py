@@ -28,7 +28,7 @@ IDEA = "RIDEA#"
 CRITERIA = {"minTrades": 100, "minHalf": 40, "minT": 2.0, "minTestT": 1.0, "minPF": 1.2, "minWin": 0.0, "minAvgR": 0.05,
             "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15, "exploreEvery": 10, "banTop": 5,
             "retire": True, "retireMin": 10, "holdoutDays": 60,
-            "folds": 5, "minFolds": 3, "adjustBy": "family", "universe": "tickers", "sipTop": 15}
+            "folds": 5, "minFolds": 3, "adjustBy": "family", "universe": "tickers", "sipTop": 15, "dayT": True}
 LIMITS = {"minTrades": (10, 5000), "minHalf": (0, 2500), "minT": (0, 10), "minTestT": (-5, 10), "minPF": (0, 10),
           "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20), "retireMin": (3, 200), "holdoutDays": (0, 250), "folds": (2, 10), "minFolds": (0, 10), "sipTop": (3, 30)}
 STRATS = ("day", "swing")
@@ -50,7 +50,7 @@ def save_criteria(sub, body):
                 cur[k] = max(lo, min(hi, float(body[k])))
             except (TypeError, ValueError):
                 pass
-    for k in ("bothHalves", "adjustT", "autoRob", "retire"):
+    for k in ("bothHalves", "adjustT", "autoRob", "retire", "dayT"):
         if k in (body or {}):
             cur[k] = bool(body[k])
     cur["minTrades"], cur["minHalf"], cur["robDays"] = int(cur["minTrades"]), int(cur["minHalf"]), int(cur["robDays"])
@@ -276,27 +276,36 @@ def tstat(xs):
     return round(m / sd * math.sqrt(n), 2) if sd else None
 
 
-def metrics(rows, mid, cost=0.0, period=None, k=5):
+def metrics(rows, mid, cost=0.0, period=None, k=5, day_t=True):
     """rows: [{"at", "R"}]. Each trade's R minus the cost. period=(first, last): also the walk-forward windows (k
-    equal calendar windows of the period, each judged on its own)."""
+    equal calendar windows of the period, each judged on its own). day_t: the t is the lower of the per-trade t and
+    the t of the R summed per day ("tDay"): trades of one day that win or lose together (a market-wide condition,
+    many stocks at once) count as one bet, not as many."""
     rs = [(r["at"], float(r["R"]) - cost) for r in rows if r.get("R") is not None]
     rs.sort()
 
-    def f(xs):
+    def f(pairs):
+        xs = [x for _, x in pairs]
         n = len(xs)
         if not n:
-            return {"n": 0, "avgR": None, "t": None, "win": None, "pf": None, "totR": 0}
+            return {"n": 0, "avgR": None, "t": None, "win": None, "pf": None, "totR": 0, "days": 0}
         w, l = [x for x in xs if x > 0], [x for x in xs if x <= 0]
-        return {"n": n, "avgR": round(sum(xs) / n, 3), "t": tstat(xs), "win": round(len(w) / n * 100, 1),
+        byd = {}
+        for a, x in pairs:
+            byd[a[:10]] = byd.get(a[:10], 0.0) + x
+        tt, td = tstat(xs), (tstat(list(byd.values())) if len(byd) >= 5 else None)
+        t = min(tt, td) if (day_t and tt is not None and td is not None) else tt
+        return {"n": n, "avgR": round(sum(xs) / n, 3), "t": t, "tTrade": tt, "tDay": td, "days": len(byd),
+                "win": round(len(w) / n * 100, 1),
                 "pf": round(sum(w) / -sum(l), 2) if l and sum(l) < 0 else (99.0 if w else None), "totR": round(sum(xs), 1)}
-    al = f([x for _, x in rs])
+    al = f(rs)
     eq = peak = dd = 0.0
     for _, x in rs:
         eq += x
         peak = max(peak, eq)
         dd = min(dd, eq - peak)
     al["maxDD"] = round(dd, 1)
-    out = {**al, "h1": f([x for a, x in rs if a[:10] < mid]), "h2": f([x for a, x in rs if a[:10] >= mid]), "cost": cost}
+    out = {**al, "h1": f([(a, x) for a, x in rs if a[:10] < mid]), "h2": f([(a, x) for a, x in rs if a[:10] >= mid]), "cost": cost}
     if period and period[0] and period[1]:
         from datetime import date
         d0, d1 = date.fromisoformat(period[0][:10]), date.fromisoformat(period[1][:10])
@@ -305,7 +314,7 @@ def metrics(rows, mid, cost=0.0, period=None, k=5):
         folds = []
         for i in range(k):
             lo, hi = date.fromordinal(edges[i]).isoformat(), date.fromordinal(edges[i + 1]).isoformat()
-            fx = f([x for a, x in rs if lo <= a[:10] < hi or (i == k - 1 and a[:10] == period[1][:10])])
+            fx = f([(a, x) for a, x in rs if lo <= a[:10] < hi or (i == k - 1 and a[:10] == period[1][:10])])
             folds.append({"from": lo, **{kk: fx[kk] for kk in ("n", "avgR", "t")}})
         out["folds"] = folds
         out["foldsPos"] = sum(1 for z in folds if z["n"] and (z["avgR"] or 0) > 0)
@@ -453,7 +462,7 @@ def test_idea(bench, base, x, c, n_tested, label=None):
     P = {**base, **(x.get("full") or x["changes"])}            # the idea's complete settings, on your tickers
     t0 = time.time()
     rows = bench.rows(P)
-    m = metrics(rows, bench.mid, float(c["costR"]), (bench.first, bench.last), int(c.get("folds") or 5))
+    m = metrics(rows, bench.mid, float(c["costR"]), (bench.first, bench.last), int(c.get("folds") or 5), c.get("dayT", True))
     g, fails, treq = grade(m, c, n_tested, label)
     by = {}
     for r in rows:

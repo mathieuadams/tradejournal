@@ -262,13 +262,22 @@ def fitness(rows, mid, cost, g, uses, first):
         out["fit"] = round(-5 + n / 60, 3)
         return out
     xs = [x for _, x in rs]
-    t = research.tstat(xs) or 0
-    k = n // 3
-    wins = [xs[:k], xs[k:2 * k], xs[2 * k:]]
+    byd = {}
+    for a, x in rs:
+        byd[a[:10]] = byd.get(a[:10], 0.0) + x
+    if len(byd) < 20:                                  # trades bunched on a few days: not enough separate bets
+        out.update(fit=round(-3 + len(byd) / 20, 3), days=len(byd))
+        return out
+    tt = research.tstat(xs) or 0
+    td = research.tstat(list(byd.values())) or 0
+    t = min(tt, td)                                    # trades of one day win / lose together: the day is the bet
+    dv = [byd[d] for d in sorted(byd)]
+    k = len(dv) // 3
+    wins = [dv[:k], dv[k:2 * k], dv[2 * k:]]
     pos = sum(1 for w in wins if w and sum(w) > 0)
     nov = novelty(g, uses)
     fit = t * pos / 3 - 0.25 * (len(g["atoms"]) - 1) + (min(0.3, 0.1 * nov) if t > 0 else 0)   # a small bonus, only on a real edge
-    out.update(fit=round(fit, 3), avgR=round(sum(xs) / n, 3), t=t, win=round(sum(1 for x in xs if x > 0) / n * 100, 1),
+    out.update(fit=round(fit, 3), avgR=round(sum(xs) / n, 3), t=t, tTrade=tt, tDay=td, days=len(byd), win=round(sum(1 for x in xs if x > 0) / n * 100, 1),
                posWin=pos, novel=nov)
     return out
 
@@ -397,7 +406,7 @@ def run(sub, budget_s=470, seed=None):
     evals0 = st["evals"]
 
     times = []
-    ukey = f"v2|{research.universe_of(c)}"              # scores cached per universe (and per fitness version)
+    ukey = f"v3|{research.universe_of(c)}"              # scores cached per universe (and per fitness version)
     live = {"pop": []}                                 # the population being evaluated (saved with the progress)
 
     def evaluate(g):

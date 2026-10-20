@@ -3172,7 +3172,7 @@ def test_research_pipeline_and_agent_apart():
 
         def rows(self, P):
             good = P.get("aboveVwap")
-            return [{"at": f"2025-{1 + i % 12:02d}-10T10:00", "R": (1.2 if i % 2 else -0.5) if good else (0.5 if i % 2 else -0.6), "sym": "QQQ"}
+            return [{"at": f"2025-{1 + i % 12:02d}-{1 + (i // 12) % 27:02d}T10:00", "R": (1.2 if (i // 12) % 2 else -0.5) if good else (0.5 if i % 2 else -0.6), "sym": "QQQ"}
                     for i in range(300)]
     seen_payload = {}
 
@@ -3314,7 +3314,7 @@ def test_research_agent_creates_indicators():
 
         def rows(self, P):
             good = "rsi(14)" in (P.get("fxLong") or "")
-            return [{"at": f"2025-{1 + i % 12:02d}-10T10:00", "R": (1.2 if i % 2 else -0.5) if good else 0.0, "sym": "QQQ"} for i in range(300)]
+            return [{"at": f"2025-{1 + i % 12:02d}-{1 + (i // 12) % 27:02d}T10:00", "R": (1.2 if (i // 12) % 2 else -0.5) if good else 0.0, "sym": "QQQ"} for i in range(300)]
 
     def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None, blocks=None):
         if not calls.get("p"):
@@ -5066,6 +5066,21 @@ def test_stocks_in_play_research_bench():
         assert len(research.same_universe(xs, c)) == 1 and len(research.same_universe(xs, {})) == 1
     finally:
         stockday.multi_bars, stockday.data_creds, research._invoke = saved
+
+
+def test_day_clustered_t():
+    """Many trades on the same few days (a market-wide condition) count as few bets: the t used is the lower of the
+    per-trade t and the per-day t."""
+    import research
+    rows = []
+    for d in range(1, 13):                              # 12 days, 20 trades each, whole days win or lose together
+        good = d % 3 != 0
+        for k in range(20):
+            rows.append({"at": f"2025-03-{d:02d}T10:{k:02d}", "R": (0.8 if good else -1.0) + (0.05 if k % 2 else -0.05)})
+    m = research.metrics(rows, "2025-03-07", 0.0)
+    assert m["days"] == 12 and m["tTrade"] > 3 and m["tDay"] < m["tTrade"] / 3 and m["t"] == m["tDay"]
+    m2 = research.metrics(rows, "2025-03-07", 0.0, day_t=False)
+    assert m2["t"] == m2["tTrade"]
 
 
 if __name__ == "__main__":
