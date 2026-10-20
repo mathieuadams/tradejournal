@@ -26,7 +26,7 @@ SK = "EVOLVE"
 POP = 24
 ELITE = 4
 MAX_ATOMS = 3
-RUNS_PER_DAY = 80
+RUNS_PER_DAY = 10 ** 9                                 # no daily limit: runs back to back while it is on
 NOVEL_USES = 5
 
 # (long, short, {param: choices}): {p} in the strings is replaced by the chosen value (short: {q} = mirrored value)
@@ -377,7 +377,7 @@ def public(sub):
     top = rank([{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in st["pop"]])[:8]
     return {"on": st["on"], "days": st["days"], "gen": st["gen"], "evals": st["evals"], "running": st.get("running"),
             "step": st.get("step"), "timedOut": timed_out, "tickers": st.get("tickers") or [], "avgEval": st.get("avgEval"),
-            "last": st.get("last"), "taboo": len(st.get(taboo_key(_universe(sub))) or []), "runsToday": (st.get("runs") or {}).get(now_ny().strftime("%Y-%m-%d"), 0), "runsMax": RUNS_PER_DAY, "universe": _universe(sub), "promoted": st["promoted"][-12:], "log": st["log"][-10:],
+            "last": st.get("last"), "taboo": len(st.get(taboo_key(_universe(sub))) or []), "runsToday": (st.get("runs") or {}).get(now_ny().strftime("%Y-%m-%d"), 0), "runsMax": None, "universe": _universe(sub), "promoted": st["promoted"][-12:], "log": st["log"][-10:],
             "top": [{"name": name_of(p["g"]), "side": p["g"]["side"], "stop": p["g"]["stop"], "target": p["g"].get("target"),
                      "formulas": dict(zip(("long", "short"), formulas(p["g"]))), **(p.get("res") or {})} for p in top]}
 
