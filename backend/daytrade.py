@@ -1692,11 +1692,11 @@ def context(sub, sym, days=30):
         notes.append(f"above the call wall {cw:g} (breakout over resistance)")
     if fl:
         notes.append(f"{'above' if price > fl else 'below'} the gamma flip {fl:g} ({'dampened' if price > fl else 'amplified'} moves)")
-    sup = next((z for z in zones if z["kind"] == "support"), None)
-    res = next((z for z in zones if z["kind"] == "resistance"), None)
+    sup = max((z for z in zones if z["kind"] == "support"), key=lambda z: z["hi"], default=None)      # nearest below
+    res = min((z for z in zones if z["kind"] == "resistance"), key=lambda z: z["lo"], default=None)   # nearest above
     atz = next((z for z in zones if z["kind"] == "at price"), None)
     if atz:
-        notes.append(f"inside a {atz['touches']}-touch zone {atz['lo']:.2f}–{atz['hi']:.2f}")
+        notes.append(f"inside a strength-{atz['touches']} zone {atz['lo']:.2f}–{atz['hi']:.2f}")
     if poc:
         notes.append("inside the 30-day value area" if va_lo <= price <= va_hi else
                      f"{'above' if price > va_hi else 'below'} the 30-day value area ({va_lo:g}–{va_hi:g})")
