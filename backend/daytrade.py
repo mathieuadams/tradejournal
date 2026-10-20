@@ -26,7 +26,7 @@ from util import BadRequest, iso, now_ny
 
 SK = "DTCFG"
 CRED_SK = "BROKER#alpacaday"
-PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "longs": True, "shorts": True,
+PARAMS = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "inplay": False, "longs": True, "shorts": True,
           "startT": "09:35", "endT": "15:30", "flatT": "15:55", "maxTrades": 3, "qty": 10, "riskUsd": 0, "maxQty": 500,
           # indicators
           "emaLen": 9, "ema2Len": 21, "kcLen": 20, "kcMult": 2.0, "sqLen": 20, "sqBB": 2.0, "sqKC": 1.5, "sqFireN": 3,
@@ -179,7 +179,7 @@ def clean_cfg(cur, body):
                 cur[k] = max(lo, min(hi, round(float(body[k]), 4)))
             except (TypeError, ValueError):
                 pass
-    for k in ("enabled", "trade", "longs", "shorts", "wallNear", "flipPrev", "cvdReal") + ENTRY + FILTERS + EXITS:
+    for k in ("enabled", "trade", "inplay", "longs", "shorts", "wallNear", "flipPrev", "cvdReal") + ENTRY + FILTERS + EXITS:
         if k in body:
             cur[k] = bool(body[k])
     for k in TIMES:
@@ -1467,6 +1467,30 @@ def _qty(P, s):
     return max(1, min(int(P.get("maxQty") or 500), q))
 
 
+def live_tickers(sub, P, now):
+    """The tickers the account trades today: the fixed list, or (inplay on) today's 09:15 top-15 movers plus any
+    ticker still holding a position opened today. -> (tickers, note or None)"""
+    if not P.get("inplay"):
+        return list(P["tickers"]), None
+    import stockday
+    pk = db.upk(sub)
+    today = now.strftime("%Y-%m-%d")
+    w = db.get(pk, f"SDWATCH#{today}") or {}
+    syms = [x["sym"] for x in (w.get("movers") or []) if x.get("sym")][:15]
+    note = None
+    if not syms:
+        try:
+            note = stockday._movers_kick(sub, now, today) or "no top-15 list for today yet"
+        except Exception as e:
+            note = f"top-15 list: {str(e)[:100]}"
+    held = [r.get("symbol") for r in db.q_prefix(pk, "DTPOS#") if r.get("status") == "open" and (r.get("at") or "")[:10] == today]
+    out = []
+    for x in syms + held:
+        if x and x not in out:
+            out.append(x)
+    return out, note
+
+
 def tick(sub, now=None):
     """Every minute: replay today with the current settings; open what the engine opens on the last finished candle,
     close what it closes (and everything at flatT)."""
@@ -1484,12 +1508,23 @@ def tick(sub, now=None):
     acts = []
     cut = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
     loaded = {}
-    for sym in P["tickers"]:
+    syms, note = live_tickers(sub, P, now)
+    if note:
+        acts.append(note)
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _load(sym):
         try:
-            loaded[sym] = [b for b in minute_bars(sub, sym, 3, now) if b["t"] <= cut]
+            return sym, [b for b in minute_bars(sub, sym, 3, now) if b["t"] <= cut], None
         except Exception as e:
-            acts.append(f"{sym}: {str(e)[:120]}")
-    for sym in P["tickers"]:
+            return sym, None, str(e)[:120]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for sym, bs, err in ex.map(_load, syms):
+            if err:
+                acts.append(f"{sym}: {err}")
+            else:
+                loaded[sym] = bs
+    for sym in syms:
         if sym not in loaded:
             continue
         try:

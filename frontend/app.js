@@ -2253,7 +2253,8 @@ function dtPanel() {
       <span class="muted" style="font-size:.78rem">max/day</span> ${num('maxTrades', 1, 3, 3)} <span class="muted" style="font-size:.78rem">shares</span> ${num('qty', 1, 4.5, 10)}
       <span class="muted" style="font-size:.78rem" title="If set, shares = this $ ÷ (entry − stop), capped by max shares">or risk $</span> ${num('riskUsd', 10, 4.5, 0)} <span class="muted" style="font-size:.78rem">max shares</span> ${num('maxQty', 1, 4.5, 500)}
       <span class="muted" style="font-size:.78rem">candles</span> <select data-dtsel="barMin" style="padding:1px 4px">${[1, 5].map(m => `<option value="${m}" ${+(c.barMin || 1) === m ? 'selected' : ''}>${m} min</option>`).join('')}</select>
-      <span class="muted" style="font-size:.78rem">tickers</span> <input data-dttk value="${esc((c.tickers || ['QQQ', 'SPY']).join(' '))}" style="width:8em;padding:1px 4px"></div>
+      <span title="ON: the account trades today's 09:15 top-15 movers (the Today list on the side), updated every morning; the tickers box is then only used for the backtest">${tog('inplay', 'Top 15 movers')}</span>
+      <span class="muted" style="font-size:.78rem">${c.inplay ? 'backtest tickers' : 'tickers'}</span> <input data-dttk value="${esc((c.tickers || ['QQQ', 'SPY']).join(' '))}" style="width:8em;padding:1px 4px"></div>
     <details open style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Indicators</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin:4px 0"><tbody>${rows}</tbody></table></div></details>
     <div style="display:flex;flex-direction:column;gap:6px">${grp('Entry')}${grp('Filter')}${grp('Exit')}</div>
     ${fxRow([['fxLong', 'Long entry'], ['fxShort', 'Short entry'], ['fxExitLong', 'Long exit'], ['fxExitShort', 'Short exit']], c, 'dtfx')}

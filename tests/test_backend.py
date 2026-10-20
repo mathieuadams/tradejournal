@@ -5189,6 +5189,22 @@ def test_chart_structure_series():
     assert cx3.s("dTrend")[0] == 1.0 and cx3.s("poc30")[0] == comp["poc"]
 
 
+def test_day_account_trades_top_15():
+    """Top 15 movers ON: the day account trades today's 09:15 movers (and keeps managing a position opened today);
+    OFF: the fixed tickers."""
+    import daytrade, db, datetime as _dt
+    sub = "inplay-user"
+    now = _dt.datetime(2026, 10, 20, 10, 0)
+    pk = db.upk(sub)
+    db.put({"PK": pk, "SK": "SDWATCH#2026-10-20", "movers": [{"sym": f"S{i}"} for i in range(20)]})
+    db.put({"PK": pk, "SK": "DTPOS#OLD#2026-10-20T09:40", "symbol": "OLD", "at": "2026-10-20T09:40", "status": "open"})
+    P = {**daytrade.PARAMS, "tickers": ["QQQ", "SPY"]}
+    assert daytrade.live_tickers(sub, P, now)[0] == ["QQQ", "SPY"]
+    syms, note = daytrade.live_tickers(sub, {**P, "inplay": True}, now)
+    assert syms[:15] == [f"S{i}" for i in range(15)] and syms[-1] == "OLD" and len(syms) == 16 and note is None
+    assert daytrade.clean_cfg(P, {"inplay": True})["inplay"] is True
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
