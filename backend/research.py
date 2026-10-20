@@ -1169,12 +1169,18 @@ def check_strategies(sub, days=250, cost=None):
             daily[r["at"][:10]] = daily.get(r["at"][:10], 0.0) + float(r["R"]) - cost
         chk["daily"] = {d: round(v, 3) for d, v in daily.items()}
         chk["dayList"] = ds[-260:]
+        d30 = ds[-30] if len(ds) >= 30 else (ds[0] if ds else "")
+        chk["days30"] = ds[-30:]
+        chk["recent"] = [{k: r.get(k) for k in ("sym", "at", "dir", "entry", "exit", "exitAt", "status", "R")}
+                         for r in rows if r["at"][:10] >= d30][-300:]         # the last 30 days, trade by trade (chart)
         avg, a60 = chk["all"].get("avgR"), chk["last60"].get("avgR")
         chk["status"] = ("healthy" if (avg or 0) > 0 and (a60 is None or a60 > 0) else
                          "weakening" if (avg or 0) > 0 else "failing")
         for old in x.get("checks") or []:              # only the latest check keeps the day-by-day series (item size)
             old.pop("daily", None)
             old.pop("dayList", None)
+            old.pop("recent", None)
+            old.pop("days30", None)
         x["checks"] = (x.get("checks") or [])[-89:] + [chk]
         x["side"] = side_of(x.get("full"))
         stage_step(x, rows, ds, cost, basket_cfg(sub))
@@ -1421,7 +1427,7 @@ def basket_switch(sub, force=False):
         return None
     x = next(s for s in strategies(sub, "day") if s["id"] == top["id"])
     keep = ("enabled", "trade", "tickers")
-    daytrade.save_config(sub, {k: v for k, v in (x.get("full") or {}).items() if k not in keep})
+    daytrade.save_config(sub, live_cfg(x, keep))
     cfg["active"] = top["id"]
     cfg["log"] = (cfg.get("log") or [])[-19:] + [{"at": iso(now_ny()), "to": top["name"], "from": cur["name"] if cur else None,
                                                    "score": top["score"]}]
@@ -1430,13 +1436,23 @@ def basket_switch(sub, force=False):
     return top["id"]
 
 
+def live_cfg(x, keep):
+    """The live settings of a saved strategy: found on stocks in play = traded on today's top-15 movers, 5-min candles
+    (as tested); found on fixed tickers = on the day tickers."""
+    out = {k: v for k, v in (x.get("full") or {}).items() if k not in keep}
+    out["inplay"] = x.get("universe") == "inplay"
+    if out["inplay"]:
+        out["barMin"] = 5
+    return out
+
+
 def use_strategy(sub, sid):
     """Put one saved strategy into the live day-trading settings by hand (it becomes the one in use)."""
     import daytrade
     x = next((s for s in strategies(sub, "day") if s["id"] == sid), None)
     if not x:
         raise ValueError("strategy not found")
-    daytrade.save_config(sub, {k: v for k, v in (x.get("full") or {}).items() if k not in ("enabled", "trade", "tickers")})
+    daytrade.save_config(sub, live_cfg(x, ("enabled", "trade", "tickers")))
     cfg = basket_cfg(sub)
     cfg["active"] = sid
     cfg["log"] = (cfg.get("log") or [])[-19:] + [{"at": iso(now_ny()), "to": x["name"], "by": "you"}]

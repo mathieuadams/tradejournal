@@ -3526,6 +3526,9 @@ def test_saved_strategies():
         research.check_strategies(sub, 250, cost=0.05)
         c = research.strategies(sub, "day")[0]["checks"][-1]
         assert c["all"]["n"] == 76 and c["last20"]["avgR"] == -0.55 and c["status"] in ("weakening", "failing")
+        assert c["recent"] and len(c["days30"]) <= 30 and all(r["at"][:10] >= c["days30"][0] for r in c["recent"])
+        x0 = {"full": {"aboveVwap": True, "tickers": ["X"]}, "universe": "inplay"}
+        assert research.live_cfg(x0, ("tickers",)) == {"aboveVwap": True, "inplay": True, "barMin": 5}
         claude.json_call = lambda *a, **k: {"ideas": [json.dumps({"name": "n", "hypothesis": "h", "changes": {"aboveVwap": True}})]}
         props, _ = research_agent.propose("day", [], {}, {}, [], 4, None, 0, [], kp)
         assert props and props[0]["name"] == "n"
