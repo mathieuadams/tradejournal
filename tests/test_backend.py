@@ -5230,6 +5230,24 @@ def test_piece_days():
         dtsearch.evaluate = saved
 
 
+def test_clustered_results_fail():
+    """Trades bunched in one market period (one month) fail the pipeline and get no fitness in the evolution, even
+    with a strong t: the edge has to show up across the calendar."""
+    import research, evolve
+    days = [f"2026-03-{d:02d}" for d in range(2, 28) if __import__("datetime").date(2026, 3, d).weekday() < 5]
+    rows = [{"at": f"{d}T10:{k:02d}", "R": 1.0 if k % 3 else -0.4} for d in days for k in range(12)]
+    m = research.metrics(rows, "2026-03-15", 0.05)
+    assert m["monthShare"] == 1.0 and m["months"] == 1
+    g, fails, _ = research.grade(m, research.CRITERIA, 1)
+    assert any("one month" in f for f in fails) and any("different days" in f for f in fails)
+    spread = [f"2026-{mo:02d}-{d:02d}" for mo in range(1, 7) for d in (5, 12, 19, 26)]
+    rows2 = [{"at": f"{d}T10:{k:02d}", "R": 1.0 if k % 3 else -0.4} for d in spread for k in range(4)]
+    g = {"atoms": [(0, 0)], "side": "long", "stop": 1.5, "target": 2}
+    f1 = evolve.fitness(rows + [{"at": "2026-01-05T10:00", "R": 0.1}] * 0, "2026-04-01", 0.05, g, {}, "2026-01-01")
+    f2 = evolve.fitness(rows2, "2026-12-31", 0.05, g, {}, "2026-01-01")
+    assert f2["monthShare"] < 0.35 and f2["fit"] > f1["fit"] and f1["posWin"] <= 1
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

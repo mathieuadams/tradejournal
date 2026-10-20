@@ -28,9 +28,10 @@ IDEA = "RIDEA#"
 CRITERIA = {"minTrades": 100, "minHalf": 40, "minT": 2.0, "minTestT": 1.0, "minPF": 1.2, "minWin": 0.0, "minAvgR": 0.05,
             "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15, "exploreEvery": 10, "banTop": 5,
             "retire": True, "retireMin": 10, "holdoutDays": 60,
-            "folds": 5, "minFolds": 3, "adjustBy": "family", "universe": "tickers", "sipTop": 15, "dayT": True}
+            "folds": 5, "minFolds": 3, "adjustBy": "family", "universe": "tickers", "sipTop": 15, "dayT": True,
+            "minDays": 40, "maxMonth": 0.35}
 LIMITS = {"minTrades": (10, 5000), "minHalf": (0, 2500), "minT": (0, 10), "minTestT": (-5, 10), "minPF": (0, 10),
-          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20), "retireMin": (3, 200), "holdoutDays": (0, 250), "folds": (2, 10), "minFolds": (0, 10), "sipTop": (3, 30)}
+          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20), "retireMin": (3, 200), "holdoutDays": (0, 250), "folds": (2, 10), "minFolds": (0, 10), "sipTop": (3, 30), "minDays": (0, 250), "maxMonth": (0.05, 1)}
 STRATS = ("day", "swing")
 MAX_IDEAS = 8
 
@@ -56,6 +57,7 @@ def save_criteria(sub, body):
     cur["minTrades"], cur["minHalf"], cur["robDays"] = int(cur["minTrades"]), int(cur["minHalf"]), int(cur["robDays"])
     cur["familyCap"], cur["exploreEvery"], cur["banTop"] = int(cur["familyCap"]), int(cur["exploreEvery"]), int(cur["banTop"])
     cur["retireMin"], cur["holdoutDays"] = int(cur["retireMin"]), int(cur["holdoutDays"])
+    cur["minDays"] = int(cur["minDays"])
     cur["folds"], cur["minFolds"] = int(cur["folds"]), min(int(cur["minFolds"]), int(cur["folds"]))
     if (body or {}).get("adjustBy") in ("family", "idea"):
         cur["adjustBy"] = body["adjustBy"]
@@ -295,7 +297,11 @@ def metrics(rows, mid, cost=0.0, period=None, k=5, day_t=True):
             byd[a[:10]] = byd.get(a[:10], 0.0) + x
         tt, td = tstat(xs), (tstat(list(byd.values())) if len(byd) >= 5 else None)
         t = min(tt, td) if (day_t and tt is not None and td is not None) else tt
+        mo = {}
+        for d in byd:
+            mo[d[:7]] = mo.get(d[:7], 0) + 1
         return {"n": n, "avgR": round(sum(xs) / n, 3), "t": t, "tTrade": tt, "tDay": td, "days": len(byd),
+                "months": len(mo), "monthShare": round(max(mo.values()) / len(byd), 2),
                 "win": round(len(w) / n * 100, 1),
                 "pf": round(sum(w) / -sum(l), 2) if l and sum(l) < 0 else (99.0 if w else None), "totR": round(sum(xs), 1)}
     al = f(rs)
@@ -361,6 +367,10 @@ def grade(m, c, n_tested, label=None):
     both = (m["h1"]["avgR"] or 0) > 0 and (m["h2"]["avgR"] or 0) > 0
     if c.get("bothHalves") and not both:
         fails.append("not positive on both halves")
+    if c.get("minDays") and (m.get("days") or 0) < int(c["minDays"]):
+        fails.append(f"traded on {m.get('days') or 0} different days < {int(c['minDays'])} (trades bunched on a few days)")
+    if c.get("maxMonth", 1) < 1 and (m.get("monthShare") or 0) > float(c["maxMonth"]):
+        fails.append(f"{round((m.get('monthShare') or 0) * 100)}% of its trading days in one month > {round(float(c['maxMonth']) * 100)}% (one market period, not an edge)")
     if m.get("folds") and c.get("minFolds") and m["foldsPos"] < int(c["minFolds"]):
         fails.append(f"positive in {m['foldsPos']}/{len(m['folds'])} walk-forward windows < {int(c['minFolds'])}")
     g = ("A" if not fails and (m["h2"]["t"] or 0) >= treq else "B" if not fails else "C" if both else "F")
@@ -1274,6 +1284,10 @@ def check_strategies(sub, days=250, cost=None):
         avg, a60 = chk["all"].get("avgR"), chk["last60"].get("avgR")
         chk["status"] = ("healthy" if (avg or 0) > 0 and (a60 is None or a60 > 0) else
                          "weakening" if (avg or 0) > 0 else "failing")
+        chk["all"]["days"], chk["all"]["monthShare"] = m.get("days"), m.get("monthShare")
+        if chk["status"] == "healthy" and ((m.get("days") or 0) < int(c.get("minDays") or 0) or
+                                           (m.get("monthShare") or 0) > float(c.get("maxMonth") or 1)):
+            chk["status"] = "clustered"                # its results come from one short market period
         for old in x.get("checks") or []:              # only the latest check keeps the day-by-day series (item size)
             old.pop("daily", None)
             old.pop("dayList", None)

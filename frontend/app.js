@@ -2080,7 +2080,7 @@ function researchBox(strategy) {
       ${strategy === 'day' ? `<label title="The research tests every day idea on these tickers (more tickers = more trades, so a real edge can reach the t needed); empty = your day-trading tickers"><span class="muted">research tickers</span> <input data-rscrittxt="dayTickers" value="${esc((c.dayTickers || []).join(' '))}" placeholder="QQQ SPY IWM AAPL MSFT NVDA AMZN META TSLA AMD" style="width:22em;padding:1px 4px"></label>${num('familyCap', 1, 3.4, 'max ideas per entry family', '(0 = no cap)')}${num('exploreEvery', 1, 3.4, 'every', 'runs: exploration round (0 = off), banning the pieces of the top')}${num('banTop', 1, 3, '', 'ideas')}
       <label title="A piece used in enough ideas whose lift is not positive on the 2nd half is retired: the agent can't use it any more"><input type="checkbox" data-rscritb="retire" ${c.retire ? 'checked' : ''}> retire pieces that fail the 2nd half</label>${num('retireMin', 1, 3, 'after', 'ideas')}
       ${num('holdoutDays', 5, 3.6, 'holdout: the last', 'days kept out of every research test')}
-      ${num('minFolds', 1, 3, 'walk-forward: positive in ≥', '')}${num('folds', 1, 3, 'of', 'windows')}
+      ${num('minFolds', 1, 3, 'walk-forward: positive in ≥', '')}${num('folds', 1, 3, 'of', 'windows')}${num('minDays', 1, 3.4, 'traded on ≥', 'different days')}${num('maxMonth', 0.05, 3.4, 'busiest month ≤', 'of its days (1 = off)')}
       <label title="Use the lower of the per-trade t and the t of the R summed per day: many trades of the same day (a market-wide condition) count as one bet"><input type="checkbox" data-rscritb="dayT" ${c.dayT !== false ? 'checked' : ''}> t per day too</label>
       <label title="What the t needed is raised for: each distinct entry family (variants of one strategy are not independent bets), or every idea"><span class="muted">raise t per</span> <select data-rscritsel="adjustBy" style="padding:1px 4px">${[['family', 'entry family'], ['idea', 'idea']].map(([v, l]) => `<option value="${v}" ${(c.adjustBy || 'family') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
       <button class="btn" data-rx="crit|${strategy}" style="font-size:.75rem;padding:1px 10px">Save criteria</button>
@@ -2159,7 +2159,7 @@ function stratRecent(x, c) {                     // a saved strategy's trades of
 }
 function rsStratBox(strategy, t) {
   const ss = t.strategies || [], R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
-  const ST = { healthy: ['gain', 'healthy'], weakening: ['', 'weakening (last 60 days ≤ 0)'], failing: ['loss', 'failing'] };
+  const ST = { healthy: ['gain', 'healthy'], weakening: ['', 'weakening (last 60 days ≤ 0)'], failing: ['loss', 'failing'], clustered: ['loss', 'clustered: its results come from one short market period'] };
   const bk = t.basket || {}, bc = bk.cfg || {}, brow = id => (bk.rows || []).find(r0 => r0.id === id) || {};
   const SIDE = { long: ['gain', 'long only'], short: ['loss', 'short only'], both: ['', 'both sides'] };
   const sideOf = x => x.side || ((x.full || {}).longs === false ? 'short' : (x.full || {}).shorts === false ? 'long' : 'both');

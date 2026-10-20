@@ -302,14 +302,24 @@ def fitness(rows, mid, cost, g, uses, first):
     tt = research.tstat(xs) or 0
     td = research.tstat(list(byd.values())) or 0
     t = min(tt, td)                                    # trades of one day win / lose together: the day is the bet
-    dv = [byd[d] for d in sorted(byd)]
-    k = len(dv) // 3
-    wins = [dv[:k], dv[k:2 * k], dv[2 * k:]]
+    ds = sorted(byd)                                   # 3 CALENDAR windows of the 1st half (not 3 groups of trading days:
+    lo, hi = (first or ds[0])[:10], mid               # trades bunched in one month would fill all three)
+    from datetime import date
+    d0, d1 = date.fromisoformat(lo), date.fromisoformat(hi)
+    sp = max(1, (d1 - d0).days)
+    edges = [date.fromordinal(d0.toordinal() + sp * i // 3).isoformat() for i in range(4)]
+    wins = [[byd[d] for d in ds if edges[i] <= d < edges[i + 1] or (i == 2 and d >= edges[3])] for i in range(3)]
     pos = sum(1 for w in wins if w and sum(w) > 0)
+    mo = {}
+    for d in ds:
+        mo[d[:7]] = mo.get(d[:7], 0) + 1
+    share = max(mo.values()) / len(ds)                 # the busiest month's share of the trading days
     nov = novelty(g, uses)
     fit = t * pos / 3 - 0.25 * (len(g["atoms"]) - 1) + (min(0.3, 0.1 * nov) if t > 0 else 0)   # a small bonus, only on a real edge
+    if share > 0.35:                                   # one market period: not an edge (penalty grows with the share)
+        fit -= 4 * (share - 0.35)
     out.update(fit=round(fit, 3), avgR=round(sum(xs) / n, 3), t=t, tTrade=tt, tDay=td, days=len(byd), win=round(sum(1 for x in xs if x > 0) / n * 100, 1),
-               posWin=pos, novel=nov)
+               posWin=pos, novel=nov, monthShare=round(share, 2))
     return out
 
 
