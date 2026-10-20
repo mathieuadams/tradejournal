@@ -1893,7 +1893,9 @@ def handler(event, context_):
         return {"flipsnap": daytrade.flip_snap_job()}
     elif job == "sdwatch":     # 09:15 ET: the pre-market watchlist of every user of the stock day trading
         subs = [p["PK"][5:] for p in db.scan_sk("SDCFG")]
-    elif job in ("sdtick", "sdmorning"):   # stocks in play: users with it on
+    elif job == "sdmorning":   # the stocks-in-play history (universe of the day, yesterday's ranges): every user of it
+        subs = [p["PK"][5:] for p in db.scan_sk("SDCFG")]
+    elif job == "sdtick":      # stocks in play live: users with it on
         subs = [p["PK"][5:] for p in db.scan_sk("SDCFG") if p.get("enabled")]
     elif job == "daytick":     # every minute: users with day trading on
         subs = [p["PK"][5:] for p in db.scan_sk("DTCFG") if p.get("enabled")]

@@ -122,7 +122,7 @@ def prep(sub, days=500, budget_s=470):
         raise ValueError("Connect an Alpaca account to load the stock data.")
     rdays = stockday.stored_days("R")
     if len(rdays) < 20:
-        raise ValueError("Build the stocks-in-play history first (Day trading stocks → Build history).")
+        raise ValueError("The stocks-in-play history (universe + opening ranges) is missing: it builds every morning at 09:05 ET.")
     have = set(stored_days())
     want = [d for d in rdays[-days:] if d not in have]
     db.put({"PK": PK, "SK": STATE_SK, "running": iso(now_ny()), "progress": f"{len(want)} days to load", "days": days, "error": None})

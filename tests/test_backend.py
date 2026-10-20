@@ -5083,6 +5083,30 @@ def test_day_clustered_t():
     assert m2["t"] == m2["tTrade"]
 
 
+def test_day_movers_side_list():
+    """The side list of the day-trading chart: today's 09:15 pre-market movers, then the previous days (their 09:15
+    list, else the stocks in play of that day from the stored history, kept once computed)."""
+    import stockday, sipbench, datetime as _dt
+    sub = "mv-user"
+    for k in [k for k in STORE if k[0] in (db.upk(sub), "SDMOVERS")]:
+        STORE.pop(k)
+    saved = stockday.now_ny, stockday.stored_days, sipbench.picks_history
+    try:
+        stockday.now_ny = lambda: _dt.datetime(2026, 10, 20, 9, 20)
+        stockday.stored_days = lambda kind: ["2026-10-15", "2026-10-16", "2026-10-19", "2026-10-20"]
+        sipbench.picks_history = lambda days, top=15: {d: [{"sym": "AMD", "rvol": 4.2, "pmRvol": 3.0}] for d in days}
+        db.put({"PK": db.upk(sub), "SK": "SDWATCH#2026-10-20", "at": "09:15", "movers": [{"sym": "CLF", "pmRvol": 44.7, "gapPct": 16.5}],
+                "picks": [{"sym": "CLF"}]})
+        db.put({"PK": db.upk(sub), "SK": "SDWATCH#2026-10-19", "movers": [{"sym": "XE", "pmRvol": 4.4}], "picks": []})
+        ds = stockday.movers(sub)
+        assert [d["label"] for d in ds] == ["Today", "Yesterday", "Fri 10-16"]
+        assert ds[0]["list"][0]["sym"] == "CLF" and ds[0]["watch"] == ["CLF"] and ds[1]["list"][0]["sym"] == "XE"
+        assert ds[2]["list"][0]["sym"] == "AMD" and ds[2]["source"] == "opening-range RVOL"
+        assert db.get("SDMOVERS", "2026-10-16")                              # kept: not computed again
+    finally:
+        stockday.now_ny, stockday.stored_days, sipbench.picks_history = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -540,7 +540,7 @@ def backtest(sub, days=250, cfg=None, budget_s=520):
         raise BadRequest("Connect an Alpaca account to load the stock data.")
     rdays = stored_days("R")
     if len(rdays) < 20:
-        raise BadRequest("Build the stock history first (Day trading stocks → Build history).")
+        raise BadRequest("The stocks-in-play history is missing: it builds every morning at 09:05 ET.")
     run = rdays[-days:]
     keep = rdays[max(0, len(rdays) - days - 14):]
     rows, errors = [], []
@@ -941,3 +941,53 @@ def chart(sub, sym, date=None):
             "pm": {d: {"h": max(b["h"] for b in pre), "l": min(b["l"] for b in pre)}} if pre else {},
             "pmVol": int(sum(b["v"] or 0 for b in pre)), "signals": sig, "levels": lv, "trend": trend, "mode": P.get("mode") or "orb", "stats": {}, "walls": [], "alerts": [], "evals": [],
             "maxPain": [], "expirations": [], "trades": [], "ema": [], "ema2": [], "kch": [], "inertia": [], "sqzH": []}
+
+
+# ---------------- the movers of the last trading days (the side list of the day-trading chart)
+def movers(sub, n_days=3, top=15):
+    """[{date, label, source, list: [{sym, pmRvol | rvol, gapPct, price}]}] newest first: today's 09:15 pre-market
+    list (pre-market RVOL), then the previous days (their 09:15 list when one was built, else the stocks in play of
+    that day ranked by opening-range RVOL from the stored history; kept once computed)."""
+    pk = db.upk(sub)
+    today = now_ny().strftime("%Y-%m-%d")
+    days = sorted(set(stored_days("U")) | set(stored_days("R")))
+    prev = [d for d in days if d < today][-(n_days - 1):][::-1]
+    out = []
+    w = db.get(pk, f"SDWATCH#{today}") or {}
+    out.append({"date": today, "label": "Today", "source": "pre-market 09:15" if w.get("movers") else None,
+                "at": w.get("at"), "error": w.get("error"), "list": [_mv(x) for x in (w.get("movers") or [])][:top],
+                "watch": [p.get("sym") for p in w.get("picks") or []]})
+    need = []
+    for d in prev:
+        wd = db.get(pk, f"SDWATCH#{d}") or {}
+        if wd.get("movers"):
+            out.append({"date": d, "source": "pre-market 09:15", "list": [_mv(x) for x in wd["movers"]][:top],
+                        "watch": [p.get("sym") for p in wd.get("picks") or []]})
+            continue
+        hit = db.get("SDMOVERS", d)
+        if hit and hit.get("list"):
+            out.append({"date": d, "source": "opening-range RVOL", "list": json.loads(hit["list"])[:top], "watch": []})
+            continue
+        need.append(d)
+        out.append({"date": d, "source": "opening-range RVOL", "list": None, "watch": []})
+    if need:
+        try:
+            import sipbench
+            ph = sipbench.picks_history(need, top)
+        except Exception as e:
+            print("movers history failed", e)
+            ph = {}
+        for x in out:
+            if x["date"] in need:
+                lst = [{"sym": p["sym"], "rvol": p.get("rvol"), "pmRvol": p.get("pmRvol")} for p in ph.get(x["date"]) or []]
+                x["list"] = lst
+                if lst:
+                    db.put({"PK": "SDMOVERS", "SK": x["date"], "list": json.dumps(lst)})
+    for i, x in enumerate(out):
+        if i:
+            x["label"] = "Yesterday" if i == 1 else datetime.strptime(x["date"], "%Y-%m-%d").strftime("%a %m-%d")
+    return out
+
+
+def _mv(x):
+    return {k: (float(v) if k != "sym" and v is not None else v) for k, v in x.items()}

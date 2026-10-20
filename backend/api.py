@@ -457,6 +457,13 @@ def daytrade_account_del(sub, claims, body, q):
     return daytrade.view(sub)
 
 
+@route("GET", "/daytrade/movers")
+def daytrade_movers(sub, claims, body, q):
+    """Today's pre-market movers (09:15) and the stocks in play of the previous days: the side list of the chart."""
+    import stockday
+    return {"days": stockday.movers(sub)}
+
+
 @route("POST", "/daytrade/chart")
 def daytrade_chart(sub, claims, body, q):
     import daytrade

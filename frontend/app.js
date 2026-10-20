@@ -1687,7 +1687,7 @@ async function loadTickers() {
   S.tkBusy = false;
   if (route() === 'botchart') render();
 }
-try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = ['dt', 'sd'].includes(m0) ? m0 : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
+try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
 function wwReviewBox() {
   const r = S.wwRev;
@@ -1740,7 +1740,7 @@ async function loadWwChart(sym) {
   try { S.fc[k] = await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`); } catch (e) { S.fc[k] = { error: e.message }; }
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
-const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['sd', 'Day trading stocks']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
@@ -2493,18 +2493,19 @@ function dtStudyCvd(t, P) {
 function vChartDT() {
   if (S.dt === undefined) { S.dt = null; setTimeout(loadDT, 0); }
   const cfg = dtCfg(), tickers = cfg.tickers || ['QQQ', 'SPY'], t0 = (hashParam('t') || '').toUpperCase();
-  const sym = tickers.includes(t0) ? t0 : tickers[0];
+  const sym = t0 || tickers[0];                        // any ticker: the day's movers too (side list)
+  if (S.dtMovers === undefined) { S.dtMovers = null; setTimeout(loadMovers, 0); }
   const k = `dt|${sym}|${dtTfEff()}|${S.dtDays}`, d = S.dtFc && S.dtFc.k === k ? S.dtFc.d : null;
   if (!d && S.dtBusy !== k) setTimeout(() => loadDTChart(sym), 0);
   const narrow = window.innerWidth < 800, headH = S.fcfHeadH || 58;
-  const W = Math.max(320, window.innerWidth - 20), H = Math.max(420, window.innerHeight - headH - 90);   // settings / backtest below: scroll
+  const side = !narrow, W = Math.max(320, window.innerWidth - 20 - (side ? 232 : 0)), H = Math.max(420, window.innerHeight - headH - 90);   // settings / backtest below: scroll
   const id = 'dt-' + sym + '-' + S.dtTf;
   fcNeedDark(id);
   const sigs = (d && d.signals) || [], st = (d && d.stats) || {};
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
   const zb = (q, l) => `<button class="btn" data-fczoom="${id}|${q}" style="padding:3px 10px">${l}</button>`;
   const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym)}</b> ${fcModeSeg()}
-    <span class="seg">${tickers.map(x => `<a class="btn ${x === sym ? 'coachbtn' : ''}" href="#botchart?t=${encodeURIComponent(x)}" style="padding:3px 10px">${esc(x)}</a>`).join('')}</span>
+    <span class="seg">${(tickers.includes(sym) ? tickers : tickers.concat([sym])).map(x => `<a class="btn ${x === sym ? 'coachbtn' : ''}" href="#botchart?t=${encodeURIComponent(x)}" style="padding:3px 10px">${esc(x)}</a>`).join('')}</span>
     <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
     <span class="seg">${[1, 3, 5, 10, 20, 30].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
@@ -2531,7 +2532,30 @@ function vChartDT() {
     ${live.length ? `<details style="margin:4px 0"><summary style="font-size:.85rem;cursor:pointer">Live day trades (${live.length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Ticker</th><th>Entry</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th><th>Exit</th></tr></thead><tbody>
       ${live.slice().reverse().map(r0 => `<tr><td>${esc(r0.symbol)}</td><td>${esc((r0.at || '').replace('T', ' ').slice(5))}</td><td>${esc(r0.dir || '')}</td><td class="r">${r0.qty ?? ''}</td><td class="r">${r0.entry ?? ''}</td><td>${esc(r0.status || '')}</td><td>${esc(r0.exitReason || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${S.hideSettings ? '' : dtPanel()}${S.hideAnalysis ? '' : rsTabs('day') + (S.rsTab === 'ai' ? researchBox('day') : dtBtBox() + dtRobBox() + flipCheckBox() + dtSearchBox() + dtCmpBox() + dtStudyBox())}`;
-  return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${main}${info}</div></div></div>`;
+  const panel = moversBox(sym);
+  return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${side ? `<div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1;min-width:0">${main}</div>${panel}</div>` : panel + main}${info}</div></div></div>`;
+}
+async function loadMovers() {
+  try { S.dtMovers = (await api('/daytrade/movers')).days || []; } catch (e) { S.dtMovers = [{ label: 'Today', error: e.message, list: [] }]; }
+  if (route() === 'botchart' && S.fcfMode === 'dt') render();
+  clearTimeout(S.mvPoll);                              // the 09:15 list appears by itself (checked every 2 minutes 09:10-09:40 ET, else every 10)
+  const hm = new Date().toLocaleTimeString('en-GB', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit' });
+  S.mvPoll = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'dt') loadMovers(); else S.dtMovers = undefined; }, hm >= '09:10' && hm < '09:40' ? 120000 : 600000);
+}
+function moversBox(sym) {
+  const ds = S.dtMovers;
+  const f1 = v => v == null ? '' : `${(+v).toFixed(1)}×`;
+  if (!ds) return '<div style="width:224px;flex:none;font-size:.8rem" class="muted">Loading the movers…</div>';
+  const k = Math.min(S.mvDay || 0, ds.length - 1), d = ds[k] || {};
+  const tabs = ds.map((x, i) => `<button class="btn ${i === k ? 'coachbtn' : ''}" data-mvday="${i}" style="font-size:.72rem;padding:0 6px">${esc(x.label || x.date)}</button>`).join('');
+  const rows = (d.list || []).map((x, i) => `<a href="#botchart?t=${encodeURIComponent(x.sym)}" style="display:flex;justify-content:space-between;gap:6px;padding:2px 6px;border-radius:4px;text-decoration:none;${x.sym === sym ? 'background:var(--sunk);font-weight:700' : ''}">
+      <span>${i + 1}. ${esc(x.sym)}${(d.watch || []).includes(x.sym) ? ' <span class="gain" title="on the 09:15 watchlist (clear hourly trend)">★</span>' : ''}</span>
+      <span class="muted" style="font-size:.72rem">${x.pmRvol != null && d.source === 'pre-market 09:15' ? f1(x.pmRvol) : f1(x.rvol)}${x.gapPct != null ? ` · ${x.gapPct > 0 ? '+' : ''}${(+x.gapPct).toFixed(1)}%` : ''}</span></a>`).join('');
+  return `<div style="width:224px;flex:none;border:1px solid var(--line);border-radius:8px;padding:6px;font-size:.8rem;max-height:${Math.max(380, window.innerHeight - 160)}px;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><b>Top movers</b><button class="btn" data-mvreload title="Reload" style="font-size:.72rem;padding:0 6px">↻</button></div>
+    <div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px">${tabs}</div>
+    <div class="muted" style="font-size:.7rem;margin-bottom:3px">${esc(d.date || '')}${d.source ? ` · ${esc(d.source)}` : ''}${d.at ? ` · built ${esc(d.at)} ET` : ''}</div>
+    ${rows || `<p class="muted" style="font-size:.76rem;margin:4px">${k === 0 ? (d.error ? esc(d.error) : 'Today’s list builds at 09:15 ET (pre-market relative volume) and shows here by itself.') : 'No stocks in play stored for that day.'}</p>`}</div>`;
 }
 /* ---------- day trading stocks in play: ORB on the top relative-volume stocks (third Alpaca paper account) ---------- */
 async function loadSD() { try { S.sd = await api('/stockday'); } catch (e) { S.sd = { error: e.message }; } if (['botchart', 'settings'].includes(route())) render();
@@ -2714,7 +2738,7 @@ function dtWhyBox() {
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {
   if (S.fcfMode === 'dt') return vChartDT();
-  if (S.fcfMode === 'sd') return vChartSD();
+  if (S.fcfMode === 'sd') S.fcfMode = 'dt';
   if (S.fcfMode === 'ww') return vChartWW();
   const L = S.tickers, items = (L && L.items) || [], sym = fcfSymbol(), cur0 = items.find(x => x.symbol === sym), evId = hashParam('id');
   const cur = cur0 && evId ? { ...cur0, id: evId } : cur0;      // a specific evaluation (backtest replay) or the latest one
@@ -4531,9 +4555,11 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
+  if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
+  if (el.hasAttribute('data-mvreload')) { loadMovers(); return; }
   if (el.dataset.savesettings) { saveSettings(); return; }
   if (el.dataset.rescan) { reEvaluate(el.dataset.rescan); return; }
   if (el.dataset.botsave) { botSaveSettings(); return; }

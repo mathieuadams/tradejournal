@@ -722,7 +722,8 @@ def watchlist(sub, now=None):
     except Exception:
         opex = False
     out = {"date": d, "at": now.strftime("%H:%M"), "picks": picks, "candidates": len(cands), "universe": len(uni),
-           "events": ev + (["opex"] if opex else []), "market": mk, "reviewed": len(top), "note": "pre-market volume 04:00 to now vs the 14-day average of the full pre-market",
+           "events": ev + (["opex"] if opex else []), "market": mk, "reviewed": len(top),
+           "movers": [{k: x.get(k) for k in ("sym", "pmRvol", "pmVol", "price", "gapPct")} for x in cands[:15]], "note": "pre-market volume 04:00 to now vs the 14-day average of the full pre-market",
            "error": None if picks else why}
     item = {"PK": pk, "SK": f"SDWATCH#{d}", **json.loads(json.dumps(out, default=str), parse_float=Decimal), "built": iso(now_ny())}
     db.put(item)
