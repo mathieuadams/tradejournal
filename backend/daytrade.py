@@ -915,17 +915,25 @@ def _agg(bars, m):
     return out
 
 
-def chart(sub, sym, days=3, tf=1, cfg=None):
+def chart(sub, sym, days=3, tf=1, cfg=None, end=None):
     sym = (sym or "QQQ").upper()
     P = clean_cfg(config(sub), cfg or {})
     days = max(1, min(30, int(days or 3)))
-    allb = minute_bars(sub, sym, days + 3)
+    now = None
+    if end:                                            # a past day: the candles up to its close
+        try:
+            now = datetime.strptime(str(end)[:10], "%Y-%m-%d").replace(hour=16, minute=17)   # (SIP: minus 15 minutes)
+            if now >= now_ny().replace(tzinfo=None):
+                now = None
+        except ValueError:
+            now = None
+    allb = minute_bars(sub, sym, days + 3, now)
     if not allb:
         return {"symbol": sym, "bars": [], "error": "No minute candles."}
     dates = sorted({b["t"][:10] for b in allb})
     show = dates[-days:]
     W = walls_by_day(sub, sym, dates[-days - 1:] if P.get("flipPrev") else show, bool(P.get("wallNear")), budget_s=15)
-    ctx = live_ctx(sub, sym, P, show, days + 3)
+    ctx = live_ctx(sub, sym, P, show, days + 3, now)
     sigs = detect(allb, P, W, show[0], ctx)
     for x in sigs:                                     # the chart draws a scale-out as {at, px, frac}
         if isinstance(x.get("scaled"), (int, float)):
@@ -999,13 +1007,14 @@ def live_ctx(sub, sym, P, dates, n_days, now=None, peer_bars=None):
     fx_on = any(P.get(k) for k in FORMULAS)
     on = lambda k: fx_on or bool(P.get(k))
     ctx = {}
+    msym = "QQQ" if P.get("inplay") else sym          # stocks in play: the market's flow / gamma, as researched
     if fx_on:
-        ctx.update(market_ctx(sym, dates))
+        ctx.update(market_ctx(msym, dates))
         try:
             import marketctx
             today = (now or now_ny()).strftime("%Y-%m-%d")
             if today in dates:
-                live = marketctx.live_day(sub, sym, today)
+                live = marketctx.live_day(sub, msym, today)
                 if live:
                     ctx.setdefault("mx", {})[today] = live
         except Exception as e:
@@ -1017,9 +1026,9 @@ def live_ctx(sub, sym, P, dates, n_days, now=None, peer_bars=None):
             ctx["dp"] = wallwatch.dp_level_map(_bt.stored_darkpool(sym), dates)
         except Exception as e:
             print("dark pool levels failed", sym, e)
-    if on("peerAgree"):
+    if on("peerAgree") or (fx_on and P.get("inplay")):
         try:
-            ps = peer_of(sym, P.get("tickers") or [])
+            ps = "QQQ" if P.get("inplay") else peer_of(sym, P.get("tickers") or [])   # stocks in play: rs = vs QQQ
             pb = (peer_bars or {}).get(ps)
             if pb is None:
                 pb = minute_bars(sub, ps, n_days, now)

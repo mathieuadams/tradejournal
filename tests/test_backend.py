@@ -3526,7 +3526,7 @@ def test_saved_strategies():
         research.check_strategies(sub, 250, cost=0.05)
         c = research.strategies(sub, "day")[0]["checks"][-1]
         assert c["all"]["n"] == 76 and c["last20"]["avgR"] == -0.55 and c["status"] in ("weakening", "failing")
-        assert c["recent"] and len(c["days30"]) <= 30 and all(r["at"][:10] >= c["days30"][0] for r in c["recent"])
+        assert c["recent"] and len(c["days30"]) <= 60 and c["tradeDayList"] and all(r["at"][:10] >= c["days30"][0] for r in c["recent"])
         assert research._and_parts("(vixyChg > 2) and (megaBreadth > 0.5) and (breadth > 0.7)") == ["(vixyChg > 2)", "(megaBreadth > 0.5)", "(breadth > 0.7)"]
         x0 = {"full": {"aboveVwap": True, "tickers": ["X"]}, "universe": "inplay"}
         assert research.live_cfg(x0, ("tickers",)) == {"aboveVwap": True, "inplay": True, "barMin": 5}

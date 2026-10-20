@@ -1253,18 +1253,24 @@ def check_strategies(sub, days=250, cost=None):
             daily[r["at"][:10]] = daily.get(r["at"][:10], 0.0) + float(r["R"]) - cost
         chk["daily"] = {d: round(v, 3) for d, v in daily.items()}
         chk["dayList"] = ds[-260:]
-        d30 = ds[-30] if len(ds) >= 30 else (ds[0] if ds else "")
-        chk["days30"] = ds[-30:]
-        chk["market30"] = day_market(ds[-30:])
+        d30 = ds[-60] if len(ds) >= 60 else (ds[0] if ds else "")     # (named 30: the window is now 60 days)
+        chk["days30"] = ds[-60:]
+        chk["market30"] = day_market(ds[-60:])
+        tdl = {}
+        for r in rows:
+            q = tdl.setdefault(r["at"][:10], [0, 0.0])
+            q[0] += 1
+            q[1] += float(r["R"])
+        chk["tradeDayList"] = [[d, q[0], round(q[1], 2)] for d, q in sorted(tdl.items())][-120:]
         if i in inplay and bench is not None:
             try:
-                chk["picks30"], chk["pieces30"] = piece_days(bench, {**daytrade.PARAMS, **x["full"]}, ds[-30:])
+                chk["picks30"], chk["pieces30"] = piece_days(bench, {**daytrade.PARAMS, **x["full"]}, ds[-60:])
             except Exception as e:
                 print("piece days failed", e)
         chk["tradeDays"] = len({r["at"][:10] for r in rows})            # the days it traded on (trades cluster on days)
         chk["lastTrade"] = max((r["at"][:10] for r in rows), default=None)
         chk["recent"] = [{k: r.get(k) for k in ("sym", "at", "dir", "entry", "exit", "exitAt", "status", "R")}
-                         for r in rows if r["at"][:10] >= d30][-300:]         # the last 30 days, trade by trade (chart)
+                         for r in rows if r["at"][:10] >= d30][-500:]         # the last 60 days, trade by trade (chart)
         avg, a60 = chk["all"].get("avgR"), chk["last60"].get("avgR")
         chk["status"] = ("healthy" if (avg or 0) > 0 and (a60 is None or a60 > 0) else
                          "weakening" if (avg or 0) > 0 else "failing")
@@ -1276,6 +1282,7 @@ def check_strategies(sub, days=250, cost=None):
             old.pop("market30", None)
             old.pop("picks30", None)
             old.pop("pieces30", None)
+            old.pop("tradeDayList", None)
         x["checks"] = (x.get("checks") or [])[-89:] + [chk]
         x["side"] = side_of(x.get("full"))
         stage_step(x, rows, ds, cost, basket_cfg(sub))

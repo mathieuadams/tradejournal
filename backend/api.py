@@ -476,7 +476,7 @@ def daytrade_chart(sub, claims, body, q):
     import daytrade
     b = body or {}
     cfg = b.get("cfg") if isinstance(b.get("cfg"), dict) else None
-    return daytrade.chart(sub, b.get("t"), b.get("days") or 3, b.get("tf") or 1, cfg)
+    return daytrade.chart(sub, b.get("t"), b.get("days") or 3, b.get("tf") or 1, cfg, b.get("end"))
 
 
 @route("POST", "/daytrade/backtest")
