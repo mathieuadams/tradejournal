@@ -5051,7 +5051,7 @@ def test_stocks_in_play_research_bench():
         stockday.multi_bars = mb
         stockday.data_creds = lambda sub: {"key": "k", "secret": "s"}
         research._invoke = lambda *a, **k: None
-        r = sipbench.prep("sip-user", days=len(days) - 15, budget_s=60)
+        r = sipbench.prep("sip-user", days=len(days) - 15, budget_s=600)
         assert r["left"] == 0 and len(sipbench.stored_days()) == len(days) - 15
         d0 = sipbench.get_day(days[-1])
         assert {p["sym"] for p in d0["picks"]} == {"HOT", "COLD"} and len(d0["b"]["HOT"]) == 78 and d0["q"]
@@ -5260,6 +5260,18 @@ def test_evolution_hall_of_fame():
     evolve._save(sub, st)
     top = evolve.public(sub)["top"]
     assert top[0]["fit"] == 1.8 and len([x for x in top if x.get("fit") == 1.8]) == 1
+
+
+def test_evolution_state_fits_one_item():
+    """The evolution state stays under DynamoDB's 400 KB item limit: the cached scores give way (best kept)."""
+    import evolve, db
+    sub = "evo-size"
+    st = evolve.state(sub)
+    st["seen"] = {f"v4|inplay|{'x' * 150}{i}": {"fit": i / 1000, "n": 300, "avgR": 0.1, "t": 2.0, "days": 90, "win": 50.0,
+                                                  "posWin": 3, "novel": 1, "monthShare": 0.2} for i in range(2900)}
+    evolve._save(sub, st)
+    raw = db.get(db.upk(sub), evolve.SK)["data"]
+    assert len(raw.encode()) <= evolve.MAX_ITEM and "v4|inplay|" + "x" * 150 + "2899" in evolve.state(sub)["seen"]
 
 
 if __name__ == "__main__":

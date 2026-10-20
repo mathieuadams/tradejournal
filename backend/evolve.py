@@ -357,7 +357,20 @@ def _save(sub, st, user=False):
                 pass
     if len(st["seen"]) > 3000:                         # keep the evaluated set bounded (best ones kept)
         st["seen"] = dict(sorted(st["seen"].items(), key=lambda kv: -(kv[1].get("fit") or -99))[:2000])
-    db.put({"PK": db.upk(sub), "SK": SK, "data": json.dumps(st, default=str, separators=(",", ":"))})
+    data = json.dumps(st, default=str, separators=(",", ":"))
+    while len(data.encode()) > MAX_ITEM and st["seen"]:   # DynamoDB: 400 KB an item; the cached scores give way first
+        st["seen"] = dict(sorted(st["seen"].items(), key=lambda kv: -(kv[1].get("fit") or -99))[:int(len(st["seen"]) * 0.7)])
+        data = json.dumps(st, default=str, separators=(",", ":"))
+    if len(data.encode()) > MAX_ITEM:                  # then the oldest never-again sets and the log
+        for k in [k for k in st if k == "taboo" or str(k).startswith("taboo")]:
+            if isinstance(st[k], list):
+                st[k] = st[k][-200:]
+        st["log"] = st.get("log", [])[-10:]
+        data = json.dumps(st, default=str, separators=(",", ":"))
+    db.put({"PK": db.upk(sub), "SK": SK, "data": data})
+
+
+MAX_ITEM = 360_000
 
 
 def _universe(sub):
@@ -394,6 +407,7 @@ def _best_of(items, n=None):
     return out[:n] if n else out
 
 
+SEEN_KEYS = ("fit", "n", "avgR", "t", "days", "win", "posWin", "novel", "monthShare", "taboo")
 HOF = 12                                               # hall of fame: the best strategies ever found (a jolt keeps them)
 
 
@@ -481,7 +495,7 @@ def run(sub, budget_s=470, seed=None):
             times.append(time.time() - te)
             st["evals"] += 1
             st["avgEval"] = round(sum(times) / len(times), 1)
-        st["seen"][k] = res
+        st["seen"][k] = {kk: v for kk, v in res.items() if kk in SEEN_KEYS}   # small: thousands are cached
         st["step"] = f"generation {st['gen'] + 1}: {st['evals'] - evals0} strategies evaluated this run (~{st.get('avgEval')} s each)"
         if len(times) % 3 == 1:                        # progress kept even if the run is cut off (and shown on the page)
             st["pop"] = [{"g": p["g"], "res": p.get("res") if p["g"] is not g else res} for p in live["pop"]]
