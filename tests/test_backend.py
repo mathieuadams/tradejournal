@@ -5088,7 +5088,7 @@ def test_day_movers_side_list():
     list, else the stocks in play of that day from the stored history, kept once computed)."""
     import stockday, sipbench, datetime as _dt
     sub = "mv-user"
-    for k in [k for k in STORE if k[0] in (db.upk(sub), "SDMOVERS")]:
+    for k in [k for k in STORE if k[0] in (db.upk(sub), "SDMOVERS2")]:
         STORE.pop(k)
     saved = stockday.now_ny, stockday.stored_days, sipbench.picks_history
     try:
@@ -5102,7 +5102,7 @@ def test_day_movers_side_list():
         assert [d["label"] for d in ds] == ["Today", "Yesterday", "Fri 10-16"]
         assert ds[0]["list"][0]["sym"] == "CLF" and ds[0]["watch"] == ["CLF"] and ds[1]["list"][0]["sym"] == "XE"
         assert ds[2]["list"][0]["sym"] == "AMD" and ds[2]["source"] == "opening-range RVOL"
-        assert db.get("SDMOVERS", "2026-10-16")                              # kept: not computed again
+        assert db.get("SDMOVERS2", "2026-10-16")                              # kept: not computed again
     finally:
         stockday.now_ny, stockday.stored_days, sipbench.picks_history = saved
 

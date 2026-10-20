@@ -37,7 +37,7 @@ DATA = "https://data.alpaca.markets"
 TRADING = "https://paper-api.alpaca.markets"
 
 PARAMS = {"enabled": False, "trade": False, "longs": True, "shorts": True,
-          "minPrice": 5.0, "minAvgVol": 1000000, "minAtr": 0.5, "minRvol": 1.0, "topN": 20, "rvolMode": "orb",
+          "minPrice": 5.0, "minAvgVol": 1000000, "minAtr": 1.0, "minRvol": 1.0, "topN": 20, "rvolMode": "orb",
           "orbMin": 5, "dirLock": True, "dojiPct": 10.0, "stopAtrPct": 10.0, "entryEnd": "11:30", "flatT": "15:55",
           "vwapSide": False, "cvdSide": False, "vwapExit": False, "skipMid": False, "vwapCap": 0, "riskPct": 1.0, "maxLev": 4.0,
           "exclude": [], "mode": "orb",
@@ -408,6 +408,8 @@ def _rank(uni, today, roll, P):
     ex = set(P.get("exclude") or [])
     for s, w in today.items():
         if s not in uni or s in ex:
+            continue
+        if float(uni[s][0]) < float(P.get("minAtr") or 0):  # the ATR floor applies to the ranking too (the universe may be older)
             continue
         h = roll.get(s) or []
         if len(h) < 5:
@@ -966,7 +968,7 @@ def movers(sub, n_days=3, top=15):
             out.append({"date": d, "source": "pre-market 09:15", "list": [_mv(x) for x in wd["movers"]][:top],
                         "watch": [p.get("sym") for p in wd.get("picks") or []]})
             continue
-        hit = db.get("SDMOVERS", d)
+        hit = db.get("SDMOVERS2", d)
         if hit and hit.get("list"):
             out.append({"date": d, "source": "opening-range RVOL", "list": json.loads(hit["list"])[:top], "watch": []})
             continue
@@ -984,7 +986,7 @@ def movers(sub, n_days=3, top=15):
                 lst = [{"sym": p["sym"], "rvol": p.get("rvol"), "pmRvol": p.get("pmRvol")} for p in ph.get(x["date"]) or []]
                 x["list"] = lst
                 if lst:
-                    db.put({"PK": "SDMOVERS", "SK": x["date"], "list": json.dumps(lst)})
+                    db.put({"PK": "SDMOVERS2", "SK": x["date"], "list": json.dumps(lst)})
     for i, x in enumerate(out):
         if i:
             x["label"] = "Yesterday" if i == 1 else datetime.strptime(x["date"], "%Y-%m-%d").strftime("%a %m-%d")

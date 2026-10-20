@@ -26,6 +26,7 @@ PK = "SIPDATA"
 STATE_SK = "SIPPREP"
 SIP_TOP = 15
 PER_ITEM = 6
+MIN_ATR = 1.0                                          # $: stocks moving less than this a day are not picked
 MIN_HM = "09:35"                                       # the picks are known once the 5-minute opening range is done
 
 
@@ -85,7 +86,7 @@ def get_day(d):
 def picks_history(days_wanted, top=SIP_TOP):
     """{day: [pick]} for the stored stocks-in-play days (the 14 previous days of each give its RVOL)."""
     import stockday
-    P = {**stockday.PARAMS, "topN": top, "minRvol": 1.0, "rvolMode": "orb", "orbMin": 5}
+    P = {**stockday.PARAMS, "topN": top, "minRvol": 1.0, "rvolMode": "orb", "orbMin": 5, "minAtr": MIN_ATR}
     rdays = stockday.stored_days("R")
     want = set(days_wanted)
     keep = [d for d in rdays if d <= max(want)] if want else []
@@ -208,7 +209,7 @@ class SipBench:
             if not x or not x["picks"]:
                 continue
             peer = daytrade.peer_map(x["q"]) if x["q"] else {}
-            for p in x["picks"][:top]:
+            for p in [q for q in x["picks"] if float(q.get("atr") or 0) >= MIN_ATR][:top]:
                 s = p["sym"]
                 today = x["b"].get(s) or []
                 if len(today) < 20:

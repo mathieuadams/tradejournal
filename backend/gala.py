@@ -22,6 +22,7 @@
              vs SPY since the open, and skipping FOMC / CPI days.
 """
 SETUPS = ("retest", "bounce", "reject")
+MIN_ATR = 1.0                                          # $: stocks moving less than this a day (14-day ATR) are left out
 INDEX = ("SPY", "QQQ")
 
 
@@ -675,7 +676,8 @@ def watchlist(sub, now=None):
     ex = set(P.get("exclude") or [])
     syms = sorted(s for s in uni if s not in ex)
     day = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
-    cut = min(now.replace(tzinfo=None, second=0, microsecond=0), day.replace(hour=9, minute=29))
+    # the SIP feed of the free data plan refuses the last 15 minutes: the pre-market up to 16 minutes ago
+    cut = min(now.replace(tzinfo=None, second=0, microsecond=0) - timedelta(minutes=16), day.replace(hour=9, minute=29))
     pm = {}
     for i in range(0, len(syms), 200):
         pm.update(sd.multi_bars(c, syms[i:i + 200], "30Min", day.replace(hour=4), cut))
@@ -696,6 +698,8 @@ def watchlist(sub, now=None):
         if a <= 0:
             continue
         atr, _, pc = (float(z) for z in uni[s][:3])
+        if atr < MIN_ATR:                               # not enough movement a day to be worth day trading
+            continue
         price = bs[-1]["c"]
         cands.append({"sym": s, "pmRvol": round(v / a, 2), "pmVol": int(v), "price": round(price, 4), "prevClose": pc,
                       "gapPct": round((price / pc - 1) * 100, 2) if pc else None, "atr": atr, "rvol": round(v / a, 2)})
