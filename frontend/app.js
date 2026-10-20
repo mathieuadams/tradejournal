@@ -2007,7 +2007,8 @@ function researchBox(strategy) {
     if (ta !== tb) return ta ? -1 : 1;
     if (!ta) return (b.at || '').localeCompare(a.at || '');
     const ma = a.metrics || {}, mb = b.metrics || {};
-    return (GR[a.grade] ?? 9) - (GR[b.grade] ?? 9) || (mb.t ?? -99) - (ma.t ?? -99) || (mb.avgR ?? -99) - (ma.avgR ?? -99); });
+    const few = m => (m.n || 0) < (c.minTrades || 100) || Math.min((m.h1 || {}).n || 0, (m.h2 || {}).n || 0) < (c.minHalf || 40) ? 1 : 0;   // too few trades: below the ones that trade enough
+    return (GR[a.grade] ?? 9) - (GR[b.grade] ?? 9) || few(ma) - few(mb) || (mb.t ?? -99) - (ma.t ?? -99) || (mb.avgR ?? -99) - (ma.avgR ?? -99); });
   else xs.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
   const nA = all.filter(x => x.grade === 'A').length, nB = all.filter(x => x.grade === 'B').length;
   const num = (k, step, w, l, u) => `<label style="display:inline-flex;gap:3px;align-items:center"><span class="muted">${l}</span><input data-rscrit="${k}" type="number" step="${step}" value="${c[k] ?? ''}" style="width:${w}em;padding:1px 4px">${u ? `<span class="muted">${u}</span>` : ''}</label>`;
