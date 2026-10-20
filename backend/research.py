@@ -1279,7 +1279,7 @@ def check_strategies(sub, days=250, cost=None):
                 print("piece days failed", e)
         chk["tradeDays"] = len({r["at"][:10] for r in rows})            # the days it traded on (trades cluster on days)
         chk["lastTrade"] = max((r["at"][:10] for r in rows), default=None)
-        chk["recent"] = [{k: r.get(k) for k in ("sym", "at", "dir", "entry", "exit", "exitAt", "status", "R")}
+        chk["recent"] = [{k: r.get(k) for k in ("sym", "at", "dir", "entry", "exit", "exitAt", "status", "R", "stop0", "target", "pct")}
                          for r in rows if r["at"][:10] >= d30][-500:]         # the last 60 days, trade by trade (chart)
         avg, a60 = chk["all"].get("avgR"), chk["last60"].get("avgR")
         chk["status"] = ("healthy" if (avg or 0) > 0 and (a60 is None or a60 > 0) else

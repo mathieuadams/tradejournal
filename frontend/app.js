@@ -1939,7 +1939,17 @@ function svgCached(slot, ref, key, draw) {        // the chart SVG is rebuilt on
 }
 async function loadDTChart(sym) {
   const k = `dt|${sym}|${dtTfEff()}|${S.dtDays}|${(S.dtView || {}).id || ''}`; S.dtBusy = k; if (route() === 'botchart') render();
-  try { S.dtFc = { k, d: dtUnpack(await api('/daytrade/chart', { method: 'POST', body: { t: sym, days: S.dtDays, tf: dtTfEff(), ...(S.dtView ? { cfg: S.dtView.cfg, end: S.dtView.end } : {}) } })) }; } catch (e) { S.dtFc = { k, d: { error: e.message } }; }
+  try {
+    const d = dtUnpack(await api('/daytrade/chart', { method: 'POST', body: { t: sym, days: S.dtDays, tf: dtTfEff(), ...(S.dtView ? { cfg: S.dtView.cfg, end: S.dtView.end } : {}) } }));
+    if (S.dtView && S.dtView.trades && d && !d.error) {    // a saved strategy: its backtest trades exactly as tested (the days the stock was in play)
+      const first = ((d.bars || [])[0] || {}).t || '';
+      d.signals = S.dtView.trades.filter(r => (r.at || '') >= first);
+      const xs = d.signals.map(r => +r.R || 0), w = xs.filter(v => v > 0), l = xs.filter(v => v <= 0);
+      d.stats = { n: xs.length, win: xs.length ? Math.round(w.length / xs.length * 100) : 0, avgR: xs.length ? +(xs.reduce((a, v) => a + v, 0) / xs.length).toFixed(2) : null,
+        totR: +xs.reduce((a, v) => a + v, 0).toFixed(2), pf: l.length && l.reduce((a, v) => a + v, 0) < 0 ? +(w.reduce((a, v) => a + v, 0) / -l.reduce((a, v) => a + v, 0)).toFixed(2) : null, exits: {} };
+    }
+    S.dtFc = { k, d };
+  } catch (e) { S.dtFc = { k, d: { error: e.message } }; }
   S.dtBusy = null; if (route() === 'botchart') render();
 }
 function dtCfg() { return { ...((S.dt && S.dt.config) || {}), ...(S.dtDraft || {}) }; }
@@ -2534,7 +2544,7 @@ function vChartDT() {
   const sigs = (d && d.signals) || [], st = (d && d.stats) || {};
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
   const zb = (q, l) => `<button class="btn" data-fczoom="${id}|${q}" style="padding:3px 10px">${l}</button>`;
-  const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym)}</b> ${S.dtView ? `<span style="font-size:.8rem;border:1px solid var(--coach);border-radius:6px;padding:2px 8px">signals of the saved strategy <b>${esc(S.dtView.name)}</b> <button class="btn" data-stview="off" style="font-size:.72rem;padding:0 6px">back to my settings</button></span>` : ''} ${fcModeSeg()}
+  const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym)}</b> ${S.dtView ? `<span style="font-size:.8rem;border:1px solid var(--coach);border-radius:6px;padding:2px 8px">backtest trades of the saved strategy <b>${esc(S.dtView.name)}</b> (the days ${esc(sym)} was in play) <button class="btn" data-stview="off" style="font-size:.72rem;padding:0 6px">back to my settings</button></span>` : ''} ${fcModeSeg()}
     <span class="seg">${(tickers.includes(sym) ? tickers : tickers.concat([sym])).map(x => `<a class="btn ${x === sym ? 'coachbtn' : ''}" href="#botchart?t=${encodeURIComponent(x)}" style="padding:3px 10px">${esc(x)}</a>`).join('')}</span>
     <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
     <span class="seg">${[1, 3, 5, 10, 20, 30].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
@@ -4621,7 +4631,9 @@ document.addEventListener('click', e => {
     if (act === 'open') { S.stratOpen = S.stratOpen === id ? null : id; render(); return; }
     const x = ((((S.rs || {}).day || {}).strategies) || []).find(s0 => s0.id === id);
     if (!x) { toast('strategy not found'); return; }
-    S.dtView = { id: `${id}|${day}`, name: `${x.name} · ${day}`, end: day, cfg: { ...(x.full || {}), ...(x.universe === 'inplay' ? { barMin: 5, inplay: true } : {}) } };
+    const chk = (x.checks || []).slice(-1)[0] || {};
+    const trades = (chk.recent || []).filter(r => r.sym === sym).map(r => ({ ...r, kind: 'day', side: r.dir === 'short' ? -1 : 1 }));
+    S.dtView = { id: `${id}|${day}`, name: `${x.name} · ${day}`, end: day, trades, cfg: { ...(x.full || {}), ...(x.universe === 'inplay' ? { barMin: 5, inplay: true } : {}) } };
     S.dtDays = 3; S.dtTf = 5;
     location.hash = `#botchart?t=${encodeURIComponent(sym)}`; render(); return;
   }
