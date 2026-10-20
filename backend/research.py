@@ -1597,6 +1597,14 @@ def auto_kick():
                 _invoke(sub, "sipprep", {"days": 500})
         except Exception as e:
             print("stocks-in-play history kick failed", e)
+        try:                                           # the market context of the last session, once it is over (autopilot
+            import marketctx                           # on or off: saved strategies and the research read it)
+            st = marketctx.job_state(sub)
+            if not st.get("running") and (st.get("left") or st.get("at", "")[:10] < now_ny().strftime("%Y-%m-%d")) \
+                    and now_ny().strftime("%H:%M") >= "16:30":
+                marketctx.kick(sub, retry=True)              # days that failed before (e.g. the last 15 minutes refused) too
+        except Exception as e:
+            print("market context kick failed", e)
         if it.get("auto"):
             started += _start(sub, auto_due(sub))
             try:                                       # robustness checks waiting (a run that died restarts the queue)
@@ -1604,14 +1612,6 @@ def auto_kick():
                                       and rob_kick(sub))
             except Exception as e:
                 print("robustness kick failed", e)
-            try:                                       # the market context of the last session, once it is over
-                import marketctx
-                st = marketctx.job_state(sub)
-                if not st.get("running") and (st.get("left") or st.get("at", "")[:10] < now_ny().strftime("%Y-%m-%d")) \
-                        and now_ny().strftime("%H:%M") >= "16:30":
-                    marketctx.kick(sub)
-            except Exception as e:
-                print("market context kick failed", e)
     try:
         import evolve
         started += evolve.kick()

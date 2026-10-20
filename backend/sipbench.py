@@ -234,6 +234,7 @@ class SipBench:
     count (the picks are only known then)."""
 
     def __init__(self, sub, days, base, holdout=0, top=SIP_TOP):
+        self.sub = sub
         import daytrade
         self.errors, self.feed = [], {}
         self.hold = max(0, int(holdout or 0))
@@ -252,6 +253,15 @@ class SipBench:
         except Exception as e:
             mxall = {}
             self.errors.append(f"market context: {str(e)[:60]}")
+        try:                                           # days without market context can't trade a formula that reads it
+            cov = marketctx.coverage(ds)
+            self.coverage = cov
+            if ds and (cov["alp"] < 0.95 * len(ds) or cov["uw"] < 0.95 * len(ds)):
+                self.errors.append(f"market context (VIXY, breadth, flow) loaded for {min(cov['alp'], cov['uw'])} of {len(ds)} days: "
+                                   "loading the rest in the background")
+                marketctx.kick(self.sub, len(ds), retry=True)
+        except Exception as e:
+            print("market context coverage failed", e)
         mx = {"mx": mxall, "snaps": {}}
         for d in ds:
             x = get_day(d)

@@ -2138,7 +2138,7 @@ function basketBox(bk, ss) {
     ${(bc.log || []).length ? `<div class="muted" style="font-size:.74rem">Switches: ${bc.log.slice(-5).reverse().map(l0 => `${esc((l0.at || '').slice(5, 16).replace('T', ' '))} → ${esc(l0.to)}${l0.by === 'you' ? ' (you)' : ''}`).join(' · ')}</div>` : ''}${corr}</div>`;
 }
 function stratRecent(x, c) {                     // a saved strategy's trades of the last 30 days, grouped by day
-  if (!c || !c.recent) return '<p class="muted" style="font-size:.78rem;margin:4px 0">No trade list yet: it comes with the next check (click <b>Re-check now</b>, a few minutes).</p>';
+  if (!c || !c.recent) return '<p class="muted" style="font-size:.78rem;margin:4px 0">No trade list yet: it comes with the next check. <button class="btn coachbtn" data-rx="scheck|day" style="font-size:.74rem;padding:0 8px">Re-check now</button> (a few minutes)</p>';
   const by = {};
   c.recent.forEach(r => { const d = (r.at || '').slice(0, 10); (by[d] = by[d] || []).push(r); });
   const days = (c.days30 || []).slice().reverse(), Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
@@ -2150,7 +2150,7 @@ function stratRecent(x, c) {                     // a saved strategy's trades of
     return `<tr><td style="white-space:nowrap">${esc(d)}</td><td class="r">${ts.length || '<span class="muted">0</span>'}</td><td class="r">${ts.length ? Rf(s0) : ''}</td><td style="font-size:.76rem">${ts.map(r => `<button class="btn" data-stview="chart|${x.id}|${esc(r.sym || '')}|${i + 1}" style="font-size:.72rem;padding:0 6px;margin:1px" title="Open ${esc(r.sym || '')} on the chart with this strategy's settings">${esc(r.sym || '')} ${r.dir === 'short' ? 'S' : 'L'} ${esc((r.at || '').slice(11, 16))} ${r.entry != null ? (+r.entry).toFixed(2) : ''}→${r.exit != null ? (+r.exit).toFixed(2) : '…'} ${Rf(r.R)}</button>`).join('')}</td></tr>`; }).join('');
   return `<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:2px 0 8px">
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:.8rem"><b>Last 30 trading days</b> ${c.recent.length} trades · ${Rf(tot)} before the cost (${Rf(tot - cost * c.recent.length)} after) ${spark}
-    <span class="muted" style="font-size:.74rem">checked ${esc((c.at || '').slice(5, 16).replace('T', ' '))} · each button opens that ticker on the chart with this strategy's settings (its signals drawn)</span></div>
+    ${(c.errors || []).length ? `<span class="loss" style="font-size:.74rem">${esc(c.errors.join(' · '))}</span>` : ''}<span class="muted" style="font-size:.74rem">checked ${esc((c.at || '').slice(5, 16).replace('T', ' '))} · each button opens that ticker on the chart with this strategy's settings (its signals drawn)</span></div>
     <div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table class="pos" style="font-size:.8rem;margin:4px 0"><thead><tr><th>Day</th><th class="r">Trades</th><th class="r">Day R</th><th>Trades (ticker side entry time entry→exit R)</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 function rsStratBox(strategy, t) {
