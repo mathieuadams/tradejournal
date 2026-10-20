@@ -285,7 +285,20 @@ def state(sub):
     return st
 
 
-def _save(sub, st):
+USER_KEYS = ("on", "days", "tickers")                 # set from the page: a run in progress never overwrites them
+
+
+def _save(sub, st, user=False):
+    if not user:
+        cur = db.get(db.upk(sub), SK)
+        if cur and cur.get("data"):
+            try:
+                live = json.loads(cur["data"])
+                for k in USER_KEYS:
+                    if k in live:
+                        st[k] = live[k]
+            except ValueError:
+                pass
     if len(st["seen"]) > 3000:                         # keep the evaluated set bounded (best ones kept)
         st["seen"] = dict(sorted(st["seen"].items(), key=lambda kv: -(kv[1].get("fit") or -99))[:2000])
     db.put({"PK": db.upk(sub), "SK": SK, "data": json.dumps(st, default=str, separators=(",", ":"))})
@@ -318,7 +331,7 @@ def save_cfg(sub, body):
         tk = b["tickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
         st["tickers"] = [str(t).strip().upper()[:10] for t in tk or [] if str(t).strip()][:20]
-    _save(sub, st)
+    _save(sub, st, user=True)
     return public(sub)
 
 
@@ -357,13 +370,14 @@ def run(sub, budget_s=470, seed=None):
         _save(sub, st)
         return st
     tsets = _taboo_sets(st["taboo"])
+    fcombos = research.failed_combos(sub, hist)        # the agent's / your failed combinations count here too
     evals0 = st["evals"]
 
     times = []
 
     def evaluate(g):
         k = key(g)
-        if is_taboo(g, tsets):
+        if is_taboo(g, tsets) or research.failed_hit({"full": changes_of(g)}, fcombos):
             return {"fit": -9, "n": 0, "taboo": True}
         if k in st["seen"]:
             return st["seen"][k]
@@ -478,6 +492,7 @@ def job(sub, params=None):
         st.update(running=None, step=None, last={"at": iso(now_ny()), "error": str(e)[:200]})
         _save(sub, st)
         return {"error": str(e)[:200]}
+    st = state(sub)                                    # the switch as it is NOW (it may have been turned off meanwhile)
     if st["on"] and st["runs"].get(now_ny().strftime("%Y-%m-%d"), 0) < RUNS_PER_DAY and not (params or {}).get("once"):
         research._invoke(sub, "evolve", {})            # the next run right away (at most RUNS_PER_DAY a day)
     return {"gen": st["gen"], "evals": st["evals"]}

@@ -4933,6 +4933,80 @@ def test_paper_stage_and_kill_switch():
         daytrade.config, daytrade.save_config = saved
 
 
+def test_failed_combos_shared():
+    """A combination that failed on the 2nd half (an idea of the record or the evolution's never-again list) blocks
+    every idea containing it on the same side, for the agent and for the evolution."""
+    import research, evolve
+    sub = "rs-failed"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    xs = [{"id": "f", "status": "tested", "full": {"flipFade": True, "cvdSide": True, "longs": True, "shorts": True},
+           "metrics": {"h2": {"n": 50, "avgR": -0.1}}},
+          {"id": "g", "status": "tested", "full": {"orbBreak": True, "longs": True, "shorts": True}, "metrics": {"h2": {"n": 50, "avgR": -0.2}}}]
+    st = evolve.state(sub)
+    st["taboo"] = ["11:None|1:None|short"]                    # gex < 0 + hTrend (short side) failed
+    evolve._save(sub, st)
+    fc = research.failed_combos(sub, xs)
+    assert (frozenset({"flipFade", "cvdSide"}), "both") in fc
+    assert not any(p == frozenset({"orbBreak"}) for p, _ in fc)                   # a single piece: left to the retire rule
+    assert any(s_ == "short" and "gex (entry formula)" in p for p, s_ in fc)
+    x = research.admit({"missing": [], "changes": {"a": 1}, "fp": "1", "full": {"flipFade": True, "cvdSide": True, "vixOn": True}}, set(), failed=fc)
+    assert x["status"] == "failed combo" and "never again" in x["fails"][0]
+    y = research.admit({"missing": [], "changes": {"a": 1}, "fp": "2", "full": {"flipFade": True, "cvdSide": True, "shorts": False}}, set(), failed=fc)
+    assert y["status"] == "queued"                                                # long only: another side, allowed
+    z = {"full": evolve.changes_of({"side": "short", "atoms": [(11, None), (1, None), (13, None)], "stop": 1.3, "target": None})}
+    assert research.failed_hit(z, fc)
+
+
+def test_failed_combos_shared():
+    """A combination that failed on the 2nd half (an idea of the record or the evolution's never-again list) blocks
+    every idea containing it on the same side, for the agent and for the evolution."""
+    import research, evolve
+    sub = "rs-failed"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    xs = [{"id": "f", "status": "tested", "full": {"flipFade": True, "cvdSide": True, "longs": True, "shorts": True},
+           "metrics": {"h2": {"n": 50, "avgR": -0.1}}},
+          {"id": "g", "status": "tested", "full": {"orbBreak": True, "longs": True, "shorts": True}, "metrics": {"h2": {"n": 50, "avgR": -0.2}}}]
+    st = evolve.state(sub)
+    st["taboo"] = ["11:None|1:None|short"]
+    evolve._save(sub, st, user=True)
+    fc = research.failed_combos(sub, xs)
+    assert (frozenset({"flipFade", "cvdSide"}), "both") in fc
+    assert not any(p == frozenset({"orbBreak"}) for p, _ in fc)
+    assert any(s_ == "short" and "gex (entry formula)" in p for p, s_ in fc)
+    x = research.admit({"missing": [], "changes": {"a": 1}, "fp": "1", "full": {"flipFade": True, "cvdSide": True, "vixOn": True}}, set(), failed=fc)
+    assert x["status"] == "failed combo" and "never again" in x["fails"][0]
+    y = research.admit({"missing": [], "changes": {"a": 1}, "fp": "2", "full": {"flipFade": True, "cvdSide": True, "shorts": False}}, set(), failed=fc)
+    assert y["status"] == "queued"
+    z = {"full": evolve.changes_of({"side": "short", "atoms": [(11, None), (1, None), (13, None)], "stop": 1.3, "target": None})}
+    assert research.failed_hit(z, fc)
+
+
+def test_evolution_off_is_not_overwritten():
+    """Turning the evolution off while a run is in progress sticks: the run's own saves keep the switch as it is
+    now, and it doesn't start the next run."""
+    import evolve, research
+    sub = "rs-evoff"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    evolve.save_cfg(sub, {"on": True})
+    st = evolve.state(sub)                              # what a run loaded when it started
+    evolve.save_cfg(sub, {"on": False})                 # the trader unticks meanwhile
+    st["gen"] = 5
+    evolve._save(sub, st)                               # the run saves its progress
+    assert evolve.state(sub)["on"] is False and evolve.state(sub)["gen"] == 5
+    calls = []
+    saved = evolve.run, research._invoke
+    try:
+        evolve.run = lambda s_, budget_s=470, seed=None: {**evolve.state(s_), "on": True}
+        research._invoke = lambda *a, **k: calls.append(a)
+        evolve.job(sub)
+        assert calls == []
+    finally:
+        evolve.run, research._invoke = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

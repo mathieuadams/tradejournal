@@ -530,7 +530,7 @@ def new_idea(strategy, base, name, changes, by, days, hypothesis="", missing=(),
             "missing": [str(m)[:160] for m in (missing or [])][:6] + [str(u)[:200] for u in unknown][:6]}
 
 
-def admit(x, seen, fam=None, cap=0, banned=None):
+def admit(x, seen, fam=None, cap=0, banned=None, failed=None):
     """The gate before testing: feature requests, empty and repeated ideas are recorded, not tested; an idea of an
     entry family already tested `cap` times is recorded as "family exhausted" (no more one-knob tweaks of it)."""
     if x["missing"]:
@@ -542,6 +542,11 @@ def admit(x, seen, fam=None, cap=0, banned=None):
     elif banned and (blocks_of(x) & set(banned)):
         x["status"] = "banned piece"
         x["fails"] = [f"it uses {', '.join(sorted(blocks_of(x) & set(banned)))} (retired: doesn't hold on the 2nd half, or banned this exploration round)"]
+    elif failed and failed_hit(x, failed):
+        hit = failed_hit(x, failed)
+        x["status"] = "failed combo"
+        x["fails"] = [f"contains {' + '.join(sorted(h.replace(' (entry formula)', '') for h in hit))} ({side_of(x.get('full'))}), "
+                      f"which already failed on the 2nd half: never again"]
     elif cap and fam is not None and fam.get(family_of(x), 0) >= cap:
         x["status"] = "family exhausted"
         x["fails"] = [f"its entry family ({family_of(x)}) has {fam[family_of(x)]} tested ideas already (cap {cap})"]
@@ -622,6 +627,46 @@ def hold_job(sub, params=None):
     except Exception as e:
         print("holdout check failed", e)
         return {"error": str(e)[:200]}
+
+
+def entry_pieces(x):
+    """The entry side of an idea: entry rules, filters and the series / functions of its entry formulas."""
+    import daytrade
+    return frozenset(b for b in blocks_of(x) if b in daytrade.ENTRY or b in daytrade.FILTERS or b.endswith("(entry formula)"))
+
+
+def failed_combos(sub, xs=None):
+    """[(pieces, side)]: every entry combination (2 pieces or more) that did not pay on the 2nd half: the ideas of
+    the record (the agent's, yours, the evolution's) and the evolution's never-again list. An idea that contains one
+    of them on the same side is the same failed idea with something added: it is not tested."""
+    xs = ideas(sub, "day") if xs is None else xs
+    out = set()
+    for x in xs:
+        h2 = ((x.get("metrics") or {}).get("h2") or {})
+        if x.get("status") == "tested" and h2.get("n") and (h2.get("avgR") or 0) <= 0:
+            p = entry_pieces(x)
+            if len(p) >= 2:
+                out.add((p, side_of(x.get("full"))))
+    try:
+        import evolve
+        for t in evolve.state(sub).get("taboo") or []:
+            parts = t.split("|")
+            atoms = [(int(a.split(":")[0]), None if a.split(":")[1] == "None" else float(a.split(":")[1])) for a in parts[:-1]]
+            g = {"side": parts[-1], "atoms": atoms, "stop": 1.3, "target": None}
+            p = entry_pieces({"full": evolve.changes_of(g)})
+            if len(p) >= 2:
+                out.add((p, parts[-1]))
+    except Exception as e:
+        print("evolution taboo read failed", e)
+    return list(out)
+
+
+def failed_hit(x, combos):
+    p, sd = entry_pieces(x), side_of(x.get("full") or x.get("changes"))
+    for c, s in combos:
+        if s == sd and c <= p:
+            return c
+    return None
 
 
 def top_ideas(xs, k):
@@ -896,6 +941,7 @@ def run(sub, params=None, budget_s=540):
                 notes.append("Exploration round: banned " + ", ".join(banned) + ".")
             gone = retired(hist, c) if strategy == "day" else []
             run_["retired"] = gone
+            fails_ = failed_combos(sub, hist) if strategy == "day" else []
             props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
                                                  research_agent.public_criteria(c), research_agent.record(hist), n, p.get("focus"),
                                                  sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy),
@@ -903,7 +949,9 @@ def run(sub, params=None, budget_s=540):
                                                   "exhaustedFamilies": sorted(([k, v] for k, v in fam.items() if cap and v >= cap), key=lambda z: -z[1])[:10],
                                                   "familyCounts": sorted(([k, v] for k, v in fam.items()), key=lambda z: -z[1])[:15],
                                                   "basketNeeds": _basket_needs(sub) if strategy == "day" else [],
-                                                  "bannedThisRound": banned, "retired": gone})
+                                                  "bannedThisRound": banned, "retired": gone,
+                                                  "failedCombos": [{"side": s_, "pieces": sorted(q.replace(" (entry formula)", "") for q in p_)}
+                                                                   for p_, s_ in fails_][:80]})
         except Exception as e:
             run_["errors"].append(f"AI agent: {str(e)[:200]}")
             break
@@ -915,7 +963,7 @@ def run(sub, params=None, budget_s=540):
             made, bad = lib_add(sub, pr.get("newIndicators"), strategy, "ai", pr.get("name"))
             x = admit(new_idea(strategy, base, pr.get("name"), pr.get("changes"), "ai", days, pr.get("hypothesis"),
                                list(pr.get("missing") or []) + bad, pr.get("learnedFrom"), p.get("focus"), k, custom=lib_map(sub)), seen,
-                      fam if strategy == "day" else None, cap, sorted(set(banned) | set(gone)))
+                      fam if strategy == "day" else None, cap, sorted(set(banned) | set(gone)), fails_)
             x["indicators"] = made
             seen.add(x["fp"])
             _put_idea(sub, x)
