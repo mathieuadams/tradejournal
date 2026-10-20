@@ -59,6 +59,9 @@ Before proposing, study the RECORD of every idea already tried:
   hBrokeDn: Gala's hourly trend + levels; breaking retest = "low <= hBrokeUp and close > hBrokeUp and hTrend > 0"),
   relative strength vs the other ticker (rs), the prior-day / pre-market / opening-range levels (prevHigh, prevLow,
   pmHigh, pmLow, orHigh(n), orLow(n), gap, gapFilled);
+- "buildingBlocks.universe" says what the strategies trade: "fixed tickers", or each day's stocks in play (then
+  the options-flow / gamma series are the market's, walls / dark pool don't exist, and rs = the stock vs QQQ: prefer
+  the stock's own candles, levels, volume, relative strength, hourly structure and the market context);
 - "retired": pieces that did not hold up when the pipeline checked them: never use them again;
 - "failedCombos": entry combinations (pieces + side) that already failed on the 2nd half (yours, the trader's or the
   genetic search's): an idea containing all the pieces of one, on the same side, is not tested: build other ones;

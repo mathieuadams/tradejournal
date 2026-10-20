@@ -105,8 +105,31 @@ def run(sub, params=None, budget_s=520, save=True):
     cost = max(0.0, float(p.get("cost") if p.get("cost") is not None else 0.05))
     vs = variants(P)
     rr, per, all_days, feed, errors = daytrade.run_variants(sub, days, [{**P, **ch} for _, ch in vs], budget_s, P["tickers"])
-    ds = sorted(all_days)
-    mid = ds[len(ds) // 2] if ds else ""
+    out = summarize(P, vs, rr, sorted(all_days), cost, days, t0, errors)
+    if save:
+        _save(sub, out)
+    return out
+
+
+def run_bench(bench, P, cost, days, budget_s=480):
+    """The same check on a research bench (stocks in play): every variant through bench.rows."""
+    t0 = time.time()
+    vs = variants(P)
+    rr, errors = {}, list(bench.errors[:3])
+    for i, (_, ch) in enumerate(vs):
+        if time.time() - t0 > budget_s:
+            errors.append(f"time limit: {i} of {len(vs)} variants")
+            break
+        rr[i] = bench.rows({**P, **ch})
+    ds = sorted({r["at"][:10] for rs in rr.values() for r in rs})
+    out = summarize(P, vs, rr, ds, cost, days, t0, errors, mid=bench.mid)
+    out["universe"] = "stocks in play"
+    return out
+
+
+def summarize(P, vs, rr, ds, cost, days, t0, errors, mid=None):
+    import daytrade
+    mid = mid or (ds[len(ds) // 2] if ds else "")
     rows = []
     for i, (lab, ch) in enumerate(vs):
         rs = [(r["at"], r["R"] - cost) for r in rr.get(i, []) if r.get("R") is not None]
@@ -128,8 +151,6 @@ def run(sub, params=None, budget_s=520, save=True):
     out = {"at": iso(now_ny()), "days": days, "daysFound": len(ds), "mid": mid, "cost": cost, "base": b, "rows": rows, "extra": extra,
            "positive": pos, "variants": len(others), "share": share, "median": med, "verdict": verdict,
            "used": daytrade.used_summary(P), "secs": round(time.time() - t0), "errors": errors[:6]}
-    if save:
-        _save(sub, out)
     return out
 
 

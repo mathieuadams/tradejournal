@@ -98,6 +98,11 @@ def atom_set(g):
     return "|".join(sorted(f"{i}:{v}" for i, v in g["atoms"])) + "|" + g["side"]
 
 
+def taboo_key(universe):
+    """One never-again list per research universe (a combination that failed on QQQ may work on stocks in play)."""
+    return "tabooInplay" if universe == "inplay" else "taboo"
+
+
 def _taboo_sets(taboo):
     out = []
     for t in taboo:
@@ -304,6 +309,14 @@ def _save(sub, st, user=False):
     db.put({"PK": db.upk(sub), "SK": SK, "data": json.dumps(st, default=str, separators=(",", ":"))})
 
 
+def _universe(sub):
+    try:
+        import research
+        return research.universe_of(research.criteria(sub))
+    except Exception:
+        return "tickers"
+
+
 def public(sub):
     from datetime import timedelta
     st = state(sub)
@@ -313,7 +326,7 @@ def public(sub):
     top = rank([{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in st["pop"]])[:8]
     return {"on": st["on"], "days": st["days"], "gen": st["gen"], "evals": st["evals"], "running": st.get("running"),
             "step": st.get("step"), "timedOut": timed_out, "tickers": st.get("tickers") or [], "avgEval": st.get("avgEval"),
-            "last": st.get("last"), "taboo": len(st["taboo"]), "promoted": st["promoted"][-12:], "log": st["log"][-10:],
+            "last": st.get("last"), "taboo": len(st.get(taboo_key(_universe(sub))) or []), "universe": _universe(sub), "promoted": st["promoted"][-12:], "log": st["log"][-10:],
             "top": [{"name": name_of(p["g"]), "side": p["g"]["side"], "stop": p["g"]["stop"], "target": p["g"].get("target"),
                      "formulas": dict(zip(("long", "short"), formulas(p["g"]))), **(p.get("res") or {})} for p in top]}
 
@@ -345,7 +358,7 @@ def run(sub, budget_s=470, seed=None):
     st["step"] = "starting"
     _save(sub, st)
     c = research.criteria(sub)
-    hist = research.ideas(sub, "day")
+    hist = research.same_universe(research.ideas(sub, "day"), c)
     uses = piece_uses(hist)
     global EXIT_CHOICES
     allowed = allowed_atoms(hist, c)
@@ -355,21 +368,30 @@ def run(sub, budget_s=470, seed=None):
         _save(sub, st)
         return st
     cost = float(c["costR"])
+    inplay = c.get("universe") == "inplay"
     tick = st.get("tickers") or (list(c.get("dayTickers") or [])[:4]) or None   # few tickers: many more strategies a run
     base = research.base_cfg(sub, "day")
     blank = research.blank_cfg(sub, "day")
-    if tick:
+    if tick and not inplay:
         base["tickers"] = blank["tickers"] = list(tick)
-    st["step"] = f"loading {int(st['days'])} days of candles for {', '.join(base.get('tickers') or [])}"
+    st["step"] = (f"loading {int(st['days'])} days of stocks in play (top {int(c.get('sipTop') or 15)} a day)" if inplay else
+                  f"loading {int(st['days'])} days of candles for {', '.join(base.get('tickers') or [])}")
     _save(sub, st)
     tl = time.time()
-    bench = research.DayBench(sub, int(st["days"]), base, holdout=int(c.get("holdoutDays") or 0))
+    if inplay:
+        bench = research.make_bench(sub, int(st["days"]), base, c)
+    else:
+        bench = research.DayBench(sub, int(st["days"]), base, holdout=int(c.get("holdoutDays") or 0))
     st["loadSecs"] = round(time.time() - tl)
     if not bench.mid:
         st.update(running=None, step=None, last={"at": iso(now_ny()), "error": "no history loaded", "errors": bench.errors[:3]})
         _save(sub, st)
         return st
-    tsets = _taboo_sets(st["taboo"])
+    tk = taboo_key(research.universe_of(c))
+    st.setdefault(tk, [])
+    if st.get("universe") != research.universe_of(c):    # another universe: a new population
+        st.update(pop=[], universe=research.universe_of(c))
+    tsets = _taboo_sets(st[tk])
     fcombos = research.failed_combos(sub, hist)        # the agent's / your failed combinations count here too
     evals0 = st["evals"]
 
@@ -459,20 +481,22 @@ def promote(sub, st, pop, bench, base, c, hist):
     out = []
     for p in pop:
         r = p.get("res") or {}
-        if (r.get("fit") or -99) < 1.5 or key(p["g"]) in done or is_taboo(p["g"], _taboo_sets(st["taboo"])):
+        tk = taboo_key(research.universe_of(c))
+        if (r.get("fit") or -99) < 1.5 or key(p["g"]) in done or is_taboo(p["g"], _taboo_sets(st.get(tk) or [])):
             continue
         g = p["g"]
         x = research.new_idea("day", research.blank_cfg(sub, "day"), name_of(g), changes_of(g), "evolve", int(st["days"]),
                               f"Found by the genetic search: 1st-half t {r.get('t')}, {r.get('posWin')}/3 windows positive, "
                               f"{r.get('novel', 0)} rarely used pieces.", origin="blank")
         x["searchCount"] = st["evals"]
+        x["universe"] = research.universe_of(c)
         x = research.admit(x, set(), banned=research.retired(hist, c))
         if x["status"] == "queued":
             research.test_idea(bench, base, x, c, n_tested + 1 + st["evals"])     # every evaluation is a trial here
             if research.rob_due(x, c):
                 x["robust"] = {"status": "queued", "at": iso(now_ny())}
             if ((x.get("metrics") or {}).get("h2") or {}).get("avgR") is None or x["metrics"]["h2"]["avgR"] <= 0:
-                st["taboo"] = (st["taboo"] + [atom_set(g)])[-500:]      # didn't pay on the 2nd half: never again
+                st[tk] = ((st.get(tk) or []) + [atom_set(g)])[-500:]      # didn't pay on the 2nd half: never again
         research._put_idea(sub, x)
         if (x.get("robust") or {}).get("status") == "queued":
             research.rob_kick(sub)

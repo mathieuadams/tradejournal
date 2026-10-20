@@ -626,6 +626,18 @@ def research_strat_save(sub, claims, body, q):
     return {"strategy": x}
 
 
+@route("POST", "/research/sipprep")
+def research_sipprep(sub, claims, body, q):
+    """Build / extend the stocks-in-play research history (background, resumable)."""
+    import research
+    import sipbench
+    st = sipbench.prep_state()
+    if st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=12)):
+        return {"status": "running", "sip": st}
+    research._invoke(sub, "sipprep", {"days": int((body or {}).get("days") or 500)})
+    return {"status": "running", "sip": {**st, "running": iso(now_ny()), "progress": "starting"}}
+
+
 @route("PUT", "/research/evolve")
 def research_evolve(sub, claims, body, q):
     """The genetic search: on / off, history days, reset; turning it on starts the first run."""

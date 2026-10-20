@@ -28,9 +28,9 @@ IDEA = "RIDEA#"
 CRITERIA = {"minTrades": 100, "minHalf": 40, "minT": 2.0, "minTestT": 1.0, "minPF": 1.2, "minWin": 0.0, "minAvgR": 0.05,
             "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15, "exploreEvery": 10, "banTop": 5,
             "retire": True, "retireMin": 10, "holdoutDays": 60,
-            "folds": 5, "minFolds": 3, "adjustBy": "family"}
+            "folds": 5, "minFolds": 3, "adjustBy": "family", "universe": "tickers", "sipTop": 15}
 LIMITS = {"minTrades": (10, 5000), "minHalf": (0, 2500), "minT": (0, 10), "minTestT": (-5, 10), "minPF": (0, 10),
-          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20), "retireMin": (3, 200), "holdoutDays": (0, 250), "folds": (2, 10), "minFolds": (0, 10)}
+          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20), "retireMin": (3, 200), "holdoutDays": (0, 250), "folds": (2, 10), "minFolds": (0, 10), "sipTop": (3, 30)}
 STRATS = ("day", "swing")
 MAX_IDEAS = 8
 
@@ -59,6 +59,9 @@ def save_criteria(sub, body):
     cur["folds"], cur["minFolds"] = int(cur["folds"]), min(int(cur["minFolds"]), int(cur["folds"]))
     if (body or {}).get("adjustBy") in ("family", "idea"):
         cur["adjustBy"] = body["adjustBy"]
+    if (body or {}).get("universe") in ("tickers", "inplay"):
+        cur["universe"] = body["universe"]
+    cur["sipTop"] = int(cur["sipTop"])
     if "dayTickers" in (body or {}):
         tk = body["dayTickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -100,15 +103,17 @@ def state(sub, strategy=None):
     run = json.loads(r["run"]) if r.get("run") else {}
     if run.get("running") and run["running"] < iso(now_ny() - timedelta(minutes=12)):
         run = {**run, "running": None, "errors": (run.get("errors") or []) + ["The last run hit the 10-minute limit."]}
-    xs = ideas(sub, strategy)
-    return {"criteria": criteria(sub), "run": run, "ideas": xs, "blocks": block_map(xs, ("h1", "h2"))[:40], "retired": retired(xs, criteria(sub)),
-            "families": sorted(([k, v] for k, v in families(xs).items()), key=lambda z: -z[1])[:20],
+    xs_all = ideas(sub, strategy)
+    cc = criteria(sub)
+    xs = same_universe(xs_all, cc, strategy or "day")
+    return {"criteria": cc, "run": run, "ideas": xs_all, "blocks": block_map(xs, ("h1", "h2"))[:40], "retired": retired(xs, cc),
+            "families": sorted(([k, v] for k, v in families(xs).items()), key=lambda z: -z[1])[:20], "universe": universe_of(cc),
             "holdoutUses": int((db.get(db.upk(sub), SK) or {}).get("holdoutUses") or 0),
-            "evolve": _evolve_public(sub) if strategy in (None, "day") else None, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
+            "evolve": _evolve_public(sub) if strategy in (None, "day") else None, "sip": _sip_state(), "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
             "strategies": [{**x, "checks": [{k: v for k, v in c.items() if k not in ("daily", "dayList")} for c in x.get("checks") or []]}
                            for x in (strategies(sub, strategy) if strategy else strategies(sub))],
             "basket": basket(sub) if strategy in (None, "day") else None, "tested": sum(1 for x in xs if x.get("status") == "tested"),
-            "tReq": t_required(criteria(sub), n_trials(xs, criteria(sub))), "nTrials": n_trials(xs, criteria(sub))}
+            "tReq": t_required(cc, n_trials(xs, cc)), "nTrials": n_trials(xs, cc)}
 
 
 def lite(sub, strategy=None):
@@ -124,11 +129,20 @@ def lite(sub, strategy=None):
             "autoToday": auto_today(sub), "auto": auto_cfg(sub)}
 
 
+def _sip_state():
+    try:
+        import sipbench
+        return sipbench.prep_state()
+    except Exception as e:
+        return {"error": str(e)[:120]}
+
+
 def _evo_at(sub):
     try:
         import evolve
         st = evolve.state(sub)
-        return f"{(st.get('last') or {}).get('at')}|{st.get('running')}|{st.get('step')}|{st.get('evals')}"
+        sp = _sip_state()
+        return f"{(st.get('last') or {}).get('at')}|{st.get('running')}|{st.get('step')}|{st.get('evals')}|{sp.get('progress')}|{sp.get('stored')}"
     except Exception:
         return None
 
@@ -591,6 +605,31 @@ def retired(xs, c):
     return sorted(out)
 
 
+def make_bench(sub, days, base, c, holdout=None, universe=None):
+    """The day-trading bench of the research: the fixed tickers (DayBench) or each day's stocks in play (SipBench)."""
+    h = int(c.get("holdoutDays") or 0) if holdout is None else holdout
+    if (universe or c.get("universe")) == "inplay":
+        import sipbench
+        return sipbench.SipBench(sub, days, base, holdout=h, top=int(c.get("sipTop") or 15))
+    if c.get("dayTickers"):
+        base = {**base, "tickers": list(c["dayTickers"])}
+    return DayBench(sub, days, base, holdout=h)
+
+
+def universe_of(c):
+    return "inplay" if c.get("universe") == "inplay" else "tickers"
+
+
+def same_universe(xs, c, strategy="day"):
+    """The ideas of the research universe in use (fixed tickers / stocks in play): the map of what works, the retired
+    pieces, the families, the never-again combinations and the t needed are kept apart per universe (a piece that
+    failed on QQQ may work on stocks in play)."""
+    if strategy != "day":
+        return xs
+    u = universe_of(c)
+    return [x for x in xs if (x.get("universe") or "tickers") == u]
+
+
 def holdout_check(sub, idea_id=None, sid=None):
     """The final test: an idea (or a saved strategy) on the holdout days only, the most recent days that no research
     test has used. Meant to be used once per finalist: every look at it makes it less clean (counted)."""
@@ -607,7 +646,7 @@ def holdout_check(sub, idea_id=None, sid=None):
     base = base_cfg(sub, "day")
     if c.get("dayTickers"):
         base["tickers"] = list(c["dayTickers"])
-    bench = DayBench(sub, 30, base, holdout=h)
+    bench = make_bench(sub, 30, base, c, holdout=h, universe=x.get("universe"))
     rows = bench.hold_rows({**base, **(x.get("full") or x.get("changes") or {})})
     m = metrics(rows, "9999", float(c["costR"]))
     r = _item(sub)
@@ -635,11 +674,13 @@ def entry_pieces(x):
     return frozenset(b for b in blocks_of(x) if b in daytrade.ENTRY or b in daytrade.FILTERS or b.endswith("(entry formula)"))
 
 
-def failed_combos(sub, xs=None):
+def failed_combos(sub, xs=None, universe=None):
     """[(pieces, side)]: every entry combination (2 pieces or more) that did not pay on the 2nd half: the ideas of
     the record (the agent's, yours, the evolution's) and the evolution's never-again list. An idea that contains one
     of them on the same side is the same failed idea with something added: it is not tested."""
-    xs = ideas(sub, "day") if xs is None else xs
+    c = criteria(sub)
+    universe = universe or universe_of(c)
+    xs = same_universe(ideas(sub, "day"), c) if xs is None else xs
     out = set()
     for x in xs:
         h2 = ((x.get("metrics") or {}).get("h2") or {})
@@ -649,7 +690,7 @@ def failed_combos(sub, xs=None):
                 out.add((p, side_of(x.get("full"))))
     try:
         import evolve
-        for t in evolve.state(sub).get("taboo") or []:
+        for t in evolve.state(sub).get(evolve.taboo_key(universe)) or []:
             parts = t.split("|")
             atoms = [(int(a.split(":")[0]), None if a.split(":")[1] == "None" else float(a.split(":")[1])) for a in parts[:-1]]
             g = {"side": parts[-1], "atoms": atoms, "stop": 1.3, "target": None}
@@ -780,13 +821,13 @@ def test_queued(sub, strategy, days, lab=None, budget_s=540, t0=None, run_=None)
         base["tickers"] = list(c["dayTickers"])        # research on a wider list than the live day tickers
     run_.update(step=f"loading {days} days of history" + (f" on {len(base.get('tickers') or [])} tickers" if strategy == "day" else ""))
     _set_run(sub, run_)
-    bench = DayBench(sub, days, base, holdout=int(c.get("holdoutDays") or 0)) if strategy == "day" else SwingBench(sub, days, base, budget_s=min(240, budget_s / 2))
+    bench = make_bench(sub, days, base, c) if strategy == "day" else SwingBench(sub, days, base, budget_s=min(240, budget_s / 2))
     run_["errors"] = (run_.get("errors") or []) + bench.errors[:5]
     run_["period"] = {"from": bench.first, "mid": bench.mid, "to": bench.last}
     if not bench.mid:
         run_["errors"].append("No history loaded.")
         return run_
-    done = [x for x in ideas(sub, strategy) if x.get("status") == "tested"]
+    done = [x for x in same_universe(ideas(sub, strategy), c, strategy) if x.get("status") == "tested"]
     for x in sorted(q, key=lambda x: x["at"]):
         if time.time() - t0 > budget_s:
             run_["errors"].append("time limit: some ideas are still queued (run again)")
@@ -794,6 +835,8 @@ def test_queued(sub, strategy, days, lab=None, budget_s=540, t0=None, run_=None)
         run_.update(step=f"testing “{x['name']}”")
         _set_run(sub, run_)
         try:
+            if strategy == "day":
+                x["universe"] = universe_of(c)
             test_idea(bench, base, x, c, n_trials(done, c, x))
             done.append(x)
             run_["testedNow"] = run_.get("testedNow", 0) + 1
@@ -862,7 +905,11 @@ def rob_job(sub, params=None):
         cfg = {**base_cfg(sub, "day"), **(x.get("full") or x.get("changes") or {})}
         if c.get("dayTickers"):
             cfg["tickers"] = list(c["dayTickers"])
-        out = dtrobust.run(sub, {"cfg": cfg, "days": int(c.get("robDays") or 500), "cost": float(c["costR"])}, save=False)
+        if x.get("universe") == "inplay":
+            bench = make_bench(sub, int(c.get("robDays") or 500), cfg, c, holdout=0, universe="inplay")
+            out = dtrobust.run_bench(bench, cfg, float(c["costR"]), int(c.get("robDays") or 500))
+        else:
+            out = dtrobust.run(sub, {"cfg": cfg, "days": int(c.get("robDays") or 500), "cost": float(c["costR"])}, save=False)
         x["robust"] = _rob_summary(out)
     except Exception as e:
         x["robust"] = {"status": "error", "at": iso(now_ny()), "errors": [str(e)[:200]]}
@@ -919,7 +966,7 @@ def run(sub, params=None, budget_s=540):
     for rnd in range(rounds):
         if time.time() - t0 > budget_s * 0.5:
             break
-        hist = ideas(sub, strategy)
+        hist = same_universe(ideas(sub, strategy), c, strategy)
         if strategy == "day":                          # parked for a piece that is no longer retired / banned: tested now
             gone_now = set(retired(hist, c))
             for x in hist:
@@ -928,7 +975,7 @@ def run(sub, params=None, budget_s=540):
                     _put_idea(sub, x)
         rebuilt = build_missing(sub, strategy, catalog, base, hist, days, run_)       # ideas waiting for an indicator
         if rebuilt:
-            hist = ideas(sub, strategy)
+            hist = same_universe(ideas(sub, strategy), c, strategy)
         run_.update(step=f"round {rnd + 1}: the AI agent is reading {len(hist)} past ideas")
         _set_run(sub, run_)
         try:
@@ -950,6 +997,9 @@ def run(sub, params=None, budget_s=540):
                                                   "familyCounts": sorted(([k, v] for k, v in fam.items()), key=lambda z: -z[1])[:15],
                                                   "basketNeeds": _basket_needs(sub) if strategy == "day" else [],
                                                   "bannedThisRound": banned, "retired": gone,
+                                                  "universe": ("each day's top stocks in play (highest opening-range relative volume; entries from 09:35; "
+                                                               "options flow / gamma / walls are the market's (QQQ), not the stock's; no dark pool levels)")
+                                                  if strategy == "day" and c.get("universe") == "inplay" else "fixed tickers",
                                                   "failedCombos": [{"side": s_, "pieces": sorted(q.replace(" (entry formula)", "") for q in p_)}
                                                                    for p_, s_ in fails_][:80]})
         except Exception as e:
@@ -1035,6 +1085,7 @@ def save_strategy(sub, strategy, name, cfg=None, idea_id=None):
          "baseline": {k: (src or {}).get("metrics", {}).get(k) for k in ("n", "avgR", "t", "pf", "win")} if src else None,
          "checks": [], "fp": fingerprint(strategy, {k: v for k, v in full.items() if blank_cfg(sub, strategy).get(k) != v})}
     x["side"] = side_of(full)
+    x["universe"] = (src or {}).get("universe") or "tickers"
     x["stage"] = {"status": "paper", "start": now_ny().strftime("%Y-%m-%d"), "at": iso(now_ny())}
     _put_strat(sub, x)
     return x
@@ -1065,8 +1116,22 @@ def check_strategies(sub, days=250, cost=None):
     c = criteria(sub)
     cost = float(c["costR"] if cost is None else cost)
     tickers = daytrade.config(sub)["tickers"]
-    vs = [{**daytrade.PARAMS, **x["full"], "tickers": tickers} for x in ss]
-    rr, per, all_days, feed, errors = daytrade.run_variants(sub, days, vs, 500, tickers)
+    fixed = [i for i, x in enumerate(ss) if x.get("universe") != "inplay"]
+    inplay = [i for i, x in enumerate(ss) if x.get("universe") == "inplay"]
+    rr, all_days, errors = {}, set(), []
+    if fixed:
+        vs = [{**daytrade.PARAMS, **ss[i]["full"], "tickers": tickers} for i in fixed]
+        r0, per, d0, feed, e0 = daytrade.run_variants(sub, days, vs, 300 if inplay else 500, tickers)
+        rr.update({fixed[k]: v for k, v in r0.items()})
+        all_days |= set(d0)
+        errors += e0
+    if inplay:                                         # found on stocks in play: checked on stocks in play
+        bench = make_bench(sub, days, base_cfg(sub, "day"), c, holdout=0, universe="inplay")
+        for i in inplay:
+            rr[i] = bench.rows({**daytrade.PARAMS, **ss[i]["full"]})
+            all_days |= {r["at"][:10] for r in rr[i]}
+        all_days |= {x["show"][0] for x in bench.data}
+        errors += bench.errors[:2]
     ds = sorted(all_days)
     l60, l20 = (ds[-60] if len(ds) >= 60 else ds[0] if ds else ""), (ds[-20] if len(ds) >= 20 else ds[0] if ds else "")
     out = []
@@ -1491,6 +1556,14 @@ def auto_kick():
                 _invoke(sub, "rsstrat", {})
         except Exception as e:
             print("strategy check kick failed", e)
+        try:                                           # stocks-in-play research history: the new day, every evening
+            cc = json.loads(it["criteria"]) if it.get("criteria") else {}
+            if cc.get("universe") == "inplay" and now_ny().weekday() < 5 and now_ny().strftime("%H:%M") >= "17:30" \
+                    and (it.get("sipKick") or "")[:10] < now_ny().strftime("%Y-%m-%d"):
+                db.put({**_item(sub), "sipKick": iso(now_ny())})
+                _invoke(sub, "sipprep", {"days": 500})
+        except Exception as e:
+            print("stocks-in-play history kick failed", e)
         if it.get("auto"):
             started += _start(sub, auto_due(sub))
             try:                                       # robustness checks waiting (a run that died restarts the queue)

@@ -5007,6 +5007,67 @@ def test_evolution_off_is_not_overwritten():
         evolve.run, research._invoke = saved
 
 
+def test_stocks_in_play_research_bench():
+    """Stocks in play as the research universe: the picks of each day from the stocks-in-play history, their candles
+    stored once (5-minute day + 30-minute prior sessions / pre-market + QQQ), each stock-day a series of the bench,
+    no trade before 09:35, the holdout cut, the robustness check on the bench."""
+    import stockday, sipbench, research, dtrobust, datetime as _dt
+    days = [d for d in (f"2026-03-{x:02d}" for x in range(2, 31)) if _dt.date.fromisoformat(d).weekday() < 5] + \
+           [d for d in (f"2026-04-{x:02d}" for x in range(1, 25)) if _dt.date.fromisoformat(d).weekday() < 5]
+    for k in [k for k in STORE if k[0] in ("SDDATA", "SIPDATA")]:
+        STORE.pop(k)
+    for j, d in enumerate(days):
+        stockday.put_day("U", d, {s: [1.0, 3000000, 50.0] for s in ("HOT", "COLD")})
+        big = 9 if j >= 15 else 1
+        stockday.put_day("R", d, {"HOT": [100000] + [50, 51, 49.5, 50.8, 1000 * big] * 3, "COLD": [100000] + [50, 50.2, 49.9, 50.1, 1000] * 3})
+
+    def mb(c, syms, tf, start, end, feed="sip", max_pages=60):
+        out = {}
+        for s in syms:
+            bs = []
+            if tf == "5Min":
+                d0 = start.strftime("%Y-%m-%d")
+                for k in range(78):
+                    m = 570 + 5 * k
+                    p = 50 + (k * 0.03 if s == "HOT" else 0)
+                    bs.append({"t": f"{d0}T{m // 60:02d}:{m % 60:02d}", "o": p, "h": p + 0.05, "l": p - 0.03, "c": p + 0.02, "v": 1000})
+            else:
+                cur = start
+                while cur <= end:
+                    if cur.weekday() < 5:
+                        for m in range(240, 1200, 30):
+                            t = cur.replace(hour=m // 60, minute=m % 60)
+                            if t <= end:
+                                bs.append({"t": t.strftime("%Y-%m-%dT%H:%M"), "o": 50, "h": 50.4, "l": 49.6, "c": 50.1, "v": 500})
+                    cur = (cur + _dt.timedelta(days=1)).replace(hour=4, minute=0)
+            out[s] = bs
+        return out
+    saved = stockday.multi_bars, stockday.data_creds, research._invoke
+    try:
+        stockday.multi_bars = mb
+        stockday.data_creds = lambda sub: {"key": "k", "secret": "s"}
+        research._invoke = lambda *a, **k: None
+        r = sipbench.prep("sip-user", days=len(days) - 15, budget_s=60)
+        assert r["left"] == 0 and len(sipbench.stored_days()) == len(days) - 15
+        d0 = sipbench.get_day(days[-1])
+        assert {p["sym"] for p in d0["picks"]} == {"HOT", "COLD"} and len(d0["b"]["HOT"]) == 78 and d0["q"]
+        assert any(b["t"][11:16] < "09:30" for b in d0["h"]["HOT"]) and all(b["t"][:10] <= days[-1] for b in d0["h"]["HOT"])
+        c = {**research.CRITERIA, "universe": "inplay", "sipTop": 5, "holdoutDays": 5}
+        bench = research.make_bench("sip-user", 100, research.base_cfg("sip-user", "day"), c)
+        assert isinstance(bench, sipbench.SipBench) and bench.nSeries >= len(days) - 15 and bench.cut and bench.last < bench.cut
+        P = {**research.blank_cfg("sip-user", "day"), "fxLong": "close > vwap", "shorts": False, "stopOn": True, "targetOn": True, "targetR": 2.0}
+        rows = bench.rows(P)
+        assert rows and all(r["at"][11:16] >= "09:35" and r["at"][:10] < bench.cut for r in rows) and {r["sym"] for r in rows} <= {"HOT", "COLD"}
+        assert all(r["at"][:10] >= bench.cut for r in bench.hold_rows(P))
+        out = dtrobust.run_bench(bench, {**research.base_cfg("sip-user", "day"), **P}, 0.05, 100, budget_s=60)
+        assert out["rows"] and out["verdict"] in ("robust", "mixed", "fragile") and out["universe"] == "stocks in play"
+        assert research.universe_of(c) == "inplay"
+        xs = [{"universe": "inplay", "status": "tested"}, {"status": "tested"}]
+        assert len(research.same_universe(xs, c)) == 1 and len(research.same_universe(xs, {})) == 1
+    finally:
+        stockday.multi_bars, stockday.data_creds, research._invoke = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
