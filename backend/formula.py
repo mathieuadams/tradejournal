@@ -61,7 +61,7 @@ SERIES = {
     "supZone": "top of the nearest 30-day support zone at or below the price (clustered hourly levels)",
     "resZone": "bottom of the nearest 30-day resistance zone above the price",
     "inZone": "1 when the price is inside a 30-day support / resistance zone, else 0",
-    "zoneTouches": "hourly candles that traded inside the zone the price is in (or the nearest one) over 30 days: how much it mattered",
+    "zoneTouches": "strength of the zone the price is in (or the nearest one): separate swings that turned there in 30 days (a daily swing counts 2)",
     "poc30": "30-day volume point of control (the price with the most volume)",
     "vaHigh": "top of the 30-day value area (70% of the volume)", "vaLow": "bottom of the 30-day value area",
 }

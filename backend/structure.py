@@ -4,8 +4,9 @@ build(prior_bars) -> {atr, hi, lo, trend, zones: [{lo, hi, n, touches}], poc, va
   * daily candles from the prior sessions' regular-session candles (any interval: 1, 5 or 30 minutes);
   * atr: 14-day average true range; hi / lo: the range of those sessions;
   * trend: +1 close above its 20-day average and higher than 5 sessions ago, -1 the opposite, 0 otherwise;
-  * zones: Gala's hourly levels (pivot bodies, impulsive candle opens; levels traded through often dropped)
-    clustered within a quarter ATR, with how many hourly candles traded inside each (touches);
+  * zones (sr_zones): where price actually turned: hourly swings (5 candles each side) and daily swings (2 days
+    each side), each from its body edge to its wick tip (<= 0.35 ATR), overlapping ones merged (<= 0.5 ATR wide);
+    touches = how many separate swings turned there (a daily swing counts 2); kept: 2+, the 3 nearest each side;
   * poc / vaLo / vaHi: the volume profile (typical price of each candle, volume weighted), value area = 70%.
 
 Used by the 30-day context box of the chart (daytrade.context), by the formula series (dTrend, rangePos, supZone,
@@ -46,18 +47,7 @@ def build(prior, days=30):
         sma = sum(closes[-n:]) / n
         trend = 1 if closes[-1] > sma and closes[-1] > closes[-6] else -1 if closes[-1] < sma and closes[-1] < closes[-6] else 0
     H = gala.agg(reg, 60)
-    lv = sorted(x["p"] for x in gala.levels(H, {"gPivot": 2, "gImpulse": 1.5, "gMaxCross": 4}, 0.1 * atr))
-    zones = []
-    for p in lv:
-        if zones and p - zones[-1]["hi"] <= 0.25 * atr:
-            zones[-1]["hi"] = p
-            zones[-1]["n"] += 1
-        else:
-            zones.append({"lo": p, "hi": p, "n": 1})
-    pad = 0.08 * atr
-    for z in zones:
-        z["lo"], z["hi"] = round(z["lo"] - pad, 4), round(z["hi"] + pad, 4)
-        z["touches"] = sum(1 for b in H if b["l"] <= z["hi"] and b["h"] >= z["lo"])
+    zones = sr_zones(H, D, atr)
     price = closes[-1]
     step = max(atr / 8, price * 0.0005)
     vp = {}
@@ -81,6 +71,62 @@ def build(prior, days=30):
         poc, va_lo, va_hi = round(pk * step, 4), round(lo_k * step, 4), round(hi_k * step, 4)
     return {"atr": round(atr, 4), "hi": max(x["h"] for x in D), "lo": min(x["l"] for x in D), "trend": trend, "zones": zones,
             "poc": poc, "vaLo": va_lo, "vaHi": va_hi, "days": len(D), "last": D[-1]["d"]}
+
+
+def _pivots(B, k):
+    """(index, "high" | "low") of the candles higher / lower than k candles on each side (confirmed only)."""
+    out = []
+    for i in range(k, len(B) - k):
+        hs = [B[j]["h"] for j in range(i - k, i + k + 1) if j != i]
+        ls = [B[j]["l"] for j in range(i - k, i + k + 1) if j != i]
+        if B[i]["h"] > max(hs):
+            out.append((i, "high"))
+        if B[i]["l"] < min(ls):
+            out.append((i, "low"))
+    return out
+
+
+def sr_zones(H, D, atr, k_hour=5, max_w=0.35, keep=3):
+    """Support / resistance where price actually turned: the swing highs / lows of the hourly candles (higher /
+    lower than the 5 hourly candles on each side, about a day) and of the daily candles (2 days on each side). Each
+    swing gives a zone from its candle body edge to its wick tip (at most 0.35 ATR wide); swings whose zones overlap
+    (within 0.1 ATR) are one zone, as long as it stays under 0.5 ATR wide. A zone's strength = how many separate
+    swings turned there (a daily swing counts 2). Kept: zones with 2+ (tested and held), the nearest 3 above and 3
+    below the last close."""
+    sw = []
+    for B, k, wgt in ((H, k_hour, 1), (D, 2, 2)):
+        for i, kind in _pivots(B, k):
+            b = B[i]
+            if kind == "high":
+                top, bot = b["h"], max(b["o"], b["c"])
+            else:
+                top, bot = min(b["o"], b["c"]), b["l"]
+            if top - bot > max_w * atr:                # a long wick: the zone is the part next to the extreme
+                if kind == "high":
+                    bot = top - max_w * atr
+                else:
+                    top = bot + max_w * atr
+            sw.append({"lo": bot, "hi": top, "w": wgt, "kind": kind, "t": b.get("t") or b.get("d")})
+    sw.sort(key=lambda z: z["lo"])
+    zones = []
+    for z in sw:
+        cur = zones[-1] if zones else None
+        if cur and z["lo"] <= cur["hi"] + 0.1 * atr and max(cur["hi"], z["hi"]) - cur["lo"] <= 0.5 * atr:
+            cur["hi"] = max(cur["hi"], z["hi"])
+            cur["n"] += 1
+            cur["touches"] += z["w"]
+            cur["last"] = max(cur["last"], z["t"] or "")
+        else:
+            zones.append({"lo": z["lo"], "hi": z["hi"], "n": 1, "touches": z["w"], "last": z["t"] or ""})
+    zones = [z for z in zones if z["touches"] >= 2]
+    last = D[-1]["c"] if D else (H[-1]["c"] if H else 0)
+    above = sorted((z for z in zones if z["lo"] > last), key=lambda z: z["lo"])[:keep]
+    below = sorted((z for z in zones if z["hi"] < last), key=lambda z: -z["hi"])[:keep]
+    at = [z for z in zones if z["lo"] <= last <= z["hi"]]
+    out = sorted(above + below + at, key=lambda z: z["lo"])
+    for z in out:
+        z["lo"], z["hi"] = round(z["lo"], 4), round(z["hi"], 4)
+    return out
 
 
 def compact(st):

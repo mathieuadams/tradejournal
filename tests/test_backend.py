@@ -5124,7 +5124,7 @@ def test_evolution_side_turns_and_jolt():
 
 
 def test_ticker_30_day_context():
-    """30-day context of a ticker: range and position, trends, support / resistance zones from the hourly levels,
+    """30-day context of a ticker: range and position, trends, support / resistance zones where swings turned,
     volume profile, and a reading against the gamma walls (on the put wall, under the call wall...)."""
     import daytrade, stockday, datetime as _dt
     def mb(c, syms, tf, start, end, feed="sip", max_pages=60):
@@ -5141,7 +5141,7 @@ def test_ticker_30_day_context():
                         k += 1
                     else:
                         for m in range(570, 960, 30):
-                            p = 160 + 3 * abs(((k // 4) % 8) - 4)
+                            p = 160 + 0.5 * abs((k % 32) - 16)   # swings that turn at the same 160 / 168 again and again
                             bs.append({"t": cur.replace(hour=m // 60, minute=m % 60).strftime("%Y-%m-%dT%H:%M"), "o": p, "h": p + 0.6, "l": p - 0.6,
                                        "c": p + 0.2, "v": 1000 + 50 * k})
                             k += 1
@@ -5169,7 +5169,7 @@ def test_chart_structure_series():
     bars = []
     days = [f"2026-0{m}-{d:02d}" for m in (1, 2, 3) for d in range(1, 29) if __import__("datetime").date(2026, m, d).weekday() < 5][:45]
     for k, d in enumerate(days):
-        base = 100 + k * 1.5
+        base = 100 + k * 0.5   # an uptrend with pullbacks that retest the same levels
         for m in range(570, 960, 30):
             j = (m - 570) // 30
             p = base + abs(((k * 13 + j) // 2) % 6 - 3)

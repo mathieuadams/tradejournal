@@ -1643,23 +1643,13 @@ def context(sub, sym, days=30):
     if len(closes) >= 21:
         sma = sum(closes[-20:]) / 20
         dtr = 1 if closes[-1] > sma and closes[-1] > closes[-6] else -1 if closes[-1] < sma and closes[-1] < closes[-6] else 0
-    # support / resistance zones: hourly levels within a quarter ATR of each other are one zone
-    lv = sorted(x["p"] for x in gala.levels(H, {"gPivot": 2, "gImpulse": 1.5, "gMaxCross": 4}, 0.1 * atr))
-    zones = []
-    for p in lv:
-        if zones and p - zones[-1]["hi"] <= 0.25 * atr:
-            zones[-1]["hi"] = p
-            zones[-1]["n"] += 1
-        else:
-            zones.append({"lo": p, "hi": p, "n": 1})
-    pad = 0.08 * atr
+    # support / resistance zones: where price actually turned (structure.sr_zones: hourly + daily swings)
+    import structure
+    st = structure.build(reg, days) or {}
+    zones = [dict(z) for z in st.get("zones") or []]
     for z in zones:
-        z["lo"], z["hi"] = round(z["lo"] - pad, 4), round(z["hi"] + pad, 4)
-        z["touches"] = sum(1 for b in H if b["l"] <= z["hi"] and b["h"] >= z["lo"])
         z["kind"] = "support" if z["hi"] < price else "resistance" if z["lo"] > price else "at price"
         z["dist"] = round(((z["lo"] - price) if z["lo"] > price else (z["hi"] - price) if z["hi"] < price else 0) / atr, 2)
-    zones.sort(key=lambda z: abs(z["dist"]))
-    zones = zones[:8]
     # volume profile of the 30 sessions (30-minute candles, typical price)
     step = max(atr / 8, price * 0.0005)
     vp = {}

@@ -65,7 +65,7 @@ GRAMMAR = [
     # the chart structure of the 30 sessions before the day
     ("dTrend > 0", "dTrend < 0", {}),
     ("close > supZone and close - supZone < {p} * dAtr", "close < resZone and resZone - close < {p} * dAtr", {"p": [0.1, 0.25]}),
-    ("inZone == 1 and zoneTouches >= {p}", "inZone == 1 and zoneTouches >= {p}", {"p": [4, 8]}),
+    ("inZone == 1 and zoneTouches >= {p}", "inZone == 1 and zoneTouches >= {p}", {"p": [3, 5]}),
     ("rangePos < {p}", "rangePos > {q}", {"p": [0.2, 0.35]}),
     ("rangePos > {q}", "rangePos < {p}", {"p": [0.2, 0.35]}),
     ("close > vaHigh", "close < vaLow", {}),

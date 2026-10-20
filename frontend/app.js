@@ -1366,7 +1366,7 @@ function fcSvg0(d, id, opts) {
   if (LY.zones !== false && (d.zones || []).length) d.zones.forEach(z => {    // 30-day support / resistance zones
     if (z.hi < lo || z.lo > hi) return;
     const y0 = Y(Math.min(hi, z.hi)), y1 = Y(Math.max(lo, z.lo)), col = z.kind === 'support' ? '#16a34a' : z.kind === 'resistance' ? '#dc2626' : '#5b5bd6';
-    g += `<rect x="${L}" y="${y0}" width="${W - Rr - L}" height="${Math.max(2, y1 - y0)}" fill="${col}" opacity=".09"><title>${z.kind} ${z.lo.toFixed(2)}–${z.hi.toFixed(2)} · ${z.touches} touches in 30 days</title></rect><text x="${W - Rr - 4}" y="${y0 + fs}" text-anchor="end" font-size="${fs - 3}" fill="${col}" opacity=".8">${z.kind === 'at price' ? 'zone' : z.kind} · ${z.touches}</text>`; });
+    g += `<rect x="${L}" y="${y0}" width="${W - Rr - L}" height="${Math.max(2, y1 - y0)}" fill="${col}" opacity=".09"><title>${z.kind} ${z.lo.toFixed(2)}–${z.hi.toFixed(2)} · strength ${z.touches}: swings that turned here in 30 days</title></rect><text x="${W - Rr - 4}" y="${y0 + fs}" text-anchor="end" font-size="${fs - 3}" fill="${col}" opacity=".8">${z.kind === 'at price' ? 'zone' : z.kind} · ${z.touches}</text>`; });
   const nDays = new Set(bars.map(b => b.t.slice(0, 10))).size, every = Math.max(1, Math.ceil(fs * 4.5 / ((W - L - Rr) / Math.max(1, nDays))));
   let dk = -1;
   bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (dk % every) return; const x = X(i) - (W - L - Rr) / nS / 2;
@@ -2565,7 +2565,7 @@ function ctxBox(sym) {
     <div><b>30-day context</b> <span class="muted">${esc(x.from)} → ${esc(x.to)}</span> · price <b>${f2(x.price)}</b> · range ${f2(x.lo)}–${f2(x.hi)} (at <b>${x.pos}%</b> of it) · ATR ${f2(x.atr)} · trend 1h ${tr(x.trendH)}, daily ${tr(x.trendD)}
       ${x.poc != null ? ` · volume POC ${f2(x.poc)}, value area ${f2(x.vaLo)}–${f2(x.vaHi)}` : ''}${w.putWall || w.callWall ? ` · walls ${w.date ? esc(w.date.slice(5)) : ''}: put ${f2(w.putWall)} · call ${f2(w.callWall)} · flip ${f2(w.flip)}` : ''}</div>
     ${(x.notes || []).length ? `<div style="margin-top:2px"><b>Now:</b> ${x.notes.map(esc).join(' · ')}</div>` : ''}
-    <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${z.slice().sort((a, b) => b.lo - a.lo).map(q => `<span class="exchip" style="font-size:.74rem;border-color:${q.kind === 'support' ? 'var(--gain)' : q.kind === 'resistance' ? 'var(--loss)' : 'var(--coach,#5b5bd6)'}" title="${q.n} hourly level(s) clustered · price traded in it on ${q.touches} hourly candles">${q.kind === 'at price' ? 'at price' : esc(q.kind)} ${f2(q.lo)}–${f2(q.hi)} · ${q.touches} touches · ${q.dist > 0 ? '+' : ''}${q.dist} ATR</span>`).join('')}</div></div>`;
+    <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${z.slice().sort((a, b) => b.lo - a.lo).map(q => `<span class="exchip" style="font-size:.74rem;border-color:${q.kind === 'support' ? 'var(--gain)' : q.kind === 'resistance' ? 'var(--loss)' : 'var(--coach,#5b5bd6)'}" title="${q.n} separate swing(s) turned here (a daily swing counts 2)${q.last ? ` · last ${esc(String(q.last).slice(0, 10))}` : ''}">${q.kind === 'at price' ? 'at price' : esc(q.kind)} ${f2(q.lo)}–${f2(q.hi)} · strength ${q.touches} · ${q.dist > 0 ? '+' : ''}${q.dist} ATR</span>`).join('')}</div></div>`;
 }
 async function loadMovers() {
   try { S.dtMovers = (await api('/daytrade/movers')).days || []; } catch (e) { S.dtMovers = [{ label: 'Today', error: e.message, list: [] }]; }
