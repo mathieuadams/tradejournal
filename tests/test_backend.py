@@ -3527,6 +3527,7 @@ def test_saved_strategies():
         c = research.strategies(sub, "day")[0]["checks"][-1]
         assert c["all"]["n"] == 76 and c["last20"]["avgR"] == -0.55 and c["status"] in ("weakening", "failing")
         assert c["recent"] and len(c["days30"]) <= 30 and all(r["at"][:10] >= c["days30"][0] for r in c["recent"])
+        assert research._and_parts("(vixyChg > 2) and (megaBreadth > 0.5) and (breadth > 0.7)") == ["(vixyChg > 2)", "(megaBreadth > 0.5)", "(breadth > 0.7)"]
         x0 = {"full": {"aboveVwap": True, "tickers": ["X"]}, "universe": "inplay"}
         assert research.live_cfg(x0, ("tickers",)) == {"aboveVwap": True, "inplay": True, "barMin": 5}
         claude.json_call = lambda *a, **k: {"ideas": [json.dumps({"name": "n", "hypothesis": "h", "changes": {"aboveVwap": True}})]}
@@ -5206,6 +5207,27 @@ def test_day_account_trades_top_15():
     syms, note = daytrade.live_tickers(sub, {**P, "inplay": True}, now)
     assert syms[:15] == [f"S{i}" for i in range(15)] and syms[-1] == "OLD" and len(syms) == 16 and note is None
     assert daytrade.clean_cfg(P, {"inplay": True})["inplay"] is True
+
+
+def test_piece_days():
+    """Why a stocks-in-play strategy took no trade on a day: the picks stored that day, and the trades each part of
+    its entry formula takes alone (the blocking part has 0)."""
+    import research, dtsearch
+    class B:
+        data = [{"sym": s, "show": [d]} for d in ("2026-10-19", "2026-10-20") for s in ("A", "B")] + [{"sym": "C", "show": ["2026-10-01"]}]
+    saved = dtsearch.evaluate
+    try:
+        def ev(data, P):
+            if "vixyChg" in P["fxLong"]:
+                return []
+            assert P["shorts"] is False and P["fxShort"] == ""
+            return [{"at": x["show"][0] + "T10:00"} for x in data]
+        dtsearch.evaluate = ev
+        picks, pcs = research.piece_days(B(), {"fxLong": "vixyChg > 2 and breadth > 0.7", "fxShort": ""}, ["2026-10-19", "2026-10-20"])
+        assert picks == {"2026-10-19": 2, "2026-10-20": 2}
+        assert [p["piece"] for p in pcs] == ["vixyChg > 2", "breadth > 0.7"] and pcs[0]["days"] == {} and pcs[1]["days"]["2026-10-20"] == 2
+    finally:
+        dtsearch.evaluate = saved
 
 
 if __name__ == "__main__":

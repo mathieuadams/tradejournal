@@ -1144,6 +1144,67 @@ def day_market(ds):
     return out
 
 
+def _and_parts(f):
+    """The top-level 'and' parts of a formula (parentheses respected)."""
+    f = (f or "").strip()
+    while f.startswith("(") and f.endswith(")"):
+        d, ok = 0, True
+        for i, ch in enumerate(f):
+            d += ch == "("
+            d -= ch == ")"
+            if d == 0 and i < len(f) - 1:
+                ok = False
+                break
+        if not ok:
+            break
+        f = f[1:-1].strip()
+    out, d, cur, i = [], 0, "", 0
+    while i < len(f):
+        ch = f[i]
+        d += ch == "("
+        d -= ch == ")"
+        if d == 0 and f[i:i + 5].lower() == " and ":
+            out.append(cur.strip())
+            cur, i = "", i + 5
+            continue
+        cur += ch
+        i += 1
+    if cur.strip():
+        out.append(cur.strip())
+    return out
+
+
+def piece_days(bench, P, days):
+    """Stocks in play on each of `days`, and the trades each part of the entry formula would take ALONE that day:
+    shows which part blocks the strategy (or that the day has no data)."""
+    import dtsearch
+    import sipbench
+    want = set(days)
+    data = [x for x in bench.data if x["show"][0] in want]
+    picks = {}
+    for x in data:
+        picks[x["show"][0]] = picks.get(x["show"][0], 0) + 1
+    out = []
+    for side, k, other in (("long", "fxLong", "fxShort"), ("short", "fxShort", "fxLong")):
+        f = str(P.get(k) or "").strip()
+        if not f or f.lower() == "off":
+            continue
+        parts = _and_parts(f)
+        if len(parts) < 2:
+            continue
+        for a in parts[:6]:
+            try:
+                rs = [r for r in dtsearch.evaluate(data, {**P, "barMin": 5, k: a, other: "", "longs": side == "long", "shorts": side == "short"}) if r["at"][11:16] >= sipbench.MIN_HM]
+            except Exception as e:
+                print("piece check failed", a, e)
+                continue
+            n = {}
+            for r in rs:
+                n[r["at"][:10]] = n.get(r["at"][:10], 0) + 1
+            out.append({"side": side, "piece": a, "days": n})
+    return picks, out
+
+
 def check_strategies(sub, days=250, cost=None):
     """Every saved day strategy on the last `days` days (one load for all): full period, last 60 and last 20 trading
     days. Kept as a history (the last 90 checks) so a strategy that weakens shows it."""
@@ -1156,7 +1217,7 @@ def check_strategies(sub, days=250, cost=None):
     tickers = daytrade.config(sub)["tickers"]
     fixed = [i for i, x in enumerate(ss) if x.get("universe") != "inplay"]
     inplay = [i for i, x in enumerate(ss) if x.get("universe") == "inplay"]
-    rr, all_days, errors, err_of = {}, set(), [], {}
+    rr, all_days, errors, err_of, bench = {}, set(), [], {}, None
     if fixed:
         vs = [{**daytrade.PARAMS, **ss[i]["full"], "tickers": tickers} for i in fixed]
         r0, per, d0, feed, e0 = daytrade.run_variants(sub, days, vs, 300 if inplay else 500, tickers)
@@ -1195,6 +1256,11 @@ def check_strategies(sub, days=250, cost=None):
         d30 = ds[-30] if len(ds) >= 30 else (ds[0] if ds else "")
         chk["days30"] = ds[-30:]
         chk["market30"] = day_market(ds[-30:])
+        if i in inplay and bench is not None:
+            try:
+                chk["picks30"], chk["pieces30"] = piece_days(bench, {**daytrade.PARAMS, **x["full"]}, ds[-30:])
+            except Exception as e:
+                print("piece days failed", e)
         chk["tradeDays"] = len({r["at"][:10] for r in rows})            # the days it traded on (trades cluster on days)
         chk["lastTrade"] = max((r["at"][:10] for r in rows), default=None)
         chk["recent"] = [{k: r.get(k) for k in ("sym", "at", "dir", "entry", "exit", "exitAt", "status", "R")}
@@ -1208,6 +1274,8 @@ def check_strategies(sub, days=250, cost=None):
             old.pop("recent", None)
             old.pop("days30", None)
             old.pop("market30", None)
+            old.pop("picks30", None)
+            old.pop("pieces30", None)
         x["checks"] = (x.get("checks") or [])[-89:] + [chk]
         x["side"] = side_of(x.get("full"))
         stage_step(x, rows, ds, cost, basket_cfg(sub))
