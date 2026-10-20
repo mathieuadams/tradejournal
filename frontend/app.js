@@ -1275,7 +1275,7 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+S.fcLayers = (() => { try { const v = { sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
 const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'CVD'], ['cvd', 'Order flow (real CVD)']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
@@ -1363,6 +1363,10 @@ function fcSvg0(d, id, opts) {
   const at = t => { const k = bucket(t); if (idx[k] != null) return idx[k]; if (k > lastT) return null; let best = null; bars.forEach((b, i) => { if (b.t <= k) best = i; }); return best; };
   let g = '';
   for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4, y = Y(v); g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/><text x="${W - Rr + 6}" y="${y + 4}" font-size="${fs}" fill="var(--muted)">${v.toFixed(v < 20 ? 2 : 1)}</text>`; }
+  if (LY.zones !== false && (d.zones || []).length) d.zones.forEach(z => {    // 30-day support / resistance zones
+    if (z.hi < lo || z.lo > hi) return;
+    const y0 = Y(Math.min(hi, z.hi)), y1 = Y(Math.max(lo, z.lo)), col = z.kind === 'support' ? '#16a34a' : z.kind === 'resistance' ? '#dc2626' : '#5b5bd6';
+    g += `<rect x="${L}" y="${y0}" width="${W - Rr - L}" height="${Math.max(2, y1 - y0)}" fill="${col}" opacity=".09"><title>${z.kind} ${z.lo.toFixed(2)}–${z.hi.toFixed(2)} · ${z.touches} touches in 30 days</title></rect><text x="${W - Rr - 4}" y="${y0 + fs}" text-anchor="end" font-size="${fs - 3}" fill="${col}" opacity=".8">${z.kind === 'at price' ? 'zone' : z.kind} · ${z.touches}</text>`; });
   const nDays = new Set(bars.map(b => b.t.slice(0, 10))).size, every = Math.max(1, Math.ceil(fs * 4.5 / ((W - L - Rr) / Math.max(1, nDays))));
   let dk = -1;
   bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (dk % every) return; const x = X(i) - (W - L - Rr) / nS / 2;
@@ -2513,7 +2517,7 @@ function vChartDT() {
     <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
     <span class="seg">${[1, 3, 5, 10, 20, 30].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
-    <span class="seg">${[['sig', 'Signals'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['pres', 'CVD'], ['cvd', 'Order flow']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
+    <span class="seg">${[['sig', 'Signals'], ['zones', 'S/R zones'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['pres', 'CVD'], ['cvd', 'Order flow']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-dtreload style="padding:3px 10px" title="Reload the candles">↻</button>
     <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideAnalysis ? 'coachbtn' : ''}" data-hideanalysis title="Hide / show the backtest, search, compare and study sections under the chart">${S.hideAnalysis ? 'Show analysis' : 'Hide analysis'}</button>
     <span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen" title="Close">✕</a></div>`;
@@ -2522,7 +2526,9 @@ function vChartDT() {
   else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
   else {
     const fl = S.flow[sym] || {}, ck = [JSON.stringify(S.fcLayers), JSON.stringify(S.fcZoom[fcKey(id)] || null), W, H, fl.k, (fl.missing || []).length, Object.keys(fl.days || {}).length, S.dpN, (() => { const x = S.fcDp[fcKey(id)]; return x ? `${(x.levels || []).length}/${(x.prints || []).length}/${x.error || ''}` : '-'; })()].join('|');
-    main = svgCached('dt', d, ck, () => fcSvg(withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []) }), id, { W, H: Math.max(380, H - 40), noAcc: true, padRight: 100 }));
+    const cx = ctxOf(sym);
+    main = svgCached('dt', d, ck + '|' + (cx && cx.to ? cx.to + (cx.zones || []).length : '-'), () => fcSvg(withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []), zones: cx && !cx.error ? cx.zones : null }), id, { W, H: Math.max(380, H - 40), noAcc: true, padRight: 100 }));
+    main += ctxBox(sym);
     if (S.dtTf === 1 && S.dtDays >= 20) main += '<p class="muted" style="font-size:.78rem;margin:2px 4px">20-30 days: shown with 5-minute candles (the signals still come from the 1-minute engine). Pick 10 days or less for 1-minute candles.</p>';
     main += dtWhyBox();
     const f2 = v => v == null ? '—' : (+v).toFixed(2), lv = Object.entries(d.pm || {}).map(([dy, x]) => `${dy.slice(5)} pre-market ${f2(x.h)} / ${f2(x.l)}`).concat(Object.entries(d.orbLv || {}).map(([dy, x]) => `${dy.slice(5)} opening range ${f2(x.h)} / ${f2(x.l)}`));
@@ -2538,6 +2544,28 @@ function vChartDT() {
     ${S.hideSettings ? '' : dtPanel()}${S.hideAnalysis ? '' : rsTabs('day') + (S.rsTab === 'ai' ? researchBox('day') : dtBtBox() + dtRobBox() + flipCheckBox() + dtSearchBox() + dtCmpBox() + dtStudyBox())}`;
   const panel = moversBox(sym);
   return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${side ? `<div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1;min-width:0">${main}</div>${panel}</div>` : panel + main}${info}</div></div></div>`;
+}
+function ctxOf(sym) {
+  S.ctx = S.ctx || {};
+  const x = S.ctx[sym];
+  if (!x || (x.at && Date.now() - x.at > 600000 && !x.busy)) {
+    S.ctx[sym] = { ...(x || {}), busy: true, at: Date.now() };
+    api('/daytrade/context', { method: 'POST', body: { t: sym } }).then(r => { S.ctx[sym] = { ...r, at: Date.now() }; })
+      .catch(e => { S.ctx[sym] = { error: e.message, at: Date.now() }; }).finally(() => { if (route() === 'botchart' && S.fcfMode === 'dt') render(); });
+  }
+  return S.ctx[sym] && !S.ctx[sym].busy ? S.ctx[sym] : (x && !x.busy ? x : null);
+}
+function ctxBox(sym) {
+  const x = ctxOf(sym);
+  if (!x) return '<p class="muted" style="font-size:.8rem;margin:4px">Loading the 30-day context…</p>';
+  if (x.error) return `<p class="muted" style="font-size:.8rem;margin:4px">30-day context: ${esc(x.error)}</p>`;
+  const f2 = v => v == null ? '—' : (+v).toFixed(2), tr = v => v > 0 ? '<span class="gain">up</span>' : v < 0 ? '<span class="loss">down</span>' : '<span class="muted">unclear</span>';
+  const w = x.walls || {}, z = x.zones || [];
+  return `<div class="fcf-info" style="font-size:.82rem;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:4px 0">
+    <div><b>30-day context</b> <span class="muted">${esc(x.from)} → ${esc(x.to)}</span> · price <b>${f2(x.price)}</b> · range ${f2(x.lo)}–${f2(x.hi)} (at <b>${x.pos}%</b> of it) · ATR ${f2(x.atr)} · trend 1h ${tr(x.trendH)}, daily ${tr(x.trendD)}
+      ${x.poc != null ? ` · volume POC ${f2(x.poc)}, value area ${f2(x.vaLo)}–${f2(x.vaHi)}` : ''}${w.putWall || w.callWall ? ` · walls ${w.date ? esc(w.date.slice(5)) : ''}: put ${f2(w.putWall)} · call ${f2(w.callWall)} · flip ${f2(w.flip)}` : ''}</div>
+    ${(x.notes || []).length ? `<div style="margin-top:2px"><b>Now:</b> ${x.notes.map(esc).join(' · ')}</div>` : ''}
+    <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${z.slice().sort((a, b) => b.lo - a.lo).map(q => `<span class="exchip" style="font-size:.74rem;border-color:${q.kind === 'support' ? 'var(--gain)' : q.kind === 'resistance' ? 'var(--loss)' : 'var(--coach,#5b5bd6)'}" title="${q.n} hourly level(s) clustered · price traded in it on ${q.touches} hourly candles">${q.kind === 'at price' ? 'at price' : esc(q.kind)} ${f2(q.lo)}–${f2(q.hi)} · ${q.touches} touches · ${q.dist > 0 ? '+' : ''}${q.dist} ATR</span>`).join('')}</div></div>`;
 }
 async function loadMovers() {
   try { S.dtMovers = (await api('/daytrade/movers')).days || []; } catch (e) { S.dtMovers = [{ label: 'Today', error: e.message, list: [] }]; }

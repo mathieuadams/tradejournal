@@ -5122,6 +5122,45 @@ def test_evolution_side_turns_and_jolt():
     evolve.RUN_SIDE = None
 
 
+def test_ticker_30_day_context():
+    """30-day context of a ticker: range and position, trends, support / resistance zones from the hourly levels,
+    volume profile, and a reading against the gamma walls (on the put wall, under the call wall...)."""
+    import daytrade, stockday, datetime as _dt
+    def mb(c, syms, tf, start, end, feed="sip", max_pages=60):
+        out = {}
+        for s in syms:
+            bs = []
+            cur = start.replace(hour=0, minute=0)
+            k = 0
+            while cur <= end:
+                if cur.weekday() < 5:
+                    if tf == "1Day":
+                        p = 160 + (k % 7)
+                        bs.append({"t": cur.strftime("%Y-%m-%dT00:00"), "o": p, "h": p + 2, "l": p - 2, "c": p + 0.5, "v": 1e6})
+                        k += 1
+                    else:
+                        for m in range(570, 960, 30):
+                            p = 160 + 3 * abs(((k // 4) % 8) - 4)
+                            bs.append({"t": cur.replace(hour=m // 60, minute=m % 60).strftime("%Y-%m-%dT%H:%M"), "o": p, "h": p + 0.6, "l": p - 0.6,
+                                       "c": p + 0.2, "v": 1000 + 50 * k})
+                            k += 1
+                cur += _dt.timedelta(days=1)
+            out[s] = bs
+        return out
+    saved = stockday.multi_bars, stockday.data_creds, daytrade.walls_by_day
+    try:
+        stockday.multi_bars = mb
+        stockday.data_creds = lambda sub: {"key": "k", "secret": "s"}
+        daytrade.walls_by_day = lambda sub, sym, dates, near=None, budget_s=10: {dates[-2]: {"putWall": 160.0, "callWall": 175.0, "flip": 167.0}}
+        x = daytrade.context("ctx-user", "MMM")
+        assert x["days"] == 30 and x["lo"] < x["price"] < x["hi"] + 1 and 0 <= x["pos"] <= 100 and x["atr"] > 0
+        assert x["zones"] and all(z["kind"] in ("support", "resistance", "at price") and z["lo"] <= z["hi"] for z in x["zones"])
+        assert x["poc"] is not None and x["vaLo"] <= x["poc"] <= x["vaHi"]
+        assert x["walls"]["putWall"] == 160.0 and any("flip" in n for n in x["notes"])
+    finally:
+        stockday.multi_bars, stockday.data_creds, daytrade.walls_by_day = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -1607,3 +1607,111 @@ def flip_check(sub, days=60):
       except Exception as e:                           # one bad record must not break the whole check
         print("flip check row failed", d, sym, e)
     return {"rows": rows[:200], "n": n, "agree": agree, "pct": round(agree / n * 100, 1) if n else None}
+
+
+# ---------------- market context of one ticker over the last 30 sessions (the box under the day-trading chart)
+def context(sub, sym, days=30):
+    """Where the price sits in its last `days` sessions: range, hourly and daily trend, support / resistance zones
+    (hourly pivots and impulse opens clustered into zones, with how often price reacted there), the volume profile
+    (point of control, value area) and the gamma walls, with a plain-English reading of the spot."""
+    import gala
+    import stockday
+    sym = (sym or "QQQ").upper()
+    c = stockday.data_creds(sub)
+    if not c:
+        return {"symbol": sym, "error": "Connect an Alpaca account to load the candles."}
+    now = now_ny().replace(tzinfo=None)
+    end = now - timedelta(minutes=16)                  # the free SIP plan refuses the last 15 minutes
+    h30 = stockday.multi_bars(c, [sym], "30Min", (now - timedelta(days=int(days * 1.6) + 5)).replace(hour=4, minute=0), end, max_pages=10).get(sym) or []
+    reg = [b for b in h30 if "09:30" <= b["t"][11:16] < "16:00"]
+    ds = sorted({b["t"][:10] for b in reg})[-days:]
+    reg = [b for b in reg if b["t"][:10] in ds]
+    if len(ds) < 5:
+        return {"symbol": sym, "error": "Not enough history for this ticker."}
+    dly = stockday.multi_bars(c, [sym], "1Day", now - timedelta(days=60), end, max_pages=2).get(sym) or []
+    trs = []
+    for i in range(1, len(dly)):
+        p = dly[i - 1]["c"]
+        trs.append(max(dly[i]["h"] - dly[i]["l"], abs(dly[i]["h"] - p), abs(dly[i]["l"] - p)))
+    atr = sum(trs[-14:]) / len(trs[-14:]) if trs else (max(b["h"] for b in reg) - min(b["l"] for b in reg)) / 10
+    price = (h30[-1]["c"] if h30 else reg[-1]["c"])
+    hi, lo = max(b["h"] for b in reg), min(b["l"] for b in reg)
+    H = gala.agg(reg, 60)
+    htr = gala.trend(H, 2)
+    closes = [b["c"] for b in dly]
+    dtr = 0
+    if len(closes) >= 21:
+        sma = sum(closes[-20:]) / 20
+        dtr = 1 if closes[-1] > sma and closes[-1] > closes[-6] else -1 if closes[-1] < sma and closes[-1] < closes[-6] else 0
+    # support / resistance zones: hourly levels within a quarter ATR of each other are one zone
+    lv = sorted(x["p"] for x in gala.levels(H, {"gPivot": 2, "gImpulse": 1.5, "gMaxCross": 4}, 0.1 * atr))
+    zones = []
+    for p in lv:
+        if zones and p - zones[-1]["hi"] <= 0.25 * atr:
+            zones[-1]["hi"] = p
+            zones[-1]["n"] += 1
+        else:
+            zones.append({"lo": p, "hi": p, "n": 1})
+    pad = 0.08 * atr
+    for z in zones:
+        z["lo"], z["hi"] = round(z["lo"] - pad, 4), round(z["hi"] + pad, 4)
+        z["touches"] = sum(1 for b in H if b["l"] <= z["hi"] and b["h"] >= z["lo"])
+        z["kind"] = "support" if z["hi"] < price else "resistance" if z["lo"] > price else "at price"
+        z["dist"] = round(((z["lo"] - price) if z["lo"] > price else (z["hi"] - price) if z["hi"] < price else 0) / atr, 2)
+    zones.sort(key=lambda z: abs(z["dist"]))
+    zones = zones[:8]
+    # volume profile of the 30 sessions (30-minute candles, typical price)
+    step = max(atr / 8, price * 0.0005)
+    vp = {}
+    for b in reg:
+        k = round(((b["h"] + b["l"] + b["c"]) / 3) / step)
+        vp[k] = vp.get(k, 0) + (b.get("v") or 0)
+    poc = va_lo = va_hi = None
+    if vp:
+        tot = sum(vp.values())
+        pk = max(vp, key=vp.get)
+        lo_k = hi_k = pk
+        acc = vp[pk]
+        while acc < 0.7 * tot and (lo_k - 1 in vp or hi_k + 1 in vp):
+            up, dn = vp.get(hi_k + 1, -1), vp.get(lo_k - 1, -1)
+            if up >= dn:
+                hi_k += 1
+                acc += max(0, up)
+            else:
+                lo_k -= 1
+                acc += max(0, dn)
+        poc, va_lo, va_hi = round(pk * step, 2), round(lo_k * step, 2), round(hi_k * step, 2)
+    # gamma walls (the latest day that has them)
+    W = {}
+    try:
+        W = walls_by_day(sub, sym, ds[-5:] + [now.strftime("%Y-%m-%d")], None, budget_s=10)
+    except Exception as e:
+        print("context walls failed", sym, e)
+    wd = max((d for d, w in W.items() if w and (w.get("putWall") or w.get("callWall"))), default=None)
+    w = W.get(wd) or {}
+    pw, cw, fl = (float(w[k]) if w.get(k) else None for k in ("putWall", "callWall", "flip"))
+    notes = []
+    near = 0.5 * atr
+    if pw and abs(price - pw) <= near:
+        notes.append(f"sitting on the put wall {pw:g} (dealer support)")
+    elif pw and price < pw:
+        notes.append(f"below the put wall {pw:g} (support broken: moves can speed up)")
+    if cw and abs(price - cw) <= near:
+        notes.append(f"testing the call wall {cw:g} (dealer resistance)")
+    elif cw and price > cw:
+        notes.append(f"above the call wall {cw:g} (breakout over resistance)")
+    if fl:
+        notes.append(f"{'above' if price > fl else 'below'} the gamma flip {fl:g} ({'dampened' if price > fl else 'amplified'} moves)")
+    sup = next((z for z in zones if z["kind"] == "support"), None)
+    res = next((z for z in zones if z["kind"] == "resistance"), None)
+    atz = next((z for z in zones if z["kind"] == "at price"), None)
+    if atz:
+        notes.append(f"inside a {atz['touches']}-touch zone {atz['lo']:.2f}–{atz['hi']:.2f}")
+    if poc:
+        notes.append("inside the 30-day value area" if va_lo <= price <= va_hi else
+                     f"{'above' if price > va_hi else 'below'} the 30-day value area ({va_lo:g}–{va_hi:g})")
+    pos = round((price - lo) / (hi - lo) * 100) if hi > lo else 50
+    return {"symbol": sym, "price": round(price, 4), "atr": round(atr, 4), "days": len(ds), "from": ds[0], "to": ds[-1],
+            "hi": hi, "lo": lo, "pos": pos, "trendH": htr, "trendD": dtr, "zones": zones, "poc": poc, "vaLo": va_lo, "vaHi": va_hi,
+            "walls": {"date": wd, "putWall": pw, "callWall": cw, "flip": fl},
+            "support": sup, "resistance": res, "notes": notes}

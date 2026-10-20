@@ -457,6 +457,13 @@ def daytrade_account_del(sub, claims, body, q):
     return daytrade.view(sub)
 
 
+@route("POST", "/daytrade/context")
+def daytrade_context(sub, claims, body, q):
+    """The last 30 sessions of one ticker: range, trends, support / resistance zones, volume profile, gamma walls."""
+    import daytrade
+    return daytrade.context(sub, (body or {}).get("t"))
+
+
 @route("GET", "/daytrade/movers")
 def daytrade_movers(sub, claims, body, q):
     """Today's pre-market movers (09:15) and the stocks in play of the previous days: the side list of the chart."""
