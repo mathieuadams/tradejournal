@@ -1334,6 +1334,7 @@ function fcSvg0(d, id, opts) {
   const all = d.bars || [];
   if (all.length < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
+  const nS = n + (opts && opts.padRight && zb >= all.length - 1 ? opts.padRight : 0);   // empty room on the right of the last candle
   const LY = id.startsWith('ww-') && !S.fcAllLayers ? { ...S.fcLayers, mp: false, acc: false } : S.fcLayers;
   const dp = LY.dark ? S.fcDp[fcKey(id)] : null;
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
@@ -1354,7 +1355,7 @@ function fcSvg0(d, id, opts) {
   const fbv = LY.fibs && d.fibs ? (() => { const dd = new Set(bars.map(b => b.t.slice(0, 10))); return Object.entries(d.fibs).filter(([k]) => dd.has(k)).flatMap(([, lv]) => lv.map(x => x[1])); })() : [];
   const lo0 = Math.min(pl0, ...wv, ...fbv), hi0 = Math.max(ph0, ...wv, ...fbv), pad = (hi0 - lo0) * 0.08 || 1;   // fibs: always in view
   const lo = lo0 - pad, hi = hi0 + pad;
-  const X = i => L + (i + 0.5) * (W - L - Rr) / n, Y = v => T + (hi - v) / (hi - lo) * (B - T), bw = Math.max(1, (W - L - Rr) / n * 0.6);
+  const X = i => L + (i + 0.5) * (W - L - Rr) / nS, Y = v => T + (hi - v) / (hi - lo) * (B - T), bw = Math.max(1, (W - L - Rr) / nS * 0.6);
   const idx = {}; bars.forEach((b, i) => { idx[b.t] = i; });
   const bucket = t => { t = String(t || ''); const d0 = t.slice(0, 10), hm = t.slice(11, 16); let m = (+hm.slice(0, 2)) * 60 + (+hm.slice(3, 5)); m = Math.max(570, Math.min(m, 960 - iv)); m = 570 + Math.floor((m - 570) / iv) * iv;
     return `${d0}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
@@ -1364,7 +1365,7 @@ function fcSvg0(d, id, opts) {
   for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4, y = Y(v); g += `<line x1="${L}" x2="${W - Rr}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/><text x="${W - Rr + 6}" y="${y + 4}" font-size="${fs}" fill="var(--muted)">${v.toFixed(v < 20 ? 2 : 1)}</text>`; }
   const nDays = new Set(bars.map(b => b.t.slice(0, 10))).size, every = Math.max(1, Math.ceil(fs * 4.5 / ((W - L - Rr) / Math.max(1, nDays))));
   let dk = -1;
-  bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (dk % every) return; const x = X(i) - (W - L - Rr) / n / 2;
+  bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (dk % every) return; const x = X(i) - (W - L - Rr) / nS / 2;
     g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${x + 3}" y="${B + 16}" font-size="${fs}" fill="var(--muted)">${b.t.slice(5, 10)}</text>`; } });
   const pf = v => v.toFixed(v < 20 ? 3 : 2);
   if (LY.fvg && (d.fvg || []).length) {               // fair value gaps: from the middle candle to the candle that fills it
@@ -1451,13 +1452,13 @@ function fcSvg0(d, id, opts) {
     const im = {}; d.inertia.forEach(x => { im[x.t] = x; });
     const col = { G: '#16a34a', Y: '#eab308', R: '#dc2626' }, nm = { G: 'green: all 3 rising', Y: 'yellow: mixed', R: 'red: all 3 falling' };
     bars.forEach((b, i) => { const x = im[b.t]; if (!x) return;
-      g += `<rect x="${X(i) - (W - L - Rr) / n / 2}" y="${B - 4}" width="${Math.max(1, (W - L - Rr) / n)}" height="4" fill="${col[x.s]}" opacity=".85"><title>${esc(b.t.replace('T', ' ').slice(5))} · daily inertia ${nm[x.s]} · regime points ${x.pts}</title></rect>`; });
+      g += `<rect x="${X(i) - (W - L - Rr) / nS / 2}" y="${B - 4}" width="${Math.max(1, (W - L - Rr) / nS)}" height="4" fill="${col[x.s]}" opacity=".85"><title>${esc(b.t.replace('T', ' ').slice(5))} · daily inertia ${nm[x.s]} · regime points ${x.pts}</title></rect>`; });
   }
   if (LY.inertiah && !d.daily && (d.inertiaH || []).length) {     // hourly inertia regime: a thin strip above the daily one
     const im = {}; d.inertiaH.forEach(x => { im[x.t] = x; });
     const col = { G: '#16a34a', Y: '#eab308', R: '#dc2626' }, nm = { G: 'green: all 3 rising', Y: 'yellow: mixed', R: 'red: all 3 falling' };
     bars.forEach((b, i) => { const x = im[b.t]; if (!x) return;
-      g += `<rect x="${X(i) - (W - L - Rr) / n / 2}" y="${B - 8}" width="${Math.max(1, (W - L - Rr) / n)}" height="3" fill="${col[x.s]}" opacity=".6"><title>${esc(b.t.replace('T', ' ').slice(5))} · hourly inertia ${nm[x.s]}</title></rect>`; });
+      g += `<rect x="${X(i) - (W - L - Rr) / nS / 2}" y="${B - 8}" width="${Math.max(1, (W - L - Rr) / nS)}" height="3" fill="${col[x.s]}" opacity=".6"><title>${esc(b.t.replace('T', ' ').slice(5))} · hourly inertia ${nm[x.s]}</title></rect>`; });
   }
   if (LY.spy && (d.spyDown || []).length) {          // red dots: SPY down over 6 sessions
     const sd = new Set(d.spyDown);
@@ -1485,7 +1486,7 @@ function fcSvg0(d, id, opts) {
     if (lastV != null && lastV >= lo && lastV <= hi) g += `<text x="${W - Rr - 4}" y="${Y(lastV) + 14}" text-anchor="end" font-size="${fs - 1}" font-weight="700" fill="${vc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">VWAP ${lastV.toFixed(2)}</text>`;
   }
   if (LY.mp !== false && ((d.expirations || []).length || (d.maxPain || []).length)) {   // monthly expirations + max pain
-    const mpc = 'var(--warn,#d97706)', bwH = (W - L - Rr) / n / 2;
+    const mpc = 'var(--warn,#d97706)', bwH = (W - L - Rr) / nS / 2;
     (d.expirations || []).forEach(e => { let i = null; bars.forEach((b, q) => { if (b.t.slice(0, 10) === e) i = q; });
       if (i == null) { if (e > lastT.slice(0, 10) && e === (d.expirations || []).find(x => x > lastT.slice(0, 10)))
           g += `<text x="${W - Rr - 4}" y="${B - 6}" text-anchor="end" font-size="${fs - 2}" font-weight="700" fill="${mpc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">next monthly exp ${e.slice(5)}</text>`;
@@ -1568,7 +1569,7 @@ function fcSvg0(d, id, opts) {
       if (sg.target != null && sg.target >= lo && sg.target <= hi) g += `<line x1="${xa}" x2="${xb}" y1="${Y(sg.target)}" y2="${Y(sg.target)}" stroke="var(--gain)" stroke-width="2" opacity=".85"><title>target ${sg.target} (call wall ${sg.cw})</title></line>`;
       const steps = sg.stops || [[sg.at, sg.stop0 ?? sg.stop ?? sg.pw]];       // trailing stop: one segment per level
       steps.forEach(([t1, v], q) => { if (v == null || v < lo || v > hi) return;
-        const s0 = Math.max(xa, at(t1) == null ? xa : X(at(t1)) - (q ? (W - L - Rr) / n / 2 : 0)), nx = steps[q + 1], e0 = nx && at(nx[0]) != null ? X(at(nx[0])) - (W - L - Rr) / n / 2 : xb;
+        const s0 = Math.max(xa, at(t1) == null ? xa : X(at(t1)) - (q ? (W - L - Rr) / nS / 2 : 0)), nx = steps[q + 1], e0 = nx && at(nx[0]) != null ? X(at(nx[0])) - (W - L - Rr) / nS / 2 : xb;
         g += `<line x1="${s0}" x2="${Math.max(s0, e0)}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--loss)" stroke-width="2" opacity=".85"><title>${q ? 'trailing stop' : 'stop'} ${v}</title></line>`;
         if (nx && nx[1] >= lo && nx[1] <= hi) g += `<line x1="${e0}" x2="${e0}" y1="${Y(v)}" y2="${Y(nx[1])}" stroke="var(--loss)" stroke-width="1" opacity=".6"/>`; });
       if (i0 != null && sg.entry >= lo && sg.entry <= hi) { const y = Y(sg.entry);
@@ -1603,7 +1604,7 @@ function fcSvg0(d, id, opts) {
   const amax = Math.max(1, cAcc[n - 1], pAcc[n - 1]), AY = v => AB - v / amax * (AB - AT - 14);
   g += `<line x1="${L}" x2="${W - Rr}" y1="${AB}" y2="${AB}" stroke="var(--line)"/><text x="${L + 2}" y="${AT + 10}" font-size="${fs}" fill="var(--muted)">Premium bought at the ask, running total</text>`;
   dk = -1;
-  bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (!i || dk % every) return; const x = X(i) - (W - L - Rr) / n / 2; g += `<line x1="${x}" x2="${x}" y1="${AT}" y2="${AB}" stroke="var(--line)" stroke-dasharray="2 3"/>`; } });
+  bars.forEach((b, i) => { if (i === 0 || b.t.slice(0, 10) !== bars[i - 1].t.slice(0, 10)) { dk++; if (!i || dk % every) return; const x = X(i) - (W - L - Rr) / nS / 2; g += `<line x1="${x}" x2="${x}" y1="${AT}" y2="${AB}" stroke="var(--line)" stroke-dasharray="2 3"/>`; } });
   const path = arr => arr.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${AY(v).toFixed(1)}`).join('');
   g += `<path d="${path(cAcc)}" fill="none" stroke="var(--gain)" stroke-width="2"/><path d="${path(pAcc)}" fill="none" stroke="var(--loss)" stroke-width="2"/>`;
   const km = v => v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${Math.round(v / 1e3)}k`;
@@ -1616,7 +1617,7 @@ function fcSvg0(d, id, opts) {
     const get = b => mp[daily ? b.t.slice(0, 10) : b.t];
     const dm = {}; (d.sqzD || []).forEach(x => { dm[x.t.slice(0, 10)] = x; });
     const vals = bars.map(get).filter(Boolean).map(x => Math.abs(x.m)), mx = Math.max(1e-9, ...vals);
-    const Z = (ST + 14 + SB) / 2, MY = v => Z - v / mx * ((SB - ST - 14) / 2), cw = Math.max(1, (W - L - Rr) / n), hw = Math.max(1, cw * 0.7);
+    const Z = (ST + 14 + SB) / 2, MY = v => Z - v / mx * ((SB - ST - 14) / 2), cw = Math.max(1, (W - L - Rr) / nS), hw = Math.max(1, cw * 0.7);
     g += `<line x1="${L}" x2="${W - Rr}" y1="${SB}" y2="${SB}" stroke="var(--line)"/><line x1="${L}" x2="${W - Rr}" y1="${Z}" y2="${Z}" stroke="var(--line)"/>`
       + `<text x="${L + 2}" y="${ST + 10}" font-size="${fs}" fill="var(--muted)">Squeeze ${daily ? 'daily' : d.dt ? (d.interval || 1) + 'm' : '1h'} momentum · dots: red = squeeze on, green = off${daily || d.dt ? '' : ' · top strip: daily squeeze'}</text>`;
     bars.forEach((b, i) => { const x = get(b); if (!x) return;
@@ -1651,7 +1652,7 @@ function fcSvg0(d, id, opts) {
     const prevCd = i => { const q = za + i; return q > 0 && (rollN || day(all[q]) === day(all[q - 1])) ? cdAll[q - 1] : 0; };
     const mx = Math.max(1e-9, ...cd.map(v => Math.abs(v)));
     const Z = (VT + 14 + VB) / 2, CY = v => Z - v / mx * ((VB - VT - 14) / 2);
-    const cw = Math.max(1, (W - L - Rr) / n), hw = Math.max(1, cw * 0.7), last = pr.slice(-20);
+    const cw = Math.max(1, (W - L - Rr) / nS), hw = Math.max(1, cw * 0.7), last = pr.slice(-20);
     const tb = last.reduce((a, x) => a + x.buy, 0), ts = last.reduce((a, x) => a + x.sell, 0), share = tb + ts > 0 ? Math.round(tb / (tb + ts) * 100) : 50;
     const who = share >= 55 ? `<tspan fill="var(--gain)" font-weight="700">buyers in charge ${share}%</tspan>` : share <= 45 ? `<tspan fill="var(--loss)" font-weight="700">sellers in charge ${100 - share}%</tspan>` : `<tspan font-weight="700">balanced ${share}% buy</tspan>`;
     g += `<line x1="${L}" x2="${W - Rr}" y1="${VB}" y2="${VB}" stroke="var(--line)"/><line x1="${L}" x2="${W - Rr}" y1="${Z}" y2="${Z}" stroke="var(--line)"/>`
@@ -1678,7 +1679,7 @@ function fcSvg0(d, id, opts) {
   g += `<line class="fc-xh" x1="0" x2="0" y1="${T}" y2="${XB}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" style="display:none;pointer-events:none"/>
     <text class="fc-ohlc" x="${L + 4}" y="${T + 13}" font-size="${fs}" fill="var(--ink)" paint-order="stroke" stroke="var(--surface)" stroke-width="4" style="pointer-events:none"></text>`;
   g += `<rect class="fcz-sel" x="0" y="${T}" width="0" height="${AB - T}" fill="var(--coach,#5b5bd6)" fill-opacity=".12" stroke="var(--coach,#5b5bd6)" stroke-width="1" style="display:none;pointer-events:none"/>`;
-  return `<svg viewBox="0 0 ${W} ${H}" data-fcz="${esc(id)}" data-l="${L}" data-pw="${W - L - Rr}" data-a="${za}" data-n="${n}" data-all="${all.length}" data-vw="${W}" style="${full ? `width:${W}px;height:${H}px` : 'width:100%;height:auto'};display:block;touch-action:pan-y;cursor:crosshair;user-select:none" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" data-fcz="${esc(id)}" data-l="${L}" data-pw="${W - L - Rr}" data-a="${za}" data-n="${n}" data-slots="${nS}" data-all="${all.length}" data-vw="${W}" style="${full ? `width:${W}px;height:${H}px` : 'width:100%;height:auto'};display:block;touch-action:pan-y;cursor:crosshair;user-select:none" role="img" aria-label="${esc(d.symbol)} price with options alerts, gamma walls and premium accumulation">${g}</svg>`;
 }
 /* ---------- full-screen chart: one ticker at a time, every evaluated ticker on the right ---------- */
 async function loadTickers() {
@@ -2041,7 +2042,9 @@ function researchBox(strategy) {
   const robD = x => { const rb = x.robust; if (!rb) return ''; if (rb.status !== 'done') return `<div class="muted"><b>Robustness check:</b> ${esc(rb.status)}${(rb.errors || []).length ? ' · ' + esc(rb.errors.join(' · ')) : ''}</div>`;
     const b = rb.base || {}; return `<div><b>Robustness check</b> (automatic, ${rb.daysFound || rb.days} days, ${esc((rb.at || '').slice(5, 16).replace('T', ' '))}): <b class="${rb.verdict === 'robust' ? 'gain' : rb.verdict === 'fragile' ? 'loss' : ''}">${esc(rb.verdict)}</b> · ${rb.positive}/${rb.variants} variants positive (${rb.share ?? '—'}%) · median ${rb.median ?? '—'}R · as is ${b.n || 0} trades ${R(b.avgR)} t ${b.t ?? '—'} · halves ${R((rb.h1 || {}).avgR)} / ${R((rb.h2 || {}).avgR)}${(rb.extra || []).map(e => ` · ${esc(e.label)} ${R(e.avgR)}`).join('')}${(rb.worst || []).length ? `<br><span class="muted">weakest: ${rb.worst.map(w => `${esc(w.label)} ${R(w.avgR)}`).join(' · ')}</span>` : ''}${(rb.errors || []).length ? `<br><span class="loss">${esc(rb.errors.join(' · '))}</span>` : ''}</div>`; };
   const holdD = x => { const h0 = x.holdout; if (!h0) return '';
-    return `<div><b>Final holdout check</b> (${h0.days} days from ${esc(h0.from || '')}, look #${h0.use}): <b class="${h0.pass ? 'gain' : 'loss'}">${h0.pass ? 'passes' : 'fails'}</b> · ${h0.n || 0} trades · ${R(h0.avgR)} · t ${h0.t ?? '—'} · win ${h0.win ?? '—'}% · PF ${h0.pf ?? '—'}</div>`; };
+    const v = h0.verdict || (h0.pass ? 'passes' : 'fails'), dg = h0.diag || {};
+    const why = v === 'no trades' ? ` — its conditions never came true on these ${dg.holdDays ?? '?'} days${dg.ctxDays != null && dg.holdDays && dg.ctxDays < dg.holdDays ? ` (market context loaded on only ${dg.ctxDays} of them: load the missing days)` : ' (a rare market condition, e.g. fear days, may simply not have happened)'}` : v === 'no data' ? ' — no stored days after the research period (the history is not up to date)' : v === 'too few trades' ? ' — not enough trades to judge' : '';
+    return `<div><b>Final holdout check</b> (${h0.days} days from ${esc(h0.from || '')}${dg.to ? ` to ${esc(dg.to)}` : ''}, look #${h0.use}): <b class="${v === 'passes' ? 'gain' : v === 'fails' ? 'loss' : ''}">${esc(v)}</b>${esc(why)} · ${h0.n || 0} trades${h0.tradeDays ? ` on ${h0.tradeDays} days` : ''} · ${R(h0.avgR)} · t ${h0.t ?? '—'} · win ${h0.win ?? '—'}% · PF ${h0.pf ?? '—'}${dg.series != null ? ` <span class="muted">(${dg.series} stock-days checked)</span>` : ''}</div>`; };
   const rows = xs.map(x => { const m = x.metrics || {}, open = S.rsOpen === x.id;
     return `<tr data-rx="open|${x.id}" style="cursor:pointer"><td>${badge(x)}</td><td><b style="font-size:.8rem">${esc(x.name)}</b> <span class="muted" style="font-size:.72rem">${x.by === 'you' ? 'yours' : x.by === 'evolve' ? 'evolution' : 'AI'} · ${esc((x.at || '').slice(5, 16).replace('T', ' '))}${x.universe === 'inplay' ? ' · <b>stocks in play</b>' : ''}</span>${robB(x)}</td>
       <td class="r">${m.n ?? '—'}</td><td class="r">${m.win != null ? m.win + '%' : '—'}</td><td class="r">${R(m.avgR)}</td><td class="r">${m.t ?? '—'}${x.tReq ? ` <span class="muted">/ ${x.tReq}</span>` : ''}</td><td class="r">${m.pf ?? '—'}</td>
@@ -2518,7 +2521,7 @@ function vChartDT() {
   else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
   else {
     const fl = S.flow[sym] || {}, ck = [JSON.stringify(S.fcLayers), JSON.stringify(S.fcZoom[fcKey(id)] || null), W, H, fl.k, (fl.missing || []).length, Object.keys(fl.days || {}).length, S.dpN, (() => { const x = S.fcDp[fcKey(id)]; return x ? `${(x.levels || []).length}/${(x.prints || []).length}/${x.error || ''}` : '-'; })()].join('|');
-    main = svgCached('dt', d, ck, () => fcSvg(withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []) }), id, { W, H: Math.max(380, H - 40), noAcc: true }));
+    main = svgCached('dt', d, ck, () => fcSvg(withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []) }), id, { W, H: Math.max(380, H - 40), noAcc: true, padRight: 100 }));
     if (S.dtTf === 1 && S.dtDays >= 20) main += '<p class="muted" style="font-size:.78rem;margin:2px 4px">20-30 days: shown with 5-minute candles (the signals still come from the 1-minute engine). Pick 10 days or less for 1-minute candles.</p>';
     main += dtWhyBox();
     const f2 = v => v == null ? '—' : (+v).toFixed(2), lv = Object.entries(d.pm || {}).map(([dy, x]) => `${dy.slice(5)} pre-market ${f2(x.h)} / ${f2(x.l)}`).concat(Object.entries(d.orbLv || {}).map(([dy, x]) => `${dy.slice(5)} opening range ${f2(x.h)} / ${f2(x.l)}`));
@@ -5028,9 +5031,9 @@ $('#signin').addEventListener('click', () => Auth.login());
   let drag = null, suppress = false;
   document.addEventListener('click', ev => { if (suppress && ev.target.closest && ev.target.closest('svg[data-fcz]')) { ev.stopPropagation(); ev.preventDefault(); } }, true);
   const info = svg => { const r = svg.getBoundingClientRect(), k = r.width ? (+svg.dataset.vw) / r.width : NaN;
-    return { r, k, L: +svg.dataset.l, pw: +svg.dataset.pw, a: +svg.dataset.a, n: +svg.dataset.n, all: +svg.dataset.all, id: svg.dataset.fcz }; };
+    return { r, k, L: +svg.dataset.l, pw: +svg.dataset.pw, a: +svg.dataset.a, n: +svg.dataset.n, s: +svg.dataset.slots || +svg.dataset.n, all: +svg.dataset.all, id: svg.dataset.fcz }; };
   const vx = (svg, ev) => { const f = info(svg); return (ev.clientX - f.r.left) * f.k; };
-  const barAt = (f, x) => f.a + Math.max(0, Math.min(f.n - 1, Math.floor((x - f.L) / (f.pw / f.n))));
+  const barAt = (f, x) => f.a + Math.max(0, Math.min(f.n - 1, Math.floor((x - f.L) / (f.pw / f.s))));
   document.addEventListener('pointerdown', ev => {
     const svg = ev.target.closest && ev.target.closest('svg[data-fcz]');
     if (!svg || ev.button > 0) return;
@@ -5047,7 +5050,7 @@ $('#signin').addEventListener('click', () => Auth.login());
         const pf = v => v.toFixed(v < 20 ? 3 : 2), ch = (b.c / b.o - 1) * 100;
         txt.textContent = `${b.t.replace('T', ' ').slice(5)}  O ${pf(b.o)}  H ${pf(b.h)}  L ${pf(b.l)}  C ${pf(b.c)}  ${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%`;
         txt.setAttribute('fill', b.c >= b.o ? 'var(--gain)' : 'var(--loss)');
-        const cx = f.L + (i - f.a + 0.5) * f.pw / f.n;
+        const cx = f.L + (i - f.a + 0.5) * f.pw / f.s;
         if (xh) { xh.setAttribute('x1', cx); xh.setAttribute('x2', cx); xh.style.display = ''; }
       }
     }

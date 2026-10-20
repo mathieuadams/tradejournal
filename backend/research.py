@@ -661,9 +661,17 @@ def holdout_check(sub, idea_id=None, sid=None):
     r = _item(sub)
     uses = int(r.get("holdoutUses") or 0) + 1
     db.put({**r, "holdoutUses": uses, "robAt": iso(now_ny())})
+    hdays = sorted({dd for xx in bench.data for dd in (xx.get("show") or []) if bench.cut and dd >= bench.cut})
+    mx = ((bench.data[0].get("ctx") or {}).get("mx") or {}) if bench.data else {}
+    diag = {"holdDays": len(hdays), "to": hdays[-1] if hdays else None,
+            "series": sum(1 for xx in bench.data for dd in (xx.get("show") or []) if bench.cut and dd >= bench.cut),
+            "ctxDays": sum(1 for dd in hdays if (mx.get(dd) or {}).get("br")), "errors": bench.errors[:3]}
+    n = m.get("n") or 0
+    verdict = ("no data" if not hdays else "no trades" if not n else "too few trades" if n < 10 else
+               "passes" if (m.get("avgR") or 0) > 0 and (m.get("t") or 0) >= 1.0 else "fails")
     x["holdout"] = {"at": iso(now_ny()), "days": h, "from": bench.cut, "use": uses,
-                    **{k: m.get(k) for k in ("n", "avgR", "t", "win", "pf", "totR", "maxDD")},
-                    "pass": bool(m.get("n")) and (m.get("avgR") or 0) > 0 and (m.get("t") or 0) >= 1.0}
+                    **{k: m.get(k) for k in ("n", "avgR", "t", "win", "pf", "totR", "maxDD")}, "tradeDays": m.get("days"),
+                    "verdict": verdict, "diag": diag, "pass": verdict == "passes"}
     (_put_strat if sid else _put_idea)(sub, x)
     return x["holdout"]
 
