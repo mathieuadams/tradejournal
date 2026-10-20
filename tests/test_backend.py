@@ -5107,6 +5107,21 @@ def test_day_movers_side_list():
         stockday.now_ny, stockday.stored_days, sipbench.picks_history = saved
 
 
+def test_evolution_side_turns_and_jolt():
+    """Runs take turns on long / short / both (most new genomes and the idea sent are of that side); every 3rd run
+    is a jolt without the conditions of the top 5; the same idea with other numbers is sent once."""
+    import evolve
+    g1 = {"side": "long", "atoms": [(9, 0.5), (20, 2)], "stop": 1.0, "target": 1.5}
+    g2 = {"side": "long", "atoms": [(20, 2), (9, 0.6)], "stop": 2.0, "target": "trail2.5"}
+    assert evolve.family_key(g1) == evolve.family_key(g2) == evolve._fam_of_key(evolve.key(g2))
+    import random
+    evolve.RUN_SIDE = "short"
+    rng = random.Random(3)
+    sides = [evolve.rand_genome(list(range(len(evolve.GRAMMAR))), rng)["side"] for _ in range(200)]
+    assert sides.count("short") > 120
+    evolve.RUN_SIDE = None
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

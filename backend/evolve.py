@@ -204,14 +204,36 @@ def rand_atom(allowed, rng):
     return (i, rng.choice(ps["p"]) if ps else None)
 
 
+RUN_SIDE = None                                        # the side this run focuses on (long / short / both, in turn)
+SIDE_CYCLE = ["long", "short", "both"]
+JOLT_EVERY = 3                                         # every 3rd run: the conditions of the top 5 are banned for the run
+
+
+def _side(rng):
+    return RUN_SIDE if RUN_SIDE and rng.random() < 0.7 else rng.choice(SIDES)
+
+
 def rand_genome(allowed, rng):
     n = rng.choice([1, 2, 2, 3])
     atoms = []
-    while len(atoms) < n:
+    while len(atoms) < min(n, len(allowed)):
         a = rand_atom(allowed, rng)
         if a[0] not in [b[0] for b in atoms]:
             atoms.append(a)
-    return {"side": rng.choice(SIDES), "atoms": atoms, "stop": rng.choice(STOPS), "target": rng.choice(EXIT_CHOICES)}
+    return {"side": _side(rng), "atoms": atoms, "stop": rng.choice(STOPS), "target": rng.choice(EXIT_CHOICES)}
+
+
+def _fam_of_key(k):
+    parts = k.split("|")
+    if len(parts) < 2:
+        return None
+    ids = sorted({int(a.split(":")[0]) for a in parts[1].split(",") if a})
+    return f"{parts[0]}|{','.join(str(i) for i in ids)}"
+
+
+def family_key(g):
+    """The idea behind a genome: its side and its conditions, ignoring their numbers, the stop and the exit."""
+    return f"{g['side']}|{','.join(str(i) for i in sorted({a[0] for a in g['atoms']}))}"
 
 
 def mutate(g, allowed, rng):
@@ -436,6 +458,17 @@ def run(sub, budget_s=470, seed=None):
         per = (sum(times) / len(times)) if times else min(20.0, budget_s / 50)
         return time.time() - t0 + 2.5 * per + min(15.0, 0.05 * budget_s) < budget_s
 
+    global RUN_SIDE
+    n_run = int(st.get("runCount") or 0)
+    st["runCount"] = n_run + 1
+    RUN_SIDE = SIDE_CYCLE[n_run % 3]                   # long, short, both in turn: each side gets its runs
+    jolt = []
+    if n_run % JOLT_EVERY == JOLT_EVERY - 1 and st.get("pop"):    # a jolt: the conditions of the top 5 are out this run
+        top5 = rank([{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in st["pop"]])[:5]
+        jolt = sorted({a[0] for p in top5 for a in p["g"]["atoms"]})
+        allowed = [i for i in allowed if i not in jolt] or allowed
+        st["pop"] = []                                 # a fresh population from the other conditions
+    st["runSide"], st["jolt"] = RUN_SIDE, [atom_expr((i, (GRAMMAR[i][2].get("p") or [None])[0])) for i in jolt]
     pop = [p for p in st["pop"] if all(a[0] in allowed for a in p["g"]["atoms"]) and not is_taboo(p["g"], tsets)]
     pop = [{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in pop
            if p["g"].get("target") in EXIT_CHOICES]
@@ -486,7 +519,8 @@ def run(sub, budget_s=470, seed=None):
     st["log"] = (st["log"] + [{"at": iso(now_ny()), "gens": gens, "evals": st["evals"] - evals0, "best": best.get("fit"),
                                "promoted": promoted, "secs": round(time.time() - t0)}])[-30:]
     st.update(running=None, step=None, last={"at": iso(now_ny()), "gens": gens, "evals": st["evals"] - evals0, "errors": bench.errors[:3],
-                                             "loadSecs": st.get("loadSecs"), "tickers": base.get("tickers")})
+                                             "loadSecs": st.get("loadSecs"), "tickers": base.get("tickers"), "side": RUN_SIDE,
+                                             "jolt": st.get("jolt") or []})
     _save(sub, st)
     return st
 
@@ -496,9 +530,15 @@ def promote(sub, st, pop, bench, base, c, hist):
     every evaluation counted in its t needed; one that doesn't pay on the 2nd half makes its atom set taboo."""
     import research
     done = {p.get("key") for p in st["promoted"]}
+    fams = {p.get("fam") or _fam_of_key(p.get("key") or "") for p in st["promoted"]}
     n_tested = research.n_trials(hist, c)
     out = []
-    for p in pop:
+    order = [p for p in pop if p["g"]["side"] == RUN_SIDE] + [p for p in pop if p["g"]["side"] != RUN_SIDE] if RUN_SIDE else pop
+    for p in order:
+        if RUN_SIDE and p["g"]["side"] != RUN_SIDE:
+            break                                      # this run sends only an idea of its side (the others get their runs)
+        if family_key(p["g"]) in fams:
+            continue                                   # the same idea with other numbers was sent already
         r = p.get("res") or {}
         tk = taboo_key(research.universe_of(c))
         if (r.get("fit") or -99) < 1.5 or (r.get("t") or 0) < 1.8 or (r.get("posWin") or 0) < 2 or key(p["g"]) in done or is_taboo(p["g"], _taboo_sets(st.get(tk) or [])):
@@ -520,7 +560,7 @@ def promote(sub, st, pop, bench, base, c, hist):
         research._put_idea(sub, x)
         if (x.get("robust") or {}).get("status") == "queued":
             research.rob_kick(sub)
-        st["promoted"].append({"key": key(g), "id": x["id"], "name": x["name"], "grade": x.get("grade"), "at": iso(now_ny()),
+        st["promoted"].append({"key": key(g), "fam": family_key(g), "id": x["id"], "name": x["name"], "grade": x.get("grade"), "at": iso(now_ny()),
                                "h2": ((x.get("metrics") or {}).get("h2") or {}).get("avgR")})
         out.append(x["id"])
         break                                          # one a run: the rest keeps evolving

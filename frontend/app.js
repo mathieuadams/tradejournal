@@ -2103,7 +2103,7 @@ function evoBox(t) {
       <span class="muted">history</span> <select id="evo-days" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (e.days || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select>
       <button class="btn coachbtn" data-rx="evorun|1|day" ${e.running ? 'disabled' : ''} style="font-size:.76rem;padding:0 10px">${e.running ? 'Running…' : 'Run once'}</button>
       <button class="btn" data-rx="evoreset|1|day" style="font-size:.74rem;padding:0 8px" title="Start a new population (the evaluated set and the taboo list are kept)">New population</button>
-      <span class="muted" style="font-size:.76rem">generation ${e.gen || 0} · ${e.evals || 0} strategies evaluated · ${e.taboo || 0} taboo${last.at ? ` · last run ${esc(last.at.slice(5, 16).replace('T', ' '))} ET: ${last.gens ?? 0} generations, ${last.evals ?? 0} evaluated${last.loadSecs != null ? `, candles loaded in ${last.loadSecs} s` : ''}` : ''}${last.error && !e.running ? ` · <span class="loss">${esc(last.error)}</span>` : ''}</span></div>
+      <span class="muted" style="font-size:.76rem">generation ${e.gen || 0} · ${e.evals || 0} strategies evaluated · ${e.taboo || 0} taboo${last.at ? ` · last run ${esc(last.at.slice(5, 16).replace('T', ' '))} ET: ${last.gens ?? 0} generations, ${last.evals ?? 0} evaluated${last.loadSecs != null ? `, candles loaded in ${last.loadSecs} s` : ''}${last.side ? `, focus: <b>${esc(last.side)}</b>` : ''}${(last.jolt || []).length ? `, <b>jolt</b> (without ${esc(last.jolt.join(' · '))})` : ''}` : ''}${last.error && !e.running ? ` · <span class="loss">${esc(last.error)}</span>` : ''}</span></div>
     ${e.running ? `<p style="font-size:.8rem;margin:4px 0 0"><b>Now:</b> ${esc(e.step || 'starting')} <span class="muted">(started ${esc((e.running || '').slice(11, 16))} ET; this box refreshes by itself)</span></p>` : ''}
     ${e.timedOut ? `<p class="loss" style="font-size:.78rem;margin:4px 0 0">The last run was cut off by the 10-minute limit${e.step ? ` while: ${esc(e.step)}` : ''}. Its progress so far is kept; if it keeps happening, use fewer tickers or 120 days.</p>` : ''}
     ${(e.top || []).length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;margin-top:4px"><thead><tr><th>Best of the population (1st half only)</th><th class="r">Trades</th><th class="r">Days</th><th class="r">Avg R</th><th class="r" title="the lower of the per-trade t and the per-day t">t</th><th class="r">Windows +</th><th class="r">Rare pieces</th><th class="r">Fitness</th></tr></thead><tbody>
@@ -2540,7 +2540,8 @@ async function loadMovers() {
   if (route() === 'botchart' && S.fcfMode === 'dt') render();
   clearTimeout(S.mvPoll);                              // the 09:15 list appears by itself (checked every 2 minutes 09:10-09:40 ET, else every 10)
   const hm = new Date().toLocaleTimeString('en-GB', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit' });
-  S.mvPoll = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'dt') loadMovers(); else S.dtMovers = undefined; }, hm >= '09:10' && hm < '09:40' ? 120000 : 600000);
+  const pending = (S.dtMovers || []).some(x => x.note);
+  S.mvPoll = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'dt') loadMovers(); else S.dtMovers = undefined; }, pending || (hm >= '09:10' && hm < '09:40') ? 60000 : 600000);
 }
 function moversBox(sym) {
   const ds = S.dtMovers;
@@ -2555,6 +2556,7 @@ function moversBox(sym) {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><b>Top movers</b><button class="btn" data-mvreload title="Reload" style="font-size:.72rem;padding:0 6px">↻</button></div>
     <div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px">${tabs}</div>
     <div class="muted" style="font-size:.7rem;margin-bottom:3px">${esc(d.date || '')}${d.source ? ` · ${esc(d.source)}` : ''}${d.at ? ` · built ${esc(d.at)} ET` : ''}</div>
+    ${d.note ? `<p style="font-size:.74rem;margin:2px 4px"><b>${esc(d.note)}</b></p>` : ''}
     ${rows || `<p class="muted" style="font-size:.76rem;margin:4px">${k === 0 ? (d.error ? esc(d.error) : 'Today’s list builds at 09:15 ET (pre-market relative volume) and shows here by itself.') : 'No stocks in play stored for that day.'}</p>`}</div>`;
 }
 /* ---------- day trading stocks in play: ORB on the top relative-volume stocks (third Alpaca paper account) ---------- */

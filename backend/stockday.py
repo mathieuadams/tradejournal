@@ -949,7 +949,9 @@ def movers(sub, n_days=3, top=15):
     list (pre-market RVOL), then the previous days (their 09:15 list when one was built, else the stocks in play of
     that day ranked by opening-range RVOL from the stored history; kept once computed)."""
     pk = db.upk(sub)
-    today = now_ny().strftime("%Y-%m-%d")
+    now = now_ny()
+    today = now.strftime("%Y-%m-%d")
+    note = _movers_kick(sub, now, today)
     days = sorted(set(stored_days("U")) | set(stored_days("R")))
     prev = [d for d in days if d < today][-(n_days - 1):][::-1]
     out = []
@@ -986,7 +988,40 @@ def movers(sub, n_days=3, top=15):
     for i, x in enumerate(out):
         if i:
             x["label"] = "Yesterday" if i == 1 else datetime.strptime(x["date"], "%Y-%m-%d").strftime("%a %m-%d")
+        if note and (i == 0 or not x.get("list")):
+            x["note"] = note
     return out
+
+
+def _movers_kick(sub, now, today):
+    """Behind on the history (no universe for today, or yesterday's opening ranges missing): the history update starts
+    in the background; after 09:15 with no list for today yet, the pre-market list is built. -> a note or None."""
+    import research
+    pk = db.upk(sub)
+    if now.weekday() >= 5:
+        return None
+    st = prep_status(sub)
+    busy = st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=12))
+    u, r = stored_days("U"), stored_days("R")
+    try:
+        c = data_creds(sub)
+        cal = trading_days(c, (now - timedelta(days=10)).strftime("%Y-%m-%d"), today) if c else []
+    except Exception:
+        cal = []
+    prev_day = max([d for d in cal if d < today], default=None)
+    behind = (now.strftime("%H:%M") >= "09:05" and today not in u) or (prev_day and (not r or r[-1] < prev_day))
+    if behind:
+        if not busy:
+            db.put({"PK": pk, "SK": PREP_SK, **st, "running": iso(now_ny()), "error": None})
+            research._invoke(sub, "sdprep", {"days": int(st.get("days") or 500)})
+        return "updating the stocks-in-play history (a few minutes): the lists fill in by themselves"
+    w = db.get(pk, f"SDWATCH#{today}")
+    if now.strftime("%H:%M") >= "09:15" and (not w or (w.get("error") and not w.get("movers"))):
+        if not (w and w.get("building") and w["building"] > iso(now_ny() - timedelta(minutes=5))):
+            db.put({"PK": pk, "SK": f"SDWATCH#{today}", **{k: v for k, v in (w or {}).items() if k not in ("PK", "SK")}, "building": iso(now_ny())})
+            research._invoke(sub, "sdwatch", {})
+        return "building today's pre-market list (about a minute)"
+    return None
 
 
 def _mv(x):
