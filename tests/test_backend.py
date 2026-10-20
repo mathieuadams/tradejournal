@@ -4678,7 +4678,7 @@ def test_strategy_basket():
         assert bk["missingSides"] == ["both"] and bk["combined"]["members"] == 2 and bk["corr"][0][1] is not None
         la = next(x for x in research.strategies(sub, "day") if x["id"] == a["id"])["checks"][-1]
         assert la["long"]["n"] == 120 and "short" not in la
-        research.save_basket(sub, {"auto": True, "side": "short"})
+        research.save_basket(sub, {"auto": True, "side": "short", "onlyPromoted": False})
         research.basket_switch(sub)
         assert research.basket_cfg(sub)["active"] == b["id"] and applied[-1].get("longs") is False and "tickers" not in applied[-1]
         research.save_basket(sub, {"side": "any"})
@@ -4842,8 +4842,87 @@ def test_evolution_search():
         assert pub["top"] and pub["top"][0]["formulas"]["long"]
         c = research.criteria(sub)
         assert all(isinstance(i, int) for i in evolve.allowed_atoms([], c))
+        assert evolve.allowed_exits({"targetOn"}) == ["trail1.5", "trail2.5"] and evolve.allowed_exits({"targetOn", "trailOn"}) == [None]
+        tr = evolve.changes_of({"side": "short", "atoms": [(0, None)], "stop": 1.3, "target": "trail2.5"})
+        assert tr["trailOn"] and tr["trailAtr"] == 2.5 and tr["targetOn"] is False and tr["longs"] is False
+        ret = research.retired                         # a retired exit (targetOn) never blocks the conditions
+        research.retired = lambda xs, c_: ["targetOn"]
+        try:
+            assert len(evolve.allowed_atoms([], c)) == len(evolve.GRAMMAR)
+        finally:
+            research.retired = ret
+        assert evolve.allowed_exits({"targetOn"}) == ["trail1.5", "trail2.5"] and evolve.allowed_exits({"targetOn", "trailOn"}) == [None]
+        tr = evolve.changes_of({"side": "short", "atoms": [(0, None)], "stop": 1.3, "target": "trail2.5"})
+        assert tr["trailOn"] and tr["trailAtr"] == 2.5 and tr["targetOn"] is False and tr["longs"] is False
+        # an exit piece being retired (targetOn) never blocks the conditions themselves
+        ret = research.retired
+        research.retired = lambda xs, c_: ["targetOn"]
+        try:
+            assert len(evolve.allowed_atoms([], c)) == len(evolve.GRAMMAR)
+        finally:
+            research.retired = ret
     finally:
         research.DayBench, daytrade.config, research._invoke = saved
+
+
+def test_walk_forward_and_family_trials():
+    """Every idea is judged in 5 walk-forward windows (a lucky stretch can't carry it); the t needed counts entry
+    families, not every small variant."""
+    import research
+    c = {**research.CRITERIA}
+    rows = []
+    for m in range(1, 13):
+        for d in range(1, 21):
+            r = (2.0 if d % 2 else -0.5) if m <= 3 else (0.4 if d % 2 else -0.5)    # only Jan-Mar earn
+            rows.append({"at": f"2025-{m:02d}-{d:02d}T10:00", "R": r})
+    m = research.metrics(rows, "2025-07-01", 0.0, ("2025-01-01", "2025-12-31"), 5)
+    assert len(m["folds"]) == 5 and m["foldsPos"] <= 2 and m["folds"][-1]["avgR"] < 0
+    g, fails, _ = research.grade(m, {**c, "minTrades": 10, "minHalf": 5, "minT": 0, "minTestT": -9, "minPF": 0, "minAvgR": -9,
+                                     "bothHalves": False}, 1)
+    assert any("walk-forward" in f for f in fails) and g != "A"
+    xs = [{"status": "tested", "full": {"flipFade": True, "cvdSide": True, "targetR": 2 + k / 10}} for k in range(40)]
+    xs += [{"status": "tested", "full": {"orbBreak": True}}]
+    assert research.n_trials(xs, c) == 2 and research.n_trials(xs, {**c, "adjustBy": "idea"}) == 41
+    assert research.n_trials(xs, c, {"full": {"fxLong": "hTrend > 0"}}) == 3
+
+
+def test_paper_stage_and_kill_switch():
+    """A saved strategy trades on paper from its start day: promoted when enough days / trades stay in line with its
+    backtest, dropped when not; a promoted one drifting below is killed, and if it was in use the orders go off."""
+    import research, daytrade
+    ds = [f"2026-{m:02d}-{d:02d}" for m in range(1, 11) for d in range(1, 29) if __import__("datetime").date(2026, m, d).weekday() < 5]
+    start = ds[-25]
+    good = [{"at": d + "T10:00", "R": (1.0 if k % 2 else -0.5)} for k, d in enumerate(ds)]
+    cfg = research.BASKET
+    x = {"stage": {"status": "paper", "start": start}}
+    st = research.stage_step(x, good, ds, 0.0, cfg)
+    assert st["status"] == "promoted" and st["fwd"]["days"] == 25 and st["base"]["n"] > 100
+    bad = [{"at": d + "T10:00", "R": (1.0 if k % 2 else -0.5) if d < start else -1.0} for k, d in enumerate(ds)]
+    assert research.stage_step({"stage": {"status": "paper", "start": start}}, bad, ds, 0.0, cfg)["status"] == "dropped"
+    st = research.stage_step({"stage": {"status": "promoted", "start": ds[-60]}}, [r if r["at"] < ds[-20] else {**r, "R": -1.0} for r in good], ds, 0.0, cfg)
+    assert st["status"] == "killed" and "drift" in st["why"] or "drawdown" in st["why"]
+    early = research.stage_step({"stage": {"status": "paper", "start": ds[-12]}}, [r if r["at"] < ds[-12] else {**r, "R": -1.0} for r in good], ds, 0.0, cfg)
+    assert early["status"] == "dropped"                          # far below already: dropped before the 20 days
+
+    sub = "rs-kill"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    saved = daytrade.config, daytrade.save_config
+    applied = []
+    try:
+        daytrade.config = lambda s_: {**daytrade.PARAMS, "tickers": ["QQQ"]}
+        daytrade.save_config = lambda s_, body: applied.append(body) or body
+        a = research.save_strategy(sub, "day", "A", cfg={"aboveVwap": True})
+        assert a["stage"]["status"] == "paper"
+        research.use_strategy(sub, a["id"])
+        a2 = next(s for s in research.strategies(sub, "day") if s["id"] == a["id"])
+        a2["stage"] = {"status": "killed", "start": start, "why": "test"}
+        research._put_strat(sub, a2)
+        assert research.kill_switch(sub) == "orders off" and applied[-1] == {"trade": False}
+        assert research.basket_cfg(sub)["active"] is None and "kill switch" in research.basket_cfg(sub)["log"][-1]["to"]
+        assert research.set_stage(sub, a["id"], "restart")["status"] == "paper"
+    finally:
+        daytrade.config, daytrade.save_config = saved
 
 
 if __name__ == "__main__":

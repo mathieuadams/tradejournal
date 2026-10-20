@@ -64,7 +64,8 @@ GRAMMAR = [
     ("eventDay == 0", "eventDay == 0", {}),
 ]
 STOPS = [1.0, 1.3, 1.6, 2.0]
-TARGETS = [1.5, 2.0, 2.5, 3.0]
+TARGETS = [1.5, 2.0, 2.5, 3.0, "trail1.5", "trail2.5"]   # a target in R, or a trailing stop (ATR) instead
+EXIT_CHOICES = list(TARGETS)                           # the exits the search may use now (retired ones taken out)
 SIDES = ["long", "short", "both"]
 
 
@@ -99,8 +100,21 @@ def atom_set(g):
 
 def changes_of(g):
     fl, fs = formulas(g)
-    return {"fxLong": fl, "fxShort": fs, "longs": g["side"] != "short", "shorts": g["side"] != "long",
-            "stopOn": True, "stopAtr": g["stop"], "targetOn": True, "targetR": g["target"], "barMin": 5}
+    out = {"fxLong": fl, "fxShort": fs, "longs": g["side"] != "short", "shorts": g["side"] != "long",
+           "stopOn": True, "stopAtr": g["stop"], "barMin": 5}
+    t = g.get("target")
+    if isinstance(t, str) and t.startswith("trail"):
+        out.update(trailOn=True, trailAtr=float(t[5:]), targetOn=False)
+    elif t:
+        out.update(targetOn=True, targetR=float(t))
+    else:
+        out.update(targetOn=False)                     # stop only, out at the close
+    return out
+
+
+def allowed_exits(gone):
+    ex = [t for t in TARGETS if (isinstance(t, str) and "trailOn" not in gone) or (not isinstance(t, str) and "targetOn" not in gone)]
+    return ex or [None]
 
 
 def name_of(g):
@@ -119,8 +133,9 @@ def allowed_atoms(xs, c):
     for i in range(len(GRAMMAR)):
         lo, sh, ps = GRAMMAR[i]
         v = ps["p"][0] if ps else None
-        g = {"side": "both", "atoms": [(i, v)], "stop": 1.3, "target": 2.0}
-        pieces = research.blocks_of({"full": changes_of(g)})
+        g = {"side": "both", "atoms": [(i, v)], "stop": 1.3, "target": None}
+        fl, fs = formulas(g)
+        pieces = research.blocks_of({"full": {"fxLong": fl, "fxShort": fs}})      # the condition's own pieces only
         if not (pieces & gone):
             ok.append(i)
     return ok
@@ -156,7 +171,7 @@ def rand_genome(allowed, rng):
         a = rand_atom(allowed, rng)
         if a[0] not in [b[0] for b in atoms]:
             atoms.append(a)
-    return {"side": rng.choice(SIDES), "atoms": atoms, "stop": rng.choice(STOPS), "target": rng.choice(TARGETS)}
+    return {"side": rng.choice(SIDES), "atoms": atoms, "stop": rng.choice(STOPS), "target": rng.choice(EXIT_CHOICES)}
 
 
 def mutate(g, allowed, rng):
@@ -182,8 +197,10 @@ def mutate(g, allowed, rng):
     elif op == "side":
         g["side"] = rng.choice([s for s in SIDES if s != g["side"]])
     else:
-        g["stop"], g["target"] = rng.choice(STOPS), rng.choice(TARGETS)
+        g["stop"], g["target"] = rng.choice(STOPS), rng.choice(EXIT_CHOICES)
     g["atoms"] = [a for a in g["atoms"] if a[0] in allowed] or [rand_atom(allowed, rng)]
+    if g.get("target") not in EXIT_CHOICES:
+        g["target"] = rng.choice(EXIT_CHOICES)
     return g
 
 
@@ -191,7 +208,7 @@ def cross(a, b, rng):
     pool = {x[0]: x for x in a["atoms"] + b["atoms"]}
     atoms = rng.sample(list(pool.values()), min(len(pool), rng.choice([1, 2, 3])))
     return {"side": rng.choice([a["side"], b["side"]]), "atoms": atoms, "stop": rng.choice([a["stop"], b["stop"]]),
-            "target": rng.choice([a["target"], b["target"]])}
+            "target": rng.choice([t for t in (a.get("target"), b.get("target")) if t in EXIT_CHOICES] or EXIT_CHOICES)}
 
 
 # ---------------------------------------------------------------- fitness (1st half only)
@@ -247,7 +264,7 @@ def public(sub):
     top = sorted(st["pop"], key=lambda p: -((p.get("res") or {}).get("fit") or -99))[:8]
     return {"on": st["on"], "days": st["days"], "gen": st["gen"], "evals": st["evals"], "running": st.get("running"),
             "last": st.get("last"), "taboo": len(st["taboo"]), "promoted": st["promoted"][-12:], "log": st["log"][-10:],
-            "top": [{"name": name_of(p["g"]), "side": p["g"]["side"], "stop": p["g"]["stop"], "target": p["g"]["target"],
+            "top": [{"name": name_of(p["g"]), "side": p["g"]["side"], "stop": p["g"]["stop"], "target": p["g"].get("target"),
                      "formulas": dict(zip(("long", "short"), formulas(p["g"]))), **(p.get("res") or {})} for p in top]}
 
 
@@ -275,9 +292,11 @@ def run(sub, budget_s=470, seed=None):
     c = research.criteria(sub)
     hist = research.ideas(sub, "day")
     uses = piece_uses(hist)
+    global EXIT_CHOICES
     allowed = allowed_atoms(hist, c)
+    EXIT_CHOICES = allowed_exits(set(research.retired(hist, c)))
     if not allowed:
-        st.update(running=None, last={"at": iso(now_ny()), "error": "every atom of the grammar is retired"})
+        st.update(running=None, last={"at": iso(now_ny()), "error": "every condition of the grammar uses a retired piece"})
         _save(sub, st)
         return st
     cost = float(c["costR"])
@@ -312,7 +331,8 @@ def run(sub, budget_s=470, seed=None):
         return res
 
     pop = [p for p in st["pop"] if all(a[0] in allowed for a in p["g"]["atoms"]) and atom_set(p["g"]) not in taboo]
-    pop = [{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in pop]
+    pop = [{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in pop
+           if p["g"].get("target") in EXIT_CHOICES]
     while len(pop) < POP:
         pop.append({"g": rand_genome(allowed, rng)})
     gens = 0
@@ -363,7 +383,7 @@ def promote(sub, st, pop, bench, base, c, hist):
     every evaluation counted in its t needed; one that doesn't pay on the 2nd half makes its atom set taboo."""
     import research
     done = {p.get("key") for p in st["promoted"]}
-    n_tested = sum(1 for x in hist if x.get("status") == "tested")
+    n_tested = research.n_trials(hist, c)
     out = []
     for p in pop:
         r = p.get("res") or {}
@@ -376,7 +396,7 @@ def promote(sub, st, pop, bench, base, c, hist):
         x["searchCount"] = st["evals"]
         x = research.admit(x, set(), banned=research.retired(hist, c))
         if x["status"] == "queued":
-            research.test_idea(bench, base, x, c, n_tested + 1 + st["evals"])
+            research.test_idea(bench, base, x, c, n_tested + 1 + st["evals"])     # every evaluation is a trial here
             if research.rob_due(x, c):
                 x["robust"] = {"status": "queued", "at": iso(now_ny())}
             if ((x.get("metrics") or {}).get("h2") or {}).get("avgR") is None or x["metrics"]["h2"]["avgR"] <= 0:

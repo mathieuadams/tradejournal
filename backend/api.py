@@ -649,6 +649,18 @@ def research_holdout(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("PUT", "/research/strategy/stage")
+def research_strat_stage(sub, claims, body, q):
+    """A saved strategy's stage by hand: restart its paper period, drop it, or promote it."""
+    import research
+    b = body or {}
+    try:
+        st = research.set_stage(sub, b.get("id"), b.get("action"))
+    except ValueError as e:
+        raise BadRequest(str(e))
+    return {"stage": st, "basket": research.basket(sub)}
+
+
 @route("PUT", "/research/basket")
 def research_basket(sub, claims, body, q):
     """Basket settings (auto-switch on / off, which side, margin) or put one strategy in use (body.use = id)."""

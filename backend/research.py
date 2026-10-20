@@ -27,9 +27,10 @@ SK = "RESEARCH"
 IDEA = "RIDEA#"
 CRITERIA = {"minTrades": 100, "minHalf": 40, "minT": 2.0, "minTestT": 1.0, "minPF": 1.2, "minWin": 0.0, "minAvgR": 0.05,
             "costR": 0.05, "bothHalves": True, "adjustT": True, "autoRob": True, "robT": 2.0, "robDays": 500, "dayTickers": [], "familyCap": 15, "exploreEvery": 10, "banTop": 5,
-            "retire": True, "retireMin": 10, "holdoutDays": 60}
+            "retire": True, "retireMin": 10, "holdoutDays": 60,
+            "folds": 5, "minFolds": 3, "adjustBy": "family"}
 LIMITS = {"minTrades": (10, 5000), "minHalf": (0, 2500), "minT": (0, 10), "minTestT": (-5, 10), "minPF": (0, 10),
-          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20), "retireMin": (3, 200), "holdoutDays": (0, 250)}
+          "minWin": (0, 100), "minAvgR": (-1, 5), "costR": (0, 2), "robT": (0, 10), "robDays": (60, 500), "familyCap": (0, 200), "exploreEvery": (0, 100), "banTop": (1, 20), "retireMin": (3, 200), "holdoutDays": (0, 250), "folds": (2, 10), "minFolds": (0, 10)}
 STRATS = ("day", "swing")
 MAX_IDEAS = 8
 
@@ -55,6 +56,9 @@ def save_criteria(sub, body):
     cur["minTrades"], cur["minHalf"], cur["robDays"] = int(cur["minTrades"]), int(cur["minHalf"]), int(cur["robDays"])
     cur["familyCap"], cur["exploreEvery"], cur["banTop"] = int(cur["familyCap"]), int(cur["exploreEvery"]), int(cur["banTop"])
     cur["retireMin"], cur["holdoutDays"] = int(cur["retireMin"]), int(cur["holdoutDays"])
+    cur["folds"], cur["minFolds"] = int(cur["folds"]), min(int(cur["minFolds"]), int(cur["folds"]))
+    if (body or {}).get("adjustBy") in ("family", "idea"):
+        cur["adjustBy"] = body["adjustBy"]
     if "dayTickers" in (body or {}):
         tk = body["dayTickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -104,7 +108,7 @@ def state(sub, strategy=None):
             "strategies": [{**x, "checks": [{k: v for k, v in c.items() if k not in ("daily", "dayList")} for c in x.get("checks") or []]}
                            for x in (strategies(sub, strategy) if strategy else strategies(sub))],
             "basket": basket(sub) if strategy in (None, "day") else None, "tested": sum(1 for x in xs if x.get("status") == "tested"),
-            "tReq": t_required(criteria(sub), sum(1 for x in xs if x.get("status") == "tested"))}
+            "tReq": t_required(criteria(sub), n_trials(xs, criteria(sub))), "nTrials": n_trials(xs, criteria(sub))}
 
 
 def lite(sub, strategy=None):
@@ -258,8 +262,9 @@ def tstat(xs):
     return round(m / sd * math.sqrt(n), 2) if sd else None
 
 
-def metrics(rows, mid, cost=0.0):
-    """rows: [{"at", "R"}]. Each trade's R minus the cost."""
+def metrics(rows, mid, cost=0.0, period=None, k=5):
+    """rows: [{"at", "R"}]. Each trade's R minus the cost. period=(first, last): also the walk-forward windows (k
+    equal calendar windows of the period, each judged on its own)."""
     rs = [(r["at"], float(r["R"]) - cost) for r in rows if r.get("R") is not None]
     rs.sort()
 
@@ -277,7 +282,32 @@ def metrics(rows, mid, cost=0.0):
         peak = max(peak, eq)
         dd = min(dd, eq - peak)
     al["maxDD"] = round(dd, 1)
-    return {**al, "h1": f([x for a, x in rs if a[:10] < mid]), "h2": f([x for a, x in rs if a[:10] >= mid]), "cost": cost}
+    out = {**al, "h1": f([x for a, x in rs if a[:10] < mid]), "h2": f([x for a, x in rs if a[:10] >= mid]), "cost": cost}
+    if period and period[0] and period[1]:
+        from datetime import date
+        d0, d1 = date.fromisoformat(period[0][:10]), date.fromisoformat(period[1][:10])
+        span = max(1, (d1 - d0).days + 1)
+        edges = [(d0.toordinal() + span * i // k) for i in range(k + 1)]
+        folds = []
+        for i in range(k):
+            lo, hi = date.fromordinal(edges[i]).isoformat(), date.fromordinal(edges[i + 1]).isoformat()
+            fx = f([x for a, x in rs if lo <= a[:10] < hi or (i == k - 1 and a[:10] == period[1][:10])])
+            folds.append({"from": lo, **{kk: fx[kk] for kk in ("n", "avgR", "t")}})
+        out["folds"] = folds
+        out["foldsPos"] = sum(1 for z in folds if z["n"] and (z["avgR"] or 0) > 0)
+    return out
+
+
+def n_trials(xs, c, x=None):
+    """The number of trials the t needed is adjusted for: the distinct entry families tested (adjustBy "family":
+    small variants of one strategy are not independent bets), or every idea ("idea")."""
+    ts = [y for y in xs if y.get("status") == "tested"]
+    if c.get("adjustBy", "family") == "idea":
+        return len(ts) + (1 if x is not None else 0)
+    fam = {family_of(y) for y in ts}
+    if x is not None:
+        fam.add(family_of(x))
+    return max(1, len(fam))
 
 
 def t_required(c, n_tested):
@@ -296,7 +326,7 @@ def grade(m, c, n_tested):
     if min(m["h1"]["n"], m["h2"]["n"]) < c["minHalf"]:
         fails.append(f"{min(m['h1']['n'], m['h2']['n'])} trades in a half < {int(c['minHalf'])}")
     if m["t"] is None or m["t"] < treq:
-        fails.append(f"t {m['t']} < {treq}" + (f" (raised for {n_tested} ideas)" if treq > c["minT"] else ""))
+        fails.append(f"t {m['t']} < {treq}" + (f" (raised for {n_tested} {'entry families' if c.get('adjustBy', 'family') == 'family' else 'ideas'})" if treq > c["minT"] else ""))
     if m["h2"]["t"] is None or m["h2"]["t"] < c["minTestT"]:
         fails.append(f"2nd half t {m['h2']['t']} < {c['minTestT']}")
     if m["pf"] is None or m["pf"] < c["minPF"]:
@@ -308,6 +338,8 @@ def grade(m, c, n_tested):
     both = (m["h1"]["avgR"] or 0) > 0 and (m["h2"]["avgR"] or 0) > 0
     if c.get("bothHalves") and not both:
         fails.append("not positive on both halves")
+    if m.get("folds") and c.get("minFolds") and m["foldsPos"] < int(c["minFolds"]):
+        fails.append(f"positive in {m['foldsPos']}/{len(m['folds'])} walk-forward windows < {int(c['minFolds'])}")
     g = ("A" if not fails and (m["h2"]["t"] or 0) >= treq else "B" if not fails else "C" if both else "F")
     return g, fails, treq
 
@@ -407,7 +439,7 @@ def test_idea(bench, base, x, c, n_tested):
     P = {**base, **(x.get("full") or x["changes"])}            # the idea's complete settings, on your tickers
     t0 = time.time()
     rows = bench.rows(P)
-    m = metrics(rows, bench.mid, float(c["costR"]))
+    m = metrics(rows, bench.mid, float(c["costR"]), (bench.first, bench.last), int(c.get("folds") or 5))
     g, fails, treq = grade(m, c, n_tested)
     by = {}
     for r in rows:
@@ -709,7 +741,7 @@ def test_queued(sub, strategy, days, lab=None, budget_s=540, t0=None, run_=None)
     if not bench.mid:
         run_["errors"].append("No history loaded.")
         return run_
-    n_tested = sum(1 for x in ideas(sub, strategy) if x.get("status") == "tested")
+    done = [x for x in ideas(sub, strategy) if x.get("status") == "tested"]
     for x in sorted(q, key=lambda x: x["at"]):
         if time.time() - t0 > budget_s:
             run_["errors"].append("time limit: some ideas are still queued (run again)")
@@ -717,8 +749,8 @@ def test_queued(sub, strategy, days, lab=None, budget_s=540, t0=None, run_=None)
         run_.update(step=f"testing “{x['name']}”")
         _set_run(sub, run_)
         try:
-            test_idea(bench, base, x, c, n_tested + 1)
-            n_tested += 1
+            test_idea(bench, base, x, c, n_trials(done, c, x))
+            done.append(x)
             run_["testedNow"] = run_.get("testedNow", 0) + 1
             if strategy == "day" and rob_due(x, c):
                 x["robust"] = {"status": "queued", "at": iso(now_ny())}
@@ -955,6 +987,7 @@ def save_strategy(sub, strategy, name, cfg=None, idea_id=None):
          "baseline": {k: (src or {}).get("metrics", {}).get(k) for k in ("n", "avgR", "t", "pf", "win")} if src else None,
          "checks": [], "fp": fingerprint(strategy, {k: v for k, v in full.items() if blank_cfg(sub, strategy).get(k) != v})}
     x["side"] = side_of(full)
+    x["stage"] = {"status": "paper", "start": now_ny().strftime("%Y-%m-%d"), "at": iso(now_ny())}
     _put_strat(sub, x)
     return x
 
@@ -1014,19 +1047,117 @@ def check_strategies(sub, days=250, cost=None):
             old.pop("dayList", None)
         x["checks"] = (x.get("checks") or [])[-89:] + [chk]
         x["side"] = side_of(x.get("full"))
+        stage_step(x, rows, ds, cost, basket_cfg(sub))
         _put_strat(sub, x)
-        out.append({"id": x["id"], "status": chk["status"]})
+        out.append({"id": x["id"], "status": chk["status"], "stage": x["stage"]["status"]})
     r = _item(sub)
     db.put({**r, "stratCheck": iso(now_ny())})
     try:
+        kill_switch(sub)
         basket_switch(sub)
     except Exception as e:
         print("basket switch failed", e)
     return out
 
 
+# ---------------------------------------------------------------- paper stage (incubation) and the kill switch
+def _stats(xs):
+    n = len(xs)
+    if not n:
+        return {"n": 0}
+    m = sum(xs) / n
+    sd = math.sqrt(sum((x - m) ** 2 for x in xs) / max(1, n - 1))
+    eq = peak = dd = 0.0
+    for x in xs:
+        eq += x
+        peak = max(peak, eq)
+        dd = min(dd, eq - peak)
+    return {"n": n, "avgR": round(m, 3), "sd": round(sd, 3), "totR": round(sum(xs), 2), "maxDD": round(dd, 2)}
+
+
+def stage_step(x, rows, ds, cost, cfg):
+    """paper -> promoted / dropped, promoted -> killed. The expectation is the strategy's own record BEFORE its
+    paper start (per-trade average and spread); the paper / live trades are the days from the start on, which no
+    test chose it on. z = how far the forward average is below the expectation, in standard errors."""
+    st = x.get("stage") or {"status": "paper", "start": now_ny().strftime("%Y-%m-%d"), "at": iso(now_ny())}
+    start = st["start"]
+    rs = sorted((r["at"], float(r["R"]) - cost) for r in rows)
+    base = _stats([v for a, v in rs if a[:10] < start])
+    fwd_rows = [(a, v) for a, v in rs if a[:10] >= start]
+    fwd = _stats([v for _, v in fwd_rows])
+    fdays = sum(1 for d in ds if d >= start)
+    z = None
+    if fwd["n"] and base.get("n", 0) >= 20 and base.get("sd"):
+        z = round((fwd["avgR"] - base["avgR"]) / (base["sd"] / math.sqrt(fwd["n"])), 2)
+    st["base"] = {k: base.get(k) for k in ("n", "avgR", "sd", "maxDD")}
+    st["fwd"] = {**{k: fwd.get(k) for k in ("n", "avgR", "totR", "maxDD")}, "days": fdays, "z": z}
+    pd, pt = int(cfg.get("paperDays") or 20), int(cfg.get("paperTrades") or 15)
+    if st["status"] == "paper":
+        if fwd["n"] >= 10 and z is not None and z < -2.5:
+            st.update(status="dropped", at=iso(now_ny()), why=f"paper trades far below the backtest (z {z})")
+        elif fdays >= pd and fwd["n"] >= pt:
+            if (fwd["avgR"] or 0) > 0 and (z is None or z > -1.5):
+                st.update(status="promoted", at=iso(now_ny()), why=f"{fdays} paper days, {fwd['n']} trades, {fwd['avgR']:+}R a trade (z {z})")
+            else:
+                st.update(status="dropped", at=iso(now_ny()), why=f"{fdays} paper days, {fwd['n']} trades, {fwd['avgR']:+}R a trade (z {z})")
+    elif st["status"] == "promoted":
+        l20 = ds[-20] if len(ds) >= 20 else (ds[0] if ds else "")
+        last = [v for a, v in rs if a[:10] >= l20 and a[:10] >= start]
+        s20 = _stats(last)
+        z20 = round((s20["avgR"] - base["avgR"]) / (base["sd"] / math.sqrt(s20["n"])), 2) if s20["n"] and base.get("sd") else None
+        st["last20"] = {"n": s20["n"], "avgR": s20.get("avgR"), "z": z20}
+        dd_lim = float(cfg.get("ddMult") or 1.5) * (base.get("maxDD") or 0)
+        if s20["n"] >= 8 and z20 is not None and z20 < float(cfg.get("killZ") or -2.0):
+            st.update(status="killed", at=iso(now_ny()), why=f"last 20 days {s20['avgR']:+}R a trade, z {z20}: drifted below the backtest")
+        elif dd_lim < 0 and (fwd.get("maxDD") or 0) < dd_lim:
+            st.update(status="killed", at=iso(now_ny()), why=f"drawdown {fwd['maxDD']}R since the start, beyond {round(dd_lim, 1)}R (1.5x the backtest's)")
+    x["stage"] = st
+    return st
+
+
+def set_stage(sub, sid, action):
+    x = next((s for s in strategies(sub, "day") if s["id"] == sid), None)
+    if not x:
+        raise ValueError("strategy not found")
+    if action == "restart":
+        x["stage"] = {"status": "paper", "start": now_ny().strftime("%Y-%m-%d"), "at": iso(now_ny()), "why": "restarted by you"}
+    elif action in ("drop", "promote"):
+        x["stage"] = {**(x.get("stage") or {}), "status": "dropped" if action == "drop" else "promoted", "at": iso(now_ny()),
+                      "why": f"{'dropped' if action == 'drop' else 'promoted'} by you"}
+    else:
+        raise ValueError("unknown action")
+    _put_strat(sub, x)
+    if action == "drop":
+        kill_switch(sub)
+    return x["stage"]
+
+
+def kill_switch(sub):
+    """The strategy in use was killed or dropped: the basket switches to the best promoted one (auto-switch on), else
+    the orders of the day-trading account go OFF (the bot keeps running, nothing new is traded)."""
+    import daytrade
+    cfg = basket_cfg(sub)
+    act = cfg.get("active")
+    if not act:
+        return None
+    x = next((s for s in strategies(sub, "day") if s["id"] == act), None)
+    if not x or (x.get("stage") or {}).get("status") not in ("killed", "dropped"):
+        return None
+    if cfg.get("auto") and basket_switch(sub, force=True):
+        return "switched"
+    daytrade.save_config(sub, {"trade": False})
+    cfg = basket_cfg(sub)
+    cfg["active"] = None
+    cfg["log"] = (cfg.get("log") or [])[-19:] + [{"at": iso(now_ny()), "to": "orders OFF (kill switch)", "from": x["name"],
+                                                   "why": (x.get("stage") or {}).get("why")}]
+    r = _item(sub)
+    db.put({**r, "basket": json.dumps(cfg, default=str)})
+    return "orders off"
+
+
 # ---------------------------------------------------------------- the basket: every saved strategy, the best one in use
-BASKET = {"auto": False, "side": "any", "margin": 0.25}
+BASKET = {"auto": False, "side": "any", "margin": 0.25, "onlyPromoted": True, "paperDays": 20, "paperTrades": 15,
+          "killZ": -2.0, "ddMult": 1.5}
 
 
 def basket_cfg(sub):
@@ -1042,6 +1173,14 @@ def save_basket(sub, body):
         c["auto"] = bool(b["auto"])
     if b.get("side") in ("any", "long", "short", "both"):
         c["side"] = b["side"]
+    if "onlyPromoted" in b:
+        c["onlyPromoted"] = bool(b["onlyPromoted"])
+    for k, lo, hi in (("paperDays", 5, 120), ("paperTrades", 5, 200)):
+        if k in b:
+            try:
+                c[k] = int(max(lo, min(hi, float(b[k]))))
+            except (TypeError, ValueError):
+                pass
     if "margin" in b:
         try:
             c["margin"] = max(0.0, min(2.0, float(b["margin"])))
@@ -1097,6 +1236,7 @@ def basket(sub):
         v60 = _daily_vec(c, days[-60:])
         st60 = _series_stats(v60)
         rows.append({"id": x["id"], "name": x["name"], "side": x.get("side") or side_of(x.get("full")), "status": c.get("status"),
+                     "stage": (x.get("stage") or {}).get("status", "paper"),
                      "score": st60.get("t"), "last60": {**(c.get("last60") or {}), **{k: st60.get(k) for k in ("totR", "t", "maxDD")}},
                      "all": c.get("all"), "long": c.get("long"), "short": c.get("short"), "at": c.get("at"),
                      "_days": days, "_c": c})
@@ -1137,13 +1277,16 @@ def basket_switch(sub, force=False):
     if not cfg.get("auto") and not force:
         return None
     b = basket(sub)
-    ok = [r for r in b["rows"] if r["status"] == "healthy" and (r["score"] or 0) > 0 and (cfg["side"] == "any" or r["side"] == cfg["side"])]
+    ok = [r for r in b["rows"] if r["status"] == "healthy" and (r["score"] or 0) > 0 and (cfg["side"] == "any" or r["side"] == cfg["side"])
+          and (not cfg.get("onlyPromoted", True) or r.get("stage") == "promoted")]
     if not ok:
         return None
     top = max(ok, key=lambda r: r["score"] or 0)
     cur = next((r for r in b["rows"] if r["id"] == cfg.get("active")), None)
     if cur and cur["id"] == top["id"]:
         return None
+    if cur and cur.get("stage") in ("killed", "dropped"):
+        force = True
     if cur and cur["status"] == "healthy" and (cur["score"] or 0) > 0 and (top["score"] or 0) < (cur["score"] or 0) * (1 + float(cfg["margin"])) and not force:
         return None
     x = next(s for s in strategies(sub, "day") if s["id"] == top["id"])
@@ -1292,16 +1435,16 @@ def auto_kick():
     kick restarts the chain after the daily reset or a failed run)."""
     started = 0
     for it in db.scan_sk(SK):
+        sub = it["PK"][5:]
+        try:                                           # the saved strategies (paper stage, kill switch): every day after the close
+            if now_ny().weekday() < 5 and now_ny().strftime("%H:%M") >= "17:00" and (it.get("stratCheck") or "")[:10] < now_ny().strftime("%Y-%m-%d") \
+                    and strategies(sub, "day"):
+                db.put({**_item(sub), "stratCheck": iso(now_ny())})
+                _invoke(sub, "rsstrat", {})
+        except Exception as e:
+            print("strategy check kick failed", e)
         if it.get("auto"):
-            sub = it["PK"][5:]
             started += _start(sub, auto_due(sub))
-            try:                                       # the saved strategies, once a day after the close
-                if now_ny().strftime("%H:%M") >= "17:00" and (it.get("stratCheck") or "")[:10] < now_ny().strftime("%Y-%m-%d") \
-                        and strategies(sub, "day"):
-                    db.put({**_item(sub), "stratCheck": iso(now_ny())})
-                    _invoke(sub, "rsstrat", {})
-            except Exception as e:
-                print("strategy check kick failed", e)
             try:                                       # robustness checks waiting (a run that died restarts the queue)
                 rob_backfill(sub) or (any((x.get("robust") or {}).get("status") in ("queued", "running") for x in ideas(sub, "day"))
                                       and rob_kick(sub))
