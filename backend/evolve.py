@@ -98,6 +98,40 @@ def atom_set(g):
     return "|".join(sorted(f"{i}:{v}" for i, v in g["atoms"])) + "|" + g["side"]
 
 
+def _taboo_sets(taboo):
+    out = []
+    for t in taboo:
+        parts = t.split("|")
+        out.append((frozenset(parts[:-1]), parts[-1]))
+    return out
+
+
+def is_taboo(g, sets):
+    """Taboo when the genome contains every condition of a failed set (same side): a failed core with filters added
+    on top is the same failed idea."""
+    mine = {f"{i}:{v}" for i, v in g["atoms"]}
+    return any(side == g["side"] and core <= mine for core, side in sets)
+
+
+def _jac(a, b):
+    return len(a & b) / len(a | b) if a | b else 1.0
+
+
+def rank(pop):
+    """Fitness sharing: sorted by fitness, each genome loses 0.75 for every better one it nearly copies (same
+    conditions, ignoring their numbers, the side and the exits: overlap >= 2/3), so the population stays varied."""
+    pop.sort(key=lambda p: -((p.get("res") or {}).get("fit") or -99))
+    kept = []
+    for p in pop:
+        f = (p.get("res") or {}).get("fit")
+        ids = frozenset(i for i, _ in p["g"]["atoms"])
+        dup = sum(1 for q in kept if _jac(ids, q) >= 0.66)
+        p["adj"] = (f if f is not None else -99) - 0.75 * dup
+        kept.append(ids)
+    pop.sort(key=lambda p: -p["adj"])
+    return pop
+
+
 def changes_of(g):
     fl, fs = formulas(g)
     out = {"fxLong": fl, "fxShort": fs, "longs": g["side"] != "short", "shorts": g["side"] != "long",
@@ -263,7 +297,7 @@ def public(sub):
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
     if timed_out:
         st["running"] = None
-    top = sorted(st["pop"], key=lambda p: -((p.get("res") or {}).get("fit") or -99))[:8]
+    top = rank([{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in st["pop"]])[:8]
     return {"on": st["on"], "days": st["days"], "gen": st["gen"], "evals": st["evals"], "running": st.get("running"),
             "step": st.get("step"), "timedOut": timed_out, "tickers": st.get("tickers") or [], "avgEval": st.get("avgEval"),
             "last": st.get("last"), "taboo": len(st["taboo"]), "promoted": st["promoted"][-12:], "log": st["log"][-10:],
@@ -322,18 +356,18 @@ def run(sub, budget_s=470, seed=None):
         st.update(running=None, step=None, last={"at": iso(now_ny()), "error": "no history loaded", "errors": bench.errors[:3]})
         _save(sub, st)
         return st
-    taboo = set(st["taboo"])
+    tsets = _taboo_sets(st["taboo"])
     evals0 = st["evals"]
 
     times = []
 
     def evaluate(g):
         k = key(g)
+        if is_taboo(g, tsets):
+            return {"fit": -9, "n": 0, "taboo": True}
         if k in st["seen"]:
             return st["seen"][k]
-        if atom_set(g) in taboo:
-            res = {"fit": -9, "n": 0, "taboo": True}
-        else:
+        if True:
             P = {**base, **blank, **changes_of(g)}
             te = time.time()
             try:
@@ -353,7 +387,7 @@ def run(sub, budget_s=470, seed=None):
         per = (sum(times) / len(times)) if times else min(20.0, budget_s / 50)
         return time.time() - t0 + 2.5 * per + min(15.0, 0.05 * budget_s) < budget_s
 
-    pop = [p for p in st["pop"] if all(a[0] in allowed for a in p["g"]["atoms"]) and atom_set(p["g"]) not in taboo]
+    pop = [p for p in st["pop"] if all(a[0] in allowed for a in p["g"]["atoms"]) and not is_taboo(p["g"], tsets)]
     pop = [{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in pop
            if p["g"].get("target") in EXIT_CHOICES]
     while len(pop) < POP:
@@ -365,15 +399,15 @@ def run(sub, budget_s=470, seed=None):
                 break
             if not p.get("res"):
                 p["res"] = evaluate(p["g"])
-        pop.sort(key=lambda p: -((p.get("res") or {}).get("fit") or -99))
+        rank(pop)
         if not time_left():
             break
-        nxt = pop[:ELITE]
+        nxt = [{"g": p["g"], "res": p.get("res")} for p in pop[:ELITE]]
         scored = [p for p in pop if p.get("res")]
 
         def pick():
             a, b = rng.sample(scored, 2) if len(scored) > 1 else (scored[0], scored[0])
-            return a if (a["res"].get("fit") or -99) >= (b["res"].get("fit") or -99) else b
+            return a if a.get("adj", -99) >= b.get("adj", -99) else b
         while len(nxt) < POP:
             r_ = rng.random()
             if r_ < 0.15:
@@ -382,13 +416,13 @@ def run(sub, budget_s=470, seed=None):
                 g = cross(pick()["g"], pick()["g"], rng)
             else:
                 g = mutate(pick()["g"], allowed, rng)
-            if any(key(g) == key(q["g"]) for q in nxt):
+            if any(key(g) == key(q["g"]) for q in nxt) or is_taboo(g, tsets):
                 continue
             nxt.append({"g": g, "res": st["seen"].get(key(g))})
         pop = nxt
         gens += 1
         st["gen"] += 1
-    pop.sort(key=lambda p: -((p.get("res") or {}).get("fit") or -99))
+    rank(pop)
     st["pop"] = [{"g": p["g"], "res": p.get("res")} for p in pop]
     promoted = promote(sub, st, pop, bench, base, c, hist)
     today = now_ny().strftime("%Y-%m-%d")
@@ -411,7 +445,7 @@ def promote(sub, st, pop, bench, base, c, hist):
     out = []
     for p in pop:
         r = p.get("res") or {}
-        if (r.get("fit") or -99) < 1.5 or key(p["g"]) in done:
+        if (r.get("fit") or -99) < 1.5 or key(p["g"]) in done or is_taboo(p["g"], _taboo_sets(st["taboo"])):
             continue
         g = p["g"]
         x = research.new_idea("day", research.blank_cfg(sub, "day"), name_of(g), changes_of(g), "evolve", int(st["days"]),

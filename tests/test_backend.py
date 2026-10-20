@@ -4842,6 +4842,14 @@ def test_evolution_search():
         assert pub["top"] and pub["top"][0]["formulas"]["long"]
         c = research.criteria(sub)
         assert all(isinstance(i, int) for i in evolve.allowed_atoms([], c))
+        ts = evolve._taboo_sets(["6:None|22:60|both"])
+        assert evolve.is_taboo({"side": "both", "atoms": [(6, None), (22, 60), (30, None)]}, ts)      # failed core + a filter
+        assert not evolve.is_taboo({"side": "short", "atoms": [(6, None), (22, 60)]}, ts)            # other side: allowed
+        assert not evolve.is_taboo({"side": "both", "atoms": [(6, None)]}, ts)                        # part of it: allowed
+        pp = evolve.rank([{"g": {"side": "both", "atoms": [(6, None), (22, 60)]}, "res": {"fit": 3.0}},
+                          {"g": {"side": "both", "atoms": [(6, None), (22, 150)]}, "res": {"fit": 2.9}},
+                          {"g": {"side": "long", "atoms": [(1, None)]}, "res": {"fit": 2.5}}])
+        assert [p0["g"]["atoms"][0][0] for p0 in pp] == [6, 1, 6]                                   # the near copy drops
         assert evolve.allowed_exits({"targetOn"}) == ["trail1.5", "trail2.5"] and evolve.allowed_exits({"targetOn", "trailOn"}) == [None]
         tr = evolve.changes_of({"side": "short", "atoms": [(0, None)], "stop": 1.3, "target": "trail2.5"})
         assert tr["trailOn"] and tr["trailAtr"] == 2.5 and tr["targetOn"] is False and tr["longs"] is False
