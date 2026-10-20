@@ -626,6 +626,18 @@ def research_strat_save(sub, claims, body, q):
     return {"strategy": x}
 
 
+@route("PUT", "/research/evolve")
+def research_evolve(sub, claims, body, q):
+    """The genetic search: on / off, history days, reset; turning it on starts the first run."""
+    import evolve
+    import research
+    b = body or {}
+    out = evolve.save_cfg(sub, b)
+    if b.get("on") or b.get("run"):
+        research._invoke(sub, "evolve", {} if b.get("on") else {"once": True})
+    return {"evolve": out}
+
+
 @route("POST", "/research/holdout")
 def research_holdout(sub, claims, body, q):
     """The final check of one finalist on the holdout days (runs in the background; the result lands on the idea)."""

@@ -45,6 +45,11 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.REGION }}
       - run: bash deploy.sh
+      - name: Allow the bot function's own job chains (autopilot, robustness queue, history build)
+        run: |
+          FN=$(aws cloudformation describe-stack-resource --stack-name "$STACK" --region "$REGION" --logical-resource-id BotFunction --query "StackResourceDetail.PhysicalResourceId" --output text)
+          aws lambda put-function-recursion-config --function-name "$FN" --recursive-loop Allow --region "$REGION" \
+            || echo "::warning::could not set the recursion config of $FN (the deploy role needs lambda:PutFunctionRecursionConfig)"
       - name: Summary
         run: |
           URL=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" --query "Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue" --output text)

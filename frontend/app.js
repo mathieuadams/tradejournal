@@ -1973,9 +1973,9 @@ async function loadRs(strategy, lite) {
   try {
     if (lite && S.rs && S.rs[strategy] && !S.rs[strategy].error) {   // status only; the full list when something changed
       const x = await api(`/research?strategy=${strategy}&lite=1`), cur = S.rs[strategy];
-      const changed = x.nIdeas !== cur.nIdeas || x.robAt !== cur.robAt || !!(x.run || {}).running !== !!(cur.run || {}).running || (x.run || {}).testedNow !== (cur.run || {}).testedNow || (x.run || {}).step !== (cur.run || {}).step;
+      const changed = x.nIdeas !== cur.nIdeas || x.robAt !== cur.robAt || x.evoAt !== cur.evoAt || !!(x.run || {}).running !== !!(cur.run || {}).running || (x.run || {}).testedNow !== (cur.run || {}).testedNow || (x.run || {}).step !== (cur.run || {}).step;
       S.rs[strategy] = { ...cur, run: { ...(cur.run || {}), ...x.run }, autoToday: x.autoToday, auto: x.auto };
-      if (x.nIdeas !== cur.nIdeas || x.robAt !== cur.robAt || (!x.run.running && (cur.run || {}).running)) { S.rs[strategy] = { ...(await api('/research?strategy=' + strategy)), nIdeas: x.nIdeas, robAt: x.robAt }; }
+      if (x.nIdeas !== cur.nIdeas || x.robAt !== cur.robAt || x.evoAt !== cur.evoAt || (!x.run.running && (cur.run || {}).running)) { S.rs[strategy] = { ...(await api('/research?strategy=' + strategy)), nIdeas: x.nIdeas, robAt: x.robAt, evoAt: x.evoAt }; }
       if (changed && route() === 'botchart' && S.rsTab === 'ai') render();
     } else {
       const x = await api('/research?strategy=' + strategy);
@@ -2078,7 +2078,24 @@ function researchBox(strategy) {
     ${(t.indicators || []).length ? `<details style="margin:2px 0 6px"><summary style="font-size:.8rem;cursor:pointer"><b>Indicators the agent created</b> <span class="muted">(${t.indicators.length}: formulas over the Alpaca / Unusual Whales data, reused by later ideas)</span></summary>
       <div style="overflow-x:auto"><table class="pos" style="font-size:.78rem"><thead><tr><th>Name</th><th>Formula</th><th>What</th><th>For</th></tr></thead><tbody>${t.indicators.slice().reverse().map(i => `<tr><td><code>${esc(i.name)}</code></td><td><code style="font-size:.74rem">${esc(i.formula)}</code></td><td>${esc(i.what || '')}</td><td class="muted">${esc(i.idea || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${t.error ? `<div class="errbox">${esc(t.error)}</div>` : xs.length ? `<div style="overflow-x:auto;max-height:520px;overflow-y:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th></th><th>Idea</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg R</th><th class="r">t / needed</th><th class="r">PF</th><th class="r">1st / 2nd half</th><th class="r">Max DD</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted" style="font-size:.8rem">No ideas yet.</p>'}</div>`;
-  return rsStratBox(strategy, t) + agent + pipe;
+  return rsStratBox(strategy, t) + agent + (strategy === 'day' ? evoBox(t) : '') + pipe;
+}
+function evoBox(t) {
+  const e = t.evolve || {}, R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  if (e.error) return `<div class="errbox">${esc(e.error)}</div>`;
+  const last = e.last || {};
+  return `<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:14px 0 6px">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:.95rem">Evolution</b>
+      <span class="muted" style="font-size:.75rem">genetic search over formula strategies (no AI): 1st half only, 3 walk-forward windows, extra conditions cost, rarely used pieces earn a bonus, retired pieces are out, and an atom set whose idea didn't pay on the 2nd half is never tried again. The best one of each run goes to the ideas list (by “evolve”), graded by the same pipeline with every evaluation counted in its t needed.</span></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">
+      <label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-evoon ${e.on ? 'checked' : ''}> run continuously</label>
+      <span class="muted">history</span> <select id="evo-days" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (e.days || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select>
+      <button class="btn coachbtn" data-rx="evorun|1|day" ${e.running ? 'disabled' : ''} style="font-size:.76rem;padding:0 10px">${e.running ? 'Running…' : 'Run once'}</button>
+      <button class="btn" data-rx="evoreset|1|day" style="font-size:.74rem;padding:0 8px" title="Start a new population (the evaluated set and the taboo list are kept)">New population</button>
+      <span class="muted" style="font-size:.76rem">generation ${e.gen || 0} · ${e.evals || 0} strategies evaluated · ${e.taboo || 0} taboo${last.at ? ` · last run ${esc(last.at.slice(5, 16).replace('T', ' '))}: ${last.gens ?? 0} generations, ${last.evals ?? 0} evaluated` : ''}${last.error ? ` · <span class="loss">${esc(last.error)}</span>` : ''}</span></div>
+    ${(e.top || []).length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;margin-top:4px"><thead><tr><th>Best of the population (1st half only)</th><th class="r">Trades</th><th class="r">Avg R</th><th class="r">t</th><th class="r">Windows +</th><th class="r">Rare pieces</th><th class="r">Fitness</th></tr></thead><tbody>
+      ${e.top.map(p0 => `<tr><td><b>${esc(p0.name)}</b><div class="muted" style="font-size:.7rem">${p0.formulas.long ? `long: <code>${esc(p0.formulas.long)}</code> ` : ''}${p0.formulas.short ? `short: <code>${esc(p0.formulas.short)}</code> ` : ''}· stop ${p0.stop} ATR · target ${p0.target}R</div></td><td class="r">${p0.n ?? '—'}</td><td class="r">${R(p0.avgR)}</td><td class="r">${p0.t ?? '—'}</td><td class="r">${p0.posWin ?? '—'}/3</td><td class="r">${p0.novel ?? 0}</td><td class="r"><b>${p0.fit ?? '—'}</b></td></tr>`).join('')}</tbody></table></div>` : ''}
+    ${(e.promoted || []).length ? `<p style="font-size:.76rem;margin:4px 0 0"><b>Sent to the ideas list:</b> ${e.promoted.slice().reverse().map(p0 => `${esc(p0.name)} <b>${esc(p0.grade || '')}</b>${p0.h2 != null ? ` (2nd half ${R(p0.h2)}${p0.h2 <= 0 ? ' → taboo' : ''})` : ''}`).join(' · ')}</p>` : ''}</div>`;
 }
 function ideaSide(x) { const f = { ...(x.full || {}), ...(x.changes || {}) }; return f.longs === false && f.shorts !== false ? 'short' : f.shorts === false && f.longs !== false ? 'long' : 'both'; }
 function basketBox(bk, ss) {
@@ -2159,6 +2176,9 @@ function rsAction([act, a, b]) {
     return; }
   if (act === 'mctx') {
     api('/research/marketctx', { method: 'POST', body: { days: +(b || S.rsDays || 250) } }).then(r => { S.rs[a] = { ...(S.rs[a] || {}), mctx: r.state }; toast(r.started ? 'Loading the market context in the background (a few runs of ~7 min)' : 'Already loading'); render(); }).catch(err => toast(err.message)); return; }
+  if (act === 'evorun' || act === 'evoreset') {
+    const body = act === 'evorun' ? { run: true, days: +(val('evo-days') || 250) } : { reset: true };
+    api('/research/evolve', { method: 'PUT', body }).then(r => { S.rs.day = { ...(S.rs.day || {}), evolve: { ...r.evolve, running: act === 'evorun' ? 'now' : r.evolve.running } }; toast(act === 'evorun' ? 'Evolution running (about 8 minutes)' : 'New population on the next run'); render(); setTimeout(() => loadRs('day'), 30000); }).catch(err => toast(err.message)); return; }
   if (act === 'hold') { api('/research/holdout', { method: 'POST', body: { id: a } }).then(() => { toast('Holdout check running (about a minute); the result shows on the idea'); setTimeout(() => loadRs(b), 60000); }).catch(err => toast(err.message)); return; }
   if (act === 'blocks') { S.rsBlocksOpen = !S.rsBlocksOpen; render(); return; }
   if (act === 'crit') {
@@ -4879,6 +4899,8 @@ document.addEventListener('submit', e => {
     if (sym) { S.sdSel = { sym, date }; render(); } }
 });
 document.addEventListener('change', e => {
+  if (e.target.hasAttribute && e.target.hasAttribute('data-evoon')) {
+    api('/research/evolve', { method: 'PUT', body: { on: e.target.checked, days: +(($('#evo-days') || {}).value || 250) } }).then(r => { S.rs.day = { ...(S.rs.day || {}), evolve: r.evolve }; toast(e.target.checked ? 'Evolution ON: runs back to back (at most 40 runs a day)' : 'Evolution OFF'); render(); }).catch(err => toast(err.message)); return; }
   if (e.target.hasAttribute && e.target.hasAttribute('data-bkauto')) {
     api('/research/basket', { method: 'PUT', body: { auto: e.target.checked } }).then(r => { S.rs.day = { ...(S.rs.day || {}), basket: r.basket }; S.dt = undefined; toast(e.target.checked ? 'Auto-switch ON: the best healthy strategy goes live after each daily check' : 'Auto-switch OFF'); render(); }).catch(err => toast(err.message)); return; }
   const sk = e.target.dataset && e.target.dataset.sdlive;

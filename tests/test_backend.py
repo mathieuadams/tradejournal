@@ -4773,6 +4773,8 @@ def test_research_retired_pieces_and_holdout():
     x = research.admit({"missing": [], "changes": {"flipFade": True}, "fp": "z", "full": {"flipFade": True}}, set(), banned=gone)
     assert x["status"] == "banned piece" and "retired" in x["fails"][0]
     assert research.retired(xs, {**c, "retire": False}) == []
+    bl = research.blocks_of({"full": {"fxLong": "close > high - atr(14) and low < hLvlBelow and megaBreadth > 0.5"}})
+    assert bl == {"hLvlBelow (entry formula)", "megaBreadth (entry formula)"}      # the raw candle and atr() are never pieces
 
     import dtsearch
     days = [f"2026-0{m}-{d:02d}" for m in (1, 2, 3) for d in range(1, 29) if __import__("datetime").date(2026, m, d).weekday() < 5]
@@ -4791,6 +4793,57 @@ def test_research_retired_pieces_and_holdout():
         assert len(b.hold_rows({})) == 20 and all(r["at"][:10] >= b.cut for r in b.hold_rows({}))
     finally:
         dtsearch.load, dtsearch.evaluate = saved
+
+
+def test_evolution_search():
+    """Genetic search: scores genomes on the 1st half only, promotes the best into the ideas list (graded by the
+    pipeline, t needed raised by every evaluation), makes an atom set taboo when its idea fails the 2nd half, never
+    uses retired pieces."""
+    import research, evolve, daytrade
+    sub = "rs-evolve"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+    seen_h2 = []
+
+    class Bench:
+        first, mid, last, errors, cut = "2025-01-01", "2025-07-01", "2025-12-31", [], None
+
+        def rows(self, P):
+            good = "hTrend > 0" in (P.get("fxLong") or "")
+            out = []
+            for i in range(400):
+                d = f"2025-{1 + i % 12:02d}-{1 + i % 27:02d}T10:00"
+                h1 = d[:10] < self.mid
+                r = (1.0 if i % 2 else -0.6) if good and h1 else (-0.4 if good else (0.3 if i % 3 else -0.9))
+                out.append({"at": d, "R": r, "sym": "QQQ", "dir": "long"})
+            return out
+    saved = research.DayBench, daytrade.config, research._invoke
+    try:
+        research.DayBench = lambda sub_, days, base, **k: Bench()
+        daytrade.config = lambda s_: {**daytrade.PARAMS, "tickers": ["QQQ"]}
+        research._invoke = lambda *a, **k: None
+        g = {"side": "long", "atoms": [(1, None)], "stop": 1.3, "target": 2.0}
+        assert evolve.formulas(g)[0] == "(hTrend > 0)" and evolve.changes_of(g)["shorts"] is False
+        g2 = {"side": "both", "atoms": [(9, 0.6), (28, 30)], "stop": 1.3, "target": 2.0}
+        lo, sh = evolve.formulas(g2)
+        assert "megaBreadth > 0.6" in lo and "megaBreadth < 0.4" in sh and "rsi(14) > 70" in sh
+        st = evolve.run(sub, budget_s=4, seed=1)
+        assert st["evals"] > 10 and st["pop"] and st["gen"] >= 1
+        xs = research.ideas(sub, "day")
+        ev = [x for x in xs if x.get("by") == "evolve"]
+        if ev:
+            x = ev[0]
+            assert x["status"] == "tested" and x["searchCount"] > 0 and x["tReq"] > 2
+            if x["metrics"]["h2"]["avgR"] <= 0:
+                assert evolve.atom_set({**evolve.state(sub)["pop"][0]["g"]}) or evolve.state(sub)["taboo"]
+        top = evolve.state(sub)["pop"][0]
+        assert any(a[0] == 1 for a in top["g"]["atoms"])        # the 1st-half winner (hTrend) rises to the top
+        pub = evolve.public(sub)
+        assert pub["top"] and pub["top"][0]["formulas"]["long"]
+        c = research.criteria(sub)
+        assert all(isinstance(i, int) for i in evolve.allowed_atoms([], c))
+    finally:
+        research.DayBench, daytrade.config, research._invoke = saved
 
 
 if __name__ == "__main__":

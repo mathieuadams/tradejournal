@@ -99,7 +99,8 @@ def state(sub, strategy=None):
     xs = ideas(sub, strategy)
     return {"criteria": criteria(sub), "run": run, "ideas": xs, "blocks": block_map(xs, ("h1", "h2"))[:40], "retired": retired(xs, criteria(sub)),
             "families": sorted(([k, v] for k, v in families(xs).items()), key=lambda z: -z[1])[:20],
-            "holdoutUses": int((db.get(db.upk(sub), SK) or {}).get("holdoutUses") or 0), "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
+            "holdoutUses": int((db.get(db.upk(sub), SK) or {}).get("holdoutUses") or 0),
+            "evolve": _evolve_public(sub) if strategy in (None, "day") else None, "auto": auto_cfg(sub), "autoToday": auto_today(sub), "indicators": library(sub), "runlog": run_log(sub)[-15:], "mctx": _mctx_state(sub),
             "strategies": [{**x, "checks": [{k: v for k, v in c.items() if k not in ("daily", "dayList")} for c in x.get("checks") or []]}
                            for x in (strategies(sub, strategy) if strategy else strategies(sub))],
             "basket": basket(sub) if strategy in (None, "day") else None, "tested": sum(1 for x in xs if x.get("status") == "tested"),
@@ -115,7 +116,25 @@ def lite(sub, strategy=None):
         run = {**run, "running": None}
     n = len(db.q_prefix(db.upk(sub), IDEA))
     return {"run": {k: run.get(k) for k in ("running", "step", "made", "testedNow", "at", "strategy", "errors")}, "nIdeas": n, "robAt": r.get("robAt"),
+            "evoAt": _evo_at(sub),
             "autoToday": auto_today(sub), "auto": auto_cfg(sub)}
+
+
+def _evo_at(sub):
+    try:
+        import evolve
+        st = evolve.state(sub)
+        return f"{(st.get('last') or {}).get('at')}|{st.get('running')}"
+    except Exception:
+        return None
+
+
+def _evolve_public(sub):
+    try:
+        import evolve
+        return evolve.public(sub)
+    except Exception as e:
+        return {"error": str(e)[:120]}
 
 
 def _mctx_state(sub):
@@ -507,13 +526,15 @@ def _fx_names(expr):
     except SyntaxError:
         return set()
     calls = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in calls and n.id not in ("and", "or", "not")}
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in calls and n.id not in ("and", "or", "not")} - PLUMBING
     fns = {n.func.id + "()" for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id not in GENERIC_FN}
     return names | fns
 
 
 GENERIC_FN = {"abs", "min", "max", "iff", "between", "sum", "ref", "change", "pct", "rising", "falling", "crossUp", "crossDown",
-              "count", "barsSince", "cumDay", "highest", "lowest", "stdev", "ema", "sma", "wma"}
+              "count", "barsSince", "cumDay", "highest", "lowest", "stdev", "ema", "sma", "wma", "atr"}
+# the raw candle: every formula uses it, so it is never a "piece" (it can't be retired or banned)
+PLUMBING = {"open", "high", "low", "close", "volume", "dayOpen", "dayHigh", "dayLow"}
 
 
 def retired(xs, c):
@@ -528,7 +549,7 @@ def retired(xs, c):
         if b["block"] in ("longs only", "shorts only") or b["block"].endswith("-min candles") or b["block"] == "stopOn":
             continue                                   # structure, not a piece of edge (sides of the basket, candle size)
         l1, l2 = b["lift"].get("h1") or 0, b["lift"].get("h2") or 0
-        if l2 <= 0 and (l1 > 0 or l1 < 0):
+        if l2 <= -0.02 or (l1 < -0.02 and l2 < 0):     # clearly not helping on the 2nd half (not just noise around 0)
             out.append(b["block"])
     return sorted(out)
 
@@ -822,6 +843,12 @@ def run(sub, params=None, budget_s=540):
         if time.time() - t0 > budget_s * 0.5:
             break
         hist = ideas(sub, strategy)
+        if strategy == "day":                          # parked for a piece that is no longer retired / banned: tested now
+            gone_now = set(retired(hist, c))
+            for x in hist:
+                if x.get("status") == "banned piece" and not (blocks_of(x) & gone_now):
+                    x.update(status="queued", fails=[])
+                    _put_idea(sub, x)
         rebuilt = build_missing(sub, strategy, catalog, base, hist, days, run_)       # ideas waiting for an indicator
         if rebuilt:
             hist = ideas(sub, strategy)
@@ -1212,6 +1239,9 @@ def save_auto(sub, strategy, body):
     return a
 
 
+CONTINUOUS_MAX = 120                                   # "continuous" autopilot: at most this many runs a day (a hard stop)
+
+
 def auto_due(sub):
     """[(strategy, params)] to start now: autopilot on, nothing running, fewer runs today than allowed (the day
     counts in New York time). Runs alternate between the strategies that are on."""
@@ -1221,7 +1251,7 @@ def auto_due(sub):
         return []
     a, today = auto_cfg(sub), now_ny().strftime("%Y-%m-%d")
     cnt = json.loads(r["autoRuns"]) if r.get("autoRuns") else {}
-    on = [s for s in STRATS if a[s]["on"] and (not a[s]["perDay"] or cnt.get(f"{today}|{s}", 0) < a[s]["perDay"])]
+    on = [s for s in STRATS if a[s]["on"] and cnt.get(f"{today}|{s}", 0) < (a[s]["perDay"] or CONTINUOUS_MAX)]
     if not on:
         return []
     s = min(on, key=lambda x: cnt.get(f"{today}|{x}", 0))
@@ -1285,6 +1315,11 @@ def auto_kick():
                     marketctx.kick(sub)
             except Exception as e:
                 print("market context kick failed", e)
+    try:
+        import evolve
+        started += evolve.kick()
+    except Exception as e:
+        print("evolution kick failed", e)
     return started
 
 
