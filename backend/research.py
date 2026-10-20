@@ -128,7 +128,7 @@ def _evo_at(sub):
     try:
         import evolve
         st = evolve.state(sub)
-        return f"{(st.get('last') or {}).get('at')}|{st.get('running')}"
+        return f"{(st.get('last') or {}).get('at')}|{st.get('running')}|{st.get('step')}|{st.get('evals')}"
     except Exception:
         return None
 

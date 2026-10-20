@@ -247,6 +247,7 @@ def state(sub):
     st.setdefault("promoted", [])
     st.setdefault("log", [])
     st.setdefault("runs", {})
+    st.setdefault("tickers", [])
     return st
 
 
@@ -259,10 +260,12 @@ def _save(sub, st):
 def public(sub):
     from datetime import timedelta
     st = state(sub)
-    if st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)):
+    timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
+    if timed_out:
         st["running"] = None
     top = sorted(st["pop"], key=lambda p: -((p.get("res") or {}).get("fit") or -99))[:8]
     return {"on": st["on"], "days": st["days"], "gen": st["gen"], "evals": st["evals"], "running": st.get("running"),
+            "step": st.get("step"), "timedOut": timed_out, "tickers": st.get("tickers") or [], "avgEval": st.get("avgEval"),
             "last": st.get("last"), "taboo": len(st["taboo"]), "promoted": st["promoted"][-12:], "log": st["log"][-10:],
             "top": [{"name": name_of(p["g"]), "side": p["g"]["side"], "stop": p["g"]["stop"], "target": p["g"].get("target"),
                      "formulas": dict(zip(("long", "short"), formulas(p["g"]))), **(p.get("res") or {})} for p in top]}
@@ -277,6 +280,10 @@ def save_cfg(sub, body):
         st["days"] = max(60, min(500, int(b["days"])))
     if b.get("reset"):
         st.update(pop=[], gen=0)
+    if "tickers" in b:
+        tk = b["tickers"]
+        tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
+        st["tickers"] = [str(t).strip().upper()[:10] for t in tk or [] if str(t).strip()][:20]
     _save(sub, st)
     return public(sub)
 
@@ -288,6 +295,7 @@ def run(sub, budget_s=470, seed=None):
     rng = random.Random(seed)
     st = state(sub)
     st["running"] = iso(now_ny())
+    st["step"] = "starting"
     _save(sub, st)
     c = research.criteria(sub)
     hist = research.ideas(sub, "day")
@@ -300,19 +308,24 @@ def run(sub, budget_s=470, seed=None):
         _save(sub, st)
         return st
     cost = float(c["costR"])
+    tick = st.get("tickers") or (list(c.get("dayTickers") or [])[:4]) or None   # few tickers: many more strategies a run
     base = research.base_cfg(sub, "day")
-    if c.get("dayTickers"):
-        base["tickers"] = list(c["dayTickers"])
     blank = research.blank_cfg(sub, "day")
-    if c.get("dayTickers"):
-        blank["tickers"] = list(c["dayTickers"])
+    if tick:
+        base["tickers"] = blank["tickers"] = list(tick)
+    st["step"] = f"loading {int(st['days'])} days of candles for {', '.join(base.get('tickers') or [])}"
+    _save(sub, st)
+    tl = time.time()
     bench = research.DayBench(sub, int(st["days"]), base, holdout=int(c.get("holdoutDays") or 0))
+    st["loadSecs"] = round(time.time() - tl)
     if not bench.mid:
-        st.update(running=None, last={"at": iso(now_ny()), "error": "no history loaded", "errors": bench.errors[:3]})
+        st.update(running=None, step=None, last={"at": iso(now_ny()), "error": "no history loaded", "errors": bench.errors[:3]})
         _save(sub, st)
         return st
     taboo = set(st["taboo"])
     evals0 = st["evals"]
+
+    times = []
 
     def evaluate(g):
         k = key(g)
@@ -322,13 +335,23 @@ def run(sub, budget_s=470, seed=None):
             res = {"fit": -9, "n": 0, "taboo": True}
         else:
             P = {**base, **blank, **changes_of(g)}
+            te = time.time()
             try:
                 res = fitness(bench.rows(P), bench.mid, cost, g, uses, bench.first)
             except Exception as e:
                 res = {"fit": -9, "n": 0, "error": str(e)[:80]}
+            times.append(time.time() - te)
             st["evals"] += 1
+            st["avgEval"] = round(sum(times) / len(times), 1)
         st["seen"][k] = res
+        st["step"] = f"generation {st['gen'] + 1}: {st['evals'] - evals0} strategies evaluated this run (~{st.get('avgEval')} s each)"
+        if len(times) % 3 == 1:                        # progress kept even if the run is cut off
+            _save(sub, st)
         return res
+
+    def time_left():                                   # room for one more evaluation, the promotion's test and saving
+        per = (sum(times) / len(times)) if times else min(20.0, budget_s / 50)
+        return time.time() - t0 + 2.5 * per + min(15.0, 0.05 * budget_s) < budget_s
 
     pop = [p for p in st["pop"] if all(a[0] in allowed for a in p["g"]["atoms"]) and atom_set(p["g"]) not in taboo]
     pop = [{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in pop
@@ -336,14 +359,14 @@ def run(sub, budget_s=470, seed=None):
     while len(pop) < POP:
         pop.append({"g": rand_genome(allowed, rng)})
     gens = 0
-    while time.time() - t0 < budget_s * 0.85:
+    while time_left():
         for p in pop:
-            if time.time() - t0 > budget_s * 0.85:
+            if not time_left():
                 break
             if not p.get("res"):
                 p["res"] = evaluate(p["g"])
         pop.sort(key=lambda p: -((p.get("res") or {}).get("fit") or -99))
-        if time.time() - t0 > budget_s * 0.85:
+        if not time_left():
             break
         nxt = pop[:ELITE]
         scored = [p for p in pop if p.get("res")]
@@ -373,7 +396,8 @@ def run(sub, budget_s=470, seed=None):
     best = (pop[0].get("res") or {}) if pop else {}
     st["log"] = (st["log"] + [{"at": iso(now_ny()), "gens": gens, "evals": st["evals"] - evals0, "best": best.get("fit"),
                                "promoted": promoted, "secs": round(time.time() - t0)}])[-30:]
-    st.update(running=None, last={"at": iso(now_ny()), "gens": gens, "evals": st["evals"] - evals0, "errors": bench.errors[:3]})
+    st.update(running=None, step=None, last={"at": iso(now_ny()), "gens": gens, "evals": st["evals"] - evals0, "errors": bench.errors[:3],
+                                             "loadSecs": st.get("loadSecs"), "tickers": base.get("tickers")})
     _save(sub, st)
     return st
 
@@ -417,7 +441,7 @@ def job(sub, params=None):
         st = run(sub)
     except Exception as e:
         st = state(sub)
-        st.update(running=None, last={"at": iso(now_ny()), "error": str(e)[:200]})
+        st.update(running=None, step=None, last={"at": iso(now_ny()), "error": str(e)[:200]})
         _save(sub, st)
         return {"error": str(e)[:200]}
     if st["on"] and st["runs"].get(now_ny().strftime("%Y-%m-%d"), 0) < RUNS_PER_DAY and not (params or {}).get("once"):

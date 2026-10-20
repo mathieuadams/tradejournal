@@ -1986,7 +1986,8 @@ async function loadRs(strategy, lite) {
   clearTimeout(S.rsPoll);
   const r = (S.rs || {})[strategy];
   const au = ((r && r.auto) || {})[strategy] || {}, left = au.on && (!au.perDay || (((r.autoToday || {})[strategy]) || 0) < au.perDay);
-  if (r && ((r.run && r.run.running) || left) && route() === 'botchart' && S.rsTab === 'ai') S.rsPoll = setTimeout(() => loadRs(strategy, true), r.run && r.run.running ? 15000 : 60000);
+  const evo = strategy === 'day' && r && r.evolve && (r.evolve.on || r.evolve.running);
+  if (r && ((r.run && r.run.running) || left || evo) && route() === 'botchart' && S.rsTab === 'ai') S.rsPoll = setTimeout(() => loadRs(strategy, true), (r.run && r.run.running) || (r.evolve || {}).running ? 15000 : 60000);
 }
 function rsCur(strategy) { return strategy === 'day' ? dtBody() : { ...(labCfg() || {}), ...(S.labDraft || {}), ...(S.labSw || {}) }; }
 function researchBox(strategy) {
@@ -2091,10 +2092,13 @@ function evoBox(t) {
       <span class="muted" style="font-size:.75rem">genetic search over formula strategies (no AI): 1st half only, 3 walk-forward windows, extra conditions cost, rarely used pieces earn a bonus, retired pieces are out, and an atom set whose idea didn't pay on the 2nd half is never tried again. The best one of each run goes to the ideas list (by “evolve”), graded by the same pipeline with every evaluation counted in its t needed.</span></div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:.8rem">
       <label style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" data-evoon ${e.on ? 'checked' : ''}> run continuously</label>
+      <label title="Few tickers = many more strategies tested per run (each strategy runs on every ticker). Empty = the first 4 research tickers."><span class="muted">tickers</span> <input id="evo-tk" value="${esc((e.tickers || []).join(' '))}" placeholder="first 4 research tickers" style="width:13em;padding:1px 4px"></label>
       <span class="muted">history</span> <select id="evo-days" style="padding:1px 4px">${[120, 250, 500].map(n => `<option ${n === (e.days || 250) ? 'selected' : ''} value="${n}">${n} days</option>`).join('')}</select>
       <button class="btn coachbtn" data-rx="evorun|1|day" ${e.running ? 'disabled' : ''} style="font-size:.76rem;padding:0 10px">${e.running ? 'Running…' : 'Run once'}</button>
       <button class="btn" data-rx="evoreset|1|day" style="font-size:.74rem;padding:0 8px" title="Start a new population (the evaluated set and the taboo list are kept)">New population</button>
-      <span class="muted" style="font-size:.76rem">generation ${e.gen || 0} · ${e.evals || 0} strategies evaluated · ${e.taboo || 0} taboo${last.at ? ` · last run ${esc(last.at.slice(5, 16).replace('T', ' '))}: ${last.gens ?? 0} generations, ${last.evals ?? 0} evaluated` : ''}${last.error ? ` · <span class="loss">${esc(last.error)}</span>` : ''}</span></div>
+      <span class="muted" style="font-size:.76rem">generation ${e.gen || 0} · ${e.evals || 0} strategies evaluated · ${e.taboo || 0} taboo${last.at ? ` · last run ${esc(last.at.slice(5, 16).replace('T', ' '))} ET: ${last.gens ?? 0} generations, ${last.evals ?? 0} evaluated${last.loadSecs != null ? `, candles loaded in ${last.loadSecs} s` : ''}` : ''}${last.error && !e.running ? ` · <span class="loss">${esc(last.error)}</span>` : ''}</span></div>
+    ${e.running ? `<p style="font-size:.8rem;margin:4px 0 0"><b>Now:</b> ${esc(e.step || 'starting')} <span class="muted">(started ${esc((e.running || '').slice(11, 16))} ET; this box refreshes by itself)</span></p>` : ''}
+    ${e.timedOut ? `<p class="loss" style="font-size:.78rem;margin:4px 0 0">The last run was cut off by the 10-minute limit${e.step ? ` while: ${esc(e.step)}` : ''}. Its progress so far is kept; if it keeps happening, use fewer tickers or 120 days.</p>` : ''}
     ${(e.top || []).length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;margin-top:4px"><thead><tr><th>Best of the population (1st half only)</th><th class="r">Trades</th><th class="r">Avg R</th><th class="r">t</th><th class="r">Windows +</th><th class="r">Rare pieces</th><th class="r">Fitness</th></tr></thead><tbody>
       ${e.top.map(p0 => `<tr><td><b>${esc(p0.name)}</b><div class="muted" style="font-size:.7rem">${p0.formulas.long ? `long: <code>${esc(p0.formulas.long)}</code> ` : ''}${p0.formulas.short ? `short: <code>${esc(p0.formulas.short)}</code> ` : ''}· stop ${p0.stop} ATR · ${String(p0.target || '').startsWith('trail') ? `trailing ${String(p0.target).slice(5)} ATR` : p0.target ? `target ${p0.target}R` : 'no target'}</div></td><td class="r">${p0.n ?? '—'}</td><td class="r">${R(p0.avgR)}</td><td class="r">${p0.t ?? '—'}</td><td class="r">${p0.posWin ?? '—'}/3</td><td class="r">${p0.novel ?? 0}</td><td class="r"><b>${p0.fit ?? '—'}</b></td></tr>`).join('')}</tbody></table></div>` : ''}
     ${(e.promoted || []).length ? `<p style="font-size:.76rem;margin:4px 0 0"><b>Sent to the ideas list:</b> ${e.promoted.slice().reverse().map(p0 => `${esc(p0.name)} <b>${esc(p0.grade || '')}</b>${p0.h2 != null ? ` (2nd half ${R(p0.h2)}${p0.h2 <= 0 ? ' → taboo' : ''})` : ''}`).join(' · ')}</p>` : ''}</div>`;
@@ -2185,7 +2189,7 @@ function rsAction([act, a, b]) {
   if (act === 'mctx') {
     api('/research/marketctx', { method: 'POST', body: { days: +(b || S.rsDays || 250) } }).then(r => { S.rs[a] = { ...(S.rs[a] || {}), mctx: r.state }; toast(r.started ? 'Loading the market context in the background (a few runs of ~7 min)' : 'Already loading'); render(); }).catch(err => toast(err.message)); return; }
   if (act === 'evorun' || act === 'evoreset') {
-    const body = act === 'evorun' ? { run: true, days: +(val('evo-days') || 250) } : { reset: true };
+    const body = act === 'evorun' ? { run: true, days: +(val('evo-days') || 250), tickers: val('evo-tk') || '' } : { reset: true };
     api('/research/evolve', { method: 'PUT', body }).then(r => { S.rs.day = { ...(S.rs.day || {}), evolve: { ...r.evolve, running: act === 'evorun' ? 'now' : r.evolve.running } }; toast(act === 'evorun' ? 'Evolution running (about 8 minutes)' : 'New population on the next run'); render(); setTimeout(() => loadRs('day'), 30000); }).catch(err => toast(err.message)); return; }
   if (act === 'hold') { api('/research/holdout', { method: 'POST', body: { id: a } }).then(() => { toast('Holdout check running (about a minute); the result shows on the idea'); setTimeout(() => loadRs(b), 60000); }).catch(err => toast(err.message)); return; }
   if (act === 'blocks') { S.rsBlocksOpen = !S.rsBlocksOpen; render(); return; }
@@ -4909,7 +4913,7 @@ document.addEventListener('submit', e => {
 });
 document.addEventListener('change', e => {
   if (e.target.hasAttribute && e.target.hasAttribute('data-evoon')) {
-    api('/research/evolve', { method: 'PUT', body: { on: e.target.checked, days: +(($('#evo-days') || {}).value || 250) } }).then(r => { S.rs.day = { ...(S.rs.day || {}), evolve: r.evolve }; toast(e.target.checked ? 'Evolution ON: runs back to back (at most 40 runs a day)' : 'Evolution OFF'); render(); }).catch(err => toast(err.message)); return; }
+    api('/research/evolve', { method: 'PUT', body: { on: e.target.checked, days: +(($('#evo-days') || {}).value || 250), tickers: (($('#evo-tk') || {}).value || '') } }).then(r => { S.rs.day = { ...(S.rs.day || {}), evolve: r.evolve }; toast(e.target.checked ? 'Evolution ON: runs back to back (at most 40 runs a day)' : 'Evolution OFF'); render(); }).catch(err => toast(err.message)); return; }
   if (e.target.hasAttribute && e.target.hasAttribute('data-bkauto')) {
     api('/research/basket', { method: 'PUT', body: { auto: e.target.checked } }).then(r => { S.rs.day = { ...(S.rs.day || {}), basket: r.basket }; S.dt = undefined; toast(e.target.checked ? 'Auto-switch ON: the best healthy strategy goes live after each daily check' : 'Auto-switch OFF'); render(); }).catch(err => toast(err.message)); return; }
   const sk = e.target.dataset && e.target.dataset.sdlive;
