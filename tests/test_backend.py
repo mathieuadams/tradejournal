@@ -5248,6 +5248,20 @@ def test_clustered_results_fail():
     assert f2["monthShare"] < 0.35 and f2["fit"] > f1["fit"] and f1["posWin"] <= 1
 
 
+def test_evolution_hall_of_fame():
+    """The best strategies found are kept through a jolt (a fresh population): shown first and put back after it."""
+    import evolve
+    sub = "evo-hof"
+    st = evolve.state(sub)
+    g1 = {"atoms": [(0, 0)], "side": "long", "stop": 1.5, "target": 2}
+    g2 = {"atoms": [(1, 0)], "side": "long", "stop": 1.5, "target": 2}
+    st["hof"] = [{"g": g1, "res": {"fit": 1.8, "n": 300}}]
+    st["pop"] = [{"g": g2, "res": None}, {"g": g1, "res": {"fit": 1.8, "n": 300}}]
+    evolve._save(sub, st)
+    top = evolve.public(sub)["top"]
+    assert top[0]["fit"] == 1.8 and len([x for x in top if x.get("fit") == 1.8]) == 1
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

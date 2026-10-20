@@ -374,12 +374,27 @@ def public(sub):
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
     if timed_out:
         st["running"] = None
-    top = rank([{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in st["pop"]])[:8]
+    top = _best_of((st.get("hof") or []) + st["pop"])[:8]   # the best found so far (kept through jolts), then the population
     return {"on": st["on"], "days": st["days"], "gen": st["gen"], "evals": st["evals"], "running": st.get("running"),
             "step": st.get("step"), "timedOut": timed_out, "tickers": st.get("tickers") or [], "avgEval": st.get("avgEval"),
             "last": st.get("last"), "taboo": len(st.get(taboo_key(_universe(sub))) or []), "runsToday": (st.get("runs") or {}).get(now_ny().strftime("%Y-%m-%d"), 0), "runsMax": None, "universe": _universe(sub), "promoted": st["promoted"][-12:], "log": st["log"][-10:],
             "top": [{"name": name_of(p["g"]), "side": p["g"]["side"], "stop": p["g"]["stop"], "target": p["g"].get("target"),
                      "formulas": dict(zip(("long", "short"), formulas(p["g"]))), **(p.get("res") or {})} for p in top]}
+
+
+def _best_of(items, n=None):
+    """Ranked, one per strategy (the hall of fame and the population together)."""
+    seen, out = set(), []
+    for p in rank([{"g": {**p["g"], "atoms": [tuple(a) for a in p["g"]["atoms"]]}, "res": p.get("res")} for p in items]):
+        k = key(p["g"])
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(p)
+    return out[:n] if n else out
+
+
+HOF = 12                                               # hall of fame: the best strategies ever found (a jolt keeps them)
 
 
 def save_cfg(sub, body):
@@ -390,7 +405,7 @@ def save_cfg(sub, body):
     if b.get("days"):
         st["days"] = max(60, min(500, int(b["days"])))
     if b.get("reset"):                                 # a full restart: new population, scores, sent list; the never-again
-        st.update(pop=[], gen=0, evals=0, seen={}, promoted=[], log=[])   # list (failed on the 2nd half) is kept
+        st.update(pop=[], gen=0, evals=0, seen={}, promoted=[], log=[], hof=[])   # list (failed on the 2nd half) is kept
     if "tickers" in b:
         tk = b["tickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -497,6 +512,7 @@ def run(sub, budget_s=470, seed=None):
         for p in pop:
             p["res"] = None
         st["popKey"] = ukey
+        st["hof"] = []
     gens = 0
     live["pop"] = pop
     while time_left():
@@ -530,6 +546,11 @@ def run(sub, budget_s=470, seed=None):
         gens += 1
         st["gen"] += 1
     rank(pop)
+    hof = [p for p in (st.get("hof") or []) if not is_taboo(p["g"], tsets)]
+    hof = _best_of([p for p in hof + [{"g": q["g"], "res": q.get("res")} for q in pop] if (p.get("res") or {}).get("fit") is not None])
+    st["hof"] = [{"g": p["g"], "res": p.get("res")} for p in hof[:HOF]]
+    if jolt:                                           # after a jolt the best ever join the new population again
+        pop = _best_of([{"g": q["g"], "res": q.get("res")} for q in pop] + [dict(p) for p in hof[:ELITE]], POP)
     st["pop"] = [{"g": p["g"], "res": p.get("res")} for p in pop]
     promoted = promote(sub, st, pop, bench, base, c, hist)
     today = now_ny().strftime("%Y-%m-%d")
