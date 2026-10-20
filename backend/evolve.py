@@ -389,8 +389,8 @@ def save_cfg(sub, body):
         st["on"] = bool(b["on"])
     if b.get("days"):
         st["days"] = max(60, min(500, int(b["days"])))
-    if b.get("reset"):
-        st.update(pop=[], gen=0)
+    if b.get("reset"):                                 # a full restart: new population, scores, sent list; the never-again
+        st.update(pop=[], gen=0, evals=0, seen={}, promoted=[], log=[])   # list (failed on the 2nd half) is kept
     if "tickers" in b:
         tk = b["tickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -447,7 +447,7 @@ def run(sub, budget_s=470, seed=None):
     evals0 = st["evals"]
 
     times = []
-    ukey = f"v3|{research.universe_of(c)}"              # scores cached per universe (and per fitness version)
+    ukey = f"v4|{research.universe_of(c)}"              # scores cached per universe (and per fitness version)
     live = {"pop": []}                                 # the population being evaluated (saved with the progress)
 
     def evaluate(g):
