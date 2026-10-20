@@ -1123,6 +1123,27 @@ def keepers(sub, strategy):
     return out
 
 
+def day_market(ds):
+    """{day: {vixyChg, breadth, megaBreadth, sectorBreadth}} the highest value of each during the session (None: no
+    data that day): shows whether a market-context formula could fire, or had no data."""
+    import marketctx
+    try:
+        mx = marketctx.for_symbol("QQQ", ds)
+    except Exception as e:
+        print("day market failed", e)
+        return {}
+    out = {}
+    for d in ds:
+        x = mx.get(d) or {}
+        hi = lambda a: round(max(v for v in a if v is not None), 2) if a and any(v is not None for v in a) else None
+        vc = None
+        if x.get("vx") and x.get("vxp"):
+            vc = hi([None if v is None else (v / x["vxp"] - 1) * 100 for v in x["vx"][1:]])
+        out[d] = {"vixyChg": vc, "breadth": hi((x.get("br") or [])[1:]), "megaBreadth": hi((x.get("brM") or [])[1:]),
+                  "sectorBreadth": hi((x.get("brS") or [])[1:])}
+    return out
+
+
 def check_strategies(sub, days=250, cost=None):
     """Every saved day strategy on the last `days` days (one load for all): full period, last 60 and last 20 trading
     days. Kept as a history (the last 90 checks) so a strategy that weakens shows it."""
@@ -1135,13 +1156,14 @@ def check_strategies(sub, days=250, cost=None):
     tickers = daytrade.config(sub)["tickers"]
     fixed = [i for i, x in enumerate(ss) if x.get("universe") != "inplay"]
     inplay = [i for i, x in enumerate(ss) if x.get("universe") == "inplay"]
-    rr, all_days, errors = {}, set(), []
+    rr, all_days, errors, err_of = {}, set(), [], {}
     if fixed:
         vs = [{**daytrade.PARAMS, **ss[i]["full"], "tickers": tickers} for i in fixed]
         r0, per, d0, feed, e0 = daytrade.run_variants(sub, days, vs, 300 if inplay else 500, tickers)
         rr.update({fixed[k]: v for k, v in r0.items()})
         all_days |= set(d0)
         errors += e0
+        err_of.update({i: e0 for i in fixed})
     if inplay:                                         # found on stocks in play: checked on stocks in play
         bench = make_bench(sub, days, base_cfg(sub, "day"), c, holdout=0, universe="inplay")
         for i in inplay:
@@ -1149,6 +1171,7 @@ def check_strategies(sub, days=250, cost=None):
             all_days |= {r["at"][:10] for r in rr[i]}
         all_days |= {x["show"][0] for x in bench.data}
         errors += bench.errors[:2]
+        err_of.update({i: bench.errors[:2] for i in inplay})
     ds = sorted(all_days)
     l60, l20 = (ds[-60] if len(ds) >= 60 else ds[0] if ds else ""), (ds[-20] if len(ds) >= 20 else ds[0] if ds else "")
     out = []
@@ -1158,7 +1181,7 @@ def check_strategies(sub, days=250, cost=None):
         m = metrics(rows, ds[len(ds) // 2] if ds else "", cost)
         chk = {"at": iso(now_ny()), "days": len(ds), "cost": cost, "all": {k: m.get(k) for k in ("n", "avgR", "t", "pf", "win", "maxDD")},
                "last60": {k: f(l60).get(k) for k in ("n", "avgR", "totR", "win")}, "last20": {k: f(l20).get(k) for k in ("n", "avgR", "totR", "win")},
-               "errors": errors[:3]}
+               "errors": (err_of.get(i) or [])[:3]}
         for dn in ("long", "short"):                   # each side on its own
             sr = [r for r in rows if (r.get("dir") or "long") == dn]
             if sr:
@@ -1171,6 +1194,9 @@ def check_strategies(sub, days=250, cost=None):
         chk["dayList"] = ds[-260:]
         d30 = ds[-30] if len(ds) >= 30 else (ds[0] if ds else "")
         chk["days30"] = ds[-30:]
+        chk["market30"] = day_market(ds[-30:])
+        chk["tradeDays"] = len({r["at"][:10] for r in rows})            # the days it traded on (trades cluster on days)
+        chk["lastTrade"] = max((r["at"][:10] for r in rows), default=None)
         chk["recent"] = [{k: r.get(k) for k in ("sym", "at", "dir", "entry", "exit", "exitAt", "status", "R")}
                          for r in rows if r["at"][:10] >= d30][-300:]         # the last 30 days, trade by trade (chart)
         avg, a60 = chk["all"].get("avgR"), chk["last60"].get("avgR")
@@ -1181,6 +1207,7 @@ def check_strategies(sub, days=250, cost=None):
             old.pop("dayList", None)
             old.pop("recent", None)
             old.pop("days30", None)
+            old.pop("market30", None)
         x["checks"] = (x.get("checks") or [])[-89:] + [chk]
         x["side"] = side_of(x.get("full"))
         stage_step(x, rows, ds, cost, basket_cfg(sub))
