@@ -396,6 +396,7 @@ def run(sub, budget_s=470, seed=None):
     evals0 = st["evals"]
 
     times = []
+    live = {"pop": []}                                 # the population being evaluated (saved with the progress)
 
     def evaluate(g):
         k = key(g)
@@ -415,7 +416,8 @@ def run(sub, budget_s=470, seed=None):
             st["avgEval"] = round(sum(times) / len(times), 1)
         st["seen"][k] = res
         st["step"] = f"generation {st['gen'] + 1}: {st['evals'] - evals0} strategies evaluated this run (~{st.get('avgEval')} s each)"
-        if len(times) % 3 == 1:                        # progress kept even if the run is cut off
+        if len(times) % 3 == 1:                        # progress kept even if the run is cut off (and shown on the page)
+            st["pop"] = [{"g": p["g"], "res": p.get("res") if p["g"] is not g else res} for p in live["pop"]]
             _save(sub, st)
         return res
 
@@ -429,7 +431,9 @@ def run(sub, budget_s=470, seed=None):
     while len(pop) < POP:
         pop.append({"g": rand_genome(allowed, rng)})
     gens = 0
+    live["pop"] = pop
     while time_left():
+        live["pop"] = pop
         for p in pop:
             if not time_left():
                 break
@@ -492,7 +496,8 @@ def promote(sub, st, pop, bench, base, c, hist):
         x["universe"] = research.universe_of(c)
         x = research.admit(x, set(), banned=research.retired(hist, c))
         if x["status"] == "queued":
-            research.test_idea(bench, base, x, c, n_tested + 1 + st["evals"])     # every evaluation is a trial here
+            research.test_idea(bench, base, x, c, n_tested + 1 + st["evals"],
+                               "trials: the families tested + every strategy the evolution scored")    # every evaluation is a trial here
             if research.rob_due(x, c):
                 x["robust"] = {"status": "queued", "at": iso(now_ny())}
             if ((x.get("metrics") or {}).get("h2") or {}).get("avgR") is None or x["metrics"]["h2"]["avgR"] <= 0:

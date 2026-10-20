@@ -332,7 +332,7 @@ def t_required(c, n_tested):
     return round(max(float(c["minT"]), NormalDist().inv_cdf(1 - 0.025 / max(1, n_tested))), 2)
 
 
-def grade(m, c, n_tested):
+def grade(m, c, n_tested, label=None):
     treq = t_required(c, n_tested)
     fails = []
     if m["n"] < c["minTrades"]:
@@ -340,7 +340,7 @@ def grade(m, c, n_tested):
     if min(m["h1"]["n"], m["h2"]["n"]) < c["minHalf"]:
         fails.append(f"{min(m['h1']['n'], m['h2']['n'])} trades in a half < {int(c['minHalf'])}")
     if m["t"] is None or m["t"] < treq:
-        fails.append(f"t {m['t']} < {treq}" + (f" (raised for {n_tested} {'entry families' if c.get('adjustBy', 'family') == 'family' else 'ideas'})" if treq > c["minT"] else ""))
+        fails.append(f"t {m['t']} < {treq}" + (f" (raised for {n_tested} {label or ('entry families' if c.get('adjustBy', 'family') == 'family' else 'ideas')})" if treq > c["minT"] else ""))
     if m["h2"]["t"] is None or m["h2"]["t"] < c["minTestT"]:
         fails.append(f"2nd half t {m['h2']['t']} < {c['minTestT']}")
     if m["pf"] is None or m["pf"] < c["minPF"]:
@@ -449,12 +449,12 @@ class SwingBench:
         return out
 
 
-def test_idea(bench, base, x, c, n_tested):
+def test_idea(bench, base, x, c, n_tested, label=None):
     P = {**base, **(x.get("full") or x["changes"])}            # the idea's complete settings, on your tickers
     t0 = time.time()
     rows = bench.rows(P)
     m = metrics(rows, bench.mid, float(c["costR"]), (bench.first, bench.last), int(c.get("folds") or 5))
-    g, fails, treq = grade(m, c, n_tested)
+    g, fails, treq = grade(m, c, n_tested, label)
     by = {}
     for r in rows:
         by.setdefault(r.get("sym") or "?", []).append(r["R"] - float(c["costR"]))
