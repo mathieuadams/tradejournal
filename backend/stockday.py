@@ -1001,7 +1001,8 @@ def _movers_kick(sub, now, today):
     if now.weekday() >= 5:
         return None
     st = prep_status(sub)
-    busy = st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=12))
+    busy = (st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=12))) or \
+        (st.get("kickedAt") or "") > iso(now_ny() - timedelta(minutes=15))      # a chain of runs continues by itself
     u, r = stored_days("U"), stored_days("R")
     try:
         c = data_creds(sub)
@@ -1012,9 +1013,16 @@ def _movers_kick(sub, now, today):
     behind = (now.strftime("%H:%M") >= "09:05" and today not in u) or (prev_day and (not r or r[-1] < prev_day))
     if behind:
         if not busy:
-            db.put({"PK": pk, "SK": PREP_SK, **st, "running": iso(now_ny()), "error": None})
+            if st.get("error"):
+                last_err = st["error"]
+            else:
+                last_err = None
+            db.put({"PK": pk, "SK": PREP_SK, **st, "running": iso(now_ny()), "kickedAt": iso(now_ny()), "error": None})
             research._invoke(sub, "sdprep", {"days": int(st.get("days") or 500)})
-        return "updating the stocks-in-play history (a few minutes): the lists fill in by themselves"
+            if last_err:
+                return f"the last history update failed ({last_err[:120]}): started again"
+        prog = st.get("progress") if busy else "starting"
+        return f"updating the stocks-in-play history ({prog or 'running'}): the lists fill in by themselves"
     w = db.get(pk, f"SDWATCH#{today}")
     if now.strftime("%H:%M") >= "09:15" and (not w or (w.get("error") and not w.get("movers"))):
         if not (w and w.get("building") and w["building"] > iso(now_ny() - timedelta(minutes=5))):
