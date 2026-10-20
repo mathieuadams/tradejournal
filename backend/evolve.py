@@ -26,7 +26,7 @@ SK = "EVOLVE"
 POP = 24
 ELITE = 4
 MAX_ATOMS = 3
-RUNS_PER_DAY = 40
+RUNS_PER_DAY = 80
 NOVEL_USES = 5
 
 # (long, short, {param: choices}): {p} in the strings is replaced by the chosen value (short: {q} = mirrored value)
@@ -182,7 +182,8 @@ def allowed_atoms(xs, c):
 
 def novelty(g, uses):
     import research
-    pieces = research.blocks_of({"full": changes_of(g)})
+    fl, fs = formulas(g)                               # the conditions' own pieces (not the side, stop or exit)
+    pieces = research.blocks_of({"full": {"fxLong": fl, "fxShort": fs}})
     return sum(1 for p in pieces if uses.get(p, 0) < NOVEL_USES)
 
 
@@ -266,7 +267,7 @@ def fitness(rows, mid, cost, g, uses, first):
     wins = [xs[:k], xs[k:2 * k], xs[2 * k:]]
     pos = sum(1 for w in wins if w and sum(w) > 0)
     nov = novelty(g, uses)
-    fit = t * pos / 3 - 0.25 * (len(g["atoms"]) - 1) + 0.15 * nov
+    fit = t * pos / 3 - 0.25 * (len(g["atoms"]) - 1) + (min(0.3, 0.1 * nov) if t > 0 else 0)   # a small bonus, only on a real edge
     out.update(fit=round(fit, 3), avgR=round(sum(xs) / n, 3), t=t, win=round(sum(1 for x in xs if x > 0) / n * 100, 1),
                posWin=pos, novel=nov)
     return out
@@ -396,10 +397,11 @@ def run(sub, budget_s=470, seed=None):
     evals0 = st["evals"]
 
     times = []
+    ukey = f"v2|{research.universe_of(c)}"              # scores cached per universe (and per fitness version)
     live = {"pop": []}                                 # the population being evaluated (saved with the progress)
 
     def evaluate(g):
-        k = key(g)
+        k = f"{ukey}|{key(g)}"
         if is_taboo(g, tsets) or research.failed_hit({"full": changes_of(g)}, fcombos):
             return {"fit": -9, "n": 0, "taboo": True}
         if k in st["seen"]:
@@ -430,6 +432,10 @@ def run(sub, budget_s=470, seed=None):
            if p["g"].get("target") in EXIT_CHOICES]
     while len(pop) < POP:
         pop.append({"g": rand_genome(allowed, rng)})
+    if st.get("popKey") != ukey:                       # scores from another universe / fitness version: scored again
+        for p in pop:
+            p["res"] = None
+        st["popKey"] = ukey
     gens = 0
     live["pop"] = pop
     while time_left():
@@ -458,7 +464,7 @@ def run(sub, budget_s=470, seed=None):
                 g = mutate(pick()["g"], allowed, rng)
             if any(key(g) == key(q["g"]) for q in nxt) or is_taboo(g, tsets):
                 continue
-            nxt.append({"g": g, "res": st["seen"].get(key(g))})
+            nxt.append({"g": g, "res": st["seen"].get(f"{ukey}|{key(g)}")})
         pop = nxt
         gens += 1
         st["gen"] += 1
@@ -486,7 +492,7 @@ def promote(sub, st, pop, bench, base, c, hist):
     for p in pop:
         r = p.get("res") or {}
         tk = taboo_key(research.universe_of(c))
-        if (r.get("fit") or -99) < 1.5 or key(p["g"]) in done or is_taboo(p["g"], _taboo_sets(st.get(tk) or [])):
+        if (r.get("fit") or -99) < 1.5 or (r.get("t") or 0) < 1.8 or (r.get("posWin") or 0) < 2 or key(p["g"]) in done or is_taboo(p["g"], _taboo_sets(st.get(tk) or [])):
             continue
         g = p["g"]
         x = research.new_idea("day", research.blank_cfg(sub, "day"), name_of(g), changes_of(g), "evolve", int(st["days"]),
