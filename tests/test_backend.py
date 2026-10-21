@@ -5366,6 +5366,21 @@ def test_unusual_flow_keeps_three_days():
     assert sorted(out) == ["D", "OLD"] and fl["tickers"] == ["A", "B", "C", "E"] and "D" not in added
 
 
+def test_daily_hvc_set_by_vwap_resets():
+    """Daily HVC: at a VWAP reset the line becomes the close of that day, from the next day on (no look-ahead), with
+    bands at + ADR% and − 0.618 ADR%; it only changes at the next reset."""
+    import wallwatch
+    bars = []
+    for k, d in enumerate(["2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07"]):
+        for h in ("09:30", "10:30", "15:30"):
+            bars.append({"t": f"{d}T{h}", "o": 100 + k, "h": 102 + k, "l": 98 + k, "c": 100 + k + (0.5 if h == "15:30" else 0), "v": 1000})
+    out = wallwatch.hvc_series(bars, [0, 4])           # reset on 10-02 10:30
+    assert all(x is None for x in out[:6]) and out[6][0] == 101.5 and out[-1][0] == 101.5
+    assert out[6][1] > 101.5 > out[6][2]
+    out2 = wallwatch.hvc_series(bars, [4, 10])         # a second reset on 10-06: the level changes on 10-07
+    assert out2[9][0] == 101.5 and out2[12][0] == 103.5
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

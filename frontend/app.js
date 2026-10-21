@@ -1278,11 +1278,11 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'CVD'], ['cvd', 'Order flow (real CVD)']];
+S.fcLayers = (() => { try { const v = { hvc: true, sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['hvc', 'Daily HVC'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'CVD'], ['cvd', 'Order flow (real CVD)']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
-  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'kc', 'kch', 'walls', 'flow', 'dark', 'pres'];
+  const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'hvc', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'hvc', 'kc', 'kch', 'walls', 'flow', 'dark', 'pres'];
   return `${ww ? `<button class="btn" data-fcalllayers title="${S.fcAllLayers ? 'Only the layers of the strategy' : 'All layers (EMA, opening range, SPY trend, expirations, dark pool, premium)'}" style="font-size:.8rem;padding:2px 9px">${S.fcAllLayers ? '−' : '…'}</button>` : ''}<span class="seg" role="group" aria-label="Chart layers">${FC_LAYERS.filter(([k]) => ww ? wwLay.includes(k) : !['cvd', 'sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'mp', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy'].includes(k)).map(([k, l]) => `<button class="btn ${S.fcLayers[k] ? 'coachbtn' : ''}" data-fclayer="${k}" aria-pressed="${!!S.fcLayers[k]}" style="font-size:.8rem;padding:2px 9px">${l}${k === 'dark' && S.fcLayers.dark && S.fcDpBusy[fcKey(id)] ? '…' : ''}</button>`).join('')}</span>${S.fcLayers.dark && dp ? `<span class="muted" style="font-size:.8rem">${dp.error ? esc(dp.error) : `dark pool: ${dp.prints.length} prints ≥ ${money(dp.minPremium, false)} · lines from the last ${dp.levelDays || 180} days${dp.missingDays ? ` (loading ${dp.missingDays} more days…)` : ''}`}</span>` : ''}`;
 }
 async function loadDarkPool(id) {
@@ -1318,7 +1318,7 @@ function fcDaily(d) {                        // hourly chart data -> daily candl
     if (!x) by.set(k, { t: day(b.t), o: b.o, h: b.h, l: b.l, c: b.c, v: b.v || 0 });
     else { x.h = Math.max(x.h, b.h); x.l = Math.min(x.l, b.l); x.c = b.c; x.v += b.v || 0; } });
   const last = rows => { const m = new Map(); (rows || []).forEach(r => { if (r && r.t) m.set(r.t.slice(0, 10), { ...r, t: day(r.t) }); }); return [...m.values()]; };
-  return { ...d, interval: 390, daily: true, bars: [...by.values()], vwap: last(d.vwap), ema: last(d.ema), kc: last(d.kc), kch: last(d.kch), inertia: last(d.inertia),
+  return { ...d, interval: 390, daily: true, bars: [...by.values()], vwap: last(d.vwap), hvc: last(d.hvc), ema: last(d.ema), kc: last(d.kc), kch: last(d.kch), inertia: last(d.inertia),
     vwapResets: [...new Set((d.vwapResets || []).map(day))] };
 }
 function fcClean(d) {                       // drop malformed rows so one bad record can't break the chart
@@ -1491,6 +1491,16 @@ function fcSvg0(d, id, opts) {
       g += `<circle cx="${X(i)}" cy="${Y(v)}" r="3.5" fill="${vc}" stroke="var(--surface)" stroke-width="1"><title>VWAP reset ${esc(t.replace('T', ' ').slice(5))}: highest volume of the period</title></circle>`; });
     const lastV = vm[bars[n - 1].t];
     if (lastV != null && lastV >= lo && lastV <= hi) g += `<text x="${W - Rr - 4}" y="${Y(lastV) + 14}" text-anchor="end" font-size="${fs - 1}" font-weight="700" fill="${vc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">VWAP ${lastV.toFixed(2)}</text>`;
+  }
+  if (LY.hvc && (d.hvc || []).length) {             // daily high-volume close: set at each VWAP reset (from the next day)
+    const hc = '#06b6d4', hm = {}; d.hvc.forEach(x => { hm[x.t] = x; });
+    const line = (key, dash, w_) => { let path = '', pv = null;
+      bars.forEach((b, i) => { const x = hm[b.t], v = x ? x[key] : null; if (v == null || v < lo || v > hi) { pv = null; return; }
+        path += `${pv == null || pv !== v ? 'M' : 'L'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`; pv = v; });
+      return path ? `<path d="${path}" fill="none" stroke="${hc}" stroke-width="${w_}" ${dash ? 'stroke-dasharray="5 4"' : ''} opacity=".9"><title>${key === 'v' ? 'Daily high-volume close (the close of the day of the last VWAP reset)' : key === 'u' ? 'HVC up band: + ADR%' : 'HVC down band: − 0.618 ADR%'}</title></path>` : ''; };
+    g += line('v', false, 2) + line('u', true, 1) + line('l', true, 1);
+    const lx = hm[bars[n - 1].t];
+    if (lx && lx.v >= lo && lx.v <= hi) g += `<text x="${W - Rr - 4}" y="${Y(lx.v) - 6}" text-anchor="end" font-size="${fs - 1}" font-weight="700" fill="${hc}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">HVC ${(+lx.v).toFixed(2)}</text>`;
   }
   if (LY.mp !== false && ((d.expirations || []).length || (d.maxPain || []).length)) {   // monthly expirations + max pain
     const mpc = 'var(--warn,#d97706)', bwH = (W - L - Rr) / nS / 2;
@@ -1855,9 +1865,9 @@ function flowTabs(L, added) {
   return g.length ? `<div style="display:flex;gap:3px;flex-wrap:wrap;padding:4px 6px">${g.map((x, i) => `<button class="btn ${i === k ? 'coachbtn' : ''}" data-flowday="${i}" style="font-size:.72rem;padding:0 7px" title="${esc(x.date)}: tickers whose unusual call flow came that day (largest premium first)">${esc(x.label)} (${x.tickers.length})</button>`).join('')}</div>` : '';
 }
 function wwLayerGroups() {                         // the wall watch chart's indicators, grouped for the left column
-  const all = ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'];
+  const all = ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'hvc', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'];
   const name = Object.fromEntries(FC_LAYERS), pick = ks => ks.filter(k => all.includes(k) && name[k]).map(k => [k, name[k]]);
-  return [['Signals', pick(['sig', 'pwv'])], ['Options', pick(['walls', 'flow', 'mp', 'acc', 'dark'])], ['Trend', pick(['vwap', 'ema', 'kc', 'kch', 'orb', 'spy'])],
+  return [['Signals', pick(['sig', 'pwv'])], ['Options', pick(['walls', 'flow', 'mp', 'acc', 'dark'])], ['Trend', pick(['vwap', 'hvc', 'ema', 'kc', 'kch', 'orb', 'spy'])],
     ['Momentum', pick(['inertia', 'inertiah', 'sqz', 'turn', 'fvg'])], ['Volume', pick(['pres'])]];
 }
 function fcfSymbol() {

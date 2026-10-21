@@ -575,6 +575,42 @@ def anchored_vwap(bars, days=VWAP_DAYS):
     return out, resets
 
 
+def hvc_series(bars, resets, adr_n=20):
+    """Daily high-volume close (the TOS HighVolClose), set by the VWAP resets: at each reset the line becomes the
+    close of that day, from the next day on (no look-ahead); bands = HVC × (1 + ADR%) and × (1 − 0.618 ADR%), ADR% =
+    the average daily high / low range of the 20 days up to it. -> [(hvc, up, dn) or None per candle]."""
+    D = {}
+    for b in bars:
+        if not ("09:30" <= b["t"][11:16] < "16:00"):
+            continue
+        d = b["t"][:10]
+        x = D.get(d)
+        if not x:
+            D[d] = {"h": b["h"], "l": b["l"], "c": b["c"]}
+        else:
+            x["h"], x["l"], x["c"] = max(x["h"], b["h"]), min(x["l"], b["l"]), b["c"]
+    days = sorted(D)
+    pos = {d: k for k, d in enumerate(days)}
+    lvl_at = {}                                        # the day the new level starts -> (hvc, up, dn)
+    for i in resets:
+        if i <= 0 or i >= len(bars):
+            continue
+        d = bars[i]["t"][:10]
+        k = pos.get(d)
+        if k is None or k + 1 >= len(days):
+            continue                                   # the reset day isn't over yet: its close isn't known
+        w = days[max(0, k - adr_n + 1):k + 1]
+        adr = 100 * (sum(D[x]["h"] / D[x]["l"] for x in w if D[x]["l"] > 0) / max(1, len(w)) - 1)
+        c = D[d]["c"]
+        lvl_at[days[k + 1]] = (round(c, 4), round(c * (1 + adr / 100), 4), round(c * (1 - adr * 0.618 / 100), 4))
+    out, cur = [], None
+    for b in bars:
+        if b["t"][:10] in lvl_at and (cur is None or cur[1] != b["t"][:10]):
+            cur = (lvl_at[b["t"][:10]], b["t"][:10])
+        out.append(cur[0] if cur else None)
+    return out
+
+
 def _flip_chg(walls, day):
     """% change of the flip from the previous stored day (None when unknown)."""
     days = sorted(d for d in walls if d < day and (walls[d] or {}).get("flip"))
@@ -2363,6 +2399,8 @@ def chart(sub, sym, days=45, flow=True, lab=None):
                               if a.get("c") and dates[0] <= a["t"][:10] < (alerts[0]["t"][:10] if alerts else cut) and a["t"] not in seen] + alerts
         except Exception as e:
             note = (note + " · " if note else "") + f"Older signals unavailable: {str(e)[:100]}"
+    hv = hvc_series(bars_all, vres)[off:]               # daily high-volume close, set by the VWAP resets
+    hvc = [{"t": b["t"], "v": x[0], "u": x[1], "l": x[2]} for b, x in zip(bars, hv) if x]
     vw, vres = vw[off:], [i - off for i in vres if i - off >= 0]
     vwap = [{"t": b["t"], "v": v} for b, v in zip(bars, vw)]
     fill = db.get(db.upk(sub), f"WWFILL#{sym}") or {}
@@ -2407,7 +2445,7 @@ def chart(sub, sym, days=45, flow=True, lab=None):
     except Exception as e:
         print("squeeze failed", sym, e)
         sqz_h, sqz_d = [], []
-    return {"sqzH": sqz_h, "sqzD": sqz_d, "inertia": inertia, "inertiaH": inertia_h, "fvg": fvg, "lab": bool(lab), "tf": ccfg.get("tf") or "1h", "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
+    return {"sqzH": sqz_h, "sqzD": sqz_d, "inertia": inertia, "inertiaH": inertia_h, "fvg": fvg, "lab": bool(lab), "tf": ccfg.get("tf") or "1h", "pwVwap": pv, "curV": cur_v, "misses": misses, "kc": kc, "kch": kch, "kcDaily": bool(ccfg.get("kcDaily", True)), "orb": orbs, "spyDown": spy_dn, "vwap": vwap, "hvc": hvc, "ema": ema, "emaLen": int(ccfg.get("emaLen") or 20), "staleSignals": len(stale), "vwapResets": [bars[i]["t"] for i in vres if i > 0], "fill": {k: fill.get(k) for k in ("running", "total", "left", "at", "errors")}, "missingDays": len(missing), "noflipDays": len(noflip),
             "symbol": sym, "bars": bars, "walls": walls, "wallsNow": last, "signals": sigs, "alerts": alerts, "note": flow_note, "evals": [],
             "interval": 60, "days": days, "wallNote": note, "setupNow": setup_kind(last),
             "maxPain": maxpain, "expirations": exps, "maxPainDays": len(maxpain), "trades": trades_for(sub, sym),
