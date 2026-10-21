@@ -63,8 +63,13 @@ def _put_day(d, picks, b5, h30, q5):
                 "picks": json.dumps([p for p in picks if p["sym"] in ss]),
                 "b": {s: _enc(b5.get(s) or []) for s in ss}, "h": {s: _enc(h30.get(s) or []) for s in ss},
                 **({"q": _enc(q5)} if k == 0 else {})})
-    idx = db.get(PK, "DAYS") or {}
-    db.put({"PK": PK, "SK": "DAYS", "days": sorted(set(idx.get("days") or []) | {d})})
+    with _IDX_LOCK:                                    # days are stored by 3 threads at once: no lost update of the index
+        idx = db.get(PK, "DAYS") or {}
+        db.put({"PK": PK, "SK": "DAYS", "days": sorted(set(idx.get("days") or []) | {d})})
+
+
+import threading  # noqa: E402
+_IDX_LOCK = threading.Lock()
 
 
 def get_day(d):

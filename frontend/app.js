@@ -1753,7 +1753,7 @@ function vChartWW() {
   if (labOn && S.optTest === undefined) { S.optTest = null; setTimeout(loadOptTest, 0); }
   if (!S.ww && !S.wwBusy) { S.wwBusy = true; setTimeout(() => { S.wwBusy = false; loadWatch(); }, 0); }
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = Math.min(110, S.fcfInfoH || (narrow ? 96 : 64));
-  const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(380, window.innerHeight - headH - infoH - 18);   // the page scrolls for the rest
+  const W = Math.max(320, window.innerWidth - sideW - 20 - (narrow ? 0 : chLeftW())), H = Math.max(380, window.innerHeight - headH - infoH - 18);   // the page scrolls for the rest
   const k = fcKey(id), d = sym ? S.fc[k] : null;
   const did = id + ':D', vid = S.chartDaily ? did : id;          // daily view: the same data as daily candles
   if (S.chartDaily && d && !d.error) {
@@ -1776,13 +1776,13 @@ function vChartWW() {
   const zb_ = (q, l, t) => sym ? `<button class="btn" data-fczoom="${vid}|${q}" title="${t}" style="padding:3px 10px">${l}</button>` : '';
   const sel = narrow ? `<select id="fcf-sel" aria-label="Ticker">${list.map(x => `<option value="${esc(x)}" ${x === sym ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>` : '';
   const done = sigs.filter(x => x.status !== 'open'), hit = done.filter(x => x.status === 'target').length;
-  const headBar = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>
+  const headBar = `<div class="fcf-head">${symSearch(sym, list)}<b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>
       ${d && !d.error ? `<span class="verdict ${d.setupNow ? 'ok' : 'mid'}">${d.setupNow === 'flip' ? 'CW > PW > flip' : d.setupNow === 'merged' ? 'PW = CW < flip' : d.setupNow ? 'CW > flip > PW' : 'no setup'}</span>
       <span class="muted" style="font-size:.85rem">${sigs.length} signal${sigs.length === 1 ? '' : 's'} · ${hit}/${done.length} reached the call wall</span>${d && d.staleSignals ? ` <span class="muted" style="font-size:.8rem">· ${d.staleSignals} from older settings hidden (recomputing)</span>` : ''}${(stMap[sym] || {}).watch ? ` <b style="color:var(--coach);font-size:.85rem">⚑ ${stMap[sym].watch.level ? `waiting for a retest of the ${esc(stMap[sym].watch.levelName)} ${stMap[sym].watch.level}` : 'waiting for a call alert to arm a retest'}</b>` : ''}` : ''}
       ${sel}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
       <span class="seg" role="group" aria-label="Candles"><button class="btn ${!S.chartDaily ? 'coachbtn' : ''}" data-chartdaily="0" style="padding:3px 10px" title="Hourly candles">1h</button><button class="btn ${S.chartDaily ? 'coachbtn' : ''}" data-chartdaily="1" style="padding:3px 10px" title="Daily candles (same signals and levels)">1D</button></span>
       <span class="seg" role="group" aria-label="Days on the chart">${[45, 90, 180].map(n => `<button class="btn ${(S.wwDays || 45) === n ? 'coachbtn' : ''}" data-wwdays="${n}" title="${n} trading days${n > 45 ? ' (signals older than 45 days are replayed with your current settings)' : ''}" style="padding:3px 9px">${n}d</button>`).join('')}</span>
-      ${sym ? fcLayerBar(id) : ''}${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}<button class="btn ${S.hideSettings ? 'coachbtn' : ''}" data-hidesettings title="Hide / show the indicators and the entry / exit rules" style="padding:3px 10px">${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideStats ? 'coachbtn' : ''}" data-hidestats title="Hide / show the stats under the chart" style="padding:3px 10px">${S.hideStats ? 'Show stats' : 'Hide stats'}</button><button class="btn ${labOn ? 'coachbtn' : ''}" data-chartlab title="${labOn ? 'Back to the live strategy' : 'Try other settings on this chart without touching the live bot'}" style="padding:3px 10px">${labOn ? '✓ Strategy lab' : 'Strategy lab'}</button><button class="btn" data-fcfmode="dt" title="1-minute day trading on QQQ / SPY (second Alpaca paper account)">Day trading</button>
+      ${sym ? wwTkBtn(sym, d && !d.error ? d : null) : ''}<button class="btn ${S.hideSettings ? 'coachbtn' : ''}" data-hidesettings title="Hide / show the indicators and the entry / exit rules" style="padding:3px 10px">${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideStats ? 'coachbtn' : ''}" data-hidestats title="Hide / show the stats under the chart" style="padding:3px 10px">${S.hideStats ? 'Show stats' : 'Hide stats'}</button><button class="btn ${labOn ? 'coachbtn' : ''}" data-chartlab title="${labOn ? 'Back to the live strategy' : 'Try other settings on this chart without touching the live bot'}" style="padding:3px 10px">${labOn ? '✓ Strategy lab' : 'Strategy lab'}</button><button class="btn" data-fcfmode="dt" title="1-minute day trading on QQQ / SPY (second Alpaca paper account)">Day trading</button>
       ${S.ww && !S.hideSettings ? (labOn ? labPanel() : wwParams(true)) : ''}<span style="flex:1"></span><a class="btn" href="#botwatch" aria-label="Back to Wall watch" title="Back to Wall watch">✕</a></div>`;
   let main;
   if (!S.ww) main = '<p class="loading" style="padding:16px">Loading the watchlist…</p>';
@@ -1834,7 +1834,13 @@ function vChartWW() {
         return `<li data-sym="${esc(x)}" ${S.fcfQ && !x.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x)}" ${x === sym ? 'aria-current="true"' : ''}>
         <span><b>${esc(x)}</b>${b.open ? ' <span class="exchip" style="font-size:.7rem">open</span>' : ''}${ad && ad.by === 'flow' ? ` <span class="exchip" style="font-size:.7rem" title="Added ${esc((ad.at || '').replace('T', ' ').slice(5, 16))} from unusual call flow ${money(ad.premium || 0, false)}">flow ${esc((ad.at || '').slice(5, 10))}</span>` : ''}<br><span class="muted" style="font-size:.75rem">${b.n} signal${b.n === 1 ? '' : 's'}${b.n ? ` · ${b.t} target` : ''}</span></span>
         <span data-q="${esc(x)}" data-setup="${st.setup ? 1 : ''}" style="text-align:right;font-variant-numeric:tabular-nums;line-height:1.25">${qHtml(x, !!st.setup)}</span></a><span class="wl-act"><button class="btn" data-wlmv="${esc(L.name)}|${esc(x)}" title="Move to another list" style="font-size:.68rem;padding:0 5px">⇄</button><button class="btn" data-wlrm="${esc(L.name)}|${esc(x)}" title="Remove from ${esc(L.name)}" style="font-size:.68rem;padding:0 5px">✕</button></span></li>`; }).join('')}</ul></div>` : ''}</div>`; }).join('')}</aside>`;
-  return `<div class="fcf">${headBar}<div class="fcf-body"><div class="fcf-main">${main}</div>${side}</div></div>`;
+  return `<div class="fcf">${headBar}<div class="fcf-body">${narrow ? '' : chLeft(wwLayerGroups())}<div class="fcf-main">${narrow && sym ? fcLayerBar(id) : ''}${main}</div>${side}</div></div>`;
+}
+function wwLayerGroups() {                         // the wall watch chart's indicators, grouped for the left column
+  const all = ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'];
+  const name = Object.fromEntries(FC_LAYERS), pick = ks => ks.filter(k => all.includes(k) && name[k]).map(k => [k, name[k]]);
+  return [['Signals', pick(['sig', 'pwv'])], ['Options', pick(['walls', 'flow', 'mp', 'acc', 'dark'])], ['Trend', pick(['vwap', 'ema', 'kc', 'kch', 'orb', 'spy'])],
+    ['Momentum', pick(['inertia', 'inertiah', 'sqz', 'turn', 'fvg'])], ['Volume', pick(['pres'])]];
 }
 function fcfSymbol() {
   if (S.fcfMode === 'ww') { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(), hd = ((S.ww && S.ww.positions) || []).map(x => x.symbol); return l.includes(t) || hd.includes(t) ? t : (l[0] || t); }
@@ -2538,18 +2544,16 @@ function vChartDT() {
   const k = `dt|${sym}|${dtTfEff()}|${S.dtDays}|${(S.dtView || {}).id || ''}`, d = S.dtFc && S.dtFc.k === k ? S.dtFc.d : null;
   if (!d && S.dtBusy !== k) setTimeout(() => loadDTChart(sym), 0);
   const narrow = window.innerWidth < 800, headH = S.fcfHeadH || 58;
-  const side = !narrow, W = Math.max(320, window.innerWidth - 20 - (side ? 232 : 0)), H = Math.max(420, window.innerHeight - headH - 90);   // settings / backtest below: scroll
+  const side = !narrow, lw = side ? chLeftW() : 0, W = Math.max(320, window.innerWidth - 28 - lw - (side ? 252 : 0)), H = Math.max(420, window.innerHeight - headH - 90);   // settings / backtest below: scroll
   const id = 'dt-' + sym + '-' + S.dtTf;
   fcNeedDark(id);
   const sigs = (d && d.signals) || [], st = (d && d.stats) || {};
   const R = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
   const zb = (q, l) => `<button class="btn" data-fczoom="${id}|${q}" style="padding:3px 10px">${l}</button>`;
-  const head = `<div class="fcf-head"><b style="font-size:1.25rem">${esc(sym)}</b> ${S.dtView ? `<span style="font-size:.8rem;border:1px solid var(--coach);border-radius:6px;padding:2px 8px">backtest trades of the saved strategy <b>${esc(S.dtView.name)}</b> (the days ${esc(sym)} was in play) <button class="btn" data-stview="off" style="font-size:.72rem;padding:0 6px">back to my settings</button></span>` : ''} ${fcModeSeg()}
-    <span class="seg">${(tickers.includes(sym) ? tickers : tickers.concat([sym])).map(x => `<a class="btn ${x === sym ? 'coachbtn' : ''}" href="#botchart?t=${encodeURIComponent(x)}" style="padding:3px 10px">${esc(x)}</a>`).join('')}</span>
-    <span class="seg">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
-    <span class="seg">${[1, 3, 5, 10, 20, 30].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
+  const head = `<div class="fcf-head">${symSearch(sym, tickers)}<b style="font-size:1.25rem">${esc(sym)}</b> ${S.dtView ? `<span style="font-size:.8rem;border:1px solid var(--coach);border-radius:6px;padding:2px 8px">backtest trades of the saved strategy <b>${esc(S.dtView.name)}</b> (the days ${esc(sym)} was in play) <button class="btn" data-stview="off" style="font-size:.72rem;padding:0 6px">back to my settings</button></span>` : ''} ${fcModeSeg()}
+    <span class="seg" title="Candle size">${[1, 5].map(m => `<button class="btn ${S.dtTf === m ? 'coachbtn' : ''}" data-dttf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
+    <span class="seg" title="Days on the chart">${[1, 3, 5, 10, 20, 30].map(n => `<button class="btn ${S.dtDays === n ? 'coachbtn' : ''}" data-dtdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
-    <span class="seg">${[['sig', 'Signals'], ['zones', 'S/R zones'], ['bands', 'EMA bands'], ['lis', 'LIS'], ['pmz', 'PM zone'], ['fibs', 'Fibs'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['ema', 'EMA'], ['kch', 'Keltner'], ['inertia', 'Inertia'], ['sqz', 'Squeeze'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['pres', 'CVD'], ['cvd', 'Order flow']].map(([l, n]) => `<button class="btn ${S.fcLayers[l] !== false && S.fcLayers[l] ? 'coachbtn' : ''}" data-fclayer="${l}" style="font-size:.8rem;padding:2px 9px">${n}</button>`).join('')}</span>
     <button class="btn" data-dtreload style="padding:3px 10px" title="Reload the candles">↻</button>
     <button class="btn" data-hidesettings>${S.hideSettings ? 'Show settings' : 'Hide settings'}</button><button class="btn ${S.hideAnalysis ? 'coachbtn' : ''}" data-hideanalysis title="Hide / show the backtest, search, compare and study sections under the chart">${S.hideAnalysis ? 'Show analysis' : 'Hide analysis'}</button>
     <span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen" title="Close">✕</a></div>`;
@@ -2574,8 +2578,37 @@ function vChartDT() {
     ${live.length ? `<details style="margin:4px 0"><summary style="font-size:.85rem;cursor:pointer">Live day trades (${live.length})</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.8rem"><thead><tr><th>Ticker</th><th>Entry</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th><th>Exit</th></tr></thead><tbody>
       ${live.slice().reverse().map(r0 => `<tr><td>${esc(r0.symbol)}</td><td>${esc((r0.at || '').replace('T', ' ').slice(5))}</td><td>${esc(r0.dir || '')}</td><td class="r">${r0.qty ?? ''}</td><td class="r">${r0.entry ?? ''}</td><td>${esc(r0.status || '')}</td><td>${esc(r0.exitReason || '')}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
     ${S.hideSettings ? '' : dtPanel()}${S.hideAnalysis ? '' : rsTabs('day') + (S.rsTab === 'ai' ? researchBox('day') : dtBtBox() + dtRobBox() + flipCheckBox() + dtSearchBox() + dtCmpBox() + dtStudyBox())}`;
-  const panel = moversBox(sym);
-  return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main">${side ? `<div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1;min-width:0">${main}</div>${panel}</div>` : panel + main}${info}</div></div></div>`;
+  const left = chLeft(DT_LAYER_GROUPS);
+  const right = dtWatchSide(sym, tickers);
+  return `<div class="fcf">${head}<div class="fcf-body">${side ? left : ''}<div class="fcf-main">${side ? '' : moversBox(sym)}${main}${info}</div>${side ? right : ''}</div></div>`;
+}
+const DT_LAYER_GROUPS = [['Trades', [['sig', 'Signals']]], ['Levels', [['zones', 'S/R zones'], ['lis', 'LIS'], ['pmz', 'Pre-market zone'], ['fibs', 'Fibs'], ['walls', 'Gamma walls'], ['dark', 'Dark pool']]],
+  ['Trend', [['vwap', 'VWAP'], ['ema', 'EMA'], ['bands', 'EMA bands 9 / 22 / 44'], ['kch', 'Keltner']]],
+  ['Momentum', [['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['inertia', 'Inertia']]], ['Volume & flow', [['pres', 'CVD'], ['cvd', 'Order flow']]]];
+S.chLeftOpen = (() => { try { return localStorage.getItem('chLeft') !== '0'; } catch (e) { return true; } })();
+const chLeftW = () => (S.chLeftOpen ? 196 : 36);
+function chLeft(groups) {                         // left column: every indicator of the chart, on / off, collapsible
+  if (!S.chLeftOpen) return `<aside class="ch-left closed"><button class="btn" data-chleft title="Show the indicators" aria-label="Show the indicators">☰</button></aside>`;
+  const on = k => S.fcLayers[k] !== false && !!S.fcLayers[k];
+  return `<aside class="ch-left"><div class="ch-left-h"><b>Indicators</b><button class="btn" data-chleft title="Hide this column" aria-label="Hide the indicators" style="padding:0 7px">‹</button></div>
+    ${groups.map(([g, xs]) => `<div class="ch-grp">${esc(g)}</div>${xs.map(([k, l]) => `<button class="ch-row ${on(k) ? 'on' : ''}" data-fclayer="${k}" aria-pressed="${on(k)}"><span class="ck">${on(k) ? '✓' : ''}</span>${esc(l)}</button>`).join('')}`).join('')}</aside>`;
+}
+function symSearch(sym, tickers) {                // top bar: any ticker, with the watchlists as suggestions
+  const mv = ((S.dtMovers || [])[0] || {}).list || [], wl = (((S.ww || {}).config || {}).lists || []).flatMap(L => L.tickers || []);
+  const all = [...new Set([...(tickers || []), ...mv.map(x => x.sym), ...wl])].slice(0, 400);
+  return `<form data-symsearch style="display:flex;gap:4px;align-items:center"><input name="q" class="ch-search" placeholder="🔍 Symbol" value="" list="sym-list" autocomplete="off" aria-label="Search a symbol" style="text-transform:uppercase">
+    <datalist id="sym-list">${all.map(x => `<option value="${esc(x)}">`).join('')}</datalist></form>`;
+}
+function dtWatchSide(sym, tickers) {               // right column: the watchlists (movers, day tickers, wall watch lists)
+  if (S.ww === undefined && !S.wwBusy) setTimeout(loadWatch, 0);
+  const tab = S.chWl || 'movers', lists = (((S.ww || {}).config || {}).lists || []);
+  const tabs = [['movers', 'Top movers'], ['day', 'Day tickers'], ...lists.map(L => [`wl:${L.name}`, `${L.name} (${(L.tickers || []).length})`])];
+  const row = x => `<a href="#botchart?t=${encodeURIComponent(x)}" ${x === sym ? 'aria-current="true"' : ''}><span><b>${esc(x)}</b></span></a>`;
+  let body;
+  if (tab === 'movers') body = moversBox(sym, true);
+  else if (tab === 'day') body = `<ul class="fcf-list">${(tickers || []).map(x => `<li>${row(x)}</li>`).join('')}</ul>`;
+  else { const L = lists.find(L0 => `wl:${L0.name}` === tab); body = L ? `<ul class="fcf-list">${(L.tickers || []).map(x => `<li>${row(x)}</li>`).join('') || '<li class="muted" style="padding:8px">Empty list</li>'}</ul>` : '<p class="muted" style="padding:8px">Loading…</p>'; }
+  return `<aside class="fcf-side ch-right"><div class="ch-tabs">${tabs.map(([k, l]) => `<button class="btn ${k === tab ? 'coachbtn' : ''}" data-chwl="${esc(k)}" style="font-size:.72rem;padding:1px 7px">${esc(l)}</button>`).join('')}</div>${body}</aside>`;
 }
 function ctxOf(sym) {
   S.ctx = S.ctx || {};
@@ -2607,7 +2640,7 @@ async function loadMovers() {
   const pending = (S.dtMovers || []).some(x => x.note);
   S.mvPoll = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'dt') loadMovers(); else S.dtMovers = undefined; }, pending || (hm >= '09:10' && hm < '09:40') ? 60000 : 600000);
 }
-function moversBox(sym) {
+function moversBox(sym, embed) {
   const ds = S.dtMovers;
   const f1 = v => v == null ? '' : `${(+v).toFixed(1)}×`;
   if (!ds) return '<div style="width:224px;flex:none;font-size:.8rem" class="muted">Loading the movers…</div>';
@@ -2616,7 +2649,7 @@ function moversBox(sym) {
   const rows = (d.list || []).map((x, i) => `<a href="#botchart?t=${encodeURIComponent(x.sym)}" style="display:flex;justify-content:space-between;gap:6px;padding:2px 6px;border-radius:4px;text-decoration:none;${x.sym === sym ? 'background:var(--sunk);font-weight:700' : ''}">
       <span>${i + 1}. ${esc(x.sym)}${(d.watch || []).includes(x.sym) ? ' <span class="gain" title="on the 09:15 watchlist (clear hourly trend)">★</span>' : ''}</span>
       <span class="muted" style="font-size:.72rem">${x.pmRvol != null && d.source === 'pre-market 09:15' ? f1(x.pmRvol) : f1(x.rvol)}${x.gapPct != null ? ` · ${x.gapPct > 0 ? '+' : ''}${(+x.gapPct).toFixed(1)}%` : ''}</span></a>`).join('');
-  return `<div style="width:224px;flex:none;border:1px solid var(--line);border-radius:8px;padding:6px;font-size:.8rem;max-height:${Math.max(380, window.innerHeight - 160)}px;overflow-y:auto">
+  return `<div style="${embed ? 'padding:6px;font-size:.8rem' : `width:224px;flex:none;border:1px solid var(--line);border-radius:8px;padding:6px;font-size:.8rem;max-height:${Math.max(380, window.innerHeight - 160)}px;overflow-y:auto`}">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><b>Top movers</b><button class="btn" data-mvreload title="Reload" style="font-size:.72rem;padding:0 6px">↻</button></div>
     <div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px">${tabs}</div>
     <div class="muted" style="font-size:.7rem;margin-bottom:3px">${esc(d.date || '')}${d.source ? ` · ${esc(d.source)}` : ''}${d.at ? ` · built ${esc(d.at)} ET` : ''}</div>
@@ -2809,7 +2842,7 @@ function vChartFull() {
   const L = S.tickers, items = (L && L.items) || [], sym = fcfSymbol(), cur0 = items.find(x => x.symbol === sym), evId = hashParam('id');
   const cur = cur0 && evId ? { ...cur0, id: evId } : cur0;      // a specific evaluation (backtest replay) or the latest one
   const narrow = window.innerWidth < 800, sideW = narrow ? 0 : 260, headH = S.fcfHeadH || (narrow ? 104 : 58), infoH = S.fcfInfoH || (narrow ? 96 : 64);
-  const W = Math.max(320, window.innerWidth - sideW - 20), H = Math.max(300, window.innerHeight - headH - infoH - 18);
+  const W = Math.max(320, window.innerWidth - sideW - 20 - (narrow ? 0 : chLeftW())), H = Math.max(300, window.innerHeight - headH - infoH - 18);
   const days = S.fcDays || 5, d = cur ? S.fc[fcKey(cur.id)] : null;
   if (cur && !d && !S.fcBusy[fcKey(cur.id)]) setTimeout(() => loadFlowChart(cur.id), 0);
   if (cur) fcNeedDark(cur.id);
@@ -2825,11 +2858,11 @@ function vChartFull() {
   const zb_ = (k, l, t) => cur ? `<button class="btn" data-fczoom="${cur.id}|${k}" title="${t}" style="padding:3px 10px">${l}</button>` : '';
   const seg = `<span class="seg">${[[5, '5D · 15m'], [45, '45D · 1h']].map(([v, l]) => `<button class="btn ${days === v ? 'coachbtn' : ''}" data-fcdays="${v}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
   const sel = narrow ? `<select id="fcf-sel" aria-label="Ticker">${items.map(x => `<option value="${esc(x.symbol)}" ${x.symbol === sym ? 'selected' : ''}>${esc(x.symbol)} · ${esc(x.decision || '')}</option>`).join('')}</select>` : '';
-  const headBar = `<div class="fcf-head">
+  const headBar = `<div class="fcf-head">${symSearch(sym, items.map(x => x.symbol))}
       <b style="font-size:1.25rem">${esc(sym || 'Chart')}</b>${cur ? `<span class="verdict ${DEC_CLS[cur.decision] || 'mid'}">${esc(cur.decision || '')}</span>
       <span class="muted" style="font-size:.85rem">evaluated ${esc((cur.at || '').replace('T', ' ').slice(5, 16))} ET${cur.price ? ` at ${px(cur.price)}` : ''}</span>` : ''}
       ${sel}${fcModeSeg()}${seg}${zb_('in', '＋', 'Zoom in')}${zb_('out', '−', 'Zoom out')}${zb_('left', '◀', 'Earlier')}${zb_('right', '▶', 'Later')}${zb_('reset', 'Reset', 'Show everything')}
-      ${nav}${cur ? fcLayerBar(cur.id) : ''}
+      ${nav}${narrow && cur ? fcLayerBar(cur.id) : ''}
       <span style="flex:1"></span>${cur ? `<a class="btn" href="#botevals?t=${encodeURIComponent(sym)}">Evaluation</a>` : ''}<a class="btn" href="${back}" aria-label="Close full screen">✕</a></div>`;
   let main;
   if (!L) main = '<p class="loading" style="padding:16px">Loading tickers…</p>';
@@ -2856,7 +2889,11 @@ function vChartFull() {
       <ul class="fcf-list">${items.map(x => `<li data-sym="${esc(x.symbol)}" ${S.fcfQ && !x.symbol.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x.symbol)}" ${x.symbol === sym ? 'aria-current="true"' : ''}>
         <span><b>${esc(x.symbol)}</b>${x.held ? ' <span class="exchip" style="font-size:.7rem">held</span>' : ''}<br><span class="muted" style="font-size:.75rem">${esc((x.at || '').slice(5, 10))} · ${x.count} eval${x.count === 1 ? '' : 's'}</span></span>
         <span style="text-align:right"><span class="verdict ${DEC_CLS[x.decision] || 'mid'}" style="font-size:.72rem;padding:1px 7px">${esc(x.decision || '')}</span><br><span class="muted" style="font-size:.75rem">${x.price ? px(x.price) : ''}</span></span></a></li>`).join('')}</ul></aside>`;
-  return `<div class="fcf">${headBar}<div class="fcf-body"><div class="fcf-main">${main}</div>${side}</div></div>`;
+  return `<div class="fcf">${headBar}<div class="fcf-body">${narrow ? '' : chLeft(evLayerGroups())}<div class="fcf-main">${main}</div>${side}</div></div>`;
+}
+function evLayerGroups() {                         // the evaluated tickers' chart: its indicators for the left column
+  const name = Object.fromEntries(FC_LAYERS), pick = ks => ks.filter(k => name[k]).map(k => [k, name[k]]);
+  return [['Bot', pick(['evals'])], ['Options', pick(['flow', 'walls', 'acc', 'dark'])], ['Volume', pick(['pres'])]];
 }
 (() => {
   let rt = null;
@@ -4621,10 +4658,12 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-stview],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
+  if (el.hasAttribute('data-chleft')) { S.chLeftOpen = !S.chLeftOpen; try { localStorage.setItem('chLeft', S.chLeftOpen ? '1' : '0'); } catch (err) {} render(); return; }
+  if (el.dataset.chwl) { S.chWl = el.dataset.chwl; render(); return; }
   if (el.dataset.stview) {
     const [act, id, sym, day] = el.dataset.stview.split('|');
     if (act === 'off') { S.dtView = null; render(); return; }
@@ -5005,6 +5044,13 @@ document.addEventListener('input', e => {
     S.evQ = v; await loadEvals(1);
     const i = $('#ev-q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
   }, 350);
+});
+document.addEventListener('submit', e => {         // the symbol search of the chart's top bar
+  const f = e.target.closest && e.target.closest('[data-symsearch]');
+  if (!f) return;
+  e.preventDefault();
+  const q = String((f.querySelector('input') || {}).value || '').trim().toUpperCase().replace(/[^A-Z0-9.\-]/g, '');
+  if (q) location.hash = `#botchart?t=${encodeURIComponent(q)}`;
 });
 document.addEventListener('submit', e => {
   if (e.target.id !== 'dt-acct') return;

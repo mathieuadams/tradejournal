@@ -429,3 +429,17 @@ tr.sel td{background:var(--sunk)}
 .fcf-list li{position:relative}
 .wl-act{position:absolute;left:96px;bottom:5px;display:flex;gap:2px;opacity:.45}
 .fcf-list li:hover .wl-act{opacity:1}
+
+/* chart: TradingView-like columns (indicators left, watchlists right, search on top) */
+.ch-left{width:196px;flex:none;border-right:1px solid var(--line);background:var(--surface);position:sticky;top:0;align-self:flex-start;min-height:calc(100vh - 58px);max-height:100vh;overflow-y:auto;padding:4px 0 12px;box-sizing:border-box}
+.ch-left.closed{width:36px;padding:6px 2px;text-align:center;overflow:hidden}
+.fcf-side{min-height:calc(100vh - 58px)}
+.ch-left-h{display:flex;justify-content:space-between;align-items:center;padding:4px 8px 6px;font-size:.85rem}
+.ch-grp{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:8px 10px 3px}
+.ch-row{display:flex;align-items:center;gap:7px;width:100%;text-align:left;background:none;border:0;padding:5px 10px;font-size:.82rem;color:var(--ink);cursor:pointer;border-radius:0}
+.ch-row:hover{background:var(--sunk)}
+.ch-row .ck{width:15px;height:15px;flex:none;border:1px solid var(--line);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:.7rem;color:#fff}
+.ch-row.on .ck{background:var(--coach,#5b5bd6);border-color:var(--coach,#5b5bd6)}
+.ch-right{width:252px;min-height:calc(100vh - 58px)}
+.ch-tabs{display:flex;flex-wrap:wrap;gap:3px;padding:6px;border-bottom:1px solid var(--line)}
+.ch-search{width:9em;padding:5px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}

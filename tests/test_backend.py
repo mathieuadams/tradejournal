@@ -5052,7 +5052,7 @@ def test_stocks_in_play_research_bench():
         stockday.data_creds = lambda sub: {"key": "k", "secret": "s"}
         research._invoke = lambda *a, **k: None
         r = sipbench.prep("sip-user", days=len(days) - 15, budget_s=600)
-        assert r["left"] == 0 and len(sipbench.stored_days()) == len(days) - 15
+        assert r["left"] == 0 and len(sipbench.stored_days()) == len(days) - 15, (r, len(sipbench.stored_days()), len(days) - 15, len(sipbench.struct_days()))
         d0 = sipbench.get_day(days[-1])
         assert {p["sym"] for p in d0["picks"]} == {"HOT", "COLD"} and len(d0["b"]["HOT"]) == 78 and d0["q"]
         assert all(p.get("st") and p["st"]["zones"] is not None for p in d0["picks"])          # chart structure stored
