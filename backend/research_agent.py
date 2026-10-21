@@ -64,6 +64,10 @@ Before proposing, study the RECORD of every idea already tried:
 - "buildingBlocks.universe" says what the strategies trade: "fixed tickers", or each day's stocks in play (then
   the options-flow / gamma series are the market's, walls / dark pool don't exist, and rs = the stock vs QQQ: prefer
   the stock's own candles, levels, volume, relative strength, hourly structure and the market context);
+- "forbiddenPieces" (= "retired" + "bannedThisRound"): an idea that uses ANY of them in its entry is thrown away
+  without a test, whatever the rest is. This list overrides every suggestion in these instructions (e.g. a chart
+  structure piece above that is listed here is off limits). Check every idea against it before answering;
+- "rejectedLastTry": ideas you sent just before that were thrown away, with the reason: don't repeat their mistake;
 - "retired": pieces that did not hold up when the pipeline checked them: never use them again;
 - "failedCombos": entry combinations (pieces + side) that already failed on the 2nd half (yours, the trader's or the
   genetic search's): an idea containing all the pieces of one, on the same side, is not tested: build other ones;

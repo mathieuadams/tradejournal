@@ -5287,6 +5287,42 @@ def test_evolution_quick_screen():
     assert evolve.screen_result([{"R": 0.3}] * 30, 0.05) is None
 
 
+def test_agent_reasked_when_forbidden():
+    """A proposal using a retired / banned piece or a failed combination isn't kept: the agent is asked again with
+    the reason (forbiddenPieces and rejectedLastTry in its payload), so the list holds testable ideas."""
+    import research, research_agent, daytrade
+    sub = "rs-reask"
+    for k in [k for k in STORE if k[0] == db.upk(sub)]:
+        STORE.pop(k)
+
+    class Bench:
+        first, mid, last, errors = "2025-01-01", "2025-07-01", "2025-12-31", []
+
+        def rows(self, P):
+            return [{"at": f"2025-{1 + i % 12:02d}-{1 + (i // 12) % 27:02d}T10:00", "R": 0.5 if i % 2 else -0.4, "sym": "QQQ"} for i in range(300)]
+    calls = []
+
+    def propose(strategy, catalog, settings, crit, rec, n, focus, n_tested, library=None, keepers=None, blocks=None):
+        calls.append(blocks or {})
+        if len(calls) == 1:
+            return [{"name": "uses banned", "hypothesis": "h", "changes": {"vwapCross": True}},
+                    {"name": "fine", "hypothesis": "h", "changes": {"aboveVwap": True}}], ""
+        return [{"name": "replacement", "hypothesis": "h", "changes": {"greenBar": True}}], ""
+    saved = research.DayBench, research_agent.propose, daytrade.config, research_agent.build, research.explore_ban
+    try:
+        research.DayBench = lambda sub_, days, base, **k: Bench()
+        research_agent.propose = propose
+        research_agent.build = lambda *a, **k: []
+        research.explore_ban = lambda *a, **k: ["vwapCross"]
+        daytrade.config = lambda s_: {**daytrade.PARAMS, "aboveVwap": False, "vwapCross": False, "greenBar": False}
+        research.run(sub, {"strategy": "day", "n": 2})
+        names = {x["name"]: x["status"] for x in research.ideas(sub, "day")}
+        assert "uses banned" not in names and "fine" in names and "replacement" in names
+        assert "vwapCross" in calls[0]["forbiddenPieces"] and calls[1]["rejectedLastTry"][0]["name"] == "uses banned"
+    finally:
+        research.DayBench, research_agent.propose, daytrade.config, research_agent.build, research.explore_ban = saved
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -1016,10 +1016,7 @@ def run(sub, params=None, budget_s=540):
             gone = retired(hist, c) if strategy == "day" else []
             run_["retired"] = gone
             fails_ = failed_combos(sub, hist) if strategy == "day" else []
-            props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
-                                                 research_agent.public_criteria(c), research_agent.record(hist), n, p.get("focus"),
-                                                 sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy),
-                                                 {"best": bm[:15], "worst": bm[-10:][::-1] if len(bm) > 15 else [],
+            blocks_ = {"best": bm[:15], "worst": bm[-10:][::-1] if len(bm) > 15 else [],
                                                   "exhaustedFamilies": sorted(([k, v] for k, v in fam.items() if cap and v >= cap), key=lambda z: -z[1])[:10],
                                                   "familyCounts": sorted(([k, v] for k, v in fam.items()), key=lambda z: -z[1])[:15],
                                                   "basketNeeds": _basket_needs(sub) if strategy == "day" else [],
@@ -1028,15 +1025,38 @@ def run(sub, params=None, budget_s=540):
                                                                "options flow / gamma / walls are the market's (QQQ), not the stock's; no dark pool levels)")
                                                   if strategy == "day" and c.get("universe") == "inplay" else "fixed tickers",
                                                   "failedCombos": [{"side": s_, "pieces": sorted(q.replace(" (entry formula)", "") for q in p_)}
-                                                                   for p_, s_ in fails_][:80]})
+                                                                   for p_, s_ in fails_][:80],
+                                                  "forbiddenPieces": sorted({str(q).replace(" (entry formula)", "") for q in set(banned) | set(gone)})}
+            seen = {x.get("fp") for x in hist if x.get("fp") and x.get("status") in ("tested", "queued")}
+            seen |= {x.get("fp") for x in strategies(sub, strategy) if x.get("fp")}
+            keep, rejected, tries, want = [], [], 0, n
+            while want > 0 and tries < 3:              # ideas thrown away unseen (forbidden piece, failed combination,
+                tries += 1                             # duplicate...) are asked again, with the reason, up to 2 more times
+                props, note = research_agent.propose(strategy, catalog, tunable(strategy, base),
+                                                     research_agent.public_criteria(c), research_agent.record(hist), want, p.get("focus"),
+                                                     sum(1 for x in hist if x.get("status") == "tested"), library(sub), keepers(sub, strategy),
+                                                     {**blocks_, "rejectedLastTry": rejected[-12:]} if rejected else blocks_)
+                if note:
+                    notes.append(note)
+                for pr in props:
+                    x = admit(new_idea(strategy, base, pr.get("name"), pr.get("changes"), "ai", days, pr.get("hypothesis"),
+                                       list(pr.get("missing") or []), pr.get("learnedFrom"), p.get("focus"), len(keep), custom=lib_map(sub)),
+                              set(seen), fam if strategy == "day" else None, cap, sorted(set(banned) | set(gone)), fails_)
+                    if x["status"] in ("banned piece", "failed combo", "family exhausted") and tries < 3:
+                        rejected.append({"name": x.get("name"), "status": x["status"], "why": "; ".join(x.get("fails") or [])[:200]})
+                        continue
+                    keep.append(pr)
+                    seen.add(x["fp"])
+                want = n - len(keep)
+            if rejected:
+                notes.append(f"{len(rejected)} proposals used a forbidden piece, a failed combination or an exhausted family: not kept, the agent was asked for others.")
+            run_["rejected"] = len(rejected)
         except Exception as e:
             run_["errors"].append(f"AI agent: {str(e)[:200]}")
             break
-        if note:
-            notes.append(note)
         seen = {x.get("fp") for x in hist if x.get("fp") and x.get("status") in ("tested", "queued")}
         seen |= {x.get("fp") for x in strategies(sub, strategy) if x.get("fp")}
-        for k, pr in enumerate(props):
+        for k, pr in enumerate(keep):
             made, bad = lib_add(sub, pr.get("newIndicators"), strategy, "ai", pr.get("name"))
             x = admit(new_idea(strategy, base, pr.get("name"), pr.get("changes"), "ai", days, pr.get("hypothesis"),
                                list(pr.get("missing") or []) + bad, pr.get("learnedFrom"), p.get("focus"), k, custom=lib_map(sub)), seen,
