@@ -354,7 +354,7 @@ def state(sub):
     return st
 
 
-USER_KEYS = ("on", "days", "tickers")                 # set from the page: a run in progress never overwrites them
+USER_KEYS = ("on", "days", "tickers", "stopReq")                # set from the page: a run in progress never overwrites them
 
 
 def _save(sub, st, user=False):
@@ -429,6 +429,8 @@ def save_cfg(sub, body):
     b = body or {}
     if "on" in b:
         st["on"] = bool(b["on"])
+        if not st["on"] and st.get("running"):         # turned off during a run: that run stops at its next check
+            st["stopReq"] = iso(now_ny())
     if b.get("days"):
         st["days"] = max(60, min(500, int(b["days"])))
     if b.get("reset"):                                 # a full restart: new population, scores, sent list; the never-again
@@ -489,7 +491,7 @@ def run(sub, budget_s=470, seed=None):
     evals0 = st["evals"]
 
     times = []
-    ukey = f"v4|{research.universe_of(c)}"              # scores cached per universe (and per fitness version)
+    ukey = f"v4|{research.universe_of(c)}|{int(st['days'])}"   # scores cached per universe, history length, fitness version
     live = {"pop": []}                                 # the population being evaluated (saved with the progress)
 
     def evaluate(g):
@@ -521,7 +523,21 @@ def run(sub, budget_s=470, seed=None):
             _save(sub, st)
         return res
 
+    started, run_days = st["running"], st.get("days")
+    chk = {"at": time.time(), "stop": False}
+
     def time_left():                                   # room for one more evaluation, the promotion's test and saving
+        if chk["stop"]:
+            return False
+        if time.time() - chk["at"] > 10:               # every 10 s: was it turned off from the page?
+            chk["at"] = time.time()
+            try:
+                live_st = json.loads((db.get(db.upk(sub), SK) or {}).get("data") or "{}")
+                if (live_st.get("stopReq") or "") > (started or "") or live_st.get("days") != run_days:
+                    chk["stop"] = True                 # (or the history length changed: the scores no longer compare)
+                    return False
+            except Exception as e:
+                print("stop check failed", e)
         per = (sum(times) / len(times)) if times else min(20.0, budget_s / 50)
         return time.time() - t0 + 2.5 * per + min(15.0, 0.05 * budget_s) < budget_s
 

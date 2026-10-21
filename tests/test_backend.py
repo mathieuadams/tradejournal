@@ -5323,6 +5323,18 @@ def test_agent_reasked_when_forbidden():
         research.DayBench, research_agent.propose, daytrade.config, research_agent.build, research.explore_ban = saved
 
 
+def test_evolution_stops_when_turned_off():
+    """Turning the evolution off during a run asks that run to stop (it checks every few seconds); the scores are
+    cached per history length (250 / 500 days are not mixed)."""
+    import evolve
+    sub = "evo-stop"
+    st = evolve.state(sub)
+    st["running"] = "2026-10-21T00:31:00"
+    evolve._save(sub, st)
+    evolve.save_cfg(sub, {"on": False})
+    assert (evolve.state(sub).get("stopReq") or "") > "2026-10-21T00:31:00"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
