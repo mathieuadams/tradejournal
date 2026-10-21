@@ -239,7 +239,7 @@ class Ctx:
     """The series of one set of candles, computed when a formula asks for them (and kept)."""
 
     def __init__(self, bars, intraday=True, walls=None, pre=None, dp=None, vix=None, peer=None, vwap=None, alerts=None,
-                 interval=1, mx=None, snaps=None, pm_last=None, struct=None):
+                 interval=1, mx=None, snaps=None, pm_last=None, struct=None, start=None):
         self.b, self.intraday = bars, intraday
         self.walls, self.pre, self.dpm = walls or {}, pre or {}, dp or {}
         self.vixm, self.peerm, self.vw, self.alerts = vix or {}, peer or {}, vwap, alerts
@@ -247,6 +247,12 @@ class Ctx:
         self.memo = {}
         self.structm = struct or {}                    # {day: structure of the sessions before it} when precomputed
         self.day = [b["t"][:10] for b in bars]
+        self.first = next((i for i, d in enumerate(self.day) if d >= start), len(bars)) if start else 0
+        # (the market-context series are only computed from `start` on: the history candles before it never trade)
+
+    def _from(self):
+        """(candle, day) from the first day that can trade; the market series are None before it."""
+        return zip(self.b[self.first:], self.day[self.first:])
 
     # ---------------- market context: minute index of the candle (since 09:30), its end (exclusive)
     def _span(self, b):
@@ -254,8 +260,8 @@ class Ctx:
         return m0, m0 + self.iv
 
     def _mx_sum(self, key):
-        out = []
-        for b, d in zip(self.b, self.day):
+        out = [None] * self.first
+        for b, d in self._from():
             arr = (self.mx.get(d) or {}).get(key)
             m0, m1 = self._span(b)
             out.append(None if not arr or m0 < 0 else sum(x or 0 for x in arr[max(0, m0):min(len(arr), m1)]))
@@ -263,8 +269,8 @@ class Ctx:
 
     def _mx_5sum(self, key):
         """5-minute buckets that END inside the candle (so a 1-minute candle gets the bucket on its last minute)."""
-        out = []
-        for b, d in zip(self.b, self.day):
+        out = [None] * self.first
+        for b, d in self._from():
             arr = (self.mx.get(d) or {}).get(key)
             m0, m1 = self._span(b)
             if not arr or m0 < 0:
@@ -275,8 +281,8 @@ class Ctx:
 
     def _mx_last5(self, key):
         """The last 5-minute value completed by the candle's close."""
-        out = []
-        for b, d in zip(self.b, self.day):
+        out = [None] * self.first
+        for b, d in self._from():
             arr = (self.mx.get(d) or {}).get(key)
             k = self._span(b)[1] // 5 - 1
             out.append(arr[k] if arr and 0 <= k < len(arr) else None)
@@ -292,8 +298,8 @@ class Ctx:
         return [None if a is None or b is None else a - b for a, b in zip(self.s("callPrem"), self.s("putPrem"))]
 
     def _netPremDay(self):
-        out = []
-        for b, d in zip(self.b, self.day):
+        out = [None] * self.first
+        for b, d in self._from():
             x = self.mx.get(d) or {}
             m1 = self._span(b)[1]
             out.append(None if not x.get("c") or not x.get("p") or m1 <= 0 else sum(v or 0 for v in x["c"][:m1]) - sum(v or 0 for v in x["p"][:m1]))
@@ -306,8 +312,8 @@ class Ctx:
         return self._mx_5sum("sp")
 
     def _gex(self):
-        out = []
-        for b, d in zip(self.b, self.day):
+        out = [None] * self.first
+        for b, d in self._from():
             arr = (self.mx.get(d) or {}).get("g")
             m1 = self._span(b)[1]
             out.append(arr[min(len(arr), m1) - 1] if arr and m1 > 0 else None)
@@ -364,8 +370,8 @@ class Ctx:
         import gala
         H = gala.agg(self.b, 60)
         P = {"gPivot": 2, "gImpulse": 1.5, "gMaxCross": 2}
-        out, cache, j = [], {}, 0
-        for b in self.b:
+        out, cache, j = [(None, [])] * self.first, {}, 0     # (only from the first day that can trade)
+        for b in self.b[self.first:]:
             d = b["t"][:10]
             m = int(b["t"][11:13]) * 60 + int(b["t"][14:16]) + self.iv
             hm = f"{m // 60:02d}:{m % 60:02d}"
@@ -395,6 +401,10 @@ class Ctx:
         for k, d in enumerate(ds):
             if d in self.structm:
                 out[d] = self.structm[d]
+                continue
+            need = self.structm.get("_need")
+            if self.structm and (need is None or d not in need):   # stocks in play: only the day that trades counts
+                out[d] = None                          # (the history days before it never trade: nothing to build)
                 continue
             prior = [b for dd in ds[max(0, k - 30):k] for b in by[dd]]
             out[d] = structure.build(prior) if len(ds[max(0, k - 30):k]) >= 10 else None
@@ -874,11 +884,47 @@ def _call(f, args, cx):
     return v
 
 
+_CHECKED = {}
+
+
+def _parts_of(expr, unavailable):
+    """The top-level 'and' parts of a checked formula (parsed once per formula)."""
+    k = (expr, tuple(unavailable or ()))
+    if k not in _CHECKED:
+        tree = check(expr, unavailable)
+        body = tree.body
+        parts = body.values if isinstance(body, ast.BoolOp) and isinstance(body.op, ast.And) else [body]
+        if len(_CHECKED) > 20000:
+            _CHECKED.clear()
+        _CHECKED[k] = [(ast.unparse(p_), p_) for p_ in parts]
+    return _CHECKED[k]
+
+
 def evaluate(expr, cx, unavailable=()):
-    """[True / False] per candle (None = not known -> False)."""
-    v = _ev(check(expr, unavailable), cx)
-    v = _vec(v, len(cx.b))
-    return [bool(x) if x is not None else False for x in v]
+    """[True / False] per candle (None = not known -> False). Each 'and' part is computed once per candles (kept as
+    a bit mask from the first day that can trade): strategies that share a condition reuse it, and the formula is
+    the AND of its parts' masks (same result as evaluating it whole)."""
+    n, f = len(cx.b), cx.first
+    acc = None
+    for src, node in _parts_of(expr, unavailable):
+        pk = ("part", src)
+        m = cx.memo.get(pk)
+        if m is None:
+            v = _vec(_ev(node, cx), n)
+            m = int("".join("1" if (x is not None and x) else "0" for x in v[f:])[::-1] or "0", 2)
+            cx.memo[pk] = m
+        acc = m if acc is None else acc & m
+        if not acc:
+            break
+    out = [False] * n
+    if acc:
+        i = f
+        while acc:
+            if acc & 1:
+                out[i] = True
+            acc >>= 1
+            i += 1
+    return out
 
 
 UNAVAILABLE = {"day": ("flowPrem",), "swing": ("hTrend", "hLvlAbove", "hLvlBelow", "hBrokeUp", "hBrokeDn", "rs", "gapFilled", "dTrend", "dAtr", "rangePos",

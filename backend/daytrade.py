@@ -155,7 +155,7 @@ def fx_series(bars, I, walls, ctx, P):
         c_ = ctx or {}
         cx = formula.Ctx(bars, True, walls, I.get("pm") or {}, c_.get("dp") or {}, c_.get("vix") or {},
                          c_.get("peer") or {}, I.get("vwap"), interval=int(P.get("barMin") or 1), mx=c_.get("mx"),
-                         snaps=c_.get("snaps"), pm_last=I.get("pmLast"), struct=c_.get("struct"))
+                         snaps=c_.get("snaps"), pm_last=I.get("pmLast"), struct=c_.get("struct"), start=c_.get("start"))
         if cache is not None:
             cache[ck] = cx
     for k in FORMULAS:
@@ -579,42 +579,94 @@ def _test(b, L, zone, long_):
     return (b["l"] <= L + zone and b["c"] > L) if long_ else (b["h"] >= L - zone and b["c"] < L)
 
 
+class _LazyInd(dict):
+    """The indicators, each computed the first time it is read (a formula strategy reads only a few of them)."""
+
+    def __init__(self, fns):
+        super().__init__()
+        self._fns = fns
+
+    def __missing__(self, k):
+        if k in self._fns:
+            v = self._fns[k]()
+            dict.__setitem__(self, k, v)
+            return v
+        raise KeyError(k)
+
+    def get(self, k, d=None):
+        try:
+            return self[k]
+        except KeyError:
+            return d
+
+    def __contains__(self, k):
+        return k in self._fns or dict.__contains__(self, k)
+
+    def __bool__(self):
+        return True
+
+    def __bool__(self):
+        return True
+
+    def keys(self):
+        return list(dict.fromkeys(list(self._fns) + list(dict.keys(self))))
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def items(self):
+        return [(k, self[k]) for k in self.keys()]
+
+
 def indicators(bars, ext, P):
     """bars: regular-session 1-minute candles; ext: all candles (pre-market for the pre-market high / low)."""
     import wallwatch as ww
     cl = [b["c"] for b in bars]
-    atr = ww.atr14(bars)
-    pm, pm_last = {}, {}
-    for b in ext:
-        if "04:00" <= b["t"][11:16] < "09:30":
-            d = b["t"][:10]
-            h, l = pm.get(d, (None, None))
-            pm[d] = (max(h, b["h"]) if h is not None else b["h"], min(l, b["l"]) if l is not None else b["l"])
-            pm_last[d] = b["c"]
-    orb, cur, day = [], None, None
-    om = int(P["orbMin"])
-    end_m = 9 * 60 + 30 + om
-    for b in bars:
-        d, hm = b["t"][:10], int(b["t"][11:13]) * 60 + int(b["t"][14:16])
-        if d != day:
-            day, cur, hi_, lo_ = d, None, b["h"], b["l"]
-        if hm < end_m:
-            hi_, lo_ = max(hi_, b["h"]), min(lo_, b["l"])
-            orb.append(None)
-            if hm == end_m - 1:
-                cur = (hi_, lo_)
-        else:
-            if cur is None:
-                cur = (hi_, lo_)
-            orb.append(cur)
-    bt, brt, nb, nbr = _fvg_scan(bars, atr, float(P["fvgMin"]), float(P["fvgNear"]), int(P["fvgDays"]))
-    lo_p, hi_p = _pivots(bars, int(P.get("swingN") or 5))
-    sq = ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"]))
-    return {"cvdE": _cvd_est(bars), "pivLo": lo_p, "pivHi": hi_p, "avgN": _avg_move(bars, int(P.get("volN") or 300)), "atr5": _atr5(bars), "atrD": _atr_day(bars), "rvol": _rvol(bars), "vwap": _session_vwap(bars), "ema": ww._ema_series(cl, int(P["emaLen"])), "ema2": ww._ema_series(cl, int(P["ema2Len"])),
-            "kc": ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
-            "sq": sq, "sqTurnD": _sq_turns_tf(bars, sq, P), "tt": [b["t"] for b in bars],
-            "inr": ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
-            "atr": atr, "pm": pm, "pmLast": pm_last, "orb": orb, "fvgBull": bt, "fvgBear": brt, "newBull": nb, "newBear": nbr}
+
+    def pm_both():
+        pm, pm_last = {}, {}
+        for b in ext:
+            if "04:00" <= b["t"][11:16] < "09:30":
+                d = b["t"][:10]
+                h, l = pm.get(d, (None, None))
+                pm[d] = (max(h, b["h"]) if h is not None else b["h"], min(l, b["l"]) if l is not None else b["l"])
+                pm_last[d] = b["c"]
+        return pm, pm_last
+
+    def orb_of():
+        orb, cur, day = [], None, None
+        om = int(P["orbMin"])
+        end_m = 9 * 60 + 30 + om
+        hi_ = lo_ = None
+        for b in bars:
+            d, hm = b["t"][:10], int(b["t"][11:13]) * 60 + int(b["t"][14:16])
+            if d != day:
+                day, cur, hi_, lo_ = d, None, b["h"], b["l"]
+            if hm < end_m:
+                hi_, lo_ = max(hi_, b["h"]), min(lo_, b["l"])
+                orb.append(None)
+                if hm == end_m - 1:
+                    cur = (hi_, lo_)
+            else:
+                if cur is None:
+                    cur = (hi_, lo_)
+                orb.append(cur)
+        return orb
+    I = None
+    fv = lambda: _fvg_scan(bars, I["atr"], float(P["fvgMin"]), float(P["fvgNear"]), int(P["fvgDays"]))
+    pv = lambda: _pivots(bars, int(P.get("swingN") or 5))
+    fns = {"cvdE": lambda: _cvd_est(bars), "pivLo": lambda: I["_piv"][0], "pivHi": lambda: I["_piv"][1], "_piv": pv,
+           "avgN": lambda: _avg_move(bars, int(P.get("volN") or 300)), "atr5": lambda: _atr5(bars), "atrD": lambda: _atr_day(bars),
+           "rvol": lambda: _rvol(bars), "vwap": lambda: _session_vwap(bars), "ema": lambda: ww._ema_series(cl, int(P["emaLen"])),
+           "ema2": lambda: ww._ema_series(cl, int(P["ema2Len"])), "kc": lambda: ww.keltner(bars, int(P["kcLen"]), float(P["kcMult"])),
+           "sq": lambda: ww.squeeze(bars, int(P["sqLen"]), float(P["sqBB"]), float(P["sqKC"]), int(P["sqFireN"])),
+           "sqTurnD": lambda: _sq_turns_tf(bars, I["sq"], P), "tt": lambda: [b["t"] for b in bars],
+           "inr": lambda: ww.inertia_hourly(bars, (int(P["inN1"]), int(P["inN2"]), int(P["inN3"]))),
+           "atr": lambda: ww.atr14(bars), "_pm": pm_both, "pm": lambda: I["_pm"][0], "pmLast": lambda: I["_pm"][1], "orb": orb_of,
+           "_fvg": fv, "fvgBull": lambda: I["_fvg"][0], "fvgBear": lambda: I["_fvg"][1], "newBull": lambda: I["_fvg"][2],
+           "newBear": lambda: I["_fvg"][3]}
+    I = _LazyInd(fns)
+    return I
 
 
 # ---------------- engine ----------------
@@ -771,7 +823,11 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
     sides = ([1] if on("longs") else []) + ([-1] if on("shorts") else [])
     st_t, en_t, fl_t = P["startT"], P["endT"], P["flatT"]
     sigs, open_, per_day, day_r = [], None, {}, {}
-    for i, b in enumerate(bars):
+    i0 = 0
+    if start:                                          # nothing trades before `start`: the loop starts there
+        i0 = next((k for k, b in enumerate(bars) if b["t"][:10] >= start), len(bars))
+    for i in range(i0, len(bars)):
+        b = bars[i]
         day, hm = b["t"][:10], b["t"][11:16]
         last_of_day = hm >= "15:59" or (i + 1 < len(bars) and bars[i + 1]["t"][:10] != day)   # end of data != end of day (live)
         if open_:
@@ -793,8 +849,10 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
                     exit_ = ("level" if s.get("lvlT") else "target", px)
             if not exit_:
                 c = b["c"]
-                vw, em, sq, ir = I["vwap"][i], I["ema"][i], I["sq"][i], I["inr"][i]
-                mins = (datetime.strptime(b["t"], "%Y-%m-%dT%H:%M") - datetime.strptime(s["at"], "%Y-%m-%dT%H:%M")).seconds // 60
+                vw = I["vwap"][i] if on("vwapExit") else None   # (read only when its exit is on: computed lazily)
+                em = I["ema"][i] if on("emaExit") else None
+                sq = I["sq"][i] if on("sqExit") else None
+                ir = I["inr"][i] if on("inExit") else None
                 if on("vwapExit") and ((c < vw) if side > 0 else (c > vw)):
                     exit_ = ("vwap", c)
                 elif on("emaExit") and em is not None and ((c < em) if side > 0 else (c > em)):
@@ -807,7 +865,7 @@ def detect(bars_all, P, walls=None, start=None, ctx=None):
                     exit_ = ("fvg", c)
                 elif fx_out[side] is not None and fx_out[side][i]:
                     exit_ = ("formula", c)
-                elif on("timeOn") and mins >= int(P["timeMin"]):
+                elif on("timeOn") and (datetime.strptime(b["t"], "%Y-%m-%dT%H:%M") - datetime.strptime(s["at"], "%Y-%m-%dT%H:%M")).seconds // 60 >= int(P["timeMin"]):
                     exit_ = ("time stop", c)
                 elif hm >= fl_t or last_of_day:
                     exit_ = ("time", c)

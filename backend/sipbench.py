@@ -274,18 +274,27 @@ class SipBench:
                 if len(today) < 20:
                     continue
                 self.data.append({"sym": s, "allb": (x["h"].get(s) or []) + today, "show": [d], "walls": {}, "pick": p,
-                                  "ctx": {"dp": {}, "vix": vix, "peer": peer, "cache": {}, **mx,
-                                          "struct": {d: p["st"]} if p.get("st") else {}}})
+                                  "ctx": {"dp": {}, "vix": vix, "peer": peer, "cache": {}, **mx, "start": d,
+                                          "struct": {d: p["st"]} if p.get("st") else {"_need": [d]}}})   # not stored: built for that day only
         days_all = sorted({x["show"][0] for x in self.data})
         self.cut = days_all[-self.hold] if self.hold and len(days_all) > self.hold else None
         rd = [d for d in days_all if not self.cut or d < self.cut]
         self.first, self.mid, self.last = (rd[0], rd[len(rd) // 2], rd[-1]) if rd else (None, None, None)
         self.nDays, self.nSeries = len(rd), len(self.data)
+        self.h1 = [x for x in self.data if self.mid and x["show"][0] < self.mid]     # the evolution scores the 1st half only
+        d1 = sorted({x["show"][0] for x in self.h1})[::3]                           # every 3rd day: the quick screen
+        self.screen = [x for x in self.h1 if x["show"][0] in set(d1)]
 
     def _all(self, P):
         import dtsearch
         P = {**P, "barMin": 5}
         return [r for r in dtsearch.evaluate(self.data, P) if r["at"][11:16] >= MIN_HM]
+
+    def rows_on(self, P, data):
+        """The trades on part of the series (the 1st half, the screen), the same engine as rows()."""
+        import dtsearch
+        P = {**P, "barMin": 5}
+        return [r for r in dtsearch.evaluate(data, P) if r["at"][11:16] >= MIN_HM and (not self.cut or r["at"][:10] < self.cut)]
 
     def rows(self, P):
         return [r for r in self._all(P) if not self.cut or r["at"][:10] < self.cut]

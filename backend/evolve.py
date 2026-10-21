@@ -283,6 +283,19 @@ def cross(a, b, rng):
 
 
 # ---------------------------------------------------------------- fitness (1st half only)
+def screen_result(rows, cost):
+    """The quick screen (a third of the 1st-half days): None = promising, test it fully; else the result it gets
+    without the full test (too few trades for the full test's 60, or losing on the sample)."""
+    n = len(rows)
+    if n * 3 < 48:                                     # the full 1st half would have under ~60 trades
+        return {"fit": round(-5 + n * 3 / 60, 3), "n": n * 3, "screened": True}
+    xs = [float(r["R"]) - cost for r in rows if r.get("R") is not None]
+    avg = sum(xs) / len(xs) if xs else 0
+    if len(xs) >= 20 and avg <= 0:                     # losing on the sample: not worth the full test
+        return {"fit": round(-1 + max(-1.0, avg), 3), "n": n * 3, "avgR": round(avg, 3), "screened": True}
+    return None
+
+
 def fitness(rows, mid, cost, g, uses, first):
     """-> {fit, n, avgR, t, win, posWin}. Only the trades before `mid` (the 1st half) exist here."""
     import research
@@ -407,7 +420,7 @@ def _best_of(items, n=None):
     return out[:n] if n else out
 
 
-SEEN_KEYS = ("fit", "n", "avgR", "t", "days", "win", "posWin", "novel", "monthShare", "taboo")
+SEEN_KEYS = ("fit", "n", "avgR", "t", "days", "win", "posWin", "novel", "monthShare", "taboo", "screened")
 HOF = 12                                               # hall of fame: the best strategies ever found (a jolt keeps them)
 
 
@@ -489,7 +502,13 @@ def run(sub, budget_s=470, seed=None):
             P = {**base, **blank, **changes_of(g)}
             te = time.time()
             try:
-                res = fitness(bench.rows(P), bench.mid, cost, g, uses, bench.first)
+                res = None
+                if getattr(bench, "screen", None):     # quick screen on every 3rd day of the 1st half first
+                    rs = bench.rows_on(P, bench.screen)
+                    res = screen_result(rs, cost)
+                if res is None:                        # passed (or no screen): the full 1st half
+                    rows = bench.rows_on(P, bench.h1) if getattr(bench, "h1", None) else bench.rows(P)
+                    res = fitness(rows, bench.mid, cost, g, uses, bench.first)
             except Exception as e:
                 res = {"fit": -9, "n": 0, "error": str(e)[:80]}
             times.append(time.time() - te)

@@ -5064,6 +5064,9 @@ def test_stocks_in_play_research_bench():
         rows = bench.rows(P)
         assert rows and all(r["at"][11:16] >= "09:35" and r["at"][:10] < bench.cut for r in rows) and {r["sym"] for r in rows} <= {"HOT", "COLD"}
         assert all(r["at"][:10] >= bench.cut for r in bench.hold_rows(P))
+        assert bench.h1 and all(x["show"][0] < bench.mid for x in bench.h1) and set(map(id, bench.screen)) <= set(map(id, bench.h1))
+        h1 = bench.rows_on(P, bench.h1)
+        assert sorted(r["at"] + r["sym"] for r in h1) == sorted(r["at"] + r["sym"] for r in rows if r["at"][:10] < bench.mid)
         out = dtrobust.run_bench(bench, {**research.base_cfg("sip-user", "day"), **P}, 0.05, 100, budget_s=60)
         assert out["rows"] and out["verdict"] in ("robust", "mixed", "fragile") and out["universe"] == "stocks in play"
         assert research.universe_of(c) == "inplay"
@@ -5272,6 +5275,16 @@ def test_evolution_state_fits_one_item():
     evolve._save(sub, st)
     raw = db.get(db.upk(sub), evolve.SK)["data"]
     assert len(raw.encode()) <= evolve.MAX_ITEM and "v4|inplay|" + "x" * 150 + "2899" in evolve.state(sub)["seen"]
+
+
+def test_evolution_quick_screen():
+    """The quick screen: too few trades or losing on a third of the 1st-half days = no full test (a low score);
+    promising = None (the full 1st half is tested)."""
+    import evolve
+    assert evolve.screen_result([{"R": 1.0}] * 10, 0.05)["fit"] < -4
+    lose = evolve.screen_result([{"R": -0.2}] * 30, 0.05)
+    assert lose["screened"] and -2 <= lose["fit"] < -1
+    assert evolve.screen_result([{"R": 0.3}] * 30, 0.05) is None
 
 
 if __name__ == "__main__":
