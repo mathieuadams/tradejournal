@@ -5335,6 +5335,22 @@ def test_evolution_stops_when_turned_off():
     assert (evolve.state(sub).get("stopReq") or "") > "2026-10-21T00:31:00"
 
 
+def test_evolution_restart_during_a_run():
+    """Restart evolution clicked while a run is going: the run's later saves don't bring the old population back."""
+    import evolve
+    sub = "evo-reset"
+    st = evolve.state(sub)
+    st.update(running="2026-10-21T00:51:00", runStarted="2026-10-21T00:51:00", gen=2220, evals=32265,
+              pop=[{"g": {"atoms": [(0, 0)], "side": "long", "stop": 1.5, "target": 2}, "res": {"fit": 2.8}}])
+    evolve._save(sub, st)
+    run_copy = evolve.state(sub)                       # what the running run holds in memory
+    evolve.save_cfg(sub, {"reset": True})
+    run_copy["gen"] = 2230
+    evolve._save(sub, run_copy)                        # the run saves its progress afterwards
+    after = evolve.state(sub)
+    assert after["gen"] == 0 and after["pop"] == [] and after["evals"] == 0
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

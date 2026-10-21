@@ -354,7 +354,8 @@ def state(sub):
     return st
 
 
-USER_KEYS = ("on", "days", "tickers", "stopReq")                # set from the page: a run in progress never overwrites them
+USER_KEYS = ("on", "days", "tickers", "stopReq", "resetAt")
+RESET = {"pop": [], "gen": 0, "evals": 0, "seen": {}, "promoted": [], "log": [], "hof": []}                # set from the page: a run in progress never overwrites them
 
 
 def _save(sub, st, user=False):
@@ -368,6 +369,8 @@ def _save(sub, st, user=False):
                         st[k] = live[k]
             except ValueError:
                 pass
+        if st.get("resetAt") and st["resetAt"] > (st.get("runStarted") or ""):   # restarted from the page during
+            st.update({k: (v.copy() if hasattr(v, "copy") else v) for k, v in RESET.items()})   # this run: keep it
     if len(st["seen"]) > 3000:                         # keep the evaluated set bounded (best ones kept)
         st["seen"] = dict(sorted(st["seen"].items(), key=lambda kv: -(kv[1].get("fit") or -99))[:2000])
     data = json.dumps(st, default=str, separators=(",", ":"))
@@ -434,7 +437,8 @@ def save_cfg(sub, body):
     if b.get("days"):
         st["days"] = max(60, min(500, int(b["days"])))
     if b.get("reset"):                                 # a full restart: new population, scores, sent list; the never-again
-        st.update(pop=[], gen=0, evals=0, seen={}, promoted=[], log=[], hof=[])   # list (failed on the 2nd half) is kept
+        st.update({k: (v.copy() if hasattr(v, "copy") else v) for k, v in RESET.items()})
+        st["resetAt"] = iso(now_ny())                  # a run in progress stops and doesn't write its old population back   # list (failed on the 2nd half) is kept
     if "tickers" in b:
         tk = b["tickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else tk
@@ -449,7 +453,7 @@ def run(sub, budget_s=470, seed=None):
     t0 = time.time()
     rng = random.Random(seed)
     st = state(sub)
-    st["running"] = iso(now_ny())
+    st["running"] = st["runStarted"] = iso(now_ny())
     st["step"] = "starting"
     _save(sub, st)
     c = research.criteria(sub)
@@ -533,7 +537,8 @@ def run(sub, budget_s=470, seed=None):
             chk["at"] = time.time()
             try:
                 live_st = json.loads((db.get(db.upk(sub), SK) or {}).get("data") or "{}")
-                if (live_st.get("stopReq") or "") > (started or "") or live_st.get("days") != run_days:
+                if (live_st.get("stopReq") or "") > (started or "") or (live_st.get("resetAt") or "") > (started or "") \
+                        or live_st.get("days") != run_days:
                     chk["stop"] = True                 # (or the history length changed: the scores no longer compare)
                     return False
             except Exception as e:
