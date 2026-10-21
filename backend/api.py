@@ -471,6 +471,14 @@ def daytrade_movers(sub, claims, body, q):
     return {"days": stockday.movers(sub)}
 
 
+@route("POST", "/daytrade/smc")
+def daytrade_smc(sub, claims, body, q):
+    """Smart-money model on one ticker: liquidity, sweeps, MSS, FVG, retracement entries, every step written down."""
+    import smc
+    b = body or {}
+    return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
+
+
 @route("POST", "/daytrade/chart")
 def daytrade_chart(sub, claims, body, q):
     import daytrade

@@ -5411,6 +5411,33 @@ def test_walls_fetch_status():
     assert st == 200 and r["running"] is None
 
 
+def test_smart_money_model():
+    """Smart-money model: a sell-side pool swept and closed back, a close above the last swing high (MSS), a fair value
+    gap in the move, a retracement into it (entry), stop under the sweep, targets at the next liquidity; every step
+    written down, the funnel counts where each candidate stopped."""
+    import smc
+    mk = lambda d, m, o, h, l, c: {"t": f"{d}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": h, "l": l, "c": c, "v": 1000}
+    bars = [mk("2026-10-19", 570 + k, 102 + 2 * ((k % 60) / 60 - .5), min(104, 102.3 + 2 * ((k % 60) / 60 - .5)), max(100, 101.7 + 2 * ((k % 60) / 60 - .5)), 102 + 2 * ((k % 60) / 60 - .5)) for k in range(390)]
+    bars.append(mk("2026-10-20", 480, 101.5, 101.8, 101.2, 101.5))
+    path = [101.5, 101.6, 101.7, 101.6, 101.5, 101.4, 101.5, 101.6, 101.7, 101.8, 101.7, 101.6, 101.5, 101.4, 101.5, 101.6, 101.8, 101.95, 101.8, 101.6,
+            101.4, 101.2, 101.0, 100.8, 100.6, 100.4, 100.3, 100.2, 100.1, 100.15, 100.2]
+    m = 570
+    for v in path:
+        bars.append(mk("2026-10-20", m, v, v + .1, v - .1, v)); m += 1
+    for o, h, l, c in [(100.2, 100.25, 99.7, 100.15), (100.15, 100.6, 100.1, 100.55), (100.55, 101.4, 100.5, 101.35), (101.4, 102.2, 100.9, 102.15),
+                       (102.15, 102.3, 102.0, 102.2), (102.2, 102.25, 101.6, 101.7), (101.7, 101.75, 100.85, 101.0), (101.0, 101.6, 100.95, 101.5)]:
+        bars.append(mk("2026-10-20", m, o, h, l, c)); m += 1
+    v = 101.5
+    while m < 960:
+        v = min(105.5, v + .06); bars.append(mk("2026-10-20", m, v, v + .05, v - .05, v)); m += 1
+    out = smc.detect(bars, {"tf": 1, "startT": "09:30"}, ["2026-10-20"])
+    won = [s for s in out["setups"] if s.get("fillT")]
+    assert len(won) == 1 and won[0]["dir"] == 1 and won[0]["R"] > 1 and [x["n"] for x in won[0]["steps"]] == [1, 2, 3, 4, 5, 6]
+    assert won[0]["stop"] < won[0]["ext"] < won[0]["entry"] < won[0]["tp1"] < won[0]["tp2"]
+    f = out["funnel"]
+    assert f["sweeps"] == len(out["setups"]) and f["filled"] == 1 and f["mss"] >= 1 and sum(f["why"].values()) == f["sweeps"] - f["filled"]
+    assert any(l["name"] == "PDH" for l in out["levels"]) and out["bars"][0]["t"].startswith("2026-10-20")
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

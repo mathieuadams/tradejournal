@@ -1278,7 +1278,7 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { hvc: true, sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+S.fcLayers = (() => { try { const v = { smcLv: true, smcSw: true, smcMss: true, smcFvg: true, smcOb: true, smcTr: true, hvc: true, sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
 const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['hvc', 'Daily HVC'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'CVD'], ['cvd', 'Order flow (real CVD)']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
@@ -1339,7 +1339,8 @@ function fcSvg0(d, id, opts) {
   if (all.length < 2) return '<p class="muted" style="margin:0">No intraday prices for these days.</p>';
   const [za, zb] = fcRange(id, all.length), bars = all.slice(za, zb + 1), n = bars.length;
   const nS = n + (opts && opts.padRight && zb >= all.length - 1 ? opts.padRight : 0);   // empty room on the right of the last candle
-  const LY = id.startsWith('ww-') && !S.fcAllLayers ? { ...S.fcLayers, mp: false, acc: false } : S.fcLayers;
+  const LY = opts && opts.smcOnly ? { zones: false, sig: false, pres: false, cvd: false, acc: false, walls: false, flow: false, dark: false, sqz: false, mp: false, evals: false, fibs: false }
+    : id.startsWith('ww-') && !S.fcAllLayers ? { ...S.fcLayers, mp: false, acc: false } : S.fcLayers;
   const dp = LY.dark ? S.fcDp[fcKey(id)] : null;
   const full = !!(opts && opts.W), narrow = !full && window.innerWidth < 700, fs = narrow ? 17 : full ? 13 : 12;
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
@@ -1382,6 +1383,7 @@ function fcSvg0(d, id, opts) {
       const x0 = X(i0) - bw / 2, x1 = X(i1 == null ? n - 1 : i1) + bw / 2, y0 = Y(Math.min(hi, z.hi)), y1 = Y(Math.max(lo, z.lo));
       g += `<rect x="${x0}" y="${y0}" width="${Math.max(2, x1 - x0)}" height="${Math.max(1, y1 - y0)}" fill="${c}" fill-opacity="${z.fillAt ? .05 : .1}" stroke="${c}" stroke-opacity=".35" stroke-width="1" ${z.fillAt ? 'stroke-dasharray="3 2"' : ''}><title>${esc(`${bull ? 'Bullish' : 'Bearish'} FVG ${z.lo}–${z.hi} · ${z.t.replace('T', ' ').slice(5)}${z.fillAt ? ` · ${z.end === 'expired' ? 'expired' : 'filled'} ${z.fillAt.replace('T', ' ').slice(5)}` : ' · still open'}`)}</title></rect>`; });
   }
+  if (opts && opts.smc && d.smc) g += smcLayer(d.smc, { X, Y, at, n, lo, hi, bw, L, W, Rr, T, B, fs, bars, sel: opts.smcSel });
   bars.forEach((b, i) => { const up = b.c >= b.o, c = up ? 'var(--gain)' : 'var(--loss)', x = X(i);
     const tip = `<title>${esc(b.t.replace('T', ' ').slice(5))} ET · O ${pf(b.o)} H ${pf(b.h)} L ${pf(b.l)} C ${pf(b.c)} (${b.c >= b.o ? '+' : ''}${((b.c / b.o - 1) * 100).toFixed(2)}%)</title>`;
     g += `<g><line x1="${x}" x2="${x}" y1="${Y(b.h)}" y2="${Y(b.l)}" stroke="${c}" stroke-width="1"/><rect x="${x - bw / 2}" y="${Y(Math.max(b.o, b.c))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b.o) - Y(b.c)))}" fill="${c}"/>`
@@ -1706,7 +1708,7 @@ async function loadTickers() {
   S.tkBusy = false;
   if (route() === 'botchart') render();
 }
-try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
+try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = m0 === 'smc' ? 'smc' : ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
 function wwReviewBox() {
   const r = S.wwRev;
@@ -1764,7 +1766,7 @@ const FC_REFRESH_MS = 5 * 60 * 1000;               // an open chart reloads its 
 setInterval(() => {                                // the check runs on a redraw: one a minute while a chart is open and seen
   if (route() === 'botchart' && document.visibilityState === 'visible' && !document.querySelector('input:focus,select:focus,textarea:focus')) render();
 }, 60000);
-const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['smc', 'Smart money']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
@@ -1875,6 +1877,94 @@ function flowPick(L, added) {
 function flowTabs(L, added) {
   const g = flowGroups(L, added), k = Math.min(S.flowDay || 0, Math.max(0, g.length - 1));
   return g.length ? `<div style="display:flex;gap:3px;flex-wrap:wrap;padding:4px 6px">${g.map((x, i) => `<button class="btn ${i === k ? 'coachbtn' : ''}" data-flowday="${i}" style="font-size:.72rem;padding:0 7px" title="${esc(x.date)}: tickers whose unusual call flow came that day (largest premium first)">${esc(x.label)} (${x.tickers.length})</button>`).join('')}</div>` : '';
+}
+/* ---------- Smart money: liquidity -> sweep -> MSS -> FVG -> retracement, step by step (backend smc.py) ---------- */
+const SMC_LY = [['smcLv', 'Liquidity (PDH / PDL, PM, OR, swings)'], ['smcSw', 'Sweeps'], ['smcMss', 'Market structure shift'], ['smcFvg', 'Fair value gaps'], ['smcOb', 'Order blocks'], ['smcTr', 'Trades (entry / stop / targets)']];
+S.smcTf = S.smcTf || 5; S.smcDays = S.smcDays || 3;
+try { S.smcCfg = JSON.parse(localStorage.getItem('smcCfg') || '{}') || {}; } catch (e) { S.smcCfg = {}; }
+const smcOn = k => S.fcLayers[k] !== false;
+function smcLayer(m, c) {                          // drawn under the candles
+  const { X, Y, at, n, lo, hi, L, W, Rr, fs, bars, sel } = c, inV = v => v >= lo && v <= hi, ix = t => (t ? at(t) : null);
+  const x0of = t => { const i = t < bars[0].t ? 0 : ix(t); return i == null ? null : X(i); }, x1of = t => { const i = !t || t > bars[n - 1].t ? n - 1 : ix(t); return i == null ? X(n - 1) : X(i); };
+  let g = '';
+  if (smcOn('smcTr')) (m.setups || []).filter(s => s.fillT).forEach(s => {   // the trade: target zone (green) and risk zone (red)
+    const a = x0of(s.fillT), b = x1of(s.exitT); if (a == null) return;
+    const up = s.dir > 0, yE = Y(s.entry), yS = Y(s.stop), yT = Y(s.tp2), w = Math.max(4, b - a), on = sel && sel === s.t;
+    g += `<rect x="${a}" y="${Math.min(yE, yT)}" width="${w}" height="${Math.abs(yT - yE)}" fill="#14b8a6" fill-opacity="${on ? .3 : .16}"><title>${esc(`${s.side} ${s.t.slice(5, 16).replace('T', ' ')} · entry ${s.entry} · TP1 ${s.tp1Name} ${s.tp1} · TP2 ${s.tp2Name} ${s.tp2} · ${s.R >= 0 ? '+' : ''}${s.R}R`)}</title></rect>`
+      + `<rect x="${a}" y="${Math.min(yE, yS)}" width="${w}" height="${Math.abs(yS - yE)}" fill="#f43f5e" fill-opacity="${on ? .28 : .15}"><title>stop ${s.stop}</title></rect>`
+      + `<line x1="${a}" x2="${a + w}" y1="${Y(s.tp1)}" y2="${Y(s.tp1)}" stroke="#0f766e" stroke-dasharray="4 3"/><text x="${a + 3}" y="${Y(s.tp1) - 3}" font-size="${fs - 2}" fill="#0f766e">TP1 ${esc(s.tp1Name)}</text>`
+      + `<text x="${a + 3}" y="${(up ? Math.min(yE, yT) : Math.max(yE, yT)) + (up ? 11 : -3)}" font-size="${fs - 2}" font-weight="700" fill="#0f766e">${s.R >= 0 ? '+' : ''}${(+s.R).toFixed(2)}R</text>`; });
+  if (smcOn('smcLv')) (m.levels || []).forEach(l => { if (!inV(l.p)) return; const a = x0of(l.t0); if (a == null) return; const b = x1of(l.t1), y = Y(l.p);
+    const col = l.side === 'buy' ? '#2563eb' : '#dc2626', major = !/swing/.test(l.name);
+    g += `<line x1="${a}" x2="${b}" y1="${y}" y2="${y}" stroke="${col}" stroke-width="${major ? 1.4 : 1}" ${l.swept ? 'stroke-dasharray="5 3"' : ''} opacity="${major ? .9 : .55}"><title>${esc(`${l.side === 'buy' ? 'Buy-side' : 'Sell-side'} liquidity · ${l.name} ${l.p}${l.swept ? ' · swept ' + l.t1.slice(11, 16) : ''}`)}</title></line>`
+      + (major || /EQ/.test(l.name) ? `<text x="${Math.max(a, L) + 2}" y="${y + (l.side === 'buy' ? -3 : 11)}" font-size="${fs - 2}" fill="${col}">${esc(l.name)}</text>` : ''); });
+  if (smcOn('smcOb')) (m.obs || []).forEach(o => { const a = x0of(o.t0); if (a == null || !inV(o.lo)) return; const y0 = Y(o.hi), y1 = Y(o.lo);
+    g += `<rect x="${a - 2}" y="${y0}" width="${Math.max(6, (W - Rr - L) / 60)}" height="${Math.max(2, y1 - y0)}" fill="#3b82f6" fill-opacity=".35"><title>Order block ${o.lo}–${o.hi}</title></rect>`; });
+  if (smcOn('smcFvg')) (m.fvgs || []).forEach(f => { const a = x0of(f.t0); if (a == null) return; const s = (m.setups || []).find(x => x.fvg && x.fvg.t0 === f.t0);
+    const b = x1of(s && (s.exitT || s.fillT) ? (s.exitT || s.fillT) : f.t1), y0 = Y(Math.min(hi, f.hi)), y1 = Y(Math.max(lo, f.lo)), col = f.dir > 0 ? '#eab308' : '#f43f5e';
+    g += `<rect x="${a}" y="${y0}" width="${Math.max(4, b - a)}" height="${Math.max(2, y1 - y0)}" fill="${col}" fill-opacity=".28" stroke="${col}" stroke-opacity=".6"><title>${f.dir > 0 ? 'Bullish' : 'Bearish'} FVG ${f.lo}–${f.hi}</title></rect>`
+      + `<text x="${a + 2}" y="${y0 - 2}" font-size="${fs - 2}" fill="${col}">${f.dir > 0 ? '+' : '−'}FVG</text>`; });
+  if (smcOn('smcMss')) (m.mss || []).forEach(x => { const a = x0of(x.t0), b = x1of(x.t); if (a == null || !inV(x.p)) return; const y = Y(x.p);
+    g += `<line x1="${a}" x2="${b}" y1="${y}" y2="${y}" stroke="var(--ink)" stroke-width="1.2" stroke-dasharray="2 2"/><text x="${b - 2}" y="${y - 4}" text-anchor="end" font-size="${fs - 1}" font-weight="700" fill="var(--ink)">MSS</text>`; });
+  if (smcOn('smcSw')) (m.sweeps || []).forEach(w => { const i = ix(w.t); if (i == null) return; const bb = bars[i], y = w.dir > 0 ? Y(bb.l) + 12 : Y(bb.h) - 12;
+    g += `<text x="${X(i)}" y="${y}" text-anchor="middle" font-size="${fs}" fill="${w.dir > 0 ? '#dc2626' : '#2563eb'}">✕<title>${esc(`${w.name} ${w.p} swept ${w.t.slice(11, 16)}`)}</title></text>`; });
+  return g;
+}
+function vChartSMC() {
+  if (S.dt === undefined) { S.dt = null; setTimeout(loadDT, 0); }
+  if (S.dtMovers === undefined) { S.dtMovers = null; setTimeout(loadMovers, 0); }
+  const cfg = dtCfg(), tickers = cfg.tickers || ['QQQ', 'SPY'], sym = (hashParam('t') || '').toUpperCase() || tickers[0];
+  const P = { ...S.smcCfg, tf: S.smcTf }, k = `smc|${sym}|${S.smcTf}|${S.smcDays}|${JSON.stringify(S.smcCfg)}`, d = S.smcD && S.smcD.k === k ? S.smcD.d : null;
+  if (!d && S.smcBusy !== k) setTimeout(() => loadSMC(sym, k, P), 0);
+  const narrow = window.innerWidth < 800, side = !narrow, W = Math.max(320, window.innerWidth - 28 - (side ? chLeftW() + 252 : 0)), H = Math.max(420, window.innerHeight - (S.fcfHeadH || 58) - 120);
+  const id = 'smc-' + sym;
+  const zb = (q, l) => `<button class="btn" data-fczoom="${id}|${q}" style="padding:3px 10px">${l}</button>`;
+  const head = `<div class="fcf-head">${symSearch(sym, tickers)}<b style="font-size:1.25rem">${esc(sym)}</b> ${fcModeSeg()}
+    <span class="seg" title="Candle size">${[1, 5].map(m => `<button class="btn ${S.smcTf === m ? 'coachbtn' : ''}" data-smctf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
+    <span class="seg" title="Days">${[1, 3, 5, 10].map(n => `<button class="btn ${S.smcDays === n ? 'coachbtn' : ''}" data-smcdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
+    ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
+    <button class="btn" data-smcreload style="padding:3px 10px" title="Reload">↻</button><span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen">✕</a></div>`;
+  let main;
+  if (!d) main = '<p class="loading">Loading the candles and reading the chart…</p>';
+  else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
+  else {
+    main = fcSvg({ bars: d.bars, interval: d.interval, smc: d }, id, { W, H, smc: true, smcOnly: true, padRight: 40, smcSel: S.smcSel });
+    main += smcPanel(d, id);
+  }
+  return `<div class="fcf">${head}<div class="fcf-body">${side ? chLeft([['Smart money', SMC_LY]]) : ''}<div class="fcf-main">${main}</div>${side ? dtWatchSide(sym, tickers) : ''}</div></div>`;
+}
+async function loadSMC(sym, k, P) {
+  S.smcBusy = k;
+  try { S.smcD = { k, d: await api('/daytrade/smc', { method: 'POST', body: { t: sym, days: S.smcDays, cfg: P } }) }; } catch (e) { S.smcD = { k, d: { error: e.message } }; }
+  S.smcBusy = null; if (route() === 'botchart') render();
+}
+function smcPanel(d, id) {
+  const f = d.funnel || {}, st = d.stats || {}, w = f.why || {}, P = d.params || {};
+  const Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const step = (a, b, l) => `<span class="smc-f"><b>${b}</b> ${l}${a != null && a > 0 ? ` <span class="muted">(${Math.round(b / a * 100)}%)</span>` : ''}</span>`;
+  const fun = `<div class="smc-funnel">${step(null, f.sweeps || 0, 'sweeps')}→${step(f.sweeps, f.mss || 0, 'with MSS')}→${step(f.mss, f.fvg || 0, 'with FVG')}→${step(f.fvg, f.filled || 0, 'retraced & filled')}→${step(f.filled, f.wins || 0, 'winners')}
+    <span class="muted" style="font-size:.76rem">· stopped at: ${Object.entries(w).filter(([, v]) => v).map(([kk, v]) => `${esc(kk)} ${v}`).join(' · ') || '—'}</span>
+    <span style="margin-left:auto">${st.n ? `${st.n} trades · win ${st.win}% · avg ${Rf(st.avgR)} · total ${Rf(st.totR)}${st.pf ? ` · PF ${st.pf}` : ''}` : 'no trade in these days'}</span></div>`;
+  const ok = (x, n) => `<span class="smc-st ${x == null ? '' : x ? 'ok' : 'no'}">${x == null ? '·' : x ? '✓' : '✕'} ${n}</span>`;
+  const NAMES = ['Liquidity swept', 'Market structure shift', 'Fair value gap', 'Retracement', 'Risk & targets', 'Result'];
+  const list = (d.setups || []).filter(s => !S.smcFilled || s.fillT);
+  const rows = list.slice().reverse().map(s => {
+    const by = Object.fromEntries((s.steps || []).map(x => [x.name, x]));
+    const open_ = S.smcOpen === s.t;
+    return `<div class="smc-row ${s.fillT ? 'filled' : ''}"><button class="btn ${S.smcSel === s.t ? 'coachbtn' : ''}" data-smcsel="${esc(s.t)}" style="font-size:.74rem;padding:1px 7px;min-width:9.5em;text-align:left">${esc(s.t.slice(5, 16).replace('T', ' '))} ${s.dir > 0 ? 'LONG' : 'SHORT'}</button>
+      <span class="smc-chk">${NAMES.map((nm, q) => ok(by[nm] ? by[nm].ok : null, ['Sweep', 'MSS', 'FVG', 'Retrace', 'Risk', 'Result'][q])).join('')}</span>
+      <span style="min-width:5em;text-align:right">${s.R != null ? Rf(s.R) : `<span class="muted">${esc(s.status || '')}</span>`}</span>
+      <button class="btn" data-smcopen="${esc(s.t)}" style="font-size:.72rem;padding:0 6px">${open_ ? 'hide steps' : 'steps'}</button>
+      ${open_ ? `<ol class="smc-steps">${(s.steps || []).map(x => `<li class="${x.ok ? 'ok' : 'no'}"><b>${esc(x.name)}</b>: ${esc(x.text)}</li>`).join('')}</ol>` : ''}</div>`; }).join('');
+  const num = (key, step_, w_, l, u) => `<label class="smc-in"><span class="muted">${l}</span><input data-smccfg="${key}" type="number" step="${step_}" value="${esc(String(P[key] ?? ''))}" style="width:${w_}em">${u ? `<span class="muted">${u}</span>` : ''}</label>`;
+  const set = `<details class="smc-set"><summary><b>Rules</b> <span class="muted">(what the model checks)</span></summary><div style="display:flex;flex-wrap:wrap;gap:8px 14px;margin:6px 0">
+      ${num('orMin', 5, 3.2, 'opening range', 'min')}${num('pivot', 1, 2.8, 'swing = higher / lower than', 'candles each side')}${num('mssBars', 1, 3, 'MSS within', 'candles of the sweep')}
+      ${num('fvgMin', 0.05, 3.2, 'FVG at least', '× ATR')}${num('entryBars', 1, 3, 'retracement within', 'candles')}${num('stopBuf', 0.05, 3, 'stop beyond the sweep +', '× ATR')}${num('partial', 0.1, 3, 'partial at TP1', '(0–1)')}
+      <label class="smc-in"><span class="muted">entry</span><select data-smccfg="entryAt"><option value="edge" ${P.entryAt !== 'ce' ? 'selected' : ''}>FVG edge</option><option value="ce" ${P.entryAt === 'ce' ? 'selected' : ''}>FVG middle (CE)</option></select></label>
+      <label class="smc-in"><span class="muted">entries</span><input data-smccfg="startT" value="${esc(P.startT || '09:45')}" style="width:4em"><span class="muted">to</span><input data-smccfg="endT" value="${esc(P.endT || '15:00')}" style="width:4em"></label>
+      <button class="btn coachbtn" data-smcapply style="font-size:.8rem">Apply</button><button class="btn" data-smcdefault style="font-size:.8rem">Defaults</button></div></details>`;
+  return `<div class="smc-panel">${fun}${set}<label style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center;margin:2px 0 4px"><input type="checkbox" data-smcfilled ${S.smcFilled ? 'checked' : ''}> only the trades (filled setups)</label><div class="smc-list">${rows || '<p class="muted" style="margin:6px 0">No liquidity sweep in these days.</p>'}</div>
+    <p class="muted" style="font-size:.74rem;margin:6px 0 0">Liquidity: PDH / PDL (previous day), PM high / low (pre-market), ORH / ORL (opening range), the day's swings (EQH / EQL when two are equal). A setup: a pool is swept (✕) → a close beyond the last swing = MSS → the move leaves a fair value gap → price comes back into it (entry) → stop beyond the sweep, TP1 at the next opposite liquidity (partial, rest to breakeven), TP2 after it. Each row shows where it stopped.</p></div>`;
 }
 function wwLayerGroups() {                         // the wall watch chart's indicators, grouped for the left column
   const all = ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'hvc', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'];
@@ -2877,6 +2967,7 @@ function dtWhyBox() {
 }
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {
+  if (S.fcfMode === 'smc') return vChartSMC();
   if (S.fcfMode === 'dt') return vChartDT();
   if (S.fcfMode === 'sd') S.fcfMode = 'dt';
   if (S.fcfMode === 'ww') return vChartWW();
@@ -4728,13 +4819,27 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
   if (el.hasAttribute('data-chleft')) { S.chLeftOpen = !S.chLeftOpen; try { localStorage.setItem('chLeft', S.chLeftOpen ? '1' : '0'); } catch (err) {} render(); return; }
   if (el.dataset.chwl) { S.chWl = el.dataset.chwl; render(); return; }
   if (el.dataset.flowday) { S.flowDay = +el.dataset.flowday; render(); return; }
+  if (el.hasAttribute('data-smcfilled')) { S.smcFilled = el.checked; render(); return; }
+  if (el.dataset.smctf) { S.smcTf = +el.dataset.smctf; render(); return; }
+  if (el.dataset.smcdays) { S.smcDays = +el.dataset.smcdays; render(); return; }
+  if (el.hasAttribute('data-smcreload')) { S.smcD = null; render(); return; }
+  if (el.dataset.smcopen) { S.smcOpen = S.smcOpen === el.dataset.smcopen ? null : el.dataset.smcopen; render(); return; }
+  if (el.dataset.smcsel) {                         // zoom the chart on that setup
+    const t = el.dataset.smcsel, d = S.smcD && S.smcD.d, sym = (hashParam('t') || '').toUpperCase() || ((dtCfg().tickers || ['QQQ'])[0]);
+    S.smcSel = S.smcSel === t ? null : t;
+    if (S.smcSel && d && d.bars) { const s = (d.setups || []).find(x => x.t === t), i0 = d.bars.findIndex(b => b.t >= t), i1 = s && s.exitT ? d.bars.findIndex(b => b.t >= s.exitT) : i0 + 30;
+      if (i0 >= 0) S.fcZoom[fcKey('smc-' + sym)] = [Math.max(0, i0 - 40), Math.min(d.bars.length - 1, Math.max(i1, i0 + 10) + 25)]; }
+    render(); return; }
+  if (el.hasAttribute('data-smcapply')) { const c = {}; document.querySelectorAll('[data-smccfg]').forEach(i => { const v = i.value; c[i.dataset.smccfg] = i.type === 'number' ? +v : v; });
+    S.smcCfg = c; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {} render(); return; }
+  if (el.hasAttribute('data-smcdefault')) { S.smcCfg = {}; try { localStorage.removeItem('smcCfg'); } catch (err) {} render(); return; }
   if (el.dataset.stview) {
     const [act, id, sym, day] = el.dataset.stview.split('|');
     if (act === 'off') { S.dtView = null; render(); return; }

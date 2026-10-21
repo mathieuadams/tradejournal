@@ -450,3 +450,19 @@ tr.sel td{background:var(--sunk)}
 .rule-cat{display:flex;gap:6px;align-items:flex-start}
 .rule-cat-l{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);min-width:8.5em;padding-top:5px}
 .rule-chips{display:flex;flex-wrap:wrap;gap:5px;flex:1;min-width:0}
+.smc-panel{margin-top:8px;font-size:.84rem}
+.smc-funnel{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
+.smc-f{white-space:nowrap}
+.smc-set{margin:6px 0}
+.smc-in{display:inline-flex;gap:4px;align-items:center;font-size:.8rem}
+.smc-in input,.smc-in select{padding:1px 4px}
+.smc-list{display:flex;flex-direction:column}
+.smc-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid var(--line)}
+.smc-row.filled{background:color-mix(in srgb,var(--gain) 6%,transparent)}
+.smc-chk{display:flex;gap:4px;flex-wrap:wrap}
+.smc-st{font-size:.72rem;border:1px solid var(--line);border-radius:4px;padding:0 5px;color:var(--muted)}
+.smc-st.ok{color:var(--gain);border-color:var(--gain)}
+.smc-st.no{color:var(--loss);border-color:var(--loss)}
+.smc-steps{flex-basis:100%;margin:4px 0 4px 1.2em;padding:0}
+.smc-steps li{margin:2px 0}
+.smc-steps li.no{color:var(--loss)}
