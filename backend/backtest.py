@@ -320,11 +320,11 @@ def continue_history(sub):
 
 RULES = [  # (switch, label)
     ("greenOnly", "Green candle"), ("aboveFlip", "Above the flip"), ("abovePW", "Above the put wall"), ("belowPW", "Below the put wall"), ("cvdUp", "CVD > 0"), ("cvdDn", "CVD < 0"), ("vwapOn", "Above VWAP"), ("emaOn", "Above EMA"),
-    ("emaOverVwap", "EMA > VWAP"), ("noAboveCW", "Not above CW"), ("cwRoomOn", "Room to CW"),
+    ("emaOverVwap", "EMA > VWAP"), ("hvcAbove", "Above daily HVC"), ("hvcBelow", "Below daily HVC"), ("noAboveCW", "Not above CW"), ("cwRoomOn", "Room to CW"),
     ("skewOn", "Skew normal (middle third of 6 months)"), ("spyUp", "SPY trend up (6 days)"), ("kcNotExt", "Under the upper Keltner band"), ("orbAbove", "Above the opening range high"),
 ]
 OFF = {"usePW": True, "useFlip": True, "greenOnly": False, "aboveFlip": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "vwapOn": False, "emaOn": False,
-       "emaOverVwap": False, "noAboveCW": False, "cwRoomOn": False, "earnOn": False,
+       "emaOverVwap": False, "hvcAbove": False, "hvcBelow": False, "noAboveCW": False, "cwRoomOn": False, "earnOn": False,
        "spyUp": False, "kcNotExt": False, "orbAbove": False, "skewOn": False, "kcRide": False, "cwLost": False, "dpLost": False,
        "stopOn": True, "trailOn": False, "targetOn": False, "flipExit": False, "vwapExit": False, "emaExit": False}
 EXITS = [  # label, exit settings on top of the fixed stop

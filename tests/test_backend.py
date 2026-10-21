@@ -5381,6 +5381,30 @@ def test_daily_hvc_set_by_vwap_resets():
     assert out2[9][0] == 101.5 and out2[12][0] == 103.5
 
 
+def test_hvc_entry_rules():
+    """Entry rules on the daily HVC: above / below it at the entry candle (a miss says why)."""
+    import wallwatch
+    bars = []
+    for k, d in enumerate(["2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07"]):
+        for h in ("09:30", "10:30", "15:30"):
+            bars.append({"t": f"{d}T{h}", "o": 100, "h": 101, "l": 99, "c": 100, "v": 1000})
+    assert "hvcAbove" in wallwatch.SWITCHES and wallwatch.PARAMS["hvcBelow"] is False
+    w = {"callWall": 110, "flip": 102, "putWall": 100}
+    bars = [{"t": "2026-10-05T09:30", "o": 104, "h": 105.5, "l": 103.5, "c": 105},
+            {"t": "2026-10-05T10:30", "o": 105, "h": 105.2, "l": 103.0, "c": 103.2},
+            {"t": "2026-10-05T11:30", "o": 102.6, "h": 103.4, "l": 102.1, "c": 103.0},   # the retest entry (close 103)
+            {"t": "2026-10-06T09:30", "o": 103, "h": 110, "l": 102.9, "c": 109}]
+    al = [{"t": "2026-10-05T10:00", "c": 1, "p": 900000}]
+    ws = {"2026-10-05": w, "2026-10-06": w}
+    run = (lambda on, lvl, m=None: wallwatch.detect_retest(bars, ws, cfg={on: True}, alerts=al,
+                                                           extra={"hvc": {b["t"][:16]: lvl for b in bars}, "misses": m if m is not None else []})[0])
+    assert run("hvcAbove", 102.5) and not run("hvcAbove", 104.0)
+    assert run("hvcBelow", 104.0) and not run("hvcBelow", 102.5)
+    m = []
+    run("hvcAbove", 104.0, m)
+    assert any("daily HVC" in x.get("r", "") for x in m), m
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

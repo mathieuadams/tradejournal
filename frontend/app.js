@@ -3713,6 +3713,8 @@ const WW_RULES = [
   ['cvdFall', 'Entry', 'CVD falling', 'The CVD (sum of the last N candles) is lower than on the candle before'],
   ['vwapOn', 'Entry', 'Above VWAP', 'The entry candle must close above the anchored VWAP'],
   ['emaOn', 'Entry', 'Above EMA', 'The entry candle must close above the hourly EMA (length in the EMA row)'],
+  ['hvcAbove', 'Entry', 'Above daily HVC', 'The entry candle must close above the daily high-volume close (the cyan line: the close of the day of the last VWAP reset)'],
+  ['hvcBelow', 'Entry', 'Below daily HVC', 'The entry candle must close under the daily high-volume close (the cyan line)'],
   ['emaOverVwap', 'Entry', 'EMA > VWAP', 'The EMA must be above the anchored VWAP on the entry candle (uptrend)'],
   ['skewOn', 'Entry', 'Skew normal', 'Only when the 25-delta skew (put IV − call IV, ~30 days) is in the middle third of its last 6 months: neither calls already bid nor puts bid (fear)'],
   ['spyUp', 'Entry', 'SPY trend up', 'SPY above its close of 6 sessions ago (the TOS ttmTrend of SPY)'],
@@ -3775,6 +3777,7 @@ const WW_IND = [
   ['walls', 'Gamma walls', 'walls', [['retestZone', 'retest zone', 0.05, 4, '× ATR', 0.25]], 'Put wall, call wall and gamma flip of each day; a candle retests a wall when its low comes within the zone', ['usePW', 'useFlip', 'aboveFlip', 'abovePW', 'belowPW', 'pwExit', 'noAboveCW', 'cwRoomOn', 'pwNeCw', 'targetOn', 'flipExit', 'cwLost', 'pvEod']],
   ['flow', 'Options flow', 'flow', [['retestMin', 'call alert ≥ $', 50, 4.2, 'K', 500000, 1000], ['retestDays', 'wait', 1, 3, 'days', 5], ['relMult', 'unusual', 0.5, 3, '× median', 3]], 'Call alerts bought at the ask (Unusual Whales); the retest must come within the wait', ['alertReq', 'relFlow']],
   ['vwap', 'Anchored VWAP', 'vwap', [['vwapDays', 'reset on highest volume of', 1, 3.2, 'days', 10]], 'VWAP restarted on the hourly candle with the highest volume of the period', ['vwapOn', 'vwapReset', 'emaOverVwap', 'vwapExit']],
+  ['hvc', 'Daily HVC', 'hvc', [], 'Daily high-volume close: the close of the day of the last VWAP reset (bands: + ADR% / − 0.618 ADR%)', ['hvcAbove', 'hvcBelow']],
   ['ema', 'EMA (hourly)', 'ema', [['emaLen', 'length', 1, 3.4, '', 20]], 'Exponential average of the hourly closes', ['emaOn', 'emaOverVwap', 'emaExit']],
   ['kcd', 'Keltner daily', 'kc', [['kcLen', 'EMA', 1, 3.2, '', 21], ['kcMult', '±', 0.5, 3, '× ATR', 3]], 'Daily candles (today building up hour by hour): over-extension', ['kcNotExt', 'kcdLower', 'kcRide']],
   ['kch', 'Keltner hourly', 'kch', [['kchLen', 'EMA', 1, 3.2, '', 21], ['kchMult', '±', 0.5, 3, '× ATR', 3]], 'Hourly candles: entry fine tuning', ['kchLower']],
@@ -3814,7 +3817,7 @@ function wwRulePanel(vals, sw, mode, shown) {
 // the rules of one group (Entry / Filter / Exit) sorted into families: inertia together, squeeze together...
 const RULE_CATS = [['Stops & targets', /\bstop\b|trailing|target|sell part|breakeven|time stop|daily loss|scale/i, true],
   ['Gamma walls', /\bPW\b|\bCW\b|flip|wall|support/i], ['Options flow', /alert|unusual|skew|flow/i], ['Inertia', /inertia/i],
-  ['Squeeze', /squeeze/i], ['CVD', /\bCVD\b/i], ['VWAP & EMA', /vwap|ema/i], ['Keltner', /\bKC\b|keltner/i],
+  ['Squeeze', /squeeze/i], ['CVD', /\bCVD\b/i], ['VWAP & EMA', /vwap|ema|hvc/i], ['Keltner', /\bKC\b|keltner/i],
   ['Levels & gaps', /fvg|orb|opening range|dark pool|pre-market|prev|LIS|fib|zone|level|gap/i],
   ['Market', /SPY|VIX|breadth|other ticker|relative volume|lunch/i], ['Earnings', /earning/i]];
 function ruleCat(r) {
@@ -3831,7 +3834,7 @@ function ruleGroup(g, rules, chip) {
 }
 const LAB_ONLY = ['pwTest'];   // daily-timeframe only: the live bot runs on hourly candles   // rules the live bot can't do yet: shown in the Strategy lab only
 const WW_CORE = ['earnExit', 'alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
-const WW_DEF_ON = { inFall: false, inhFall: false, sqhRise: false, sqhFall: false, sqdRise: false, sqdFall: false, cvdRise: false, cvdFall: false, inRiseX: false, inhRiseX: false, inhRedX: false, sqhRiseX: false, sqdRiseX: false, cvdRiseX: false, cvdFallX: false, pwExit: false, sqhTurn: false, sqdTurn: false, sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, abovePW: false, belowPW: false, cvdUp: false, cvdDn: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
+const WW_DEF_ON = { hvcAbove: false, hvcBelow: false, inFall: false, inhFall: false, sqhRise: false, sqhFall: false, sqdRise: false, sqdFall: false, cvdRise: false, cvdFall: false, inRiseX: false, inhRiseX: false, inhRedX: false, sqhRiseX: false, sqdRiseX: false, cvdRiseX: false, cvdFallX: false, pwExit: false, sqhTurn: false, sqdTurn: false, sqhOn: false, sqhFire: false, sqhMom: false, sqhExit: false, sqdOn: false, sqdFire: false, sqdMom: false, sqdExit: false, inhGreen: false, inhNotRed: false, inhYExit: false, pwTest: false, inYExit: false, inGreen: false, inNotRed: false, inRedExit: false, kcdLower: false, kchLower: false, scaleOn: false, scaleBE: true, fvgExit: false, fvgOn: false, relFlow: true, alertReq: true, vwapReset: false, pwNeCw: false, pvEod: false, aboveFlip: false, abovePW: false, belowPW: false, cvdUp: false, cvdDn: false, vwapOn: false, emaOn: false, vwapExit: false, emaExit: false, emaOverVwap: false, spyUp: false, kcNotExt: false, orbAbove: false, skewOn: false, kcRide: false, cwLost: false, dpLost: false };
 S.wwSw = S.wwSw || null;
 try { S.rtUseLab = localStorage.getItem('rtUseLab') === '1'; } catch (e) { S.rtUseLab = false; }
 try { S.chartDaily = localStorage.getItem('chartDaily') === '1'; } catch (e) { S.chartDaily = false; }
@@ -4118,7 +4121,7 @@ async function loadLabTest() {
 function labRedraw() { labSave(); const sym = labSymbol(); Object.keys(S.fc).filter(x => x.includes('ww-lab-')).forEach(x => { delete S.fc[x]; }); clearTimeout(S.labT); S.labT = setTimeout(() => loadLabChart(sym), 600); render(); }
 function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(); return t || l[0] || ''; }
 try { S.chartLab = localStorage.getItem('chartLab') === '1'; } catch (e) { S.chartLab = false; }
-const HOURLY_ONLY = ['alertReq', 'relFlow', 'vwapReset', 'usePW', 'useFlip', 'vwapOn', 'emaOverVwap', 'skewOn', 'spyUp', 'kchLower', 'orbAbove', 'pvEod', 'vwapExit', 'dpLost'];
+const HOURLY_ONLY = ['hvcAbove', 'hvcBelow', 'alertReq', 'relFlow', 'vwapReset', 'usePW', 'useFlip', 'vwapOn', 'emaOverVwap', 'skewOn', 'spyUp', 'kchLower', 'orbAbove', 'pvEod', 'vwapExit', 'dpLost'];
 const DAILY_PRESET = { tf: '1D', pwTest: true, inGreen: true, fvgOn: true, inYExit: true, greenOnly: false, inNotRed: false, emaOn: false, kcdLower: false, kcNotExt: false, aboveFlip: false, abovePW: false, belowPW: false, cvdUp: false, cvdDn: false, noAboveCW: false, cwRoomOn: false, earnOn: false, pwNeCw: false, stopOn: true, trailOn: false, targetOn: false, flipExit: false, pwExit: false, kcRide: false, cwLost: false, fvgExit: false, scaleOn: false, inRedExit: false, emaExit: false };
 function labPanel() {
   const L = labCfg() || {};

@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False, "fxEntry": "", "fxExit": "", "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "inFall": False, "inhFall": False, "sqhRise": False, "sqhFall": False, "sqdRise": False, "sqdFall": False, "cvdRise": False, "cvdFall": False, "inRiseX": False, "inhRiseX": False, "inhRedX": False, "sqhRiseX": False, "sqdRiseX": False, "cvdRiseX": False, "cvdFallX": False,
+          "inYExit": False, "fxEntry": "", "fxExit": "", "hvcAbove": False, "hvcBelow": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "inFall": False, "inhFall": False, "sqhRise": False, "sqhFall": False, "sqdRise": False, "sqdFall": False, "cvdRise": False, "cvdFall": False, "inRiseX": False, "inhRiseX": False, "inhRedX": False, "sqhRiseX": False, "sqdRiseX": False, "cvdRiseX": False, "cvdFallX": False,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -137,7 +137,7 @@ EXTRA_SW = ("inFall", "inhFall", "sqhRise", "sqhFall", "sqdRise", "sqdFall", "cv
 EXTRA_NUM = ("cvdN", "sqTurnN", "inhN1", "inhN2", "inhN3", "sqhLen", "sqhBB", "sqhKC", "sqdLen", "sqdBB", "sqdKC", "sqFireN")
 
 
-SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower", "inGreen", "inNotRed", "inRedExit")
+SWITCHES = ("usePW", "useFlip", "greenOnly", "noAboveCW", "cwRoomOn", "earnOn", "vwapOn", "emaOn", "stopOn", "trailOn", "targetOn", "vwapExit", "emaExit", "emaOverVwap", "spyUp", "kcNotExt", "orbAbove", "skewOn", "kcRide", "cwLost", "dpLost", "pvSetup", "pvEod", "relFlow", "fvgOn", "fvgExit", "scaleOn", "scaleBE", "kchLower", "alertReq", "vwapReset", "pwNeCw", "kcdLower", "inGreen", "inNotRed", "inRedExit", "hvcAbove", "hvcBelow")
 
 
 def save_config(sub, body):
@@ -1164,6 +1164,17 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         s0 = squeeze(db0, int(P.get("sqdLen") or 20), float(P.get("sqdBB") or 2), float(P.get("sqdKC") or 1.5), fire_n)
         at0 = {b["t"][:10]: x for b, x in zip(db0, s0)}
         sqd_x = [at0.get(b["t"][:10]) for b in bars]
+    hvl = None
+    if on("hvcAbove") or on("hvcBelow"):              # daily high-volume close, set by the VWAP resets
+        if extra.get("hvc") is not None:
+            hvl = [extra["hvc"].get(b["t"][:16]) for b in bars]
+        else:
+            if extra.get("vwResets") is not None:
+                rs0 = set(extra["vwResets"])
+                ridx = [i for i, b in enumerate(bars) if b["t"][:16] in rs0]
+            else:
+                ridx = anchored_vwap(bars, int(P.get("vwapDays") or VWAP_DAYS))[1]
+            hvl = [x[0] if x else None for x in hvc_series(bars, ridx)]
     if on("vwapReset"):
         if extra.get("vwResets") is not None:
             rs_ = set(extra["vwResets"])
@@ -1303,6 +1314,12 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             if on("vwapOn") and not (vwap[i] is not None and b["c"] > vwap[i]):
                 miss(b, f"close {b['c']:.2f} under the VWAP {vwap[i]:.2f}" if vwap[i] is not None else "no VWAP yet")
                 continue                               # rule on: the close must be above the VWAP
+            if on("hvcAbove") and not (hvl[i] is not None and b["c"] > hvl[i]):
+                miss(b, f"close {b['c']:.2f} under the daily HVC {hvl[i]:.2f}" if hvl[i] is not None else "no daily HVC yet")
+                continue                               # rule on: the close must be above the daily high-volume close
+            if on("hvcBelow") and not (hvl[i] is not None and b["c"] < hvl[i]):
+                miss(b, f"close {b['c']:.2f} above the daily HVC {hvl[i]:.2f}" if hvl[i] is not None else "no daily HVC yet")
+                continue                               # rule on: the close must be under the daily high-volume close
             if on("emaOn") and not (ema[i] is not None and b["c"] > ema[i]):
                 miss(b, "close under the EMA")
                 continue                               # rule on: the close must be above the EMA
@@ -1730,7 +1747,8 @@ def check_ticker(sub, key, sym, days, now, since=None):
                     print("dark pool levels failed", sym, e)
             rs, watch = detect_retest(rb, walls, first, cfg, datr, ticker_alerts(sub, sym, max_age_h=1), earn, vmap, emap,
                                       {"kc": kmap, "kch": khmap, "spy": spy, "skewPct": skp, "misses": misses, "dpLevels": dpm,
-                                       "vwResets": [bars[i]["t"][:16] for i in vres_full if i > 0]})
+                                       "vwResets": [bars[i]["t"][:16] for i in vres_full if i > 0],
+                                       "hvc": {b["t"][:16]: x[0] for b, x in zip(bars, hvc_series(bars, vres_full)) if x}})
             try:
                 db.put({"PK": db.upk(sub), "SK": f"WWMISS#{sym}", "misses": misses[-400:], "v": version(cfg), "at": iso(now_ny())})
             except Exception as e:
