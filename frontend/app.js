@@ -1326,10 +1326,11 @@ function fcClean(d) {                       // drop malformed rows so one bad re
   const bars = (d.bars || []).filter(b => ok(b) && isFinite(b.o) && isFinite(b.h) && isFinite(b.l) && isFinite(b.c)).sort((a, b) => a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
   return { ...d, bars, alerts: (d.alerts || []).filter(ok), walls: (d.walls || []).filter(ok), evals: (d.evals || []).filter(ok) };
 }
+const fmtInt = v => { const x = Math.round(+v || 0); return (x < 0 ? '-' : '') + String(Math.abs(x)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); };   // (no Intl: cheap and safe)
 function fcSvg(d, id, opts) {
   try { return fcSvg0(fcClean(d), id, opts); } catch (e) {
     console.error('flow chart', e); S.fcZoom[fcKey(id)] = null;
-    const where = ((e.stack || '').split('\n')[1] || '').trim().slice(0, 120);
+    const where = (e.stack || '').split('\n').slice(1, 4).map(x => x.trim().replace(/^at /, '').replace(/\(?https?:\/\/[^)]*\/([^/)]+)\)?/, '$1')).join(' ← ').slice(0, 240);
     return `<p class="muted" style="margin:0">The chart couldn't be drawn (${esc(e.message)}${where ? ` — ${esc(where)}` : ''}). <button class="btn" data-fczoom="${esc(id)}|reset">Reset the view</button></p>`;
   }
 }
@@ -1648,7 +1649,7 @@ function fcSvg0(d, id, opts) {
     const mxn = Math.max(...d.big.map(x => x[1] * x[2]));
     d.big.forEach(([t, p, sz, side]) => { const i = at(t); if (i == null || p < lo || p > hi) return;
       const r = 3 + 9 * Math.sqrt(p * sz / mxn), c = side > 0 ? '#16a34a' : '#dc2626';
-      g += `<circle cx="${X(i)}" cy="${Y(p)}" r="${r.toFixed(1)}" fill="${c}" fill-opacity=".28" stroke="${c}" stroke-width="1.2"><title>${esc(`${t.replace('T', ' ').slice(5)} · ${side > 0 ? 'BUY' : 'SELL'} ${sz.toLocaleString()} @ ${p} · $${(p * sz / 1e6).toFixed(2)}M`)}</title></circle>`; });
+      g += `<circle cx="${X(i)}" cy="${Y(p)}" r="${r.toFixed(1)}" fill="${c}" fill-opacity=".28" stroke="${c}" stroke-width="1.2"><title>${esc(`${t.replace('T', ' ').slice(5)} · ${side > 0 ? 'BUY' : 'SELL'} ${fmtInt(sz)} @ ${p} · $${(p * sz / 1e6).toFixed(2)}M`)}</title></circle>`; });
   }
   if (VH) {                                            // buy / sell pressure, estimated from each candle: the close's place in its range
     const real = LY.cvd && d.cvd ? d.cvd : null;           // real order flow: trades classified one by one (per minute)
@@ -1676,10 +1677,10 @@ function fcSvg0(d, id, opts) {
       + `<text x="${L + 2}" y="${VT + 10}" font-size="${fs}" fill="var(--muted)">CVD ${nReal ? (nReal === n ? '(REAL: every trade classified buy / sell)' : '(real where loaded, estimated elsewhere)') : '(estimated: volume split by where each candle closes in its range)'}${d.flowLoading ? ' · loading the trades…' : ''} · ${rollN ? `sum of the last ${rollN} candles` : `running total${d.daily ? '' : ' from each day\'s open'}`} · cyan / blue = above 0 rising / falling, yellow / red = below 0 rising / falling · dots = the entries · last 20 candles: ${who}</text>`;
     bars.forEach((b, i) => { const v = cd[i], up = v > prevCd(i), y = CY(v);
       const col = v >= 0 ? (up ? '#06b6d4' : '#1d4ed8') : (up ? '#eab308' : '#dc2626');
-      g += `<rect x="${X(i) - hw / 2}" y="${Math.min(y, Z)}" width="${hw}" height="${Math.max(1, Math.abs(y - Z))}" fill="${col}"><title>${esc(b.t.replace('T', ' ').slice(5))} · CVD ${Math.round(v).toLocaleString()} ${up ? 'rising' : 'falling'} · this candle: buy ≈ ${Math.round(pr[i].buy).toLocaleString()} · sell ≈ ${Math.round(pr[i].sell).toLocaleString()}</title></rect>`; });
+      g += `<rect x="${X(i) - hw / 2}" y="${Math.min(y, Z)}" width="${hw}" height="${Math.max(1, Math.abs(y - Z))}" fill="${col}"><title>${esc(b.t.replace('T', ' ').slice(5))} · CVD ${fmtInt(Math.round(v))} ${up ? 'rising' : 'falling'} · this candle: buy ≈ ${fmtInt(Math.round(pr[i].buy))} · sell ≈ ${fmtInt(Math.round(pr[i].sell))}</title></rect>`; });
     g += `<text x="${W - Rr + 6}" y="${Z + 4}" font-size="${fs - 1}" fill="var(--muted)">0</text>`;
     if (d.signals && LY.sig !== false) d.signals.forEach(sg => { const i = idx[sg.at] ?? at(sg.at); if (i == null) return;   // where the CVD was at each entry
-      g += `<circle cx="${X(i)}" cy="${CY(cd[i])}" r="3.5" fill="${sg.side < 0 ? '#dc2626' : '#16a34a'}" stroke="var(--surface)" stroke-width="1"><title>${esc(`${sg.side < 0 ? 'SHORT entry' : 'LONG entry'}${sg.kind && sg.kind !== 'day' ? ' (' + ({ retest: 'retest', flip: 'flip', merged: 'merged' }[sg.kind] || sg.kind) + ')' : ''} ${sg.at.replace('T', ' ').slice(5)} · CVD ${Math.round(cd[i]).toLocaleString()} (${cd[i] > 0 ? 'above' : 'below'} 0, ${cd[i] > prevCd(i) ? 'rising' : 'falling'})`)}</title></circle>`; });
+      g += `<circle cx="${X(i)}" cy="${CY(cd[i])}" r="3.5" fill="${sg.side < 0 ? '#dc2626' : '#16a34a'}" stroke="var(--surface)" stroke-width="1"><title>${esc(`${sg.side < 0 ? 'SHORT entry' : 'LONG entry'}${sg.kind && sg.kind !== 'day' ? ' (' + ({ retest: 'retest', flip: 'flip', merged: 'merged' }[sg.kind] || sg.kind) + ')' : ''} ${sg.at.replace('T', ' ').slice(5)} · CVD ${fmtInt(Math.round(cd[i]))} (${cd[i] > 0 ? 'above' : 'below'} 0, ${cd[i] > prevCd(i) ? 'rising' : 'falling'})`)}</title></circle>`; });
     const fmt = v => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : Math.round(v);
     g += `<text x="${W - Rr + 6}" y="${CY(cd[cd.length - 1]) + 4}" font-size="${fs - 1}" fill="var(--coach,#5b5bd6)">${cd[cd.length - 1] >= 0 ? '+' : ''}${fmt(cd[cd.length - 1])}</text>`;
   }
@@ -1755,9 +1756,14 @@ document.addEventListener('mouseup', () => {          // a watchlist box resized
 function wwTickers() { return ((S.ww && S.ww.config && S.ww.config.tickers) || []); }
 async function loadWwChart(sym) {
   const k = fcKey('ww-' + sym); S.fcBusy[k] = true;
-  try { S.fc[k] = await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`); } catch (e) { S.fc[k] = { error: e.message }; }
+  try { S.fc[k] = { ...(await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`)), _at: Date.now() }; }
+  catch (e) { if (!S.fc[k] || S.fc[k].error) S.fc[k] = { error: e.message, _at: Date.now() }; }   // a failed refresh keeps the chart
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
+const FC_REFRESH_MS = 5 * 60 * 1000;               // an open chart reloads its candles / walls / flow every 5 minutes
+setInterval(() => {                                // the check runs on a redraw: one a minute while a chart is open and seen
+  if (route() === 'botchart' && document.visibilityState === 'visible' && !document.querySelector('input:focus,select:focus,textarea:focus')) render();
+}, 60000);
 const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
@@ -1774,7 +1780,13 @@ function vChartWW() {
     if (!S.fc[dk] || S.fc[dk]._src !== d) S.fc[dk] = { ...fcDaily(d), _src: d };
     S.fcDp[dk] = S.fcDp[k];
   }
-  if (sym && !d && !S.fcBusy[k]) { S.fcBusy[k] = true; setTimeout(() => labOn ? loadLabChart(sym) : loadWwChart(sym), 0); }
+  if (sym && !S.fcBusy[k] && (!d || Date.now() - (d._at || 0) > FC_REFRESH_MS)) {   // first load, or a refresh (the old chart stays meanwhile)
+    S.fcBusy[k] = true; setTimeout(() => labOn ? loadLabChart(sym) : loadWwChart(sym), 0);
+  }
+  if (sym && d && !d.error && !labOn && !S.wwTk[sym] && ((d.missingDays || 0) + (d.noflipDays || 0)) > 0 && !(S.wwAutoFill || {})[sym]) {
+    S.wwAutoFill = { ...(S.wwAutoFill || {}), [sym]: true };   // walls missing: fetched by themselves (once per ticker per visit)
+    setTimeout(() => wwTkFill(sym), 0);
+  }
   if (sym) fcNeedDark(id);
   const sigs = (d && d.signals) || [];
   const selK = S.wwSel && S.wwSel.sym === sym ? sigs.findIndex(x => x.at === S.wwSel.at) : -1;
@@ -3897,7 +3909,7 @@ async function wwTkFill(sym) {
   const poll = async () => {
     n++;
     const k = fcKey('ww-' + sym);
-    try { S.fc[k] = await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`); } catch (e) {}
+    try { S.fc[k] = { ...(await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`)), _at: Date.now() }; } catch (e) {}
     const f = (S.fc[k] && S.fc[k].fill) || {};
     if (f.running && n < 40) { if (route() === 'botchart') render(); S.wwTkPoll[sym] = setTimeout(poll, 8000); return; }
     S.wwTk[sym] = false; loadWatch();
@@ -4070,7 +4082,8 @@ const labLive = () => { const c = (S.ww && S.ww.config) || {}, L = labCfg() || {
   return Object.keys(L).filter(k => L[k] !== undefined && String(L[k]) !== String(c[k] ?? def(k))).length; };
 async function loadLabChart(sym) {
   const k = fcKey('ww-lab-' + sym); S.fcBusy[k] = true; if (route() === 'botchart') render();
-  try { S.fc[k] = await api('/bot/lab/chart', { method: 'POST', body: { t: sym, days: S.wwDays || 45, cfg: labCfg(), flow: !!S.fcLayers.flow } }); } catch (e) { S.fc[k] = { error: e.message }; }
+  try { S.fc[k] = { ...(await api('/bot/lab/chart', { method: 'POST', body: { t: sym, days: S.wwDays || 45, cfg: labCfg(), flow: !!S.fcLayers.flow } })), _at: Date.now() }; }
+  catch (e) { if (!S.fc[k] || S.fc[k].error) S.fc[k] = { error: e.message, _at: Date.now() }; }
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
 async function loadOptTest() {
