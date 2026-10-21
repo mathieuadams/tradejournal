@@ -19,13 +19,16 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /* ---------- API ---------- */
+const API_TIMEOUT_MS = 45000;                     // API Gateway stops at 29 s: past 45 s the connection is dead
 async function api(path, { method = 'GET', body } = {}) {
   const token = await Auth.token();
   if (!token) { Auth.login(); return new Promise(() => {}); }
   let r;
-  try {
-    r = await fetch(C.apiUrl + path, { method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
-  } catch (e) { throw new Error('Can’t reach the server. Check your connection and try again.'); }
+  const ac = new AbortController(), tm = setTimeout(() => ac.abort(), API_TIMEOUT_MS);   // a hung connection (after sleep, a
+  try {                                                                                   // network change) fails instead of waiting forever
+    r = await fetch(C.apiUrl + path, { method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: ac.signal });
+  } catch (e) { throw new Error(ac.signal.aborted ? 'The server didn’t answer in time — click ↻ to try again.' : 'Can’t reach the server. Check your connection and try again.'); }
+  finally { clearTimeout(tm); }
   if (r.status === 401) { Auth.login(); return new Promise(() => {}); }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(data.error || (r.status >= 500 ? `The server took too long or failed (${r.status}) — try a shorter period (45d / 90d) and reload.` : `Request failed (${r.status}).`)); e.status = r.status; throw e; }
@@ -1830,11 +1833,26 @@ function vChartWW() {
         return `<div class="wl-sec" style="border-bottom:2px solid var(--line)"><div style="display:flex;align-items:center;gap:4px;padding:4px 6px;background:var(--sunk)">
           <button class="btn" data-wltoggle="${esc(L.name)}" style="font-size:.7rem;padding:0 6px">${open_ ? '▾' : '▸'}</button><b style="font-size:.78rem;flex:1;text-transform:uppercase;letter-spacing:.04em">${esc(L.name)} <span class="muted">(${L.tickers.length})</span></b>
           ${!['Main', 'Unusual flow'].includes(L.name) ? `<button class="btn" data-wlren="${esc(L.name)}" title="Rename" style="font-size:.7rem;padding:0 6px">✎</button><button class="btn" data-wldel="${esc(L.name)}" title="Delete this list" style="font-size:.7rem;padding:0 6px">✕</button>` : ''}</div>
-          ${open_ ? `<div class="wl-box" data-wlbox="${esc(L.name)}" style="height:${h || (L.name === 'Main' ? 420 : 200)}px;resize:vertical;overflow:auto;min-height:60px"><ul class="fcf-list" style="overflow:visible">${L.tickers.map(x => { const b = bySym[x] || { n: 0, t: 0, open: 0, tot: 0 }, st = stMap[x] || {}, ad = added[x];
+          ${open_ && L.name === 'Unusual flow' ? flowTabs(L, added) : ''}
+          ${open_ ? `<div class="wl-box" data-wlbox="${esc(L.name)}" style="height:${h || (L.name === 'Main' ? 420 : 200)}px;resize:vertical;overflow:auto;min-height:60px"><ul class="fcf-list" style="overflow:visible">${(L.name === 'Unusual flow' ? flowPick(L, added) : L.tickers).map(x => { const b = bySym[x] || { n: 0, t: 0, open: 0, tot: 0 }, st = stMap[x] || {}, ad = added[x];
         return `<li data-sym="${esc(x)}" ${S.fcfQ && !x.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x)}" ${x === sym ? 'aria-current="true"' : ''}>
         <span><b>${esc(x)}</b>${b.open ? ' <span class="exchip" style="font-size:.7rem">open</span>' : ''}${ad && ad.by === 'flow' ? ` <span class="exchip" style="font-size:.7rem" title="Added ${esc((ad.at || '').replace('T', ' ').slice(5, 16))} from unusual call flow ${money(ad.premium || 0, false)}">flow ${esc((ad.at || '').slice(5, 10))}</span>` : ''}<br><span class="muted" style="font-size:.75rem">${b.n} signal${b.n === 1 ? '' : 's'}${b.n ? ` · ${b.t} target` : ''}</span></span>
         <span data-q="${esc(x)}" data-setup="${st.setup ? 1 : ''}" style="text-align:right;font-variant-numeric:tabular-nums;line-height:1.25">${qHtml(x, !!st.setup)}</span></a><span class="wl-act"><button class="btn" data-wlmv="${esc(L.name)}|${esc(x)}" title="Move to another list" style="font-size:.68rem;padding:0 5px">⇄</button><button class="btn" data-wlrm="${esc(L.name)}|${esc(x)}" title="Remove from ${esc(L.name)}" style="font-size:.68rem;padding:0 5px">✕</button></span></li>`; }).join('')}</ul></div>` : ''}</div>`; }).join('')}</aside>`;
   return `<div class="fcf">${headBar}<div class="fcf-body">${narrow ? '' : chLeft(wwLayerGroups())}<div class="fcf-main">${narrow && sym ? fcLayerBar(id) : ''}${main}${S.ww && !S.hideSettings ? `<div class="ch-settings">${labOn ? labPanel() : wwParams(true)}</div>` : ''}</div>${side}</div></div>`;
+}
+function flowGroups(L, added) {                   // the Unusual flow list by day: today, yesterday, the day before
+  const ds = [...new Set((L.tickers || []).map(t => ((added[t] || {}).at || '').slice(0, 10)).filter(Boolean))].sort().reverse().slice(0, 3);
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  return ds.map((d, i) => ({ date: d, label: d === today ? 'Today' : i === 0 || (i === 1 && ds[0] === today) ? 'Yesterday' : d.slice(5),
+    tickers: (L.tickers || []).filter(t => ((added[t] || {}).at || '').slice(0, 10) === d).sort((a, b) => ((added[b] || {}).premium || 0) - ((added[a] || {}).premium || 0)) }));
+}
+function flowPick(L, added) {
+  const g = flowGroups(L, added);
+  return g.length ? (g[Math.min(S.flowDay || 0, g.length - 1)] || {}).tickers || [] : (L.tickers || []);
+}
+function flowTabs(L, added) {
+  const g = flowGroups(L, added), k = Math.min(S.flowDay || 0, Math.max(0, g.length - 1));
+  return g.length ? `<div style="display:flex;gap:3px;flex-wrap:wrap;padding:4px 6px">${g.map((x, i) => `<button class="btn ${i === k ? 'coachbtn' : ''}" data-flowday="${i}" style="font-size:.72rem;padding:0 7px" title="${esc(x.date)}: tickers whose unusual call flow came that day (largest premium first)">${esc(x.label)} (${x.tickers.length})</button>`).join('')}</div>` : '';
 }
 function wwLayerGroups() {                         // the wall watch chart's indicators, grouped for the left column
   const all = ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'];
@@ -2281,7 +2299,7 @@ function dtPanel() {
   const chip = ([k, , l, tip, f]) => { const on = !!c[k];
     return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${on ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${on ? '' : 'opacity:.55'}">
       <button class="btn" data-dtsw="${k}" title="${esc(tip)}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button><span style="font-size:.8rem" title="${esc(tip)}">${l}</span>${(!f ? [] : Array.isArray(f[0]) ? f : [f]).map(x => ` ${x[6] ? `<span class="muted" style="font-size:.72rem">${x[6]}</span> ` : ''}${x[5] === 'time' ? `<input data-dttime="${x[0]}" value="${esc(c[x[0]] || x[4])}" style="width:${x[2]}em;padding:1px 4px">` : x[5] === 'sel' ? `<select data-dtsel="${x[0]}" style="padding:0 2px;font-size:.78rem">${x[7].map(([v, l]) => `<option value="${v}" ${(c[x[0]] || x[4]) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>` : num(x[0], x[1], x[2], x[4])}<span class="muted" style="font-size:.75rem">${x[3]}</span>`).join('')}</span>`; };
-  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${DT_RULES.filter(r => r[1] === g).map(chip).join('')}</div>`;
+  const grp = g => ruleGroup(g, DT_RULES.filter(r => r[1] === g), chip);
   const tog = (k, l) => `<button class="btn ${c[k] ? 'coachbtn' : ''}" data-dtsw="${k}" style="font-size:.78rem;padding:1px 10px">${l}</button>`;
   const tm = (k, l) => `<span class="muted" style="font-size:.78rem">${l}</span> <input data-dttime="${k}" value="${esc(c[k] || '')}" style="width:4.2em;padding:1px 4px">`;
   return `<div style="display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0">
@@ -2607,7 +2625,8 @@ function dtWatchSide(sym, tickers) {               // right column: the watchlis
   let body;
   if (tab === 'movers') body = moversBox(sym, true);
   else if (tab === 'day') body = `<ul class="fcf-list">${(tickers || []).map(x => `<li>${row(x)}</li>`).join('')}</ul>`;
-  else { const L = lists.find(L0 => `wl:${L0.name}` === tab); body = L ? `<ul class="fcf-list">${(L.tickers || []).map(x => `<li>${row(x)}</li>`).join('') || '<li class="muted" style="padding:8px">Empty list</li>'}</ul>` : '<p class="muted" style="padding:8px">Loading…</p>'; }
+  else { const L = lists.find(L0 => `wl:${L0.name}` === tab), ad = (((S.ww || {}).config || {}).added) || {}, fl = L && L.name === 'Unusual flow';
+    body = L ? `${fl ? flowTabs(L, ad) : ''}<ul class="fcf-list">${(fl ? flowPick(L, ad) : (L.tickers || [])).map(x => `<li>${row(x)}</li>`).join('') || '<li class="muted" style="padding:8px">Empty list</li>'}</ul>` : '<p class="muted" style="padding:8px">Loading…</p>'; }
   return `<aside class="fcf-side ch-right"><div class="ch-tabs">${tabs.map(([k, l]) => `<button class="btn ${k === tab ? 'coachbtn' : ''}" data-chwl="${esc(k)}" style="font-size:.72rem;padding:1px 7px">${esc(l)}</button>`).join('')}</div>${body}</aside>`;
 }
 function ctxOf(sym) {
@@ -3776,11 +3795,29 @@ function wwRulePanel(vals, sw, mode, shown) {
     return `<span style="display:inline-flex;gap:3px;align-items:center;border:1px solid ${onv ? 'var(--gain)' : 'var(--line)'};border-radius:14px;padding:1px 4px 1px 2px;${onv ? '' : 'opacity:.55'}">
       <button class="btn" ${swA}="${k}" title="${esc(tip)} — click to turn ${onv ? 'off' : 'on'}" style="font-size:.75rem;padding:0 8px;border-radius:12px;${onv ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${onv ? 'ON' : 'OFF'}</button>
       <span style="font-size:.8rem">${lbl}</span>${f ? ` ${inp(f[1], f[2], f[3], f[5])}<span class="muted" style="font-size:.75rem">${f[4]}</span>` : ''}${f2 ? ` <span style="font-size:.8rem">sell</span> ${inp(f2[1], f2[2], f2[3], f2[5])}<span class="muted" style="font-size:.75rem">${f2[4]}</span>` : ''}</span>`; };
-  const grp = g => `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><b style="font-size:.8rem;min-width:3.6em">${g}</b>${WW_RULES.filter(r => r[1] === g && shown(r)).map(chip).join('')}</div>`;
+  const grp = g => ruleGroup(g, WW_RULES.filter(r => r[1] === g && shown(r)), chip);
   return `<details data-indpanel ${S.indOpen !== false ? 'open' : ''} style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Indicators</summary>
     <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;margin:4px 0"><tbody>${rows}</tbody></table></div></details>
     <details data-rulespanel ${S.rulesOpen !== false ? 'open' : ''} style="margin:0"><summary style="font-size:.8rem;font-weight:700;cursor:pointer">Entry &amp; exit rules</summary>
     <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">${grp('Entry')}${grp('Exit')}</div></details>`;
+}
+// the rules of one group (Entry / Filter / Exit) sorted into families: inertia together, squeeze together...
+const RULE_CATS = [['Stops & targets', /\bstop\b|trailing|target|sell part|breakeven|time stop|daily loss|scale/i, true],
+  ['Gamma walls', /\bPW\b|\bCW\b|flip|wall|support/i], ['Options flow', /alert|unusual|skew|flow/i], ['Inertia', /inertia/i],
+  ['Squeeze', /squeeze/i], ['CVD', /\bCVD\b/i], ['VWAP & EMA', /vwap|ema/i], ['Keltner', /\bKC\b|keltner/i],
+  ['Levels & gaps', /fvg|orb|opening range|dark pool|pre-market|prev|LIS|fib|zone|level|gap/i],
+  ['Market', /SPY|VIX|breadth|other ticker|relative volume|lunch/i], ['Earnings', /earning/i]];
+function ruleCat(r) {
+  const t = `${r[2]} ${r[0]}`;
+  for (const [name, re, exitOnly] of RULE_CATS) if ((!exitOnly || r[1] === 'Exit') && re.test(t)) return name;
+  return 'Other';
+}
+function ruleGroup(g, rules, chip) {
+  if (!rules.length) return '';
+  const by = {};
+  rules.forEach(r => { const c = ruleCat(r); (by[c] = by[c] || []).push(r); });
+  const order = RULE_CATS.map(x => x[0]).concat(['Other']).filter(c => by[c]);
+  return `<div class="rule-sec"><b class="rule-g">${g}</b><div class="rule-cats">${order.map(c => `<div class="rule-cat"><span class="rule-cat-l">${esc(c)}</span><span class="rule-chips">${by[c].map(chip).join('')}</span></div>`).join('')}</div></div>`;
 }
 const LAB_ONLY = ['pwTest'];   // daily-timeframe only: the live bot runs on hourly candles   // rules the live bot can't do yet: shown in the Strategy lab only
 const WW_CORE = ['earnExit', 'alertReq', 'relFlow', 'usePW', 'vwapOn', 'kcNotExt', 'cwRoomOn', 'earnOn', 'stopOn', 'targetOn', 'flipExit', 'kcRide', 'cwLost', 'dpLost'];   // the validated strategy
@@ -4658,12 +4695,13 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
   if (el.hasAttribute('data-chleft')) { S.chLeftOpen = !S.chLeftOpen; try { localStorage.setItem('chLeft', S.chLeftOpen ? '1' : '0'); } catch (err) {} render(); return; }
   if (el.dataset.chwl) { S.chWl = el.dataset.chwl; render(); return; }
+  if (el.dataset.flowday) { S.flowDay = +el.dataset.flowday; render(); return; }
   if (el.dataset.stview) {
     const [act, id, sym, day] = el.dataset.stview.split('|');
     if (act === 'off') { S.dtView = null; render(); return; }

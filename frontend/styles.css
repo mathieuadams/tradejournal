@@ -444,3 +444,9 @@ tr.sel td{background:var(--sunk)}
 .ch-tabs{display:flex;flex-wrap:wrap;gap:3px;padding:6px;border-bottom:1px solid var(--line)}
 .ch-search{width:9em;padding:5px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
 .ch-settings{border-top:1px solid var(--line);margin-top:10px;padding-top:6px}
+.rule-sec{display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-top:1px solid var(--line)}
+.rule-g{font-size:.8rem;min-width:3.6em;padding-top:4px}
+.rule-cats{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}
+.rule-cat{display:flex;gap:6px;align-items:flex-start}
+.rule-cat-l{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);min-width:8.5em;padding-top:5px}
+.rule-chips{display:flex;flex-wrap:wrap;gap:5px;flex:1;min-width:0}

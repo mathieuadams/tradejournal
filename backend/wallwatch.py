@@ -1804,21 +1804,72 @@ def flow_add(sub, cfg=None):
             prem[t] = prem.get(t, 0) + (a.get("premium") or 0)
     cur = db.get(db.upk(sub), "WWCFG") or {"PK": db.upk(sub), "SK": "WWCFG"}
     cut = iso(now_ny() - timedelta(days=7))
+    lists = [dict(x) for x in (cur.get("lists") or [])]
+    fl = next((x for x in lists if x.get("name") == FLOW_LIST), None)
+    if not fl:
+        fl = {"name": FLOW_LIST, "tickers": []}
+        lists.insert(0, fl)
+    fl["tickers"] = list(fl.get("tickers") or [])
+    other = set(cfg["tickers"]) - set(fl["tickers"])   # in Main or another list: left there
     new = [t for t in sorted(prem, key=lambda t: -prem[t]) if t not in cfg["tickers"] and (cur.get("removed") or {}).get(t, "") < cut]
-    if new:                                            # into the "Unusual flow" list, not the main one
-        lists = [dict(x) for x in (cur.get("lists") or [])]
-        fl = next((x for x in lists if x.get("name") == FLOW_LIST), None)
-        if not fl:
-            fl = {"name": FLOW_LIST, "tickers": []}
-            lists.insert(0, fl)
-        fl["tickers"] = list(fl.get("tickers") or [])
-        added = dict(cur.get("added") or {})
-        for t in new[:20]:
-            if t not in fl["tickers"] and len(cfg["tickers"]) + len(fl["tickers"]) < 400:
-                fl["tickers"].append(t)
-                added[t] = {"at": iso(now_ny()), "by": "flow", "premium": round(prem[t])}
+    added = dict(cur.get("added") or {})
+    changed = False
+    for t in sorted(prem, key=lambda t: -prem[t]):     # flow again on a ticker of the list: it moves to today
+        if t in fl["tickers"] and t not in other and (added.get(t) or {}).get("at", "")[:10] != iso(now_ny())[:10]:
+            added[t] = {"at": iso(now_ny()), "by": "flow", "premium": round(prem[t])}
+            changed = True
+    for t in new[:20]:                                 # into the "Unusual flow" list, not the main one
+        if t not in fl["tickers"] and len(cfg["tickers"]) + len(fl["tickers"]) < 400:
+            fl["tickers"].append(t)
+            added[t] = {"at": iso(now_ny()), "by": "flow", "premium": round(prem[t])}
+            changed = True
+    dropped = prune_flow(sub, fl, added)               # only today, yesterday and the day before are kept
+    if changed or dropped:
         db.update(db.upk(sub), "WWCFG", {"lists": lists, "added": added, "listsV": 1, **({} if cur.get("tickers") else {"tickers": list(cfg["main"])})})
-    return {"alerts": len(res.get("alerts") or []), "added": new[:20]}
+    return {"alerts": len(res.get("alerts") or []), "added": new[:20], "dropped": dropped}
+
+
+FLOW_DAYS = 3
+
+
+def flow_days(fl, added, today=None):
+    """The days the Unusual flow list keeps: today (on a weekday) and the latest days a ticker came in from the
+    flow, newest first, FLOW_DAYS of them."""
+    today = today or iso(now_ny())[:10]
+    ds = {(added.get(t) or {}).get("at", "")[:10] for t in fl.get("tickers") or []} - {""}
+    if datetime.strptime(today, "%Y-%m-%d").weekday() < 5:
+        ds.add(today)
+    return sorted(ds, reverse=True)[:FLOW_DAYS]
+
+
+def prune_flow(sub, fl, added, today=None):
+    """Drops from the Unusual flow list the tickers whose last flow is older than the kept days (a ticker with an
+    open wall watch position or an open signal stays). -> the dropped tickers."""
+    keep_days = set(flow_days(fl, added, today))
+    if not keep_days:
+        return []
+    old = [t for t in fl.get("tickers") or [] if (added.get(t) or {}).get("at", "")[:10] not in keep_days]
+    if not old:                                        # (positions are only looked up when something would go)
+        return []
+    held = set()
+    try:
+        held = {r.get("symbol") for r in db.q_prefix(db.upk(sub), "BOT#") if r.get("status") in ("submitted", "open", "closing")}
+        held |= {s_.get("symbol") for s_ in db.q_prefix(db.upk(sub), "WWSIG#") if s_.get("status") == "open"}
+    except Exception as e:
+        print("flow prune: positions failed", e)
+    out, kept = [], []
+    for t in fl.get("tickers") or []:
+        d = (added.get(t) or {}).get("at", "")[:10]
+        if d in keep_days or t in held:
+            kept.append(t)
+        else:
+            out.append(t)
+    if out:
+        fl["tickers"] = kept
+        for t in out:
+            if (added.get(t) or {}).get("by") == "flow":
+                added.pop(t, None)
+    return out
 
 
 def enter(sub, sym, sg):

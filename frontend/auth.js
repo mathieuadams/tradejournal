@@ -10,10 +10,14 @@
   const write = v => { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY) } catch (e) {} };
 
   async function tokenRequest(params) {
-    const r = await fetch(`https://${C.cognitoDomain}/oauth2/token`, {
-      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ client_id: C.clientId, ...params })
-    });
+    const ac = new AbortController(), tm = setTimeout(() => ac.abort(), 15000);   // never wait forever on the sign-in server
+    let r;
+    try {
+      r = await fetch(`https://${C.cognitoDomain}/oauth2/token`, {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: C.clientId, ...params }), signal: ac.signal
+      });
+    } finally { clearTimeout(tm); }
     if (!r.ok) throw new Error('Sign-in failed (' + r.status + '). Try again.');
     return r.json();
   }
@@ -28,6 +32,7 @@
     return;
   }
 
+  let refreshing = null;
   window.Auth = {
     async login() {
       const verifier = rand(48);
@@ -56,8 +61,16 @@
       if (!a) return null;
       if (Date.now() < a.exp - 60000) return a.id;
       if (!a.refresh) { write(null); return null; }
-      try { const t = await tokenRequest({ grant_type: 'refresh_token', refresh_token: a.refresh }); store(t, a.refresh); return read().id; }
-      catch (e) { write(null); return null; }
+      if (!refreshing) {                               // one refresh for every request waiting on it (not one each)
+        refreshing = (async () => {
+          for (let k = 0; k < 2; k++) {                // a network blip: once more before signing out
+            try { const t = await tokenRequest({ grant_type: 'refresh_token', refresh_token: a.refresh }); store(t, a.refresh); return read().id; }
+            catch (e) { if (k === 1 || /\b(400|401)\b/.test(String(e.message))) { write(null); return null; } }
+          }
+          return null;
+        })().finally(() => { refreshing = null; });
+      }
+      return refreshing;
     },
     email() { return (read() || {}).email || ''; },
     logout() {

@@ -5351,6 +5351,21 @@ def test_evolution_restart_during_a_run():
     assert after["gen"] == 0 and after["pop"] == [] and after["evals"] == 0
 
 
+def test_unusual_flow_keeps_three_days():
+    """The Unusual flow list keeps the tickers of today, yesterday and the day before (by their last flow); older
+    ones are dropped unless they hold an open position."""
+    import wallwatch
+    sub = "flow-days"
+    fl = {"name": wallwatch.FLOW_LIST, "tickers": ["A", "B", "C", "D", "E", "OLD"]}
+    added = {"A": {"at": "2026-10-21T10:00:00", "by": "flow"}, "B": {"at": "2026-10-20T10:00:00", "by": "flow"},
+             "C": {"at": "2026-10-19T11:00:00", "by": "flow"}, "D": {"at": "2026-10-16T11:00:00", "by": "flow"},
+             "E": {"at": "2026-10-15T11:00:00", "by": "flow"}}
+    db.put({"PK": db.upk(sub), "SK": "BOT#1", "symbol": "E", "status": "open"})
+    assert wallwatch.flow_days(fl, added, "2026-10-21") == ["2026-10-21", "2026-10-20", "2026-10-19"]
+    out = wallwatch.prune_flow(sub, fl, added, "2026-10-21")
+    assert sorted(out) == ["D", "OLD"] and fl["tickers"] == ["A", "B", "C", "E"] and "D" not in added
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
