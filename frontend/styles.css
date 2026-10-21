@@ -443,3 +443,4 @@ tr.sel td{background:var(--sunk)}
 .ch-right{width:252px;min-height:calc(100vh - 58px)}
 .ch-tabs{display:flex;flex-wrap:wrap;gap:3px;padding:6px;border-bottom:1px solid var(--line)}
 .ch-search{width:9em;padding:5px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+.ch-settings{border-top:1px solid var(--line);margin-top:10px;padding-top:6px}
