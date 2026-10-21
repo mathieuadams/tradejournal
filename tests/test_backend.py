@@ -5405,6 +5405,12 @@ def test_hvc_entry_rules():
     assert any("daily HVC" in x.get("r", "") for x in m), m
 
 
+def test_walls_fetch_status():
+    """The light status of a ticker's walls fetch (polled by the chart instead of reloading the whole chart)."""
+    st, r = call("GET", "/bot/wallwatch/walls", q={"t": "UAL"})
+    assert st == 200 and r["running"] is None
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

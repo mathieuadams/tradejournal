@@ -1757,7 +1757,7 @@ function wwTickers() { return ((S.ww && S.ww.config && S.ww.config.tickers) || [
 async function loadWwChart(sym) {
   const k = fcKey('ww-' + sym); S.fcBusy[k] = true;
   try { S.fc[k] = { ...(await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`)), _at: Date.now() }; }
-  catch (e) { if (!S.fc[k] || S.fc[k].error) S.fc[k] = { error: e.message, _at: Date.now() }; }   // a failed refresh keeps the chart
+  catch (e) { if (!S.fc[k] || S.fc[k].error) S.fc[k] = { error: e.message, _at: Date.now() }; else S.fc[k]._at = Date.now(); }   // a failed refresh keeps the chart (next try in 5 min)
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
 const FC_REFRESH_MS = 5 * 60 * 1000;               // an open chart reloads its candles / walls / flow every 5 minutes
@@ -1780,7 +1780,7 @@ function vChartWW() {
     if (!S.fc[dk] || S.fc[dk]._src !== d) S.fc[dk] = { ...fcDaily(d), _src: d };
     S.fcDp[dk] = S.fcDp[k];
   }
-  if (sym && !S.fcBusy[k] && (!d || Date.now() - (d._at || 0) > FC_REFRESH_MS)) {   // first load, or a refresh (the old chart stays meanwhile)
+  if (sym && !S.fcBusy[k] && !S.wwTk[sym] && (!d || Date.now() - (d._at || 0) > FC_REFRESH_MS)) {   // first load, or a refresh (the old chart stays; not while its walls are being fetched)
     S.fcBusy[k] = true; setTimeout(() => labOn ? loadLabChart(sym) : loadWwChart(sym), 0);
   }
   if (sym && d && !d.error && !labOn && !S.wwTk[sym] && ((d.missingDays || 0) + (d.noflipDays || 0)) > 0 && !(S.wwAutoFill || {})[sym]) {
@@ -3909,10 +3909,12 @@ async function wwTkFill(sym) {
   const poll = async () => {
     n++;
     const k = fcKey('ww-' + sym);
-    try { S.fc[k] = { ...(await api(`/bot/wallwatch/chart?t=${encodeURIComponent(sym)}&days=${S.wwDays || 45}`)), _at: Date.now() }; } catch (e) {}
-    const f = (S.fc[k] && S.fc[k].fill) || {};
-    if (f.running && n < 40) { if (route() === 'botchart') render(); S.wwTkPoll[sym] = setTimeout(poll, 8000); return; }
-    S.wwTk[sym] = false; loadWatch();
+    let f = {};
+    try { f = await api(`/bot/wallwatch/walls?t=${encodeURIComponent(sym)}`); } catch (e) { f = { running: true }; }   // the status only (light)
+    if (f.running && n < 40) { S.wwTkPoll[sym] = setTimeout(poll, 8000); return; }
+    S.wwTk[sym] = false;
+    if (S.fc[k]) S.fc[k]._at = 0;                      // done: the chart reloads once with the walls
+    loadWatch();
     toast(f.left ? `${sym}: ${f.left} days still missing — press again` : `${sym}: walls stored`);
     if (route() === 'botchart') render();
   };
@@ -4083,7 +4085,7 @@ const labLive = () => { const c = (S.ww && S.ww.config) || {}, L = labCfg() || {
 async function loadLabChart(sym) {
   const k = fcKey('ww-lab-' + sym); S.fcBusy[k] = true; if (route() === 'botchart') render();
   try { S.fc[k] = { ...(await api('/bot/lab/chart', { method: 'POST', body: { t: sym, days: S.wwDays || 45, cfg: labCfg(), flow: !!S.fcLayers.flow } })), _at: Date.now() }; }
-  catch (e) { if (!S.fc[k] || S.fc[k].error) S.fc[k] = { error: e.message, _at: Date.now() }; }
+  catch (e) { if (!S.fc[k] || S.fc[k].error) S.fc[k] = { error: e.message, _at: Date.now() }; else S.fc[k]._at = Date.now(); }
   S.fcBusy[k] = false; if (route() === 'botchart') render();
 }
 async function loadOptTest() {

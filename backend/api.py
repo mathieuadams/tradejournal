@@ -934,6 +934,14 @@ def bot_wallwatch_walls(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("GET", "/bot/wallwatch/walls")
+def bot_wallwatch_walls_status(sub, claims, body, q):
+    """The walls fetch of one ticker (or of the watchlist): running / left / at. Cheap: polled while it runs."""
+    t = (q.get("t") or "").upper().replace("/", ".")[:10]
+    f = db.get(db.upk(sub), f"WWFILL#{t}" if t else "WWFILL") or {}
+    return {k: f.get(k) for k in ("running", "total", "left", "at", "errors")}
+
+
 @route("GET", "/bot/wallwatch/ruletest")
 def bot_ruletest_get(sub, claims, body, q):
     import backtest
