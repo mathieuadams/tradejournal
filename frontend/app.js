@@ -4683,7 +4683,12 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
   botchart: [vChartFull, () => { if (!S.tickers && !S.tkBusy) loadTickers();
     const h = document.querySelector('.fcf-head'), inf = document.querySelector('.fcf-info');      // fit the chart to what's left
     const hh = h ? h.offsetHeight : 0, ih = inf ? inf.offsetHeight + 8 : 0;
-    if (hh && (Math.abs(hh - (S.fcfHeadH || 0)) > 3 || (inf && Math.abs(ih - (S.fcfInfoH || 0)) > 3))) { S.fcfHeadH = hh; if (inf) S.fcfInfoH = ih; render(); } }],
+    if (hh && (Math.abs(hh - (S.fcfHeadH || 0)) > 3 || (inf && Math.abs(ih - (S.fcfInfoH || 0)) > 3))) {
+      const now = Date.now();                        // at most 2 refits a second: heights that flip back and forth
+      if (now - (S.fitAt || 0) > 1000) S.fitN = 0;   // (a scrollbar appearing makes the text wrap...) can't loop forever
+      S.fitAt = now;
+      if ((S.fitN = (S.fitN || 0) + 1) <= 2) { S.fcfHeadH = hh; if (inf) S.fcfInfoH = ih; setTimeout(render, 0); }
+    } }],
   botstrats: [vStrats, () => { if (!S.strats && !S.stratsBusy) loadStrats(); if (!S.bot) loadBot(); }], dashboard: [vDashboard, async () => { if (!S.bot) loadBot(); if (S.notes === undefined) { await loadNotes(); if (route() === 'dashboard') render(); } }], trades: [vTrades], analytics: [vAnalytics], coach: [vCoach, afterCoach], journal: [vJournal, afterJournal], import: [vImport, afterImport], settings: [vSettings, afterSettings] };
 const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
