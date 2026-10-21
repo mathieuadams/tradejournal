@@ -20,9 +20,18 @@ a fill, a winner) shows whether the rules read the chart the way a trader would.
 
 PARAMS = {"tf": 5, "orMin": 15, "pivot": 2, "fvgMin": 0.3, "mssBars": 12, "entryBars": 24, "entryAt": "edge",
           "stopBuf": 0.1, "partial": 0.5, "startT": "09:45", "endT": "15:00", "flatT": "15:55", "eqTol": 0.1,
-          "longs": True, "shorts": True}
-INTS = ("tf", "orMin", "pivot", "mssBars", "entryBars")
-FLOATS = ("fvgMin", "stopBuf", "partial", "eqTol")
+          "longs": True, "shorts": True,
+          # building blocks (switches + their numbers)
+          "poolPD": True, "poolPM": True, "poolOR": True, "poolSwing": True, "eqOnly": False,       # which liquidity counts
+          "mssOn": True, "dispOn": False, "dispMin": 1.0, "fvgOn": True,                            # structure
+          "stopAt": "sweep", "vwapOn": False, "pdOn": False, "rrOn": False, "rrMin": 1.5, "maxDay": 0,   # entry filters
+          "tpLiq": True, "tpR": 2.0, "partialOn": True, "beTp1": True,                              # targets
+          "beOn": False, "beR": 1.0, "trailOn": False, "fvgFail": False, "mssX": False, "vwapX": False,   # early exits
+          "timeOn": False, "timeBars": 12}
+INTS = ("tf", "orMin", "pivot", "mssBars", "entryBars", "maxDay", "timeBars")
+FLOATS = ("fvgMin", "stopBuf", "partial", "eqTol", "dispMin", "rrMin", "tpR", "beR")
+BOOLS = ("longs", "shorts", "poolPD", "poolPM", "poolOR", "poolSwing", "eqOnly", "mssOn", "dispOn", "fvgOn", "vwapOn", "pdOn",
+         "rrOn", "tpLiq", "partialOn", "beTp1", "beOn", "trailOn", "fvgFail", "mssX", "vwapX", "timeOn")
 
 
 def clean(cfg):
@@ -31,11 +40,15 @@ def clean(cfg):
         if k not in PARAMS:
             continue
         try:
-            P[k] = int(v) if k in INTS else float(v) if k in FLOATS else bool(v) if k in ("longs", "shorts") else str(v)
+            P[k] = int(v) if k in INTS else float(v) if k in FLOATS else (v in (True, 1, "1", "true", "on")) if k in BOOLS else str(v)
         except (TypeError, ValueError):
             pass
     P["tf"] = 1 if P["tf"] <= 1 else 5 if P["tf"] < 15 else 15
     P["pivot"] = max(1, min(5, P["pivot"]))
+    if P["entryAt"] not in ("edge", "ce", "ob", "market"):
+        P["entryAt"] = "edge"
+    if P["stopAt"] not in ("sweep", "fvg"):
+        P["stopAt"] = "sweep"
     return P
 
 
@@ -52,12 +65,13 @@ def _hm(t):
     return t[11:16]
 
 
-def day_pools(prev_reg, pm):
+def day_pools(prev_reg, pm, P=None):
     """The day's starting pools: previous day high / low, pre-market high / low."""
+    P = P or PARAMS
     out = []
-    if prev_reg:
+    if prev_reg and P.get("poolPD", True):
         out += [{"name": "PDH", "p": max(b["h"] for b in prev_reg), "side": "buy"}, {"name": "PDL", "p": min(b["l"] for b in prev_reg), "side": "sell"}]
-    if pm:
+    if pm and P.get("poolPM", True):
         out += [{"name": "PM high", "p": max(b["h"] for b in pm), "side": "buy"}, {"name": "PM low", "p": min(b["l"] for b in pm), "side": "sell"}]
     return out
 
@@ -88,7 +102,7 @@ def detect(minute_bars, P=None, show=None):
             continue
         ix = by[d]
         prev = [reg[i] for i in by.get(days[di - 1], [])] if di else []
-        _day(reg, atr, ix, day_pools(prev, pm_by.get(d) or []), P, out)
+        _day(reg, atr, ix, day_pools(prev, pm_by.get(d) or [], P), P, out)
     keep = set(show)
     out["bars"] = [{k: b[k] for k in ("t", "o", "h", "l", "c", "v")} for b in reg if b["t"][:10] in keep]
     out["interval"] = tf
@@ -118,17 +132,32 @@ def _day(bars, atr, ix, pools0, P, out):
     piv = _pivots(bars, ix, k)
     or_end = ix[0] + max(1, P["orMin"] // P["tf"]) - 1
     pools = [dict(p, t0=t0, born=ix[0], swept=None) for p in pools0]
-    if or_end in ix:
+    vw, pv, vv = {}, 0.0, 0.0                          # session VWAP (for the VWAP filter / exit)
+    for j in ix:
+        b = bars[j]
+        v = float(b.get("v") or 0) or 1.0
+        pv += (b["h"] + b["l"] + b["c"]) / 3 * v
+        vv += v
+        vw[j] = pv / vv
+    if or_end in ix and P["poolOR"]:
         seg = [bars[j] for j in ix if j <= or_end]
         pools += [{"name": "ORH", "p": max(b["h"] for b in seg), "side": "buy", "t0": bars[or_end]["t"], "born": or_end + 1, "swept": None},
                   {"name": "ORL", "p": min(b["l"] for b in seg), "side": "sell", "t0": bars[or_end]["t"], "born": or_end + 1, "swept": None}]
+    swings = []
     for i, p, kind, conf in piv:                       # the day's swings become pools once confirmed
+        if not P["poolSwing"]:
+            break
         tol = P["eqTol"] * (atr[i] or 0)
-        eq = any(q["name"].startswith("swing") and q["side"] == ("buy" if kind == "high" else "sell") and abs(q["p"] - p) <= tol and q["born"] <= conf
-                 for q in pools)
-        pools.append({"name": ("EQH" if eq else "swing high") if kind == "high" else ("EQL" if eq else "swing low"), "p": p,
-                      "side": "buy" if kind == "high" else "sell", "t0": bars[i]["t"], "born": conf + 1, "swept": None, "at": i})
+        eq = any(q["side"] == ("buy" if kind == "high" else "sell") and abs(q["p"] - p) <= tol and q["born"] <= conf for q in swings)
+        if eq:
+            for q in swings:                           # both ends of an equal pair are the same pool
+                if q["side"] == ("buy" if kind == "high" else "sell") and abs(q["p"] - p) <= tol:
+                    q["name"] = "EQH" if kind == "high" else "EQL"
+        swings.append({"name": ("EQH" if eq else "swing high") if kind == "high" else ("EQL" if eq else "swing low"), "p": p,
+                       "side": "buy" if kind == "high" else "sell", "t0": bars[i]["t"], "born": conf + 1, "swept": None, "at": i})
+    pools += [q for q in swings if not P["eqOnly"] or q["name"] in ("EQH", "EQL")]
     busy_until = {1: -1, -1: -1}                       # one setup at a time per side
+    n_day = 0
     n = len(ix)
     for pos in range(n):
         i = ix[pos]
@@ -154,7 +183,11 @@ def _day(bars, atr, ix, pools0, P, out):
                 continue
             if not (P["startT"] <= hm < P["endT"]):
                 continue
-            s = _setup(bars, atr, ix, pos, sw_i, p, side, piv, pools, P, t_end)
+            if P["maxDay"] and n_day >= P["maxDay"]:
+                continue
+            s = _setup(bars, atr, ix, pos, sw_i, p, side, piv, pools, P, t_end, vw)
+            if s.get("fillT"):
+                n_day += 1
             out["sweeps"].append({"t": bars[sw_i]["t"], "p": p["p"], "name": p["name"], "dir": side})
             if s.get("mss"):
                 out["mss"].append(s["mss"])
@@ -169,138 +202,194 @@ def _day(bars, atr, ix, pools0, P, out):
                               "t1": bars[p["swept"]]["t"] if p["swept"] is not None else t_end, "swept": p["swept"] is not None})
 
 
-def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end):
+def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
     f = lambda v: round(v, 4)
+    vw = vw or {}
+    up = side > 0
+    beyond = lambda x, lvl: x > lvl if up else x < lvl          # past a level in the trade's direction
     sweep_bars = [bars[j] for j in ix if bars[ix[pos]]["t"] <= bars[j]["t"] <= bars[sw_i]["t"]]
-    ext = min(x["l"] for x in sweep_bars) if side > 0 else max(x["h"] for x in sweep_bars)
+    ext = min(x["l"] for x in sweep_bars) if up else max(x["h"] for x in sweep_bars)
     a = atr[sw_i] or 0
-    word = "long" if side > 0 else "short"
-    s = {"dir": side, "side": word, "t": bars[sw_i]["t"], "pool": pool["name"], "poolP": f(pool["p"]), "ext": f(ext), "steps": []}
-    s["steps"].append({"n": 1, "ok": True, "name": "Liquidity swept",
-                       "text": f"{pool['name']} {pool['p']:.2f} taken at {bars[ix[pos]]['t'][11:16]} ({'low' if side > 0 else 'high'} {ext:.2f}), "
-                               f"closed back {'above' if side > 0 else 'under'} it"})
-    # 3. MSS: the last swing opposite to the sweep, formed before it
-    want = "high" if side > 0 else "low"
-    cand = [x for x in piv if x[2] == want and x[3] <= sw_i and x[0] < ix[pos]]
-    if not cand:
-        s["status"] = "no structure"
-        s["steps"].append({"n": 2, "ok": False, "name": "Market structure shift", "text": f"no swing {want} before the sweep to break"})
-        return s
-    lvl_i, lvl, _, _ = cand[-1]
+    s = {"dir": side, "side": "long" if up else "short", "t": bars[sw_i]["t"], "pool": pool["name"], "poolP": f(pool["p"]), "ext": f(ext), "steps": []}
+    step = lambda n, ok, name, text: s["steps"].append({"n": n, "ok": ok, "name": name, "text": text})
+    stop_here = (lambda status, n, name, text, end=None: (s.update(status=status), step(n, False, name, text),
+                                                          s.__setitem__("_end", end) if end is not None else None, s)[-1])
+    step(1, True, "Liquidity swept", f"{pool['name']} {pool['p']:.2f} taken at {bars[ix[pos]]['t'][11:16]} ({'low' if up else 'high'} {ext:.2f}), "
+                                     f"closed back {'above' if up else 'under'} it")
     k0 = ix.index(sw_i)
-    mss_j = None
-    for q in range(k0 + 1, min(len(ix), k0 + 1 + P["mssBars"])):
-        j = ix[q]
-        c = bars[j]
-        if (c["l"] < ext) if side > 0 else (c["h"] > ext):
-            s["status"] = "new extreme"
-            s["steps"].append({"n": 2, "ok": False, "name": "Market structure shift",
-                               "text": f"price made a new {'low' if side > 0 else 'high'} at {c['t'][11:16]} before breaking the swing {want} {lvl:.2f}"})
-            s["_end"] = j
-            return s
-        if (c["c"] > lvl) if side > 0 else (c["c"] < lvl):
-            mss_j = j
-            break
-    if mss_j is None:
-        s["status"] = "no MSS"
-        s["steps"].append({"n": 2, "ok": False, "name": "Market structure shift",
-                           "text": f"no close {'above' if side > 0 else 'under'} the swing {want} {lvl:.2f} within {P['mssBars']} candles"})
-        s["_end"] = ix[min(len(ix) - 1, k0 + P["mssBars"])]
-        return s
-    s["mss"] = {"t": bars[mss_j]["t"], "p": f(lvl), "t0": bars[lvl_i]["t"], "dir": side}
-    s["steps"].append({"n": 2, "ok": True, "name": "Market structure shift",
-                       "text": f"close {bars[mss_j]['c']:.2f} {'above' if side > 0 else 'under'} the swing {want} {lvl:.2f} at {bars[mss_j]['t'][11:16]} "
-                               f"({ix.index(mss_j) - k0} candles after the sweep)"})
-    # 4. FVG of the displacement leg (sweep -> MSS, and the candle after)
+    # 2. market structure shift
+    want = "high" if up else "low"
+    if P["mssOn"]:
+        cand = [x for x in piv if x[2] == want and x[3] <= sw_i and x[0] < ix[pos]]
+        if not cand:
+            return stop_here("no structure", 2, "Market structure shift", f"no swing {want} before the sweep to break")
+        lvl_i, lvl, _, _ = cand[-1]
+        mss_j = None
+        for q in range(k0 + 1, min(len(ix), k0 + 1 + P["mssBars"])):
+            c = bars[ix[q]]
+            if (c["l"] < ext) if up else (c["h"] > ext):
+                return stop_here("new extreme", 2, "Market structure shift",
+                                 f"price made a new {'low' if up else 'high'} at {c['t'][11:16]} before breaking the swing {want} {lvl:.2f}", ix[q])
+            if beyond(c["c"], lvl):
+                mss_j = ix[q]
+                break
+        if mss_j is None:
+            return stop_here("no MSS", 2, "Market structure shift",
+                             f"no close {'above' if up else 'under'} the swing {want} {lvl:.2f} within {P['mssBars']} candles", ix[min(len(ix) - 1, k0 + P["mssBars"])])
+        s["mss"] = {"t": bars[mss_j]["t"], "p": f(lvl), "t0": bars[lvl_i]["t"], "dir": side}
+        step(2, True, "Market structure shift", f"close {bars[mss_j]['c']:.2f} {'above' if up else 'under'} the swing {want} {lvl:.2f} at "
+                                                f"{bars[mss_j]['t'][11:16]} ({ix.index(mss_j) - k0} candles after the sweep)")
+        leg_end = ix.index(mss_j) + 1
+    else:
+        mss_j = sw_i
+        leg_end = min(len(ix) - 1, k0 + P["mssBars"])
+        step(2, True, "Market structure shift", "not required (block off)")
+    # displacement: one candle of the leg with a body of dispMin x ATR in the trade's direction
+    if P["dispOn"]:
+        big = [ix[q] for q in range(k0 + 1, min(len(ix), leg_end + 1))
+               if (bars[ix[q]]["c"] - bars[ix[q]]["o"]) * side >= P["dispMin"] * (atr[ix[q]] or 0)]
+        if not big:
+            return stop_here("no displacement", 3, "Fair value gap", f"no candle of the move with a body of {P['dispMin']:g} ATR or more", mss_j)
+    # 3. FVG of the leg
     best = None
-    q_end = min(len(ix) - 1, ix.index(mss_j) + 1)
-    for q in range(k0 + 2, q_end + 1):
+    for q in range(k0 + 2, min(len(ix) - 1, leg_end) + 1):
         j, j2 = ix[q], ix[q - 2]
-        lo_, hi_ = (bars[j2]["h"], bars[j]["l"]) if side > 0 else (bars[j]["h"], bars[j2]["l"])
+        lo_, hi_ = (bars[j2]["h"], bars[j]["l"]) if up else (bars[j]["h"], bars[j2]["l"])
         size = hi_ - lo_
         if size > 0 and size >= P["fvgMin"] * (atr[ix[q - 1]] or 0) and (best is None or size > best[2]):
             best = (j2, j, size, lo_, hi_)
-    if not best:
-        s["status"] = "no FVG"
-        s["steps"].append({"n": 3, "ok": False, "name": "Fair value gap",
-                           "text": f"the move to the MSS left no gap of {P['fvgMin']:g} ATR or more: no displacement"})
-        s["_end"] = mss_j
-        return s
-    j2, j, size, glo, ghi = best
-    s["fvg"] = {"t0": bars[j2]["t"], "t1": t_end, "lo": f(glo), "hi": f(ghi), "dir": side}
-    s["steps"].append({"n": 3, "ok": True, "name": "Fair value gap",
-                       "text": f"{'bullish' if side > 0 else 'bearish'} FVG {glo:.2f}–{ghi:.2f} ({size / a:.2f} ATR) at {bars[ix[ix.index(j) - 1]]['t'][11:16]}" if a else
-                               f"FVG {glo:.2f}–{ghi:.2f}"})
-    # order block: the last opposite candle before the leg (shown, not required)
-    for q in range(ix.index(j2), k0 - 1, -1):
+    if best:
+        j2, j, size, glo, ghi = best
+        s["fvg"] = {"t0": bars[j2]["t"], "t1": t_end, "lo": f(glo), "hi": f(ghi), "dir": side}
+        step(3, True, "Fair value gap", f"{'bullish' if up else 'bearish'} FVG {glo:.2f}–{ghi:.2f}" + (f" ({size / a:.2f} ATR)" if a else "")
+                                        + f" at {bars[ix[ix.index(j) - 1]]['t'][11:16]}")
+    elif P["fvgOn"]:
+        return stop_here("no FVG", 3, "Fair value gap", f"the move left no gap of {P['fvgMin']:g} ATR or more: no displacement", mss_j)
+    else:
+        glo = ghi = None
+        step(3, True, "Fair value gap", "none, not required (block off)")
+    # order block: the last opposite candle before the leg
+    ob_from = ix.index(best[0]) if best else ix.index(mss_j)
+    for q in range(ob_from, k0 - 1, -1):
         c = bars[ix[q]]
-        if (c["c"] < c["o"]) if side > 0 else (c["c"] > c["o"]):
+        if (c["c"] < c["o"]) if up else (c["c"] > c["o"]):
             s["ob"] = {"t0": c["t"], "lo": f(c["l"]), "hi": f(c["h"]), "dir": side}
             break
-    # 6 (needed for 5): risk and the targets
-    entry = (ghi if side > 0 else glo) if P["entryAt"] != "ce" else (glo + ghi) / 2
-    stop = ext - side * P["stopBuf"] * a
+    # entry price
+    how = P["entryAt"]
+    if how in ("edge", "ce") and glo is None:
+        how = "ob" if s.get("ob") else "market"
+    if how == "ob" and not s.get("ob"):
+        how = "edge" if glo is not None else "market"
+    if how == "edge":
+        entry, where = (ghi if up else glo), "the FVG edge"
+    elif how == "ce":
+        entry, where = (glo + ghi) / 2, "the middle of the FVG"
+    elif how == "ob":
+        entry, where = (s["ob"]["hi"] if up else s["ob"]["lo"]), "the order block"
+    else:
+        entry, where = bars[mss_j]["c"], "the close of the MSS candle"
+    stop = (ext - side * P["stopBuf"] * a) if P["stopAt"] == "sweep" or glo is None else ((glo if up else ghi) - side * P["stopBuf"] * a)
     risk = (entry - stop) * side
     if risk <= 0:
-        s["status"] = "bad risk"
-        s["steps"].append({"n": 4, "ok": False, "name": "Retracement", "text": "the stop would be on the wrong side of the entry"})
-        s["_end"] = mss_j
-        return s
-    opp = "buy" if side > 0 else "sell"
+        return stop_here("bad risk", 4, "Retracement", "the stop would be on the wrong side of the entry", mss_j)
+    # targets
+    opp = "buy" if up else "sell"
     targets = sorted((p for p in pools if p["side"] == opp and p["swept"] is None and (p["p"] - entry) * side >= risk and p["born"] <= mss_j),
-                     key=lambda p: (p["p"] - entry) * side)
+                     key=lambda p: (p["p"] - entry) * side) if P["tpLiq"] else []
     if targets:
         tp1 = (targets[0]["p"], targets[0]["name"])
         tp2 = (targets[1]["p"], targets[1]["name"]) if len(targets) > 1 else (entry + side * max(2 * risk, 1.5 * (targets[0]["p"] - entry) * side), "extension")
     else:
-        tp1, tp2 = (entry + side * 2 * risk, "2R (no liquidity)"), (entry + side * 3 * risk, "3R")
-    s.update(entry=f(entry), stop=f(stop), tp1=f(tp1[0]), tp1Name=tp1[1], tp2=f(tp2[0]), tp2Name=tp2[1])
+        tp1 = (entry + side * P["tpR"] * risk, f"{P['tpR']:g}R" + (" (no liquidity)" if P["tpLiq"] else ""))
+        tp2 = (entry + side * P["tpR"] * 1.5 * risk, f"{P['tpR'] * 1.5:g}R")
     r_ = lambda px: (px - entry) * side / risk
-    # 5. the retracement into the gap
+    s.update(entry=f(entry), stop=f(stop), tp1=f(tp1[0]), tp1Name=tp1[1], tp2=f(tp2[0]), tp2Name=tp2[1])
+    if P["rrOn"] and r_(tp1[0]) < P["rrMin"]:
+        return stop_here("RR too small", 4, "Retracement", f"TP1 {tp1[1]} is only {r_(tp1[0]):.1f}R away (< {P['rrMin']:g}R)", mss_j)
+    # 4. the retracement (or the market entry)
     m_q = ix.index(mss_j)
     fill = None
-    for q in range(m_q + 1, min(len(ix), m_q + 1 + P["entryBars"])):
-        c = bars[ix[q]]
-        if _hm(c["t"]) >= P["endT"]:
-            break
-        if (c["h"] >= tp1[0]) if side > 0 else (c["l"] <= tp1[0]):
-            s["status"] = "ran away"
-            s["steps"].append({"n": 4, "ok": False, "name": "Retracement", "text": f"price reached {tp1[1]} at {c['t'][11:16]} without coming back to the FVG"})
-            s["_end"] = ix[q]
-            return s
-        if (c["l"] <= entry) if side > 0 else (c["h"] >= entry):
-            fill = q
-            break
-    if fill is None:
-        s["status"] = "no retrace"
-        s["steps"].append({"n": 4, "ok": False, "name": "Retracement", "text": f"no return to the FVG ({entry:.2f}) within {P['entryBars']} candles"})
-        s["_end"] = ix[min(len(ix) - 1, m_q + P["entryBars"])]
-        return s
-    c = bars[ix[fill]]
+    if how == "market":
+        fill = m_q
+    else:
+        for q in range(m_q + 1, min(len(ix), m_q + 1 + P["entryBars"])):
+            c = bars[ix[q]]
+            if _hm(c["t"]) >= P["endT"]:
+                break
+            if beyond(c["h"] if up else c["l"], tp1[0]) or (c["h"] if up else c["l"]) == tp1[0]:
+                return stop_here("ran away", 4, "Retracement", f"price reached {tp1[1]} at {c['t'][11:16]} without coming back to {where}", ix[q])
+            if (c["l"] <= entry) if up else (c["h"] >= entry):
+                fill = q
+                break
+        if fill is None:
+            return stop_here("no retrace", 4, "Retracement", f"no return to {where} ({entry:.2f}) within {P['entryBars']} candles",
+                             ix[min(len(ix) - 1, m_q + P["entryBars"])])
+    fj = ix[fill]
+    c = bars[fj]
+    # entry filters, checked at the fill
+    if P["vwapOn"] and not beyond(entry, vw.get(fj, entry)):
+        return stop_here("VWAP side", 4, "Retracement", f"entry {entry:.2f} {'under' if up else 'above'} the session VWAP {vw.get(fj, 0):.2f}", fj)
+    if P["pdOn"]:
+        seen = [bars[j] for j in ix if j <= fj]
+        mid = (max(x["h"] for x in seen) + min(x["l"] for x in seen)) / 2
+        if (entry > mid) if up else (entry < mid):
+            return stop_here("premium / discount", 4, "Retracement",
+                             f"entry {entry:.2f} in the {'premium' if up else 'discount'} half of the day's range (middle {mid:.2f})", fj)
     s["fillT"] = c["t"]
-    s["steps"].append({"n": 4, "ok": True, "name": "Retracement", "text": f"back into the FVG at {c['t'][11:16]}: filled at {entry:.2f}"})
-    s["steps"].append({"n": 5, "ok": True, "name": "Risk & targets",
-                       "text": f"stop {stop:.2f} beyond the sweep ({risk:.2f} = 1R) · TP1 {tp1[1]} {tp1[0]:.2f} ({r_(tp1[0]):.1f}R, {round(P['partial'] * 100)}%) · "
-                               f"TP2 {tp2[1]} {tp2[0]:.2f} ({r_(tp2[0]):.1f}R)"})
-    # the trade
-    st, half, res, ex_t = stop, None, None, None
+    step(4, True, "Retracement", f"filled at {entry:.2f} ({where}) at {c['t'][11:16]}")
+    exits = [n_ for k_, n_ in (("beOn", f"breakeven at {P['beR']:g}R"), ("trailOn", "trail under the new swings"), ("fvgFail", "close through the FVG"),
+                               ("mssX", "opposite structure shift"), ("vwapX", "close back across VWAP"), ("timeOn", f"time stop {P['timeBars']} candles")) if P[k_]]
+    part = P["partial"] if P["partialOn"] else 0.0
+    step(5, True, "Risk & targets", f"stop {stop:.2f} ({'beyond the sweep' if P['stopAt'] == 'sweep' or glo is None else 'beyond the FVG'}, {risk:.2f} = 1R) · "
+                                    f"TP1 {tp1[1]} {tp1[0]:.2f} ({r_(tp1[0]):.1f}R{f', {round(part * 100)}%' if part else ', all'})"
+                                    + (f" · TP2 {tp2[1]} {tp2[0]:.2f} ({r_(tp2[0]):.1f}R)" if part else "")
+                                    + (f" · early exits: {', '.join(exits)}" if exits else ""))
+    # 5. the trade
+    final = tp2[0] if part else tp1[0]
+    st, half, res, ex_t, why = stop, None, None, None, ""
+    best_px = entry
+    sw_after = lambda q: [x for x in piv if x[2] == ("low" if up else "high") and x[0] > fj and x[3] <= ix[q]]
     for q in range(fill, len(ix)):
         c = bars[ix[q]]
-        if (c["l"] <= st) if side > 0 else (c["h"] >= st):
-            res, ex_t = (P["partial"] * half + (1 - P["partial"]) * r_(st)) if half is not None else r_(st), c["t"]
+        blend = lambda px: (part * half + (1 - part) * r_(px)) if half is not None else r_(px)
+        if (c["l"] <= st) if up else (c["h"] >= st):
+            res, ex_t, why = blend(st), c["t"], "breakeven stop" if st == entry else "trailing stop" if (st - stop) * side > 0 else "stop"
             break
-        if half is None and ((c["h"] >= tp1[0]) if side > 0 else (c["l"] <= tp1[0])):
-            half, st = r_(tp1[0]), entry                # partial at TP1, the rest to breakeven
-        if half is not None and ((c["h"] >= tp2[0]) if side > 0 else (c["l"] <= tp2[0])):
-            res, ex_t = P["partial"] * half + (1 - P["partial"]) * r_(tp2[0]), c["t"]
+        best_px = max(best_px, c["h"]) if up else min(best_px, c["l"])
+        if half is None and part and beyond(c["h"] if up else c["l"], tp1[0]) or (half is None and part and (c["h"] if up else c["l"]) == tp1[0]):
+            half = r_(tp1[0])                          # partial at TP1
+            if P["beTp1"]:
+                st = entry if (entry - st) * side > 0 else st
+        if beyond(c["h"] if up else c["l"], final) or (c["h"] if up else c["l"]) == final:
+            res, ex_t, why = blend(final), c["t"], "TP2" if part else "TP1"
+            break
+        if P["beOn"] and (best_px - entry) * side >= P["beR"] * risk and (entry - st) * side > 0:
+            st = entry
+        if P["trailOn"] and (half is not None or (best_px - entry) * side >= risk):
+            sw = sw_after(q)
+            if sw:
+                lvl = sw[-1][1] - side * P["stopBuf"] * (atr[ix[q]] or 0)
+                if (lvl - st) * side > 0:
+                    st = lvl
+        early = None                                   # early exits, at the close of the candle
+        if P["fvgFail"] and glo is not None and ((c["c"] < glo) if up else (c["c"] > ghi)):
+            early = "closed through the FVG"
+        elif P["mssX"] and sw_after(q) and ((c["c"] < sw_after(q)[-1][1]) if up else (c["c"] > sw_after(q)[-1][1])):
+            early = f"opposite structure shift (close {'under' if up else 'above'} {sw_after(q)[-1][1]:.2f})"
+        elif P["vwapX"] and q > fill and not beyond(c["c"], vw.get(ix[q], c["c"])):
+            early = "closed back across VWAP"
+        elif P["timeOn"] and half is None and q - fill >= P["timeBars"]:
+            early = f"time stop ({P['timeBars']} candles without TP1)"
+        if early:
+            res, ex_t, why = blend(c["c"]), c["t"], early
             break
         if _hm(c["t"]) >= P["flatT"] or q == len(ix) - 1:
-            res, ex_t = (P["partial"] * half + (1 - P["partial"]) * r_(c["c"])) if half is not None else r_(c["c"]), c["t"]
+            res, ex_t, why = blend(c["c"]), c["t"], "end of day"
             break
-    s["R"], s["exitT"] = round(res, 3), ex_t
+    s["R"], s["exitT"], s["exitWhy"] = round(res, 3), ex_t, why
     s["status"] = "win" if res > 0.05 else "loss" if res < -0.05 else "flat"
-    s["steps"].append({"n": 6, "ok": res > 0, "name": "Result",
-                       "text": f"{'TP1 hit (partial), ' if half is not None else ''}out at {ex_t[11:16]}: {res:+.2f}R"})
+    step(6, res > 0, "Result", f"{'TP1 hit (partial), ' if half is not None else ''}out at {ex_t[11:16]} ({why}): {res:+.2f}R")
     s["_end"] = next((j for j in ix if bars[j]["t"] == ex_t), ix[-1])
     return s
 
@@ -312,7 +401,8 @@ def funnel(setups):
     fill = sum(1 for s in setups if s.get("fillT"))
     win = sum(1 for s in setups if s.get("status") == "win")
     return {"sweeps": n, "mss": mss, "fvg": fvg, "filled": fill, "wins": win,
-            "why": {k: sum(1 for s in setups if s.get("status") == k) for k in ("no structure", "new extreme", "no MSS", "no FVG", "ran away", "no retrace", "bad risk")}}
+            "why": {k: sum(1 for s in setups if s.get("status") == k) for k in ("no structure", "new extreme", "no MSS", "no displacement", "no FVG", "RR too small",
+                                                                              "ran away", "no retrace", "VWAP side", "premium / discount", "bad risk")}}
 
 
 def stats(setups):

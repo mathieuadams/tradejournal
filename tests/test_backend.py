@@ -5438,6 +5438,30 @@ def test_smart_money_model():
     assert f["sweeps"] == len(out["setups"]) and f["filled"] == 1 and f["mss"] >= 1 and sum(f["why"].values()) == f["sweeps"] - f["filled"]
     assert any(l["name"] == "PDH" for l in out["levels"]) and out["bars"][0]["t"].startswith("2026-10-20")
 
+def test_smart_money_building_blocks():
+    """The building blocks change what the model takes: market entry at the MSS close without a gap, fixed-R targets
+    without a partial, the early exits (each exit says why), the filters, and the pools that count."""
+    import smc, random
+    r = random.Random(7)
+    bars, p = [], 100.0
+    for d in ["2026-10-14", "2026-10-15", "2026-10-16", "2026-10-19", "2026-10-20"]:
+        for m in list(range(480, 570, 5)) + list(range(570, 960)):
+            o = p
+            p = max(1, p + r.gauss(0, 0.06) + (0.08 * r.choice([-1, 1]) if r.random() < 0.02 else 0))
+            bars.append({"t": f"{d}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, p) + abs(r.gauss(0, .03)), "l": min(o, p) - abs(r.gauss(0, .03)), "c": p, "v": 1000})
+    base = smc.detect(bars, {"tf": 1})
+    mkt = smc.detect(bars, {"tf": 1, "fvgOn": False, "entryAt": "market"})
+    assert mkt["funnel"]["filled"] > base["funnel"]["filled"]
+    fixed = smc.detect(bars, {"tf": 1, "tpLiq": False, "partialOn": False, "tpR": 2})
+    assert all(s["tp1Name"] == "2R" for s in fixed["setups"] if s.get("fillT")) and all(s["exitWhy"] in ("TP1", "stop", "end of day") for s in fixed["setups"] if s.get("fillT"))
+    early = smc.detect(bars, {"tf": 1, "fvgFail": True, "vwapX": True, "timeOn": True, "timeBars": 5})
+    assert any(s.get("exitWhy", "").startswith(("closed", "time stop")) for s in early["setups"])
+    tight = smc.detect(bars, {"tf": 1, "vwapOn": True, "pdOn": True, "rrOn": True, "rrMin": 3})
+    assert tight["funnel"]["filled"] <= base["funnel"]["filled"]
+    no_day = smc.detect(bars, {"tf": 1, "poolPD": False, "poolPM": False, "poolOR": False})
+    assert not any(l["name"] in ("PDH", "PDL", "PM high", "PM low", "ORH", "ORL") for l in no_day["levels"])
+    assert smc.clean({"fvgFail": "true", "timeBars": "7", "entryAt": "bogus"})["fvgFail"] is True and smc.clean({"entryAt": "bogus"})["entryAt"] == "edge"
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

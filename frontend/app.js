@@ -1938,6 +1938,50 @@ async function loadSMC(sym, k, P) {
   try { S.smcD = { k, d: await api('/daytrade/smc', { method: 'POST', body: { t: sym, days: S.smcDays, cfg: P } }) }; } catch (e) { S.smcD = { k, d: { error: e.message } }; }
   S.smcBusy = null; if (route() === 'botchart') render();
 }
+// the model's building blocks, like the other strategies: [key, group, label, tip, number field [key, step, width, unit]]
+const SMC_BLOCKS = [
+  ['poolPD', 'Liquidity', 'Previous day high / low', 'PDH / PDL count as liquidity pools'],
+  ['poolPM', 'Liquidity', 'Pre-market high / low', 'The pre-market high / low count as pools'],
+  ['poolOR', 'Liquidity', 'Opening range', 'The opening range high / low count (once the range is done)', ['orMin', 5, 3, 'min']],
+  ['poolSwing', 'Liquidity', 'Intraday swings', 'The day\'s confirmed swing highs / lows count', ['pivot', 1, 2.6, 'candles each side']],
+  ['eqOnly', 'Liquidity', 'Equal highs / lows only', 'Of the swings, only equal highs / lows (EQH / EQL: two within 0.1 ATR) count: the stronger pools'],
+  ['mssOn', 'Structure', 'Market structure shift', 'After the sweep, a close beyond the last swing high (long) / low (short)', ['mssBars', 1, 2.8, 'candles max']],
+  ['dispOn', 'Structure', 'Displacement candle', 'One candle of the move with a body of at least this × ATR', ['dispMin', 0.1, 3, '× ATR']],
+  ['fvgOn', 'Structure', 'Fair value gap required', 'The move leaves a 3-candle gap of at least this × ATR', ['fvgMin', 0.05, 3, '× ATR']],
+  ['vwapOn', 'Filters', 'VWAP side', 'Longs filled above the session VWAP, shorts under it'],
+  ['pdOn', 'Filters', 'Discount / premium', 'Longs filled in the lower half of the day\'s range so far (discount), shorts in the upper half (premium)'],
+  ['rrOn', 'Filters', 'Minimum R to TP1', 'Skip when the first target is closer than this', ['rrMin', 0.25, 3, 'R']],
+  ['tpLiq', 'Targets', 'Targets at liquidity', 'TP1 / TP2 = the next opposite pools (at least 1R away); off: fixed R', ['tpR', 0.5, 3, 'R if none / off']],
+  ['partialOn', 'Targets', 'Partial at TP1', 'Sell this part at TP1, the rest runs to TP2', ['partial', 0.1, 3, 'of the position']],
+  ['beTp1', 'Targets', 'Rest to breakeven at TP1', 'Once TP1 is hit, the stop of the rest moves to the entry'],
+  ['beOn', 'Early exits', 'Breakeven at', 'Stop to the entry once the trade is this many R in profit', ['beR', 0.25, 3, 'R']],
+  ['trailOn', 'Early exits', 'Trail under new swings', 'After TP1 (or 1R), the stop follows each new swing low (long) / high (short)'],
+  ['fvgFail', 'Early exits', 'Close through the FVG', 'Out at the close when a candle closes through the far side of the entry gap (the gap failed)'],
+  ['mssX', 'Early exits', 'Opposite structure shift', 'Out when a candle closes beyond the last swing formed against the trade'],
+  ['vwapX', 'Early exits', 'Close back across VWAP', 'Out when a candle closes on the wrong side of the session VWAP'],
+  ['timeOn', 'Early exits', 'Time stop', 'Out after this many candles if TP1 isn\'t reached', ['timeBars', 1, 2.8, 'candles']],
+];
+function smcCfgNow() { return { ...((S.smcD && S.smcD.d && S.smcD.d.params) || {}), ...S.smcCfg, ...(S.smcDraft || {}) }; }
+function smcBlocks(P0) {
+  const P = { ...P0, ...S.smcCfg, ...(S.smcDraft || {}) }, dirty = S.smcDraft && Object.keys(S.smcDraft).length;
+  const inp = (k, step_, w_) => `<input data-smccfg="${k}" type="number" step="${step_}" value="${esc(String(P[k] ?? ''))}" style="width:${w_}em;padding:0 3px;font-size:.78rem">`;
+  const chip = ([k, , lbl, tip, f]) => { const on = !!P[k];
+    return `<span class="smc-chip ${on ? 'on' : ''}"><button class="btn" data-smcsw="${k}" title="${esc(tip)} — click to turn ${on ? 'off' : 'on'}" style="font-size:.72rem;padding:0 7px;border-radius:10px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button>
+      <span style="font-size:.8rem" title="${esc(tip)}">${esc(lbl)}</span>${f ? ` ${inp(f[0], f[1], f[2])}<span class="muted" style="font-size:.74rem">${esc(f[3])}</span>` : ''}</span>`; };
+  const sel = (k, opts) => `<select data-smccfg="${k}" style="font-size:.78rem;padding:0 3px">${opts.map(([v, l]) => `<option value="${v}" ${P[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const grp = g => `<div class="rule-cat"><span class="rule-cat-l">${esc(g)}</span><span class="rule-chips">${SMC_BLOCKS.filter(r => r[1] === g).map(chip).join('')}${g === 'Structure' ? '' : ''}</span></div>`;
+  const entryRow = `<div class="rule-cat"><span class="rule-cat-l">Entry</span><span class="rule-chips">
+      <span class="smc-chip on"><span style="font-size:.8rem">enter at</span> ${sel('entryAt', [['edge', 'FVG edge'], ['ce', 'FVG middle (CE)'], ['ob', 'order block'], ['market', 'MSS close (market)']])}</span>
+      <span class="smc-chip on"><span style="font-size:.8rem">within</span> ${inp('entryBars', 1, 2.8)}<span class="muted" style="font-size:.74rem">candles of the MSS</span></span>
+      <span class="smc-chip on"><span style="font-size:.8rem">stop beyond</span> ${sel('stopAt', [['sweep', 'the sweep'], ['fvg', 'the FVG']])} + ${inp('stopBuf', 0.05, 2.8)}<span class="muted" style="font-size:.74rem">× ATR</span></span>
+      <span class="smc-chip on"><span style="font-size:.8rem">entries</span> <input data-smccfg="startT" value="${esc(P.startT || '09:45')}" style="width:3.6em;font-size:.78rem"> – <input data-smccfg="endT" value="${esc(P.endT || '15:00')}" style="width:3.6em;font-size:.78rem"></span>
+      <span class="smc-chip on"><span style="font-size:.8rem">max</span> ${inp('maxDay', 1, 2.6)}<span class="muted" style="font-size:.74rem">trades a day (0 = no limit)</span></span>
+      ${chip(['longs', '', 'Longs', 'Take the long setups (sell-side liquidity swept)'])}${chip(['shorts', '', 'Shorts', 'Take the short setups (buy-side liquidity swept)'])}</span></div>`;
+  return `<details class="smc-set" ${S.smcSetOpen !== false ? 'open' : ''} data-smcsetd><summary><b>Building blocks</b> <span class="muted">(switch the pieces on / off, then Apply)</span></summary>
+    <div class="smc-blocks">${grp('Liquidity')}${grp('Structure')}${entryRow}${grp('Filters')}${grp('Targets')}${grp('Early exits')}</div>
+    <div style="display:flex;gap:8px;align-items:center;margin:6px 0"><button class="btn ${dirty ? 'coachbtn' : ''}" data-smcapply style="font-size:.8rem">${dirty ? 'Apply changes' : 'Apply'}</button><button class="btn" data-smcdefault style="font-size:.8rem">Defaults</button>
+      <span class="muted" style="font-size:.76rem">${dirty ? `${Object.keys(S.smcDraft).length} change(s) pending` : 'the chart and the list use these blocks'}</span></div></details>`;
+}
 function smcPanel(d, id) {
   const f = d.funnel || {}, st = d.stats || {}, w = f.why || {}, P = d.params || {};
   const Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
@@ -1953,16 +1997,10 @@ function smcPanel(d, id) {
     const open_ = S.smcOpen === s.t;
     return `<div class="smc-row ${s.fillT ? 'filled' : ''}"><button class="btn ${S.smcSel === s.t ? 'coachbtn' : ''}" data-smcsel="${esc(s.t)}" style="font-size:.74rem;padding:1px 7px;min-width:9.5em;text-align:left">${esc(s.t.slice(5, 16).replace('T', ' '))} ${s.dir > 0 ? 'LONG' : 'SHORT'}</button>
       <span class="smc-chk">${NAMES.map((nm, q) => ok(by[nm] ? by[nm].ok : null, ['Sweep', 'MSS', 'FVG', 'Retrace', 'Risk', 'Result'][q])).join('')}</span>
-      <span style="min-width:5em;text-align:right">${s.R != null ? Rf(s.R) : `<span class="muted">${esc(s.status || '')}</span>`}</span>
+      <span style="min-width:5em;text-align:right" title="${esc(s.exitWhy || '')}">${s.R != null ? Rf(s.R) : `<span class="muted">${esc(s.status || '')}</span>`}</span>${s.exitWhy ? `<span class="muted" style="font-size:.74rem">${esc(s.exitWhy)}</span>` : ''}
       <button class="btn" data-smcopen="${esc(s.t)}" style="font-size:.72rem;padding:0 6px">${open_ ? 'hide steps' : 'steps'}</button>
       ${open_ ? `<ol class="smc-steps">${(s.steps || []).map(x => `<li class="${x.ok ? 'ok' : 'no'}"><b>${esc(x.name)}</b>: ${esc(x.text)}</li>`).join('')}</ol>` : ''}</div>`; }).join('');
-  const num = (key, step_, w_, l, u) => `<label class="smc-in"><span class="muted">${l}</span><input data-smccfg="${key}" type="number" step="${step_}" value="${esc(String(P[key] ?? ''))}" style="width:${w_}em">${u ? `<span class="muted">${u}</span>` : ''}</label>`;
-  const set = `<details class="smc-set"><summary><b>Rules</b> <span class="muted">(what the model checks)</span></summary><div style="display:flex;flex-wrap:wrap;gap:8px 14px;margin:6px 0">
-      ${num('orMin', 5, 3.2, 'opening range', 'min')}${num('pivot', 1, 2.8, 'swing = higher / lower than', 'candles each side')}${num('mssBars', 1, 3, 'MSS within', 'candles of the sweep')}
-      ${num('fvgMin', 0.05, 3.2, 'FVG at least', '× ATR')}${num('entryBars', 1, 3, 'retracement within', 'candles')}${num('stopBuf', 0.05, 3, 'stop beyond the sweep +', '× ATR')}${num('partial', 0.1, 3, 'partial at TP1', '(0–1)')}
-      <label class="smc-in"><span class="muted">entry</span><select data-smccfg="entryAt"><option value="edge" ${P.entryAt !== 'ce' ? 'selected' : ''}>FVG edge</option><option value="ce" ${P.entryAt === 'ce' ? 'selected' : ''}>FVG middle (CE)</option></select></label>
-      <label class="smc-in"><span class="muted">entries</span><input data-smccfg="startT" value="${esc(P.startT || '09:45')}" style="width:4em"><span class="muted">to</span><input data-smccfg="endT" value="${esc(P.endT || '15:00')}" style="width:4em"></label>
-      <button class="btn coachbtn" data-smcapply style="font-size:.8rem">Apply</button><button class="btn" data-smcdefault style="font-size:.8rem">Defaults</button></div></details>`;
+  const set = smcBlocks(P);
   return `<div class="smc-panel">${fun}${set}<label style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center;margin:2px 0 4px"><input type="checkbox" data-smcfilled ${S.smcFilled ? 'checked' : ''}> only the trades (filled setups)</label><div class="smc-list">${rows || '<p class="muted" style="margin:6px 0">No liquidity sweep in these days.</p>'}</div>
     <p class="muted" style="font-size:.74rem;margin:6px 0 0">Liquidity: PDH / PDL (previous day), PM high / low (pre-market), ORH / ORL (opening range), the day's swings (EQH / EQL when two are equal). A setup: a pool is swept (✕) → a close beyond the last swing = MSS → the move leaves a fair value gap → price comes back into it (entry) → stop beyond the sweep, TP1 at the next opposite liquidity (partial, rest to breakeven), TP2 after it. Each row shows where it stopped.</p></div>`;
 }
@@ -3944,6 +3982,7 @@ try { S.chartDaily = localStorage.getItem('chartDaily') === '1'; } catch (e) { S
 try { S.indOpen = localStorage.getItem('indOpen') !== '0'; S.rulesOpen = localStorage.getItem('rulesOpen') !== '0'; S.hideStats = localStorage.getItem('hideStats') === '1'; S.hideSettings = localStorage.getItem('hideSettings') === '1'; } catch (e) { S.indOpen = true; S.rulesOpen = true; S.hideStats = false; S.hideSettings = false; }
 document.addEventListener('toggle', e => {        // the Indicators / rules panels stay as you left them (toggle doesn't bubble: capture)
   const t = e.target;
+  if (t.matches && t.matches('[data-smcsetd]')) { S.smcSetOpen = t.open; return; }
   if (!t.matches || !t.matches('[data-indpanel],[data-rulespanel]')) return;
   const key = t.matches('[data-indpanel]') ? 'indOpen' : 'rulesOpen';
   if (S[key] === t.open) return;                  // fired by a redraw (a panel created open): nothing changed, no redraw loop
@@ -4819,7 +4858,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -4837,9 +4876,11 @@ document.addEventListener('click', e => {
     if (S.smcSel && d && d.bars) { const s = (d.setups || []).find(x => x.t === t), i0 = d.bars.findIndex(b => b.t >= t), i1 = s && s.exitT ? d.bars.findIndex(b => b.t >= s.exitT) : i0 + 30;
       if (i0 >= 0) S.fcZoom[fcKey('smc-' + sym)] = [Math.max(0, i0 - 40), Math.min(d.bars.length - 1, Math.max(i1, i0 + 10) + 25)]; }
     render(); return; }
-  if (el.hasAttribute('data-smcapply')) { const c = {}; document.querySelectorAll('[data-smccfg]').forEach(i => { const v = i.value; c[i.dataset.smccfg] = i.type === 'number' ? +v : v; });
-    S.smcCfg = c; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {} render(); return; }
-  if (el.hasAttribute('data-smcdefault')) { S.smcCfg = {}; try { localStorage.removeItem('smcCfg'); } catch (err) {} render(); return; }
+  if (el.dataset.smcsw) { const k = el.dataset.smcsw, P = smcCfgNow(); S.smcDraft = { ...(S.smcDraft || {}), [k]: !P[k] }; render(); return; }
+  if (el.hasAttribute('data-smcapply')) { const c = { ...S.smcCfg, ...(S.smcDraft || {}) };
+    document.querySelectorAll('[data-smccfg]').forEach(i => { const v = i.value; c[i.dataset.smccfg] = i.type === 'number' ? +v : v; });
+    S.smcCfg = c; S.smcDraft = null; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {} render(); return; }
+  if (el.hasAttribute('data-smcdefault')) { S.smcCfg = {}; S.smcDraft = null; try { localStorage.removeItem('smcCfg'); } catch (err) {} render(); return; }
   if (el.dataset.stview) {
     const [act, id, sym, day] = el.dataset.stview.split('|');
     if (act === 'off') { S.dtView = null; render(); return; }

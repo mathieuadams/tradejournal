@@ -466,3 +466,6 @@ tr.sel td{background:var(--sunk)}
 .smc-steps{flex-basis:100%;margin:4px 0 4px 1.2em;padding:0}
 .smc-steps li{margin:2px 0}
 .smc-steps li.no{color:var(--loss)}
+.smc-blocks{display:flex;flex-direction:column;gap:5px;margin:6px 0}
+.smc-chip{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--line);border-radius:14px;padding:1px 7px 1px 2px}
+.smc-chip.on{border-color:var(--gain)}
