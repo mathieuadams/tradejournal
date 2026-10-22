@@ -5913,6 +5913,30 @@ def test_smart_money_scheduled_minute():
     finally:
         smclive.users, smclive.tick = saved
 
+def test_single_owner_reads():
+    """No table scans: the scheduled jobs read the owner's own items (owner kept in one item)."""
+    import importlib
+    real = importlib.reload(importlib.import_module("db"))  # the real functions (the fakes replaced them on the module)
+    store = {}
+    try:
+        real.get = lambda pk, sk: store.get((pk, sk))
+        real.put = lambda it: store.__setitem__((it["PK"], it["SK"]), it)
+        real.q_prefix = lambda pk, pre, desc=False, limit=None: [v for (p_, s_), v in sorted(store.items()) if p_ == pk and s_.startswith(pre)]
+        real._scan_full = lambda f: (_ for _ in ()).throw(AssertionError("table scan"))
+        real._owners = None
+        store[real.OWNER] = {"PK": "APP", "SK": "OWNER", "subs": ["me"]}
+        store[("USER#me", "DTCFG")] = {"PK": "USER#me", "SK": "DTCFG", "enabled": True}
+        store[("USER#me", "BOT#1")] = {"PK": "USER#me", "SK": "BOT#1", "status": "open"}
+        store[("USER#me", "BOT#2")] = {"PK": "USER#me", "SK": "BOT#2", "status": "closed"}
+        assert [i["PK"] for i in real.scan_sk("DTCFG")] == ["USER#me"] and real.scan_sk("NOPE") == []
+        assert [i["SK"] for i in real.scan_prefix("BOT#", ("open",))] == ["BOT#1"]
+        real.note_owner("me2")
+        assert store[real.OWNER]["subs"] == ["me", "me2"]
+    finally:
+        importlib.reload(real)
+        _install_fake_db()                              # back to the in-memory fakes for the other tests
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

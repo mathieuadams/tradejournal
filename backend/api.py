@@ -1750,6 +1750,10 @@ def handler(event, context):
     try:
         claims = event["requestContext"]["authorizer"]["jwt"]["claims"]
         sub = claims["sub"]
+        try:
+            db.note_owner(sub)                         # the single user's id, for the scheduled jobs (no table scans)
+        except Exception as e:
+            print("owner note failed", e)
     except KeyError:
         return resp(401, {"error": "Sign in required."})
     q = event.get("queryStringParameters") or {}

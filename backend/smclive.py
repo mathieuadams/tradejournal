@@ -591,7 +591,7 @@ def _tick(sub, now=None, minute=None):
             acts.append(f"{sym}: {str(e)[:160]}")
     if real:
         st = db.get(pk, SK + "#TICK") or {}
-        entry = {"at": iso(now_ny()), "minute": hm, "equity": (acct or {}).get("equity"), "dayPct": (acct or {}).get("dayPct"), "blocked": risk["why"], "took": round((now_ny().replace(tzinfo=None) - t_start).total_seconds(), 1), "syms": log, "actions": acts}
+        entry = {"at": iso(now_ny()), "minute": hm, "startS": round((t_start - now).total_seconds(), 1), "equity": (acct or {}).get("equity"), "dayPct": (acct or {}).get("dayPct"), "blocked": risk["why"], "took": round((now_ny().replace(tzinfo=None) - t_start).total_seconds(), 1), "syms": log, "actions": acts}
         db.put({"PK": pk, "SK": SK + "#TICK", "last": entry, "log": ((st.get("log") or []) + [entry])[-120:]})
     return {"actions": acts}
 
@@ -848,4 +848,4 @@ def _realized_R(c, sym, r, risk):
 
 
 def users():
-    return [p["PK"][5:] for p in db.scan_sk(SK) if p.get("enabled")]
+    return [p["PK"][5:] for p in db.scan_sk(SK) if p.get("enabled")]      # the owner's own item: one read

@@ -114,25 +114,45 @@ def batch_write(puts=(), deletes=()):
             b.delete_item(Key={"PK": pk, "SK": sk})
 
 
-def scan_sk(sk_value):
-    from boto3.dynamodb.conditions import Attr
-    kw = {"FilterExpression": Attr("SK").eq(sk_value)}
-    items = []
-    while True:
-        r = table().scan(**kw)
-        items += r["Items"]
-        if "LastEvaluatedKey" not in r:
-            break
-        kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
-    return [from_ddb(i) for i in items]
+# ---------------------------------------------------------------- single owner: no table scans
+# The app has one user: the scheduled jobs used to scan the whole table (~25 s with the stored market history) to
+# find "every user with X". The owner's id is kept in one item instead (set by the first page request), and the
+# "every user" reads are reads of that user's own items.
+OWNER = ("APP", "OWNER")
+_owners = None
 
 
-def scan_prefix(prefix, statuses=None):
-    """All items (any user) whose SK starts with prefix, optionally filtered by status."""
+def owners():
+    global _owners
+    if _owners is None:
+        it = get(*OWNER)
+        if it and it.get("subs"):
+            _owners = list(it["subs"])
+        else:                                          # never set yet: found once from the profiles, then kept
+            subs = sorted({i["PK"][5:] for i in _scan_full(Attr_eq("SK", "PROFILE")) if str(i.get("PK", "")).startswith("USER#")})
+            if subs:
+                put({"PK": OWNER[0], "SK": OWNER[1], "subs": subs})
+            _owners = subs
+    return _owners
+
+
+def note_owner(sub):
+    """Called on each page request: the signed-in user is the owner (kept once)."""
+    global _owners
+    if not sub or (_owners is not None and sub in _owners):
+        return
+    cur = owners()
+    if sub not in cur:
+        _owners = sorted(set(cur) | {sub})
+        put({"PK": OWNER[0], "SK": OWNER[1], "subs": _owners})
+
+
+def Attr_eq(k, v):
     from boto3.dynamodb.conditions import Attr
-    f = Attr("SK").begins_with(prefix)
-    if statuses:
-        f = f & Attr("status").is_in(list(statuses))
+    return Attr(k).eq(v)
+
+
+def _scan_full(f):
     kw = {"FilterExpression": f}
     items = []
     while True:
@@ -143,6 +163,24 @@ def scan_prefix(prefix, statuses=None):
         kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
     return [from_ddb(i) for i in items]
 
+
+def scan_sk(sk_value):
+    """The item `sk_value` of each user (the owner): direct reads, no table scan."""
+    out = []
+    for sub in owners():
+        it = get(upk(sub), sk_value)
+        if it:
+            out.append(it)
+    return out
+
+
+def scan_prefix(prefix, statuses=None):
+    """The items of each user (the owner) whose SK starts with prefix, optionally filtered by status: a query of
+    the owner's partition, no table scan."""
+    out = []
+    for sub in owners():
+        out += [i for i in q_prefix(upk(sub), prefix) if not statuses or i.get("status") in statuses]
+    return out
 
 def try_lock(pk, sk, seconds):
     """Take a short lock (conditional write). Returns False if someone else holds it."""
