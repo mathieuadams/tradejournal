@@ -5908,7 +5908,9 @@ def test_smart_money_scheduled_minute():
     try:
         smclive.users = lambda: ["a", "b"]
         smclive.tick = lambda sub, now=None, minute=None: seen.append((sub, minute)) or {"ok": 1}
-        out = smclive.job("2026-10-22T16:07:00Z")
+        out = smclive.job("2026-10-22T16:07:00Z", t0=1.0)
+        names = [m[0] for m in smclive._TM[0].marks]
+        assert "Lambda handler start" in names and "users read" in names and "lock taken" in names and names[-1] == "done"
         assert set(out) == {"a", "b"} and all(m == dt.datetime(2026, 10, 22, 12, 7) for _, m in seen), seen
     finally:
         smclive.users, smclive.tick = saved

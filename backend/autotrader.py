@@ -34,6 +34,9 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+
+_LOADED_AT = time.time()                              # container start (cold start timing)
+_T0 = None
 from datetime import datetime, timedelta
 
 import db
@@ -1876,6 +1879,8 @@ def tick(sub):
 
 
 def handler(event, context_):
+    global _T0
+    _T0 = time.time()                                  # when the invocation reached the code (smart money timing)
     job = event.get("job", "monitor")
     if event.get("sub"):
         subs = [event["sub"]]
@@ -1901,7 +1906,7 @@ def handler(event, context_):
         subs = [p["PK"][5:] for p in db.scan_sk("DTCFG") if p.get("enabled")]
     elif job == "smctick":     # every minute: smart money live (its own invocation, for the minute it was scheduled for)
         import smclive
-        return smclive.job(event.get("at"))
+        return smclive.job(event.get("at"), t0=_T0, loaded=_LOADED_AT)
     elif job == "wallwatch":   # every hour: users with the wall watchlist on
         subs = [p["PK"][5:] for p in db.scan_sk("WWCFG") if p.get("enabled", True)]
     elif job == "tick":   # every minute: users with open bot trades or flow trading on

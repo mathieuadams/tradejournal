@@ -288,18 +288,55 @@ def _close_t(t, tf):
     return d
 
 
-def job(at=None):
+_LOADED = time.time()                                  # when this Lambda container loaded the code (cold start)
+_RUNS = [0]
+
+
+class Timer:
+    """Seconds since the scheduled minute (the candle close) at each step of a run: where the time goes."""
+    def __init__(self, base):
+        self.base, self.marks = base, []
+
+    def mark(self, name):
+        self.marks.append([name, round(time.time() - self.base, 2)])
+
+    def line(self):
+        return " ".join(f"{n}@{t:+.2f}s" for n, t in self.marks)
+
+
+_TM = [None]
+
+
+def _mark(name):
+    if _TM[0]:
+        _TM[0].mark(name)
+
+
+def job(at=None, t0=None, loaded=None):
     """The scheduled minute: `at` = the time it was scheduled for (UTC, from EventBridge Scheduler), so a run that
     starts late still works on its own minute (and never skips one). Every user with auto-trading on, in parallel."""
     from concurrent.futures import ThreadPoolExecutor
     from util import utc_to_ny
-    minute = None
+    import calendar
+    minute, base = None, None
     if at:
         try:
-            minute = utc_to_ny(datetime.strptime(str(at)[:19], "%Y-%m-%dT%H:%M:%S")).replace(tzinfo=None, second=0, microsecond=0)
+            u = datetime.strptime(str(at)[:19], "%Y-%m-%dT%H:%M:%S")
+            minute = utc_to_ny(u).replace(tzinfo=None, second=0, microsecond=0)
+            base = calendar.timegm(u.replace(second=0).timetuple())
         except (TypeError, ValueError):
             minute = None
+    base = base or (time.time() // 60 * 60)
+    tm = _TM[0] = Timer(base)
+    cold = _RUNS[0] == 0
+    _RUNS[0] += 1
+    if cold:
+        tm.marks.append(["code loaded (cold start)", round((loaded or _LOADED) - base, 2)])
+    if t0:
+        tm.marks.append(["Lambda handler start", round(t0 - base, 2)])
+    tm.mark("job start")
     subs = users()
+    tm.mark("users read")
     def one(sub):
         pk = db.upk(sub)
         for _ in range(25):                            # a previous minute still running: wait for it (never two at once)
@@ -308,6 +345,7 @@ def job(at=None):
             time.sleep(1)
         else:
             return sub, {"skipped": "the previous minute run is still going"}
+        _mark("lock taken")
         try:
             return sub, tick(sub, minute=minute)
         except Exception as e:
@@ -315,7 +353,10 @@ def job(at=None):
         finally:
             db.unlock(pk, SK + "#LOCK")
     with ThreadPoolExecutor(max_workers=8) as ex:
-        return dict(ex.map(one, subs))
+        out = dict(ex.map(one, subs))
+    tm.mark("done")
+    print(f"SMC {minute.strftime('%H:%M') if minute else '?'} {'COLD ' if cold else ''}{tm.line()}")   # CloudWatch: filter @message like /^SMC /
+    return out
 
 
 def tick(sub, now=None, minute=None):
@@ -481,6 +522,7 @@ def _tick(sub, now=None, minute=None):
     except Exception as e:
         acct = None
         acts.append(f"account: {str(e)[:100]}")
+    _mark("account read")
     day_recs = [r for r in db.q_prefix(pk, POS) if (r.get("t") or "")[:10] == today]
     risk = risk_state(cfg, acct, day_recs)
     if risk["flatten"]:                                # daily loss limit hit: everything of the strategy closed
@@ -502,8 +544,11 @@ def _tick(sub, now=None, minute=None):
             acts.append(f"loop test failed: {str(e)[:160]}")
     for sym in cfg["tickers"]:
         try:
+            _mark(f"{sym} candles asked")
             bs, waited, fresh = _bars_now(sub, sym, now, tf)
+            _mark(f"{sym} candles in" + (f" (waited {waited:g}s)" if waited else ""))
             out = smc.detect(bs, P, [today]) if bs else {"setups": [], "bars": []}
+            _mark(f"{sym} strategy run")
             bars = out.get("bars") or []
             last = bars[-1]["t"] if bars else None
             if not last:                               # no candle: what is open is still managed (no new setup)
@@ -526,6 +571,7 @@ def _tick(sub, now=None, minute=None):
             for r in active:
                 s = setups.get(r["t"])
                 acts += _manage(c, pk, r, s, last, tf, flat, P, lag)
+                _mark(f"{sym} open trade managed")
             active = [r for r in db.q_prefix(pk, f"{POS}{sym}#{today}") if r.get("status") in ("pending", "open", "closing")]
             last_end = max(P["endT"], P["endT2"]) if P.get("win2On") else P["endT"]
             if active or flat or not cfg["trade"] or hm >= last_end:
@@ -566,7 +612,9 @@ def _tick(sub, now=None, minute=None):
                     break
                 side = "buy" if s["dir"] > 0 else "sell"
                 if market_now:
+                    _mark(f"{sym} entry sending")
                     o, notes = _send(c, {"symbol": sym, "qty": str(q), "side": side, "type": "market", "time_in_force": "day"})
+                    _mark(f"{sym} entry accepted by Alpaca" if o else f"{sym} entry refused")
                 else:
                     o, notes = _send(c, {"symbol": sym, "qty": str(q), "side": side, "type": "limit", "time_in_force": "day",
                                          "limit_price": str(_px(s["entry"]))})
@@ -591,7 +639,8 @@ def _tick(sub, now=None, minute=None):
             acts.append(f"{sym}: {str(e)[:160]}")
     if real:
         st = db.get(pk, SK + "#TICK") or {}
-        entry = {"at": iso(now_ny()), "minute": hm, "startS": round((t_start - now).total_seconds(), 1), "equity": (acct or {}).get("equity"), "dayPct": (acct or {}).get("dayPct"), "blocked": risk["why"], "took": round((now_ny().replace(tzinfo=None) - t_start).total_seconds(), 1), "syms": log, "actions": acts}
+        _mark("logged")
+        entry = {"at": iso(now_ny()), "minute": hm, "timing": list(_TM[0].marks) if _TM[0] else None, "startS": round((t_start - now).total_seconds(), 1), "equity": (acct or {}).get("equity"), "dayPct": (acct or {}).get("dayPct"), "blocked": risk["why"], "took": round((now_ny().replace(tzinfo=None) - t_start).total_seconds(), 1), "syms": log, "actions": acts}
         db.put({"PK": pk, "SK": SK + "#TICK", "last": entry, "log": ((st.get("log") or []) + [entry])[-120:]})
     return {"actions": acts}
 
@@ -789,6 +838,7 @@ def _manage_mkt(c, pk, r, s, last, flat, P, lag, rest=None):
                     ev += notes + [f"TP1: {q} sold at market (candle {last[11:16]}, {lag()}s after its close)" if o else "TP1 partial NOT sent (tried again next minute)"]
                     if o:
                         upd["tp1Done"] = True
+                        upd["heldAfterTp1"] = abs(held) - q     # the sale may not be filled yet: the stop is for what is left
                         acts.append(f"{sym} TP1 partial {q}")
             stop = (s or {}).get("stopNow") or r.get("stopNow") or r["stop"]
             moved = abs(float(stop) - float(r.get("stopNow") or r["stop"])) >= 0.01
@@ -799,7 +849,9 @@ def _manage_mkt(c, pk, r, s, last, flat, P, lag, rest=None):
                 if r.get("stopId"):
                     _cancel(c, r["stopId"])
                     time.sleep(0.4)
-                left = _held(c, sym)
+                left = upd.get("heldAfterTp1") or abs(_held(c, sym))
+                if r.get("tp1Done") and r.get("heldAfterTp1"):
+                    left = min(left, r["heldAfterTp1"])
                 if left:
                     sid, notes = _rest_stop(c, r, left, stop)
                     upd["stopId"] = sid
