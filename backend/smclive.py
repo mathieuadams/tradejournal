@@ -93,7 +93,7 @@ def view(sub):
         except Exception as e:
             out["accountError"] = str(e)[:120]
     out["lastTick"] = st.get("last")
-    out["ticks"] = (st.get("log") or [])[-15:]
+    out["ticks"] = (st.get("log") or [])[-60:]
     out["today"] = today
     return out
 
@@ -470,7 +470,10 @@ def _tick(sub, now=None):
             db.put({"PK": pk, "SK": f"{SK}#LAST#{sym}", "t": last})
             lag = lambda: round((now_ny().replace(tzinfo=None) - _close_t(last, tf)).total_seconds(), 1)
             log.append({"sym": sym, "candle": last, "closedAt": _close_t(last, tf).strftime("%H:%M:%S"), "fresh": fresh, "waited": waited,
-                        "newCandle": new_candle})
+                        "newCandle": new_candle,
+                        "engine": [f"{x['t'][11:16]} {'L' if x['dir'] > 0 else 'S'} {x.get('status')}" + (f" fill {x['fillT'][11:16]}" if x.get("fillT") else "")
+                                   + (f" out {x['exitT'][11:16]} {x.get('exitWhy')}" if x.get("exitT") and x.get("exitWhy") != "end of day" else "")
+                                   for x in out["setups"] if (x.get("fillT") or x.get("armedT") or x["t"]) >= (now - timedelta(minutes=6 * tf)).strftime("%Y-%m-%dT%H:%M")]})
             recs = {r["t"]: r for r in db.q_prefix(pk, f"{POS}{sym}#{today}")}
             active = [r for r in recs.values() if r.get("status") in ("pending", "open", "closing")]
             flat = hm >= P["flatT"]
@@ -491,10 +494,16 @@ def _tick(sub, now=None):
             for s in out["setups"]:
                 if s["t"] in recs:
                     continue
+                notes_late = None
                 mkt_mode = cfg.get("orderMode", "market") == "market"
                 done_now = s.get("exitT") == last and s.get("exitWhy") != "end of day"     # in and out in the same candle
                 if mkt_mode:                           # market: in right after the candle where the engine fills
-                    pending, market_now = False, bool(s.get("fillT") == last and not done_now)
+                    in_trade = bool(s.get("fillT")) and (not s.get("exitT") or s.get("exitWhy") == "end of day")
+                    late = _candles_between(s.get("fillT"), last, tf) if s.get("fillT") else 99
+                    pending, market_now = False, bool(in_trade and late <= CATCHUP)   # a missed minute (late candle, slow run): caught up
+                    if market_now and late:
+                        notes_late = f"{late} candle(s) late (the minute run missed the fill candle {s['fillT'][11:16]})"
+                        acts.append(f"{sym}: entry caught up: {notes_late}")
                 else:
                     pending = _waiting(s, last, tf, P)
                     market_now = P["entryAt"] == "market" and s.get("fillT") == last and s.get("armedT") == last
@@ -525,7 +534,7 @@ def _tick(sub, now=None):
                        "status": "pending", "candle": last, "tries": 1,
                        "sentAt": iso(now_ny()), "lagS": lag(), "sizing": size_note, "equity": (acct or {}).get("equity"),
                        "events": [f"size {q}: {size_note}", f"{'market' if market_now else 'limit'} {side} {q} @ {s['entry']} "
-                                                                           f"(candle {last[11:16]}, sent {lag()}s after its close)"] + notes}
+                                                                           f"(candle {last[11:16]}, sent {lag()}s after its close)"] + notes + ([notes_late] if notes_late else [])}
                 if not o.get("id"):
                     rec["events"].append("order not accepted after the retries: tried again next minute")
                 if P["partialOn"] is False:
@@ -538,8 +547,19 @@ def _tick(sub, now=None):
     if real:
         st = db.get(pk, SK + "#TICK") or {}
         entry = {"at": iso(now_ny()), "minute": hm, "equity": (acct or {}).get("equity"), "dayPct": (acct or {}).get("dayPct"), "blocked": risk["why"], "took": round((now_ny().replace(tzinfo=None) - t_start).total_seconds(), 1), "syms": log, "actions": acts}
-        db.put({"PK": pk, "SK": SK + "#TICK", "last": entry, "log": ((st.get("log") or []) + [entry])[-60:] if acts or hm[-1] == "0" else (st.get("log") or [])[-60:]})
+        db.put({"PK": pk, "SK": SK + "#TICK", "last": entry, "log": ((st.get("log") or []) + [entry])[-120:]})
     return {"actions": acts}
+
+
+CATCHUP = 3                                            # market mode: an entry missed by up to 3 candles is still taken
+
+
+def _candles_between(t0, t1, tf):
+    try:
+        d = (datetime.strptime(t1[:16], "%Y-%m-%dT%H:%M") - datetime.strptime(t0[:16], "%Y-%m-%dT%H:%M")).total_seconds() / 60 / tf
+    except (TypeError, ValueError):
+        return 99
+    return int(round(d)) if t0[:10] == t1[:10] else 99
 
 
 def _waiting(s, last, tf, P):

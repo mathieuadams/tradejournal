@@ -5588,7 +5588,12 @@ def test_smart_money_live_market_orders():
     _smc_live_day("market")
 
 
-def _smc_live_day(MODE):
+def test_smart_money_live_missed_minute():
+    """A minute run that doesn't happen at the fill candle: the entry is caught up on the next run."""
+    _smc_live_day("market", skip_fill=True)
+
+
+def _smc_live_day(MODE, skip_fill=False):
     """Live: a day replayed minute by minute against a fake broker: the limit entry rests at the FVG edge while the
     setup waits, the exits are OCO at the broker, nothing is left open after the flat time, the candle used is the
     one that just closed."""
@@ -5678,17 +5683,21 @@ def _smc_live_day(MODE):
             closed = (now - dt.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
             broker_minute(by_t[closed])                # the candle happened, then the tick runs at its close
             n0 = len(calls)
-            smclive.tick("smc-live-" + MODE, now)
+            if not (skip_fill and closed == found["fillT"]):                # the run right after the fill candle missed
+                smclive.tick("smc-live-" + MODE + ("-skip" if skip_fill else ""), now)
             for m, path, body in calls[n0:]:
                 if m == "POST" and body.get("type") == "limit" and not body.get("order_class") and first_limit is None:
                     first_limit = (closed, body)
             now += dt.timedelta(minutes=1)
-        recs = db.q_prefix(db.upk("smc-live-" + MODE), "SMCPOS#QQQ#2026-09-16")
+        recs = db.q_prefix(db.upk("smc-live-" + MODE + ("-skip" if skip_fill else "")), "SMCPOS#QQQ#2026-09-16")
         if MODE == "market":
             full = {x["t"]: x for x in smc.detect(day, P, ["2026-09-16"])["setups"]}
             assert recs and not first_limit, recs
             assert not any(b and b.get("type") == "limit" for m, p_, b in calls)           # market orders only (+ stops)
             for r in recs:                             # in right after the candle where the engine filled
+                if skip_fill and r["t"] == found["t"]:
+                    assert r["candle"] > found["fillT"] and any("late" in e for e in r["events"]), r
+                    continue
                 assert r["candle"] == full[r["t"]]["fillT"], (r["candle"], full[r["t"]]["fillT"])
                 assert r["status"] in ("closed", "canceled"), r
             assert not any(b and b.get("type") in ("stop", "limit") or (b or {}).get("order_class") for m, p_, b in calls), "market orders only"
