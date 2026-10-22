@@ -265,9 +265,9 @@ def check(sub):
     out = {"now": now.strftime("%Y-%m-%d %H:%M"), "enabled": cfg["enabled"], "trade": cfg["trade"], "problems": []}
     c = daytrade.creds(sub)
     if not cfg["enabled"]:
-        out["problems"].append("Watch is off: the minute run skips this strategy.")
+        out["problems"].append("Auto-trading is off: the minute run skips this strategy.")
     if not cfg["trade"]:
-        out["problems"].append("Send orders is off: setups are logged, no order goes out.")
+        out["problems"].append("Auto-trading is off: no order goes out.")
     if not c:
         out["problems"].append("No day-trading paper account connected.")
         return out
@@ -309,7 +309,7 @@ def check(sub):
                 wait = bool(last) and _waiting(s_, last, P["tf"], P)
                 what = (f"live record: {r.get('status')}" + (f" ({r.get('why') or r.get('exitWhy')})" if r.get("why") or r.get("exitWhy") else "")) if r else \
                     "waiting for the retracement: a limit order should be resting now" if wait else \
-                    ("filled in the engine but no live record: the setup was armed and filled between two minute runs, or before Watch / Send orders was on" if s_.get("fillT") else s_.get("status") or "")
+                    ("filled in the engine but no live record: the setup was armed and filled between two minute runs, or before auto-trading was on" if s_.get("fillT") else s_.get("status") or "")
                 x["setups"].append({"t": s_["t"], "dir": s_["dir"], "status": s_.get("status"), "armedT": s_.get("armedT"), "entry": s_.get("entry"),
                                     "fillT": s_.get("fillT"), "R": s_.get("R"), "exitWhy": s_.get("exitWhy"), "live": what})
         except Exception as e:

@@ -2181,8 +2181,7 @@ function smcLiveBox() {
   const table = rs => rs.length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>Setup</th><th></th><th></th><th>Order</th><th class="r">Entry</th><th class="r">Fill</th><th class="r">Slip</th><th class="r">Lag</th><th>Status</th><th class="r">R</th><th class="r">Engine R</th><th></th></tr></thead><tbody>${rs.map(tr).join('')}</tbody></table></div>` : '';
   return `<div class="smc-stress" style="border-color:${c.enabled && c.trade ? 'var(--gain)' : 'var(--line)'}"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
     <b>Live (paper)</b>${L.connected ? `<span class="muted" style="font-size:.76rem">day-trading paper account · data</span><select data-smcfeed style="font-size:.76rem" title="Market data of the day-trading account: switching restarts the optimizer (other candles)"><option value="iex" ${L.feed !== 'sip' ? 'selected' : ''}>IEX only (free)</option><option value="sip" ${L.feed === 'sip' ? 'selected' : ''}>All exchanges, real time (Algo Trader Plus)</option></select>` : '<span class="loss" style="font-size:.8rem">connect the day-trading paper account first (Day trading tab)</span>'}
-    <button class="btn ${c.enabled ? 'coachbtn' : ''}" data-smclive="enabled" style="font-size:.78rem" title="Run the strategy every minute (the log below fills even without orders)">${c.enabled ? '✓ Watching' : 'Watch'}</button>
-    <button class="btn ${c.trade ? 'coachbtn' : ''}" data-smclive="trade" style="font-size:.78rem" title="Send the orders to the paper account">${c.trade ? '✓ Sending orders' : 'Send orders'}</button>
+    <button class="btn ${c.enabled && c.trade ? 'coachbtn' : ''}" data-smclive="auto" style="font-size:.8rem;font-weight:700" title="On: every minute the saved strategy runs on QQQ / SPY and its orders (entry, stop, targets, exits) go to the paper account by themselves">${c.enabled && c.trade ? '● AUTO-TRADING ON' : '○ Auto-trading off'}</button>
     <span class="muted" style="font-size:.74rem">tickers ${esc((c.tickers || []).join(' '))}</span></div>
     ${smcRiskBox(L)}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0;font-size:.78rem"><b>Strategy:</b> ${c.savedAt ? `${esc(c.name || 'saved')} <span class="muted">(${P.tf}m · saved ${esc(c.savedAt.slice(0, 16).replace('T', ' '))})</span>` : '<span class="muted">none saved yet</span>'}
@@ -5180,9 +5179,8 @@ document.addEventListener('click', e => {
     render(); return; }
   if (el.hasAttribute('data-smclivecheck')) { S.smcChkBusy = true; render();
     api('/daytrade/smc/live/check').then(r => { S.smcChk = r; }).catch(err => { S.smcChk = { error: err.message }; }).finally(() => { S.smcChkBusy = false; render(); }); return; }
-  if (el.dataset.smclive) { const k = el.dataset.smclive, c = ((S.smcLive || {}).config) || {};
-    if (k === 'trade' && !c.trade && !confirm('Send real orders to the day-trading PAPER account for this strategy?')) return;
-    smcLiveSet({ [k]: !c[k], ...(k === 'trade' && !c.trade ? { enabled: true } : {}) }); return; }
+  if (el.dataset.smclive) { const c = ((S.smcLive || {}).config) || {}, on = !(c.enabled && c.trade);
+    smcLiveSet({ enabled: on, trade: on }); return; }
   if (el.hasAttribute('data-smclivesave')) { const nm = (document.querySelector('[data-smclivename]') || {}).value || '';
     S.smcLiveName = nm; smcLiveSet({ cfg: { ...S.smcCfg, tf: S.smcTf }, name: nm, source: S.smcSrc || null }); return; }
   if (el.dataset.smcopt) { const v = el.dataset.smcopt, start = { ...S.smcCfg, tf: S.smcTf };
