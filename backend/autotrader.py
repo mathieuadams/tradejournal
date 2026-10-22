@@ -1898,8 +1898,10 @@ def handler(event, context_):
     elif job == "sdtick":      # stocks in play live: users with it on
         subs = [p["PK"][5:] for p in db.scan_sk("SDCFG") if p.get("enabled")]
     elif job == "daytick":     # every minute: users with day trading on
+        subs = [p["PK"][5:] for p in db.scan_sk("DTCFG") if p.get("enabled")]
+    elif job == "smctick":     # every minute: smart money live (its own invocation, for the minute it was scheduled for)
         import smclive
-        subs = sorted({p["PK"][5:] for p in db.scan_sk("DTCFG") if p.get("enabled")} | set(smclive.users()))
+        return smclive.job(event.get("at"))
     elif job == "wallwatch":   # every hour: users with the wall watchlist on
         subs = [p["PK"][5:] for p in db.scan_sk("WWCFG") if p.get("enabled", True)]
     elif job == "tick":   # every minute: users with open bot trades or flow trading on
@@ -2020,12 +2022,7 @@ def handler(event, context_):
                 out[sub] = {"n": len(daytrade.compare_job(sub, event.get("params") or {}).get("variants") or [])}
             elif job == "daytick":
                 import daytrade
-                import smclive
-                out[sub] = {"day": daytrade.tick(sub)}
-                try:
-                    out[sub]["smc"] = smclive.tick(sub)  # smart money on the same paper account
-                except Exception as e:
-                    out[sub]["smc"] = {"error": str(e)[:200]}
+                out[sub] = daytrade.tick(sub)
             elif job == "oflow":
                 import orderflow
                 out[sub] = orderflow.job(sub, event.get("params") or {})

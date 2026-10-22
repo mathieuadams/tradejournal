@@ -5892,6 +5892,19 @@ def test_smart_money_order_retry():
     finally:
         smclive._alp, smclive.time.sleep = saved
 
+def test_smart_money_scheduled_minute():
+    """The scheduled run works on the minute it was scheduled for (EventBridge time, UTC), however late it starts."""
+    import smclive, datetime as dt
+    seen = []
+    saved = (smclive.users, smclive.tick)
+    try:
+        smclive.users = lambda: ["a", "b"]
+        smclive.tick = lambda sub, now=None, minute=None: seen.append((sub, minute)) or {"ok": 1}
+        out = smclive.job("2026-10-22T16:07:00Z")
+        assert set(out) == {"a", "b"} and all(m == dt.datetime(2026, 10, 22, 12, 7) for _, m in seen), seen
+    finally:
+        smclive.users, smclive.tick = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

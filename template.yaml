@@ -450,6 +450,12 @@ Resources:
             ScheduleExpression: cron(20,32,40 9 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "flipsnap"}'
+        SmcTick:            # every minute: smart money live on the day-trading paper account (its own run: never late behind another job)
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "smctick", "at": "<aws.scheduler.scheduled-time>"}'
         DayTrade:           # every minute: the day-trading account (1-minute strategy on QQQ / SPY)
           Type: ScheduleV2
           Properties:

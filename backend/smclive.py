@@ -275,10 +275,41 @@ def _close_t(t, tf):
     return d
 
 
-def tick(sub, now=None):
-    """The minute run; a crash is written to the log the page shows (else it would only be in CloudWatch)."""
+def job(at=None):
+    """The scheduled minute: `at` = the time it was scheduled for (UTC, from EventBridge Scheduler), so a run that
+    starts late still works on its own minute (and never skips one). Every user with auto-trading on, in parallel."""
+    from concurrent.futures import ThreadPoolExecutor
+    from util import utc_to_ny
+    minute = None
+    if at:
+        try:
+            minute = utc_to_ny(datetime.strptime(str(at)[:19], "%Y-%m-%dT%H:%M:%S")).replace(tzinfo=None, second=0, microsecond=0)
+        except (TypeError, ValueError):
+            minute = None
+    subs = users()
+    def one(sub):
+        pk = db.upk(sub)
+        for _ in range(25):                            # a previous minute still running: wait for it (never two at once)
+            if db.try_lock(pk, SK + "#LOCK", 50):
+                break
+            time.sleep(1)
+        else:
+            return sub, {"skipped": "the previous minute run is still going"}
+        try:
+            return sub, tick(sub, minute=minute)
+        except Exception as e:
+            return sub, {"error": str(e)[:200]}
+        finally:
+            db.unlock(pk, SK + "#LOCK")
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        return dict(ex.map(one, subs))
+
+
+def tick(sub, now=None, minute=None):
+    """The minute run; a crash is written to the log the page shows (else it would only be in CloudWatch).
+    now: tests (no log); minute: the scheduled minute of a real run."""
     try:
-        return _tick(sub, now)
+        return _tick(sub, now, minute)
     except Exception as e:
         import traceback
         if now is None:
@@ -414,7 +445,7 @@ def test_loop(sub, sym="SPY"):
     return {"steps": steps}
 
 
-def _tick(sub, now=None):
+def _tick(sub, now=None, minute=None):
     cfg = config(sub)
     if not cfg["enabled"]:
         return {"skipped": "off"}
@@ -423,7 +454,7 @@ def _tick(sub, now=None):
     if not c:
         return {"skipped": "no day-trading account"}
     real = now is None
-    now = now or now_ny().replace(tzinfo=None, second=0, microsecond=0)
+    now = now or minute or now_ny().replace(tzinfo=None, second=0, microsecond=0)
     t_start = now_ny().replace(tzinfo=None)
     today, hm = now.strftime("%Y-%m-%d"), now.strftime("%H:%M")
     if now.weekday() >= 5 or not ("09:31" <= hm <= "16:00"):
