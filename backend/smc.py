@@ -27,11 +27,12 @@ PARAMS = {"tf": 5, "orMin": 15, "pivot": 2, "fvgMin": 0.3, "mssBars": 12, "entry
           "stopAt": "sweep", "vwapOn": False, "pdOn": False, "rrOn": False, "rrMin": 1.5, "maxDay": 0,   # entry filters
           "tpLiq": True, "tpR": 2.0, "partialOn": True, "beTp1": True,                              # targets
           "beOn": False, "beR": 1.0, "trailOn": False, "fvgFail": False, "mssX": False, "vwapX": False,   # early exits
-          "timeOn": False, "timeBars": 12}
+          "timeOn": False, "timeBars": 12,
+          "win2On": False, "startT2": "13:30", "endT2": "15:30"}                                    # a 2nd entry window (afternoon)
 INTS = ("tf", "orMin", "pivot", "mssBars", "entryBars", "maxDay", "timeBars")
 FLOATS = ("fvgMin", "stopBuf", "partial", "eqTol", "dispMin", "rrMin", "tpR", "beR")
 BOOLS = ("longs", "shorts", "poolPD", "poolPM", "poolOR", "poolSwing", "eqOnly", "mssOn", "dispOn", "fvgOn", "vwapOn", "pdOn",
-         "rrOn", "tpLiq", "partialOn", "beTp1", "beOn", "trailOn", "fvgFail", "mssX", "vwapX", "timeOn")
+         "rrOn", "tpLiq", "partialOn", "beTp1", "beOn", "trailOn", "fvgFail", "mssX", "vwapX", "timeOn", "win2On")
 
 
 def clean(cfg):
@@ -63,6 +64,15 @@ def _atr(bars, n=14):
 
 def _hm(t):
     return t[11:16]
+
+
+def window_end(P, hm):
+    """The end of the entry window `hm` is in (the morning window, or the 2nd one when it is on), else None."""
+    if P["startT"] <= hm < P["endT"]:
+        return P["endT"]
+    if P.get("win2On") and P["startT2"] <= hm < P["endT2"]:
+        return P["endT2"]
+    return None
 
 
 def day_pools(prev_reg, pm, P=None):
@@ -202,11 +212,12 @@ def _day(bars, atr, ix, pools0, P, out):
                 continue                               # broke through and stayed: not a sweep
             if (side > 0 and not P["longs"]) or (side < 0 and not P["shorts"]) or i <= busy[0]:
                 continue
-            if not (P["startT"] <= hm < P["endT"]):
+            we = window_end(P, hm)
+            if not we:
                 continue
             if P["maxDay"] and n_day >= P["maxDay"]:
                 continue
-            s = _setup(bars, atr, ix, pos, sw_i, p, side, piv, pools, P, t_end, vw)
+            s = _setup(bars, atr, ix, pos, sw_i, p, side, piv, pools, P if we == P["endT"] else {**P, "endT": we}, t_end, vw)
             if s.get("fillT"):
                 n_day += 1
             out["sweeps"].append({"t": bars[sw_i]["t"], "p": p["p"], "name": p["name"], "dir": side})
@@ -526,3 +537,27 @@ def stress(sub, sym, days=30, cfg=None, cost=0.05):
         except Exception as e:
             vs.append({"label": label, "error": str(e)[:80]})
     return {"symbol": sym, "days": dates, "cost": cost, "trades": tr, "base": _sum(base["setups"], cost), "funnel": base["funnel"], "variants": vs}
+
+
+WINDOWS = [("09:35", "11:30", "morning"), ("11:30", "13:30", "midday"), ("13:30", "15:30", "afternoon"), ("09:35", "15:30", "all day")]
+
+
+def windows(sub, sym, days=30, cfg=None, cost=0.05, wins=None):
+    """The same blocks traded in one time window at a time (the 2nd window off): which part of the day gives the
+    good trades. -> {"symbol", "days", "windows": [{label, from, to, n, totR, avgR, win, trades: [{t, R}]}]}"""
+    import daytrade
+    sym = (sym or "").upper()
+    P = clean(cfg)
+    days = max(5, min(60, int(days or 30)))
+    mb = daytrade.minute_bars(sub, sym, days + 2)
+    dates = sorted({b["t"][:10] for b in mb if "09:30" <= b["t"][11:16] < "16:00"})[-days:]
+    if not dates:
+        return {"symbol": sym, "error": "No minute candles."}
+    out = []
+    for a, b, label in wins or WINDOWS:
+        res = detect(mb, {**P, "startT": a, "endT": b, "win2On": False}, dates)["setups"]
+        rs = [x for x in res if x.get("R") is not None]
+        out.append({"label": label, "from": a, "to": b, **_sum(rs, cost),
+                    "win": round(sum(1 for x in rs if x["R"] - cost > 0) / len(rs) * 100) if rs else None,
+                    "trades": [{"t": x["fillT"], "R": round(x["R"] - cost, 3)} for x in rs]})
+    return {"symbol": sym, "days": dates, "cost": cost, "windows": out}

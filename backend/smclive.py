@@ -301,7 +301,8 @@ def tick(sub, now=None):
                 s = setups.get(r["t"])
                 acts += _manage(c, pk, r, s, last, tf, flat, P, lag)
             active = [r for r in db.q_prefix(pk, f"{POS}{sym}#{today}") if r.get("status") in ("pending", "open")]
-            if active or flat or not cfg["trade"] or hm >= P["endT"]:
+            last_end = max(P["endT"], P["endT2"]) if P.get("win2On") else P["endT"]
+            if active or flat or not cfg["trade"] or hm >= last_end:
                 continue
             if not risk["ok"]:
                 if any(s["t"] not in recs and _waiting(s, last, tf, P) for s in out["setups"]):
@@ -359,7 +360,7 @@ def _waiting(s, last, tf, P):
         return False
     armed = datetime.strptime(s["armedT"][:16], "%Y-%m-%dT%H:%M")
     return last >= s["armedT"] and datetime.strptime(last[:16], "%Y-%m-%dT%H:%M") < armed + timedelta(minutes=tf * P["entryBars"]) \
-        and _hm(last) < P["endT"]
+        and _hm(last) < (smc.window_end(P, _hm(s["t"])) or P["endT"])
 
 
 def _manage(c, pk, r, s, last, tf, flat, P, lag):
@@ -385,7 +386,7 @@ def _manage(c, pk, r, s, last, tf, flat, P, lag):
             upd.update(status="canceled", why=f"order {st} at the broker")
         else:
             gone = None
-            if flat or _hm(last) >= P["endT"]:
+            if flat or _hm(last) >= (smc.window_end(P, _hm(r["t"])) or P["endT"]):
                 gone = "past the entry time window"
             elif s is None:
                 gone = "the engine no longer sees the setup"

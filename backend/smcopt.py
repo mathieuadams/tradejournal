@@ -21,7 +21,7 @@ import smc
 from util import iso, now_ny
 
 SK = "SMCOPT"
-VERSION = 3                                            # 3: the setup is armed once the leg window closed (as live sees it)
+VERSION = 4                                            # 4: a 2nd (afternoon) entry window in the search
 COST = 0.05
 MIN_TRADES = 80
 MONTH_SHARE = 0.35
@@ -37,7 +37,8 @@ SPACE = {
     "fvgOn": [True, False], "fvgMin": [0.0, 0.1, 0.2, 0.3, 0.5, 0.75],
     "entryAt": ["edge", "ce", "ob", "market"], "entryBars": [3, 6, 12, 18, 24, 36], "stopAt": ["sweep", "fvg"],
     "stopBuf": [0.0, 0.1, 0.2, 0.3, 0.5],
-    "startT": ["09:35", "09:45", "10:00", "10:30"], "endT": ["10:30", "11:00", "12:00", "13:30", "15:00"],
+    "startT": ["09:35", "09:45", "10:00", "10:30"], "endT": ["10:30", "11:00", "11:30", "12:00", "13:30", "15:00"],
+    "win2On": [False, True], "startT2": ["12:30", "13:00", "13:30", "14:00", "14:30"], "endT2": ["15:00", "15:30", "15:50"],
     "vwapOn": [False, True], "pdOn": [False, True], "rrOn": [False, True], "rrMin": [1.0, 1.5, 2.0, 3.0], "maxDay": [0, 1, 2, 3],
     "side": ["both", "long", "short"],
     "tpLiq": [True, False], "tpR": [1.0, 1.5, 2.0, 3.0, 4.0], "partialOn": [True, False], "partial": [0.25, 0.5, 0.75],
@@ -45,7 +46,7 @@ SPACE = {
     "trailOn": [False, True], "fvgFail": [False, True], "mssX": [False, True], "vwapX": [False, True],
     "timeOn": [False, True], "timeBars": [6, 12, 24, 36],
 }
-NEEDS = {"orMin": "poolOR", "mssBars": None, "dispMin": "dispOn", "fvgMin": "fvgOn", "rrMin": "rrOn", "partial": "partialOn",
+NEEDS = {"startT2": "win2On", "endT2": "win2On", "orMin": "poolOR", "mssBars": None, "dispMin": "dispOn", "fvgMin": "fvgOn", "rrMin": "rrOn", "partial": "partialOn",
          "beR": "beOn", "timeBars": "timeOn"}
 
 
@@ -80,7 +81,8 @@ def key(g):
 
 
 def valid(g):
-    return (g["poolPD"] or g["poolPM"] or g["poolOR"] or g["poolSwing"]) and g["startT"] < g["endT"]
+    return (g["poolPD"] or g["poolPM"] or g["poolOR"] or g["poolSwing"]) and g["startT"] < g["endT"] \
+        and (not g.get("win2On") or g["endT"] <= g.get("startT2", "13:30") < g.get("endT2", "15:30"))
 
 
 def rand_g(rng):

@@ -5736,6 +5736,37 @@ def test_day_account_sip_feed():
     finally:
         daytrade.data_creds, alpaca.bars = saved
 
+def test_smart_money_two_windows():
+    import smc, daytrade, random
+    random.seed(21)
+    bars, p = [], 300.0
+    for d in range(12):
+        for m in range(240, 960):
+            o = p
+            p += random.gauss(0, .12)
+            bars.append({"t": f"2026-09-{1 + d:02d}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, p) + abs(random.gauss(0, .04)), "l": min(o, p) - abs(random.gauss(0, .04)), "c": p, "v": 1})
+    base = {"tf": 1, "fvgMin": 0.1, "startT": "09:35", "endT": "11:30"}
+    one = smc.detect(bars, base)["setups"]
+    two = smc.detect(bars, {**base, "win2On": True, "startT2": "13:30", "endT2": "15:30"})["setups"]
+    assert one and all("09:35" <= s["t"][11:16] <= "11:31" for s in one)
+    assert any("13:30" <= s["t"][11:16] < "15:31" for s in two) and len(two) > len(one)
+    assert not any("11:31" < s["t"][11:16] < "13:30" for s in two)
+    for s in two:                                       # no fill after the end of the setup's window
+        if s.get("fillT"):
+            we = smc.window_end({**smc.clean(base), "win2On": True, "startT2": "13:30", "endT2": "15:30"}, s["t"][11:16]) or "11:30"
+            assert s["fillT"][11:16] < max(we, "11:31") or s["fillT"][11:16] < "15:30"
+    assert smc.window_end(smc.clean({"win2On": True, "startT2": "13:00", "endT2": "15:00"}), "14:00") == "15:00"
+    assert smc.window_end(smc.clean({}), "15:10") is None
+    saved = daytrade.minute_bars
+    try:
+        daytrade.minute_bars = lambda *a, **k: bars
+        r = smc.windows("u", "QQQ", 10, {"tf": 1, "fvgMin": 0.1})
+        assert [w["label"] for w in r["windows"]] == ["morning", "midday", "afternoon", "all day"]
+        am = next(w for w in r["windows"] if w["label"] == "morning")
+        assert all("09:35" <= t["t"][11:16] for t in am["trades"])
+    finally:
+        daytrade.minute_bars = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

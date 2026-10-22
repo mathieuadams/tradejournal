@@ -1303,6 +1303,50 @@ function fcRange(id, N) {             // visible bars [a, b] for this chart (zoo
   const a = Math.max(0, Math.min(Math.round(z[0]), N - 2)), b = Math.min(N - 1, Math.max(Math.round(z[1]), a + 1));
   return [a, b];
 }
+// ---- the slider under a chart: the whole period in small, the part on screen as a window to drag (move) or stretch
+// by its edges (zoom); a click elsewhere centres the window there. Charts of the same group move together.
+function fcNav(id, bars, W, group) {
+  const N = (bars || []).length; if (N < 3) return '';
+  const [a, b] = fcRange(id, N), step = Math.max(1, Math.floor(N / 400)), lo = Math.min(...bars.map(x => x.l)), hi = Math.max(...bars.map(x => x.h)), h = 34;
+  const pts = []; for (let i = 0; i < N; i += step) pts.push(`${(i / (N - 1) * W).toFixed(1)},${(h - 3 - (bars[i].c - lo) / ((hi - lo) || 1) * (h - 6)).toFixed(1)}`);
+  const days = []; let pd = ''; bars.forEach((x, i) => { const d = x.t.slice(0, 10); if (d !== pd) { pd = d; days.push([i, d.slice(5)]); } });
+  const L = a / (N - 1) * 100, Wd = Math.max(1.5, (b - a) / (N - 1) * 100);
+  return `<div class="fc-nav" data-fcnav="${esc(id)}" data-n="${N}" ${group ? `data-navgroup="${esc(group)}"` : ''} style="width:${W}px" title="Drag the window to move, its edges to zoom; wheel on the chart zooms too">
+    <svg width="${W}" height="${h}" viewBox="0 0 ${W} ${h}" preserveAspectRatio="none" style="display:block"><polyline points="${pts.join(' ')}" fill="none" stroke="var(--muted,#888)" stroke-width="1"/>
+      ${days.slice(1).map(([i, l]) => `<line x1="${(i / (N - 1) * W).toFixed(1)}" x2="${(i / (N - 1) * W).toFixed(1)}" y1="0" y2="${h}" stroke="var(--line)"/>${days.length < 16 ? `<text x="${(i / (N - 1) * W + 2).toFixed(1)}" y="10" font-size="9" fill="var(--muted,#888)">${esc(l)}</text>` : ''}`).join('')}</svg>
+    <div class="fc-nav-win" style="left:${L}%;width:${Wd}%"><span class="fc-nav-h" data-h="l"></span><span class="fc-nav-h" data-h="r"></span></div></div>`;
+}
+(function () {                                  // dragging the slider
+  let g = null, last = 0;
+  const apply = (fa, fb) => {                   // fractions of the period -> each chart of the group
+    const ids = g.group ? [...document.querySelectorAll(`[data-navgroup="${CSS.escape(g.group)}"]`)].map(e => [e.dataset.fcnav, +e.dataset.n]) : [[g.id, g.n]];
+    ids.forEach(([id, n]) => { const a = Math.round(fa * (n - 1)), b = Math.round(fb * (n - 1)); S.fcZoom[fcKey(id)] = a <= 0 && b >= n - 1 ? null : [a, Math.max(a + 8, b)]; });
+  };
+  document.addEventListener('pointerdown', ev => {
+    const nav = ev.target.closest && ev.target.closest('[data-fcnav]'); if (!nav || ev.button > 0) return;
+    ev.preventDefault();
+    const r = nav.getBoundingClientRect(), win = nav.querySelector('.fc-nav-win'), wr = win.getBoundingClientRect();
+    const h = ev.target.dataset && ev.target.dataset.h, f0 = (wr.left - r.left) / r.width, f1 = (wr.right - r.left) / r.width, x = (ev.clientX - r.left) / r.width;
+    g = { nav, id: nav.dataset.fcnav, n: +nav.dataset.n, group: nav.dataset.navgroup, r, f0, f1, x0: x, mode: h === 'l' ? 'l' : h === 'r' ? 'r' : ev.target === win ? 'move' : 'jump' };
+    if (g.mode === 'jump') { const w = f1 - f0; g.f0 = Math.max(0, Math.min(1 - w, x - w / 2)); g.f1 = g.f0 + w; g.mode = 'move'; g.x0 = x; apply(g.f0, g.f1); render(); }
+    S.fczDrag = true;
+  });
+  document.addEventListener('pointermove', ev => {
+    if (!g) return;
+    const x = (ev.clientX - g.r.left) / g.r.width, dx = x - g.x0, minW = 8 / Math.max(9, g.n - 1);
+    let a = g.f0, b = g.f1;
+    if (g.mode === 'move') { const w = b - a; a = Math.max(0, Math.min(1 - w, a + dx)); b = a + w; }
+    else if (g.mode === 'l') a = Math.max(0, Math.min(b - minW, a + dx));
+    else b = Math.min(1, Math.max(a + minW, b + dx));
+    const win = g.nav.querySelector('.fc-nav-win'); if (win) { win.style.left = a * 100 + '%'; win.style.width = (b - a) * 100 + '%'; }
+    g.a = a; g.b = b;
+    if (Date.now() - last > 90) { last = Date.now(); apply(a, b); S.fczDrag = false; render(); S.fczDrag = true;     // the charts follow while dragging
+      const nav = document.querySelector(`[data-fcnav="${CSS.escape(g.id)}"]`); if (nav) { g.nav = nav; } }
+  });
+  const end = () => { if (!g) return; if (g.a != null) apply(g.a, g.b); g = null; S.fczDrag = false; S.renderPending = false; render(); };
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
+})();
 function fcSetZoom(id, a, b, N) {
   if (!isFinite(a) || !isFinite(b) || !(N > 2)) return;   // a drag on a chart that was redrawn meanwhile: ignore
   const span = Math.round(Math.min(N - 1, Math.max(8, b - a)));     // never fewer than 8 bars; whole bars only
@@ -1818,7 +1862,7 @@ function vChartWW() {
   else if (d.error) main = `<div class="errbox" style="margin:16px">${esc(d.error)}</div>`;
   else {
     const w = d.wallsNow, pc = v => `<b class="${v >= 0 ? 'gain' : 'loss'}">${v >= 0 ? '+' : ''}${v}%</b>`;
-    main = fcSvg(S.chartDaily ? S.fc[fcKey(did)] : d, vid, { W, H, cvdN: +((labCfg() || {}).cvdN) || 20 }) + `<div class="fcf-info" ${S.hideStats ? 'hidden style="display:none"' : ''}>
+    main = fcSvg(S.chartDaily ? S.fc[fcKey(did)] : d, vid, { W, H, cvdN: +((labCfg() || {}).cvdN) || 20 }) + fcNav(vid, fcClean(S.chartDaily ? S.fc[fcKey(did)] : d).bars, W) + `<div class="fcf-info" ${S.hideStats ? 'hidden style="display:none"' : ''}>
       ${w ? `<span>Walls: <b class="gain">call ${w.callWall}</b> · <b style="color:var(--coach)">flip ${w.flip ?? '—'}</b> · <b class="loss">put ${w.putWall}</b></span>` : ''}
       ${(d.trades || []).length ? `<span><b style="color:var(--coach)">Option trades</b> ${d.trades.map(tr => `${esc((tr.at || '').slice(5, 16).replace('T', ' '))} ${esc(tr.contract || '')} ×${tr.qty ?? ''} @${tr.fill ?? tr.limit ?? '—'} · ${esc(tr.status || '')}${tr.plPct != null ? ` <b class="${tr.plPct >= 0 ? 'gain' : 'loss'}">${tr.plPct >= 0 ? '+' : ''}${tr.plPct}%</b>` : ''}`).join(' | ')}</span>` : ''}
       ${(() => { const m = (d.maxPain || []).slice(-1)[0], nx = (d.expirations || []).find(e => e >= new Date().toISOString().slice(0, 10)); return m || nx ? `<span style="color:var(--warn,#d97706)"><b>${nx ? `Next monthly exp ${esc(nx)}` : ''}${m ? ` · max pain ${m.maxPain}${m.exp !== nx ? ` (${esc(m.exp)})` : ''}` : ''}</b></span>` : ''; })()}
@@ -1932,9 +1976,15 @@ function vChartSMC() {
   if (S.dt === undefined) { S.dt = null; setTimeout(loadDT, 0); }
   const P = { ...S.smcCfg, tf: S.smcTf }, kOf = sym => `smc|${sym}|${S.smcTf}|${S.smcDays}|${JSON.stringify(S.smcCfg)}`;
   S.smcDs = S.smcDs || {}; S.smcBusyS = S.smcBusyS || {};
-  SMC_PAIR.forEach(sym => { const k = kOf(sym), x = S.smcDs[sym]; if ((!x || x.k !== k) && S.smcBusyS[sym] !== k) setTimeout(() => loadSMC(sym, k, P), 0); });
+  const hmNY = new Date().toLocaleTimeString('en-GB', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit' }), dow = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+  const live = !['Sat', 'Sun'].includes(dow) && hmNY >= '04:00' && hmNY < '16:05';      // market day: new candles every minute
+  SMC_PAIR.forEach(sym => { const k = kOf(sym), x = S.smcDs[sym];
+    const stale = x && x.k === k && live && Date.now() - (x.at || 0) > 60000;
+    if ((!x || x.k !== k || stale) && S.smcBusyS[sym] !== k) setTimeout(() => loadSMC(sym, k, P), 0); });
+  clearTimeout(S.smcRefT);
+  if (live) S.smcRefT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'smc' && !S.fczDrag) render(); }, 61000);
   const narrow = window.innerWidth < 900, side = window.innerWidth >= 800;
-  const full = Math.max(320, window.innerWidth - 28 - (side ? chLeftW() : 0)), W = narrow ? full : Math.floor((full - 10) / 2), H = Math.max(360, window.innerHeight - (S.fcfHeadH || 58) - 160);
+  const full = Math.max(320, window.innerWidth - 28 - (side ? chLeftW() : 0)), W = narrow ? full : Math.floor((full - 10) / 2), H = Math.max(340, window.innerHeight - (S.fcfHeadH || 58) - 200);
   const zb = (q, l) => `<button class="btn" data-smczoom="${q}" style="padding:3px 10px">${l}</button>`;
   const head = `<div class="fcf-head"><b style="font-size:1.25rem">QQQ · SPY</b> ${fcModeSeg()}
     <span class="seg" title="Candle size">${[1, 5].map(m => `<button class="btn ${S.smcTf === m ? 'coachbtn' : ''}" data-smctf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
@@ -1947,7 +1997,7 @@ function vChartSMC() {
     const st = d.stats || {}, sel = S.smcSel && S.smcSel.startsWith(sym + '|') ? S.smcSel.slice(sym.length + 1) : null;
     return `<div class="smc-one" style="width:${W}px"><div style="display:flex;gap:8px;align-items:baseline;font-size:.82rem;margin:2px 0"><b style="font-size:1rem">${sym}</b>
       <span class="muted">${st.n ? `${st.n} trades · win ${st.win}% · avg ${(st.avgR > 0 ? '+' : '') + (+st.avgR).toFixed(2)}R · total ${(st.totR > 0 ? '+' : '') + (+st.totR).toFixed(2)}R` : 'no trade in these days'}</span></div>
-      ${fcSvg({ bars: d.bars, interval: d.interval, smc: d }, id, { W, H, smc: true, smcOnly: true, padRight: 40, smcSel: sel })}</div>`; };
+      ${fcSvg({ bars: d.bars, interval: d.interval, smc: d }, id, { W, H, smc: true, smcOnly: true, padRight: 40, smcSel: sel })}${fcNav(id, d.bars, W, 'smc')}</div>`; };
   const m = smcMerged();
   const main = `<div style="display:flex;gap:10px;flex-wrap:${narrow ? 'wrap' : 'nowrap'}">${SMC_PAIR.map(one).join('')}</div>${m ? smcPanel(m, 'smc-pair') : ''}`;
   return `<div class="fcf">${head}<div class="fcf-body">${side ? chLeft([['Smart money', SMC_LY]]) : ''}<div class="fcf-main">${main}</div></div></div>`;
@@ -1955,7 +2005,8 @@ function vChartSMC() {
 async function loadSMC(sym, k, P) {
   S.smcBusyS = S.smcBusyS || {}; S.smcDs = S.smcDs || {};
   S.smcBusyS[sym] = k;
-  try { S.smcDs[sym] = { k, d: await api('/daytrade/smc', { method: 'POST', body: { t: sym, days: S.smcDays, cfg: P } }) }; } catch (e) { S.smcDs[sym] = { k, d: { error: e.message } }; }
+  try { S.smcDs[sym] = { k, at: Date.now(), d: await api('/daytrade/smc', { method: 'POST', body: { t: sym, days: S.smcDays, cfg: P } }) }; }
+  catch (e) { const old = S.smcDs[sym]; S.smcDs[sym] = old && old.k === k && old.d && !old.d.error ? { ...old, at: Date.now() } : { k, at: Date.now(), d: { error: e.message } }; }   // a failed refresh keeps the chart
   if (sym === SMC_PAIR[0]) S.smcD = S.smcDs[sym];
   S.smcBusyS[sym] = null; if (route() === 'botchart') render();
 }
@@ -1996,6 +2047,8 @@ function smcBlocks(P0) {
       <span class="smc-chip on"><span style="font-size:.8rem">within</span> ${inp('entryBars', 1, 2.8)}<span class="muted" style="font-size:.74rem">candles of the MSS</span></span>
       <span class="smc-chip on"><span style="font-size:.8rem">stop beyond</span> ${sel('stopAt', [['sweep', 'the sweep'], ['fvg', 'the FVG']])} + ${inp('stopBuf', 0.05, 2.8)}<span class="muted" style="font-size:.74rem">× ATR</span></span>
       <span class="smc-chip on"><span style="font-size:.8rem">entries</span> <input data-smccfg="startT" value="${esc(P.startT || '09:45')}" style="width:3.6em;font-size:.78rem"> – <input data-smccfg="endT" value="${esc(P.endT || '15:00')}" style="width:3.6em;font-size:.78rem"></span>
+      <span class="smc-chip ${P.win2On ? 'on' : ''}"><button class="btn" data-smcsw="win2On" title="A second entry window (afternoon) — click to turn ${P.win2On ? 'off' : 'on'}" style="font-size:.72rem;padding:0 7px;border-radius:10px;${P.win2On ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${P.win2On ? 'ON' : 'OFF'}</button>
+        <span style="font-size:.8rem">2nd window</span> <input data-smccfg="startT2" value="${esc(P.startT2 || '13:30')}" style="width:3.6em;font-size:.78rem"> – <input data-smccfg="endT2" value="${esc(P.endT2 || '15:30')}" style="width:3.6em;font-size:.78rem"></span>
       <span class="smc-chip on"><span style="font-size:.8rem">max</span> ${inp('maxDay', 1, 2.6)}<span class="muted" style="font-size:.74rem">trades a day (0 = no limit)</span></span>
       ${chip(['longs', '', 'Longs', 'Take the long setups (sell-side liquidity swept)'])}${chip(['shorts', '', 'Shorts', 'Take the short setups (buy-side liquidity swept)'])}</span></div>`;
   return `<details class="smc-set" ${S.smcSetOpen !== false ? 'open' : ''} data-smcsetd><summary><b>Building blocks</b> <span class="muted">(switch the pieces on / off, then Apply)</span></summary>
@@ -2042,6 +2095,36 @@ function smcAgg(res) {
   return { all: st(tr), h1: st(tr.filter(x => x.t.slice(0, 10) < mid)), h2: st(tr.filter(x => x.t.slice(0, 10) >= mid)), longs: st(tr.filter(x => x.dir > 0)), shorts: st(tr.filter(x => x.dir < 0)),
     tick, vs, vPos: vs.filter(v => (v.avgR || 0) > 0).length, tPos: tick.filter(x => x.n && x.totR > 0).length, tN: tick.filter(x => x.n).length,
     exits: tr.reduce((a, x) => { a[x.why || '?'] = (a[x.why || '?'] || 0) + 1; return a; }, {}), mid };
+}
+// ---- time windows: the blocks traded in the morning / midday / afternoon only (QQQ + SPY)
+async function smcWinRun() {
+  const days = S.smcWinDays || 30, cfg = { ...S.smcCfg, tf: S.smcTf };
+  const run = S.smcWin = { running: true, days, res: [], errors: [], cfg: JSON.stringify(cfg) }; render();
+  for (const t of SMC_PAIR) {
+    try { run.res.push(await api('/daytrade/smc/windows', { method: 'POST', body: { t, days, cfg, cost: 0.05 } })); } catch (e) { run.errors.push(`${t}: ${e.message}`); }
+    if (route() === 'botchart') render();
+  }
+  run.running = false; if (route() === 'botchart') render();
+}
+function smcWinBox() {
+  const R = S.smcWin, Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Time windows</b>
+    <select data-smcwindays style="font-size:.8rem">${[20, 30, 60].map(n => `<option value="${n}" ${(S.smcWinDays || 30) === n ? 'selected' : ''}>${n} days</option>`).join('')}</select>
+    ${R && R.running ? '<span class="loading" style="padding:0">testing QQQ and SPY…</span>' : '<button class="btn coachbtn" data-smcwinrun style="font-size:.8rem">Compare morning / midday / afternoon</button>'}
+    <span class="muted" style="font-size:.74rem">the blocks above (${S.smcTf}m) with entries only in one window at a time, QQQ + SPY, minus 0.05R a trade</span></div>`;
+  if (!R || !R.res.length) return `<div class="smc-stress">${ctl}${R && R.errors.length ? `<p class="loss" style="font-size:.76rem">${esc(R.errors.join(' · '))}</p>` : ''}</div>`;
+  const labs = (R.res[0].windows || []).map(w => w.label), f2 = v => v == null ? '—' : (+v).toFixed(2);
+  const rows = labs.map(l => { const ws = R.res.map(r => (r.windows || []).find(w => w.label === l)).filter(Boolean), tr = ws.flatMap(w => w.trades || []), n = tr.length;
+    const tot = tr.reduce((a, x) => a + x.R, 0), byD = {}; tr.forEach(x => { byD[x.t.slice(0, 10)] = (byD[x.t.slice(0, 10)] || 0) + x.R; });
+    const dv = Object.values(byD), m = dv.length ? dv.reduce((a, v) => a + v, 0) / dv.length : 0, sd = Math.sqrt(dv.reduce((a, v) => a + (v - m) ** 2, 0) / Math.max(1, dv.length - 1));
+    const gw = tr.filter(x => x.R > 0).reduce((a, x) => a + x.R, 0), gl = -tr.filter(x => x.R <= 0).reduce((a, x) => a + x.R, 0);
+    return `<tr><td><b>${esc(l)}</b> <span class="muted">${esc(ws[0].from)}–${esc(ws[0].to)}</span></td><td class="r">${n}</td><td class="r">${n ? Math.round(tr.filter(x => x.R > 0).length / n * 100) + '%' : '—'}</td>
+      <td class="r">${n ? Rf(tot / n) : '—'}</td><td class="r">${n ? Rf(tot) : '—'}</td><td class="r">${gl > 0 ? f2(gw / gl) : '—'}</td><td class="r">${sd > 0 && dv.length >= 5 ? f2(m / sd * Math.sqrt(dv.length)) : '—'}</td>
+      <td class="r">${R.res.map(r => { const w = (r.windows || []).find(x => x.label === l); return `${esc(r.symbol)} ${w && w.n ? Rf(w.avgR) : '—'}`; }).join(' · ')}</td></tr>`; }).join('');
+  const changed = R.cfg !== JSON.stringify({ ...S.smcCfg, tf: S.smcTf });
+  return `<div class="smc-stress">${ctl}${changed ? '<p class="muted" style="font-size:.76rem;margin:2px 0">The blocks changed since this test: run it again.</p>' : ''}
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;width:auto"><thead><tr><th>Window</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Total</th><th class="r">PF</th><th class="r" title="t of the R per day: above 2 = probably not luck">t</th><th class="r">QQQ · SPY avg</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="muted" style="font-size:.74rem">To trade two windows: set the morning one in "entries" and turn on the 2nd window (Building blocks → Entry), then Apply.</div></div>`;
 }
 // ---- live on the day-trading paper account (backend smclive.py, every minute)
 async function loadSmcLive() {
@@ -2115,14 +2198,14 @@ async function smcOptSet(body) {
 }
 const SMC_NAMES = { poolPD: 'prev day H/L', poolPM: 'pre-market H/L', poolOR: 'opening range', poolSwing: 'swings', eqOnly: 'equal H/L only', orMin: 'OR min', pivot: 'swing candles',
   mssOn: 'MSS', mssBars: 'MSS within', dispOn: 'displacement', dispMin: 'displ. ATR', fvgOn: 'FVG required', fvgMin: 'FVG ATR', entryAt: 'enter at', entryBars: 'retrace within',
-  stopAt: 'stop beyond', stopBuf: 'stop +ATR', startT: 'from', endT: 'to', vwapOn: 'VWAP side', pdOn: 'premium/discount', rrOn: 'min R to TP1', rrMin: 'min R', maxDay: 'max a day',
+  stopAt: 'stop beyond', stopBuf: 'stop +ATR', startT: 'from', endT: 'to', win2On: '2nd window', startT2: '2nd from', endT2: '2nd to', vwapOn: 'VWAP side', pdOn: 'premium/discount', rrOn: 'min R to TP1', rrMin: 'min R', maxDay: 'max a day',
   longs: 'longs', shorts: 'shorts', tpLiq: 'targets at liquidity', tpR: 'target R', partialOn: 'partial at TP1', partial: 'partial', beTp1: 'BE at TP1', beOn: 'BE at R', beR: 'BE R',
   trailOn: 'trail swings', fvgFail: 'FVG fails exit', mssX: 'MSS against exit', vwapX: 'VWAP exit', timeOn: 'time exit', timeBars: 'time candles' };
 function smcOptDiff(P) {
   return `<span class="exchip" style="font-size:.7rem"><b>${P.tf === 1 ? '1m' : '5m'}</b> candles</span>` + smcOptDiff0(P);
 }
 function smcOptDiff0(P) {
-  const off = { dispMin: 'dispOn', rrMin: 'rrOn', beR: 'beOn', timeBars: 'timeOn', partial: 'partialOn', orMin: 'poolOR', fvgMin: 'fvgOn', mssBars: 'mssOn' };
+  const off = { startT2: 'win2On', endT2: 'win2On', dispMin: 'dispOn', rrMin: 'rrOn', beR: 'beOn', timeBars: 'timeOn', partial: 'partialOn', orMin: 'poolOR', fvgMin: 'fvgOn', mssBars: 'mssOn' };
   return Object.keys(SMC_NAMES).filter(k => P[k] !== undefined && !(off[k] && !P[off[k]])).map(k => { const v = P[k];
     return typeof v === 'boolean' ? `<span class="exchip" style="font-size:.7rem;${v ? '' : 'opacity:.45;text-decoration:line-through'}">${SMC_NAMES[k]}</span>` : `<span class="exchip" style="font-size:.7rem">${SMC_NAMES[k]} <b>${esc(String(v))}</b></span>`; }).join('');
 }
@@ -2202,7 +2285,7 @@ function smcPanel(d, id) {
       <button class="btn" data-smcopen="${esc(kk)}" style="font-size:.72rem;padding:0 6px">${open_ ? 'hide steps' : 'steps'}</button>
       ${open_ ? `<ol class="smc-steps">${(s.steps || []).map(x => `<li class="${x.ok ? 'ok' : 'no'}"><b>${esc(x.name)}</b>: ${esc(x.text)}</li>`).join('')}</ol>` : ''}</div>`; }).join('');
   const set = smcBlocks(P);
-  return `<div class="smc-panel">${fun}${smcLiveBox()}${set}${smcStressBox()}${smcOptBox()}<label style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center;margin:2px 0 4px"><input type="checkbox" data-smcfilled ${S.smcFilled ? 'checked' : ''}> only the trades (filled setups)</label><div class="smc-list">${rows || '<p class="muted" style="margin:6px 0">No liquidity sweep in these days.</p>'}</div>
+  return `<div class="smc-panel">${fun}${smcLiveBox()}${set}${smcStressBox()}${smcWinBox()}${smcOptBox()}<label style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center;margin:2px 0 4px"><input type="checkbox" data-smcfilled ${S.smcFilled ? 'checked' : ''}> only the trades (filled setups)</label><div class="smc-list">${rows || '<p class="muted" style="margin:6px 0">No liquidity sweep in these days.</p>'}</div>
     <p class="muted" style="font-size:.74rem;margin:6px 0 0">Liquidity: PDH / PDL (previous day), PM high / low (pre-market), ORH / ORL (opening range), the day's swings (EQH / EQL when two are equal). A setup: a pool is swept (✕) → a close beyond the last swing = MSS → the move leaves a fair value gap → price comes back into it (entry) → stop beyond the sweep, TP1 at the next opposite liquidity (partial, rest to breakeven), TP2 after it. Each row shows where it stopped.</p></div>`;
 }
 function wwLayerGroups() {                         // the wall watch chart's indicators, grouped for the left column
@@ -2933,6 +3016,7 @@ function vChartDT() {
     const fl = S.flow[sym] || {}, ck = [JSON.stringify(S.fcLayers), JSON.stringify(S.fcZoom[fcKey(id)] || null), W, H, fl.k, (fl.missing || []).length, Object.keys(fl.days || {}).length, S.dpN, (() => { const x = S.fcDp[fcKey(id)]; return x ? `${(x.levels || []).length}/${(x.prints || []).length}/${x.error || ''}` : '-'; })()].join('|');
     const cx = ctxOf(sym);
     main = svgCached('dt', d, ck + '|' + (cx && cx.to ? cx.to + (cx.zones || []).length : '-'), () => fcSvg(withFlow(sym, { ...d, ema: (S.fcLayers.ema ? d.ema : []), zones: cx && !cx.error ? cx.zones : null }), id, { W, H: Math.max(380, H - 40), noAcc: true, padRight: 100 }));
+    main += fcNav(id, fcClean(d).bars, W);
     main += ctxBox(sym);
     if (S.dtTf === 1 && S.dtDays >= 20) main += '<p class="muted" style="font-size:.78rem;margin:2px 4px">20-30 days: shown with 5-minute candles (the signals still come from the 1-minute engine). Pick 10 days or less for 1-minute candles.</p>';
     main += dtWhyBox();
@@ -5059,7 +5143,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -5093,6 +5177,7 @@ document.addEventListener('click', e => {
   if (el.dataset.smcoptuse) { const t = ((S.smcOpt || {}).top || [])[+el.dataset.smcoptuse]; if (!t) return;
     const c = { ...t.params }; S.smcTf = c.tf === 1 ? 1 : 5; delete c.tf; S.smcCfg = c; S.smcDraft = null; S.smcSrc = { train: t.train, test: t.test, fit: t.fit }; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {}
     toast(`Blocks set from the optimizer (${S.smcTf}m candles)`); render(); return; }
+  if (el.hasAttribute('data-smcwinrun')) { smcWinRun(); return; }
   if (el.hasAttribute('data-smcstrun')) { smcStressRun(); return; }
   if (el.hasAttribute('data-smcststop')) { if (S.smcStress) S.smcStress.stop = true; return; }
   if (el.dataset.smcsw) { const k = el.dataset.smcsw, P = smcCfgNow(); S.smcDraft = { ...(S.smcDraft || {}), [k]: !P[k] }; render(); return; }
@@ -5486,6 +5571,7 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-smcstdays]')) S.smcStDays = +e.target.value;
   if (e.target.matches && e.target.matches('[data-smclivef]')) smcLiveSet({ [e.target.dataset.smclivef]: +e.target.value });
   if (e.target.matches && e.target.matches('[data-smclivemode]')) smcLiveSet({ riskMode: e.target.value });
+  if (e.target.matches && e.target.matches('[data-smcwindays]')) S.smcWinDays = +e.target.value;
   if (e.target.matches && e.target.matches('[data-smcfeed]')) { const f = e.target.value;
     api('/daytrade/feed', { method: 'PUT', body: { feed: f } }).then(() => { toast(f === 'sip' ? 'Real-time SIP data on: the optimizer starts again' : 'IEX data'); S.smcDs = {}; S.smcOpt = undefined; loadSmcLive(); })
       .catch(err => { toast(err.message); loadSmcLive(); }); }

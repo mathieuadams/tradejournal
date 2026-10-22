@@ -479,6 +479,14 @@ def daytrade_smc(sub, claims, body, q):
     return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
 
 
+@route("POST", "/daytrade/smc/windows")
+def daytrade_smc_windows(sub, claims, body, q):
+    """The blocks in the morning / midday / afternoon windows, one ticker (the page adds QQQ and SPY up)."""
+    import smc
+    b = body or {}
+    return smc.windows(sub, b.get("t"), b.get("days") or 30, b.get("cfg") if isinstance(b.get("cfg"), dict) else None, float(b.get("cost") or 0.05))
+
+
 @route("POST", "/daytrade/smc/stress")
 def daytrade_smc_stress(sub, claims, body, q):
     """Smart-money stress test of one ticker (the page runs it ticker by ticker and adds them up)."""

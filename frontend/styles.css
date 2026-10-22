@@ -472,3 +472,7 @@ tr.sel td{background:var(--sunk)}
 .smc-stress{border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:6px 0}
 .smc-one{min-width:0;flex:0 0 auto}
 .smc-risk{border-top:1px solid var(--line);margin-top:5px;padding-top:5px}.smc-rk{display:inline-flex;gap:3px;align-items:center;white-space:nowrap}
+.fc-nav{position:relative;height:34px;margin:2px 0 6px;border:1px solid var(--line);border-radius:6px;background:var(--sunk,rgba(127,127,127,.06));cursor:pointer;touch-action:none;user-select:none;overflow:hidden}
+.fc-nav-win{position:absolute;top:0;bottom:0;background:rgba(91,91,214,.18);border:1px solid var(--coach,#5b5bd6);border-radius:4px;cursor:grab;box-sizing:border-box}
+.fc-nav-win:active{cursor:grabbing}.fc-nav-h{position:absolute;top:0;bottom:0;width:9px;cursor:ew-resize;background:var(--coach,#5b5bd6);opacity:.55}
+.fc-nav-h[data-h="l"]{left:-1px;border-radius:4px 0 0 4px}.fc-nav-h[data-h="r"]{right:-1px;border-radius:0 4px 4px 0}
