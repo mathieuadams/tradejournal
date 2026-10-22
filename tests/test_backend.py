@@ -5767,6 +5767,24 @@ def test_smart_money_two_windows():
     finally:
         daytrade.minute_bars = saved
 
+def test_smart_money_live_check():
+    """Check now: names why nothing went out (off, no orders), reads the setups of today."""
+    import smclive, daytrade
+    saved = (smclive.config, daytrade.creds, smclive.account, daytrade.minute_bars)
+    try:
+        smclive.config = lambda sub: {**smclive.DEFAULT, "enabled": False, "trade": False, "cfg": smclive.smc.clean({"tf": 1})}
+        daytrade.creds = lambda sub: None
+        r = smclive.check("chk")
+        assert any("Watch is off" in p_ for p_ in r["problems"]) and any("No day-trading" in p_ for p_ in r["problems"])
+        daytrade.creds = lambda sub: {"key": "k", "secret": "s"}
+        smclive.account = lambda c: {"equity": 1e5, "start": 1e5, "dayPct": 0.0, "buyingPower": 2e5}
+        daytrade.minute_bars = lambda *a, **k: []
+        smclive.config = lambda sub: {**smclive.DEFAULT, "enabled": True, "trade": True, "cfg": smclive.smc.clean({"tf": 1})}
+        r = smclive.check("chk")
+        assert not any("Watch is off" in p_ or "Send orders" in p_ for p_ in r["problems"]) and len(r["syms"]) == 2
+    finally:
+        smclive.config, daytrade.creds, smclive.account, daytrade.minute_bars = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

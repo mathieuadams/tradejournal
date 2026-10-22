@@ -508,6 +508,13 @@ def daytrade_smc_live(sub, claims, body, q):
     return smclive.view(sub)
 
 
+@route("GET", "/daytrade/smc/live/check")
+def daytrade_smc_live_check(sub, claims, body, q):
+    """Why a trade did / didn't go out: the live state right now, nothing sent."""
+    import smclive
+    return smclive.check(sub)
+
+
 @route("PUT", "/daytrade/smc/live")
 def daytrade_smc_live_set(sub, claims, body, q):
     """Smart money on the day-trading paper account: save the strategy, watch / trade on-off, size."""

@@ -242,6 +242,83 @@ def _close_t(t, tf):
 
 
 def tick(sub, now=None):
+    """The minute run; a crash is written to the log the page shows (else it would only be in CloudWatch)."""
+    try:
+        return _tick(sub, now)
+    except Exception as e:
+        import traceback
+        if now is None:
+            st = db.get(db.upk(sub), SK + "#TICK") or {}
+            entry = {"at": iso(now_ny()), "minute": now_ny().strftime("%H:%M"), "error": f"{type(e).__name__}: {str(e)[:200]}",
+                     "where": traceback.format_exc().strip().splitlines()[-3][:200]}
+            db.put({"PK": db.upk(sub), "SK": SK + "#TICK", "last": entry, "log": ((st.get("log") or []) + [entry])[-60:]})
+        raise
+
+
+def check(sub):
+    """Right now, without sending anything: is it on, the account, the limits, and per ticker the last candle and
+    every setup of today with what live would do with it (and why not)."""
+    import daytrade
+    cfg = config(sub)
+    now = now_ny().replace(tzinfo=None, second=0, microsecond=0)
+    today, hm = now.strftime("%Y-%m-%d"), now.strftime("%H:%M")
+    out = {"now": now.strftime("%Y-%m-%d %H:%M"), "enabled": cfg["enabled"], "trade": cfg["trade"], "problems": []}
+    c = daytrade.creds(sub)
+    if not cfg["enabled"]:
+        out["problems"].append("Watch is off: the minute run skips this strategy.")
+    if not cfg["trade"]:
+        out["problems"].append("Send orders is off: setups are logged, no order goes out.")
+    if not c:
+        out["problems"].append("No day-trading paper account connected.")
+        return out
+    if now.weekday() >= 5 or not ("09:31" <= hm <= "16:00"):
+        out["problems"].append(f"Market closed now ({hm} ET): the minute run works 09:31-16:00 ET.")
+    try:
+        acct = account(c)
+    except Exception as e:
+        acct = None
+        out["problems"].append(f"Account not readable: {str(e)[:120]}")
+    out["account"] = acct
+    pk = db.upk(sub)
+    day_recs = [r for r in db.q_prefix(pk, POS) if (r.get("t") or "")[:10] == today]
+    risk = risk_state(cfg, acct, day_recs)
+    out["risk"] = risk
+    if not risk["ok"]:
+        out["problems"].append(f"New trades blocked: {risk['why']}")
+    st = db.get(pk, SK + "#TICK") or {}
+    last_run = (st.get("last") or {}).get("at")
+    out["lastRun"] = st.get("last")
+    if cfg["enabled"] and (not last_run or last_run < iso(now_ny() - timedelta(minutes=3))) and "09:33" <= hm <= "16:00" and now.weekday() < 5:
+        out["problems"].append(f"The minute run hasn't run since {last_run or 'ever'}: is the latest version deployed (sam build / deploy)?")
+    P = cfg["cfg"]
+    out["tf"] = P["tf"]
+    out["syms"] = []
+    for sym in cfg["tickers"]:
+        x = {"sym": sym}
+        try:
+            cut = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+            bs = [b for b in daytrade.minute_bars(sub, sym, 3, now) if b["t"] <= cut]
+            o = smc.detect(bs, P, [today])
+            bars = o.get("bars") or []
+            last = bars[-1]["t"] if bars else None
+            x["lastCandle"] = last
+            recs = {r["t"]: r for r in day_recs if r.get("symbol") == sym}
+            x["setups"] = []
+            for s_ in o["setups"]:
+                r = recs.get(s_["t"])
+                wait = bool(last) and _waiting(s_, last, P["tf"], P)
+                what = (f"live record: {r.get('status')}" + (f" ({r.get('why') or r.get('exitWhy')})" if r.get("why") or r.get("exitWhy") else "")) if r else \
+                    "waiting for the retracement: a limit order should be resting now" if wait else \
+                    ("filled in the engine but no live record: the setup was armed and filled between two minute runs, or before Watch / Send orders was on" if s_.get("fillT") else s_.get("status") or "")
+                x["setups"].append({"t": s_["t"], "dir": s_["dir"], "status": s_.get("status"), "armedT": s_.get("armedT"), "entry": s_.get("entry"),
+                                    "fillT": s_.get("fillT"), "R": s_.get("R"), "exitWhy": s_.get("exitWhy"), "live": what})
+        except Exception as e:
+            x["error"] = str(e)[:160]
+        out["syms"].append(x)
+    return out
+
+
+def _tick(sub, now=None):
     cfg = config(sub)
     if not cfg["enabled"]:
         return {"skipped": "off"}
