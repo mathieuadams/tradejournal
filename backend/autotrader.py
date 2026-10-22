@@ -1879,8 +1879,9 @@ def tick(sub):
 
 
 def handler(event, context_):
-    global _T0
+    global _T0, _N
     _T0 = time.time()                                  # when the invocation reached the code (smart money timing)
+    _N = globals().get("_N", 0) + 1                    # 1 = the first run of this container (a cold start)
     job = event.get("job", "monitor")
     if event.get("sub"):
         subs = [event["sub"]]
@@ -2004,6 +2005,10 @@ def handler(event, context_):
             elif job == "evolve":
                 import evolve
                 out[sub] = evolve.job(sub, event.get("params") or {})
+            elif job == "smcspeed":
+                import smclive
+                cold = _N == 1
+                out[sub] = smclive.speed_test(sub, (event.get("params") or {}).get("askedAt"), t0=_T0, loaded=_LOADED_AT, cold=cold)
             elif job == "smcopt":
                 import smcopt
                 out[sub] = smcopt.job(sub, event.get("params") or {})

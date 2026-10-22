@@ -508,6 +508,13 @@ def daytrade_smc_live(sub, claims, body, q):
     return smclive.view(sub)
 
 
+@route("POST", "/daytrade/smc/live/speed")
+def daytrade_smc_live_speed(sub, claims, body, q):
+    """Crypto speed test (any hour): $10 BTC bought and sold at market on the paper account, every step timed."""
+    import smclive
+    return smclive.start_speed(sub)
+
+
 @route("POST", "/daytrade/smc/live/test")
 def daytrade_smc_live_test(sub, claims, body, q):
     """Loop test: 1 share of SPY bought at market, exits at the broker, closed by the minute run after 2 minutes."""

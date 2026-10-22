@@ -95,6 +95,7 @@ def view(sub):
                                "maxOpen": round(a["equity"] * c["openRiskPct"] / 100, 2), "dayLimit": round(a["start"] * c["dayLossPct"] / 100, 2)}
         except Exception as e:
             out["accountError"] = str(e)[:120]
+    out["speed"] = {k: v for k, v in (db.get(db.upk(sub), SK + "#SPEED") or {}).items() if k not in ("PK", "SK")} or None
     out["lastTick"] = st.get("last")
     out["ticks"] = (st.get("log") or [])[-60:]
     out["today"] = today
@@ -435,6 +436,82 @@ def check(sub):
             x["error"] = str(e)[:160]
         out["syms"].append(x)
     return out
+
+
+def start_speed(sub):
+    """The crypto speed test, any hour: the page asks, the trading function (the same one as the minute run) does it."""
+    import daytrade
+    import research
+    if not daytrade.creds(sub):
+        raise BadRequest("Connect the day-trading paper account first.")
+    t = time.time()
+    db.put({"PK": db.upk(sub), "SK": SK + "#SPEED", "status": "starting", "askedAt": t, "at": iso(now_ny())})
+    research._invoke(sub, "smcspeed", {"askedAt": t})
+    return {"status": "starting"}
+
+
+def speed_test(sub, asked_at=None, t0=None, loaded=None, cold=False, sym="BTC/USD", notional=10):
+    """Crypto round trip on the day-trading paper account (24/7, market orders): $10 bought at market, the fill read,
+    sold back at market. Every step timed from the click on the page."""
+    import daytrade
+    c = daytrade.creds(sub)
+    base = asked_at or time.time()
+    tm = Timer(base)
+    if cold and loaded:
+        tm.marks.append(["code loaded (cold start)", round(loaded - base, 2)])
+    if t0:
+        tm.marks.append(["Lambda handler start", round(t0 - base, 2)])
+    out = {"status": "done", "sym": sym, "at": iso(now_ny()), "askedAt": asked_at}
+    try:
+        tm.mark("job start")
+        account(c)
+        tm.mark("account read")
+        t1 = time.time()
+        o, notes = _send(c, {"symbol": sym, "notional": str(notional), "side": "buy", "type": "market", "time_in_force": "gtc"})
+        tm.mark("buy accepted by Alpaca" if o else "buy refused")
+        out["buyAcceptMs"] = round((time.time() - t1) * 1000)
+        if not o:
+            raise ValueError("; ".join(notes) or "buy refused")
+        x = {}
+        for _ in range(40):
+            x = _alp(c, "GET", f"/v2/orders/{o['id']}") or {}
+            if x.get("status") == "filled":
+                break
+            time.sleep(0.25)
+        if x.get("status") != "filled":
+            raise ValueError(f"buy not filled after 10 s (status {x.get('status')})")
+        tm.mark("buy filled (seen)")
+        out["buyFillMs"] = round((time.time() - t1) * 1000)
+        out["buyPx"], qty = float(x["filled_avg_price"]), x["filled_qty"]
+        out["buyAlpacaMs"] = _alpaca_ms(x)
+        t2 = time.time()
+        o2, notes = _send(c, {"symbol": sym, "qty": str(qty), "side": "sell", "type": "market", "time_in_force": "gtc"})
+        tm.mark("sell accepted by Alpaca" if o2 else "sell refused")
+        out["sellAcceptMs"] = round((time.time() - t2) * 1000)
+        if o2:
+            for _ in range(40):
+                y = _alp(c, "GET", f"/v2/orders/{o2['id']}") or {}
+                if y.get("status") == "filled":
+                    out["sellPx"], out["sellFillMs"], out["sellAlpacaMs"] = float(y["filled_avg_price"]), round((time.time() - t2) * 1000), _alpaca_ms(y)
+                    tm.mark("sell filled (seen)")
+                    break
+                time.sleep(0.25)
+    except Exception as e:
+        out.update(status="failed", error=str(e)[:200])
+    tm.mark("done")
+    out["timing"] = tm.marks
+    print(f"SMC SPEED {'COLD ' if cold else ''}{tm.line()}")
+    db.put({"PK": db.upk(sub), "SK": SK + "#SPEED", **out})
+    return out
+
+
+def _alpaca_ms(o):
+    """Alpaca's own time between receiving the order and filling it (from its timestamps), in ms."""
+    try:
+        f = lambda v: datetime.strptime(v[:26].replace("Z", ""), "%Y-%m-%dT%H:%M:%S.%f")
+        return round((f(o["filled_at"]) - f(o["submitted_at"] or o["created_at"])).total_seconds() * 1000)
+    except Exception:
+        return None
 
 
 def arm_test(sub, sym="SPY"):

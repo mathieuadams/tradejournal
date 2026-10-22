@@ -5939,6 +5939,30 @@ def test_single_owner_reads():
         _install_fake_db()                              # back to the in-memory fakes for the other tests
 
 
+def test_crypto_speed_test():
+    import smclive, daytrade
+    calls = []
+    def alp(c, m, path, body=None):
+        calls.append((m, path, body))
+        if m == "GET" and path == "/v2/account":
+            return {"equity": "100000", "last_equity": "100000"}
+        if m == "POST":
+            return {"id": "b" if body["side"] == "buy" else "s"}
+        if m == "GET" and path.startswith("/v2/orders/"):
+            return {"status": "filled", "filled_avg_price": "65000", "filled_qty": "0.000153", "submitted_at": "2026-10-22T23:00:00.100Z", "filled_at": "2026-10-22T23:00:00.250Z"}
+        return {}
+    saved = (smclive._alp, daytrade.creds)
+    try:
+        smclive._alp = alp
+        daytrade.creds = lambda sub: {"key": "k", "secret": "s"}
+        r = smclive.speed_test("spd", 1.0)
+        assert r["status"] == "done" and r["buyAlpacaMs"] == 150 and r["sellPx"] == 65000.0, r
+        assert calls[1][2] == {"symbol": "BTC/USD", "notional": "10", "side": "buy", "type": "market", "time_in_force": "gtc"}
+        assert any(b and b.get("side") == "sell" and b["qty"] == "0.000153" for m, p_, b in calls)
+        assert [m[0] for m in r["timing"]][-1] == "done"
+    finally:
+        smclive._alp, daytrade.creds = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
