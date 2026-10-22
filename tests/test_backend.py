@@ -5629,7 +5629,10 @@ def _smc_live_day(MODE, skip_fill=False):
         if m == "GET" and path.startswith("/v2/orders/"):
             return orders.get(path.rsplit("/", 1)[1])
         if m == "GET" and path.startswith("/v2/orders?"):
-            return [o for o in orders.values() if o["status"] == "filled"]
+            import urllib.parse as _up
+            qs = dict(_up.parse_qsl(path.split("?", 1)[1]))
+            return [o for o in orders.values() if o["status"] == "filled" and o["symbol"] == qs.get("symbols", o["symbol"])
+                    and o.get("filled_at", "") >= qs.get("after", "")[:16]]
         if m == "DELETE" and path.startswith("/v2/orders/"):
             o = orders.get(path.rsplit("/", 1)[1])
             if o and o["status"] == "new":
@@ -5700,7 +5703,12 @@ def _smc_live_day(MODE, skip_fill=False):
                     continue
                 assert r["candle"] == full[r["t"]]["fillT"], (r["candle"], full[r["t"]]["fillT"])
                 assert r["status"] in ("closed", "canceled"), r
-            assert not any(b and b.get("type") in ("stop", "limit") or (b or {}).get("order_class") for m, p_, b in calls), "market orders only"
+            assert not any(b and b.get("type") == "limit" or (b or {}).get("order_class") for m, p_, b in calls), "market orders + resting stops"
+            assert any(b and b.get("type") == "stop" for m, p_, b in calls), "a stop order resting at the strategy's stop"
+            assert not [o for o in orders.values() if o["status"] == "new"], "nothing left resting at the end of the day"
+            for r in recs:                             # a stop exit fills at the stop (not at a later candle close)
+                if "stop order at Alpaca" in (r.get("exitWhy") or "") and r.get("engineR") is not None:
+                    assert abs(r["R"] - r["engineR"]) < 0.3, (r["R"], r["engineR"])
             assert not pos, pos
             return
         assert recs and first_limit, calls[:5]

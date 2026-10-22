@@ -2183,6 +2183,7 @@ function smcLiveBox() {
     <b>Live (paper)</b>${L.connected ? `<span class="muted" style="font-size:.76rem">day-trading paper account · data</span><select data-smcfeed style="font-size:.76rem" title="Market data of the day-trading account: switching restarts the optimizer (other candles)"><option value="iex" ${L.feed !== 'sip' ? 'selected' : ''}>IEX only (free)</option><option value="sip" ${L.feed === 'sip' ? 'selected' : ''}>All exchanges, real time (Algo Trader Plus)</option></select>` : '<span class="loss" style="font-size:.8rem">connect the day-trading paper account first (Day trading tab)</span>'}
     <button class="btn ${c.enabled && c.trade ? 'coachbtn' : ''}" data-smclive="auto" style="font-size:.8rem;font-weight:700" title="On: every minute the saved strategy runs on QQQ / SPY and its orders (entry, stop, targets, exits) go to the paper account by themselves">${c.enabled && c.trade ? '● AUTO-TRADING ON' : '○ Auto-trading off'}</button>
     <span class="muted" style="font-size:.74rem" title="Every entry and exit is a market order sent right after the candle where the saved strategy enters / exits">market orders</span>
+    <label style="font-size:.76rem" title="A stop order rests at Alpaca at the strategy's stop (moved with breakeven / trail, resized after TP1): a stop exit fills at the stop the moment it is touched, not at the close of the candle"><input type="checkbox" data-smclivereststop ${c.restStop !== false ? 'checked' : ''}> stop order at Alpaca</label>
     <span class="muted" style="font-size:.74rem">tickers ${esc((c.tickers || []).join(' '))}</span></div>
     ${smcRiskBox(L)}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0;font-size:.78rem"><b>Strategy:</b> ${c.savedAt ? `${esc(c.name || 'saved')} <span class="muted">(${P.tf}m · saved ${esc(c.savedAt.slice(0, 16).replace('T', ' '))})</span>` : '<span class="muted">none saved yet</span>'}
@@ -5589,6 +5590,7 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-smclivef]')) smcLiveSet({ [e.target.dataset.smclivef]: +e.target.value });
   if (e.target.matches && e.target.matches('[data-smclivemode]')) smcLiveSet({ riskMode: e.target.value });
   if (e.target.matches && e.target.matches('[data-smclivemodeo]')) smcLiveSet({ orderMode: e.target.value });
+  if (e.target.matches && e.target.matches('[data-smclivereststop]')) smcLiveSet({ restStop: e.target.checked });
   if (e.target.matches && e.target.matches('[data-smcwindays]')) S.smcWinDays = +e.target.value;
   if (e.target.matches && e.target.matches('[data-smcfeed]')) { const f = e.target.value;
     api('/daytrade/feed', { method: 'PUT', body: { feed: f } }).then(() => { toast(f === 'sip' ? 'Real-time SIP data on: the optimizer starts again' : 'IEX data'); S.smcDs = {}; S.smcOpt = undefined; loadSmcLive(); })

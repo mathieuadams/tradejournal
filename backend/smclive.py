@@ -29,6 +29,7 @@ DEFAULT = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "riskUsd
            # "market": every entry / exit is a market order sent right after the candle where the strategy enters / exits
            # (the exits come only from the strategy); "limit": limit entry + OCO exits at the broker
            "orderMode": "market",
+           "restStop": True,                           # market mode: a stop order resting at Alpaca at the strategy's stop
            "cfg": {}, "name": "", "savedAt": None, "source": None}
 
 
@@ -53,6 +54,8 @@ def save(sub, b):
                       ("openRiskPct", 0.01, 20), ("dayLossPct", 0, 50), ("maxTrades", 0, 50), ("lossStreak", 0, 50)):
         if b.get(k) is not None and b.get(k) != "":
             cur[k] = max(lo, min(hi, float(b[k]) if k in ("riskUsd", "riskPct", "maxPosPct", "openRiskPct", "dayLossPct") else int(float(b[k]))))
+    if "restStop" in b:
+        cur["restStop"] = bool(b["restStop"])
     if b.get("orderMode") in ("market", "limit"):
         cur["orderMode"] = b["orderMode"]
     if b.get("riskMode") in ("pct", "usd"):
@@ -225,6 +228,16 @@ def _close_pos(c, sym, tries=3):
             notes.append(f"close try {k + 1}: {str(e)[:120]}")
             time.sleep(0.6 * (k + 1))
     return None, notes
+
+
+def _rest_stop(c, r, qty, stop):
+    """A stop order resting at Alpaca at the strategy's stop: filled the moment the price gets there (not at the close
+    of the candle). -> (order id or None, notes)"""
+    import math
+    px = math.ceil(float(stop) * 100 - 1e-6) / 100 if r["dir"] > 0 else math.floor(float(stop) * 100 + 1e-6) / 100   # on the strategy's side of
+    o, notes = _send(c, {"symbol": r["symbol"], "qty": str(int(abs(qty))), "side": "sell" if r["dir"] > 0 else "buy", "type": "stop",   # the cent: it
+                         "time_in_force": "day", "stop_price": f"{px:.2f}"})                                                              # triggers when the strategy does
+    return (o or {}).get("id"), notes
 
 
 def _cancel(c, oid):
@@ -472,7 +485,7 @@ def _tick(sub, now=None, minute=None):
     risk = risk_state(cfg, acct, day_recs)
     if risk["flatten"]:                                # daily loss limit hit: everything of the strategy closed
         for r in [r for r in day_recs if r.get("status") in ("pending", "open")]:
-            for oid in [r.get("orderId")] + list(r.get("exitIds") or []):
+            for oid in [r.get("orderId"), r.get("stopId")] + list(r.get("exitIds") or []):
                 _cancel(c, oid)
             if r["status"] == "open":
                 time.sleep(0.5)
@@ -562,6 +575,7 @@ def _tick(sub, now=None, minute=None):
                        "entry": s["entry"], "stop": s["stop"], "tp1": s["tp1"], "tp2": s["tp2"], "tp1Name": s.get("tp1Name"),
                        "tp2Name": s.get("tp2Name"), "part": s.get("part", P["partial"] if P["partialOn"] else 0), "pool": s.get("pool"),
                        "kind": "market" if market_now else "limit", "mode": cfg.get("orderMode", "market"), "orderId": o.get("id"),
+                       "restStop": bool(cfg.get("restStop", True)),
                        "status": "pending", "candle": last, "tries": 1,
                        "sentAt": iso(now_ny()), "lagS": lag(), "sizing": size_note, "equity": (acct or {}).get("equity"),
                        "events": [f"size {q}: {size_note}", f"{'market' if market_now else 'limit'} {side} {q} @ {s['entry']} "
@@ -604,7 +618,7 @@ def _waiting(s, last, tf, P):
 
 def _manage(c, pk, r, s, last, tf, flat, P, lag):
     if r.get("mode") == "market" and not r.get("test"):
-        return _manage_mkt(c, pk, r, s, last, flat, P, lag)
+        return _manage_mkt(c, pk, r, s, last, flat, P, lag, r.get("restStop"))
     acts = []
     sym = r["symbol"]
     upd = {}
@@ -705,7 +719,7 @@ def _hm(t):
     return t[11:16]
 
 
-def _manage_mkt(c, pk, r, s, last, flat, P, lag):
+def _manage_mkt(c, pk, r, s, last, flat, P, lag, rest=None):
     """Market mode: every order is a market order and the exits come only from the saved strategy (no order resting
     at the broker). The strategy takes TP1 -> the partial sold at market; the strategy exits (target, stop, breakeven,
     trail, early exit) or the flat time -> closed at market right after that candle. A close that didn't go through is
@@ -726,6 +740,10 @@ def _manage_mkt(c, pk, r, s, last, flat, P, lag):
                        stopNow=(s or {}).get("stopNow") or r["stop"])
             ev.append(f"filled {filled} @ {px:.2f} (seen {lag()}s after the close of candle {last[11:16]}; strategy price {r['entry']})")
             acts.append(f"{sym} filled {filled} @ {px:.2f}")
+            if rest:
+                sid, notes = _rest_stop(c, r, filled, upd["stopNow"])
+                upd["stopId"] = sid
+                ev += notes + [f"stop order resting at Alpaca {upd['stopNow']}" if sid else "stop order NOT placed (tried again next minute)"]
         elif not r.get("orderId") or ost in ("canceled", "expired", "rejected") or \
                 (ost in ("new", "accepted", "pending_new") and (r.get("sentAt") or "") < iso(now_ny() - timedelta(minutes=2))):
             if r.get("orderId") and ost not in ("canceled", "expired", "rejected"):
@@ -737,13 +755,23 @@ def _manage_mkt(c, pk, r, s, last, flat, P, lag):
         held = _held(c, sym)
         if not held:
             px, why = _last_exit(c, sym, r)
-            upd.update(status="closed", exitPx=px, closedAt=iso(now_ny()), exitWhy=r.get("exitWhy") or "closed outside the strategy")
+            so = _alp(c, "GET", f"/v2/orders/{r['stopId']}") if r.get("stopId") else None
+            if so and so.get("status") == "filled":
+                px = float(so.get("filled_avg_price") or px or 0) or px
+                why = f"stop order at Alpaca filled @ {px:.2f}"
+            else:
+                why = r.get("exitWhy") or "closed outside the strategy"
+            upd.update(status="closed", exitPx=px, closedAt=iso(now_ny()), exitWhy=r.get("exitWhy") if st == "closing" and r.get("exitWhy") else why)
             if px is not None and r.get("fill"):
                 upd["R"] = round(_realized_R(c, sym, r, abs(r["entry"] - r["stop"]) or 1), 3)
             ev.append(f"closed: {upd['exitWhy']}" + (f" @ {px:.2f}" if px else "") + f" (seen {lag()}s after candle {last[11:16]})")
             acts.append(f"{sym} closed ({upd['exitWhy']})")
         elif st == "closing" or flat or eng_out:
             why = r.get("exitWhy") if st == "closing" else (f"flat at {P['flatT']}" if flat else s["exitWhy"])
+            if r.get("stopId"):                        # the resting stop out first (else it holds the shares)
+                _cancel(c, r["stopId"])
+                time.sleep(0.4)
+                upd["stopId"] = None
             oid, notes = _close_pos(c, sym)
             upd.update(status="closing", exitWhy=why, exitOrder=oid, closeTries=(r.get("closeTries") or 0) + 1)
             ev += notes + [f"close at market: {why} (candle {last[11:16]}, {lag()}s after its close" + (f", try {upd['closeTries']})" if upd["closeTries"] > 1 else ")")]
@@ -752,15 +780,30 @@ def _manage_mkt(c, pk, r, s, last, flat, P, lag):
             if s and s.get("tp1Hit") and not r.get("tp1Done") and float(r.get("part") or 0):
                 q = int(int(r.get("filledQty") or abs(held)) * float(r["part"]))
                 if 0 < q < abs(held):
+                    if rest and r.get("stopId"):           # the stop order holds the shares: out, then back for the rest
+                        _cancel(c, r["stopId"])
+                        time.sleep(0.4)
+                        r = {**r, "stopId": None}
+                        upd["stopId"] = None
                     o, notes = _send(c, {"symbol": sym, "qty": str(q), "side": side_exit, "type": "market", "time_in_force": "day"})
                     ev += notes + [f"TP1: {q} sold at market (candle {last[11:16]}, {lag()}s after its close)" if o else "TP1 partial NOT sent (tried again next minute)"]
                     if o:
                         upd["tp1Done"] = True
                         acts.append(f"{sym} TP1 partial {q}")
-            stop = (s or {}).get("stopNow")
-            if stop and abs(float(stop) - float(r.get("stopNow") or r["stop"])) >= 0.01:
-                upd["stopNow"] = stop                  # the strategy's stop (followed by the minute run, not an order)
+            stop = (s or {}).get("stopNow") or r.get("stopNow") or r["stop"]
+            moved = abs(float(stop) - float(r.get("stopNow") or r["stop"])) >= 0.01
+            if moved:
+                upd["stopNow"] = stop
                 ev.append(f"strategy stop now {stop} (candle {last[11:16]})")
+            if rest and (moved or upd.get("tp1Done") or not r.get("stopId")):
+                if r.get("stopId"):
+                    _cancel(c, r["stopId"])
+                    time.sleep(0.4)
+                left = _held(c, sym)
+                if left:
+                    sid, notes = _rest_stop(c, r, left, stop)
+                    upd["stopId"] = sid
+                    ev += notes + [f"stop order at Alpaca → {stop} ({abs(left)} shares)" if sid else "stop order NOT placed (tried again next minute)"]
     if s and s.get("R") is not None and s.get("exitWhy") != "end of day":
         upd["engineR"] = s["R"]
     if upd:
