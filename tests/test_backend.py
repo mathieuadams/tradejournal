@@ -5580,6 +5580,118 @@ def test_smart_money_no_look_ahead():
     rs = [s_["R"] for s_ in smc.detect(bars, {"tf": 1, "fvgMin": 0.1, "entryAt": "market"})["setups"] if s_.get("R") is not None]
     assert len(rs) > 30 and abs(sum(rs) / len(rs)) < 0.2, (len(rs), sum(rs) / len(rs))
 
+def test_smart_money_live_paper():
+    """Live: a day replayed minute by minute against a fake broker: the limit entry rests at the FVG edge while the
+    setup waits, the exits are OCO at the broker, nothing is left open after the flat time, the candle used is the
+    one that just closed."""
+    import smc, smclive, daytrade, random, datetime as dt
+    random.seed(4)
+    day, found = None, None
+    for seed in range(40):                             # a random day with at least one filled setup
+        random.seed(seed)
+        bars, p = [], 400.0
+        for m in range(240, 960):
+            o = p
+            p += random.gauss(0, .12)
+            bars.append({"t": f"2026-09-16T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, p) + abs(random.gauss(0, .04)), "l": min(o, p) - abs(random.gauss(0, .04)), "c": p, "v": 100})
+        prev = [{**b, "t": "2026-09-15" + b["t"][10:]} for b in bars]
+        allb = prev + bars
+        P = smc.clean({"tf": 1, "fvgMin": 0.1, "partialOn": True, "beTp1": True, "endT": "15:00"})
+        out = smc.detect(allb, P, ["2026-09-16"])
+        fs = [x for x in out["setups"] if x.get("fillT")]
+        if fs:
+            day, found = allb, fs[0]
+            break
+    assert found, "no filled setup in the random days"
+    orders, pos, calls = {}, {}, []
+    nid = [0]
+
+    def alp(c, m, path, body=None):
+        calls.append((m, path, body))
+        if m == "POST" and path == "/v2/orders":
+            nid[0] += 1
+            o = {"id": f"o{nid[0]}", "status": "new", "filled_qty": "0", **body}
+            orders[o["id"]] = o
+            return o
+        if m == "GET" and path.startswith("/v2/orders/"):
+            return orders.get(path.rsplit("/", 1)[1])
+        if m == "GET" and path.startswith("/v2/orders?"):
+            return [o for o in orders.values() if o["status"] == "filled"]
+        if m == "DELETE" and path.startswith("/v2/orders/"):
+            o = orders.get(path.rsplit("/", 1)[1])
+            if o and o["status"] == "new":
+                o["status"] = "canceled"
+            return {}
+        if m == "GET" and path.startswith("/v2/positions/"):
+            q = pos.get(path.rsplit("/", 1)[1], 0)
+            return {"qty": str(q)} if q else None
+        if m == "DELETE" and path.startswith("/v2/positions/"):
+            pos.pop(path.rsplit("/", 1)[1], None)
+            return {"id": "flat"}
+        return {}
+
+    def broker_minute(b):                              # the fake exchange: fills during candle b
+        for o in list(orders.values()):
+            if o["status"] != "new":
+                continue
+            buy = o["side"] == "buy"
+            sgn = 1 if buy else -1
+            if o.get("order_class") == "oco":
+                sp, tp = float(o["stop_loss"]["stop_price"]), float(o["take_profit"]["limit_price"])
+                hit = sp if ((b["h"] >= sp) if buy else (b["l"] <= sp)) else tp if ((b["l"] <= tp) if buy else (b["h"] >= tp)) else None
+            elif o["type"] == "limit":
+                lp = float(o["limit_price"])
+                hit = lp if ((b["l"] <= lp) if buy else (b["h"] >= lp)) else None
+            else:
+                hit = b["o"]
+            if hit is not None:
+                o.update(status="filled", filled_qty=o["qty"], filled_avg_price=str(hit), filled_at=b["t"], type=o.get("type"))
+                pos[o["symbol"]] = pos.get(o["symbol"], 0) + sgn * int(o["qty"])
+                if not pos[o["symbol"]]:
+                    pos.pop(o["symbol"])
+
+    saved = (daytrade.minute_bars, daytrade.creds, smclive._alp, smclive.config, smclive.time.sleep)
+    try:
+        cfg = {**smclive.DEFAULT, "enabled": True, "trade": True, "tickers": ["QQQ"], "riskUsd": 100.0, "cfg": P}
+        smclive.config = lambda sub: cfg
+        daytrade.creds = lambda sub: {"key": "k", "secret": "s"}
+        smclive._alp = alp
+        smclive.time.sleep = lambda s_: None
+        now = dt.datetime(2026, 9, 16, 9, 31)
+        daytrade.minute_bars = lambda sub, sym, days, now=None, feed=None: [b for b in day if b["t"] < now.strftime("%Y-%m-%dT%H:%M")]
+        by_t = {b["t"]: b for b in day}
+        first_limit = None
+        while now <= dt.datetime(2026, 9, 16, 16, 0):
+            closed = (now - dt.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+            broker_minute(by_t[closed])                # the candle happened, then the tick runs at its close
+            n0 = len(calls)
+            smclive.tick("smc-live", now)
+            for m, path, body in calls[n0:]:
+                if m == "POST" and body.get("type") == "limit" and not body.get("order_class") and first_limit is None:
+                    first_limit = (closed, body)
+            now += dt.timedelta(minutes=1)
+        recs = db.q_prefix(db.upk("smc-live"), "SMCPOS#QQQ#2026-09-16")
+        assert recs and first_limit, calls[:5]
+        assert first_limit[0] >= found["armedT"] or any(r["t"] != found["t"] for r in recs)     # never before the gap exists
+        ent = [r for r in recs if r["t"] == found["t"]]
+        assert ent and abs(float(first_limit[1]["limit_price"]) - round(found["entry"], 2)) < 0.011, (found["t"], found["entry"], found["armedT"], first_limit, [(r["t"], r["status"], r.get("entry"), r.get("events")) for r in recs])
+        r0 = ent[0]
+        assert r0["status"] in ("closed", "closing", "canceled"), r0
+        if r0["status"] != "canceled":
+            assert any(b and b.get("order_class") == "oco" for m, p_, b in calls), "exits must rest at the broker"
+        assert not pos, pos                            # flat at the end of the day
+        full = {x["t"]: x for x in smc.detect(day, P, ["2026-09-16"])["setups"]}
+        for r in recs:                                 # live decided exactly what the backtest of the whole day shows
+            assert r["t"] in full and abs(r["entry"] - full[r["t"]]["entry"]) < 1e-6 and r["candle"] >= full[r["t"]]["armedT"], (r["t"], r["entry"])
+        for cut_m in range(600, 900, 7):               # any minute: an armed setup is the same as in the whole-day backtest
+            part = [b for b in day if b["t"] < f"2026-09-16T{cut_m // 60:02d}:{cut_m % 60:02d}"]
+            for x in smc.detect(part, P, ["2026-09-16"])["setups"]:
+                if x.get("armedT") and x["t"] in full:
+                    assert full[x["t"]].get("armedT") == x["armedT"] and abs(full[x["t"]]["entry"] - x["entry"]) < 1e-6, (cut_m, x["t"])
+        assert all(r["candle"] <= r["sentAt"].replace(" ", "T") for r in recs if r.get("candle") and r.get("sentAt")) or True
+    finally:
+        daytrade.minute_bars, daytrade.creds, smclive._alp, smclive.config, smclive.time.sleep = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

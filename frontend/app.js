@@ -1918,33 +1918,46 @@ function smcLayer(m, c) {                          // drawn under the candles
     g += `<text x="${X(i)}" y="${y}" text-anchor="middle" font-size="${fs}" fill="${w.dir > 0 ? '#dc2626' : '#2563eb'}">✕<title>${esc(`${w.name} ${w.p} swept ${w.t.slice(11, 16)}`)}</title></text>`; });
   return g;
 }
+const SMC_PAIR = ['QQQ', 'SPY'];
+function smcMerged() {                               // the two charts' setups as one list (for the panel)
+  const ds = SMC_PAIR.map(x => [x, ((S.smcDs || {})[x] || {}).d]).filter(([, d]) => d && !d.error);
+  if (!ds.length) return null;
+  const setups = ds.flatMap(([x, d]) => (d.setups || []).map(s => ({ ...s, sym: x, key: `${x}|${s.t}` }))).sort((a, b) => a.t < b.t ? -1 : 1);
+  const fn = {}, why = {};
+  ds.forEach(([, d]) => { const f = d.funnel || {}; ['sweeps', 'mss', 'fvg', 'filled', 'wins'].forEach(k => { fn[k] = (fn[k] || 0) + (f[k] || 0); }); Object.entries(f.why || {}).forEach(([k, v]) => { why[k] = (why[k] || 0) + v; }); });
+  const rs = setups.filter(s => s.R != null).map(s => s.R), w = rs.filter(r => r > 0), l = rs.filter(r => r <= 0), tot = rs.reduce((a, r) => a + r, 0), gl = -l.reduce((a, r) => a + r, 0);
+  return { params: ds[0][1].params, setups, funnel: { ...fn, why }, stats: rs.length ? { n: rs.length, win: Math.round(w.length / rs.length * 100), avgR: tot / rs.length, totR: tot, pf: gl > 0 ? +(w.reduce((a, r) => a + r, 0) / gl).toFixed(2) : null } : { n: 0 } };
+}
 function vChartSMC() {
   if (S.dt === undefined) { S.dt = null; setTimeout(loadDT, 0); }
-  if (S.dtMovers === undefined) { S.dtMovers = null; setTimeout(loadMovers, 0); }
-  const cfg = dtCfg(), tickers = cfg.tickers || ['QQQ', 'SPY'], sym = (hashParam('t') || '').toUpperCase() || tickers[0];
-  const P = { ...S.smcCfg, tf: S.smcTf }, k = `smc|${sym}|${S.smcTf}|${S.smcDays}|${JSON.stringify(S.smcCfg)}`, d = S.smcD && S.smcD.k === k ? S.smcD.d : null;
-  if (!d && S.smcBusy !== k) setTimeout(() => loadSMC(sym, k, P), 0);
-  const narrow = window.innerWidth < 800, side = !narrow, W = Math.max(320, window.innerWidth - 28 - (side ? chLeftW() + 252 : 0)), H = Math.max(420, window.innerHeight - (S.fcfHeadH || 58) - 120);
-  const id = 'smc-' + sym;
-  const zb = (q, l) => `<button class="btn" data-fczoom="${id}|${q}" style="padding:3px 10px">${l}</button>`;
-  const head = `<div class="fcf-head">${symSearch(sym, tickers)}<b style="font-size:1.25rem">${esc(sym)}</b> ${fcModeSeg()}
+  const P = { ...S.smcCfg, tf: S.smcTf }, kOf = sym => `smc|${sym}|${S.smcTf}|${S.smcDays}|${JSON.stringify(S.smcCfg)}`;
+  S.smcDs = S.smcDs || {}; S.smcBusyS = S.smcBusyS || {};
+  SMC_PAIR.forEach(sym => { const k = kOf(sym), x = S.smcDs[sym]; if ((!x || x.k !== k) && S.smcBusyS[sym] !== k) setTimeout(() => loadSMC(sym, k, P), 0); });
+  const narrow = window.innerWidth < 900, side = window.innerWidth >= 800;
+  const full = Math.max(320, window.innerWidth - 28 - (side ? chLeftW() : 0)), W = narrow ? full : Math.floor((full - 10) / 2), H = Math.max(360, window.innerHeight - (S.fcfHeadH || 58) - 160);
+  const zb = (q, l) => `<button class="btn" data-smczoom="${q}" style="padding:3px 10px">${l}</button>`;
+  const head = `<div class="fcf-head"><b style="font-size:1.25rem">QQQ · SPY</b> ${fcModeSeg()}
     <span class="seg" title="Candle size">${[1, 5].map(m => `<button class="btn ${S.smcTf === m ? 'coachbtn' : ''}" data-smctf="${m}" style="padding:3px 10px">${m}m</button>`).join('')}</span>
     <span class="seg" title="Days">${[1, 3, 5, 10].map(n => `<button class="btn ${S.smcDays === n ? 'coachbtn' : ''}" data-smcdays="${n}" style="padding:3px 10px">${n}d</button>`).join('')}</span>
     ${zb('in', '＋')}${zb('out', '−')}${zb('left', '◀')}${zb('right', '▶')}${zb('reset', 'Reset')}
     <button class="btn" data-smcreload style="padding:3px 10px" title="Reload">↻</button><span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen">✕</a></div>`;
-  let main;
-  if (!d) main = '<p class="loading">Loading the candles and reading the chart…</p>';
-  else if (d.error) main = `<div class="errbox">${esc(d.error)}</div>`;
-  else {
-    main = fcSvg({ bars: d.bars, interval: d.interval, smc: d }, id, { W, H, smc: true, smcOnly: true, padRight: 40, smcSel: S.smcSel });
-    main += smcPanel(d, id);
-  }
-  return `<div class="fcf">${head}<div class="fcf-body">${side ? chLeft([['Smart money', SMC_LY]]) : ''}<div class="fcf-main">${main}</div>${side ? dtWatchSide(sym, tickers) : ''}</div></div>`;
+  const one = sym => { const x = S.smcDs[sym], d = x && x.k === kOf(sym) ? x.d : null, id = 'smc-' + sym;
+    if (!d) return `<div class="smc-one" style="width:${W}px"><b>${sym}</b><p class="loading">Loading the candles and reading the chart…</p></div>`;
+    if (d.error) return `<div class="smc-one" style="width:${W}px"><b>${sym}</b><div class="errbox">${esc(d.error)}</div></div>`;
+    const st = d.stats || {}, sel = S.smcSel && S.smcSel.startsWith(sym + '|') ? S.smcSel.slice(sym.length + 1) : null;
+    return `<div class="smc-one" style="width:${W}px"><div style="display:flex;gap:8px;align-items:baseline;font-size:.82rem;margin:2px 0"><b style="font-size:1rem">${sym}</b>
+      <span class="muted">${st.n ? `${st.n} trades · win ${st.win}% · avg ${(st.avgR > 0 ? '+' : '') + (+st.avgR).toFixed(2)}R · total ${(st.totR > 0 ? '+' : '') + (+st.totR).toFixed(2)}R` : 'no trade in these days'}</span></div>
+      ${fcSvg({ bars: d.bars, interval: d.interval, smc: d }, id, { W, H, smc: true, smcOnly: true, padRight: 40, smcSel: sel })}</div>`; };
+  const m = smcMerged();
+  const main = `<div style="display:flex;gap:10px;flex-wrap:${narrow ? 'wrap' : 'nowrap'}">${SMC_PAIR.map(one).join('')}</div>${m ? smcPanel(m, 'smc-pair') : ''}`;
+  return `<div class="fcf">${head}<div class="fcf-body">${side ? chLeft([['Smart money', SMC_LY]]) : ''}<div class="fcf-main">${main}</div></div></div>`;
 }
 async function loadSMC(sym, k, P) {
-  S.smcBusy = k;
-  try { S.smcD = { k, d: await api('/daytrade/smc', { method: 'POST', body: { t: sym, days: S.smcDays, cfg: P } }) }; } catch (e) { S.smcD = { k, d: { error: e.message } }; }
-  S.smcBusy = null; if (route() === 'botchart') render();
+  S.smcBusyS = S.smcBusyS || {}; S.smcDs = S.smcDs || {};
+  S.smcBusyS[sym] = k;
+  try { S.smcDs[sym] = { k, d: await api('/daytrade/smc', { method: 'POST', body: { t: sym, days: S.smcDays, cfg: P } }) }; } catch (e) { S.smcDs[sym] = { k, d: { error: e.message } }; }
+  if (sym === SMC_PAIR[0]) S.smcD = S.smcDs[sym];
+  S.smcBusyS[sym] = null; if (route() === 'botchart') render();
 }
 // the model's building blocks, like the other strategies: [key, group, label, tip, number field [key, step, width, unit]]
 const SMC_BLOCKS = [
@@ -1993,6 +2006,7 @@ function smcBlocks(P0) {
 // ---- stress test: the same blocks on many tickers / 30 days, after the cost, each block and number shaken
 function smcUniverse(u) {
   const cfg = dtCfg(), sym = (hashParam('t') || '').toUpperCase() || ((cfg.tickers || ['QQQ'])[0]);
+  if (u === 'pair') return SMC_PAIR.slice();
   if (u === 'this') return [sym];
   if (u === 'day') return cfg.tickers || ['QQQ', 'SPY'];
   if (u === 'movers') return [...new Set((S.dtMovers || []).flatMap(x => (x.list || []).map(y => y.sym)))].slice(0, 45);
@@ -2000,7 +2014,7 @@ function smcUniverse(u) {
   return [sym];
 }
 async function smcStressRun() {
-  const u = S.smcStU || 'movers', tick = smcUniverse(u), days = S.smcStDays || 30, cfg = { ...S.smcCfg, tf: S.smcTf };
+  const u = S.smcStU || 'pair', tick = smcUniverse(u), days = S.smcStDays || 30, cfg = { ...S.smcCfg, tf: S.smcTf };
   if (!tick.length) { toast('No ticker in that list yet'); return; }
   const run = S.smcStress = { running: true, u, days, total: tick.length, results: [], errors: [], cfg: JSON.stringify(cfg), at: new Date().toISOString() };
   render();
@@ -2028,6 +2042,48 @@ function smcAgg(res) {
   return { all: st(tr), h1: st(tr.filter(x => x.t.slice(0, 10) < mid)), h2: st(tr.filter(x => x.t.slice(0, 10) >= mid)), longs: st(tr.filter(x => x.dir > 0)), shorts: st(tr.filter(x => x.dir < 0)),
     tick, vs, vPos: vs.filter(v => (v.avgR || 0) > 0).length, tPos: tick.filter(x => x.n && x.totR > 0).length, tN: tick.filter(x => x.n).length,
     exits: tr.reduce((a, x) => { a[x.why || '?'] = (a[x.why || '?'] || 0) + 1; return a; }, {}), mid };
+}
+// ---- live on the day-trading paper account (backend smclive.py, every minute)
+async function loadSmcLive() {
+  try { S.smcLive = await api('/daytrade/smc/live'); } catch (e) { S.smcLive = { error: e.message }; }
+  if (route() === 'botchart' && S.fcfMode === 'smc') render();
+  clearTimeout(S.smcLiveT);
+  S.smcLiveT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'smc') loadSmcLive(); else S.smcLive = undefined; }, 30000);
+}
+async function smcLiveSet(body) {
+  try { S.smcLive = await api('/daytrade/smc/live', { method: 'PUT', body }); toast('Saved'); } catch (e) { toast(e.message); }
+  render();
+}
+function smcLiveBox() {
+  if (S.smcLive === undefined) { S.smcLive = null; setTimeout(loadSmcLive, 0); }
+  const L = S.smcLive;
+  if (!L) return '<div class="smc-stress"><b>Live (paper)</b> <span class="loading" style="padding:0">loading…</span></div>';
+  if (L.error) return `<div class="smc-stress"><b>Live (paper)</b> <span class="loss">${esc(L.error)}</span></div>`;
+  const c = L.config || {}, P = c.cfg || {}, cur = { ...S.smcCfg, tf: S.smcTf };
+  const same = ['tf', ...Object.keys(SMC_NAMES)].every(k => cur[k] === undefined || P[k] === undefined || String(cur[k]) === String(P[k]));
+  const Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const lt = L.lastTick, today = (L.trades || []).filter(r => (r.t || '').slice(0, 10) === L.today).reverse(), older = (L.trades || []).filter(r => (r.t || '').slice(0, 10) !== L.today).reverse().slice(0, 20);
+  const tr = r => `<tr><td>${esc((r.t || '').slice(5, 16).replace('T', ' '))}</td><td><b>${esc(r.symbol)}</b></td><td>${r.dir > 0 ? 'LONG' : 'SHORT'}</td><td>${esc(r.kind || '')}</td>
+    <td class="r">${r.entry ?? '—'}</td><td class="r">${r.fill != null ? (+r.fill).toFixed(2) : '—'}</td><td class="r">${r.slip != null ? (r.slip > 0 ? '−' : '+') + Math.abs(r.slip).toFixed(2) : '—'}</td>
+    <td class="r" title="seconds between the close of the candle and the order">${r.lagS != null ? r.lagS + 's' : '—'}</td><td>${esc(r.status || '')}${r.exitWhy ? ' · ' + esc(r.exitWhy) : r.why ? ' · ' + esc(r.why) : ''}</td>
+    <td class="r">${Rf(r.R)}</td><td class="r" title="what the backtest engine says the same trade made">${Rf(r.engineR)}</td>
+    <td><details><summary style="cursor:pointer;font-size:.72rem">log</summary><ol style="margin:2px 0;padding-left:16px;font-size:.72rem">${(r.events || []).map(e => `<li>${esc(e)}</li>`).join('')}</ol></details></td></tr>`;
+  const table = rs => rs.length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>Setup</th><th></th><th></th><th>Order</th><th class="r">Entry</th><th class="r">Fill</th><th class="r">Slip</th><th class="r">Lag</th><th>Status</th><th class="r">R</th><th class="r">Engine R</th><th></th></tr></thead><tbody>${rs.map(tr).join('')}</tbody></table></div>` : '';
+  return `<div class="smc-stress" style="border-color:${c.enabled && c.trade ? 'var(--gain)' : 'var(--line)'}"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+    <b>Live (paper)</b>${L.connected ? `<span class="muted" style="font-size:.76rem">day-trading paper account · data feed ${esc(L.feed || 'iex')}</span>` : '<span class="loss" style="font-size:.8rem">connect the day-trading paper account first (Day trading tab)</span>'}
+    <button class="btn ${c.enabled ? 'coachbtn' : ''}" data-smclive="enabled" style="font-size:.78rem" title="Run the strategy every minute (the log below fills even without orders)">${c.enabled ? '✓ Watching' : 'Watch'}</button>
+    <button class="btn ${c.trade ? 'coachbtn' : ''}" data-smclive="trade" style="font-size:.78rem" title="Send the orders to the paper account">${c.trade ? '✓ Sending orders' : 'Send orders'}</button>
+    <label style="font-size:.76rem">risk $<input data-smclivef="riskUsd" type="number" value="${c.riskUsd ?? 100}" style="width:5.5em"></label>
+    <label style="font-size:.76rem">max qty<input data-smclivef="maxQty" type="number" value="${c.maxQty ?? 500}" style="width:5em"></label>
+    <span class="muted" style="font-size:.74rem">tickers ${esc((c.tickers || []).join(' '))}</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0;font-size:.78rem"><b>Strategy:</b> ${c.savedAt ? `${esc(c.name || 'saved')} <span class="muted">(${P.tf}m · saved ${esc(c.savedAt.slice(0, 16).replace('T', ' '))})</span>` : '<span class="muted">none saved yet</span>'}
+      ${same ? (c.savedAt ? '<span class="gain">= the blocks on the chart</span>' : '') : `<span class="muted">the blocks on the chart differ</span>`}
+      <input data-smclivename placeholder="name" value="${esc(S.smcLiveName || '')}" style="width:10em;font-size:.76rem"><button class="btn coachbtn" data-smclivesave style="font-size:.76rem">Save the chart's blocks as the live strategy</button></div>
+    ${c.savedAt ? `<details style="font-size:.74rem"><summary style="cursor:pointer">saved blocks</summary><div style="display:flex;flex-wrap:wrap;gap:3px;margin:3px 0">${smcOptDiff(P)}</div>${c.source ? `<span class="muted">from the optimizer: train ${c.source.train ? `${c.source.train.n} trades ${(+c.source.train.avgR).toFixed(2)}R` : '—'} · test ${c.source.test ? `${c.source.test.n} trades ${(+c.source.test.avgR).toFixed(2)}R` : '—'}</span>` : ''}</details>` : ''}
+    ${L.warn ? `<p class="loss" style="font-size:.76rem;margin:2px 0">${esc(L.warn)}</p>` : ''}
+    ${lt ? `<div style="font-size:.76rem;margin:4px 0"><b>Last minute:</b> ${esc(lt.minute)} ET, done in ${lt.took}s · ${(lt.syms || []).map(x => `${esc(x.sym)} candle ${esc((x.candle || '').slice(11, 16))} (closed ${esc(x.closedAt || '')}${x.waited ? `, waited ${x.waited}s for it` : ''}${x.fresh ? '' : ', <span class="loss">not published yet: the previous one used</span>'})`).join(' · ')}${(lt.actions || []).length ? ` · ${(lt.actions || []).map(esc).join(' · ')}` : ''}</div>` : c.enabled ? '<div class="muted" style="font-size:.76rem">No minute run yet (09:31–16:00 ET, Mon–Fri).</div>' : ''}
+    ${today.length ? `<div style="font-size:.78rem;margin-top:4px"><b>Today</b></div>${table(today)}` : c.enabled ? '<div class="muted" style="font-size:.76rem">No setup traded today yet.</div>' : ''}
+    ${older.length ? `<details style="margin-top:4px"><summary style="font-size:.78rem;cursor:pointer"><b>Earlier</b> (${older.length})</summary>${table(older)}</details>` : ''}</div>`;
 }
 // ---- optimizer: the blocks tuned on the stocks-in-play history (top 15 a day, 5m), chosen on the 1st 60%, checked on the rest
 async function loadSmcOpt() {
@@ -2083,9 +2139,9 @@ function smcOptBox() {
 }
 function smcStressBox() {
   const R = S.smcStress, Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
-  const U = [['movers', 'top movers (last 3 days)'], ['day', 'day tickers'], ['main', 'wall watch lists'], ['this', 'this ticker']];
+  const U = [['pair', 'QQQ + SPY'], ['movers', 'top movers (last 3 days)'], ['day', 'day tickers'], ['main', 'wall watch lists']];
   const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Stress test</b>
-    <select data-smcstu style="font-size:.8rem">${U.map(([k, l]) => `<option value="${k}" ${(S.smcStU || 'movers') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <select data-smcstu style="font-size:.8rem">${U.map(([k, l]) => `<option value="${k}" ${(S.smcStU || 'pair') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <select data-smcstdays style="font-size:.8rem">${[10, 20, 30].map(n => `<option value="${n}" ${(S.smcStDays || 30) === n ? 'selected' : ''}>${n} days</option>`).join('')}</select>
     ${R && R.running ? `<button class="btn" data-smcststop style="font-size:.8rem">Stop</button><span class="loading" style="padding:0">testing ${R.results.length + R.errors.length} / ${R.total} tickers…</span>`
       : `<button class="btn coachbtn" data-smcstrun style="font-size:.8rem">Run the stress test</button>`}
@@ -2122,14 +2178,14 @@ function smcPanel(d, id) {
   const list = (d.setups || []).filter(s => !S.smcFilled || s.fillT);
   const rows = list.slice().reverse().map(s => {
     const by = Object.fromEntries((s.steps || []).map(x => [x.name, x]));
-    const open_ = S.smcOpen === s.t;
-    return `<div class="smc-row ${s.fillT ? 'filled' : ''}"><button class="btn ${S.smcSel === s.t ? 'coachbtn' : ''}" data-smcsel="${esc(s.t)}" style="font-size:.74rem;padding:1px 7px;min-width:9.5em;text-align:left">${esc(s.t.slice(5, 16).replace('T', ' '))} ${s.dir > 0 ? 'LONG' : 'SHORT'}</button>
+    const kk = s.key || s.t, open_ = S.smcOpen === kk;
+    return `<div class="smc-row ${s.fillT ? 'filled' : ''}"><button class="btn ${S.smcSel === kk ? 'coachbtn' : ''}" data-smcsel="${esc(kk)}" style="font-size:.74rem;padding:1px 7px;min-width:12em;text-align:left">${s.sym ? `<b>${esc(s.sym)}</b> ` : ''}${esc(s.t.slice(5, 16).replace('T', ' '))} ${s.dir > 0 ? 'LONG' : 'SHORT'}</button>
       <span class="smc-chk">${NAMES.map((nm, q) => ok(by[nm] ? by[nm].ok : null, ['Sweep', 'MSS', 'FVG', 'Retrace', 'Risk', 'Result'][q])).join('')}</span>
       <span style="min-width:5em;text-align:right" title="${esc(s.exitWhy || '')}">${s.R != null ? Rf(s.R) : `<span class="muted">${esc(s.status || '')}</span>`}</span>${s.exitWhy ? `<span class="muted" style="font-size:.74rem">${esc(s.exitWhy)}</span>` : ''}
-      <button class="btn" data-smcopen="${esc(s.t)}" style="font-size:.72rem;padding:0 6px">${open_ ? 'hide steps' : 'steps'}</button>
+      <button class="btn" data-smcopen="${esc(kk)}" style="font-size:.72rem;padding:0 6px">${open_ ? 'hide steps' : 'steps'}</button>
       ${open_ ? `<ol class="smc-steps">${(s.steps || []).map(x => `<li class="${x.ok ? 'ok' : 'no'}"><b>${esc(x.name)}</b>: ${esc(x.text)}</li>`).join('')}</ol>` : ''}</div>`; }).join('');
   const set = smcBlocks(P);
-  return `<div class="smc-panel">${fun}${set}${smcStressBox()}${smcOptBox()}<label style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center;margin:2px 0 4px"><input type="checkbox" data-smcfilled ${S.smcFilled ? 'checked' : ''}> only the trades (filled setups)</label><div class="smc-list">${rows || '<p class="muted" style="margin:6px 0">No liquidity sweep in these days.</p>'}</div>
+  return `<div class="smc-panel">${fun}${smcLiveBox()}${set}${smcStressBox()}${smcOptBox()}<label style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center;margin:2px 0 4px"><input type="checkbox" data-smcfilled ${S.smcFilled ? 'checked' : ''}> only the trades (filled setups)</label><div class="smc-list">${rows || '<p class="muted" style="margin:6px 0">No liquidity sweep in these days.</p>'}</div>
     <p class="muted" style="font-size:.74rem;margin:6px 0 0">Liquidity: PDH / PDL (previous day), PM high / low (pre-market), ORH / ORL (opening range), the day's swings (EQH / EQL when two are equal). A setup: a pool is swept (✕) → a close beyond the last swing = MSS → the move leaves a fair value gap → price comes back into it (entry) → stop beyond the sweep, TP1 at the next opposite liquidity (partial, rest to breakeven), TP2 after it. Each row shows where it stopped.</p></div>`;
 }
 function wwLayerGroups() {                         // the wall watch chart's indicators, grouped for the left column
@@ -4986,7 +5042,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -4996,18 +5052,29 @@ document.addEventListener('click', e => {
   if (el.hasAttribute('data-smcfilled')) { S.smcFilled = el.checked; render(); return; }
   if (el.dataset.smctf) { S.smcTf = +el.dataset.smctf; render(); return; }
   if (el.dataset.smcdays) { S.smcDays = +el.dataset.smcdays; render(); return; }
-  if (el.hasAttribute('data-smcreload')) { S.smcD = null; render(); return; }
+  if (el.hasAttribute('data-smcreload')) { S.smcD = null; S.smcDs = {}; render(); return; }
   if (el.dataset.smcopen) { S.smcOpen = S.smcOpen === el.dataset.smcopen ? null : el.dataset.smcopen; render(); return; }
-  if (el.dataset.smcsel) {                         // zoom the chart on that setup
-    const t = el.dataset.smcsel, d = S.smcD && S.smcD.d, sym = (hashParam('t') || '').toUpperCase() || ((dtCfg().tickers || ['QQQ'])[0]);
-    S.smcSel = S.smcSel === t ? null : t;
+  if (el.dataset.smcsel) {                         // zoom that ticker's chart on that setup
+    const kk = el.dataset.smcsel, [sym, t] = kk.split('|'), d = ((S.smcDs || {})[sym] || {}).d;
+    S.smcSel = S.smcSel === kk ? null : kk;
     if (S.smcSel && d && d.bars) { const s = (d.setups || []).find(x => x.t === t), i0 = d.bars.findIndex(b => b.t >= t), i1 = s && s.exitT ? d.bars.findIndex(b => b.t >= s.exitT) : i0 + 30;
-      if (i0 >= 0) S.fcZoom[fcKey('smc-' + sym)] = [Math.max(0, i0 - 40), Math.min(d.bars.length - 1, Math.max(i1, i0 + 10) + 25)]; }
+      if (i0 >= 0) SMC_PAIR.forEach(x => { const dd = ((S.smcDs || {})[x] || {}).d; if (!dd || !dd.bars) return; const a0 = dd.bars.findIndex(b => b.t >= d.bars[i0].t), a1 = dd.bars.findIndex(b => b.t >= d.bars[Math.min(d.bars.length - 1, Math.max(0, i1))].t);
+        if (a0 >= 0) S.fcZoom[fcKey('smc-' + x)] = [Math.max(0, a0 - 40), Math.min(dd.bars.length - 1, Math.max(a1, a0 + 10) + 25)]; }); }
     render(); return; }
+  if (el.dataset.smczoom) { const q = el.dataset.smczoom;          // both charts zoom / pan together
+    SMC_PAIR.forEach(x => { const id = 'smc-' + x, d = S.fc[fcKey(id)], N = ((d && d.bars) || []).length; if (N < 2) return; const [a, b] = fcRange(id, N), span = b - a, mid = (a + b) / 2;
+      if (q === 'reset') S.fcZoom[fcKey(id)] = null; else if (q === 'in') fcSetZoom(id, mid - span / 4, mid + span / 4, N); else if (q === 'out') fcSetZoom(id, mid - span, mid + span, N);
+      else if (q === 'left') fcSetZoom(id, a - span / 3, b - span / 3, N); else if (q === 'right') fcSetZoom(id, a + span / 3, b + span / 3, N); });
+    render(); return; }
+  if (el.dataset.smclive) { const k = el.dataset.smclive, c = ((S.smcLive || {}).config) || {};
+    if (k === 'trade' && !c.trade && !confirm('Send real orders to the day-trading PAPER account for this strategy?')) return;
+    smcLiveSet({ [k]: !c[k], ...(k === 'trade' && !c.trade ? { enabled: true } : {}) }); return; }
+  if (el.hasAttribute('data-smclivesave')) { const nm = (document.querySelector('[data-smclivename]') || {}).value || '';
+    S.smcLiveName = nm; smcLiveSet({ cfg: { ...S.smcCfg, tf: S.smcTf }, name: nm, source: S.smcSrc || null }); return; }
   if (el.dataset.smcopt) { const v = el.dataset.smcopt, start = { ...S.smcCfg, tf: S.smcTf };
     smcOptSet(v === 'reset' ? { reset: true, start } : v === 'on' ? { on: true, start } : { on: false }); return; }
   if (el.dataset.smcoptuse) { const t = ((S.smcOpt || {}).top || [])[+el.dataset.smcoptuse]; if (!t) return;
-    const c = { ...t.params }; S.smcTf = c.tf === 1 ? 1 : 5; delete c.tf; S.smcCfg = c; S.smcDraft = null; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {}
+    const c = { ...t.params }; S.smcTf = c.tf === 1 ? 1 : 5; delete c.tf; S.smcCfg = c; S.smcDraft = null; S.smcSrc = { train: t.train, test: t.test, fit: t.fit }; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {}
     toast(`Blocks set from the optimizer (${S.smcTf}m candles)`); render(); return; }
   if (el.hasAttribute('data-smcstrun')) { smcStressRun(); return; }
   if (el.hasAttribute('data-smcststop')) { if (S.smcStress) S.smcStress.stop = true; return; }
@@ -5400,6 +5467,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-smcstu]')) { S.smcStU = e.target.value; if (e.target.value === 'main' && !S.ww) loadWatch(); }
   if (e.target.matches && e.target.matches('[data-smcstdays]')) S.smcStDays = +e.target.value;
+  if (e.target.matches && e.target.matches('[data-smclivef]')) smcLiveSet({ [e.target.dataset.smclivef]: +e.target.value });
   if (e.target.matches && e.target.matches('[data-smcoptdays]')) smcOptSet({ days: +e.target.value });
   if (e.target.matches && e.target.matches('[data-smcoptuni]')) smcOptSet({ universe: e.target.value, start: { ...S.smcCfg, tf: S.smcTf } });
 });

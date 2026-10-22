@@ -271,6 +271,10 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
         mss_j = sw_i
         leg_end = min(len(ix) - 1, k0 + P["mssBars"])
         step(2, True, "Market structure shift", "not required (block off)")
+    if leg_end > len(ix) - 1 and _hm(bars[ix[-1]]["t"]) < P["flatT"]:   # live: the leg's window isn't over yet
+        s["status"] = "forming"
+        s["_end"] = ix[-1]
+        return s
     # displacement: one candle of the leg with a body of dispMin x ATR in the trade's direction
     if P["dispOn"]:
         big = [ix[q] for q in range(k0 + 1, min(len(ix), leg_end + 1))
@@ -285,10 +289,12 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
         size = hi_ - lo_
         if size > 0 and size >= P["fvgMin"] * (atr[ix[q - 1]] or 0) and (best is None or size > best[2]):
             best = (j2, j, size, lo_, hi_)
-    k_q = ix.index(mss_j)                                # the candle where the setup is known (the MSS, or the gap's 3rd candle)
-    if best:
+            if not P["mssOn"]:
+                break                                  # no MSS: the first gap of the move (known at its 3rd candle)
+    k_q = ix.index(mss_j)                                # the candle where the setup is known: the end of the leg's window
+    if best:                                           # (the largest gap is only known then), or the gap's 3rd candle
         j2, j, size, glo, ghi = best
-        k_q = max(k_q, ix.index(j))
+        k_q = max(k_q, ix.index(j), min(len(ix) - 1, leg_end) if P["mssOn"] else 0)
         s["fvg"] = {"t0": bars[j2]["t"], "t1": t_end, "lo": f(glo), "hi": f(ghi), "dir": side}
         step(3, True, "Fair value gap", f"{'bullish' if up else 'bearish'} FVG {glo:.2f}–{ghi:.2f}" + (f" ({size / a:.2f} ATR)" if a else "")
                                         + f" at {bars[ix[ix.index(j) - 1]]['t'][11:16]}")
@@ -338,6 +344,8 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
         return stop_here("RR too small", 4, "Retracement", f"TP1 {tp1[1]} is only {r_(tp1[0]):.1f}R away (< {P['rrMin']:g}R)", mss_j)
     # 4. the retracement (or the market entry)
     m_q = k_q                                          # no fill before the gap exists (its 3rd candle closed)
+    s["armedT"] = bars[ix[m_q]]["t"]                   # live: the limit order can rest from the close of this candle
+    s["armedJ"] = ix[m_q]
     fill = None
     if how == "market":
         fill = m_q
@@ -422,6 +430,7 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
             break
     if res is None:                                    # filled on the last candle of the day
         res, ex_t, why = r_(bars[ix[-1]]["c"]), bars[ix[-1]]["t"], "end of day"
+    s["stopNow"], s["tp1Hit"], s["part"] = f(st), half is not None, part   # live: the stop as it stands now (breakeven / trail)
     s["R"], s["exitT"], s["exitWhy"] = round(res, 3), ex_t, why
     s["status"] = "win" if res > 0.05 else "loss" if res < -0.05 else "flat"
     step(6, res > 0, "Result", f"{'TP1 hit (partial), ' if half is not None else ''}out at {ex_t[11:16]} ({why}): {res:+.2f}R")
@@ -436,7 +445,7 @@ def funnel(setups):
     fill = sum(1 for s in setups if s.get("fillT"))
     win = sum(1 for s in setups if s.get("status") == "win")
     return {"sweeps": n, "mss": mss, "fvg": fvg, "filled": fill, "wins": win,
-            "why": {k: sum(1 for s in setups if s.get("status") == k) for k in ("no structure", "new extreme", "no MSS", "no displacement", "no FVG", "RR too small",
+            "why": {k: sum(1 for s in setups if s.get("status") == k) for k in ("forming", "no structure", "new extreme", "no MSS", "no displacement", "no FVG", "RR too small",
                                                                               "ran away", "no retrace", "VWAP side", "premium / discount", "bad risk")}}
 
 

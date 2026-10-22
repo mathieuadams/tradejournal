@@ -21,7 +21,7 @@ import smc
 from util import iso, now_ny
 
 SK = "SMCOPT"
-VERSION = 2                                            # 2: no fill before the FVG's 3rd candle closed (look-ahead fixed)
+VERSION = 3                                            # 3: the setup is armed once the leg window closed (as live sees it)
 COST = 0.05
 MIN_TRADES = 80
 MONTH_SHARE = 0.35

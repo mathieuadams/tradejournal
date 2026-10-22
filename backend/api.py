@@ -487,6 +487,19 @@ def daytrade_smc_stress(sub, claims, body, q):
     return smc.stress(sub, b.get("t"), b.get("days") or 30, b.get("cfg") if isinstance(b.get("cfg"), dict) else None, float(b.get("cost") or 0.05))
 
 
+@route("GET", "/daytrade/smc/live")
+def daytrade_smc_live(sub, claims, body, q):
+    import smclive
+    return smclive.view(sub)
+
+
+@route("PUT", "/daytrade/smc/live")
+def daytrade_smc_live_set(sub, claims, body, q):
+    """Smart money on the day-trading paper account: save the strategy, watch / trade on-off, size."""
+    import smclive
+    return smclive.save(sub, body or {})
+
+
 @route("GET", "/daytrade/smc/opt")
 def daytrade_smc_opt(sub, claims, body, q):
     import smcopt
