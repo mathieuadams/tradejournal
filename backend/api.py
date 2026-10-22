@@ -508,6 +508,13 @@ def daytrade_smc_live(sub, claims, body, q):
     return smclive.view(sub)
 
 
+@route("POST", "/daytrade/smc/live/test")
+def daytrade_smc_live_test(sub, claims, body, q):
+    """Loop test: 1 share of SPY bought at market, exits at the broker, closed by the minute run after 2 minutes."""
+    import smclive
+    return smclive.arm_test(sub, ((body or {}).get("t") or "SPY").upper())
+
+
 @route("GET", "/daytrade/smc/live/check")
 def daytrade_smc_live_check(sub, claims, body, q):
     """Why a trade did / didn't go out: the live state right now, nothing sent."""

@@ -5581,6 +5581,14 @@ def test_smart_money_no_look_ahead():
     assert len(rs) > 30 and abs(sum(rs) / len(rs)) < 0.2, (len(rs), sum(rs) / len(rs))
 
 def test_smart_money_live_paper():
+    _smc_live_day("limit")
+
+
+def test_smart_money_live_market_orders():
+    _smc_live_day("market")
+
+
+def _smc_live_day(MODE):
     """Live: a day replayed minute by minute against a fake broker: the limit entry rests at the FVG edge while the
     setup waits, the exits are OCO at the broker, nothing is left open after the flat time, the candle used is the
     one that just closed."""
@@ -5644,6 +5652,9 @@ def test_smart_money_live_paper():
             elif o["type"] == "limit":
                 lp = float(o["limit_price"])
                 hit = lp if ((b["l"] <= lp) if buy else (b["h"] >= lp)) else None
+            elif o["type"] == "stop":
+                sp = float(o["stop_price"])
+                hit = sp if ((b["h"] >= sp) if buy else (b["l"] <= sp)) else None
             else:
                 hit = b["o"]
             if hit is not None:
@@ -5654,7 +5665,7 @@ def test_smart_money_live_paper():
 
     saved = (daytrade.minute_bars, daytrade.creds, smclive._alp, smclive.config, smclive.time.sleep)
     try:
-        cfg = {**smclive.DEFAULT, "enabled": True, "trade": True, "tickers": ["QQQ"], "riskUsd": 100.0, "cfg": P}
+        cfg = {**smclive.DEFAULT, "enabled": True, "trade": True, "tickers": ["QQQ"], "riskUsd": 100.0, "cfg": P, "orderMode": MODE}
         smclive.config = lambda sub: cfg
         daytrade.creds = lambda sub: {"key": "k", "secret": "s"}
         smclive._alp = alp
@@ -5667,12 +5678,22 @@ def test_smart_money_live_paper():
             closed = (now - dt.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
             broker_minute(by_t[closed])                # the candle happened, then the tick runs at its close
             n0 = len(calls)
-            smclive.tick("smc-live", now)
+            smclive.tick("smc-live-" + MODE, now)
             for m, path, body in calls[n0:]:
                 if m == "POST" and body.get("type") == "limit" and not body.get("order_class") and first_limit is None:
                     first_limit = (closed, body)
             now += dt.timedelta(minutes=1)
-        recs = db.q_prefix(db.upk("smc-live"), "SMCPOS#QQQ#2026-09-16")
+        recs = db.q_prefix(db.upk("smc-live-" + MODE), "SMCPOS#QQQ#2026-09-16")
+        if MODE == "market":
+            full = {x["t"]: x for x in smc.detect(day, P, ["2026-09-16"])["setups"]}
+            assert recs and not first_limit, recs
+            assert not any(b and b.get("type") == "limit" for m, p_, b in calls)           # market orders only (+ stops)
+            for r in recs:                             # in right after the candle where the engine filled
+                assert r["candle"] == full[r["t"]]["fillT"], (r["candle"], full[r["t"]]["fillT"])
+                assert r["status"] in ("closed", "canceled"), r
+            assert not any(b and b.get("type") in ("stop", "limit") or (b or {}).get("order_class") for m, p_, b in calls), "market orders only"
+            assert not pos, pos
+            return
         assert recs and first_limit, calls[:5]
         assert first_limit[0] >= found["armedT"] or any(r["t"] != found["t"] for r in recs)     # never before the gap exists
         ent = [r for r in recs if r["t"] == found["t"]]
@@ -5784,6 +5805,83 @@ def test_smart_money_live_check():
         assert not any("Auto-trading is off" in p_ for p_ in r["problems"]) and len(r["syms"]) == 2
     finally:
         smclive.config, daytrade.creds, smclive.account, daytrade.minute_bars = saved
+
+def test_smart_money_loop_test():
+    """Loop test: market buy 1 share, OCO exits at the broker, the minute run closes it after 2 minutes."""
+    import smclive, daytrade, datetime as dt
+    orders, pos, calls = {}, {}, []
+    def alp(c, m, path, body=None):
+        calls.append((m, path, body))
+        if m == "POST" and path == "/v2/orders":
+            oid = f"o{len(orders) + 1}"
+            o = {"id": oid, "status": "filled" if body["type"] == "market" else "new", "filled_qty": body["qty"] if body["type"] == "market" else "0",
+                 "filled_avg_price": "600.00", **body}
+            orders[oid] = o
+            if body["type"] == "market":
+                pos[body["symbol"]] = pos.get(body["symbol"], 0) + (1 if body["side"] == "buy" else -1) * int(body["qty"])
+            return o
+        if m == "GET" and path.startswith("/v2/orders/"):
+            return orders.get(path.rsplit("/", 1)[1])
+        if m == "GET" and path.startswith("/v2/orders?"):
+            return []
+        if m == "DELETE" and path.startswith("/v2/orders/"):
+            return {}
+        if m == "GET" and path == "/v2/account":
+            return {"equity": "100000", "last_equity": "100000", "buying_power": "200000"}
+        if m == "GET" and path.startswith("/v2/positions/"):
+            q = pos.get(path.rsplit("/", 1)[1], 0)
+            return {"qty": str(q), "avg_entry_price": "600"} if q else None
+        if m == "DELETE" and path.startswith("/v2/positions/"):
+            pos.pop(path.rsplit("/", 1)[1], None)
+            return {"id": "flat"}
+        return {}
+    clock = [dt.datetime(2026, 10, 22, 10, 0, 5)]
+    saved = (smclive._alp, smclive.config, daytrade.creds, smclive.now_ny, smclive.time.sleep, daytrade.minute_bars)
+    try:
+        smclive._alp = alp
+        smclive.config = lambda sub: {**smclive.DEFAULT, "enabled": True, "trade": True, "tickers": ["SPY"], "cfg": smclive.smc.clean({"tf": 1})}
+        daytrade.creds = lambda sub: {"key": "k", "secret": "s"}
+        smclive.now_ny = lambda: clock[0]
+        smclive.time.sleep = lambda s_: None
+        daytrade.minute_bars = lambda *a, **k: []
+        db.put({"PK": db.upk("loop"), "SK": smclive.SK, "enabled": True, "trade": True})
+        smclive.arm_test("loop", "SPY")
+        assert not pos                                  # armed only: the minute run does it
+        r = smclive.tick("loop", dt.datetime(2026, 10, 22, 10, 0))
+        assert any("filled @ 600.00" in x for x in r["actions"]) and any("OCO" in x for x in r["actions"]), r
+        assert not (db.get(db.upk("loop"), smclive.SK) or {}).get("testReq")
+        assert any(b and b.get("order_class") == "oco" and b["stop_loss"]["stop_price"] == "599.0" for m, p_, b in calls)
+        rec = db.q_prefix(db.upk("loop"), "SMCPOS#SPY#")[0]
+        assert rec["status"] == "open" and rec["test"]
+        clock[0] = dt.datetime(2026, 10, 22, 10, 3, 0)
+        smclive.tick("loop", dt.datetime(2026, 10, 22, 10, 3))
+        assert not pos and db.q_prefix(db.upk("loop"), "SMCPOS#SPY#")[0]["status"] in ("closing", "closed")
+    finally:
+        smclive._alp, smclive.config, daytrade.creds, smclive.now_ny, smclive.time.sleep, daytrade.minute_bars = saved
+
+def test_smart_money_order_retry():
+    import smclive
+    seen = []
+    def flaky(c, m, path, body=None):
+        seen.append(1)
+        if len(seen) < 3:
+            raise Exception("Alpaca couldn't be reached: timed out")
+        return {"id": "ok"}
+    def refused(c, m, path, body=None):
+        seen.append(1)
+        raise Exception("Alpaca refused the request (422): insufficient qty")
+    saved = (smclive._alp, smclive.time.sleep)
+    try:
+        smclive.time.sleep = lambda s_: None
+        smclive._alp = flaky
+        o, notes = smclive._send({}, {"symbol": "SPY"})
+        assert o == {"id": "ok"} and len(notes) == 2
+        seen.clear()
+        smclive._alp = refused
+        o, notes = smclive._send({}, {"symbol": "SPY"})
+        assert o is None and len(seen) == 1             # a refusal is not retried
+    finally:
+        smclive._alp, smclive.time.sleep = saved
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

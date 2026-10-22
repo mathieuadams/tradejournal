@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 
 import db
 import smc
-from util import iso, now_ny
+from util import BadRequest, iso, now_ny
 
 SK = "SMCLIVE"
 POS = "SMCPOS#"
@@ -26,6 +26,9 @@ DEFAULT = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "riskUsd
            # risk management from the account value (equity of the paper account, read every minute)
            "riskMode": "pct", "riskPct": 0.5, "maxPosPct": 50.0, "openRiskPct": 1.0, "dayLossPct": 2.0, "maxTrades": 4,
            "lossStreak": 3, "flattenOnLimit": True,
+           # "market": every entry / exit is a market order sent right after the candle where the strategy enters / exits
+           # (the exits come only from the strategy); "limit": limit entry + OCO exits at the broker
+           "orderMode": "market",
            "cfg": {}, "name": "", "savedAt": None, "source": None}
 
 
@@ -50,6 +53,8 @@ def save(sub, b):
                       ("openRiskPct", 0.01, 20), ("dayLossPct", 0, 50), ("maxTrades", 0, 50), ("lossStreak", 0, 50)):
         if b.get(k) is not None and b.get(k) != "":
             cur[k] = max(lo, min(hi, float(b[k]) if k in ("riskUsd", "riskPct", "maxPosPct", "openRiskPct", "dayLossPct") else int(float(b[k]))))
+    if b.get("orderMode") in ("market", "limit"):
+        cur["orderMode"] = b["orderMode"]
     if b.get("riskMode") in ("pct", "usd"):
         cur["riskMode"] = b["riskMode"]
     if "flattenOnLimit" in b:
@@ -193,6 +198,35 @@ def _oco(c, sym, side_exit, qty, tp, stop):
                                           "stop_loss": {"stop_price": str(_px(stop))}}) or {}
 
 
+def _send(c, body, tries=3):
+    """An order, retried on network errors, rate limits (429) and Alpaca server errors (5xx); a refusal (4xx: not
+    enough shares, market closed, ...) is not retried. -> (order or None, [notes])"""
+    notes = []
+    for k in range(tries):
+        try:
+            return (_alp(c, "POST", "/v2/orders", body) or {}), notes
+        except Exception as e:
+            m = str(e)
+            notes.append(f"try {k + 1}: {m[:120]}")
+            if "(4" in m and "(429)" not in m:
+                break
+            time.sleep(0.6 * (k + 1))
+    return None, notes
+
+
+def _close_pos(c, sym, tries=3):
+    """Close the whole position at market, retried. -> (order id or None, notes)"""
+    notes = []
+    for k in range(tries):
+        try:
+            o = _alp(c, "DELETE", f"/v2/positions/{sym}") or {}
+            return o.get("id") or "none", notes
+        except Exception as e:
+            notes.append(f"close try {k + 1}: {str(e)[:120]}")
+            time.sleep(0.6 * (k + 1))
+    return None, notes
+
+
 def _cancel(c, oid):
     if oid:
         try:
@@ -318,6 +352,68 @@ def check(sub):
     return out
 
 
+def arm_test(sub, sym="SPY"):
+    """The loop test, automatic: the next minute run (the scheduled job, as for a real setup) buys 1 share at market,
+    puts the exits at the broker, and closes it 2 minutes later."""
+    import daytrade
+    cfg = config(sub)
+    if not daytrade.creds(sub):
+        raise BadRequest("Connect the day-trading paper account first.")
+    if not (cfg["enabled"] and cfg["trade"]):
+        raise BadRequest("Turn auto-trading on first: the minute run does the test.")
+    db.update(db.upk(sub), SK, {"testReq": sym, "testAt": iso(now_ny())})
+    return {"steps": [f"armed: the next minute run buys 1 {sym} at market, puts the stop / target at the broker and closes it 2 minutes later "
+                      "(watch the Today table)"]}
+
+
+def test_loop(sub, sym="SPY"):
+    """The whole loop with 1 share, right now: market order -> fill read -> OCO stop / target at the broker; the minute
+    run then manages it and closes it at market after 2 minutes. -> the steps done in this call."""
+    import daytrade
+    cfg = config(sub)
+    c = daytrade.creds(sub)
+    if not c:
+        raise BadRequest("Connect the day-trading paper account first.")
+    if not (cfg["enabled"] and cfg["trade"]):
+        raise BadRequest("Turn auto-trading on first: the minute run manages and closes the test trade.")
+    now = now_ny().replace(tzinfo=None)
+    if now.weekday() >= 5 or not ("09:30" <= now.strftime("%H:%M") < "15:50"):
+        raise BadRequest("The market is closed: the loop test runs 09:30-15:50 ET.")
+    if _held(c, sym):
+        raise BadRequest(f"A {sym} position is already held on this account.")
+    steps = []
+    t0 = time.time()
+    o = _alp(c, "POST", "/v2/orders", {"symbol": sym, "qty": "1", "side": "buy", "type": "market", "time_in_force": "day"}) or {}
+    steps.append(f"market buy 1 {sym} sent ({time.time() - t0:.2f}s)")
+    px = None
+    for _ in range(10):
+        time.sleep(0.5)
+        x = _alp(c, "GET", f"/v2/orders/{o.get('id')}") or {}
+        if x.get("status") == "filled":
+            px = float(x["filled_avg_price"])
+            break
+    if px is None:
+        steps.append("not filled within 5 s: the minute run keeps checking it")
+        px = None
+    else:
+        steps.append(f"filled @ {px:.2f} ({time.time() - t0:.2f}s after sending)")
+    ref = px or float((_alp(c, "GET", f"/v2/positions/{sym}") or {}).get("avg_entry_price") or 0) or None
+    tkey = now.strftime("%Y-%m-%dT%H:%M") + "~test"
+    rec = {"PK": db.upk(sub), "SK": f"{POS}{sym}#{tkey}", "symbol": sym, "t": tkey, "dir": 1, "qty": 1, "test": True, "kind": "market",
+           "entry": ref or 0, "stop": round((ref or 0) - 1.0, 2), "tp1": round((ref or 0) + 1.0, 2), "tp2": round((ref or 0) + 1.0, 2), "part": 0,
+           "orderId": o.get("id"), "status": "pending", "candle": tkey, "sentAt": iso(now_ny()), "lagS": 0,
+           "events": ["loop test: market buy 1 share"] + steps}
+    if px is not None:
+        rec.update(status="open", filledQty=1, fill=px, slip=0.0)
+        rec["exitIds"] = _place_exits(c, rec, rec["stop"])
+        rec["stopNow"] = rec["stop"]
+        steps.append(f"OCO exit at the broker: stop {rec['stop']} / target {rec['tp1']} ({len(rec['exitIds'])} order)")
+        rec["events"] = rec["events"][:1] + steps
+    db.put(rec)
+    steps.append("the minute run closes it at market in about 2 minutes: watch the Today table")
+    return {"steps": steps}
+
+
 def _tick(sub, now=None):
     cfg = config(sub)
     if not cfg["enabled"]:
@@ -353,31 +449,37 @@ def _tick(sub, now=None):
             db.update(pk, r["SK"], {"status": "closing" if r["status"] == "open" else "canceled", "exitWhy": risk["why"],
                                     "why": risk["why"], "events": (r.get("events") or []) + [f"closed: {risk['why']}"]})
             acts.append(f"{r['symbol']} closed: {risk['why']}")
+    req = (db.get(pk, SK) or {}).get("testReq")
+    if req and cfg["trade"]:                           # the loop test armed from the page
+        db.update(pk, SK, {"testReq": ""})
+        try:
+            acts += [f"loop test: {x}" for x in test_loop(sub, req)["steps"][:-1]]
+        except Exception as e:
+            acts.append(f"loop test failed: {str(e)[:160]}")
     for sym in cfg["tickers"]:
         try:
             bs, waited, fresh = _bars_now(sub, sym, now, tf)
-            if not bs:
-                acts.append(f"{sym}: no candles")
-                continue
-            out = smc.detect(bs, P, [today])
+            out = smc.detect(bs, P, [today]) if bs else {"setups": [], "bars": []}
             bars = out.get("bars") or []
             last = bars[-1]["t"] if bars else None
-            if not last:
-                continue
+            if not last:                               # no candle: what is open is still managed (no new setup)
+                acts.append(f"{sym}: no candles")
+                last = (now - timedelta(minutes=tf)).strftime("%Y-%m-%dT%H:%M")
+                out = {"setups": [], "bars": []}
             new_candle = last != (db.get(pk, f"{SK}#LAST#{sym}") or {}).get("t")
             db.put({"PK": pk, "SK": f"{SK}#LAST#{sym}", "t": last})
             lag = lambda: round((now_ny().replace(tzinfo=None) - _close_t(last, tf)).total_seconds(), 1)
             log.append({"sym": sym, "candle": last, "closedAt": _close_t(last, tf).strftime("%H:%M:%S"), "fresh": fresh, "waited": waited,
                         "newCandle": new_candle})
             recs = {r["t"]: r for r in db.q_prefix(pk, f"{POS}{sym}#{today}")}
-            active = [r for r in recs.values() if r.get("status") in ("pending", "open")]
+            active = [r for r in recs.values() if r.get("status") in ("pending", "open", "closing")]
             flat = hm >= P["flatT"]
             setups = {s["t"]: s for s in out["setups"]}
             # 1. what is already at the broker
             for r in active:
                 s = setups.get(r["t"])
                 acts += _manage(c, pk, r, s, last, tf, flat, P, lag)
-            active = [r for r in db.q_prefix(pk, f"{POS}{sym}#{today}") if r.get("status") in ("pending", "open")]
+            active = [r for r in db.q_prefix(pk, f"{POS}{sym}#{today}") if r.get("status") in ("pending", "open", "closing")]
             last_end = max(P["endT"], P["endT2"]) if P.get("win2On") else P["endT"]
             if active or flat or not cfg["trade"] or hm >= last_end:
                 continue
@@ -389,8 +491,13 @@ def _tick(sub, now=None):
             for s in out["setups"]:
                 if s["t"] in recs:
                     continue
-                pending = _waiting(s, last, tf, P)
-                market_now = P["entryAt"] == "market" and s.get("fillT") == last and s.get("armedT") == last
+                mkt_mode = cfg.get("orderMode", "market") == "market"
+                done_now = s.get("exitT") == last and s.get("exitWhy") != "end of day"     # in and out in the same candle
+                if mkt_mode:                           # market: in right after the candle where the engine fills
+                    pending, market_now = False, bool(s.get("fillT") == last and not done_now)
+                else:
+                    pending = _waiting(s, last, tf, P)
+                    market_now = P["entryAt"] == "market" and s.get("fillT") == last and s.get("armedT") == last
                 if not (pending or market_now):
                     continue
                 if _held(c, sym):
@@ -406,17 +513,21 @@ def _tick(sub, now=None):
                     break
                 side = "buy" if s["dir"] > 0 else "sell"
                 if market_now:
-                    o = _alp(c, "POST", "/v2/orders", {"symbol": sym, "qty": str(q), "side": side, "type": "market", "time_in_force": "day"}) or {}
+                    o, notes = _send(c, {"symbol": sym, "qty": str(q), "side": side, "type": "market", "time_in_force": "day"})
                 else:
-                    o = _alp(c, "POST", "/v2/orders", {"symbol": sym, "qty": str(q), "side": side, "type": "limit", "time_in_force": "day",
-                                                       "limit_price": str(_px(s["entry"]))}) or {}
+                    o, notes = _send(c, {"symbol": sym, "qty": str(q), "side": side, "type": "limit", "time_in_force": "day",
+                                         "limit_price": str(_px(s["entry"]))})
+                o = o or {}
                 rec = {"PK": pk, "SK": f"{POS}{sym}#{s['t']}", "symbol": sym, "t": s["t"], "dir": s["dir"], "qty": q,
                        "entry": s["entry"], "stop": s["stop"], "tp1": s["tp1"], "tp2": s["tp2"], "tp1Name": s.get("tp1Name"),
                        "tp2Name": s.get("tp2Name"), "part": s.get("part", P["partial"] if P["partialOn"] else 0), "pool": s.get("pool"),
-                       "kind": "market" if market_now else "limit", "orderId": o.get("id"), "status": "pending", "candle": last,
+                       "kind": "market" if market_now else "limit", "mode": cfg.get("orderMode", "market"), "orderId": o.get("id"),
+                       "status": "pending", "candle": last, "tries": 1,
                        "sentAt": iso(now_ny()), "lagS": lag(), "sizing": size_note, "equity": (acct or {}).get("equity"),
                        "events": [f"size {q}: {size_note}", f"{'market' if market_now else 'limit'} {side} {q} @ {s['entry']} "
-                                                                           f"(candle {last[11:16]}, sent {lag()}s after its close)"]}
+                                                                           f"(candle {last[11:16]}, sent {lag()}s after its close)"] + notes}
+                if not o.get("id"):
+                    rec["events"].append("order not accepted after the retries: tried again next minute")
                 if P["partialOn"] is False:
                     rec["part"] = 0
                 db.put(rec)
@@ -441,6 +552,8 @@ def _waiting(s, last, tf, P):
 
 
 def _manage(c, pk, r, s, last, tf, flat, P, lag):
+    if r.get("mode") == "market" and not r.get("test"):
+        return _manage_mkt(c, pk, r, s, last, flat, P, lag)
     acts = []
     sym = r["symbol"]
     upd = {}
@@ -465,6 +578,8 @@ def _manage(c, pk, r, s, last, tf, flat, P, lag):
             gone = None
             if flat or _hm(last) >= (smc.window_end(P, _hm(r["t"])) or P["endT"]):
                 gone = "past the entry time window"
+            elif r.get("test"):
+                gone = None                            # the loop test: not a setup of the engine
             elif s is None:
                 gone = "the engine no longer sees the setup"
             elif not s.get("fillT") and not _waiting(s, last, tf, P):
@@ -497,6 +612,8 @@ def _manage(c, pk, r, s, last, tf, flat, P, lag):
             early = None
             if flat:
                 early = f"flat at {P['flatT']}"
+            elif r.get("test") and (r.get("sentAt") or "") < iso(now_ny() - timedelta(minutes=2)):
+                early = "loop test done (closed after 2 minutes)"
             elif s and s.get("exitT") and s.get("exitWhy") not in ("end of day", "stop", "breakeven stop", "trailing stop", "TP1", "TP2"):
                 early = s["exitWhy"]
             if early:
@@ -536,6 +653,69 @@ def _manage(c, pk, r, s, last, tf, flat, P, lag):
 def _hm(t):
     return t[11:16]
 
+
+def _manage_mkt(c, pk, r, s, last, flat, P, lag):
+    """Market mode: every order is a market order and the exits come only from the saved strategy (no order resting
+    at the broker). The strategy takes TP1 -> the partial sold at market; the strategy exits (target, stop, breakeven,
+    trail, early exit) or the flat time -> closed at market right after that candle. A close that didn't go through is
+    sent again every minute until the position is gone."""
+    acts, upd, ev = [], {}, list(r.get("events") or [])
+    sym, side_exit = r["symbol"], "sell" if r["dir"] > 0 else "buy"
+    eng_out = bool(s and s.get("exitT") and s.get("exitWhy") != "end of day")
+    st = r["status"]
+    if st == "pending":
+        o = _alp(c, "GET", f"/v2/orders/{r['orderId']}") if r.get("orderId") else None
+        filled = int(float((o or {}).get("filled_qty") or 0))
+        ost = (o or {}).get("status")
+        if filled and ost in ("filled", "canceled", "expired", "partially_filled"):
+            if ost == "partially_filled":
+                _cancel(c, r["orderId"])               # what is filled is the trade
+            px = float(o.get("filled_avg_price") or r["entry"])
+            upd.update(status="open", filledQty=filled, fill=px, filledAt=o.get("filled_at"), slip=round((px - r["entry"]) * r["dir"], 4),
+                       stopNow=(s or {}).get("stopNow") or r["stop"])
+            ev.append(f"filled {filled} @ {px:.2f} (seen {lag()}s after the close of candle {last[11:16]}; strategy price {r['entry']})")
+            acts.append(f"{sym} filled {filled} @ {px:.2f}")
+        elif not r.get("orderId") or ost in ("canceled", "expired", "rejected") or \
+                (ost in ("new", "accepted", "pending_new") and (r.get("sentAt") or "") < iso(now_ny() - timedelta(minutes=2))):
+            if r.get("orderId") and ost not in ("canceled", "expired", "rejected"):
+                _cancel(c, r["orderId"])
+            upd.update(status="canceled", why=f"entry not filled ({ost or 'not accepted by Alpaca'})")
+            ev.append(upd["why"])
+            acts.append(f"{sym} entry not filled: {ost or 'not accepted'}")
+    elif st in ("open", "closing"):
+        held = _held(c, sym)
+        if not held:
+            px, why = _last_exit(c, sym, r)
+            upd.update(status="closed", exitPx=px, closedAt=iso(now_ny()), exitWhy=r.get("exitWhy") or "closed outside the strategy")
+            if px is not None and r.get("fill"):
+                upd["R"] = round(_realized_R(c, sym, r, abs(r["entry"] - r["stop"]) or 1), 3)
+            ev.append(f"closed: {upd['exitWhy']}" + (f" @ {px:.2f}" if px else "") + f" (seen {lag()}s after candle {last[11:16]})")
+            acts.append(f"{sym} closed ({upd['exitWhy']})")
+        elif st == "closing" or flat or eng_out:
+            why = r.get("exitWhy") if st == "closing" else (f"flat at {P['flatT']}" if flat else s["exitWhy"])
+            oid, notes = _close_pos(c, sym)
+            upd.update(status="closing", exitWhy=why, exitOrder=oid, closeTries=(r.get("closeTries") or 0) + 1)
+            ev += notes + [f"close at market: {why} (candle {last[11:16]}, {lag()}s after its close" + (f", try {upd['closeTries']})" if upd["closeTries"] > 1 else ")")]
+            acts.append(f"{sym} close at market: {why}")
+        else:
+            if s and s.get("tp1Hit") and not r.get("tp1Done") and float(r.get("part") or 0):
+                q = int(int(r.get("filledQty") or abs(held)) * float(r["part"]))
+                if 0 < q < abs(held):
+                    o, notes = _send(c, {"symbol": sym, "qty": str(q), "side": side_exit, "type": "market", "time_in_force": "day"})
+                    ev += notes + [f"TP1: {q} sold at market (candle {last[11:16]}, {lag()}s after its close)" if o else "TP1 partial NOT sent (tried again next minute)"]
+                    if o:
+                        upd["tp1Done"] = True
+                        acts.append(f"{sym} TP1 partial {q}")
+            stop = (s or {}).get("stopNow")
+            if stop and abs(float(stop) - float(r.get("stopNow") or r["stop"])) >= 0.01:
+                upd["stopNow"] = stop                  # the strategy's stop (followed by the minute run, not an order)
+                ev.append(f"strategy stop now {stop} (candle {last[11:16]})")
+    if s and s.get("R") is not None and s.get("exitWhy") != "end of day":
+        upd["engineR"] = s["R"]
+    if upd:
+        upd["events"] = ev[-25:]
+        db.update(pk, r["SK"], upd)
+    return acts
 
 def _orders_after(c, sym, r):
     after = (r.get("filledAt") or r.get("sentAt") or "")[:19]
