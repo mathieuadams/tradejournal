@@ -52,7 +52,7 @@ def to_params(g):
     P = {k: v for k, v in g.items() if k != "side"}
     side = g.get("side", "both")
     P["longs"], P["shorts"] = side in ("both", "long"), side in ("both", "short")
-    P["tf"] = 5
+    P["tf"] = int(g.get("tf") or 5)
     if P.get("startT", "09:45") < "09:35":
         P["startT"] = "09:35"                          # the picks are known at 09:35
     return smc.clean(P)
@@ -60,6 +60,7 @@ def to_params(g):
 
 def from_params(P):
     g = {k: P[k] for k in SPACE if k in P}
+    g["tf"] = 1 if P.get("tf") == 1 else 5
     g["side"] = "both" if P.get("longs", True) and P.get("shorts", True) else "long" if P.get("longs", True) else "short"
     for k, vs in SPACE.items():
         g.setdefault(k, vs[0])
@@ -91,6 +92,9 @@ def rand_g(rng):
 def mutate(g, rng):
     for _ in range(20):
         x = dict(g)
+        if "tf" in g and rng.random() < 0.08:
+            x["tf"] = 1 if g["tf"] == 5 else 5         # QQQ / SPY: 1m or 5m candles
+            return x
         for k in rng.sample(list(SPACE), rng.choice([1, 1, 2, 3])):
             vs = SPACE[k]
             if isinstance(vs[0], (int, float)) and not isinstance(vs[0], bool) and x[k] in vs and rng.random() < 0.7:
@@ -105,6 +109,46 @@ def mutate(g, rng):
 
 # ---------------------------------------------------------------- the data: one series per stock-day
 _CACHE = {}
+
+
+INDEX = ("QQQ", "SPY")
+
+
+def load_index(sub, days):
+    """QQQ and SPY: 1-minute candles (pre-market included) of the last `days` days, ready for 1m and 5m."""
+    import daytrade
+    ck = ("index", sub, days, now_ny().strftime("%Y-%m-%d"))
+    if _CACHE.get("k") == ck:
+        return _CACHE["v"]
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        mbs = dict(zip(INDEX, ex.map(lambda s: daytrade.minute_bars(sub, s, days + 2), INDEX)))
+    data = {1: [], 5: []}
+    for sym, mb in mbs.items():
+        if not mb:
+            continue
+        pm_by = {}
+        for b in mb:
+            if "04:00" <= b["t"][11:16] < "09:30":
+                pm_by.setdefault(b["t"][:10], []).append(b)
+        for tf in (1, 5):
+            allb = daytrade.agg_bars(mb, tf) if tf > 1 else list(mb)
+            reg = [{k: b[k] for k in ("t", "o", "h", "l", "c", "v")} for b in allb if "09:30" <= b["t"][11:16] < "16:00"]
+            atr = smc._atr(reg)
+            by = {}
+            for i, b in enumerate(reg):
+                by.setdefault(b["t"][:10], []).append(i)
+            ds = sorted(by)[-days:]
+            allds = sorted(by)
+            for d in ds:
+                ix = by[d]
+                k = allds.index(d)
+                prev = [reg[i] for i in by[allds[k - 1]]] if k else []
+                if len(ix) < 20:
+                    continue
+                data[tf].append({"sym": sym, "d": d, "reg": reg[ix[0]:ix[-1] + 1], "prev": prev, "pm": pm_by.get(d) or [],
+                                 "atr": atr[ix[0]:ix[-1] + 1]})
+    _CACHE.update(k=ck, v=data)
+    return data
 
 
 def load(days):
@@ -190,12 +234,16 @@ def score(tr, cost=COST):
             "months": len(bym), "posMonths": len(pos_m)}
 
 
-def fitness(r):
+def min_trades(st):
+    return 60 if st.get("universe", "index") == "index" else MIN_TRADES
+
+
+def fitness(r, need=MIN_TRADES):
     if not r.get("n"):
         return -10.0
     f = r.get("t") or 0.0
-    if r["n"] < MIN_TRADES:
-        f = min(f, 0) - 3 * (1 - r["n"] / MIN_TRADES)  # too few trades: below every setting that has enough
+    if r["n"] < need:
+        f = min(f, 0) - 3 * (1 - r["n"] / need)  # too few trades: below every setting that has enough
     if (r.get("monthShare") or 0) > MONTH_SHARE:
         f -= 2 * (r["monthShare"] - MONTH_SHARE) / (1 - MONTH_SHARE) * max(1.0, abs(f))
     return round(f, 3)
@@ -205,12 +253,12 @@ def fitness(r):
 def state(sub):
     r = db.get(db.upk(sub), SK) or {}
     st = json.loads(r["data"]) if r.get("data") else {}
-    for k, v in (("on", False), ("days", 250), ("evals", 0), ("top", []), ("seen", {}), ("log", []), ("runs", 0)):
+    for k, v in (("on", False), ("days", 250), ("universe", "index"), ("evals", 0), ("top", []), ("seen", {}), ("log", []), ("runs", 0)):
         st.setdefault(k, v)
     return st
 
 
-USER_KEYS = ("on", "days", "stopReq", "resetAt", "start")
+USER_KEYS = ("on", "days", "stopReq", "resetAt", "start", "universe")
 
 
 def _save(sub, st, user=False):
@@ -236,9 +284,9 @@ def _save(sub, st, user=False):
 def public(sub):
     st = state(sub)
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
-    return {k: st.get(k) for k in ("on", "days", "evals", "step", "last", "split", "nSeries", "avgEval", "runs")} | {
+    return {k: st.get(k) for k in ("on", "days", "universe", "evals", "step", "last", "split", "nSeries", "avgEval", "runs")} | {
         "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": len(st["seen"]),
-        "top": [{**t, "params": to_params(t["g"])} for t in st["top"][:TOP]], "cost": COST, "minTrades": MIN_TRADES}
+        "top": [{**t, "params": to_params(t["g"])} for t in st["top"][:TOP]], "cost": COST, "minTrades": min_trades(st)}
 
 
 def save_cfg(sub, b):
@@ -253,6 +301,10 @@ def save_cfg(sub, b):
         if nd != st["days"]:
             b["reset"] = True
         st["days"] = nd
+    if b.get("universe") in ("index", "sip"):
+        if b["universe"] != st["universe"]:
+            b["reset"] = True
+        st["universe"] = b["universe"]
     if b.get("start"):                                 # the blocks on the page: the first setting tried
         st["start"] = from_params(smc.clean(b["start"]))
     if b.get("reset"):
@@ -270,39 +322,49 @@ def run(sub, budget_s=470, seed=None):
     st["step"] = "loading the stocks-in-play history"
     st.pop("stopReq", None)
     _save(sub, st)
-    data = load(st["days"])
+    idx = st["universe"] == "index"
+    if idx:
+        st["step"] = "loading QQQ / SPY minute candles"
+        _save(sub, st)
+        by_tf = load_index(sub, st["days"])
+        data = by_tf[5]
+    else:
+        data = load(st["days"])
+        by_tf = {5: data}
     if not data:
-        raise ValueError("No stocks-in-play history yet: build it first (AI tab → criteria → Build stocks-in-play history).")
+        raise ValueError("No QQQ / SPY minute candles." if idx else "No stocks-in-play history yet: build it first (AI tab → criteria → Build stocks-in-play history).")
     ds = sorted({x["d"] for x in data})
     cut = ds[int(len(ds) * TRAIN)]
-    train = [x for x in data if x["d"] < cut]
-    test = [x for x in data if x["d"] >= cut]
+    split = {tf: ([x for x in xs if x["d"] < cut], [x for x in xs if x["d"] >= cut]) for tf, xs in by_tf.items()}
+    need = min_trades(st)
     st["split"] = {"from": ds[0], "cut": cut, "to": ds[-1], "trainDays": sum(1 for d in ds if d < cut), "testDays": sum(1 for d in ds if d >= cut)}
     st["nSeries"] = len(data)
     st["step"] = "searching"
     _save(sub, st)
     seen, top = st["seen"], st["top"]
     queue = []
-    if st.get("start") and key(st["start"]) not in seen:
-        queue.append(st["start"])
-    if not top and key(from_params(smc.PARAMS)) not in seen:
-        queue.append(from_params(smc.PARAMS))
+    fix = (lambda g: g if idx else {**g, "tf": 5})     # the stocks-in-play history is 5m only
+    if st.get("start") and key(fix(st["start"])) not in seen:
+        queue.append(fix(st["start"]))
+    if not top and key(fix(from_params(smc.PARAMS))) not in seen:
+        queue.append(fix(from_params(smc.PARAMS)))
     n_run, last_save, times = 0, time.time(), []
     while time.time() - t0 < budget_s - max(times[-5:] or [10]) * 1.5:
         if queue:
             g = queue.pop(0)
         elif not top or rng.random() < 0.3:
-            g = rand_g(rng)
+            g = {**rand_g(rng), "tf": rng.choice([1, 5]) if idx else 5}
         else:
             pool = top[:8]
-            g = mutate(rng.choice(pool[:3] if rng.random() < 0.5 else pool)["g"], rng)
+            g = fix(mutate(rng.choice(pool[:3] if rng.random() < 0.5 else pool)["g"], rng))
         k = key(g)
         if k in seen:
             continue
         t1 = time.time()
         P = to_params(g)
+        train, test = split.get(P["tf"]) or split[5]
         r_tr = score(trades(train, P))
-        f = fitness(r_tr)
+        f = fitness(r_tr, need)
         seen[k] = f
         st["evals"] += 1
         n_run += 1
@@ -314,7 +376,7 @@ def run(sub, budget_s=470, seed=None):
         times.append(time.time() - t1)
         if time.time() - last_save > 45:
             cur = state(sub)
-            if not cur["on"] or cur.get("stopReq") or (cur.get("resetAt") or "") > st["runStarted"] or cur["days"] != st["days"]:
+            if not cur["on"] or cur.get("stopReq") or (cur.get("resetAt") or "") > st["runStarted"] or cur["days"] != st["days"] or cur["universe"] != st["universe"]:
                 break
             st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2)
             _save(sub, st)

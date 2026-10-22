@@ -2046,6 +2046,9 @@ const SMC_NAMES = { poolPD: 'prev day H/L', poolPM: 'pre-market H/L', poolOR: 'o
   longs: 'longs', shorts: 'shorts', tpLiq: 'targets at liquidity', tpR: 'target R', partialOn: 'partial at TP1', partial: 'partial', beTp1: 'BE at TP1', beOn: 'BE at R', beR: 'BE R',
   trailOn: 'trail swings', fvgFail: 'FVG fails exit', mssX: 'MSS against exit', vwapX: 'VWAP exit', timeOn: 'time exit', timeBars: 'time candles' };
 function smcOptDiff(P) {
+  return `<span class="exchip" style="font-size:.7rem"><b>${P.tf === 1 ? '1m' : '5m'}</b> candles</span>` + smcOptDiff0(P);
+}
+function smcOptDiff0(P) {
   const off = { dispMin: 'dispOn', rrMin: 'rrOn', beR: 'beOn', timeBars: 'timeOn', partial: 'partialOn', orMin: 'poolOR', fvgMin: 'fvgOn', mssBars: 'mssOn' };
   return Object.keys(SMC_NAMES).filter(k => P[k] !== undefined && !(off[k] && !P[off[k]])).map(k => { const v = P[k];
     return typeof v === 'boolean' ? `<span class="exchip" style="font-size:.7rem;${v ? '' : 'opacity:.45;text-decoration:line-through'}">${SMC_NAMES[k]}</span>` : `<span class="exchip" style="font-size:.7rem">${SMC_NAMES[k]} <b>${esc(String(v))}</b></span>`; }).join('');
@@ -2059,11 +2062,12 @@ function smcOptBox() {
   const sp = o.split || {}, top = o.top || [];
   const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Optimizer</b>
     <button class="btn ${o.on ? 'coachbtn' : ''}" data-smcopt="${o.on ? 'off' : 'on'}" style="font-size:.8rem">${o.on ? '■ Stop' : '▶ Start'}</button>
+    <select data-smcoptuni style="font-size:.8rem" title="Changing it restarts the search">${[['index', 'QQQ + SPY (1m / 5m)'], ['sip', 'Top 15 stocks in play (5m)']].map(([k, l]) => `<option value="${k}" ${(o.universe || 'index') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <select data-smcoptdays style="font-size:.8rem">${[120, 250, 500].map(n => `<option value="${n}" ${o.days === n ? 'selected' : ''}>${n} days</option>`).join('')}</select>
     <button class="btn" data-smcopt="reset" style="font-size:.8rem" title="Forget every setting tried and start again from the blocks above">Restart</button>
     <span class="muted" style="font-size:.76rem">${o.running ? `<span class="loading" style="padding:0">${esc(o.step || 'running')}</span> · ` : o.on ? 'next run starting · ' : ''}${o.tried || 0} settings tried${o.avgEval ? ` · ${o.avgEval}s each` : ''}${o.nSeries ? ` · ${fmtInt(o.nSeries)} stock-days` : ''}</span>
     ${o.last && o.last.error ? `<span class="loss" style="font-size:.76rem">${esc(o.last.error)}</span>` : ''}</div>
-    <div class="muted" style="font-size:.74rem">Each day's top 15 stocks in play, 5m candles, minus ${o.cost}R a trade. Chosen on the train days only${sp.cut ? ` (${esc(sp.from)} → ${esc(sp.cut)}, ${sp.trainDays} days)` : ''} by the t of the R per day, ${o.minTrades}+ trades, no month over 35% of the profit.
+    <div class="muted" style="font-size:.74rem">${(o.universe || 'index') === 'index' ? 'QQQ and SPY only, 1m or 5m candles (the search tries both)' : "Each day's top 15 stocks in play, 5m candles"}, minus ${o.cost}R a trade. Chosen on the train days only${sp.cut ? ` (${esc(sp.from)} → ${esc(sp.cut)}, ${sp.trainDays} days)` : ''} by the t of the R per day, ${o.minTrades}+ trades, no month over 35% of the profit.
       The test days${sp.cut ? ` (${esc(sp.cut)} → ${esc(sp.to)}, ${sp.testDays} days)` : ''} are never used to choose: a setting that is good on both is the one to try. Starts from the blocks above.</div>`;
   if (!top.length) return `<div class="smc-stress">${ctl}</div>`;
   const ok = t => (t.test || {}).n >= 30 && (t.test.avgR || 0) > 0 && (t.test.t || 0) >= 1.5;
@@ -5000,11 +5004,11 @@ document.addEventListener('click', e => {
     if (S.smcSel && d && d.bars) { const s = (d.setups || []).find(x => x.t === t), i0 = d.bars.findIndex(b => b.t >= t), i1 = s && s.exitT ? d.bars.findIndex(b => b.t >= s.exitT) : i0 + 30;
       if (i0 >= 0) S.fcZoom[fcKey('smc-' + sym)] = [Math.max(0, i0 - 40), Math.min(d.bars.length - 1, Math.max(i1, i0 + 10) + 25)]; }
     render(); return; }
-  if (el.dataset.smcopt) { const v = el.dataset.smcopt, start = { ...S.smcCfg, tf: 5 };
+  if (el.dataset.smcopt) { const v = el.dataset.smcopt, start = { ...S.smcCfg, tf: S.smcTf };
     smcOptSet(v === 'reset' ? { reset: true, start } : v === 'on' ? { on: true, start } : { on: false }); return; }
   if (el.dataset.smcoptuse) { const t = ((S.smcOpt || {}).top || [])[+el.dataset.smcoptuse]; if (!t) return;
-    const c = { ...t.params }; delete c.tf; S.smcCfg = c; S.smcDraft = null; S.smcTf = 5; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {}
-    toast('Blocks set from the optimizer (5m candles)'); render(); return; }
+    const c = { ...t.params }; S.smcTf = c.tf === 1 ? 1 : 5; delete c.tf; S.smcCfg = c; S.smcDraft = null; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {}
+    toast(`Blocks set from the optimizer (${S.smcTf}m candles)`); render(); return; }
   if (el.hasAttribute('data-smcstrun')) { smcStressRun(); return; }
   if (el.hasAttribute('data-smcststop')) { if (S.smcStress) S.smcStress.stop = true; return; }
   if (el.dataset.smcsw) { const k = el.dataset.smcsw, P = smcCfgNow(); S.smcDraft = { ...(S.smcDraft || {}), [k]: !P[k] }; render(); return; }
@@ -5397,6 +5401,7 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-smcstu]')) { S.smcStU = e.target.value; if (e.target.value === 'main' && !S.ww) loadWatch(); }
   if (e.target.matches && e.target.matches('[data-smcstdays]')) S.smcStDays = +e.target.value;
   if (e.target.matches && e.target.matches('[data-smcoptdays]')) smcOptSet({ days: +e.target.value });
+  if (e.target.matches && e.target.matches('[data-smcoptuni]')) smcOptSet({ universe: e.target.value, start: { ...S.smcCfg, tf: S.smcTf } });
 });
 document.addEventListener('submit', e => {         // the symbol search of the chart's top bar
   const f = e.target.closest && e.target.closest('[data-symsearch]');

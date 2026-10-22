@@ -5526,6 +5526,26 @@ def test_smart_money_optimizer():
     assert r["n"] == len(tr) and abs(r["totR"] - sum(t[2] - smcopt.COST for t in tr)) < 0.05
     assert smcopt.fitness({"n": 10, "t": 3.0}) < 0 < smcopt.fitness({"n": 200, "t": 1.0, "monthShare": 0.2})
     assert smcopt.fitness({"n": 200, "t": 2.0, "monthShare": 0.9}) < smcopt.fitness({"n": 200, "t": 2.0, "monthShare": 0.3})
+    # QQQ / SPY: 1-minute candles of the account, 1m and 5m series, the candle size searched too
+    import daytrade
+    saved = daytrade.minute_bars
+    try:
+        mb = []
+        for x in data[::3][:3]:
+            for b_ in x["reg"]:                        # 5-min bars stretched into 1-min ones
+                for q in range(5):
+                    mm = int(b_["t"][11:13]) * 60 + int(b_["t"][14:16]) + q
+                    mb.append({**b_, "t": f"{b_['t'][:11]}{mm // 60:02d}:{mm % 60:02d}"})
+        daytrade.minute_bars = lambda sub, sym, days, now=None, feed=None: list(mb)
+        smcopt._CACHE.clear()
+        d2 = smcopt.load_index("u1", 30)
+        assert {x["sym"] for x in d2[1]} == {"QQQ", "SPY"} and len(d2[1]) == len(d2[5]) and len(d2[5][0]["reg"]) == 78
+        assert len(d2[1][0]["reg"]) == len(d2[1][0]["atr"]) == 390
+        assert smcopt.to_params({**g, "tf": 1})["tf"] == 1
+        assert any(smcopt.mutate({**g, "tf": 5}, random.Random(i)).get("tf") == 1 for i in range(80))
+    finally:
+        daytrade.minute_bars = saved
+        smcopt._CACHE.clear()
     # every gap of the day is listed (setup or not), each closing when filled
     bars = [dict(b) for b in data[0]["reg"]]
     for q in range(11, len(bars)):                     # a jump up at candle 11: candles 10 and 12 don't overlap
