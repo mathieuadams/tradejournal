@@ -85,7 +85,7 @@ def detect(minute_bars, P=None, show=None):
     allb = daytrade.agg_bars(minute_bars, tf) if tf > 1 else list(minute_bars)
     reg = [b for b in allb if "09:30" <= _hm(b["t"]) < "16:00"]
     if not reg:
-        return {"bars": [], "levels": [], "sweeps": [], "mss": [], "fvgs": [], "obs": [], "setups": [], "funnel": {}}
+        return {"bars": [], "levels": [], "sweeps": [], "mss": [], "fvgs": [], "obs": [], "setups": [], "gaps": [], "funnel": {}}
     atr = _atr(reg)
     days = sorted({b["t"][:10] for b in reg})
     show = [d for d in days if not show or d in show]
@@ -96,18 +96,39 @@ def detect(minute_bars, P=None, show=None):
     by = {}
     for i, b in enumerate(reg):
         by.setdefault(b["t"][:10], []).append(i)
-    out = {"levels": [], "sweeps": [], "mss": [], "fvgs": [], "obs": [], "setups": []}
+    out = {"levels": [], "sweeps": [], "mss": [], "fvgs": [], "obs": [], "setups": [], "gaps": []}
     for di, d in enumerate(days):
         if d not in show:
             continue
         ix = by[d]
         prev = [reg[i] for i in by.get(days[di - 1], [])] if di else []
         _day(reg, atr, ix, day_pools(prev, pm_by.get(d) or [], P), P, out)
+        out["gaps"] += _gaps(reg, atr, ix, P)
     keep = set(show)
     out["bars"] = [{k: b[k] for k in ("t", "o", "h", "l", "c", "v")} for b in reg if b["t"][:10] in keep]
     out["interval"] = tf
     out["funnel"] = funnel(out["setups"])
     out["stats"] = stats(out["setups"])
+    return out
+
+
+def _gaps(bars, atr, ix, P):
+    """Every fair value gap of the day (3-candle gap of fvgMin x ATR or more), setup or not, drawn until price fills
+    it (trades through its far side) or the day ends."""
+    out = []
+    for q in range(2, len(ix)):
+        j, j1, j2 = ix[q], ix[q - 1], ix[q - 2]
+        for up in (True, False):
+            lo_, hi_ = (bars[j2]["h"], bars[j]["l"]) if up else (bars[j]["h"], bars[j2]["l"])
+            if hi_ - lo_ <= 0 or hi_ - lo_ < P["fvgMin"] * (atr[j1] or 0):
+                continue
+            t1 = bars[ix[-1]]["t"]
+            for r in range(q + 1, len(ix)):
+                c = bars[ix[r]]
+                if (c["l"] <= lo_) if up else (c["h"] >= hi_):
+                    t1 = c["t"]
+                    break
+            out.append({"t0": bars[j2]["t"], "t1": t1, "lo": round(lo_, 4), "hi": round(hi_, 4), "dir": 1 if up else -1})
     return out
 
 
@@ -434,3 +455,57 @@ def run(sub, sym, days=5, cfg=None):
     for s in out["setups"]:
         s.pop("_end", None)
     return {"symbol": sym, "params": P, **out}
+
+
+NUDGE = ("fvgMin", "mssBars", "entryBars", "stopBuf", "partial", "pivot", "orMin", "tpR", "rrMin", "dispMin", "beR", "timeBars")
+
+
+def variants(P):
+    """The stress versions of a setting: each block switched the other way, each number -20% / +20%, the other candle
+    size, the other entry / stop. -> [(label, cfg)]"""
+    out = []
+    for k in BOOLS:
+        if k in ("longs", "shorts"):
+            continue
+        out.append((f"{k} {'off' if P[k] else 'on'}", {**P, k: not P[k]}))
+    used_by = {"dispMin": "dispOn", "rrMin": "rrOn", "beR": "beOn", "timeBars": "timeOn", "partial": "partialOn", "orMin": "poolOR"}
+    for k in NUDGE:
+        if k in used_by and not P[used_by[k]]:
+            continue                                   # a number of a block that is off changes nothing
+        for f in (0.8, 1.2):
+            v = P[k] * f
+            v = max(1, int(round(v))) if k in INTS else round(v, 4)
+            if v != P[k]:
+                out.append((f"{k} {P[k]:g} → {v:g}", {**P, k: v}))
+    out.append((f"{'5m' if P['tf'] == 1 else '1m'} candles", {**P, "tf": 5 if P["tf"] == 1 else 1}))
+    for e in ("edge", "ce", "ob", "market"):
+        if e != P["entryAt"]:
+            out.append((f"entry at {e}", {**P, "entryAt": e}))
+    out.append((f"stop beyond the {'FVG' if P['stopAt'] == 'sweep' else 'sweep'}", {**P, "stopAt": "fvg" if P["stopAt"] == "sweep" else "sweep"}))
+    return out
+
+
+def _sum(setups, cost):
+    rs = [s["R"] - cost for s in setups if s.get("R") is not None]
+    return {"n": len(rs), "totR": round(sum(rs), 3), "avgR": round(sum(rs) / len(rs), 4) if rs else None}
+
+
+def stress(sub, sym, days=30, cfg=None, cost=0.05):
+    """One ticker, the last `days` days: the trades of the setting (after the cost) and the stress versions."""
+    import daytrade
+    sym = (sym or "").upper()
+    P = clean(cfg)
+    days = max(5, min(30, int(days or 30)))
+    mb = daytrade.minute_bars(sub, sym, days + 2)
+    dates = sorted({b["t"][:10] for b in mb if "09:30" <= b["t"][11:16] < "16:00"})[-days:]
+    if not dates:
+        return {"symbol": sym, "error": "No minute candles."}
+    base = detect(mb, P, dates)
+    tr = [{"t": s["fillT"], "R": round(s["R"] - cost, 3), "dir": s["dir"], "why": s.get("exitWhy")} for s in base["setups"] if s.get("R") is not None]
+    vs = []
+    for label, c in variants(P):
+        try:
+            vs.append({"label": label, **_sum(detect(mb, c, dates)["setups"], cost)})
+        except Exception as e:
+            vs.append({"label": label, "error": str(e)[:80]})
+    return {"symbol": sym, "days": dates, "cost": cost, "trades": tr, "base": _sum(base["setups"], cost), "funnel": base["funnel"], "variants": vs}

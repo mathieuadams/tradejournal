@@ -479,6 +479,32 @@ def daytrade_smc(sub, claims, body, q):
     return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
 
 
+@route("POST", "/daytrade/smc/stress")
+def daytrade_smc_stress(sub, claims, body, q):
+    """Smart-money stress test of one ticker (the page runs it ticker by ticker and adds them up)."""
+    import smc
+    b = body or {}
+    return smc.stress(sub, b.get("t"), b.get("days") or 30, b.get("cfg") if isinstance(b.get("cfg"), dict) else None, float(b.get("cost") or 0.05))
+
+
+@route("GET", "/daytrade/smc/opt")
+def daytrade_smc_opt(sub, claims, body, q):
+    import smcopt
+    return smcopt.public(sub)
+
+
+@route("PUT", "/daytrade/smc/opt")
+def daytrade_smc_opt_set(sub, claims, body, q):
+    """Smart money optimizer: on / off, days, restart, the blocks to start from."""
+    import research
+    import smcopt
+    b = body or {}
+    out = smcopt.save_cfg(sub, b)
+    if b.get("on") and not out.get("running"):
+        research._invoke(sub, "smcopt", {})
+    return out
+
+
 @route("POST", "/daytrade/chart")
 def daytrade_chart(sub, claims, body, q):
     import daytrade

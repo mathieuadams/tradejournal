@@ -1996,6 +1996,9 @@ def handler(event, context_):
             elif job == "evolve":
                 import evolve
                 out[sub] = evolve.job(sub, event.get("params") or {})
+            elif job == "smcopt":
+                import smcopt
+                out[sub] = smcopt.job(sub, event.get("params") or {})
             elif job == "rshold":
                 import research
                 out[sub] = research.hold_job(sub, event.get("params") or {})

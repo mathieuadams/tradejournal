@@ -1278,7 +1278,7 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { smcLv: true, smcSw: true, smcMss: true, smcFvg: true, smcOb: true, smcTr: true, hvc: true, sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+S.fcLayers = (() => { try { const v = { smcLv: true, smcSw: true, smcMss: true, smcFvg: true, smcGap: true, smcOb: true, smcTr: true, hvc: true, sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
 const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['hvc', 'Daily HVC'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'CVD'], ['cvd', 'Order flow (real CVD)']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
@@ -1879,7 +1879,7 @@ function flowTabs(L, added) {
   return g.length ? `<div style="display:flex;gap:3px;flex-wrap:wrap;padding:4px 6px">${g.map((x, i) => `<button class="btn ${i === k ? 'coachbtn' : ''}" data-flowday="${i}" style="font-size:.72rem;padding:0 7px" title="${esc(x.date)}: tickers whose unusual call flow came that day (largest premium first)">${esc(x.label)} (${x.tickers.length})</button>`).join('')}</div>` : '';
 }
 /* ---------- Smart money: liquidity -> sweep -> MSS -> FVG -> retracement, step by step (backend smc.py) ---------- */
-const SMC_LY = [['smcLv', 'Liquidity (PDH / PDL, PM, OR, swings)'], ['smcSw', 'Sweeps'], ['smcMss', 'Market structure shift'], ['smcFvg', 'Fair value gaps'], ['smcOb', 'Order blocks'], ['smcTr', 'Trades (entry / stop / targets)']];
+const SMC_LY = [['smcLv', 'Liquidity (PDH / PDL, PM, OR, swings)'], ['smcSw', 'Sweeps'], ['smcMss', 'Market structure shift'], ['smcFvg', 'Fair value gaps (of the setups)'], ['smcGap', 'Every fair value gap (setup or not)'], ['smcOb', 'Order blocks'], ['smcTr', 'Trades (entry / stop / targets)']];
 S.smcTf = S.smcTf || 5; S.smcDays = S.smcDays || 3;
 try { S.smcCfg = JSON.parse(localStorage.getItem('smcCfg') || '{}') || {}; } catch (e) { S.smcCfg = {}; }
 const smcOn = k => S.fcLayers[k] !== false;
@@ -1903,6 +1903,10 @@ function smcLayer(m, c) {                          // drawn under the candles
       + (major || /EQ/.test(l.name) ? `<text x="${Math.max(a, L) + 2}" y="${y + (l.side === 'buy' ? -3 : 11)}" font-size="${fs - 2}" fill="${col}">${esc(l.name)}</text>` : ''); });
   if (smcOn('smcOb')) (m.obs || []).forEach(o => { if (o.t0 < first || o.t0 > last) return; const a = x0of(o.t0); if (a == null || !inV(o.lo)) return; const y0 = Y(o.hi), y1 = Y(o.lo);
     g += `<rect x="${a - 2}" y="${y0}" width="${Math.max(6, (W - Rr - L) / 60)}" height="${Math.max(2, y1 - y0)}" fill="#3b82f6" fill-opacity=".35"><title>Order block ${o.lo}–${o.hi}</title></rect>`; });
+  if (smcOn('smcGap')) { const own = new Set((m.fvgs || []).map(f => f.t0 + '|' + f.dir));
+    (m.gaps || []).forEach(f => { if (own.has(f.t0 + '|' + f.dir) || !vis(f.t0, f.t1)) return; const a = x0of(f.t0), b = x1of(f.t1); if (a == null || b == null || !(f.hi >= lo && f.lo <= hi)) return;
+      const y0 = Y(Math.min(hi, f.hi)), y1 = Y(Math.max(lo, f.lo)), col = f.dir > 0 ? '#eab308' : '#f43f5e';
+      g += `<rect x="${a}" y="${y0}" width="${Math.max(4, b - a)}" height="${Math.max(1.5, y1 - y0)}" fill="${col}" fill-opacity=".1" stroke="${col}" stroke-opacity=".45" stroke-dasharray="3 2"><title>${f.dir > 0 ? 'Bullish' : 'Bearish'} FVG ${f.lo}–${f.hi} (no setup: no sweep + MSS before it, or a trade was already on)${f.t1 ? ' · filled ' + f.t1.slice(11, 16) : ''}</title></rect>`; }); }
   if (smcOn('smcFvg')) (m.fvgs || []).forEach(f => { const s = (m.setups || []).find(x => x.fvg && x.fvg.t0 === f.t0), t1 = s && (s.exitT || s.fillT) ? (s.exitT || s.fillT) : f.t1;
     if (!vis(f.t0, t1)) return; const a = x0of(f.t0); if (a == null) return;
     const b = x1of(t1); if (b == null) return; const y0 = Y(Math.min(hi, f.hi)), y1 = Y(Math.max(lo, f.lo)), col = f.dir > 0 ? '#eab308' : '#f43f5e';
@@ -1986,6 +1990,122 @@ function smcBlocks(P0) {
     <div style="display:flex;gap:8px;align-items:center;margin:6px 0"><button class="btn ${dirty ? 'coachbtn' : ''}" data-smcapply style="font-size:.8rem">${dirty ? 'Apply changes' : 'Apply'}</button><button class="btn" data-smcdefault style="font-size:.8rem">Defaults</button>
       <span class="muted" style="font-size:.76rem">${dirty ? `${Object.keys(S.smcDraft).length} change(s) pending` : 'the chart and the list use these blocks'}</span></div></details>`;
 }
+// ---- stress test: the same blocks on many tickers / 30 days, after the cost, each block and number shaken
+function smcUniverse(u) {
+  const cfg = dtCfg(), sym = (hashParam('t') || '').toUpperCase() || ((cfg.tickers || ['QQQ'])[0]);
+  if (u === 'this') return [sym];
+  if (u === 'day') return cfg.tickers || ['QQQ', 'SPY'];
+  if (u === 'movers') return [...new Set((S.dtMovers || []).flatMap(x => (x.list || []).map(y => y.sym)))].slice(0, 45);
+  if (u === 'main') return [...new Set((((S.ww || {}).config || {}).lists || []).flatMap(L => L.tickers || []))].slice(0, 60);
+  return [sym];
+}
+async function smcStressRun() {
+  const u = S.smcStU || 'movers', tick = smcUniverse(u), days = S.smcStDays || 30, cfg = { ...S.smcCfg, tf: S.smcTf };
+  if (!tick.length) { toast('No ticker in that list yet'); return; }
+  const run = S.smcStress = { running: true, u, days, total: tick.length, results: [], errors: [], cfg: JSON.stringify(cfg), at: new Date().toISOString() };
+  render();
+  for (const t of tick) {
+    if (S.smcStress !== run || run.stop) break;
+    try { run.results.push(await api('/daytrade/smc/stress', { method: 'POST', body: { t, days, cfg, cost: 0.05 } })); }
+    catch (e) { run.errors.push(`${t}: ${e.message}`); }
+    if (route() === 'botchart') render();
+  }
+  run.running = false; if (route() === 'botchart') render();
+}
+function smcAgg(res) {
+  const tr = res.flatMap(r => (r.trades || []).map(x => ({ ...x, sym: r.symbol }))).sort((a, b) => a.t < b.t ? -1 : 1);
+  const st = xs => { const n = xs.length; if (!n) return { n: 0 }; const tot = xs.reduce((a, x) => a + x.R, 0), w = xs.filter(x => x.R > 0), l = xs.filter(x => x.R <= 0);
+    const byD = {}; xs.forEach(x => { byD[x.t.slice(0, 10)] = (byD[x.t.slice(0, 10)] || 0) + x.R; }); const dv = Object.values(byD), m = dv.reduce((a, v) => a + v, 0) / dv.length;
+    const sd = Math.sqrt(dv.reduce((a, v) => a + (v - m) ** 2, 0) / Math.max(1, dv.length - 1)), t = sd > 0 && dv.length >= 5 ? m / sd * Math.sqrt(dv.length) : null;
+    let eq = 0, pk = 0, dd = 0; xs.forEach(x => { eq += x.R; pk = Math.max(pk, eq); dd = Math.min(dd, eq - pk); });
+    const gw = w.reduce((a, x) => a + x.R, 0), gl = -l.reduce((a, x) => a + x.R, 0);
+    return { n, totR: tot, avgR: tot / n, win: Math.round(w.length / n * 100), pf: gl > 0 ? gw / gl : null, t, dd, days: dv.length }; };
+  const ds = [...new Set(tr.map(x => x.t.slice(0, 10)))].sort(), mid = ds[Math.floor(ds.length / 2)] || '';
+  const vmap = {};
+  res.forEach(r => (r.variants || []).forEach(v => { if (v.error) return; const x = vmap[v.label] = vmap[v.label] || { label: v.label, n: 0, totR: 0 }; x.n += v.n || 0; x.totR += v.totR || 0; }));
+  const vs = Object.values(vmap).map(v => ({ ...v, avgR: v.n ? v.totR / v.n : null }));
+  const tick = res.map(r => ({ sym: r.symbol, ...st((r.trades || []).map(x => ({ ...x, sym: r.symbol }))) }));
+  return { all: st(tr), h1: st(tr.filter(x => x.t.slice(0, 10) < mid)), h2: st(tr.filter(x => x.t.slice(0, 10) >= mid)), longs: st(tr.filter(x => x.dir > 0)), shorts: st(tr.filter(x => x.dir < 0)),
+    tick, vs, vPos: vs.filter(v => (v.avgR || 0) > 0).length, tPos: tick.filter(x => x.n && x.totR > 0).length, tN: tick.filter(x => x.n).length,
+    exits: tr.reduce((a, x) => { a[x.why || '?'] = (a[x.why || '?'] || 0) + 1; return a; }, {}), mid };
+}
+// ---- optimizer: the blocks tuned on the stocks-in-play history (top 15 a day, 5m), chosen on the 1st 60%, checked on the rest
+async function loadSmcOpt() {
+  try { S.smcOpt = await api('/daytrade/smc/opt'); } catch (e) { S.smcOpt = { error: e.message }; }
+  if (route() === 'botchart' && S.fcfMode === 'smc') render();
+  clearTimeout(S.smcOptT);
+  if (S.smcOpt && (S.smcOpt.on || S.smcOpt.running)) S.smcOptT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'smc') loadSmcOpt(); else S.smcOpt = undefined; }, 20000);
+}
+async function smcOptSet(body) {
+  try { S.smcOpt = await api('/daytrade/smc/opt', { method: 'PUT', body }); } catch (e) { toast(e.message); }
+  loadSmcOpt();
+}
+const SMC_NAMES = { poolPD: 'prev day H/L', poolPM: 'pre-market H/L', poolOR: 'opening range', poolSwing: 'swings', eqOnly: 'equal H/L only', orMin: 'OR min', pivot: 'swing candles',
+  mssOn: 'MSS', mssBars: 'MSS within', dispOn: 'displacement', dispMin: 'displ. ATR', fvgOn: 'FVG required', fvgMin: 'FVG ATR', entryAt: 'enter at', entryBars: 'retrace within',
+  stopAt: 'stop beyond', stopBuf: 'stop +ATR', startT: 'from', endT: 'to', vwapOn: 'VWAP side', pdOn: 'premium/discount', rrOn: 'min R to TP1', rrMin: 'min R', maxDay: 'max a day',
+  longs: 'longs', shorts: 'shorts', tpLiq: 'targets at liquidity', tpR: 'target R', partialOn: 'partial at TP1', partial: 'partial', beTp1: 'BE at TP1', beOn: 'BE at R', beR: 'BE R',
+  trailOn: 'trail swings', fvgFail: 'FVG fails exit', mssX: 'MSS against exit', vwapX: 'VWAP exit', timeOn: 'time exit', timeBars: 'time candles' };
+function smcOptDiff(P) {
+  const off = { dispMin: 'dispOn', rrMin: 'rrOn', beR: 'beOn', timeBars: 'timeOn', partial: 'partialOn', orMin: 'poolOR', fvgMin: 'fvgOn', mssBars: 'mssOn' };
+  return Object.keys(SMC_NAMES).filter(k => P[k] !== undefined && !(off[k] && !P[off[k]])).map(k => { const v = P[k];
+    return typeof v === 'boolean' ? `<span class="exchip" style="font-size:.7rem;${v ? '' : 'opacity:.45;text-decoration:line-through'}">${SMC_NAMES[k]}</span>` : `<span class="exchip" style="font-size:.7rem">${SMC_NAMES[k]} <b>${esc(String(v))}</b></span>`; }).join('');
+}
+function smcOptBox() {
+  if (S.smcOpt === undefined) { S.smcOpt = null; setTimeout(loadSmcOpt, 0); }
+  const o = S.smcOpt;
+  if (!o) return '<div class="smc-stress"><b>Optimizer</b> <span class="loading" style="padding:0">loading…</span></div>';
+  if (o.error) return `<div class="smc-stress"><b>Optimizer</b> <span class="loss">${esc(o.error)}</span></div>`;
+  const Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`, f2 = v => v == null ? '—' : (+v).toFixed(2);
+  const sp = o.split || {}, top = o.top || [];
+  const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Optimizer</b>
+    <button class="btn ${o.on ? 'coachbtn' : ''}" data-smcopt="${o.on ? 'off' : 'on'}" style="font-size:.8rem">${o.on ? '■ Stop' : '▶ Start'}</button>
+    <select data-smcoptdays style="font-size:.8rem">${[120, 250, 500].map(n => `<option value="${n}" ${o.days === n ? 'selected' : ''}>${n} days</option>`).join('')}</select>
+    <button class="btn" data-smcopt="reset" style="font-size:.8rem" title="Forget every setting tried and start again from the blocks above">Restart</button>
+    <span class="muted" style="font-size:.76rem">${o.running ? `<span class="loading" style="padding:0">${esc(o.step || 'running')}</span> · ` : o.on ? 'next run starting · ' : ''}${o.tried || 0} settings tried${o.avgEval ? ` · ${o.avgEval}s each` : ''}${o.nSeries ? ` · ${fmtInt(o.nSeries)} stock-days` : ''}</span>
+    ${o.last && o.last.error ? `<span class="loss" style="font-size:.76rem">${esc(o.last.error)}</span>` : ''}</div>
+    <div class="muted" style="font-size:.74rem">Each day's top 15 stocks in play, 5m candles, minus ${o.cost}R a trade. Chosen on the train days only${sp.cut ? ` (${esc(sp.from)} → ${esc(sp.cut)}, ${sp.trainDays} days)` : ''} by the t of the R per day, ${o.minTrades}+ trades, no month over 35% of the profit.
+      The test days${sp.cut ? ` (${esc(sp.cut)} → ${esc(sp.to)}, ${sp.testDays} days)` : ''} are never used to choose: a setting that is good on both is the one to try. Starts from the blocks above.</div>`;
+  if (!top.length) return `<div class="smc-stress">${ctl}</div>`;
+  const ok = t => (t.test || {}).n >= 30 && (t.test.avgR || 0) > 0 && (t.test.t || 0) >= 1.5;
+  return `<div class="smc-stress">${ctl}<div style="overflow-x:auto"><table class="pos" style="font-size:.78rem;width:100%"><thead><tr><th>#</th><th class="r">Score</th>
+    <th class="r">Train trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">t</th><th class="r">Test trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Total</th><th class="r">t</th><th class="r">DD</th><th>Blocks</th><th></th></tr></thead><tbody>
+    ${top.map((t, i) => { const a = t.train || {}, b = t.test || {};
+      return `<tr style="${ok(t) ? 'background:color-mix(in srgb,var(--gain) 9%,transparent)' : ''}"><td>${i + 1}</td><td class="r">${f2(t.fit)}</td>
+        <td class="r">${a.n || 0}</td><td class="r">${a.n ? a.win + '%' : '—'}</td><td class="r">${Rf(a.avgR)}</td><td class="r">${f2(a.t)}</td>
+        <td class="r">${b.n || 0}</td><td class="r">${b.n ? b.win + '%' : '—'}</td><td class="r">${Rf(b.avgR)}</td><td class="r">${Rf(b.totR)}</td><td class="r">${f2(b.t)}</td><td class="r">${b.n ? f2(b.dd) + 'R' : '—'}</td>
+        <td><details><summary style="cursor:pointer;font-size:.74rem">show</summary><div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px">${smcOptDiff(t.params)}</div></details></td>
+        <td><button class="btn" data-smcoptuse="${i}" style="font-size:.74rem;padding:1px 7px" title="Put these blocks on the chart (5m candles)">Use</button></td></tr>`; }).join('')}</tbody></table></div>
+    <div class="muted" style="font-size:.74rem">Green rows: still positive on the test days (30+ trades, t ≥ 1.5). Use one, then run the stress test above on it.</div></div>`;
+}
+function smcStressBox() {
+  const R = S.smcStress, Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
+  const U = [['movers', 'top movers (last 3 days)'], ['day', 'day tickers'], ['main', 'wall watch lists'], ['this', 'this ticker']];
+  const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Stress test</b>
+    <select data-smcstu style="font-size:.8rem">${U.map(([k, l]) => `<option value="${k}" ${(S.smcStU || 'movers') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <select data-smcstdays style="font-size:.8rem">${[10, 20, 30].map(n => `<option value="${n}" ${(S.smcStDays || 30) === n ? 'selected' : ''}>${n} days</option>`).join('')}</select>
+    ${R && R.running ? `<button class="btn" data-smcststop style="font-size:.8rem">Stop</button><span class="loading" style="padding:0">testing ${R.results.length + R.errors.length} / ${R.total} tickers…</span>`
+      : `<button class="btn coachbtn" data-smcstrun style="font-size:.8rem">Run the stress test</button>`}
+    <span class="muted" style="font-size:.74rem">the blocks above on every ticker of the list, ${S.smcTf}m candles, minus 0.05R a trade; then every block switched and every number moved ±20%</span></div>`;
+  if (!R || !R.results.length) return `<div class="smc-stress">${ctl}${R && R.errors.length ? `<p class="loss" style="font-size:.76rem">${esc(R.errors.slice(-3).join(' · '))}</p>` : ''}</div>`;
+  const A = smcAgg(R.results), a = A.all, f2 = v => v == null ? '—' : (+v).toFixed(2);
+  const changed = R.cfg !== JSON.stringify({ ...S.smcCfg, tf: S.smcTf });
+  const ok = a.n >= 30 && (a.avgR || 0) > 0 && (A.h1.avgR || 0) > 0 && (A.h2.avgR || 0) > 0 && (a.t || 0) >= 2 && A.vPos >= 0.7 * A.vs.length;
+  const verdict = a.n < 30 ? ['', `only ${a.n} trades: not enough to judge (30+ needed)`] : ok ? ['gain', 'holds up: positive after the cost on both halves, t ≥ 2, and most variants still positive']
+    : (a.avgR || 0) <= 0 ? ['loss', 'loses after the cost'] : ['', `mixed: ${(A.h1.avgR || 0) <= 0 || (A.h2.avgR || 0) <= 0 ? 'one half is negative' : (a.t || 0) < 2 ? `t ${f2(a.t)} < 2 (could be luck)` : 'many variants turn negative (fragile)'}`];
+  const line = (l, x) => `<tr><td>${l}</td><td class="r">${x.n || 0}</td><td class="r">${x.n ? x.win + '%' : '—'}</td><td class="r">${x.n ? Rf(x.avgR) : '—'}</td><td class="r">${x.n ? Rf(x.totR) : '—'}</td><td class="r">${x.pf ? f2(x.pf) : '—'}</td><td class="r">${x.t != null ? f2(x.t) : '—'}</td><td class="r">${x.n ? f2(x.dd) + 'R' : '—'}</td></tr>`;
+  const vs = A.vs.slice().sort((p, q) => (p.avgR ?? -9) - (q.avgR ?? -9));
+  return `<div class="smc-stress">${ctl}
+    ${changed ? '<p class="muted" style="font-size:.76rem;margin:2px 0">The blocks changed since this test: run it again.</p>' : ''}
+    <p style="margin:4px 0"><b class="${verdict[0]}">${esc(verdict[1])}</b> <span class="muted" style="font-size:.76rem">${R.results.length} tickers · ${A.tPos} of ${A.tN} with trades positive · ${A.vPos} of ${A.vs.length} variants positive</span></p>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.8rem;width:auto"><thead><tr><th></th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Total</th><th class="r">PF</th><th class="r" title="t of the R summed per day: above 2 = probably not luck">t (days)</th><th class="r">Max DD</th></tr></thead><tbody>
+      ${line('All', a)}${line(`1st half (to ${esc(A.mid.slice(5))})`, A.h1)}${line('2nd half', A.h2)}${line('Longs', A.longs)}${line('Shorts', A.shorts)}</tbody></table></div>
+    <div style="font-size:.78rem;margin:4px 0"><b>Exits:</b> ${Object.entries(A.exits).sort((p, q) => q[1] - p[1]).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</div>
+    <details style="margin:4px 0"><summary style="font-size:.8rem;cursor:pointer"><b>Variants</b> (worst first): each block switched, each number ±20%</summary><div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0">
+      ${vs.map(v => `<span class="exchip" style="font-size:.74rem" title="${v.n} trades · total ${(+v.totR).toFixed(1)}R">${esc(v.label)} ${v.avgR == null ? '—' : Rf(v.avgR)}</span>`).join('')}</div></details>
+    <details style="margin:4px 0"><summary style="font-size:.8rem;cursor:pointer"><b>By ticker</b></summary><div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0">
+      ${A.tick.filter(x => x.n).sort((p, q) => q.totR - p.totR).map(x => `<a class="exchip" style="font-size:.74rem;text-decoration:none" href="#botchart?t=${encodeURIComponent(x.sym)}">${esc(x.sym)} ${x.n}× ${Rf(x.totR)}</a>`).join('')}</div></details>
+    ${R.errors.length ? `<p class="muted" style="font-size:.74rem">${R.errors.length} ticker(s) failed: ${esc(R.errors.slice(0, 3).join(' · '))}</p>` : ''}</div>`;
+}
 function smcPanel(d, id) {
   const f = d.funnel || {}, st = d.stats || {}, w = f.why || {}, P = d.params || {};
   const Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
@@ -2005,7 +2125,7 @@ function smcPanel(d, id) {
       <button class="btn" data-smcopen="${esc(s.t)}" style="font-size:.72rem;padding:0 6px">${open_ ? 'hide steps' : 'steps'}</button>
       ${open_ ? `<ol class="smc-steps">${(s.steps || []).map(x => `<li class="${x.ok ? 'ok' : 'no'}"><b>${esc(x.name)}</b>: ${esc(x.text)}</li>`).join('')}</ol>` : ''}</div>`; }).join('');
   const set = smcBlocks(P);
-  return `<div class="smc-panel">${fun}${set}<label style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center;margin:2px 0 4px"><input type="checkbox" data-smcfilled ${S.smcFilled ? 'checked' : ''}> only the trades (filled setups)</label><div class="smc-list">${rows || '<p class="muted" style="margin:6px 0">No liquidity sweep in these days.</p>'}</div>
+  return `<div class="smc-panel">${fun}${set}${smcStressBox()}${smcOptBox()}<label style="font-size:.8rem;display:inline-flex;gap:4px;align-items:center;margin:2px 0 4px"><input type="checkbox" data-smcfilled ${S.smcFilled ? 'checked' : ''}> only the trades (filled setups)</label><div class="smc-list">${rows || '<p class="muted" style="margin:6px 0">No liquidity sweep in these days.</p>'}</div>
     <p class="muted" style="font-size:.74rem;margin:6px 0 0">Liquidity: PDH / PDL (previous day), PM high / low (pre-market), ORH / ORL (opening range), the day's swings (EQH / EQL when two are equal). A setup: a pool is swept (✕) → a close beyond the last swing = MSS → the move leaves a fair value gap → price comes back into it (entry) → stop beyond the sweep, TP1 at the next opposite liquidity (partial, rest to breakeven), TP2 after it. Each row shows where it stopped.</p></div>`;
 }
 function wwLayerGroups() {                         // the wall watch chart's indicators, grouped for the left column
@@ -4862,7 +4982,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -4880,6 +5000,13 @@ document.addEventListener('click', e => {
     if (S.smcSel && d && d.bars) { const s = (d.setups || []).find(x => x.t === t), i0 = d.bars.findIndex(b => b.t >= t), i1 = s && s.exitT ? d.bars.findIndex(b => b.t >= s.exitT) : i0 + 30;
       if (i0 >= 0) S.fcZoom[fcKey('smc-' + sym)] = [Math.max(0, i0 - 40), Math.min(d.bars.length - 1, Math.max(i1, i0 + 10) + 25)]; }
     render(); return; }
+  if (el.dataset.smcopt) { const v = el.dataset.smcopt, start = { ...S.smcCfg, tf: 5 };
+    smcOptSet(v === 'reset' ? { reset: true, start } : v === 'on' ? { on: true, start } : { on: false }); return; }
+  if (el.dataset.smcoptuse) { const t = ((S.smcOpt || {}).top || [])[+el.dataset.smcoptuse]; if (!t) return;
+    const c = { ...t.params }; delete c.tf; S.smcCfg = c; S.smcDraft = null; S.smcTf = 5; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {}
+    toast('Blocks set from the optimizer (5m candles)'); render(); return; }
+  if (el.hasAttribute('data-smcstrun')) { smcStressRun(); return; }
+  if (el.hasAttribute('data-smcststop')) { if (S.smcStress) S.smcStress.stop = true; return; }
   if (el.dataset.smcsw) { const k = el.dataset.smcsw, P = smcCfgNow(); S.smcDraft = { ...(S.smcDraft || {}), [k]: !P[k] }; render(); return; }
   if (el.hasAttribute('data-smcapply')) { const c = { ...S.smcCfg, ...(S.smcDraft || {}) };
     document.querySelectorAll('[data-smccfg]').forEach(i => { const v = i.value; c[i.dataset.smccfg] = i.type === 'number' ? +v : v; });
@@ -5265,6 +5392,11 @@ document.addEventListener('input', e => {
     S.evQ = v; await loadEvals(1);
     const i = $('#ev-q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
   }, 350);
+});
+document.addEventListener('change', e => {         // stress test list / days
+  if (e.target.matches && e.target.matches('[data-smcstu]')) { S.smcStU = e.target.value; if (e.target.value === 'main' && !S.ww) loadWatch(); }
+  if (e.target.matches && e.target.matches('[data-smcstdays]')) S.smcStDays = +e.target.value;
+  if (e.target.matches && e.target.matches('[data-smcoptdays]')) smcOptSet({ days: +e.target.value });
 });
 document.addEventListener('submit', e => {         // the symbol search of the chart's top bar
   const f = e.target.closest && e.target.closest('[data-symsearch]');

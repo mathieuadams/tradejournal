@@ -1753,6 +1753,11 @@ def auto_kick():
         started += evolve.kick()
     except Exception as e:
         print("evolution kick failed", e)
+    try:
+        import smcopt
+        started += smcopt.kick()
+    except Exception as e:
+        print("smart money optimizer kick failed", e)
     return started
 
 

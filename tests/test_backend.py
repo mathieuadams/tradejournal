@@ -5465,8 +5465,80 @@ def test_smart_money_building_blocks():
         tr = sorted((s for s in out["setups"] if s.get("fillT")), key=lambda s: s["fillT"])
         assert all(b_["fillT"] > a_["exitT"] for a_, b_ in zip(tr, tr[1:])), [(x["fillT"], x["exitT"]) for x in tr]
 
+def test_smart_money_stress():
+    import smc, daytrade, random, datetime as _dt
+    random.seed(3)
+    bars, p = [], 100.0
+    for d in range(14):
+        dd = _dt.date(2026, 9, 1) + _dt.timedelta(days=d)
+        if dd.weekday() >= 5:
+            continue
+        for m in range(4 * 60, 20 * 60):
+            p += random.gauss(0, 0.08)
+            t = _dt.datetime(dd.year, dd.month, dd.day, m // 60, m % 60) + _dt.timedelta(hours=4)
+            bars.append({"t": t.strftime("%Y-%m-%dT%H:%M:00Z"), "o": p, "h": p + 0.05, "l": p - 0.05, "c": p + random.gauss(0, 0.02), "v": 1000})
+    saved = daytrade.minute_bars
+    try:
+        daytrade.minute_bars = lambda *a, **k: bars
+        P = smc.clean({})
+        labels = [v[0] for v in smc.variants(P)]
+        assert len(labels) == len(set(labels)) and len(labels) > 20
+        assert not any(l.startswith("dispMin") for l in labels)     # a number whose block is off is not moved
+        r = smc.stress("u1", "QQQ", days=5, cfg={}, cost=0.05)
+        assert len(r["days"]) == 5 and r["variants"]
+        assert all(t["dir"] in (1, -1) and "R" in t for t in r["trades"])
+        assert abs(r["base"]["totR"] - sum(t["R"] for t in r["trades"])) < 0.01
+        assert all("label" in v for v in r["variants"])
+    finally:
+        daytrade.minute_bars = saved
+
+
+def test_smart_money_optimizer():
+    import smcopt, smc, random, datetime as _dt
+    random.seed(5)
+    data = []
+    d0 = _dt.date(2026, 3, 2)
+    days = [d0 + _dt.timedelta(days=i) for i in range(60) if (d0 + _dt.timedelta(days=i)).weekday() < 5][:30]
+    for d in days:
+        for k in range(3):
+            p, reg = 50.0 + k * 20, []
+            for m in range(78):
+                mm = 570 + m * 5
+                o = p
+                p += random.gauss(0, 0.15)
+                reg.append({"t": f"{d}T{mm // 60:02d}:{mm % 60:02d}", "o": o, "h": max(o, p) + abs(random.gauss(0, .07)), "l": min(o, p) - abs(random.gauss(0, .07)), "c": p, "v": 1000})
+            data.append({"sym": f"S{k}", "d": str(d), "reg": reg, "prev": [{"t": "x", "h": reg[0]["o"] + .5, "l": reg[0]["o"] - .5}], "pm": [],
+                         "atr": smcopt._atr_seeded(reg, 0.2)})
+    g = smcopt.from_params(smc.PARAMS)
+    P = smcopt.to_params(g)
+    assert P["tf"] == 5 and P["longs"] and P["shorts"] and P["startT"] >= "09:35"
+    assert smcopt.to_params({**g, "side": "short"})["longs"] is False
+    # a number of a block that is off doesn't make a new setting
+    assert smcopt.key({**g, "dispOn": False, "dispMin": 0.5}) == smcopt.key({**g, "dispOn": False, "dispMin": 2.0})
+    assert smcopt.key({**g, "dispOn": True, "dispMin": 0.5}) != smcopt.key({**g, "dispOn": True, "dispMin": 2.0})
+    rng = random.Random(1)
+    for _ in range(30):
+        m = smcopt.mutate(g, rng)
+        assert smcopt.valid(m) and m != g and set(m) == set(g)
+    tr = smcopt.trades(data, P)
+    assert tr and all(len(t) == 4 for t in tr)
+    r = smcopt.score(tr)
+    assert r["n"] == len(tr) and abs(r["totR"] - sum(t[2] - smcopt.COST for t in tr)) < 0.05
+    assert smcopt.fitness({"n": 10, "t": 3.0}) < 0 < smcopt.fitness({"n": 200, "t": 1.0, "monthShare": 0.2})
+    assert smcopt.fitness({"n": 200, "t": 2.0, "monthShare": 0.9}) < smcopt.fitness({"n": 200, "t": 2.0, "monthShare": 0.3})
+    # every gap of the day is listed (setup or not), each closing when filled
+    bars = [dict(b) for b in data[0]["reg"]]
+    for q in range(11, len(bars)):                     # a jump up at candle 11: candles 10 and 12 don't overlap
+        for f in ("o", "h", "l", "c"):
+            bars[q][f] += 3.0
+    out = smc.detect(bars, {"tf": 1, "fvgMin": 0})
+    assert out["gaps"] and all(gp["t1"] >= gp["t0"] and gp["hi"] > gp["lo"] for gp in out["gaps"])
+    own = {(f["t0"], f["dir"]) for f in out["fvgs"]}
+    assert own <= {(gp["t0"], gp["dir"]) for gp in out["gaps"]} or not own
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
             fn()
             print("ok", name)
+

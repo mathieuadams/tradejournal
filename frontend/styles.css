@@ -469,3 +469,4 @@ tr.sel td{background:var(--sunk)}
 .smc-blocks{display:flex;flex-direction:column;gap:5px;margin:6px 0}
 .smc-chip{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--line);border-radius:14px;padding:1px 7px 1px 2px}
 .smc-chip.on{border-color:var(--gain)}
+.smc-stress{border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:6px 0}
