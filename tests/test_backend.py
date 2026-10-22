@@ -5622,6 +5622,8 @@ def test_smart_money_live_paper():
             if o and o["status"] == "new":
                 o["status"] = "canceled"
             return {}
+        if m == "GET" and path == "/v2/account":
+            return {"equity": "100000", "last_equity": "100000", "buying_power": "200000"}
         if m == "GET" and path.startswith("/v2/positions/"):
             q = pos.get(path.rsplit("/", 1)[1], 0)
             return {"qty": str(q)} if q else None
@@ -5691,6 +5693,29 @@ def test_smart_money_live_paper():
         assert all(r["candle"] <= r["sentAt"].replace(" ", "T") for r in recs if r.get("candle") and r.get("sentAt")) or True
     finally:
         daytrade.minute_bars, daytrade.creds, smclive._alp, smclive.config, smclive.time.sleep = saved
+
+def test_smart_money_risk_from_account_value():
+    import smclive
+    cfg = dict(smclive.DEFAULT)
+    acct = {"equity": 100000.0, "start": 100000.0, "dayPct": 0.0, "buyingPower": 200000.0}
+    s_ = {"entry": 100.0, "stop": 99.0}
+    q, note = smclive.size(cfg, s_, acct, 0)
+    assert q == 500 and "0.5%" in note                  # 0.5% of 100k = $500 / $1 a share
+    q, note = smclive.size(cfg, {"entry": 100.0, "stop": 99.9}, acct, 0)
+    assert q == 500 and "position" in note              # $500 / $0.10 = 5000 shares, but 50% of the account = 500 shares
+    q, note = smclive.size(cfg, s_, acct, 900.0)
+    assert q == 100 and "open risk" in note             # 1% = $1000 open risk, $900 already at risk
+    assert smclive.size(cfg, s_, None, 0)[0] == 0        # % mode without the account value: no trade
+    assert smclive.size({**cfg, "riskMode": "usd", "riskUsd": 50}, s_, None, 0)[0] == 50
+    st = smclive.risk_state(cfg, {**acct, "dayPct": -2.5}, [])
+    assert not st["ok"] and st["flatten"] and "daily loss" in st["why"]
+    recs = [{"status": "closed", "R": -1.0, "closedAt": f"2026-09-16T10:0{i}", "filledQty": 10} for i in range(3)]
+    st = smclive.risk_state(cfg, acct, recs)
+    assert not st["ok"] and "losses in a row" in st["why"]
+    st = smclive.risk_state({**cfg, "lossStreak": 0, "maxTrades": 3}, acct, recs)
+    assert not st["ok"] and "trades today" in st["why"]
+    assert smclive.risk_state(cfg, acct, recs[:1])["ok"]
+    assert smclive._open_risk([{"status": "open", "dir": 1, "qty": 10, "filledQty": 10, "fill": 500.0, "entry": 500.0, "stop": 499.0, "stopNow": 500.0}]) == 0
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

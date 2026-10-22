@@ -22,7 +22,10 @@ from util import iso, now_ny
 
 SK = "SMCLIVE"
 POS = "SMCPOS#"
-DEFAULT = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "riskUsd": 100.0, "qty": 0, "maxQty": 500,
+DEFAULT = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "riskUsd": 100.0, "qty": 0, "maxQty": 5000,
+           # risk management from the account value (equity of the paper account, read every minute)
+           "riskMode": "pct", "riskPct": 0.5, "maxPosPct": 50.0, "openRiskPct": 1.0, "dayLossPct": 2.0, "maxTrades": 4,
+           "lossStreak": 3, "flattenOnLimit": True,
            "cfg": {}, "name": "", "savedAt": None, "source": None}
 
 
@@ -43,9 +46,14 @@ def save(sub, b):
         tk = b["tickers"]
         tk = tk.replace(",", " ").split() if isinstance(tk, str) else (tk or [])
         cur["tickers"] = [str(t).strip().upper()[:10] for t in tk if str(t).strip()][:6] or ["QQQ", "SPY"]
-    for k, lo, hi in (("riskUsd", 0, 100000), ("qty", 0, 100000), ("maxQty", 1, 100000)):
+    for k, lo, hi in (("riskUsd", 0, 100000), ("qty", 0, 100000), ("maxQty", 1, 100000), ("riskPct", 0.01, 5), ("maxPosPct", 1, 400),
+                      ("openRiskPct", 0.01, 20), ("dayLossPct", 0, 50), ("maxTrades", 0, 50), ("lossStreak", 0, 50)):
         if b.get(k) is not None and b.get(k) != "":
-            cur[k] = max(lo, min(hi, float(b[k]) if k == "riskUsd" else int(float(b[k]))))
+            cur[k] = max(lo, min(hi, float(b[k]) if k in ("riskUsd", "riskPct", "maxPosPct", "openRiskPct", "dayLossPct") else int(float(b[k]))))
+    if b.get("riskMode") in ("pct", "usd"):
+        cur["riskMode"] = b["riskMode"]
+    if "flattenOnLimit" in b:
+        cur["flattenOnLimit"] = bool(b["flattenOnLimit"])
     if isinstance(b.get("cfg"), dict):                 # a new strategy saved from the page
         cur["cfg"] = smc.clean(b["cfg"])
         cur["name"] = str(b.get("name") or "")[:60]
@@ -68,6 +76,17 @@ def view(sub):
     recs = sorted(db.q_prefix(db.upk(sub), POS), key=lambda r: r.get("t", ""))[-80:]
     out["trades"] = [{k: v for k, v in r.items() if k != "PK"} for r in recs]
     st = db.get(db.upk(sub), SK + "#TICK") or {}
+    if acct:
+        try:
+            a = account(daytrade.creds(sub))
+            if a:
+                out["account"] = a
+                recs_today = [r for r in recs if (r.get("t") or "")[:10] == today]
+                rs = risk_state(c, a, recs_today)
+                out["risk"] = {**rs, "openRisk": round(_open_risk(recs_today), 2), "perTrade": round(a["equity"] * c["riskPct"] / 100, 2) if c["riskMode"] == "pct" else c["riskUsd"],
+                               "maxOpen": round(a["equity"] * c["openRiskPct"] / 100, 2), "dayLimit": round(a["start"] * c["dayLossPct"] / 100, 2)}
+        except Exception as e:
+            out["accountError"] = str(e)[:120]
     out["lastTick"] = st.get("last")
     out["ticks"] = (st.get("log") or [])[-15:]
     out["today"] = today
@@ -84,13 +103,88 @@ def _px(v):
     return round(float(v), 2)
 
 
-def _qty(cfg, s):
-    risk = abs(s["entry"] - s["stop"])
-    if cfg["riskUsd"] > 0 and risk > 0:
-        q = int(cfg["riskUsd"] // risk)
+def account(c):
+    """{equity, start (yesterday's close equity), dayPct, buyingPower} of the paper account, or None."""
+    a = _alp(c, "GET", "/v2/account") or {}
+    try:
+        eq = float(a["equity"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    start = float(a.get("last_equity") or eq) or eq
+    return {"equity": eq, "start": start, "dayPct": round((eq - start) / start * 100, 3) if start else 0.0,
+            "buyingPower": float(a.get("buying_power") or 0) or None}
+
+
+def _open_risk(recs):
+    """$ at risk right now: what each pending / open trade loses if its stop is hit (after breakeven: 0)."""
+    out = 0.0
+    for r in recs:
+        if r.get("status") not in ("pending", "open"):
+            continue
+        q = float(r.get("filledQty") or r.get("qty") or 0)
+        px = float(r.get("fill") or r.get("entry"))
+        out += max(0.0, (px - float(r.get("stopNow") or r["stop"])) * r["dir"]) * q
+    return out
+
+
+def risk_state(cfg, acct, day_recs):
+    """The day's limits: -> {"ok": bool, "why": reason when new trades are blocked, "flatten": bool, ...}."""
+    st = {"ok": True, "why": None, "flatten": False}
+    done = [r for r in day_recs if r.get("status") not in ("canceled",) and (r.get("filledQty") or r.get("status") in ("open", "closing", "closed"))]
+    st["tradesToday"] = len(done)
+    closed = sorted((r for r in day_recs if r.get("status") == "closed" and r.get("R") is not None), key=lambda r: r.get("closedAt") or "")
+    streak = 0
+    for r in reversed(closed):
+        if r["R"] < 0:
+            streak += 1
+        else:
+            break
+    st["lossStreak"] = streak
+    if cfg["riskMode"] == "pct" and not acct:
+        st.update(ok=False, why="account value not available")
+        return st
+    if acct:
+        st["dayPct"] = acct["dayPct"]
+        if cfg["dayLossPct"] and acct["dayPct"] <= -cfg["dayLossPct"]:
+            st.update(ok=False, why=f"daily loss limit: {acct['dayPct']:.2f}% today (limit -{cfg['dayLossPct']:g}%)",
+                      flatten=bool(cfg.get("flattenOnLimit")))
+            return st
+    if cfg["maxTrades"] and len(done) >= cfg["maxTrades"]:
+        st.update(ok=False, why=f"{len(done)} trades today (max {cfg['maxTrades']})")
+    elif cfg["lossStreak"] and streak >= cfg["lossStreak"]:
+        st.update(ok=False, why=f"{streak} losses in a row today (stop after {cfg['lossStreak']})")
+    return st
+
+
+def size(cfg, s, acct, open_risk):
+    """Shares for a setup: risk per trade (% of the account value, or a fixed $) / the risk per share, then capped by
+    the position size (% of the account), the buying power, the total open risk and the max quantity.
+    -> (qty, note): qty 0 = not taken."""
+    per = abs(s["entry"] - s["stop"])
+    if per <= 0:
+        return 0, "no risk per share"
+    eq = (acct or {}).get("equity")
+    if cfg["riskMode"] == "pct":
+        if not eq:
+            return 0, "account value not available"
+        budget = eq * cfg["riskPct"] / 100
     else:
-        q = int(cfg["qty"] or 1)
-    return max(1, min(int(cfg["maxQty"]), q))
+        budget = float(cfg["riskUsd"] or 0) or per * float(cfg["qty"] or 1)
+    notes = [f"risk ${budget:,.0f}" + (f" ({cfg['riskPct']:g}% of ${eq:,.0f})" if cfg["riskMode"] == "pct" else "")]
+    q = int(budget // per)
+    caps = []
+    if eq:
+        caps.append((int(eq * cfg["maxPosPct"] / 100 // s["entry"]), f"position ≤ {cfg['maxPosPct']:g}% of the account"))
+        room = eq * cfg["openRiskPct"] / 100 - open_risk
+        caps.append((int(max(0.0, room) // per), f"open risk ≤ {cfg['openRiskPct']:g}% of the account (${open_risk:,.0f} already at risk)"))
+    if acct and acct.get("buyingPower"):
+        caps.append((int(acct["buyingPower"] * 0.95 // s["entry"]), "buying power"))
+    caps.append((int(cfg["maxQty"]), f"max qty {cfg['maxQty']}"))
+    for cap, why in caps:
+        if cap < q:
+            q = cap
+            notes.append(f"capped by {why}")
+    return max(0, q), "; ".join(notes)
 
 
 def _oco(c, sym, side_exit, qty, tp, stop):
@@ -165,6 +259,23 @@ def tick(sub, now=None):
     tf = P["tf"]
     pk = db.upk(sub)
     acts, log = [], []
+    try:
+        acct = account(c)
+    except Exception as e:
+        acct = None
+        acts.append(f"account: {str(e)[:100]}")
+    day_recs = [r for r in db.q_prefix(pk, POS) if (r.get("t") or "")[:10] == today]
+    risk = risk_state(cfg, acct, day_recs)
+    if risk["flatten"]:                                # daily loss limit hit: everything of the strategy closed
+        for r in [r for r in day_recs if r.get("status") in ("pending", "open")]:
+            for oid in [r.get("orderId")] + list(r.get("exitIds") or []):
+                _cancel(c, oid)
+            if r["status"] == "open":
+                time.sleep(0.5)
+                _alp(c, "DELETE", f"/v2/positions/{r['symbol']}")
+            db.update(pk, r["SK"], {"status": "closing" if r["status"] == "open" else "canceled", "exitWhy": risk["why"],
+                                    "why": risk["why"], "events": (r.get("events") or []) + [f"closed: {risk['why']}"]})
+            acts.append(f"{r['symbol']} closed: {risk['why']}")
     for sym in cfg["tickers"]:
         try:
             bs, waited, fresh = _bars_now(sub, sym, now, tf)
@@ -192,6 +303,10 @@ def tick(sub, now=None):
             active = [r for r in db.q_prefix(pk, f"{POS}{sym}#{today}") if r.get("status") in ("pending", "open")]
             if active or flat or not cfg["trade"] or hm >= P["endT"]:
                 continue
+            if not risk["ok"]:
+                if any(s["t"] not in recs and _waiting(s, last, tf, P) for s in out["setups"]):
+                    acts.append(f"{sym}: setup not taken: {risk['why']}")
+                continue
             # 2. a new setup on the candle that just closed
             for s in out["setups"]:
                 if s["t"] in recs:
@@ -203,7 +318,14 @@ def tick(sub, now=None):
                 if _held(c, sym):
                     acts.append(f"{sym}: setup {s['t'][11:16]} skipped (a position is already held)")
                     break
-                q = _qty(cfg, s)
+                all_recs = [r for r in db.q_prefix(pk, POS) if (r.get("t") or "")[:10] == today]
+                q, size_note = size(cfg, s, acct, _open_risk(all_recs))
+                if q < 1:
+                    acts.append(f"{sym}: setup {s['t'][11:16]} not taken: {size_note}")
+                    db.put({"PK": pk, "SK": f"{POS}{sym}#{s['t']}", "symbol": sym, "t": s["t"], "dir": s["dir"], "qty": 0, "entry": s["entry"],
+                            "stop": s["stop"], "tp1": s["tp1"], "tp2": s["tp2"], "status": "canceled", "why": f"size 0: {size_note}",
+                            "candle": last, "sentAt": iso(now_ny()), "events": [f"not taken: {size_note}"]})
+                    break
                 side = "buy" if s["dir"] > 0 else "sell"
                 if market_now:
                     o = _alp(c, "POST", "/v2/orders", {"symbol": sym, "qty": str(q), "side": side, "type": "market", "time_in_force": "day"}) or {}
@@ -214,7 +336,8 @@ def tick(sub, now=None):
                        "entry": s["entry"], "stop": s["stop"], "tp1": s["tp1"], "tp2": s["tp2"], "tp1Name": s.get("tp1Name"),
                        "tp2Name": s.get("tp2Name"), "part": s.get("part", P["partial"] if P["partialOn"] else 0), "pool": s.get("pool"),
                        "kind": "market" if market_now else "limit", "orderId": o.get("id"), "status": "pending", "candle": last,
-                       "sentAt": iso(now_ny()), "lagS": lag(), "events": [f"{'market' if market_now else 'limit'} {side} {q} @ {s['entry']} "
+                       "sentAt": iso(now_ny()), "lagS": lag(), "sizing": size_note, "equity": (acct or {}).get("equity"),
+                       "events": [f"size {q}: {size_note}", f"{'market' if market_now else 'limit'} {side} {q} @ {s['entry']} "
                                                                            f"(candle {last[11:16]}, sent {lag()}s after its close)"]}
                 if P["partialOn"] is False:
                     rec["part"] = 0
@@ -225,7 +348,7 @@ def tick(sub, now=None):
             acts.append(f"{sym}: {str(e)[:160]}")
     if real:
         st = db.get(pk, SK + "#TICK") or {}
-        entry = {"at": iso(now_ny()), "minute": hm, "took": round((now_ny().replace(tzinfo=None) - t_start).total_seconds(), 1), "syms": log, "actions": acts}
+        entry = {"at": iso(now_ny()), "minute": hm, "equity": (acct or {}).get("equity"), "dayPct": (acct or {}).get("dayPct"), "blocked": risk["why"], "took": round((now_ny().replace(tzinfo=None) - t_start).total_seconds(), 1), "syms": log, "actions": acts}
         db.put({"PK": pk, "SK": SK + "#TICK", "last": entry, "log": ((st.get("log") or []) + [entry])[-60:] if acts or hm[-1] == "0" else (st.get("log") or [])[-60:]})
     return {"actions": acts}
 

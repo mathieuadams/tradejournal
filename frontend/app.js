@@ -2054,6 +2054,24 @@ async function smcLiveSet(body) {
   try { S.smcLive = await api('/daytrade/smc/live', { method: 'PUT', body }); toast('Saved'); } catch (e) { toast(e.message); }
   render();
 }
+function smcRiskBox(L) {
+  const c = L.config || {}, a = L.account, r = L.risk || {}, m = v => '$' + fmtInt(v);
+  const num = (k, l, step, w, unit, tip) => `<label class="smc-rk" title="${esc(tip)}">${l} <input data-smclivef="${k}" type="number" step="${step}" value="${c[k] ?? ''}" style="width:${w}em">${unit}</label>`;
+  return `<div class="smc-risk"><div style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:.76rem">
+    <b>Risk</b><select data-smclivemode style="font-size:.76rem"><option value="pct" ${c.riskMode !== 'usd' ? 'selected' : ''}>% of the account value</option><option value="usd" ${c.riskMode === 'usd' ? 'selected' : ''}>fixed $</option></select>
+    ${c.riskMode === 'usd' ? num('riskUsd', 'risk a trade $', 10, 5.5, '', 'Dollars lost if the stop is hit') : num('riskPct', 'risk a trade', 0.05, 4.5, '%', 'Percent of the account value lost if the stop is hit: shares = (account × %) / (entry − stop)')}
+    ${num('maxPosPct', 'position ≤', 5, 4, '% of the account', 'The value of one position never above this share of the account')}
+    ${num('openRiskPct', 'open risk ≤', 0.1, 4, '%', 'All the trades open at once (QQQ and SPY move together) never risk more than this')}
+    ${num('dayLossPct', 'daily loss limit', 0.1, 4, '%', 'Down this much today (vs yesterday\'s close of the account): no new trade' )}
+    <label class="smc-rk" title="When the daily loss limit is hit, close what is open too"><input type="checkbox" data-smcliveflat ${c.flattenOnLimit !== false ? 'checked' : ''}> and close all</label>
+    ${num('maxTrades', 'max trades a day', 1, 3.5, '', '0 = no limit')}
+    ${num('lossStreak', 'stop after', 1, 3.5, ' losses in a row', '0 = never')}
+    ${num('maxQty', 'max qty', 1, 5, '', 'Never more shares than this')}</div>
+    ${a ? `<div style="font-size:.76rem;margin-top:3px">Account <b>${m(a.equity)}</b> · today <b class="${a.dayPct >= 0 ? 'gain' : 'loss'}">${a.dayPct >= 0 ? '+' : ''}${(+a.dayPct).toFixed(2)}%</b>
+      · ${c.riskMode === 'usd' ? `risk ${m(r.perTrade || c.riskUsd)} a trade` : `${c.riskPct}% = <b>${m(r.perTrade)}</b> a trade`} · open risk ${m(r.openRisk || 0)} of ${m(r.maxOpen)} · daily limit −${m(r.dayLimit)}
+      · ${r.tradesToday || 0} trade${r.tradesToday === 1 ? '' : 's'} today${r.lossStreak ? ` · ${r.lossStreak} loss${r.lossStreak > 1 ? 'es' : ''} in a row` : ''}
+      · ${r.ok === false ? `<b class="loss">new trades blocked: ${esc(r.why)}</b>` : '<span class="gain">new trades allowed</span>'}</div>` : L.connected ? `<div class="muted" style="font-size:.76rem">${esc(L.accountError || 'account value not read yet')}</div>` : ''}</div>`;
+}
 function smcLiveBox() {
   if (S.smcLive === undefined) { S.smcLive = null; setTimeout(loadSmcLive, 0); }
   const L = S.smcLive;
@@ -2073,9 +2091,8 @@ function smcLiveBox() {
     <b>Live (paper)</b>${L.connected ? `<span class="muted" style="font-size:.76rem">day-trading paper account · data feed ${esc(L.feed || 'iex')}</span>` : '<span class="loss" style="font-size:.8rem">connect the day-trading paper account first (Day trading tab)</span>'}
     <button class="btn ${c.enabled ? 'coachbtn' : ''}" data-smclive="enabled" style="font-size:.78rem" title="Run the strategy every minute (the log below fills even without orders)">${c.enabled ? '✓ Watching' : 'Watch'}</button>
     <button class="btn ${c.trade ? 'coachbtn' : ''}" data-smclive="trade" style="font-size:.78rem" title="Send the orders to the paper account">${c.trade ? '✓ Sending orders' : 'Send orders'}</button>
-    <label style="font-size:.76rem">risk $<input data-smclivef="riskUsd" type="number" value="${c.riskUsd ?? 100}" style="width:5.5em"></label>
-    <label style="font-size:.76rem">max qty<input data-smclivef="maxQty" type="number" value="${c.maxQty ?? 500}" style="width:5em"></label>
     <span class="muted" style="font-size:.74rem">tickers ${esc((c.tickers || []).join(' '))}</span></div>
+    ${smcRiskBox(L)}
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0;font-size:.78rem"><b>Strategy:</b> ${c.savedAt ? `${esc(c.name || 'saved')} <span class="muted">(${P.tf}m · saved ${esc(c.savedAt.slice(0, 16).replace('T', ' '))})</span>` : '<span class="muted">none saved yet</span>'}
       ${same ? (c.savedAt ? '<span class="gain">= the blocks on the chart</span>' : '') : `<span class="muted">the blocks on the chart differ</span>`}
       <input data-smclivename placeholder="name" value="${esc(S.smcLiveName || '')}" style="width:10em;font-size:.76rem"><button class="btn coachbtn" data-smclivesave style="font-size:.76rem">Save the chart's blocks as the live strategy</button></div>
@@ -2169,7 +2186,7 @@ function smcStressBox() {
 function smcPanel(d, id) {
   const f = d.funnel || {}, st = d.stats || {}, w = f.why || {}, P = d.params || {};
   const Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`;
-  const step = (a, b, l) => `<span class="smc-f"><b>${b}</b> ${l}${a != null && a > 0 ? ` <span class="muted">(${Math.round(b / a * 100)}%)</span>` : ''}</span>`;
+  const step = (a, b, l) => `<span class="smc-f"><b>${b}</b> ${l}${a != null && a > 0 && b <= a ? ` <span class="muted">(${Math.round(b / a * 100)}%)</span>` : ''}</span>`;
   const fun = `<div class="smc-funnel">${step(null, f.sweeps || 0, 'sweeps')}→${step(f.sweeps, f.mss || 0, 'with MSS')}→${step(f.mss, f.fvg || 0, 'with FVG')}→${step(f.fvg, f.filled || 0, 'retraced & filled')}→${step(f.filled, f.wins || 0, 'winners')}
     <span class="muted" style="font-size:.76rem">· stopped at: ${Object.entries(w).filter(([, v]) => v).map(([kk, v]) => `${esc(kk)} ${v}`).join(' · ') || '—'}</span>
     <span style="margin-left:auto">${st.n ? `${st.n} trades · win ${st.win}% · avg ${Rf(st.avgR)} · total ${Rf(st.totR)}${st.pf ? ` · PF ${st.pf}` : ''}` : 'no trade in these days'}</span></div>`;
@@ -5468,6 +5485,8 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-smcstu]')) { S.smcStU = e.target.value; if (e.target.value === 'main' && !S.ww) loadWatch(); }
   if (e.target.matches && e.target.matches('[data-smcstdays]')) S.smcStDays = +e.target.value;
   if (e.target.matches && e.target.matches('[data-smclivef]')) smcLiveSet({ [e.target.dataset.smclivef]: +e.target.value });
+  if (e.target.matches && e.target.matches('[data-smclivemode]')) smcLiveSet({ riskMode: e.target.value });
+  if (e.target.matches && e.target.matches('[data-smcliveflat]')) smcLiveSet({ flattenOnLimit: e.target.checked });
   if (e.target.matches && e.target.matches('[data-smcoptdays]')) smcOptSet({ days: +e.target.value });
   if (e.target.matches && e.target.matches('[data-smcoptuni]')) smcOptSet({ universe: e.target.value, start: { ...S.smcCfg, tf: S.smcTf } });
 });
