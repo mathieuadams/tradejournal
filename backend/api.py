@@ -487,6 +487,13 @@ def daytrade_smc_stress(sub, claims, body, q):
     return smc.stress(sub, b.get("t"), b.get("days") or 30, b.get("cfg") if isinstance(b.get("cfg"), dict) else None, float(b.get("cost") or 0.05))
 
 
+@route("PUT", "/daytrade/feed")
+def daytrade_feed(sub, claims, body, q):
+    """The day-trading account's market data: iex (free) or sip (Algo Trader Plus, real time)."""
+    import daytrade
+    return daytrade.set_feed(sub, (body or {}).get("feed"))
+
+
 @route("GET", "/daytrade/smc/live")
 def daytrade_smc_live(sub, claims, body, q):
     import smclive

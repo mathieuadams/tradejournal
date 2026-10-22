@@ -118,7 +118,11 @@ INDEX = ("QQQ", "SPY")
 def load_index(sub, days):
     """QQQ and SPY: 1-minute candles (pre-market included) of the last `days` days, ready for 1m and 5m."""
     import daytrade
-    ck = ("index", sub, days, now_ny().strftime("%Y-%m-%d"))
+    try:
+        feed = (daytrade.data_creds(sub) or {}).get("feed")
+    except Exception:
+        feed = None
+    ck = ("index", sub, days, now_ny().strftime("%Y-%m-%d"), feed)
     if _CACHE.get("k") == ck:
         return _CACHE["v"]
     with ThreadPoolExecutor(max_workers=2) as ex:

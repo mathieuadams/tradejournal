@@ -5717,6 +5717,25 @@ def test_smart_money_risk_from_account_value():
     assert smclive.risk_state(cfg, acct, recs[:1])["ok"]
     assert smclive._open_risk([{"status": "open", "dir": 1, "qty": 10, "filledQty": 10, "fill": 500.0, "entry": 500.0, "stop": 499.0, "stopNow": 500.0}]) == 0
 
+def test_day_account_sip_feed():
+    """Algo Trader Plus: the day account's feed set to SIP reads up to the last minute; free SIP stays 16 minutes late."""
+    import daytrade, alpaca, datetime as dt
+    seen = []
+    saved = (daytrade.data_creds, alpaca.bars)
+    try:
+        alpaca.bars = lambda c, sym, a, b, tf, max_pages=10, feed=None: seen.append((b, feed)) or []
+        now = dt.datetime(2026, 10, 22, 10, 0)
+        daytrade.data_creds = lambda sub: {"key": "k", "secret": "s", "feed": "sip"}
+        daytrade.minute_bars("u", "QQQ", 2, now)
+        assert seen[-1] == ("2026-10-22T09:59:00", "sip")
+        daytrade.data_creds = lambda sub: {"key": "k", "secret": "s", "feed": "iex"}
+        daytrade.minute_bars("u", "QQQ", 2, now, feed="sip")
+        assert seen[-1] == ("2026-10-22T09:44:00", "sip")
+        daytrade.minute_bars("u", "QQQ", 2, now)
+        assert seen[-1] == ("2026-10-22T09:59:00", "iex")
+    finally:
+        daytrade.data_creds, alpaca.bars = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

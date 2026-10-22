@@ -236,7 +236,8 @@ def minute_bars(sub, sym, days, now=None, feed=None):
     now = now or now_ny().replace(tzinfo=None)
     start = (now - timedelta(days=int(days * 1.5) + 4)).replace(hour=4, minute=0, second=0, microsecond=0)
     fd = feed or c.get("feed", "iex")
-    end = now - timedelta(minutes=1) if fd == "iex" else now - timedelta(minutes=16)   # SIP: not the last 15 minutes
+    live = fd == "iex" or (fd == "sip" and c.get("feed") == "sip")       # SIP in real time: the paid plan (set on the account)
+    end = now - timedelta(minutes=1) if live else now - timedelta(minutes=16)   # free SIP: not the last 15 minutes
     pages = max(10, int(days * 1000 / 10000) + 3)
     out = alpaca.bars(c, sym, start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S"), 1, max_pages=pages, feed=fd)
     out = [b for b in out if "04:00" <= b["t"][11:16] < "16:00"]         # after-hours not used
@@ -1523,6 +1524,32 @@ def connect(sub, key, secret):
     if main.get("keyHint") and main.get("keyHint") == key.strip()[-4:]:
         raise BadRequest("These look like the keys of your main Alpaca account: use a second paper account for day trading.")
     return view(sub)
+
+
+def set_feed(sub, feed):
+    """The market data of the day-trading account: "iex" (free: the IEX exchange only) or "sip" (Algo Trader Plus:
+    every exchange, in real time). SIP is checked first with a request for the last minutes."""
+    import alpaca
+    c = creds(sub)
+    if not c:
+        raise BadRequest("Connect the day-trading paper account first.")
+    if feed not in ("iex", "sip"):
+        raise BadRequest("feed: iex or sip")
+    if feed == "sip":
+        now = now_ny().replace(tzinfo=None)
+        try:
+            alpaca.bars({**c, "feed": "sip"}, "SPY", (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S"),
+                        now.strftime("%Y-%m-%dT%H:%M:%S"), 1, max_pages=1, feed="sip")
+        except Exception as e:
+            raise BadRequest("Alpaca refused real-time SIP data for these keys: the Algo Trader Plus plan isn't active on this "
+                             f"account yet (or on another account). ({str(e)[:80]})")
+    alpaca.save_creds(sub, c["key"], c["secret"], c.get("env") or "paper", feed, sk=CRED_SK)
+    try:                                               # the strategy search saw the other feed's candles: it starts again
+        import smcopt
+        smcopt.save_cfg(sub, {"reset": True})
+    except Exception as e:
+        print("optimizer reset failed", e)
+    return {"feed": feed}
 
 
 def _qty(P, s):

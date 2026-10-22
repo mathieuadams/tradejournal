@@ -1880,7 +1880,7 @@ function flowTabs(L, added) {
 }
 /* ---------- Smart money: liquidity -> sweep -> MSS -> FVG -> retracement, step by step (backend smc.py) ---------- */
 const SMC_LY = [['smcLv', 'Liquidity (PDH / PDL, PM, OR, swings)'], ['smcSw', 'Sweeps'], ['smcMss', 'Market structure shift'], ['smcFvg', 'Fair value gaps (of the setups)'], ['smcGap', 'Every fair value gap (setup or not)'], ['smcOb', 'Order blocks'], ['smcTr', 'Trades (entry / stop / targets)']];
-S.smcTf = S.smcTf || 5; S.smcDays = S.smcDays || 3;
+S.smcTf = S.smcTf || 1; S.smcDays = S.smcDays || 10;          // default: 1-minute candles, 10 days
 try { S.smcCfg = JSON.parse(localStorage.getItem('smcCfg') || '{}') || {}; } catch (e) { S.smcCfg = {}; }
 const smcOn = k => S.fcLayers[k] !== false;
 function smcLayer(m, c) {                          // drawn under the candles
@@ -2088,7 +2088,7 @@ function smcLiveBox() {
     <td><details><summary style="cursor:pointer;font-size:.72rem">log</summary><ol style="margin:2px 0;padding-left:16px;font-size:.72rem">${(r.events || []).map(e => `<li>${esc(e)}</li>`).join('')}</ol></details></td></tr>`;
   const table = rs => rs.length ? `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>Setup</th><th></th><th></th><th>Order</th><th class="r">Entry</th><th class="r">Fill</th><th class="r">Slip</th><th class="r">Lag</th><th>Status</th><th class="r">R</th><th class="r">Engine R</th><th></th></tr></thead><tbody>${rs.map(tr).join('')}</tbody></table></div>` : '';
   return `<div class="smc-stress" style="border-color:${c.enabled && c.trade ? 'var(--gain)' : 'var(--line)'}"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
-    <b>Live (paper)</b>${L.connected ? `<span class="muted" style="font-size:.76rem">day-trading paper account · data feed ${esc(L.feed || 'iex')}</span>` : '<span class="loss" style="font-size:.8rem">connect the day-trading paper account first (Day trading tab)</span>'}
+    <b>Live (paper)</b>${L.connected ? `<span class="muted" style="font-size:.76rem">day-trading paper account · data</span><select data-smcfeed style="font-size:.76rem" title="Market data of the day-trading account: switching restarts the optimizer (other candles)"><option value="iex" ${L.feed !== 'sip' ? 'selected' : ''}>IEX only (free)</option><option value="sip" ${L.feed === 'sip' ? 'selected' : ''}>All exchanges, real time (Algo Trader Plus)</option></select>` : '<span class="loss" style="font-size:.8rem">connect the day-trading paper account first (Day trading tab)</span>'}
     <button class="btn ${c.enabled ? 'coachbtn' : ''}" data-smclive="enabled" style="font-size:.78rem" title="Run the strategy every minute (the log below fills even without orders)">${c.enabled ? '✓ Watching' : 'Watch'}</button>
     <button class="btn ${c.trade ? 'coachbtn' : ''}" data-smclive="trade" style="font-size:.78rem" title="Send the orders to the paper account">${c.trade ? '✓ Sending orders' : 'Send orders'}</button>
     <span class="muted" style="font-size:.74rem">tickers ${esc((c.tickers || []).join(' '))}</span></div>
@@ -5486,6 +5486,9 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-smcstdays]')) S.smcStDays = +e.target.value;
   if (e.target.matches && e.target.matches('[data-smclivef]')) smcLiveSet({ [e.target.dataset.smclivef]: +e.target.value });
   if (e.target.matches && e.target.matches('[data-smclivemode]')) smcLiveSet({ riskMode: e.target.value });
+  if (e.target.matches && e.target.matches('[data-smcfeed]')) { const f = e.target.value;
+    api('/daytrade/feed', { method: 'PUT', body: { feed: f } }).then(() => { toast(f === 'sip' ? 'Real-time SIP data on: the optimizer starts again' : 'IEX data'); S.smcDs = {}; S.smcOpt = undefined; loadSmcLive(); })
+      .catch(err => { toast(err.message); loadSmcLive(); }); }
   if (e.target.matches && e.target.matches('[data-smcliveflat]')) smcLiveSet({ flattenOnLimit: e.target.checked });
   if (e.target.matches && e.target.matches('[data-smcoptdays]')) smcOptSet({ days: +e.target.value });
   if (e.target.matches && e.target.matches('[data-smcoptuni]')) smcOptSet({ universe: e.target.value, start: { ...S.smcCfg, tf: S.smcTf } });
