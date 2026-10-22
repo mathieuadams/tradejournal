@@ -5461,6 +5461,9 @@ def test_smart_money_building_blocks():
     no_day = smc.detect(bars, {"tf": 1, "poolPD": False, "poolPM": False, "poolOR": False})
     assert not any(l["name"] in ("PDH", "PDL", "PM high", "PM low", "ORH", "ORL") for l in no_day["levels"])
     assert smc.clean({"fvgFail": "true", "timeBars": "7", "entryAt": "bogus"})["fvgFail"] is True and smc.clean({"entryAt": "bogus"})["entryAt"] == "edge"
+    for out in (base, mkt, early):                     # one trade at a time, whatever the side
+        tr = sorted((s for s in out["setups"] if s.get("fillT")), key=lambda s: s["fillT"])
+        assert all(b_["fillT"] > a_["exitT"] for a_, b_ in zip(tr, tr[1:])), [(x["fillT"], x["exitT"]) for x in tr]
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

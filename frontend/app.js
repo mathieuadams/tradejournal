@@ -1885,28 +1885,32 @@ try { S.smcCfg = JSON.parse(localStorage.getItem('smcCfg') || '{}') || {}; } cat
 const smcOn = k => S.fcLayers[k] !== false;
 function smcLayer(m, c) {                          // drawn under the candles
   const { X, Y, at, n, lo, hi, L, W, Rr, fs, bars, sel } = c, inV = v => v >= lo && v <= hi, ix = t => (t ? at(t) : null);
-  const x0of = t => { const i = t < bars[0].t ? 0 : ix(t); return i == null ? null : X(i); }, x1of = t => { const i = !t || t > bars[n - 1].t ? n - 1 : ix(t); return i == null ? X(n - 1) : X(i); };
+  const first = bars[0].t, last = bars[n - 1].t;
+  const vis = (t0, t1) => t0 && t0 <= last && (!t1 || t1 >= first);   // only what overlaps the view (zoomed in: the rest is off screen)
+  const x0of = t => { if (t > last) return null; const i = t < first ? 0 : ix(t); return i == null ? null : X(i); };
+  const x1of = t => { if (t && t < first) return null; const i = !t || t > last ? n - 1 : ix(t); return i == null ? X(n - 1) : X(i); };
   let g = '';
-  if (smcOn('smcTr')) (m.setups || []).filter(s => s.fillT).forEach(s => {   // the trade: target zone (green) and risk zone (red)
-    const a = x0of(s.fillT), b = x1of(s.exitT); if (a == null) return;
+  if (smcOn('smcTr')) (m.setups || []).filter(s => s.fillT && vis(s.fillT, s.exitT)).forEach(s => {   // the trade: target zone (green) and risk zone (red)
+    const a = x0of(s.fillT), b = x1of(s.exitT); if (a == null || b == null) return;
     const up = s.dir > 0, yE = Y(s.entry), yS = Y(s.stop), yT = Y(s.tp2), w = Math.max(4, b - a), on = sel && sel === s.t;
     g += `<rect x="${a}" y="${Math.min(yE, yT)}" width="${w}" height="${Math.abs(yT - yE)}" fill="#14b8a6" fill-opacity="${on ? .3 : .16}"><title>${esc(`${s.side} ${s.t.slice(5, 16).replace('T', ' ')} · entry ${s.entry} · TP1 ${s.tp1Name} ${s.tp1} · TP2 ${s.tp2Name} ${s.tp2} · ${s.R >= 0 ? '+' : ''}${s.R}R`)}</title></rect>`
       + `<rect x="${a}" y="${Math.min(yE, yS)}" width="${w}" height="${Math.abs(yS - yE)}" fill="#f43f5e" fill-opacity="${on ? .28 : .15}"><title>stop ${s.stop}</title></rect>`
       + `<line x1="${a}" x2="${a + w}" y1="${Y(s.tp1)}" y2="${Y(s.tp1)}" stroke="#0f766e" stroke-dasharray="4 3"/><text x="${a + 3}" y="${Y(s.tp1) - 3}" font-size="${fs - 2}" fill="#0f766e">TP1 ${esc(s.tp1Name)}</text>`
       + `<text x="${a + 3}" y="${(up ? Math.min(yE, yT) : Math.max(yE, yT)) + (up ? 11 : -3)}" font-size="${fs - 2}" font-weight="700" fill="#0f766e">${s.R >= 0 ? '+' : ''}${(+s.R).toFixed(2)}R</text>`; });
-  if (smcOn('smcLv')) (m.levels || []).forEach(l => { if (!inV(l.p)) return; const a = x0of(l.t0); if (a == null) return; const b = x1of(l.t1), y = Y(l.p);
+  if (smcOn('smcLv')) (m.levels || []).forEach(l => { if (!inV(l.p) || !vis(l.t0, l.t1)) return; const a = x0of(l.t0), b = x1of(l.t1); if (a == null || b == null) return; const y = Y(l.p);
     const col = l.side === 'buy' ? '#2563eb' : '#dc2626', major = !/swing/.test(l.name);
     g += `<line x1="${a}" x2="${b}" y1="${y}" y2="${y}" stroke="${col}" stroke-width="${major ? 1.4 : 1}" ${l.swept ? 'stroke-dasharray="5 3"' : ''} opacity="${major ? .9 : .55}"><title>${esc(`${l.side === 'buy' ? 'Buy-side' : 'Sell-side'} liquidity · ${l.name} ${l.p}${l.swept ? ' · swept ' + l.t1.slice(11, 16) : ''}`)}</title></line>`
       + (major || /EQ/.test(l.name) ? `<text x="${Math.max(a, L) + 2}" y="${y + (l.side === 'buy' ? -3 : 11)}" font-size="${fs - 2}" fill="${col}">${esc(l.name)}</text>` : ''); });
-  if (smcOn('smcOb')) (m.obs || []).forEach(o => { const a = x0of(o.t0); if (a == null || !inV(o.lo)) return; const y0 = Y(o.hi), y1 = Y(o.lo);
+  if (smcOn('smcOb')) (m.obs || []).forEach(o => { if (o.t0 < first || o.t0 > last) return; const a = x0of(o.t0); if (a == null || !inV(o.lo)) return; const y0 = Y(o.hi), y1 = Y(o.lo);
     g += `<rect x="${a - 2}" y="${y0}" width="${Math.max(6, (W - Rr - L) / 60)}" height="${Math.max(2, y1 - y0)}" fill="#3b82f6" fill-opacity=".35"><title>Order block ${o.lo}–${o.hi}</title></rect>`; });
-  if (smcOn('smcFvg')) (m.fvgs || []).forEach(f => { const a = x0of(f.t0); if (a == null) return; const s = (m.setups || []).find(x => x.fvg && x.fvg.t0 === f.t0);
-    const b = x1of(s && (s.exitT || s.fillT) ? (s.exitT || s.fillT) : f.t1), y0 = Y(Math.min(hi, f.hi)), y1 = Y(Math.max(lo, f.lo)), col = f.dir > 0 ? '#eab308' : '#f43f5e';
+  if (smcOn('smcFvg')) (m.fvgs || []).forEach(f => { const s = (m.setups || []).find(x => x.fvg && x.fvg.t0 === f.t0), t1 = s && (s.exitT || s.fillT) ? (s.exitT || s.fillT) : f.t1;
+    if (!vis(f.t0, t1)) return; const a = x0of(f.t0); if (a == null) return;
+    const b = x1of(t1); if (b == null) return; const y0 = Y(Math.min(hi, f.hi)), y1 = Y(Math.max(lo, f.lo)), col = f.dir > 0 ? '#eab308' : '#f43f5e';
     g += `<rect x="${a}" y="${y0}" width="${Math.max(4, b - a)}" height="${Math.max(2, y1 - y0)}" fill="${col}" fill-opacity=".28" stroke="${col}" stroke-opacity=".6"><title>${f.dir > 0 ? 'Bullish' : 'Bearish'} FVG ${f.lo}–${f.hi}</title></rect>`
       + `<text x="${a + 2}" y="${y0 - 2}" font-size="${fs - 2}" fill="${col}">${f.dir > 0 ? '+' : '−'}FVG</text>`; });
-  if (smcOn('smcMss')) (m.mss || []).forEach(x => { const a = x0of(x.t0), b = x1of(x.t); if (a == null || !inV(x.p)) return; const y = Y(x.p);
+  if (smcOn('smcMss')) (m.mss || []).forEach(x => { if (!vis(x.t0, x.t)) return; const a = x0of(x.t0), b = x1of(x.t); if (a == null || b == null || !inV(x.p)) return; const y = Y(x.p);
     g += `<line x1="${a}" x2="${b}" y1="${y}" y2="${y}" stroke="var(--ink)" stroke-width="1.2" stroke-dasharray="2 2"/><text x="${b - 2}" y="${y - 4}" text-anchor="end" font-size="${fs - 1}" font-weight="700" fill="var(--ink)">MSS</text>`; });
-  if (smcOn('smcSw')) (m.sweeps || []).forEach(w => { const i = ix(w.t); if (i == null) return; const bb = bars[i], y = w.dir > 0 ? Y(bb.l) + 12 : Y(bb.h) - 12;
+  if (smcOn('smcSw')) (m.sweeps || []).forEach(w => { if (w.t < first || w.t > last) return; const i = ix(w.t); if (i == null) return; const bb = bars[i], y = w.dir > 0 ? Y(bb.l) + 12 : Y(bb.h) - 12;
     g += `<text x="${X(i)}" y="${y}" text-anchor="middle" font-size="${fs}" fill="${w.dir > 0 ? '#dc2626' : '#2563eb'}">✕<title>${esc(`${w.name} ${w.p} swept ${w.t.slice(11, 16)}`)}</title></text>`; });
   return g;
 }

@@ -156,7 +156,7 @@ def _day(bars, atr, ix, pools0, P, out):
         swings.append({"name": ("EQH" if eq else "swing high") if kind == "high" else ("EQL" if eq else "swing low"), "p": p,
                        "side": "buy" if kind == "high" else "sell", "t0": bars[i]["t"], "born": conf + 1, "swept": None, "at": i})
     pools += [q for q in swings if not P["eqOnly"] or q["name"] in ("EQH", "EQL")]
-    busy_until = {1: -1, -1: -1}                       # one setup at a time per side
+    busy = [-1]                                        # one setup at a time (either side): nothing new until it is done
     n_day = 0
     n = len(ix)
     for pos in range(n):
@@ -179,7 +179,7 @@ def _day(bars, atr, ix, pools0, P, out):
                 sw_i = ix[pos + 1]
             if not back:
                 continue                               # broke through and stayed: not a sweep
-            if (side > 0 and not P["longs"]) or (side < 0 and not P["shorts"]) or i <= busy_until[side]:
+            if (side > 0 and not P["longs"]) or (side < 0 and not P["shorts"]) or i <= busy[0]:
                 continue
             if not (P["startT"] <= hm < P["endT"]):
                 continue
@@ -196,7 +196,7 @@ def _day(bars, atr, ix, pools0, P, out):
             if s.get("ob"):
                 out["obs"].append(s["ob"])
             out["setups"].append(s)
-            busy_until[side] = s.get("_end", sw_i)
+            busy[0] = s.get("_end", sw_i)
     for p in pools:
         out["levels"].append({"name": p["name"], "p": round(p["p"], 4), "side": p["side"], "t0": p["t0"],
                               "t1": bars[p["swept"]]["t"] if p["swept"] is not None else t_end, "swept": p["swept"] is not None})
@@ -212,8 +212,14 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
     a = atr[sw_i] or 0
     s = {"dir": side, "side": "long" if up else "short", "t": bars[sw_i]["t"], "pool": pool["name"], "poolP": f(pool["p"]), "ext": f(ext), "steps": []}
     step = lambda n, ok, name, text: s["steps"].append({"n": n, "ok": ok, "name": name, "text": text})
-    stop_here = (lambda status, n, name, text, end=None: (s.update(status=status), step(n, False, name, text),
-                                                          s.__setitem__("_end", end) if end is not None else None, s)[-1])
+    def stop_here(status, n, name, text, end=None):
+        s["status"] = status
+        step(n, False, name, text)
+        if end is not None:
+            s["_end"] = end
+            if s.get("fvg"):                           # the gap is drawn until the setup gave up
+                s["fvg"]["t1"] = bars[end]["t"]
+        return s
     step(1, True, "Liquidity swept", f"{pool['name']} {pool['p']:.2f} taken at {bars[ix[pos]]['t'][11:16]} ({'low' if up else 'high'} {ext:.2f}), "
                                      f"closed back {'above' if up else 'under'} it")
     k0 = ix.index(sw_i)
