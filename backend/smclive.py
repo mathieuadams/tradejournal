@@ -485,7 +485,10 @@ def speed_test(sub, asked_at=None, t0=None, loaded=None, cold=False, sym="BTC/US
         out["buyPx"], qty = float(x["filled_avg_price"]), x["filled_qty"]
         out["buyAlpacaMs"] = _alpaca_ms(x)
         t2 = time.time()
-        o2, notes = _send(c, {"symbol": sym, "qty": str(qty), "side": "sell", "type": "market", "time_in_force": "gtc"})
+        try:                                           # close the position (the crypto fee leaves a bit less than the fill)
+            o2 = _alp(c, "DELETE", f"/v2/positions/{sym.replace('/', '')}") or None
+        except Exception as e:
+            o2, out["sellError"] = None, str(e)[:160]
         tm.mark("sell accepted by Alpaca" if o2 else "sell refused")
         out["sellAcceptMs"] = round((time.time() - t2) * 1000)
         if o2:

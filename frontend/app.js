@@ -2161,7 +2161,8 @@ function smcSpeedBox(x) {
   const ms = v => v == null ? '—' : `<b>${fmtInt(v)} ms</b>`;
   return `<span style="font-size:.74rem">${esc((x.at || '').slice(11, 19))} ${x.status === 'failed' ? `<span class="loss">${esc(x.error || 'failed')}</span>` : ''}
     ${x.buyAcceptMs != null ? `· buy accepted ${ms(x.buyAcceptMs)} · filled (seen) ${ms(x.buyFillMs)}${x.buyAlpacaMs != null ? ` (Alpaca ${ms(x.buyAlpacaMs)})` : ''} @ ${x.buyPx}` : ''}
-    ${x.sellAcceptMs != null ? `· sell accepted ${ms(x.sellAcceptMs)} · filled ${ms(x.sellFillMs)}${x.sellAlpacaMs != null ? ` (Alpaca ${ms(x.sellAlpacaMs)})` : ''} @ ${x.sellPx ?? '—'}` : ''}</span>
+    ${x.sellError ? `· <span class="loss">sell: ${esc(x.sellError)}</span>` : ''}
+    ${x.sellAcceptMs != null && !x.sellError ? `· sell accepted ${ms(x.sellAcceptMs)} · filled ${ms(x.sellFillMs)}${x.sellAlpacaMs != null ? ` (Alpaca ${ms(x.sellAlpacaMs)})` : ''} @ ${x.sellPx ?? '—'}` : ''}</span>
     ${(x.timing || []).length ? `<div style="font-size:.7rem;display:flex;flex-wrap:wrap;gap:3px;width:100%">${x.timing.map(([n, t]) => `<span class="exchip" style="font-size:.7rem">${esc(n)} <b>${t >= 0 ? '+' : ''}${(+t).toFixed(2)}s</b></span>`).join('')}<span class="muted">(seconds after the click)</span></div>` : ''}`;
 }
 function smcCheckBox() {
