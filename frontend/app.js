@@ -1997,7 +1997,7 @@ function vChartSMC() {
     const st = d.stats || {}, sel = S.smcSel && S.smcSel.startsWith(sym + '|') ? S.smcSel.slice(sym.length + 1) : null;
     return `<div class="smc-one" style="width:${W}px"><div style="display:flex;gap:8px;align-items:baseline;font-size:.82rem;margin:2px 0"><b style="font-size:1rem">${sym}</b>
       <span class="muted">${st.n ? `${st.n} trades · win ${st.win}% · avg ${(st.avgR > 0 ? '+' : '') + (+st.avgR).toFixed(2)}R · total ${(st.totR > 0 ? '+' : '') + (+st.totR).toFixed(2)}R` : 'no trade in these days'}</span></div>
-      ${fcSvg({ bars: d.bars, interval: d.interval, smc: d }, id, { W, H, smc: true, smcOnly: true, padRight: 40, smcSel: sel })}${fcNav(id, d.bars, W, 'smc')}</div>`; };
+      ${fcSvg({ bars: d.bars, interval: d.interval, smc: d }, id, { W, H, smc: true, smcOnly: true, padRight: 100, smcSel: sel })}${fcNav(id, d.bars, W, 'smc')}</div>`; };
   const m = smcMerged();
   const main = `<div style="display:flex;gap:10px;flex-wrap:${narrow ? 'wrap' : 'nowrap'}">${SMC_PAIR.map(one).join('')}</div>${m ? smcPanel(m, 'smc-pair') : ''}`;
   return `<div class="fcf">${head}<div class="fcf-body">${side ? chLeft([['Smart money', SMC_LY]]) : ''}<div class="fcf-main">${main}</div></div></div>`;
