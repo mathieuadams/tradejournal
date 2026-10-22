@@ -5556,6 +5556,30 @@ def test_smart_money_optimizer():
     own = {(f["t0"], f["dir"]) for f in out["fvgs"]}
     assert own <= {(gp["t0"], gp["dir"]) for gp in out["gaps"]} or not own
 
+def test_smart_money_no_look_ahead():
+    """The fill never comes before the gap exists, a market entry never trades its own candle, and on a random walk
+    with market entries the average R stays near 0."""
+    import smc, random
+    random.seed(11)
+    bars, p = [], 500.0
+    for d in range(40):
+        for m in range(330, 960):
+            o = p
+            p += random.gauss(0, .15)
+            bars.append({"t": f"2025-{1 + d // 25:02d}-{1 + d % 25:02d}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, p) + abs(random.gauss(0, .05)), "l": min(o, p) - abs(random.gauss(0, .05)), "c": p, "v": 1})
+    for entry in ("edge", "ce", "market"):
+        for mss in (True, False):
+            out = smc.detect(bars, {"tf": 1, "fvgMin": 0.1, "entryAt": entry, "mssOn": mss})
+            pos = {b["t"]: i for i, b in enumerate(out["bars"])}
+            for s_ in out["setups"]:
+                if not s_.get("fillT") or not s_.get("fvg"):
+                    continue
+                assert pos[s_["fillT"]] >= pos[s_["fvg"]["t0"]] + 2 + (entry != "market"), (entry, mss, s_["fvg"]["t0"], s_["fillT"])
+                if entry == "market":
+                    assert pos[s_["exitT"]] > pos[s_["fillT"]] or s_["exitWhy"] == "end of day"
+    rs = [s_["R"] for s_ in smc.detect(bars, {"tf": 1, "fvgMin": 0.1, "entryAt": "market"})["setups"] if s_.get("R") is not None]
+    assert len(rs) > 30 and abs(sum(rs) / len(rs)) < 0.2, (len(rs), sum(rs) / len(rs))
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -21,6 +21,7 @@ import smc
 from util import iso, now_ny
 
 SK = "SMCOPT"
+VERSION = 2                                            # 2: no fill before the FVG's 3rd candle closed (look-ahead fixed)
 COST = 0.05
 MIN_TRADES = 80
 MONTH_SHARE = 0.35
@@ -253,6 +254,9 @@ def fitness(r, need=MIN_TRADES):
 def state(sub):
     r = db.get(db.upk(sub), SK) or {}
     st = json.loads(r["data"]) if r.get("data") else {}
+    if st and st.get("v") != VERSION:                  # scores of an older trade simulation: tried again
+        st.update(top=[], seen={}, evals=0, log=[])
+    st["v"] = VERSION
     for k, v in (("on", False), ("days", 250), ("universe", "index"), ("evals", 0), ("top", []), ("seen", {}), ("log", []), ("runs", 0)):
         st.setdefault(k, v)
     return st

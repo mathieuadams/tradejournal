@@ -285,8 +285,10 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
         size = hi_ - lo_
         if size > 0 and size >= P["fvgMin"] * (atr[ix[q - 1]] or 0) and (best is None or size > best[2]):
             best = (j2, j, size, lo_, hi_)
+    k_q = ix.index(mss_j)                                # the candle where the setup is known (the MSS, or the gap's 3rd candle)
     if best:
         j2, j, size, glo, ghi = best
+        k_q = max(k_q, ix.index(j))
         s["fvg"] = {"t0": bars[j2]["t"], "t1": t_end, "lo": f(glo), "hi": f(ghi), "dir": side}
         step(3, True, "Fair value gap", f"{'bullish' if up else 'bearish'} FVG {glo:.2f}–{ghi:.2f}" + (f" ({size / a:.2f} ATR)" if a else "")
                                         + f" at {bars[ix[ix.index(j) - 1]]['t'][11:16]}")
@@ -315,7 +317,7 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
     elif how == "ob":
         entry, where = (s["ob"]["hi"] if up else s["ob"]["lo"]), "the order block"
     else:
-        entry, where = bars[mss_j]["c"], "the close of the MSS candle"
+        entry, where = bars[ix[k_q]]["c"], "the close of the MSS candle" if ix[k_q] == mss_j else "the close of the candle that completed the FVG"
     stop = (ext - side * P["stopBuf"] * a) if P["stopAt"] == "sweep" or glo is None else ((glo if up else ghi) - side * P["stopBuf"] * a)
     risk = (entry - stop) * side
     if risk <= 0:
@@ -335,7 +337,7 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
     if P["rrOn"] and r_(tp1[0]) < P["rrMin"]:
         return stop_here("RR too small", 4, "Retracement", f"TP1 {tp1[1]} is only {r_(tp1[0]):.1f}R away (< {P['rrMin']:g}R)", mss_j)
     # 4. the retracement (or the market entry)
-    m_q = ix.index(mss_j)
+    m_q = k_q                                          # no fill before the gap exists (its 3rd candle closed)
     fill = None
     if how == "market":
         fill = m_q
@@ -377,12 +379,16 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
     st, half, res, ex_t, why = stop, None, None, None, ""
     best_px = entry
     sw_after = lambda q: [x for x in piv if x[2] == ("low" if up else "high") and x[0] > fj and x[3] <= ix[q]]
-    for q in range(fill, len(ix)):
+    for q in range(fill + 1 if how == "market" else fill, len(ix)):   # market: in at the close, the trade starts on the next candle
         c = bars[ix[q]]
         blend = lambda px: (part * half + (1 - part) * r_(px)) if half is not None else r_(px)
         if (c["l"] <= st) if up else (c["h"] >= st):
             res, ex_t, why = blend(st), c["t"], "breakeven stop" if st == entry else "trailing stop" if (st - stop) * side > 0 else "stop"
             break
+        if q == fill and how != "market":              # the fill candle: its high (long) may come before the fill -> only its close counts
+            best_px = max(best_px, c["c"]) if up else min(best_px, c["c"])
+            if _hm(c["t"]) < P["flatT"] and q < len(ix) - 1:
+                continue
         best_px = max(best_px, c["h"]) if up else min(best_px, c["l"])
         if half is None and part and beyond(c["h"] if up else c["l"], tp1[0]) or (half is None and part and (c["h"] if up else c["l"]) == tp1[0]):
             half = r_(tp1[0])                          # partial at TP1
@@ -414,6 +420,8 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
         if _hm(c["t"]) >= P["flatT"] or q == len(ix) - 1:
             res, ex_t, why = blend(c["c"]), c["t"], "end of day"
             break
+    if res is None:                                    # filled on the last candle of the day
+        res, ex_t, why = r_(bars[ix[-1]]["c"]), bars[ix[-1]]["t"], "end of day"
     s["R"], s["exitT"], s["exitWhy"] = round(res, 3), ex_t, why
     s["status"] = "win" if res > 0.05 else "loss" if res < -0.05 else "flat"
     step(6, res > 0, "Result", f"{'TP1 hit (partial), ' if half is not None else ''}out at {ex_t[11:16]} ({why}): {res:+.2f}R")
