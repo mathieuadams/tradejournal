@@ -311,19 +311,48 @@ def _held(c, sym):
 
 
 # ---------------------------------------------------------------- the minute
-def _bars_now(sub, sym, now, tf):
-    """Today's 1-minute candles up to the one that closed at `now` (waits a little for it to be published)."""
+_BARS = {}                                             # warm container: the candles already loaded, per ticker
+
+
+def _fetch_bars(sub, sym, now, fast):
+    """1-minute candles (3 days, pre-market included). fast (the scheduled run): the days already in memory and only
+    the last minutes asked again (a small request), else the 3 days."""
     import daytrade
+    today = now.strftime("%Y-%m-%d")
+    cache = _BARS.get(sym)
+    if not fast or not cache or cache["day"] != today or not cache["bars"]:
+        bs = daytrade.minute_bars(sub, sym, 3, now)
+        if fast:
+            _BARS[sym] = {"day": today, "bars": list(bs)}
+        return bs
+    import alpaca
+    c = daytrade.data_creds(sub)
+    last = cache["bars"][-1]["t"]
+    start = (datetime.strptime(last, "%Y-%m-%dT%H:%M") - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%S")
+    end = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    new = alpaca.bars(c, sym, start, end, 1, max_pages=2, feed=c.get("feed", "iex"))
+    by = {b["t"]: b for b in cache["bars"]}
+    for b in new:
+        t = b["t"][:16]
+        if "04:00" <= t[11:16] < "16:00":
+            by[t] = {**b, "t": t}
+    cache["bars"] = [by[k] for k in sorted(by)]
+    return cache["bars"]
+
+
+def _bars_now(sub, sym, now, tf, fast=False):
+    """Today's 1-minute candles up to the one that closed at `now`; not published yet: asked again every 0.4 s
+    (up to 12 s)."""
     cut = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
-    waited = 0.0
-    for k in range(5):
-        bs = [b for b in daytrade.minute_bars(sub, sym, 3, now) if b["t"] <= cut]
+    t0 = time.time()
+    bs = []
+    while True:
+        bs = [b for b in _fetch_bars(sub, sym, now, fast) if b["t"] <= cut]
         if bs and bs[-1]["t"] == cut:
-            return bs, waited, True
-        if k < 4:
-            time.sleep(3)
-            waited += 3
-    return bs, waited, False                            # no candle for that minute (no trade on the feed, or late)
+            return bs, round(time.time() - t0, 1) if time.time() - t0 > 0.9 else 0, True
+        if time.time() - t0 > 12:
+            return bs, round(time.time() - t0, 1), False     # no candle for that minute (no trade on the feed, or late)
+        time.sleep(0.4)
 
 
 def _close_t(t, tf):
@@ -348,7 +377,7 @@ class Timer:
 
 
 _TM = [None]
-EARLY_MIN = 4.0                                        # started later than this into its minute: wait for the next one
+EARLY_MIN = 1.0                                        # started later than this into its minute: wait for the next one
 WAIT_PAD = 0.25                                        # seconds after :00 (the candle just closed is published by then)
 
 
@@ -655,12 +684,25 @@ def _tick(sub, now=None, minute=None):
     pk = db.upk(sub)
     config_cache[pk] = cfg
     acts, log = [], []
-    try:
-        acct = account(c)
-    except Exception as e:
-        acct = None
-        acts.append(f"account: {str(e)[:100]}")
-    _mark("account read")
+    from concurrent.futures import ThreadPoolExecutor
+    fast = bool(real or minute)
+    _mark("candles + account asked")
+    with ThreadPoolExecutor(max_workers=len(cfg["tickers"]) + 1) as ex:     # both tickers and the account at once
+        f_acct = ex.submit(account, c)
+        f_bars = {sym: ex.submit(_bars_now, sub, sym, now, tf, fast) for sym in cfg["tickers"]}
+        try:
+            acct = f_acct.result()
+        except Exception as e:
+            acct = None
+            acts.append(f"account: {str(e)[:100]}")
+        _mark("account read")
+        pre = {}
+        for sym, f in f_bars.items():
+            try:
+                pre[sym] = f.result()
+                _mark(f"{sym} candles in" + (f" (waited {pre[sym][1]:g}s)" if pre[sym][1] else ""))
+            except Exception as e:
+                pre[sym] = e
     day_recs = [r for r in db.q_prefix(pk, POS) if (r.get("t") or "")[:10] == today]
     risk = risk_state(cfg, acct, day_recs)
     if risk["flatten"]:                                # daily loss limit hit: everything of the strategy closed
@@ -682,9 +724,9 @@ def _tick(sub, now=None, minute=None):
             acts.append(f"loop test failed: {str(e)[:160]}")
     for sym in cfg["tickers"]:
         try:
-            _mark(f"{sym} candles asked")
-            bs, waited, fresh = _bars_now(sub, sym, now, tf)
-            _mark(f"{sym} candles in" + (f" (waited {waited:g}s)" if waited else ""))
+            if isinstance(pre.get(sym), Exception):
+                raise pre[sym]
+            bs, waited, fresh = pre.get(sym) or _bars_now(sub, sym, now, tf, fast)
             out = smc.detect(bs, P, [today]) if bs else {"setups": [], "bars": []}
             _mark(f"{sym} strategy run")
             bars = out.get("bars") or []

@@ -5920,9 +5920,9 @@ def test_smart_money_scheduled_minute():
         smclive.tick = lambda sub, now=None, minute=None: seen.append((sub, minute)) or {"ok": 1}
         import calendar, time as _time
         rt = _time.time
-        _time.time = lambda: calendar.timegm((2026, 10, 22, 16, 7, 2))      # started 2 s in: runs at once on 12:07
+        _time.time = lambda: calendar.timegm((2026, 10, 22, 16, 7, 0)) + 0.5   # started 0.5 s in: runs at once on 12:07
         try:
-            out = smclive.job("2026-10-22T16:07:00Z", t0=calendar.timegm((2026, 10, 22, 16, 7, 1)))
+            out = smclive.job("2026-10-22T16:07:00Z", t0=calendar.timegm((2026, 10, 22, 16, 7, 0)) + 0.4)
         finally:
             _time.time = rt
         assert set(out) == {"a", "b"} and all(m == dt.datetime(2026, 10, 22, 12, 7) for _, m in seen), seen
@@ -6101,6 +6101,25 @@ def test_option_watch_exits_on_the_stock():
         assert clock[0] <= 6, clock[0]                  # 1 s between checks: the stop seen at the 5th second
     finally:
         smclive._send, smclive._close_pos = saved
+
+def test_smart_money_candles_kept_in_memory():
+    """The scheduled run asks only for the last minutes once the 3 days are in memory."""
+    import smclive, daytrade, alpaca, datetime as dt
+    asked = []
+    full = [{"t": f"2026-10-23T09:{m:02d}", "o": 1, "h": 1, "l": 1, "c": 1, "v": 1} for m in range(30, 40)]
+    saved = (daytrade.minute_bars, daytrade.data_creds, alpaca.bars)
+    try:
+        smclive._BARS.clear()
+        daytrade.minute_bars = lambda *a, **k: asked.append("3 days") or list(full)
+        daytrade.data_creds = lambda sub: {"key": "k", "secret": "s", "feed": "sip"}
+        alpaca.bars = lambda c, sym, a, b, tf, max_pages=10, feed=None: asked.append((a, b)) or [{"t": "2026-10-23T09:40:00", "o": 2, "h": 2, "l": 2, "c": 2, "v": 1}]
+        b1, w, fresh = smclive._bars_now("u", "QQQ", dt.datetime(2026, 10, 23, 9, 40), 1, True)
+        assert fresh and asked == ["3 days"]
+        b2, w, fresh = smclive._bars_now("u", "QQQ", dt.datetime(2026, 10, 23, 9, 41), 1, True)
+        assert fresh and asked[1] == ("2026-10-23T09:36:00", "2026-10-23T09:40:00") and b2[-1]["t"] == "2026-10-23T09:40" and len(b2) == 11
+    finally:
+        daytrade.minute_bars, daytrade.data_creds, alpaca.bars = saved
+        smclive._BARS.clear()
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
