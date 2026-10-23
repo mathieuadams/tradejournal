@@ -2128,13 +2128,25 @@ function smcWinBox() {
 }
 // ---- live on the day-trading paper account (backend smclive.py, every minute)
 async function loadSmcLive() {
-  try { S.smcLive = await api('/daytrade/smc/live'); } catch (e) { S.smcLive = { error: e.message }; }
+  const seq = S.smcLiveSeq || 0;
+  let r;
+  try { r = await api('/daytrade/smc/live'); } catch (e) { r = { error: e.message }; }
+  if ((S.smcLiveSeq || 0) === seq && !S.smcLiveSaving) S.smcLive = r;   // a save meanwhile: this older read is dropped
   if (route() === 'botchart' && S.fcfMode === 'smc') render();
   clearTimeout(S.smcLiveT);
   S.smcLiveT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'smc') loadSmcLive(); else S.smcLive = undefined; }, 30000);
 }
 async function smcLiveSet(body) {
-  try { S.smcLive = await api('/daytrade/smc/live', { method: 'PUT', body }); toast('Saved'); } catch (e) { toast(e.message); }
+  const seq = S.smcLiveSeq = (S.smcLiveSeq || 0) + 1;
+  if (S.smcLive && S.smcLive.config) {                 // shown at once (not the old value until the server answers)
+    const c = { ...S.smcLive.config };
+    Object.entries(body || {}).forEach(([k, v]) => { if (k !== 'cfg' && k !== 'source' && k !== 'name') c[k] = v; });
+    S.smcLive = { ...S.smcLive, config: c };
+  }
+  S.smcLiveSaving = (S.smcLiveSaving || 0) + 1;
+  try { const r = await api('/daytrade/smc/live', { method: 'PUT', body }); if (S.smcLiveSeq === seq) S.smcLive = r; toast('Saved'); }
+  catch (e) { toast(e.message); if (S.smcLiveSeq === seq) loadSmcLive(); }
+  finally { S.smcLiveSaving -= 1; }
   render();
 }
 function smcRiskBox(L) {
