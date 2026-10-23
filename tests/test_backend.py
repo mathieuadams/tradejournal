@@ -6153,6 +6153,19 @@ def test_smart_money_no_repaint():
                     if x.get("exitWhy") not in (None, "end of day"):
                         assert f.get("exitT") == x["exitT"] and f.get("exitWhy") == x["exitWhy"], (seed, cfg, cut, x["t"], x["exitT"], f.get("exitT"))
 
+def test_smart_money_minute_run_stops_after_the_window():
+    import smclive, datetime as dt
+    saved = (smclive.users, smclive.config)
+    try:
+        smclive.users = lambda: ["win-u"]
+        smclive.config = lambda sub: {**smclive.DEFAULT, "enabled": True, "trade": True, "cfg": smclive.smc.clean({"tf": 1, "startT": "09:30", "endT": "11:30"})}
+        assert smclive._needed(dt.datetime(2026, 10, 23, 11, 20)) and smclive._needed(dt.datetime(2026, 10, 23, 11, 33))
+        assert not smclive._needed(dt.datetime(2026, 10, 23, 12, 0))
+        db.put({"PK": db.upk("win-u"), "SK": "SMCPOS#QQQ#2026-10-23T11:25", "t": "2026-10-23T11:25", "status": "open"})
+        assert smclive._needed(dt.datetime(2026, 10, 23, 12, 0))          # a trade still open: the run goes on
+    finally:
+        smclive.users, smclive.config = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

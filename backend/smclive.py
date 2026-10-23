@@ -386,6 +386,24 @@ def _mark(name):
         _TM[0].mark(name)
 
 
+def _needed(minute):
+    """Is a minute run needed at `minute` (NY)? Yes inside the entry windows (+ a few minutes for a late fill), or while
+    a trade / order of today is still open; else the scheduler's start returns at once."""
+    hm, today = minute.strftime("%H:%M"), minute.strftime("%Y-%m-%d")
+    for sub in users():
+        cfg = config(sub)
+        P = cfg["cfg"]
+        last_end = max(P["endT"], P["endT2"]) if P.get("win2On") else P["endT"]
+        end = (datetime.strptime(last_end, "%H:%M") + timedelta(minutes=P["tf"] * (CATCHUP + 1))).strftime("%H:%M")
+        if hm <= end:
+            return True
+        if (db.get(db.upk(sub), SK) or {}).get("testReq"):
+            return True
+        if any(r.get("status") in ("pending", "open", "closing") for r in db.q_prefix(db.upk(sub), f"{POS}") if (r.get("t") or "")[:10] == today):
+            return True
+    return False
+
+
 def job(at=None, t0=None, loaded=None):
     """The scheduled minute: `at` = the time it was scheduled for (UTC, from EventBridge Scheduler), so a run that
     starts late still works on its own minute (and never skips one). Every user with auto-trading on, in parallel."""
@@ -404,6 +422,8 @@ def job(at=None, t0=None, loaded=None):
     cold = _RUNS[0] == 0
     _RUNS[0] += 1
     late = time.time() - base
+    if minute and not _needed(minute + timedelta(minutes=1)):   # past the entry window and nothing open: no run (no wait)
+        return {"skipped": "past the entry window, nothing open"}
     if minute and EARLY_MIN <= late < 58:              # EventBridge started us ~20 s into the minute: wait for the next :00
         target = base + 60                             # and work on that minute (its candle has just closed then)
         tm0 = Timer(target)
