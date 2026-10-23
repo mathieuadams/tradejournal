@@ -543,7 +543,7 @@ def check(sub):
         try:
             cut = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
             bs = [b for b in daytrade.minute_bars(sub, sym, 3, now) if b["t"] <= cut]
-            o = smc.detect(bs, P, [today])
+            o = smc.detect(bs, P, [today], peer=[b for b in daytrade.minute_bars(sub, smc.peer_of(sym), 3, now) if b["t"] <= cut] if P.get("smtOn") else None)
             bars = o.get("bars") or []
             last = bars[-1]["t"] if bars else None
             x["lastCandle"] = last
@@ -766,7 +766,9 @@ def _tick(sub, now=None, minute=None):
             if isinstance(pre.get(sym), Exception):
                 raise pre[sym]
             bs, waited, fresh = pre.get(sym) or _bars_now(sub, sym, now, tf, fast)
-            out = smc.detect(bs, P, [today]) if bs else {"setups": [], "bars": []}
+            pp = pre.get(smc.peer_of(sym))             # the other index's candles (SMT block), already loaded
+            pbars = pp[0] if isinstance(pp, tuple) else (_fetch_bars(sub, smc.peer_of(sym), now, fast) if P.get("smtOn") else None)
+            out = smc.detect(bs, P, [today], peer=pbars) if bs else {"setups": [], "bars": []}
             _mark(f"{sym} strategy run")
             bars = out.get("bars") or []
             last = bars[-1]["t"] if bars else None

@@ -2023,6 +2023,13 @@ const SMC_BLOCKS = [
   ['vwapOn', 'Filters', 'VWAP side', 'Longs filled above the session VWAP, shorts under it'],
   ['pdOn', 'Filters', 'Discount / premium', 'Longs filled in the lower half of the day\'s range so far (discount), shorts in the upper half (premium)'],
   ['rrOn', 'Filters', 'Minimum R to TP1', 'Skip when the first target is closer than this', ['rrMin', 0.25, 3, 'R']],
+  ['smtOn', 'Filters', 'SMT divergence', 'QQQ vs SPY: take the sweep only if the other index did NOT make the new low (long) / high (short) over the last candles', ['smtBars', 5, 3, 'candles back']],
+  ['depthOn', 'Filters', 'Sweep depth', 'How far the sweep went through the pool, x ATR: too shallow = a touch, too deep = a breakout', [['depthMin', 0.05, 3, 'to'], ['depthMax', 0.1, 3, '× ATR']]],
+  ['stopOn', 'Filters', 'Stop size', 'The stop distance, x ATR: too tight = noise, too wide = poor reward', [['stopMinA', 0.1, 3, 'to'], ['stopMaxA', 0.1, 3, '× ATR']]],
+  ['biasOn', 'Filters', 'Daily bias', 'Gap: the open vs yesterday\'s close decides the side (gap up = longs only). Day: the price vs today\'s open at the sweep', ['sel', 'biasMode', [['gap', 'with the gap'], ['open', 'with the day (vs the open)']]]],
+  ['volOn', 'Filters', 'Volume of the move', 'The biggest candle of the move traded at least this x the average volume of the candles before it', [['volMult', 0.1, 3, '× the last'], ['volLook', 5, 3, 'candles']]],
+  ['coolOn', 'Filters', 'Cooldown after a loss', 'After a losing trade, no new entry for this many minutes', ['coolMin', 5, 3, 'min']],
+  ['dayOn', 'Filters', 'Day filter', 'Skip the day: a gap bigger than this x yesterday\'s range, or an opening range smaller than this x it (a quiet day)', [['gapMaxR', 0.05, 3, 'gap max ·'], ['orMinR', 0.05, 3, 'opening range min (× yesterday\'s range)']]],
   ['tpLiq', 'Targets', 'Targets at liquidity', 'TP1 / TP2 = the next opposite pools (at least 1R away); off: fixed R', ['tpR', 0.5, 3, 'R if none / off']],
   ['partialOn', 'Targets', 'Partial at TP1', 'Sell this part at TP1, the rest runs to TP2', ['partial', 0.1, 3, 'of the position']],
   ['beTp1', 'Targets', 'Rest to breakeven at TP1', 'Once TP1 is hit, the stop of the rest moves to the entry'],
@@ -2039,7 +2046,8 @@ function smcBlocks(P0) {
   const inp = (k, step_, w_) => `<input data-smccfg="${k}" type="number" step="${step_}" value="${esc(String(P[k] ?? ''))}" style="width:${w_}em;padding:0 3px;font-size:.78rem">`;
   const chip = ([k, , lbl, tip, f]) => { const on = !!P[k];
     return `<span class="smc-chip ${on ? 'on' : ''}"><button class="btn" data-smcsw="${k}" title="${esc(tip)} — click to turn ${on ? 'off' : 'on'}" style="font-size:.72rem;padding:0 7px;border-radius:10px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button>
-      <span style="font-size:.8rem" title="${esc(tip)}">${esc(lbl)}</span>${f ? ` ${inp(f[0], f[1], f[2])}<span class="muted" style="font-size:.74rem">${esc(f[3])}</span>` : ''}</span>`; };
+      <span style="font-size:.8rem" title="${esc(tip)}">${esc(lbl)}</span>${!f ? '' : f[0] === 'sel' ? ` ${selF(f[1], f[2])}` : (Array.isArray(f[0]) ? f : [f]).map(x => ` ${inp(x[0], x[1], x[2])}<span class="muted" style="font-size:.74rem">${esc(x[3])}</span>`).join('')}</span>`; };
+  const selF = (k, opts) => `<select data-smccfg="${k}" style="font-size:.78rem;padding:0 3px">${opts.map(([v, l]) => `<option value="${v}" ${P[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
   const sel = (k, opts) => `<select data-smccfg="${k}" style="font-size:.78rem;padding:0 3px">${opts.map(([v, l]) => `<option value="${v}" ${P[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
   const grp = g => `<div class="rule-cat"><span class="rule-cat-l">${esc(g)}</span><span class="rule-chips">${SMC_BLOCKS.filter(r => r[1] === g).map(chip).join('')}${g === 'Structure' ? '' : ''}</span></div>`;
   const entryRow = `<div class="rule-cat"><span class="rule-cat-l">Entry</span><span class="rule-chips">
@@ -2243,12 +2251,16 @@ const SMC_NAMES = { poolPD: 'prev day H/L', poolPM: 'pre-market H/L', poolOR: 'o
   mssOn: 'MSS', mssBars: 'MSS within', dispOn: 'displacement', dispMin: 'displ. ATR', fvgOn: 'FVG required', fvgMin: 'FVG ATR', entryAt: 'enter at', entryBars: 'retrace within',
   stopAt: 'stop beyond', stopBuf: 'stop +ATR', startT: 'from', endT: 'to', win2On: '2nd window', startT2: '2nd from', endT2: '2nd to', vwapOn: 'VWAP side', pdOn: 'premium/discount', rrOn: 'min R to TP1', rrMin: 'min R', maxDay: 'max a day',
   longs: 'longs', shorts: 'shorts', tpLiq: 'targets at liquidity', tpR: 'target R', partialOn: 'partial at TP1', partial: 'partial', beTp1: 'BE at TP1', beOn: 'BE at R', beR: 'BE R',
-  trailOn: 'trail swings', fvgFail: 'FVG fails exit', mssX: 'MSS against exit', vwapX: 'VWAP exit', timeOn: 'time exit', timeBars: 'time candles' };
+  trailOn: 'trail swings', fvgFail: 'FVG fails exit', mssX: 'MSS against exit', vwapX: 'VWAP exit', timeOn: 'time exit', timeBars: 'time candles',
+  smtOn: 'SMT', smtBars: 'SMT candles', depthOn: 'sweep depth', depthMin: 'depth min', depthMax: 'depth max', stopOn: 'stop size', stopMinA: 'stop min ATR', stopMaxA: 'stop max ATR',
+  biasOn: 'daily bias', biasMode: 'bias', volOn: 'volume', volMult: 'volume x', volLook: 'volume candles', coolOn: 'cooldown', coolMin: 'cooldown min',
+  dayOn: 'day filter', gapMaxR: 'gap max', orMinR: 'OR min' };
 function smcOptDiff(P) {
   return `<span class="exchip" style="font-size:.7rem"><b>${P.tf === 1 ? '1m' : '5m'}</b> candles</span>` + smcOptDiff0(P);
 }
 function smcOptDiff0(P) {
-  const off = { startT2: 'win2On', endT2: 'win2On', dispMin: 'dispOn', rrMin: 'rrOn', beR: 'beOn', timeBars: 'timeOn', partial: 'partialOn', orMin: 'poolOR', fvgMin: 'fvgOn', mssBars: 'mssOn' };
+  const off = { smtBars: 'smtOn', depthMin: 'depthOn', depthMax: 'depthOn', stopMinA: 'stopOn', stopMaxA: 'stopOn', biasMode: 'biasOn', volMult: 'volOn', volLook: 'volOn',
+    coolMin: 'coolOn', gapMaxR: 'dayOn', orMinR: 'dayOn', startT2: 'win2On', endT2: 'win2On', dispMin: 'dispOn', rrMin: 'rrOn', beR: 'beOn', timeBars: 'timeOn', partial: 'partialOn', orMin: 'poolOR', fvgMin: 'fvgOn', mssBars: 'mssOn' };
   return Object.keys(SMC_NAMES).filter(k => P[k] !== undefined && !(off[k] && !P[off[k]])).map(k => { const v = P[k];
     return typeof v === 'boolean' ? `<span class="exchip" style="font-size:.7rem;${v ? '' : 'opacity:.45;text-decoration:line-through'}">${SMC_NAMES[k]}</span>` : `<span class="exchip" style="font-size:.7rem">${SMC_NAMES[k]} <b>${esc(String(v))}</b></span>`; }).join('');
 }

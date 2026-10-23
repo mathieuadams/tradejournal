@@ -28,11 +28,26 @@ PARAMS = {"tf": 5, "orMin": 15, "pivot": 2, "fvgMin": 0.3, "mssBars": 12, "entry
           "tpLiq": True, "tpR": 2.0, "partialOn": True, "beTp1": True,                              # targets
           "beOn": False, "beR": 1.0, "trailOn": False, "fvgFail": False, "mssX": False, "vwapX": False,   # early exits
           "timeOn": False, "timeBars": 12,
-          "win2On": False, "startT2": "13:30", "endT2": "15:30"}                                    # a 2nd entry window (afternoon)
-INTS = ("tf", "orMin", "pivot", "mssBars", "entryBars", "maxDay", "timeBars")
-FLOATS = ("fvgMin", "stopBuf", "partial", "eqTol", "dispMin", "rrMin", "tpR", "beR")
+          "win2On": False, "startT2": "13:30", "endT2": "15:30",                                    # a 2nd entry window (afternoon)
+          # filters (each a block: on / off + its numbers)
+          "smtOn": False, "smtBars": 20,              # SMT divergence: the other index (QQQ <-> SPY) did NOT make the new low / high
+          "depthOn": False, "depthMin": 0.05, "depthMax": 1.0,   # how far through the pool the sweep went, x ATR
+          "stopOn": False, "stopMinA": 0.3, "stopMaxA": 1.5,     # the stop distance, x ATR
+          "biasOn": False, "biasMode": "gap",          # daily bias: with the gap (open vs yesterday's close) / with the day (vs the open)
+          "volOn": False, "volMult": 1.5, "volLook": 20,          # the move's biggest candle: volume x its last volLook candles' average
+          "coolOn": False, "coolMin": 15,              # after a losing trade, no new entry for coolMin minutes
+          "dayOn": False, "gapMaxR": 0.5, "orMinR": 0.1}         # skip the day: gap > gapMaxR x yesterday's range, opening range < orMinR x it
+INTS = ("tf", "orMin", "pivot", "mssBars", "entryBars", "maxDay", "timeBars", "smtBars", "volLook", "coolMin")
+FLOATS = ("fvgMin", "stopBuf", "partial", "eqTol", "dispMin", "rrMin", "tpR", "beR", "depthMin", "depthMax", "stopMinA", "stopMaxA",
+          "volMult", "gapMaxR", "orMinR")
 BOOLS = ("longs", "shorts", "poolPD", "poolPM", "poolOR", "poolSwing", "eqOnly", "mssOn", "dispOn", "fvgOn", "vwapOn", "pdOn",
-         "rrOn", "tpLiq", "partialOn", "beTp1", "beOn", "trailOn", "fvgFail", "mssX", "vwapX", "timeOn", "win2On")
+         "rrOn", "tpLiq", "partialOn", "beTp1", "beOn", "trailOn", "fvgFail", "mssX", "vwapX", "timeOn", "win2On",
+         "smtOn", "depthOn", "stopOn", "biasOn", "volOn", "coolOn", "dayOn")
+PEER = {"QQQ": "SPY", "SPY": "QQQ"}                    # the other index of the SMT divergence (else QQQ)
+
+
+def peer_of(sym):
+    return PEER.get((sym or "").upper(), "QQQ")
 
 
 def clean(cfg):
@@ -50,6 +65,8 @@ def clean(cfg):
         P["entryAt"] = "edge"
     if P["stopAt"] not in ("sweep", "fvg"):
         P["stopAt"] = "sweep"
+    if P["biasMode"] not in ("gap", "open"):
+        P["biasMode"] = "gap"
     return P
 
 
@@ -86,12 +103,31 @@ def day_pools(prev_reg, pm, P=None):
     return out
 
 
-def detect(minute_bars, P=None, show=None):
+def day_ctx(bars, ix, prev, peer=None):
+    """What the day filters need: yesterday's range / close, today's open, and the other index's candles by time."""
+    ph = max((b["h"] for b in prev), default=None)
+    pl = min((b["l"] for b in prev), default=None)
+    return {"prevH": ph, "prevL": pl, "prevC": prev[-1].get("c") if prev else None, "open": bars[ix[0]].get("o") if ix else None,
+            "peer": peer or {}}
+
+
+def peer_map(peer_bars, tf):
+    """The other index's 1-minute candles -> {t: candle} at the strategy's candle size (regular hours)."""
+    import daytrade
+    if not peer_bars:
+        return {}
+    pb = daytrade.agg_bars(peer_bars, tf) if tf > 1 else peer_bars
+    return {b["t"][:16]: b for b in pb if "09:30" <= _hm(b["t"]) < "16:00"}
+
+
+def detect(minute_bars, P=None, show=None, peer=None):
     """minute_bars: 1-minute candles (pre-market included) of several days. -> {"bars", "levels", "sweeps", "mss",
-    "fvgs", "obs", "setups", "funnel"} for the days in `show` (default: all)."""
+    "fvgs", "obs", "setups", "funnel"} for the days in `show` (default: all). peer: the other index's 1-minute candles
+    (SMT divergence block)."""
     import daytrade
     P = clean(P)
     tf = P["tf"]
+    pm_ = peer_map(peer, tf) if (peer and P["smtOn"]) else {}
     allb = daytrade.agg_bars(minute_bars, tf) if tf > 1 else list(minute_bars)
     reg = [b for b in allb if "09:30" <= _hm(b["t"]) < "16:00"]
     if not reg:
@@ -112,7 +148,7 @@ def detect(minute_bars, P=None, show=None):
             continue
         ix = by[d]
         prev = [reg[i] for i in by.get(days[di - 1], [])] if di else []
-        _day(reg, atr, ix, day_pools(prev, pm_by.get(d) or [], P), P, out)
+        _day(reg, atr, ix, day_pools(prev, pm_by.get(d) or [], P), P, out, day_ctx(reg, ix, prev, pm_))
         out["gaps"] += _gaps(reg, atr, ix, P)
     keep = set(show)
     out["bars"] = [{k: b[k] for k in ("t", "o", "h", "l", "c", "v")} for b in reg if b["t"][:10] in keep]
@@ -157,7 +193,7 @@ def _pivots(bars, ix, k):
     return out
 
 
-def _day(bars, atr, ix, pools0, P, out):
+def _day(bars, atr, ix, pools0, P, out, dx=None):
     k = P["pivot"]
     t0, t_end = bars[ix[0]]["t"], bars[ix[-1]]["t"]
     piv = _pivots(bars, ix, k)
@@ -217,7 +253,7 @@ def _day(bars, atr, ix, pools0, P, out):
             if any(x["t"] == bars[sw_i]["t"] and x["dir"] == side for x in day_setups):
                 out["sweeps"].append({"t": bars[sw_i]["t"], "p": p["p"], "name": p["name"], "dir": side})
                 continue                               # several pools taken by the same candle: one setup
-            s = _setup(bars, atr, ix, pos, sw_i, p, side, piv, pools, P if we == P["endT"] else {**P, "endT": we}, t_end, vw)
+            s = _setup(bars, atr, ix, pos, sw_i, p, side, piv, pools, P if we == P["endT"] else {**P, "endT": we}, t_end, vw, dx)
             day_setups.append(s)
             out["sweeps"].append({"t": bars[sw_i]["t"], "p": p["p"], "name": p["name"], "dir": side})
             if s.get("mss"):
@@ -233,6 +269,56 @@ def _day(bars, atr, ix, pools0, P, out):
                               "t1": bars[p["swept"]]["t"] if p["swept"] is not None else t_end, "swept": p["swept"] is not None})
 
 
+def _sweep_filters(bars, atr, ix, pos, sw_i, pool, side, ext, P, dx):
+    """The filters known at the sweep. -> (status, text) when the setup is not taken, else None."""
+    a = atr[sw_i] or 0
+    k0 = ix.index(sw_i)
+    if P["dayOn"]:
+        rng = (dx.get("prevH") or 0) - (dx.get("prevL") or 0)
+        if rng > 0 and dx.get("prevC") is not None and dx.get("open") is not None:
+            g = abs(dx["open"] - dx["prevC"]) / rng
+            if g > P["gapMaxR"]:
+                return "day filter", f"gap {g:.2f} x yesterday's range (> {P['gapMaxR']:g})"
+            n_or = max(1, P["orMin"] // P["tf"])
+            if k0 < n_or:
+                return "day filter", f"the opening range ({P['orMin']} min) isn't done yet"
+            seg = [bars[ix[q]] for q in range(n_or)]
+            r = (max(b["h"] for b in seg) - min(b["l"] for b in seg)) / rng
+            if r < P["orMinR"]:
+                return "day filter", f"opening range {r:.2f} x yesterday's range (< {P['orMinR']:g}): a quiet day"
+    if P["depthOn"] and a:
+        dep = (pool["p"] - ext) * side / a
+        if not (P["depthMin"] <= dep <= P["depthMax"]):
+            return "sweep depth", f"the sweep went {dep:.2f} ATR through {pool['name']} (wanted {P['depthMin']:g}-{P['depthMax']:g})"
+    if P["biasOn"]:
+        ref = dx.get("prevC") if P["biasMode"] == "gap" else bars[sw_i]["c"]
+        base = dx.get("open")
+        if ref is not None and base is not None:
+            up_day = base >= ref if P["biasMode"] == "gap" else ref >= base
+            if (side > 0) != up_day:
+                return "against bias", (f"{'gap up' if up_day else 'gap down'}: only {'longs' if up_day else 'shorts'}" if P["biasMode"] == "gap"
+                                        else f"price {'above' if up_day else 'under'} the open: only {'longs' if up_day else 'shorts'}")
+    if P["smtOn"]:
+        pr = dx.get("peer") or {}
+        if not pr:
+            return "no SMT", "no candles of the other index to compare (SMT)"
+        lo_q = max(0, ix.index(sw_i) - P["smtBars"])
+        prior = [bars[ix[q]]["t"][:16] for q in range(lo_q, pos)]
+        now_t = [bars[ix[q]]["t"][:16] for q in range(pos, k0 + 1)]
+        pp = [pr[t] for t in prior if t in pr]
+        pn = [pr[t] for t in now_t if t in pr]
+        if not pp or not pn:
+            return "no SMT", "the other index has no candles at those times"
+        own = [bars[ix[q]] for q in range(lo_q, pos)]
+        if side > 0:                                   # this index made a new low, the other one did NOT
+            div = bool(own) and ext < min(b["l"] for b in own) and min(b["l"] for b in pn) >= min(b["l"] for b in pp)
+        else:
+            div = bool(own) and ext > max(b["h"] for b in own) and max(b["h"] for b in pn) <= max(b["h"] for b in pp)
+        if not div:
+            return "no SMT", f"the other index also made a new {'low' if side > 0 else 'high'} (no divergence)"
+    return None
+
+
 FILL_KEYS = ("fillT", "R", "exitT", "exitWhy", "stopNow", "tp1Hit")
 
 
@@ -240,11 +326,19 @@ def _one_at_a_time(setups, P):
     """One trade at a time (either side), decided by the fills: each setup is read on its own (so a setup that only
     qualifies later can't hide or reveal another one afterwards: live sees the same), then a fill while another trade
     is still open is not taken, and maxDay caps the trades of the day."""
+    from datetime import datetime as _dt, timedelta as _td
     taken, n_day = [], 0
     for s in sorted((x for x in setups if x.get("fillT")), key=lambda x: (x["fillT"], x["t"])):
         open_ = next((x for x in taken if x["fillT"] <= s["fillT"] <= (x.get("exitT") or "9999")), None)
-        why = f"a trade was open (from {open_['t'][11:16]})" if open_ else \
-            f"max {P['maxDay']} trades a day" if P["maxDay"] and n_day >= P["maxDay"] else None
+        cool = None
+        if P.get("coolOn"):                            # after a loss: a pause before the next entry
+            for x in taken:
+                if (x.get("R") or 0) < 0 and x.get("exitT") and x.get("exitWhy") != "end of day":
+                    until = (_dt.strptime(x["exitT"][:16], "%Y-%m-%dT%H:%M") + _td(minutes=P["coolMin"])).strftime("%Y-%m-%dT%H:%M")
+                    if x["exitT"] <= s["fillT"] < until:
+                        cool = f"cooling down after the loss at {x['exitT'][11:16]} ({P['coolMin']} min)"
+        why = f"a trade was open (from {open_['t'][11:16]})" if open_ else cool or \
+            (f"max {P['maxDay']} trades a day" if P["maxDay"] and n_day >= P["maxDay"] else None)
         if why:
             for k in FILL_KEYS:
                 s.pop(k, None)
@@ -255,7 +349,7 @@ def _one_at_a_time(setups, P):
         n_day += 1
 
 
-def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
+def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None, dx=None):
     f = lambda v: round(v, 4)
     vw = vw or {}
     up = side > 0
@@ -276,6 +370,9 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
     step(1, True, "Liquidity swept", f"{pool['name']} {pool['p']:.2f} taken at {bars[ix[pos]]['t'][11:16]} ({'low' if up else 'high'} {ext:.2f}), "
                                      f"closed back {'above' if up else 'under'} it")
     k0 = ix.index(sw_i)
+    why = _sweep_filters(bars, atr, ix, pos, sw_i, pool, side, ext, P, dx or {})
+    if why:
+        return stop_here(why[0], 1, "Filters", why[1], sw_i)
     # 2. market structure shift
     want = "high" if up else "low"
     if P["mssOn"]:
@@ -368,6 +465,20 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
     risk = (entry - stop) * side
     if risk <= 0:
         return stop_here("bad risk", 4, "Retracement", "the stop would be on the wrong side of the entry", mss_j)
+    if P["stopOn"] and a:
+        ra = risk / a
+        if ra < P["stopMinA"] or ra > P["stopMaxA"]:
+            return stop_here("stop size", 4, "Filters", f"stop {ra:.2f} ATR away: outside {P['stopMinA']:g}-{P['stopMaxA']:g} ATR", ix[k_q])
+    if P["volOn"]:
+        leg = [ix[q] for q in range(k0, k_q + 1)]
+        big = max(leg, key=lambda j: (bars[j]["c"] - bars[j]["o"]) * side)
+        q0 = ix.index(big)
+        past = [float(bars[ix[q]].get("v") or 0) for q in range(max(0, q0 - P["volLook"]), q0)]
+        avg = sum(past) / len(past) if past else 0
+        v = float(bars[big].get("v") or 0)
+        if avg > 0 and v < P["volMult"] * avg:
+            return stop_here("low volume", 4, "Filters", f"the move's biggest candle ({bars[big]['t'][11:16]}) traded {v / avg:.1f}x its "
+                                                         f"{P['volLook']}-candle average (< {P['volMult']:g}x)", ix[k_q])
     # targets
     opp = "buy" if up else "sell"
     targets = sorted((p for p in pools if p["side"] == opp and p["swept"] is None and (p["p"] - entry) * side >= risk and p["born"] <= mss_j),
@@ -485,7 +596,7 @@ def funnel(setups):
     fill = sum(1 for s in setups if s.get("fillT"))
     win = sum(1 for s in setups if s.get("status") == "win")
     return {"sweeps": n, "mss": mss, "fvg": fvg, "filled": fill, "wins": win,
-            "why": {k: sum(1 for s in setups if s.get("status") == k) for k in ("skipped", "forming", "no structure", "new extreme", "no MSS", "no displacement", "no FVG", "RR too small",
+            "why": {k: sum(1 for s in setups if s.get("status") == k) for k in ("day filter", "sweep depth", "against bias", "no SMT", "stop size", "low volume", "skipped", "forming", "no structure", "new extreme", "no MSS", "no displacement", "no FVG", "RR too small",
                                                                               "ran away", "no retrace", "VWAP side", "premium / discount", "bad risk")}}
 
 
@@ -499,6 +610,16 @@ def stats(setups):
             "pf": round(sum(w) / -sum(l_), 2) if l_ and sum(l_) < 0 else None}
 
 
+def _peer_bars(sub, sym, days):
+    """The other index's minute candles (SMT divergence); [] if they can't be read."""
+    import daytrade
+    try:
+        return daytrade.minute_bars(sub, peer_of(sym), days)
+    except Exception as e:
+        print("peer candles failed", sym, e)
+        return []
+
+
 def run(sub, sym, days=5, cfg=None):
     import daytrade
     sym = (sym or "QQQ").upper()
@@ -508,13 +629,14 @@ def run(sub, sym, days=5, cfg=None):
     if not mb:
         return {"symbol": sym, "bars": [], "error": "No minute candles."}
     dates = sorted({b["t"][:10] for b in mb if "09:30" <= b["t"][11:16] < "16:00"})
-    out = detect(mb, P, dates[-days:])
+    out = detect(mb, P, dates[-days:], peer=_peer_bars(sub, sym, days + 2) if P["smtOn"] else None)
     for s in out["setups"]:
         s.pop("_end", None)
     return {"symbol": sym, "params": P, **out}
 
 
-NUDGE = ("fvgMin", "mssBars", "entryBars", "stopBuf", "partial", "pivot", "orMin", "tpR", "rrMin", "dispMin", "beR", "timeBars")
+NUDGE = ("fvgMin", "mssBars", "entryBars", "stopBuf", "partial", "pivot", "orMin", "tpR", "rrMin", "dispMin", "beR", "timeBars",
+         "smtBars", "depthMin", "depthMax", "stopMinA", "stopMaxA", "volMult", "volLook", "coolMin", "gapMaxR", "orMinR")
 
 
 def variants(P):
@@ -525,7 +647,9 @@ def variants(P):
         if k in ("longs", "shorts"):
             continue
         out.append((f"{k} {'off' if P[k] else 'on'}", {**P, k: not P[k]}))
-    used_by = {"dispMin": "dispOn", "rrMin": "rrOn", "beR": "beOn", "timeBars": "timeOn", "partial": "partialOn", "orMin": "poolOR"}
+    used_by = {"dispMin": "dispOn", "rrMin": "rrOn", "beR": "beOn", "timeBars": "timeOn", "partial": "partialOn", "orMin": "poolOR",
+               "smtBars": "smtOn", "depthMin": "depthOn", "depthMax": "depthOn", "stopMinA": "stopOn", "stopMaxA": "stopOn",
+               "volMult": "volOn", "volLook": "volOn", "coolMin": "coolOn", "gapMaxR": "dayOn", "orMinR": "dayOn"}
     for k in NUDGE:
         if k in used_by and not P[used_by[k]]:
             continue                                   # a number of a block that is off changes nothing
@@ -557,12 +681,13 @@ def stress(sub, sym, days=30, cfg=None, cost=0.05):
     dates = sorted({b["t"][:10] for b in mb if "09:30" <= b["t"][11:16] < "16:00"})[-days:]
     if not dates:
         return {"symbol": sym, "error": "No minute candles."}
-    base = detect(mb, P, dates)
+    pb = _peer_bars(sub, sym, days + 2)                # the variants switch SMT on too
+    base = detect(mb, P, dates, peer=pb)
     tr = [{"t": s["fillT"], "R": round(s["R"] - cost, 3), "dir": s["dir"], "why": s.get("exitWhy")} for s in base["setups"] if s.get("R") is not None]
     vs = []
     for label, c in variants(P):
         try:
-            vs.append({"label": label, **_sum(detect(mb, c, dates)["setups"], cost)})
+            vs.append({"label": label, **_sum(detect(mb, c, dates, peer=pb)["setups"], cost)})
         except Exception as e:
             vs.append({"label": label, "error": str(e)[:80]})
     return {"symbol": sym, "days": dates, "cost": cost, "trades": tr, "base": _sum(base["setups"], cost), "funnel": base["funnel"], "variants": vs}
@@ -582,9 +707,10 @@ def windows(sub, sym, days=30, cfg=None, cost=0.05, wins=None):
     dates = sorted({b["t"][:10] for b in mb if "09:30" <= b["t"][11:16] < "16:00"})[-days:]
     if not dates:
         return {"symbol": sym, "error": "No minute candles."}
+    pb = _peer_bars(sub, sym, days + 2) if P["smtOn"] else None
     out = []
     for a, b, label in wins or WINDOWS:
-        res = detect(mb, {**P, "startT": a, "endT": b, "win2On": False}, dates)["setups"]
+        res = detect(mb, {**P, "startT": a, "endT": b, "win2On": False}, dates, peer=pb)["setups"]
         rs = [x for x in res if x.get("R") is not None]
         out.append({"label": label, "from": a, "to": b, **_sum(rs, cost),
                     "win": round(sum(1 for x in rs if x["R"] - cost > 0) / len(rs) * 100) if rs else None,

@@ -21,7 +21,7 @@ import smc
 from util import iso, now_ny
 
 SK = "SMCOPT"
-VERSION = 5                                            # 5: no repaint (arming causal, one trade at a time by fills)
+VERSION = 6                                            # 6: the 7 new filter blocks in the search
 COST = 0.05
 MIN_TRADES = 80
 MONTH_SHARE = 0.35
@@ -45,8 +45,17 @@ SPACE = {
     "beTp1": [True, False], "beOn": [False, True], "beR": [0.5, 1.0, 1.5],
     "trailOn": [False, True], "fvgFail": [False, True], "mssX": [False, True], "vwapX": [False, True],
     "timeOn": [False, True], "timeBars": [6, 12, 24, 36],
+    "smtOn": [False, True], "smtBars": [10, 20, 30, 60],
+    "depthOn": [False, True], "depthMin": [0.0, 0.05, 0.1, 0.2], "depthMax": [0.5, 1.0, 2.0],
+    "stopOn": [False, True], "stopMinA": [0.2, 0.3, 0.5], "stopMaxA": [1.0, 1.5, 2.5],
+    "biasOn": [False, True], "biasMode": ["gap", "open"],
+    "volOn": [False, True], "volMult": [1.2, 1.5, 2.0, 3.0], "volLook": [10, 20, 40],
+    "coolOn": [False, True], "coolMin": [5, 15, 30, 60],
+    "dayOn": [False, True], "gapMaxR": [0.25, 0.5, 1.0], "orMinR": [0.05, 0.1, 0.2],
 }
-NEEDS = {"startT2": "win2On", "endT2": "win2On", "orMin": "poolOR", "mssBars": None, "dispMin": "dispOn", "fvgMin": "fvgOn", "rrMin": "rrOn", "partial": "partialOn",
+NEEDS = {"startT2": "win2On", "endT2": "win2On", "smtBars": "smtOn", "depthMin": "depthOn", "depthMax": "depthOn",
+         "stopMinA": "stopOn", "stopMaxA": "stopOn", "biasMode": "biasOn", "volMult": "volOn", "volLook": "volOn", "coolMin": "coolOn",
+         "gapMaxR": "dayOn", "orMinR": "dayOn", "orMin": "poolOR", "mssBars": None, "dispMin": "dispOn", "fvgMin": "fvgOn", "rrMin": "rrOn", "partial": "partialOn",
          "beR": "beOn", "timeBars": "timeOn"}
 
 
@@ -82,7 +91,8 @@ def key(g):
 
 def valid(g):
     return (g["poolPD"] or g["poolPM"] or g["poolOR"] or g["poolSwing"]) and g["startT"] < g["endT"] \
-        and (not g.get("win2On") or g["endT"] <= g.get("startT2", "13:30") < g.get("endT2", "15:30"))
+        and (not g.get("win2On") or g["endT"] <= g.get("startT2", "13:30") < g.get("endT2", "15:30")) \
+        and g.get("depthMin", 0) < g.get("depthMax", 1) and g.get("stopMinA", 0.3) < g.get("stopMaxA", 1.5)
 
 
 def rand_g(rng):
@@ -100,11 +110,11 @@ def mutate(g, rng):
             return x
         for k in rng.sample(list(SPACE), rng.choice([1, 1, 2, 3])):
             vs = SPACE[k]
-            if isinstance(vs[0], (int, float)) and not isinstance(vs[0], bool) and x[k] in vs and rng.random() < 0.7:
+            if isinstance(vs[0], (int, float)) and not isinstance(vs[0], bool) and x.get(k) in vs and rng.random() < 0.7:
                 i = vs.index(x[k]) + rng.choice([-1, 1])  # numbers: mostly the next value up / down
                 x[k] = vs[max(0, min(len(vs) - 1, i))]
             else:
-                x[k] = rng.choice([v for v in vs if v != x[k]] or vs)
+                x[k] = rng.choice([v for v in vs if v != x.get(k)] or vs)
         if valid(x) and x != g:
             return x
     return rand_g(rng)
@@ -154,6 +164,11 @@ def load_index(sub, days):
                     continue
                 data[tf].append({"sym": sym, "d": d, "reg": reg[ix[0]:ix[-1] + 1], "prev": prev, "pm": pm_by.get(d) or [],
                                  "atr": atr[ix[0]:ix[-1] + 1]})
+    for tf, xs in data.items():                        # each series gets the other index's candles of the day (SMT)
+        by = {(x["sym"], x["d"]): x for x in xs}
+        for x in xs:
+            o = by.get((smc.peer_of(x["sym"]), x["d"]))
+            x["peer"] = {b["t"][:16]: b for b in o["reg"]} if o else {}
     _CACHE.update(k=ck, v=data)
     return data
 
@@ -182,7 +197,8 @@ def load(days):
             pm = [b for b in h if b["t"][:10] == d and "04:00" <= b["t"][11:16] < "09:30"]
             rng30 = [b["h"] - b["l"] for b in prev]
             seed = sum(rng30) / len(rng30) / math.sqrt(6) if rng30 else None    # a 30-min range -> about a 5-min one
-            out.append({"sym": s, "d": d, "reg": reg, "prev": prev, "pm": pm, "atr": _atr_seeded(reg, seed)})
+            q = {b["t"][:16]: b for b in x.get("q") or []} if s != "QQQ" else {}     # QQQ for the SMT block
+            out.append({"sym": s, "d": d, "reg": reg, "prev": prev, "pm": pm, "atr": _atr_seeded(reg, seed), "peer": q})
         return out
     data = []
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -207,7 +223,8 @@ def trades(data, P):
     for x in data:
         o = {"levels": [], "sweeps": [], "mss": [], "fvgs": [], "obs": [], "setups": []}
         try:
-            smc._day(x["reg"], x["atr"], list(range(len(x["reg"]))), smc.day_pools(x["prev"], x["pm"], P), P, o)
+            ix = list(range(len(x["reg"])))
+            smc._day(x["reg"], x["atr"], ix, smc.day_pools(x["prev"], x["pm"], P), P, o, smc.day_ctx(x["reg"], ix, x["prev"], x.get("peer")))
         except Exception:
             continue
         out += [(x["d"], x["sym"], s["R"], s.get("exitWhy")) for s in o["setups"] if s.get("R") is not None]

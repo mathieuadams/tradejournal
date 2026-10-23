@@ -6191,6 +6191,76 @@ def test_live_settings_saves_dont_undo_each_other():
     c = smclive.config("race-u")
     assert c["optRiskPct"] == 0.9 and c["name"] == "s1", c
 
+def _rand_days(seed, days=("2026-09-14", "2026-09-15", "2026-09-16"), p0=400.0, vol=True):
+    import random
+    random.seed(seed)
+    bars, p = [], p0
+    for d in days:
+        for m in range(240, 960):
+            o = p
+            p += random.gauss(0, .12)
+            bars.append({"t": f"{d}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, p) + abs(random.gauss(0, .05)), "l": min(o, p) - abs(random.gauss(0, .05)),
+                         "c": p, "v": random.randint(50, 500) if vol else 0})
+    return bars
+
+
+def test_smart_money_filter_blocks():
+    """The 7 filter blocks: each one only removes setups (never adds), with its own reason; SMT needs the other index."""
+    import smc
+    bars, peer = _rand_days(5), _rand_days(6, p0=600.0)
+    base_cfg = {"tf": 1, "fvgMin": 0.1, "mssOn": False, "dispOn": True, "dispMin": 0.6, "fvgOn": False, "entryAt": "market", "startT": "09:35", "endT": "15:30"}
+    show = ["2026-09-15", "2026-09-16"]
+    base = smc.detect(bars, base_cfg, show, peer=peer)
+    bf = [x for x in base["setups"] if x.get("fillT")]
+    assert len(bf) > 5, len(bf)
+    cases = {"day filter": {"dayOn": True, "gapMaxR": 0.0001}, "sweep depth": {"depthOn": True, "depthMin": 5.0, "depthMax": 9.0},
+             "stop size": {"stopOn": True, "stopMinA": 50.0, "stopMaxA": 60.0}, "low volume": {"volOn": True, "volMult": 50.0},
+             "no SMT": {"smtOn": True, "smtBars": 20}}
+    for why, extra in cases.items():
+        out = smc.detect(bars, {**base_cfg, **extra}, show, peer=peer if why == "no SMT" else None)
+        st = [x.get("status") for x in out["setups"]]
+        assert why in st, (why, st[:20])
+        if why != "no SMT":
+            assert not [x for x in out["setups"] if x.get("fillT")], why                  # extreme numbers: nothing left
+    same = smc.detect(bars, {**base_cfg, "smtOn": True}, show, peer=bars)                # the "other" index = the same one: never a divergence
+    assert not [x for x in same["setups"] if x.get("fillT")] and "no SMT" in [x.get("status") for x in same["setups"]]
+    calm = [{**b, "h": 600.01, "l": 599.99, "o": 600, "c": 600} for b in peer]          # flat other index: every sweep diverges
+    flat = smc.detect(bars, {**base_cfg, "smtOn": True}, show, peer=calm)
+    assert [x for x in flat["setups"] if x.get("fillT")]                                  # the divergences are taken
+    # bias: on a gap-up day only longs
+    for d in show:
+        o = smc.detect(bars, {**base_cfg, "biasOn": True, "biasMode": "gap"}, [d])
+        prev = [b for b in bars if b["t"][:10] < d and "09:30" <= b["t"][11:16] < "16:00"]
+        op = next(b for b in bars if b["t"][:10] == d and b["t"][11:16] == "09:30")["o"]
+        want = 1 if op >= prev[-1]["c"] else -1
+        assert all(x["dir"] == want for x in o["setups"] if x.get("fillT")), d
+    # cooldown: no entry within coolMin minutes after a losing exit
+    import datetime as dt
+    cd = smc.detect(bars, {**base_cfg, "coolOn": True, "coolMin": 30}, show)
+    tr = sorted((x for x in cd["setups"] if x.get("fillT")), key=lambda x: x["fillT"])
+    for a_, b_ in zip(tr, tr[1:]):
+        if a_["R"] < 0 and a_["exitT"][:10] == b_["fillT"][:10]:
+            gap = (dt.datetime.strptime(b_["fillT"], "%Y-%m-%dT%H:%M") - dt.datetime.strptime(a_["exitT"], "%Y-%m-%dT%H:%M")).total_seconds() / 60
+            assert gap >= 30, (a_["exitT"], b_["fillT"])
+    assert any(x.get("status") == "skipped" and "cooling" in x["steps"][-1]["text"] for x in cd["setups"]) or len(tr) <= len(bf)
+
+
+def test_smart_money_filters_no_repaint():
+    """With the filters on (SMT with the other index too): what live saw at a minute stays true at the end of the day."""
+    import smc
+    bars, peer = _rand_days(7), _rand_days(8, p0=600.0)
+    cfg = {"tf": 1, "fvgMin": 0.1, "mssOn": False, "dispOn": True, "dispMin": 0.6, "fvgOn": False, "entryAt": "market", "startT": "09:35",
+           "endT": "15:30", "smtOn": True, "depthOn": True, "depthMin": 0.0, "depthMax": 3.0, "stopOn": True, "stopMinA": 0.1, "stopMaxA": 5.0,
+           "volOn": True, "volMult": 1.0, "coolOn": True, "coolMin": 10, "dayOn": True, "gapMaxR": 5, "orMinR": 0.01, "biasOn": True, "biasMode": "open"}
+    full = {(x["t"], x["dir"]): x for x in smc.detect(bars, cfg, ["2026-09-16"], peer=peer)["setups"]}
+    assert any(x.get("fillT") for x in full.values())
+    for cut_m in range(585, 960, 4):
+        cut = f"2026-09-16T{cut_m // 60:02d}:{cut_m % 60:02d}"
+        for x in smc.detect([b for b in bars if b["t"] < cut], cfg, ["2026-09-16"], peer=[b for b in peer if b["t"] < cut])["setups"]:
+            if x.get("fillT"):
+                f = full.get((x["t"], x["dir"]))
+                assert f and f.get("fillT") == x["fillT"], (cut, x["t"], x["fillT"], f and f.get("status"))
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
