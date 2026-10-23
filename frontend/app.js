@@ -5140,8 +5140,13 @@ const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
 const route = () => { const r = location.hash.slice(1).split('?')[0] || 'dashboard'; return VIEWS[r] ? r : 'dashboard'; };
 const hashParam = k => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
 const evTicker = () => route() === 'botevals' ? (hashParam('t') || '').toUpperCase() : '';
-function render() {
+function editing() {                                // the user is typing in a field: a background refresh must not redraw it
+  const a = document.activeElement;
+  return !!(a && ((a.tagName === 'INPUT' && !['checkbox', 'radio', 'button', 'submit'].includes(a.type)) || a.tagName === 'TEXTAREA'));   // (a select commits at once)
+}
+function render(force) {
   if (S.fczDrag) { S.renderPending = true; return; }   // a drag-zoom in progress: redraw once it ends (else the drag is lost)
+  if (!force && editing()) { S.renderPending = true; return; }   // typing: the redraw waits until the field is left
   const v = route();
   const grp = groupOf(v);
   document.querySelectorAll('.nav a[data-r]').forEach(a => {
@@ -5168,6 +5173,11 @@ function render() {
   } else if (!f1 && winY) window.scrollTo(0, winY);
   if (VIEWS[v][1]) VIEWS[v][1]();
 }
+document.addEventListener('focusout', () => setTimeout(() => { if (S.renderPending && !editing() && !S.fczDrag) { S.renderPending = false; render(); } }, 60));
+document.addEventListener('input', e => {               // building blocks: what is typed is kept in the draft (a redraw doesn't lose it)
+  const t = e.target;
+  if (t && t.dataset && t.dataset.smccfg) { S.smcDraft = { ...(S.smcDraft || {}), [t.dataset.smccfg]: t.type === 'number' ? (t.value === '' ? '' : +t.value) : t.value }; }
+});
 document.addEventListener('scroll', e => {             // remember where the chart page is scrolled (not the jumps caused by a redraw)
   const t = e.target;
   if (t && t.classList && t.classList.contains('fcf') && Date.now() - (S.renderAt || 0) > 400) S.fcfY = t.scrollTop;
