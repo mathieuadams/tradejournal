@@ -21,7 +21,7 @@ import smc
 from util import iso, now_ny
 
 SK = "SMCOPT"
-VERSION = 4                                            # 4: a 2nd (afternoon) entry window in the search
+VERSION = 5                                            # 5: no repaint (arming causal, one trade at a time by fills)
 COST = 0.05
 MIN_TRADES = 80
 MONTH_SHARE = 0.35

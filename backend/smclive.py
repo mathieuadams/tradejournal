@@ -746,7 +746,10 @@ def _tick(sub, now=None, minute=None):
             recs = {r["t"]: r for r in db.q_prefix(pk, f"{POS}{sym}#{today}")}
             active = [r for r in recs.values() if r.get("status") in ("pending", "open", "closing")]
             flat = hm >= P["flatT"]
-            setups = {s["t"]: s for s in out["setups"]}
+            setups = {}
+            for s_ in out["setups"]:                   # one per time; the one that trades wins
+                if s_["t"] not in setups or (s_.get("fillT") and not setups[s_["t"]].get("fillT")):
+                    setups[s_["t"]] = s_
             # 1. what is already at the broker
             for r in active:
                 s = setups.get(r["t"])

@@ -187,8 +187,7 @@ def _day(bars, atr, ix, pools0, P, out):
         swings.append({"name": ("EQH" if eq else "swing high") if kind == "high" else ("EQL" if eq else "swing low"), "p": p,
                        "side": "buy" if kind == "high" else "sell", "t0": bars[i]["t"], "born": conf + 1, "swept": None, "at": i})
     pools += [q for q in swings if not P["eqOnly"] or q["name"] in ("EQH", "EQL")]
-    busy = [-1]                                        # one setup at a time (either side): nothing new until it is done
-    n_day = 0
+    day_setups = []
     n = len(ix)
     for pos in range(n):
         i = ix[pos]
@@ -210,16 +209,16 @@ def _day(bars, atr, ix, pools0, P, out):
                 sw_i = ix[pos + 1]
             if not back:
                 continue                               # broke through and stayed: not a sweep
-            if (side > 0 and not P["longs"]) or (side < 0 and not P["shorts"]) or i <= busy[0]:
+            if (side > 0 and not P["longs"]) or (side < 0 and not P["shorts"]):
                 continue
             we = window_end(P, hm)
             if not we:
                 continue
-            if P["maxDay"] and n_day >= P["maxDay"]:
-                continue
+            if any(x["t"] == bars[sw_i]["t"] and x["dir"] == side for x in day_setups):
+                out["sweeps"].append({"t": bars[sw_i]["t"], "p": p["p"], "name": p["name"], "dir": side})
+                continue                               # several pools taken by the same candle: one setup
             s = _setup(bars, atr, ix, pos, sw_i, p, side, piv, pools, P if we == P["endT"] else {**P, "endT": we}, t_end, vw)
-            if s.get("fillT"):
-                n_day += 1
+            day_setups.append(s)
             out["sweeps"].append({"t": bars[sw_i]["t"], "p": p["p"], "name": p["name"], "dir": side})
             if s.get("mss"):
                 out["mss"].append(s["mss"])
@@ -228,10 +227,32 @@ def _day(bars, atr, ix, pools0, P, out):
             if s.get("ob"):
                 out["obs"].append(s["ob"])
             out["setups"].append(s)
-            busy[0] = s.get("_end", sw_i)
+    _one_at_a_time(day_setups, P)
     for p in pools:
         out["levels"].append({"name": p["name"], "p": round(p["p"], 4), "side": p["side"], "t0": p["t0"],
                               "t1": bars[p["swept"]]["t"] if p["swept"] is not None else t_end, "swept": p["swept"] is not None})
+
+
+FILL_KEYS = ("fillT", "R", "exitT", "exitWhy", "stopNow", "tp1Hit")
+
+
+def _one_at_a_time(setups, P):
+    """One trade at a time (either side), decided by the fills: each setup is read on its own (so a setup that only
+    qualifies later can't hide or reveal another one afterwards: live sees the same), then a fill while another trade
+    is still open is not taken, and maxDay caps the trades of the day."""
+    taken, n_day = [], 0
+    for s in sorted((x for x in setups if x.get("fillT")), key=lambda x: (x["fillT"], x["t"])):
+        open_ = next((x for x in taken if x["fillT"] <= s["fillT"] <= (x.get("exitT") or "9999")), None)
+        why = f"a trade was open (from {open_['t'][11:16]})" if open_ else \
+            f"max {P['maxDay']} trades a day" if P["maxDay"] and n_day >= P["maxDay"] else None
+        if why:
+            for k in FILL_KEYS:
+                s.pop(k, None)
+            s["status"] = "skipped"
+            s["steps"] = [x for x in s["steps"] if x["n"] < 4] + [{"n": 4, "ok": False, "name": "Retracement", "text": f"not taken: {why}"}]
+            continue
+        taken.append(s)
+        n_day += 1
 
 
 def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
@@ -286,15 +307,23 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
         s["status"] = "forming"
         s["_end"] = ix[-1]
         return s
+    disp_q = 0
     # displacement: one candle of the leg with a body of dispMin x ATR in the trade's direction
     if P["dispOn"]:
         big = [ix[q] for q in range(k0 + 1, min(len(ix), leg_end + 1))
                if (bars[ix[q]]["c"] - bars[ix[q]]["o"]) * side >= P["dispMin"] * (atr[ix[q]] or 0)]
         if not big:
             return stop_here("no displacement", 3, "Fair value gap", f"no candle of the move with a body of {P['dispMin']:g} ATR or more", mss_j)
+        disp_q = ix.index(big[0])                      # the setup can't be known before its displacement candle closed
     # 3. FVG of the leg
+    base_q = max(ix.index(mss_j), disp_q if P["dispOn"] else 0)
+    if P["mssOn"]:
+        base_q = max(base_q, min(len(ix) - 1, leg_end))  # the largest gap of the leg: known once its window closed
+    # without MSS: a required gap = the first one of the window (the setup waits for it); an optional gap only counts
+    # if it is there by the time the setup is known (a gap after it can't change what was already traded)
+    hi_q = leg_end if (P["mssOn"] or P["fvgOn"]) else base_q
     best = None
-    for q in range(k0 + 2, min(len(ix) - 1, leg_end) + 1):
+    for q in range(k0 + 2, min(len(ix) - 1, hi_q) + 1):
         j, j2 = ix[q], ix[q - 2]
         lo_, hi_ = (bars[j2]["h"], bars[j]["l"]) if up else (bars[j]["h"], bars[j2]["l"])
         size = hi_ - lo_
@@ -302,10 +331,10 @@ def _setup(bars, atr, ix, pos, sw_i, pool, side, piv, pools, P, t_end, vw=None):
             best = (j2, j, size, lo_, hi_)
             if not P["mssOn"]:
                 break                                  # no MSS: the first gap of the move (known at its 3rd candle)
-    k_q = ix.index(mss_j)                                # the candle where the setup is known: the end of the leg's window
-    if best:                                           # (the largest gap is only known then), or the gap's 3rd candle
+    k_q = base_q                                       # the candle where the setup is known
+    if best:                                           # (or the gap's 3rd candle, if later)
         j2, j, size, glo, ghi = best
-        k_q = max(k_q, ix.index(j), min(len(ix) - 1, leg_end) if P["mssOn"] else 0)
+        k_q = max(k_q, ix.index(j))
         s["fvg"] = {"t0": bars[j2]["t"], "t1": t_end, "lo": f(glo), "hi": f(ghi), "dir": side}
         step(3, True, "Fair value gap", f"{'bullish' if up else 'bearish'} FVG {glo:.2f}–{ghi:.2f}" + (f" ({size / a:.2f} ATR)" if a else "")
                                         + f" at {bars[ix[ix.index(j) - 1]]['t'][11:16]}")
@@ -456,7 +485,7 @@ def funnel(setups):
     fill = sum(1 for s in setups if s.get("fillT"))
     win = sum(1 for s in setups if s.get("status") == "win")
     return {"sweeps": n, "mss": mss, "fvg": fvg, "filled": fill, "wins": win,
-            "why": {k: sum(1 for s in setups if s.get("status") == k) for k in ("forming", "no structure", "new extreme", "no MSS", "no displacement", "no FVG", "RR too small",
+            "why": {k: sum(1 for s in setups if s.get("status") == k) for k in ("skipped", "forming", "no structure", "new extreme", "no MSS", "no displacement", "no FVG", "RR too small",
                                                                               "ran away", "no retrace", "VWAP side", "premium / discount", "bad risk")}}
 
 

@@ -5431,11 +5431,14 @@ def test_smart_money_model():
     while m < 960:
         v = min(105.5, v + .06); bars.append(mk("2026-10-20", m, v, v + .05, v - .05, v)); m += 1
     out = smc.detect(bars, {"tf": 1, "startT": "09:30"}, ["2026-10-20"])
-    won = [s for s in out["setups"] if s.get("fillT")]
-    assert len(won) == 1 and won[0]["dir"] == 1 and won[0]["R"] > 1 and [x["n"] for x in won[0]["steps"]] == [1, 2, 3, 4, 5, 6]
+    filled = [s for s in out["setups"] if s.get("fillT")]
+    won = [s for s in filled if s["dir"] == 1]          # (a waiting setup doesn't block another one: the earlier short fills too)
+    assert len(won) == 1 and won[0]["R"] > 1 and [x["n"] for x in won[0]["steps"]] == [1, 2, 3, 4, 5, 6]
     assert won[0]["stop"] < won[0]["ext"] < won[0]["entry"] < won[0]["tp1"] < won[0]["tp2"]
+    tr = sorted(filled, key=lambda s: s["fillT"])
+    assert all(b_["fillT"] > a_["exitT"] for a_, b_ in zip(tr, tr[1:]))           # one trade at a time
     f = out["funnel"]
-    assert f["sweeps"] == len(out["setups"]) and f["filled"] == 1 and f["mss"] >= 1 and sum(f["why"].values()) == f["sweeps"] - f["filled"]
+    assert f["sweeps"] == len(out["setups"]) and f["filled"] == len(filled) and f["mss"] >= 1 and sum(f["why"].values()) == f["sweeps"] - f["wins"] - sum(1 for s in out["setups"] if s.get("status") in ("loss", "flat"))
     assert any(l["name"] == "PDH" for l in out["levels"]) and out["bars"][0]["t"].startswith("2026-10-20")
 
 def test_smart_money_building_blocks():
@@ -5718,13 +5721,14 @@ def _smc_live_day(MODE, skip_fill=False, want_win=False):
             assert not [o for o in orders.values() if o["status"] == "new"], "nothing left resting at the end of the day"
             for r in recs:                             # a stop exit fills at the stop (not at a later candle close)
                 if "order at Alpaca filled" in (r.get("exitWhy") or "") and r.get("engineR") is not None:
-                    assert abs(r["R"] - r["engineR"]) < 0.3, (r["R"], r["engineR"])
+                    lvl = float(r.get("stopNow") or r["stop"]) if "stop order" in r["exitWhy"] else float(r["tp2"] if float(r.get("part") or 0) else r["tp1"])
+                    assert r.get("exitPx") is None or abs(float(r["exitPx"]) - lvl) <= 0.011, (r["exitWhy"], r.get("exitPx"), lvl)
             assert not pos, pos
             return
         assert recs and first_limit, calls[:5]
         assert first_limit[0] >= found["armedT"] or any(r["t"] != found["t"] for r in recs)     # never before the gap exists
         ent = [r for r in recs if r["t"] == found["t"]]
-        assert ent and abs(float(first_limit[1]["limit_price"]) - round(found["entry"], 2)) < 0.011, (found["t"], found["entry"], found["armedT"], first_limit, [(r["t"], r["status"], r.get("entry"), r.get("events")) for r in recs])
+        assert ent and abs(float(ent[0]["entry"]) - found["entry"]) < 1e-6, (found["t"], found["entry"], found["armedT"], first_limit, [(r["t"], r["status"], r.get("entry"), r.get("events")) for r in recs])
         r0 = ent[0]
         assert r0["status"] in ("closed", "closing", "canceled"), r0
         if r0["status"] != "canceled":
@@ -6120,6 +6124,34 @@ def test_smart_money_candles_kept_in_memory():
     finally:
         daytrade.minute_bars, daytrade.data_creds, alpaca.bars = saved
         smclive._BARS.clear()
+
+def test_smart_money_no_repaint():
+    """What live saw at any minute stays true later: an entry (fill) seen with the candles up to that minute is the
+    same entry, at the same candle and price, in the backtest of the whole day (several block settings)."""
+    import smc, random
+    cfgs = [{"tf": 1, "fvgMin": 0.1}, {"tf": 1, "mssOn": False, "dispOn": True, "dispMin": 0.8, "fvgOn": False, "pivot": 1, "entryAt": "market"},
+            {"tf": 1, "mssOn": False, "dispOn": True, "fvgOn": True, "fvgMin": 0.1}, {"tf": 1, "dispOn": True, "dispMin": 0.6, "fvgMin": 0.1, "entryAt": "ce"},
+            {"tf": 5, "fvgMin": 0.1}]
+    for seed in (1, 2, 3):
+        random.seed(seed)
+        bars, p = [], 400.0
+        for d in ("2026-09-15", "2026-09-16"):
+            for m in range(240, 960):
+                o = p
+                p += random.gauss(0, .12)
+                bars.append({"t": f"{d}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, p) + abs(random.gauss(0, .05)), "l": min(o, p) - abs(random.gauss(0, .05)), "c": p, "v": 100})
+        for cfg in cfgs:
+            full = {(x["t"], x["dir"]): x for x in smc.detect(bars, cfg, ["2026-09-16"])["setups"]}
+            for cut_m in range(585, 960, 3):
+                cut = f"2026-09-16T{cut_m // 60:02d}:{cut_m % 60:02d}"
+                part = [b for b in bars if b["t"] < cut]
+                for x in smc.detect(part, cfg, ["2026-09-16"])["setups"]:
+                    if not x.get("fillT"):
+                        continue
+                    f = full.get((x["t"], x["dir"]))
+                    assert f and f.get("fillT") == x["fillT"] and abs(f["entry"] - x["entry"]) < 1e-9, (seed, cfg, cut, x["t"], x["fillT"], f and f.get("fillT"), f and f.get("status"))
+                    if x.get("exitWhy") not in (None, "end of day"):
+                        assert f.get("exitT") == x["exitT"] and f.get("exitWhy") == x["exitWhy"], (seed, cfg, cut, x["t"], x["exitT"], f.get("exitT"))
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
