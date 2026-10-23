@@ -29,7 +29,10 @@ DEFAULT = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "riskUsd
            # "market": every entry / exit is a market order sent right after the candle where the strategy enters / exits
            # (the exits come only from the strategy); "limit": limit entry + OCO exits at the broker
            "orderMode": "market",
-           "restStop": True,                           # market mode: a stop order resting at Alpaca at the strategy's stop
+           "restStop": True,
+           # what is bought: "shares" or "opt0dte" (same-day call for a long, put for a short; the strategy reads the
+           # chart of the stock, the option is bought / sold at market)
+           "instrument": "shares", "optPick": "atm", "optRiskPct": 0.5, "optMaxContracts": 50, "optFlatT": "15:25",                           # market mode: a stop order resting at Alpaca at the strategy's stop
            "cfg": {}, "name": "", "savedAt": None, "source": None}
 
 
@@ -54,6 +57,15 @@ def save(sub, b):
                       ("openRiskPct", 0.01, 20), ("dayLossPct", 0, 50), ("maxTrades", 0, 50), ("lossStreak", 0, 50)):
         if b.get(k) is not None and b.get(k) != "":
             cur[k] = max(lo, min(hi, float(b[k]) if k in ("riskUsd", "riskPct", "maxPosPct", "openRiskPct", "dayLossPct") else int(float(b[k]))))
+    if b.get("instrument") in ("shares", "opt0dte"):
+        cur["instrument"] = b["instrument"]
+    if b.get("optPick") in ("atm", "otm1", "otm2", "itm1"):
+        cur["optPick"] = b["optPick"]
+    for k, lo, hi in (("optRiskPct", 0.01, 10), ("optMaxContracts", 1, 1000)):
+        if b.get(k) not in (None, ""):
+            cur[k] = max(lo, min(hi, float(b[k]) if k == "optRiskPct" else int(float(b[k]))))
+    if b.get("optFlatT") and "09:30" < str(b["optFlatT"]) <= "15:29":
+        cur["optFlatT"] = str(b["optFlatT"])[:5]
     if "restStop" in b:
         cur["restStop"] = bool(b["restStop"])
     if b.get("orderMode") in ("market", "limit"):
@@ -131,6 +143,9 @@ def _open_risk(recs):
         if r.get("status") not in ("pending", "open"):
             continue
         q = float(r.get("filledQty") or r.get("qty") or 0)
+        if r.get("kind") == "option":                  # an option bought: the premium is what can be lost
+            out += float(r.get("fill") or r.get("premium") or 0) * 100 * q
+            continue
         px = float(r.get("fill") or r.get("entry"))
         out += max(0.0, (px - float(r.get("stopNow") or r["stop"])) * r["dir"]) * q
     return out
@@ -623,6 +638,7 @@ def _tick(sub, now=None, minute=None):
     P = cfg["cfg"]
     tf = P["tf"]
     pk = db.upk(sub)
+    config_cache[pk] = cfg
     acts, log = [], []
     try:
         acct = account(c)
@@ -638,7 +654,7 @@ def _tick(sub, now=None, minute=None):
                 _cancel(c, oid)
             if r["status"] == "open":
                 time.sleep(0.5)
-                _alp(c, "DELETE", f"/v2/positions/{r['symbol']}")
+                _alp(c, "DELETE", f"/v2/positions/{r.get('optSym') or r['symbol']}")
             db.update(pk, r["SK"], {"status": "closing" if r["status"] == "open" else "canceled", "exitWhy": risk["why"],
                                     "why": risk["why"], "events": (r.get("events") or []) + [f"closed: {risk['why']}"]})
             acts.append(f"{r['symbol']} closed: {risk['why']}")
@@ -706,6 +722,10 @@ def _tick(sub, now=None, minute=None):
                     market_now = P["entryAt"] == "market" and s.get("fillT") == last and s.get("armedT") == last
                 if not (pending or market_now):
                     continue
+                if cfg.get("instrument") == "opt0dte" and mkt_mode:
+                    if market_now:
+                        acts += _enter_option(c, pk, cfg, sym, s, last, acct, today, lag, notes_late)
+                    break
                 if _held(c, sym):
                     acts.append(f"{sym}: setup {s['t'][11:16]} skipped (a position is already held)")
                     break
@@ -752,6 +772,149 @@ def _tick(sub, now=None, minute=None):
     return {"actions": acts}
 
 
+# ---------------------------------------------------------------- 0DTE options
+def pick_0dte(c, sym, up, price, pick="atm", day=None):
+    """Today's call (long) / put (short) of `sym`: at the money, 1-2 strikes out of the money, or 1 in the money.
+    -> {"symbol": OCC, "strike", "exp"} or None"""
+    import urllib.parse
+    day = day or now_ny().strftime("%Y-%m-%d")
+    q = urllib.parse.urlencode({"underlying_symbols": sym, "expiration_date": day, "type": "call" if up else "put",
+                                "strike_price_gte": f"{price * 0.97:.2f}", "strike_price_lte": f"{price * 1.03:.2f}", "limit": 500, "status": "active"})
+    cs = (_alp(c, "GET", f"/v2/options/contracts?{q}") or {}).get("option_contracts") or []
+    cs = sorted((x for x in cs if x.get("tradable", True)), key=lambda x: float(x["strike_price"]))
+    if not cs:
+        return None
+    ks = [float(x["strike_price"]) for x in cs]
+    i = min(range(len(ks)), key=lambda k: abs(ks[k] - price))
+    step = {"atm": 0, "otm1": 1, "otm2": 2, "itm1": -1}.get(pick, 0) * (1 if up else -1)   # out of the money: up for a call
+    i = max(0, min(len(cs) - 1, i + step))
+    return {"symbol": cs[i]["symbol"], "strike": ks[i], "exp": cs[i].get("expiration_date") or day}
+
+
+def _opt_quote(c, occ):
+    import daytrade
+    import optiondata
+    feed = "opra" if (daytrade.data_creds_feed(c) == "sip") else "indicative"
+    q = optiondata.snapshots(c, [occ], feed=feed).get(occ) or {}
+    if not q.get("ask") and feed == "opra":
+        q = optiondata.snapshots(c, [occ]).get(occ) or {}
+    return q
+
+
+def _enter_option(c, pk, cfg, sym, s, last, acct, today, lag, notes_late=None):
+    """The strategy filled on the stock: buy today's call (long) / put (short) at market, sized by the premium."""
+    P = cfg["cfg"]
+    hm = last[11:16]
+    cut = min(P["endT"] if not P.get("win2On") else max(P["endT"], P["endT2"]), "15:10")
+    key = f"{POS}{sym}#{s['t']}"
+    base = {"PK": pk, "SK": key, "symbol": sym, "t": s["t"], "dir": s["dir"], "entry": s["entry"], "stop": s["stop"], "tp1": s["tp1"],
+            "tp2": s["tp2"], "tp1Name": s.get("tp1Name"), "tp2Name": s.get("tp2Name"), "kind": "option", "mode": "market", "candle": last,
+            "part": s.get("part", P["partial"] if P["partialOn"] else 0) if P["partialOn"] else 0, "sentAt": iso(now_ny())}
+    if hm >= cut:
+        db.put({**base, "status": "canceled", "why": f"0DTE: no new option after {cut} (Alpaca cutoff 15:30)", "events": [f"not taken: after {cut}"]})
+        return [f"{sym}: option not bought after {cut}"]
+    if not acct:
+        db.put({**base, "status": "canceled", "why": "account value not available", "events": ["not taken: account value not available"]})
+        return [f"{sym}: option not bought: account value not available"]
+    px = float(s["entry"])
+    try:
+        ct = pick_0dte(c, sym, s["dir"] > 0, px, cfg.get("optPick", "atm"), today)
+    except Exception as e:
+        ct, err = None, str(e)[:120]
+    else:
+        err = None
+    if not ct:
+        db.put({**base, "status": "canceled", "why": f"no 0DTE contract found{': ' + err if err else ''}", "events": ["not taken: no contract"]})
+        return [f"{sym}: no 0DTE contract{': ' + err if err else ''}"]
+    qt = _opt_quote(c, ct["symbol"])
+    ask = qt.get("ask") or qt.get("mark")
+    if not ask:
+        db.put({**base, "optSym": ct["symbol"], "status": "canceled", "why": "no option quote", "events": [f"{ct['symbol']}: no quote"]})
+        return [f"{sym}: {ct['symbol']} has no quote"]
+    budget = acct["equity"] * float(cfg.get("optRiskPct") or 0.5) / 100
+    n = min(int(budget // (float(ask) * 100)), int(cfg.get("optMaxContracts") or 50))
+    note = f"premium budget ${budget:,.0f} ({cfg.get('optRiskPct')}% of ${acct['equity']:,.0f}) / ask {float(ask):.2f} x 100"
+    if n < 1:
+        db.put({**base, "optSym": ct["symbol"], "status": "canceled", "why": f"size 0: {note}", "events": [f"not taken: {note}"]})
+        return [f"{sym}: option not bought: {note}"]
+    _mark(f"{sym} option entry sending")
+    o, notes = _send(c, {"symbol": ct["symbol"], "qty": str(n), "side": "buy", "type": "market", "time_in_force": "day"})
+    _mark(f"{sym} option entry accepted by Alpaca" if o else f"{sym} option entry refused")
+    o = o or {}
+    rec = {**base, "optSym": ct["symbol"], "strike": ct["strike"], "qty": n, "premium": float(ask), "bid": qt.get("bid"), "delta": qt.get("delta"),
+           "orderId": o.get("id"), "status": "pending", "tries": 1, "lagS": lag(), "sizing": note, "equity": acct.get("equity"),
+           "events": [f"{'CALL' if s['dir'] > 0 else 'PUT'} {ct['symbol']} (strike {ct['strike']:g}, {cfg.get('optPick', 'atm')}) · bid {qt.get('bid')} / ask {ask}",
+                      f"size {n}: {note}", f"market buy {n} (candle {last[11:16]}, sent {lag()}s after its close)"] + notes + ([notes_late] if notes_late else [])}
+    if not o.get("id"):
+        rec["events"].append("order not accepted after the retries")
+    db.put(rec)
+    return [f"{sym} {'CALL' if s['dir'] > 0 else 'PUT'} {n}x {ct['symbol']} market (ask {ask}) · lag {rec['lagS']}s"]
+
+
+def _manage_opt(c, pk, r, s, last, flat, P, lag):
+    """An option bought on the strategy: exits from the strategy on the stock (TP1 partial, target, stop, breakeven,
+    trail, early exit) at market after the candle, and always out before the 0DTE cutoff (optFlatT)."""
+    acts, upd, ev = [], {}, list(r.get("events") or [])
+    occ = r["optSym"]
+    cfg_flat = (config_cache.get(pk) or {}).get("optFlatT", "15:25")
+    flat = flat or last[11:16] >= min(cfg_flat, "15:28")
+    eng_out = bool(s and s.get("exitT") and s.get("exitWhy") != "end of day")
+    st = r["status"]
+    if st == "pending":
+        o = _alp(c, "GET", f"/v2/orders/{r['orderId']}") if r.get("orderId") else None
+        filled = int(float((o or {}).get("filled_qty") or 0))
+        ost = (o or {}).get("status")
+        if filled and ost in ("filled", "canceled", "expired", "partially_filled"):
+            if ost == "partially_filled":
+                _cancel(c, r["orderId"])
+            px = float(o.get("filled_avg_price") or r.get("premium") or 0)
+            upd.update(status="open", filledQty=filled, fill=px, filledAt=o.get("filled_at"), slip=round(px - float(r.get("premium") or px), 4))
+            ev.append(f"filled {filled} @ {px:.2f} (ask was {r.get('premium')}; seen {lag()}s after candle {last[11:16]})")
+            acts.append(f"{r['symbol']} option filled {filled} @ {px:.2f}")
+        elif not r.get("orderId") or ost in ("canceled", "expired", "rejected") or \
+                (ost in ("new", "accepted", "pending_new") and (r.get("sentAt") or "") < iso(now_ny() - timedelta(minutes=2))):
+            if r.get("orderId") and ost not in ("canceled", "expired", "rejected"):
+                _cancel(c, r["orderId"])
+            upd.update(status="canceled", why=f"option entry not filled ({ost or 'not accepted by Alpaca'})")
+            ev.append(upd["why"])
+    elif st in ("open", "closing"):
+        held = abs(_held(c, occ))
+        if not held:
+            xs = _orders_after(c, occ, {**r, "dir": 1})
+            q_all = sum(float(x["filled_qty"]) for x in xs)
+            avg = sum(float(x["filled_avg_price"]) * float(x["filled_qty"]) for x in xs) / q_all if q_all else None
+            upd.update(status="closed", exitPx=round(avg, 4) if avg else None, closedAt=iso(now_ny()), exitWhy=r.get("exitWhy") or "closed outside the strategy")
+            if avg and r.get("fill"):
+                upd["R"] = round((avg - float(r["fill"])) / float(r["fill"]), 3)      # 1R = the premium paid
+            ev.append(f"closed: {upd['exitWhy']}" + (f" @ {avg:.2f} avg" if avg else ""))
+            acts.append(f"{r['symbol']} option closed ({upd['exitWhy']})")
+        elif st == "closing" or flat or eng_out:
+            why = r.get("exitWhy") if st == "closing" else (f"0DTE flat at {cfg_flat}" if flat else s["exitWhy"])
+            oid, notes = _close_pos(c, occ)
+            upd.update(status="closing", exitWhy=why, exitOrder=oid, closeTries=(r.get("closeTries") or 0) + 1)
+            ev += notes + [f"option sold at market: {why} (candle {last[11:16]}, {lag()}s after its close)"]
+            acts.append(f"{r['symbol']} option sold: {why}")
+        elif s and s.get("tp1Hit") and not r.get("tp1Done") and float(r.get("part") or 0):
+            q = int(int(r.get("filledQty") or held) * float(r["part"]))
+            if 0 < q < held:
+                o, notes = _send(c, {"symbol": occ, "qty": str(q), "side": "sell", "type": "market", "time_in_force": "day"})
+                ev += notes + [f"TP1: {q} contracts sold at market (candle {last[11:16]}, {lag()}s after its close)" if o else "TP1 partial NOT sent (tried again next minute)"]
+                if o:
+                    upd["tp1Done"] = True
+                    acts.append(f"{r['symbol']} option TP1 {q}")
+            else:
+                upd["tp1Done"] = True                  # 1 contract: no partial, the rest rides to TP2
+    if s and s.get("R") is not None and s.get("exitWhy") != "end of day":
+        upd["engineR"] = s["R"]
+    if upd:
+        upd["events"] = ev[-25:]
+        db.update(pk, r["SK"], upd)
+    return acts
+
+
+config_cache = {}
+
+
 CATCHUP = 3                                            # market mode: an entry missed by up to 3 candles is still taken
 
 
@@ -773,6 +936,8 @@ def _waiting(s, last, tf, P):
 
 
 def _manage(c, pk, r, s, last, tf, flat, P, lag):
+    if r.get("kind") == "option":
+        return _manage_opt(c, pk, r, s, last, flat, P, lag)
     if r.get("mode") == "market" and not r.get("test"):
         return _manage_mkt(c, pk, r, s, last, flat, P, lag, r.get("restStop"))
     acts = []

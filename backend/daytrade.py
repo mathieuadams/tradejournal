@@ -222,6 +222,10 @@ def creds(sub):
     return alpaca.creds(sub, CRED_SK)
 
 
+def data_creds_feed(c):
+    return (c or {}).get("feed")
+
+
 def data_creds(sub):
     import alpaca
     return creds(sub) or alpaca.creds(sub)

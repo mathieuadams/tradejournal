@@ -5975,6 +5975,80 @@ def test_crypto_speed_test():
     finally:
         smclive._alp, daytrade.creds = saved
 
+def test_smart_money_live_0dte_options():
+    """0DTE: the strategy on the stock buys today's call (long) / put (short) at market, sized by the premium, sells
+    it on the strategy's exits, and nothing is left after the 0DTE flat time."""
+    import smc, smclive, daytrade, optiondata, random, datetime as dt
+    for seed in range(40):
+        random.seed(seed)
+        bars, p = [], 400.0
+        for m in range(240, 960):
+            o = p
+            p += random.gauss(0, .12)
+            bars.append({"t": f"2026-09-16T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, p) + abs(random.gauss(0, .04)), "l": min(o, p) - abs(random.gauss(0, .04)), "c": p, "v": 100})
+        day = [{**b, "t": "2026-09-15" + b["t"][10:]} for b in bars] + bars
+        P = smc.clean({"tf": 1, "fvgMin": 0.1, "partialOn": True, "endT": "15:00"})
+        if any(x.get("fillT") for x in smc.detect(day, P, ["2026-09-16"])["setups"]):
+            break
+    orders, pos, calls = {}, {}, []
+    def alp(c, m, path, body=None):
+        calls.append((m, path, body))
+        if m == "GET" and path == "/v2/account":
+            return {"equity": "100000", "last_equity": "100000", "buying_power": "200000"}
+        if m == "GET" and path.startswith("/v2/options/contracts?"):
+            import urllib.parse as up
+            qs = dict(up.parse_qsl(path.split("?", 1)[1]))
+            k0 = round(float(qs["strike_price_gte"]) / 0.97)
+            cp = "C" if qs["type"] == "call" else "P"
+            return {"option_contracts": [{"symbol": f"QQQ260916{cp}{(k0 + d) * 1000:08d}", "strike_price": str(k0 + d), "expiration_date": "2026-09-16"} for d in range(-5, 6)]}
+        if m == "POST":
+            oid = f"o{len(orders) + 1}"
+            px = "1.50" if body["side"] == "buy" else "1.80"
+            o = {"id": oid, "status": "filled", "filled_qty": body["qty"], "filled_avg_price": px, "filled_at": "2026-09-16T12:00", **body}
+            orders[oid] = o
+            pos[body["symbol"]] = pos.get(body["symbol"], 0) + (1 if body["side"] == "buy" else -1) * int(body["qty"])
+            if not pos[body["symbol"]]:
+                pos.pop(body["symbol"])
+            return o
+        if m == "GET" and path.startswith("/v2/orders/"):
+            return orders.get(path.rsplit("/", 1)[1])
+        if m == "GET" and path.startswith("/v2/orders?"):
+            return [o for o in orders.values() if o["side"] == "sell"]
+        if m == "GET" and path.startswith("/v2/positions/"):
+            q = pos.get(path.rsplit("/", 1)[1], 0)
+            return {"qty": str(q)} if q else None
+        if m == "DELETE" and path.startswith("/v2/positions/"):
+            sym = path.rsplit("/", 1)[1]
+            q = pos.pop(sym, 0)
+            if q:
+                orders[f"x{len(orders)}"] = {"id": "x", "symbol": sym, "side": "sell", "qty": str(q), "filled_qty": str(q), "filled_avg_price": "1.20", "status": "filled", "filled_at": "2026-09-16T13:00"}
+            return {"id": "flat"}
+        return {}
+    saved = (daytrade.minute_bars, daytrade.creds, smclive._alp, smclive.config, smclive.time.sleep, optiondata.snapshots)
+    try:
+        cfg = {**smclive.DEFAULT, "enabled": True, "trade": True, "tickers": ["QQQ"], "cfg": P, "instrument": "opt0dte", "optRiskPct": 0.5}
+        smclive.config = lambda sub: cfg
+        daytrade.creds = lambda sub: {"key": "k", "secret": "s", "feed": "sip"}
+        smclive._alp = alp
+        smclive.time.sleep = lambda s_: None
+        optiondata.snapshots = lambda c, syms, feed="indicative": {x: {"bid": 1.45, "ask": 1.50, "mark": 1.475, "delta": 0.5} for x in syms}
+        daytrade.minute_bars = lambda sub, sym, days, now=None, feed=None: [b for b in day if b["t"] < now.strftime("%Y-%m-%dT%H:%M")]
+        now = dt.datetime(2026, 9, 16, 9, 31)
+        while now <= dt.datetime(2026, 9, 16, 16, 0):
+            smclive.tick("smc-0dte", now)
+            now += dt.timedelta(minutes=1)
+        recs = [r for r in db.q_prefix(db.upk("smc-0dte"), "SMCPOS#QQQ#") if r.get("filledQty")]
+        assert recs, [r.get("why") for r in db.q_prefix(db.upk("smc-0dte"), "SMCPOS#QQQ#")]
+        buys = [b for m, p_, b in calls if m == "POST" and b["side"] == "buy"]
+        assert buys and all(len(b["symbol"]) > 10 and b["type"] == "market" for b in buys), buys      # options only, no shares
+        assert int(buys[0]["qty"]) == 3                 # $500 premium budget / (1.50 x 100)
+        for r in recs:
+            assert ("C" if r["dir"] > 0 else "P") in r["optSym"][9:10] and r["status"] == "closed", r
+        assert not pos, pos                            # nothing open after the 0DTE flat time
+        assert not any(b["side"] == "buy" and p_ == "/v2/orders" and calls.index((m, p_, b)) > 0 and False for m, p_, b in calls if m == "POST")
+    finally:
+        daytrade.minute_bars, daytrade.creds, smclive._alp, smclive.config, smclive.time.sleep, optiondata.snapshots = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

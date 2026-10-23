@@ -30,11 +30,11 @@ def daily_volume(creds, occ, entry_date):
             "optVolRatio": round(day["v"] / avg5, 2) if avg5 else None}
 
 
-def snapshots(creds, occ_symbols):
-    """Latest quote, trade and greeks for option contracts (Alpaca indicative feed)."""
+def snapshots(creds, occ_symbols, feed="indicative"):
+    """Latest quote, trade and greeks for option contracts (Alpaca indicative feed; "opra" with Algo Trader Plus)."""
     if not occ_symbols:
         return {}
-    q = urllib.parse.urlencode({"symbols": ",".join(occ_symbols[:100]), "feed": "indicative"})
+    q = urllib.parse.urlencode({"symbols": ",".join(occ_symbols[:100]), "feed": feed})
     req = urllib.request.Request(f"https://data.alpaca.markets/v1beta1/options/snapshots?{q}",
                                  headers={"APCA-API-KEY-ID": creds["key"], "APCA-API-SECRET-KEY": creds["secret"]})
     try:
