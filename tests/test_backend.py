@@ -5918,10 +5918,32 @@ def test_smart_money_scheduled_minute():
     try:
         smclive.users = lambda: ["a", "b"]
         smclive.tick = lambda sub, now=None, minute=None: seen.append((sub, minute)) or {"ok": 1}
-        out = smclive.job("2026-10-22T16:07:00Z", t0=1.0)
+        import calendar, time as _time
+        rt = _time.time
+        _time.time = lambda: calendar.timegm((2026, 10, 22, 16, 7, 2))      # started 2 s in: runs at once on 12:07
+        try:
+            out = smclive.job("2026-10-22T16:07:00Z", t0=calendar.timegm((2026, 10, 22, 16, 7, 1)))
+        finally:
+            _time.time = rt
+        assert set(out) == {"a", "b"} and all(m == dt.datetime(2026, 10, 22, 12, 7) for _, m in seen), seen
         names = [m[0] for m in smclive._TM[0].marks]
         assert "Lambda handler start" in names and "users read" in names and "lock taken" in names and names[-1] == "done"
-        assert set(out) == {"a", "b"} and all(m == dt.datetime(2026, 10, 22, 12, 7) for _, m in seen), seen
+        # started 21 s into 12:07 (as EventBridge does): waits for 12:08:00 and works on 12:08
+        import calendar, time as _time
+        base = calendar.timegm((2026, 10, 22, 16, 7, 0))
+        now_ = [base + 21.0]
+        slept = []
+        real_time, real_sleep = _time.time, _time.sleep
+        _time.time = lambda: now_[0]
+        _time.sleep = lambda x: (slept.append(x), now_.__setitem__(0, now_[0] + x))
+        try:
+            seen.clear()
+            smclive.job("2026-10-22T16:07:00Z", t0=base + 21.0)
+        finally:
+            _time.time, _time.sleep = real_time, real_sleep
+        assert seen[0][1] == dt.datetime(2026, 10, 22, 12, 8) and abs(slept[0] - 39.25) < 0.01, (seen, slept)
+        names = dict(smclive._TM[0].marks)
+        assert names["Lambda handler start"] < 0 and abs(names["waited for the minute"] - 0.25) < 0.01, names
     finally:
         smclive.users, smclive.tick = saved
 

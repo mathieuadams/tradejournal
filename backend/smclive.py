@@ -348,6 +348,8 @@ class Timer:
 
 
 _TM = [None]
+EARLY_MIN = 4.0                                        # started later than this into its minute: wait for the next one
+WAIT_PAD = 0.25                                        # seconds after :00 (the candle just closed is published by then)
 
 
 def _mark(name):
@@ -370,13 +372,26 @@ def job(at=None, t0=None, loaded=None):
         except (TypeError, ValueError):
             minute = None
     base = base or (time.time() // 60 * 60)
-    tm = _TM[0] = Timer(base)
     cold = _RUNS[0] == 0
     _RUNS[0] += 1
-    if cold:
-        tm.marks.append(["code loaded (cold start)", round((loaded or _LOADED) - base, 2)])
-    if t0:
-        tm.marks.append(["Lambda handler start", round(t0 - base, 2)])
+    late = time.time() - base
+    if minute and EARLY_MIN <= late < 58:              # EventBridge started us ~20 s into the minute: wait for the next :00
+        target = base + 60                             # and work on that minute (its candle has just closed then)
+        tm0 = Timer(target)
+        if cold:
+            tm0.marks.append(["code loaded (cold start)", round((loaded or _LOADED) - target, 2)])
+        if t0:
+            tm0.marks.append(["Lambda handler start", round(t0 - target, 2)])
+        time.sleep(max(0.0, target - time.time() + WAIT_PAD))
+        base, minute = target, minute + timedelta(minutes=1)
+        tm = _TM[0] = tm0
+        tm.mark("waited for the minute")
+    else:
+        tm = _TM[0] = Timer(base)
+        if cold:
+            tm.marks.append(["code loaded (cold start)", round((loaded or _LOADED) - base, 2)])
+        if t0:
+            tm.marks.append(["Lambda handler start", round(t0 - base, 2)])
     tm.mark("job start")
     subs = users()
     tm.mark("users read")

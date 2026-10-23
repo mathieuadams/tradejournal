@@ -381,6 +381,23 @@ Resources:
             ScheduleExpressionTimezone: America/New_York
             Input: '{"kind": "preclose"}'
 
+  SmcFunction:            # smart money live only: its own small function, started early and waiting for the minute
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: autotrader.handler
+      Timeout: 150
+      MemorySize: 1024
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
+      Events:
+        SmcTick:            # EventBridge starts a cron target ~20 s into the minute: the run waits for the next :00
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "smctick", "at": "<aws.scheduler.scheduled-time>"}'
+
   BotFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -450,12 +467,6 @@ Resources:
             ScheduleExpression: cron(20,32,40 9 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "flipsnap"}'
-        SmcTick:            # every minute: smart money live on the day-trading paper account (its own run: never late behind another job)
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "smctick", "at": "<aws.scheduler.scheduled-time>"}'
         DayTrade:           # every minute: the day-trading account (1-minute strategy on QQQ / SPY)
           Type: ScheduleV2
           Properties:
