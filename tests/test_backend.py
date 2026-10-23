@@ -6166,6 +6166,16 @@ def test_smart_money_minute_run_stops_after_the_window():
     finally:
         smclive.users, smclive.config = saved
 
+def test_option_sold_by_time():
+    import smclive
+    assert smclive._hhmm("1525") == "15:25" and smclive._hhmm("9:45") == "09:45" and smclive._hhmm("15") is None and smclive._hhmm("1") is None
+    try:
+        smclive.save("sb-u", {"optFlatT": "1"})
+        assert False, "a bad time must be refused"
+    except Exception as e:
+        assert "Sold by" in str(e)
+    assert smclive.save("sb-u", {"optFlatT": "11:45"})["config"]["optFlatT"] == "11:45"
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -64,8 +64,11 @@ def save(sub, b):
     for k, lo, hi in (("optRiskPct", 0.01, 10), ("optMaxContracts", 1, 1000)):
         if b.get(k) not in (None, ""):
             cur[k] = max(lo, min(hi, float(b[k]) if k == "optRiskPct" else int(float(b[k]))))
-    if b.get("optFlatT") and "09:30" < str(b["optFlatT"]) <= "15:29":
-        cur["optFlatT"] = str(b["optFlatT"])[:5]
+    if b.get("optFlatT"):
+        t = _hhmm(b["optFlatT"])
+        if not t or not ("09:31" <= t <= "15:29"):
+            raise BadRequest("Sold by: a time between 09:31 and 15:29 ET, like 15:25 (Alpaca's 0DTE cutoff is 15:30).")
+        cur["optFlatT"] = t
     if "restStop" in b:
         cur["restStop"] = bool(b["restStop"])
     if b.get("orderMode") in ("market", "limit"):
@@ -81,6 +84,16 @@ def save(sub, b):
         cur["source"] = b.get("source") if isinstance(b.get("source"), dict) else None
     db.put({"PK": db.upk(sub), "SK": SK, **cur})
     return view(sub)
+
+
+def _hhmm(v):
+    """'15:25', '1525', '15.25', '9:45' -> 'HH:MM' (None if it isn't a time)."""
+    import re
+    m = re.fullmatch(r"\s*(\d{1,2})\s*[:.h]?\s*(\d{2})\s*", str(v))
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    return f"{h:02d}:{mi:02d}" if h < 24 and mi < 60 else None
 
 
 def view(sub):
@@ -941,7 +954,9 @@ def _manage_opt(c, pk, r, s, last, flat, P, lag):
     trail, early exit) at market after the candle, and always out before the 0DTE cutoff (optFlatT)."""
     acts, upd, ev = [], {}, list(r.get("events") or [])
     occ = r["optSym"]
-    cfg_flat = (config_cache.get(pk) or {}).get("optFlatT", "15:25")
+    cfg_flat = _hhmm((config_cache.get(pk) or {}).get("optFlatT", "15:25")) or "15:25"
+    if not ("09:31" <= cfg_flat <= "15:29"):
+        cfg_flat = "15:25"
     flat = flat or last[11:16] >= min(cfg_flat, "15:28")
     eng_out = bool(s and s.get("exitT") and s.get("exitWhy") != "end of day")
     st = r["status"]
