@@ -5588,12 +5588,17 @@ def test_smart_money_live_market_orders():
     _smc_live_day("market")
 
 
+def test_smart_money_live_target_at_alpaca():
+    """A winning day: the target rests at Alpaca (OCO) and fills at its price, as in the backtest."""
+    _smc_live_day("market", want_win=True)
+
+
 def test_smart_money_live_missed_minute():
     """A minute run that doesn't happen at the fill candle: the entry is caught up on the next run."""
     _smc_live_day("market", skip_fill=True)
 
 
-def _smc_live_day(MODE, skip_fill=False):
+def _smc_live_day(MODE, skip_fill=False, want_win=False):
     """Live: a day replayed minute by minute against a fake broker: the limit entry rests at the FVG edge while the
     setup waits, the exits are OCO at the broker, nothing is left open after the flat time, the candle used is the
     one that just closed."""
@@ -5611,7 +5616,7 @@ def _smc_live_day(MODE, skip_fill=False):
         allb = prev + bars
         P = smc.clean({"tf": 1, "fvgMin": 0.1, "partialOn": True, "beTp1": True, "endT": "15:00"})
         out = smc.detect(allb, P, ["2026-09-16"])
-        fs = [x for x in out["setups"] if x.get("fillT")]
+        fs = [x for x in out["setups"] if x.get("fillT") and (not want_win or x.get("exitWhy") in ("TP1", "TP2"))]
         if fs:
             day, found = allb, fs[0]
             break
@@ -5657,6 +5662,8 @@ def _smc_live_day(MODE, skip_fill=False):
             if o.get("order_class") == "oco":
                 sp, tp = float(o["stop_loss"]["stop_price"]), float(o["take_profit"]["limit_price"])
                 hit = sp if ((b["h"] >= sp) if buy else (b["l"] <= sp)) else tp if ((b["l"] <= tp) if buy else (b["h"] >= tp)) else None
+                if hit is not None:
+                    o["type"] = "stop" if hit == sp else "limit"
             elif o["type"] == "limit":
                 lp = float(o["limit_price"])
                 hit = lp if ((b["l"] <= lp) if buy else (b["h"] >= lp)) else None
@@ -5687,27 +5694,30 @@ def _smc_live_day(MODE, skip_fill=False):
             broker_minute(by_t[closed])                # the candle happened, then the tick runs at its close
             n0 = len(calls)
             if not (skip_fill and closed == found["fillT"]):                # the run right after the fill candle missed
-                smclive.tick("smc-live-" + MODE + ("-skip" if skip_fill else ""), now)
+                smclive.tick("smc-live-" + MODE + ("-skip" if skip_fill else "") + ("-win" if want_win else ""), now)
             for m, path, body in calls[n0:]:
                 if m == "POST" and body.get("type") == "limit" and not body.get("order_class") and first_limit is None:
                     first_limit = (closed, body)
             now += dt.timedelta(minutes=1)
-        recs = db.q_prefix(db.upk("smc-live-" + MODE + ("-skip" if skip_fill else "")), "SMCPOS#QQQ#2026-09-16")
+        recs = db.q_prefix(db.upk("smc-live-" + MODE + ("-skip" if skip_fill else "") + ("-win" if want_win else "")), "SMCPOS#QQQ#2026-09-16")
+        if want_win:
+            w = [r for r in recs if r["t"] == found["t"]][0]
+            assert "target order at Alpaca filled" in (w.get("exitWhy") or "") or w.get("tp1Done"), (w.get("exitWhy"), w.get("events"))
         if MODE == "market":
             full = {x["t"]: x for x in smc.detect(day, P, ["2026-09-16"])["setups"]}
             assert recs and not first_limit, recs
-            assert not any(b and b.get("type") == "limit" for m, p_, b in calls)           # market orders only (+ stops)
+            assert not any(b and b.get("type") == "limit" and not b.get("order_class") for m, p_, b in calls)   # market entries (+ OCO exits)
             for r in recs:                             # in right after the candle where the engine filled
                 if skip_fill and r["t"] == found["t"]:
                     assert r["candle"] > found["fillT"] and any("late" in e for e in r["events"]), r
                     continue
                 assert r["candle"] == full[r["t"]]["fillT"], (r["candle"], full[r["t"]]["fillT"])
                 assert r["status"] in ("closed", "canceled"), r
-            assert not any(b and b.get("type") == "limit" or (b or {}).get("order_class") for m, p_, b in calls), "market orders + resting stops"
-            assert any(b and b.get("type") == "stop" for m, p_, b in calls), "a stop order resting at the strategy's stop"
+            assert not any(b and b.get("type") == "limit" and not b.get("order_class") for m, p_, b in calls), "market entries + OCO exits"
+            assert any(b and b.get("order_class") == "oco" for m, p_, b in calls), "stop + target resting at Alpaca (OCO)"
             assert not [o for o in orders.values() if o["status"] == "new"], "nothing left resting at the end of the day"
             for r in recs:                             # a stop exit fills at the stop (not at a later candle close)
-                if "stop order at Alpaca" in (r.get("exitWhy") or "") and r.get("engineR") is not None:
+                if "order at Alpaca filled" in (r.get("exitWhy") or "") and r.get("engineR") is not None:
                     assert abs(r["R"] - r["engineR"]) < 0.3, (r["R"], r["engineR"])
             assert not pos, pos
             return
