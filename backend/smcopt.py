@@ -245,6 +245,16 @@ def min_trades(st):
     return 60 if st.get("universe", "index") == "index" else MIN_TRADES
 
 
+def _dedup(top):
+    out, sigs = [], set()
+    for x in sorted(top, key=lambda x: -x["fit"]):
+        sig = ((x.get("train") or {}).get("n"), (x.get("train") or {}).get("totR"))
+        if sig not in sigs:
+            sigs.add(sig)
+            out.append(x)
+    return out
+
+
 def fitness(r, need=MIN_TRADES):
     if not r.get("n"):
         return -10.0
@@ -295,8 +305,8 @@ def public(sub):
     st = state(sub)
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
     return {k: st.get(k) for k in ("on", "days", "universe", "evals", "step", "last", "split", "nSeries", "avgEval", "runs")} | {
-        "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": len(st["seen"]),
-        "top": [{**t, "params": to_params(t["g"])} for t in st["top"][:TOP]], "cost": COST, "minTrades": min_trades(st)}
+        "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": st.get("evals", 0),
+        "top": [{**t, "params": to_params(t["g"])} for t in _dedup(st["top"])[:TOP]], "cost": COST, "minTrades": min_trades(st)}
 
 
 def save_cfg(sub, b):
@@ -351,7 +361,8 @@ def run(sub, budget_s=470, seed=None):
     st["nSeries"] = len(data)
     st["step"] = "searching"
     _save(sub, st)
-    seen, top = st["seen"], st["top"]
+    seen, top = st["seen"], _dedup(st["top"])
+    st["top"] = top
     queue = []
     fix = (lambda g: g if idx else {**g, "tf": 5})     # the stocks-in-play history is 5m only
     if st.get("start") and key(fix(st["start"])) not in seen:
@@ -378,7 +389,10 @@ def run(sub, budget_s=470, seed=None):
         seen[k] = f
         st["evals"] += 1
         n_run += 1
-        if len(top) < TOP or f > top[-1]["fit"]:
+        same = any((x["train"] or {}).get("n") == r_tr.get("n") and (x["train"] or {}).get("totR") == r_tr.get("totR") for x in top)
+        if same:                                       # the same trades as a setting already listed (a number that
+            pass                                       # changes nothing): not listed twice
+        elif len(top) < TOP or f > top[-1]["fit"]:
             r_te = score(trades(test, P))
             top.append({"g": g, "fit": f, "train": r_tr, "test": r_te, "at": iso(now_ny())})
             top.sort(key=lambda x: -x["fit"])
@@ -412,6 +426,7 @@ def job(sub, params=None):
     except Exception as e:
         st = state(sub)
         st.update(running=None, step=None, last={"at": iso(now_ny()), "error": str(e)[:200]})
+        st["log"] = (st.get("log") or [])[-19:] + [{"at": iso(now_ny()), "error": str(e)[:120]}]
         _save(sub, st, user=True)
         return {"error": str(e)[:200]}
     st = state(sub)
