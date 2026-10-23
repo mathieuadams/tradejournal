@@ -383,7 +383,7 @@ def job(at=None, t0=None, loaded=None):
     def one(sub):
         pk = db.upk(sub)
         for _ in range(25):                            # a previous minute still running: wait for it (never two at once)
-            if db.try_lock(pk, SK + "#LOCK", 50):
+            if db.try_lock(pk, SK + "#LOCK", 75):     # (the option watch runs to :56)
                 break
             time.sleep(1)
         else:
@@ -764,6 +764,11 @@ def _tick(sub, now=None, minute=None):
                 break
         except Exception as e:
             acts.append(f"{sym}: {str(e)[:160]}")
+    if (real or minute) and cfg.get("instrument") == "opt0dte":   # an option open: the stock watched every second until :56
+        try:
+            acts += watch_options(c, pk, cfg, today, now)
+        except Exception as e:
+            acts.append(f"option watch: {str(e)[:120]}")
     if real:
         st = db.get(pk, SK + "#TICK") or {}
         _mark("logged")
@@ -896,6 +901,8 @@ def _manage_opt(c, pk, r, s, last, flat, P, lag):
             acts.append(f"{r['symbol']} option sold: {why}")
         elif s and s.get("tp1Hit") and not r.get("tp1Done") and float(r.get("part") or 0):
             q = int(int(r.get("filledQty") or held) * float(r["part"]))
+            if s.get("stopNow"):
+                upd["stopNow"] = s["stopNow"]
             if 0 < q < held:
                 o, notes = _send(c, {"symbol": occ, "qty": str(q), "side": "sell", "type": "market", "time_in_force": "day"})
                 ev += notes + [f"TP1: {q} contracts sold at market (candle {last[11:16]}, {lag()}s after its close)" if o else "TP1 partial NOT sent (tried again next minute)"]
@@ -904,6 +911,9 @@ def _manage_opt(c, pk, r, s, last, flat, P, lag):
                     acts.append(f"{r['symbol']} option TP1 {q}")
             else:
                 upd["tp1Done"] = True                  # 1 contract: no partial, the rest rides to TP2
+        elif s and s.get("stopNow") and abs(float(s["stopNow"]) - float(r.get("stopNow") or r["stop"])) >= 0.01:
+            upd["stopNow"] = s["stopNow"]              # breakeven / trail: the level the watch uses
+            ev.append(f"strategy stop now {s['stopNow']} (candle {last[11:16]})")
     if s and s.get("R") is not None and s.get("exitWhy") != "end of day":
         upd["engineR"] = s["R"]
     if upd:
@@ -913,6 +923,73 @@ def _manage_opt(c, pk, r, s, last, flat, P, lag):
 
 
 config_cache = {}
+WATCH_END = 56                                         # the option watch stops at :56 (the next minute run starts at :00)
+
+
+def _stock_px(c, syms):
+    """Latest trade price of each stock (real-time SIP with Algo Trader Plus, else IEX)."""
+    import alpaca
+    import urllib.parse
+    feed = "sip" if (c or {}).get("feed") == "sip" else "iex"
+    d = alpaca._get(f"{alpaca.DATA}/v2/stocks/trades/latest?" + urllib.parse.urlencode({"symbols": ",".join(syms), "feed": feed}), c) or {}
+    return {k: float(v["p"]) for k, v in (d.get("trades") or {}).items() if v.get("p")}
+
+
+def watch_options(c, pk, cfg, today, minute, clock=time.time, sleep=time.sleep, price=None, end_s=WATCH_END):
+    """Between two minute runs, every second: the stock's price against the strategy's stop / TP1 / TP2 of each open
+    option; crossed -> the option sold at market right away (not at the close of the candle)."""
+    import calendar
+    from util import ny_to_utc
+    price = price or (lambda syms: _stock_px(c, syms))
+    start = calendar.timegm(ny_to_utc(minute).timetuple())                    # the minute (NY) -> epoch
+    acts = []
+    while clock() < start + end_s:
+        recs = [r for r in db.q_prefix(pk, POS) if (r.get("t") or "")[:10] == today and r.get("kind") == "option" and r.get("status") == "open"]
+        if not recs:
+            break
+        try:
+            px = price(sorted({r["symbol"] for r in recs}))
+        except Exception as e:
+            acts.append(f"option watch: price: {str(e)[:80]}")
+            sleep(1)
+            continue
+        for r in recs:
+            p = px.get(r["symbol"])
+            if p is None:
+                continue
+            up = r["dir"] > 0
+            beyond = (lambda lvl: p >= lvl) if up else (lambda lvl: p <= lvl)
+            stop = float(r.get("stopNow") or r["stop"])
+            part = float(r.get("part") or 0)
+            final = float(r["tp2"] if part else r["tp1"])
+            t_s = f"{clock() - start:+.1f}s"
+            occ, held = r["optSym"], int(r.get("filledQty") or r.get("qty") or 0)
+            if (p <= stop) if up else (p >= stop):
+                why = f"stock {r['symbol']} {p:.2f} hit the stop {stop:.2f}"
+            elif beyond(final):
+                why = f"stock {r['symbol']} {p:.2f} reached {'TP2' if part else 'TP1'} {final:.2f}"
+            elif part and not r.get("tp1Done") and beyond(float(r["tp1"])):
+                q = int(held * part)
+                upd = {"tp1Done": True}
+                if q >= 1:
+                    o, notes = _send(c, {"symbol": occ, "qty": str(q), "side": "sell", "type": "market", "time_in_force": "day"})
+                    if not o:
+                        upd = {}
+                    ev = notes + [f"stock {p:.2f} reached TP1 {float(r['tp1']):.2f}: {q} contracts sold at market ({minute.strftime('%H:%M')} {t_s})" if o else "TP1 sale NOT sent"]
+                    acts.append(f"{r['symbol']} option TP1 {q} (stock {p:.2f}, {t_s})")
+                else:
+                    ev = [f"stock reached TP1 {float(r['tp1']):.2f} (1 contract: rides to TP2)"]
+                if upd:
+                    db.update(pk, r["SK"], {**upd, "events": (list(r.get("events") or []) + ev)[-25:]})
+                continue
+            else:
+                continue
+            oid, notes = _close_pos(c, occ)
+            db.update(pk, r["SK"], {"status": "closing", "exitWhy": why, "exitOrder": oid, "closeTries": 1,
+                                    "events": (list(r.get("events") or []) + notes + [f"{why}: option sold at market ({minute.strftime('%H:%M')} {t_s})"])[-25:]})
+            acts.append(f"{r['symbol']} option sold: {why} ({t_s})")
+        sleep(1)
+    return acts
 
 
 CATCHUP = 3                                            # market mode: an entry missed by up to 3 candles is still taken

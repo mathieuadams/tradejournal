@@ -6049,6 +6049,37 @@ def test_smart_money_live_0dte_options():
     finally:
         daytrade.minute_bars, daytrade.creds, smclive._alp, smclive.config, smclive.time.sleep, optiondata.snapshots = saved
 
+def test_option_watch_exits_on_the_stock():
+    """Between minute runs: the stock crosses TP1 -> part sold; crosses the stop -> the option sold, within a second."""
+    import smclive, datetime as dt
+    pk = db.upk("watch")
+    db.put({"PK": pk, "SK": "SMCPOS#QQQ#2026-09-16T10:00", "symbol": "QQQ", "t": "2026-09-16T10:00", "dir": 1, "kind": "option",
+            "optSym": "QQQ260916C00400000", "status": "open", "filledQty": 4, "fill": 1.5, "entry": 400.0, "stop": 399.0,
+            "tp1": 401.0, "tp2": 402.0, "part": 0.5})
+    sent, closed = [], []
+    clock = [0.0]
+    path = iter([400.2, 400.5, 401.1, 400.8, 398.9, 398.5])
+    saved = (smclive._send, smclive._close_pos)
+    try:
+        smclive._send = lambda c, body, tries=3: (sent.append(body) or {"id": "s"}, [])
+        smclive._close_pos = lambda c, sym, tries=3: (closed.append(sym) or "x", [])
+        minute = dt.datetime(2026, 9, 16, 10, 5)
+        import calendar
+        from util import ny_to_utc
+        base = calendar.timegm(ny_to_utc(minute).timetuple())
+        def tick_clock():
+            return base + clock[0]
+        def sl(s_):
+            clock[0] += 1
+        acts = smclive.watch_options({}, pk, {}, "2026-09-16", minute, clock=tick_clock, sleep=sl, price=lambda syms: {"QQQ": next(path, 398.0)})
+        assert sent and sent[0]["qty"] == "2" and sent[0]["symbol"] == "QQQ260916C00400000", sent    # TP1: half of 4 at 401.1
+        assert closed == ["QQQ260916C00400000"], closed                                              # then the stop at 398.9
+        r = db.get(pk, "SMCPOS#QQQ#2026-09-16T10:00")
+        assert r["status"] == "closing" and "hit the stop" in r["exitWhy"] and r["tp1Done"]
+        assert clock[0] <= 6, clock[0]                  # 1 s between checks: the stop seen at the 5th second
+    finally:
+        smclive._send, smclive._close_pos = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
