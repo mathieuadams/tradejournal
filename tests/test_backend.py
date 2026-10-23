@@ -6176,6 +6176,21 @@ def test_option_sold_by_time():
         assert "Sold by" in str(e)
     assert smclive.save("sb-u", {"optFlatT": "11:45"})["config"]["optFlatT"] == "11:45"
 
+def test_live_settings_saves_dont_undo_each_other():
+    """Two saves sent at the same time (a field, then the strategy): the second one doesn't put the first one back."""
+    import smclive
+    smclive.save("race-u", {"optRiskPct": 0.5})
+    stale = smclive.config("race-u")                    # what the 2nd request read before the 1st one wrote
+    smclive.save("race-u", {"optRiskPct": 0.9})
+    real_config = smclive.config
+    try:
+        smclive.config = lambda sub: dict(stale)
+        smclive.save("race-u", {"cfg": {"tf": 1}, "name": "s1"})
+    finally:
+        smclive.config = real_config
+    c = smclive.config("race-u")
+    assert c["optRiskPct"] == 0.9 and c["name"] == "s1", c
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -13,6 +13,7 @@ Every minute (the "daytick" schedule, 09:00-15:59 ET, fired at the start of each
        * an early exit of the engine (FVG fails, opposite MSS, VWAP, time stop) or the flat time -> exit orders
          cancelled and the position closed at market.
 Each action stores the candle it acted on and the seconds between that candle's close and the order."""
+import json
 import time
 from datetime import datetime, timedelta
 
@@ -45,6 +46,7 @@ def config(sub):
 
 def save(sub, b):
     cur = config(sub)
+    before = json.loads(json.dumps(cur, default=str))
     b = b or {}
     for k in ("enabled", "trade"):
         if k in b:
@@ -82,7 +84,11 @@ def save(sub, b):
         cur["name"] = str(b.get("name") or "")[:60]
         cur["savedAt"] = iso(now_ny())
         cur["source"] = b.get("source") if isinstance(b.get("source"), dict) else None
-    db.put({"PK": db.upk(sub), "SK": SK, **cur})
+    changed = {k: v for k, v in cur.items() if json.dumps(v, default=str, sort_keys=True) != json.dumps(before.get(k), default=str, sort_keys=True)}
+    if not db.get(db.upk(sub), SK):
+        db.put({"PK": db.upk(sub), "SK": SK, **cur})
+    elif changed:                                      # only what this request changed: two saves at the same time
+        db.update(db.upk(sub), SK, changed)            # (a field, then the strategy) can't undo each other
     return view(sub)
 
 

@@ -5232,7 +5232,10 @@ document.addEventListener('click', e => {
   if (el.dataset.smclive) { const c = ((S.smcLive || {}).config) || {}, on = !(c.enabled && c.trade);
     smcLiveSet({ enabled: on, trade: on }); return; }
   if (el.hasAttribute('data-smclivesave')) { const nm = (document.querySelector('[data-smclivename]') || {}).value || '';
-    S.smcLiveName = nm; smcLiveSet({ cfg: { ...S.smcCfg, tf: S.smcTf }, name: nm, source: S.smcSrc || null }); return; }
+    S.smcLiveName = nm;
+    if (S.smcDraft && Object.keys(S.smcDraft).length) {   // blocks changed on screen but not applied: applied now (what is saved = what is shown)
+      const c = { ...S.smcCfg, ...S.smcDraft }; S.smcCfg = c; S.smcDraft = null; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {} }
+    smcLiveSet({ cfg: { ...S.smcCfg, tf: S.smcTf }, name: nm, source: S.smcSrc || null }); return; }
   if (el.dataset.smcopt) { const v = el.dataset.smcopt, start = { ...S.smcCfg, tf: S.smcTf };
     smcOptSet(v === 'reset' ? { reset: true, start } : v === 'on' ? { on: true, start } : { on: false }); return; }
   if (el.dataset.smcoptuse) { const t = ((S.smcOpt || {}).top || [])[+el.dataset.smcoptuse]; if (!t) return;
