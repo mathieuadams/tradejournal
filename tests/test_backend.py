@@ -6292,6 +6292,9 @@ def test_unusual_flow_optimizer():
         best = pub["top"][0]
         assert best["params"]["trailAtr"] == 2.0 and best["params"]["vwapOn"], best["params"]
         assert best["test"]["n"] > 0 and set(best["params"]) == set(wwopt.SPACE)
+        assert db.try_lock(db.upk("wwo"), wwopt.SK + "#LOCK", 60)              # a run going: a second one is skipped
+        assert wwopt.job("wwo", {"once": True}) == {"skipped": "a run is already going"}
+        db.unlock(db.upk("wwo"), wwopt.SK + "#LOCK")
     finally:
         wwopt.load, wallwatch.detect_retest, wallwatch.config = saved
 

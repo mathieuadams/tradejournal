@@ -437,15 +437,21 @@ def run(sub, budget_s=470, seed=None):
 
 
 def job(sub, params=None):
+    """One run at a time: two runs in parallel would share the CPU and overwrite each other's results."""
     import research
+    pk = db.upk(sub)
+    if not db.try_lock(pk, SK + "#LOCK", 560):
+        return {"skipped": "a run is already going"}
     try:
         run(sub)
     except Exception as e:
+        db.unlock(pk, SK + "#LOCK")
         st = state(sub)
         st.update(running=None, step=None, last={"at": iso(now_ny()), "error": str(e)[:200]})
         st["log"] = (st.get("log") or [])[-19:] + [{"at": iso(now_ny()), "error": str(e)[:120]}]
         _save(sub, st, user=True)
         return {"error": str(e)[:200]}
+    db.unlock(pk, SK + "#LOCK")
     st = state(sub)
     if st["on"] and not (params or {}).get("once"):
         research._invoke(sub, "smcopt", {})

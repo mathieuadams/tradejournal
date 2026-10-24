@@ -19,7 +19,7 @@ import db
 from util import iso, now_ny
 
 SK = "WWOPT"
-VERSION = 2                                            # 2: train evaluated on the train months only
+VERSION = 3                                            # 3: one run at a time (parallel runs overwrote the results)
 MIN_TRADES = 40
 TRAIN = 0.6
 TOP = 15
@@ -233,7 +233,7 @@ def public(sub):
     import smcopt
     st = state(sub)
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
-    return {k: st.get(k) for k in ("on", "days", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors")} | {
+    return {k: st.get(k) for k in ("on", "days", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors", "cycle")} | {
         "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": st.get("evals", 0), "screened": st.get("screened", 0),
         "top": [{**t, "params": t["g"]} for t in smcopt._dedup(st["top"])[:TOP]], "minTrades": MIN_TRADES}
 
@@ -285,6 +285,7 @@ def run(sub, budget_s=470, seed=None):
     ek = entry_keys()
     n_run, last_save, times = 0, time.time(), []
     st["screened"] = st.get("screened", 0)
+    ccache = {}
 
     def confirm(g):
         """The exact train result (full engine, train months only); in the list if good enough (then its test)."""
@@ -318,7 +319,13 @@ def run(sub, budget_s=470, seed=None):
             parent = rng.choice(top[:3] if rng.random() < 0.5 else top[:8])["g"]
             parent = mutate_heavy(parent, rng) if not first_cycle else parent
         first_cycle = False
-        cands = candidates(tdata, {**fixed, **parent}, first)              # one pass: every candle at the support
+        c0 = time.time()
+        hk = heavy_key(parent)
+        if hk not in ccache:
+            if len(ccache) >= 4:
+                ccache.pop(next(iter(ccache)))
+            ccache[hk] = candidates(tdata, {**fixed, **parent}, first)     # one pass: every candle at the support
+        cands = ccache[hk]
         # 2. the entry rules screened on those candidates (milliseconds each): hill climbing from the parent's mix
         scored = {}
         def scr(g):
@@ -329,7 +336,7 @@ def run(sub, budget_s=470, seed=None):
             return scored[kk][0]
         cur = dict(parent)
         scr(cur)
-        for _ in range(60):
+        for _ in range(150):
             x = dict(cur)
             for kk in rng.sample(ek, rng.choice([1, 1, 2])):
                 x[kk] = not x.get(kk)
@@ -337,12 +344,15 @@ def run(sub, budget_s=470, seed=None):
                 cur = x
             if time.time() - t0 > budget_s * 0.9:
                 break
-        # 3. the best screened mixes confirmed by the full engine (the exact trades)
+        # 3. only the best screened mix that can enter the list is confirmed by the full engine (the exact trades)
+        worst = top[-1]["fit"] if len(top) >= TOP else -1e9
         for f_, g in sorted(scored.values(), key=lambda v: -v[0])[:3]:
             if time.time() - t0 > budget_s - max(times[-5:] or [2]) * 1.5:
                 break
-            if key(g) not in seen:
+            if key(g) not in seen and f_ > worst:
                 confirm(g)
+                break
+        st["cycle"] = round(time.time() - c0, 1)
         if time.time() - last_save > 45:
             cur_st = state(sub)
             if not cur_st["on"] or cur_st.get("stopReq") or (cur_st.get("resetAt") or "") > st["runStarted"] or cur_st["days"] != st["days"]:
@@ -361,16 +371,25 @@ def run(sub, budget_s=470, seed=None):
     return st
 
 
+LOCK_S = 560
+
+
 def job(sub, params=None):
+    """One run at a time: two runs in parallel would share the CPU and overwrite each other's results."""
     import research
+    pk = db.upk(sub)
+    if not db.try_lock(pk, SK + "#LOCK", LOCK_S):
+        return {"skipped": "a run is already going"}
     try:
         run(sub)
     except Exception as e:
+        db.unlock(pk, SK + "#LOCK")
         st = state(sub)
         st.update(running=None, step=None, last={"at": iso(now_ny()), "error": str(e)[:200]})
         st["log"] = (st.get("log") or [])[-19:] + [{"at": iso(now_ny()), "error": str(e)[:120]}]
         _save(sub, st, user=True)
         return {"error": str(e)[:200]}
+    db.unlock(pk, SK + "#LOCK")
     st = state(sub)
     if st["on"] and not (params or {}).get("once"):
         research._invoke(sub, "wwopt", {})
