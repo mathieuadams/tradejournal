@@ -6268,19 +6268,25 @@ def test_unusual_flow_optimizer():
     from util import now_ny
     today = now_ny()
     days = [(today - dt.timedelta(days=k)).strftime("%Y-%m-%d") for k in range(1, 330)]
-    def fake_detect(bars, walls, first, cfg, *a, **k):    # a "good" rule: trail 2 ATR + VWAP on
-        good = cfg.get("trailAtr") == 2.0 and cfg.get("vwapOn")
-        return [{"at": d + "T10:30", "R": (1.0 if (i % 3) else -0.5) if good else (0.5 if i % 2 else -0.6), "status": "target"}
-                for i, d in enumerate(days) if d >= first][:300], []
+    def r_of(i, cfg_trail):                                # above VWAP (i % 3 != 0) + trail 2 ATR: the good trades
+        return ((1.5 if i % 2 else 0.5) if i % 3 else -1.0) if cfg_trail == 2.0 else (0.3 if i % 2 else -0.5)
+    def fake_detect(bars, walls, first, cfg, *a, **k):
+        ds = [d for d in days if d >= first and (not bars or d <= bars[-1]["t"][:10])]
+        if cfg.get("_collect") is not None:                 # the quick screen: every candidate, tagged with the rules
+            for i, d in enumerate(ds):
+                cfg["_collect"].append({"at": d + "T10:30", "end": d + "T11:30", "R": r_of(i, cfg.get("trailAtr")), "f": {**{r: True for r in wwopt.entry_keys()}, "vwapOn": bool(i % 3)}})
+            return [], []
+        return [{"at": d + "T10:30", "R": r_of(i, cfg.get("trailAtr")), "status": "target"} for i, d in enumerate(ds)
+                if (not cfg.get("vwapOn") or i % 3)], []
     saved = (wwopt.load, wallwatch.detect_retest, wallwatch.config)
     try:
-        wwopt.load = lambda sub, n, live, budget_s=300: ({"AAA": {"bars": [], "walls": {}, "datr": {}, "alerts": [], "vmap": {}, "emap": {}}}, [])
+        wwopt.load = lambda sub, n, live, budget_s=300: ({"AAA": {"bars": [{"t": d + "T15:30"} for d in sorted(days)], "walls": {}, "datr": {}, "alerts": [], "vmap": {}, "emap": {}}}, [])
         wallwatch.detect_retest = fake_detect
-        wallwatch.config = lambda sub: {**wallwatch.PARAMS, "tickers": ["AAA"]}
+        wallwatch.config = lambda sub: {**wallwatch.PARAMS, "tickers": ["AAA"], "alertReq": False, "relFlow": False, "greenOnly": False}
         wwopt.save_cfg("wwo", {"on": True})
-        st = wwopt.run("wwo", budget_s=6, seed=3)
+        st = wwopt.run("wwo", budget_s=20, seed=3)
         pub = wwopt.public("wwo")
-        assert pub["tried"] > 5 and pub["top"] and pub["split"]["cut"] > pub["split"]["from"]
+        assert pub["tried"] >= 3 and pub["screened"] > pub["tried"] and pub["top"] and pub["split"]["cut"] > pub["split"]["from"]
         sig = [((t["train"] or {}).get("n"), (t["train"] or {}).get("totR")) for t in pub["top"]]
         assert len(sig) == len(set(sig))                # no two rows with the same trades
         best = pub["top"][0]

@@ -19,7 +19,7 @@ import db
 from util import iso, now_ny
 
 SK = "WWOPT"
-VERSION = 1
+VERSION = 2                                            # 2: train evaluated on the train months only
 MIN_TRADES = 40
 TRAIN = 0.6
 TOP = 15
@@ -69,6 +69,24 @@ def mutate(g, rng):
     for _ in range(30):
         x = dict(g)
         for k in rng.sample(list(SPACE), rng.choice([1, 1, 2, 3])):
+            vs = SPACE[k]
+            if k in NUMS and x.get(k) in vs and rng.random() < 0.7:
+                i = vs.index(x[k]) + rng.choice([-1, 1])
+                x[k] = vs[max(0, min(len(vs) - 1, i))]
+            else:
+                x[k] = rng.choice([v for v in vs if v != x.get(k)] or vs)
+        if valid(x) and x != g:
+            return x
+    return g
+
+
+def mutate_heavy(g, rng):
+    """A change of 1-2 exits / numbers / setups (the entry rules are screened separately)."""
+    import wallwatch
+    hk = [k for k in SPACE if k not in wallwatch.SEARCH_RULES]
+    for _ in range(30):
+        x = dict(g)
+        for k in rng.sample(hk, rng.choice([1, 1, 2])):
             vs = SPACE[k]
             if k in NUMS and x.get(k) in vs and rng.random() < 0.7:
                 i = vs.index(x[k]) + rng.choice([-1, 1])
@@ -130,6 +148,52 @@ def trades(data, cfg, first, cut=None, part="train"):
     return out
 
 
+def train_slice(data, cut):
+    """The tickers' data cut at the end of the train period: a train evaluation doesn't compute the test months."""
+    return {sym: {**d, "bars": [b for b in d["bars"] if b["t"][:10] < cut]} for sym, d in data.items()}
+
+
+def entry_keys():
+    import wallwatch
+    return [k for k in BOOL_KEYS if k in wallwatch.SEARCH_RULES]
+
+
+def heavy_key(g):
+    """The part of a setting that changes the candidate trades (exits, numbers, setups); the entry rules don't."""
+    ek = set(entry_keys())
+    return key({k: v for k, v in g.items() if k not in ek})
+
+
+def candidates(data, cfg, first):
+    """{sym: [candidate]}: every candle at the support traded alone with the exits of cfg, tagged with each entry
+    rule (wallwatch _collect): any mix of entry rules is then replayed in milliseconds."""
+    import wallwatch
+    out = {}
+    base = {**cfg, **{k: False for k in entry_keys()}}
+    for sym, d in data.items():
+        col = []
+        try:
+            wallwatch.detect_retest(d["bars"], d["walls"], first, {**base, "_collect": col}, d["datr"], d["alerts"], None, d["vmap"], d["emap"], d.get("extra"))
+        except Exception:
+            continue
+        out[sym] = sorted(col, key=lambda c: c["at"])
+    return out
+
+
+def replay(cands, g):
+    """The trades of the entry rules of g on the candidates: one at a time per ticker (the quick screen)."""
+    need = [k for k in entry_keys() if g.get(k)]
+    out = []
+    for sym, cs in cands.items():
+        last = ""
+        for c in cs:
+            if c["at"] <= last or not all(c["f"].get(r) for r in need):
+                continue
+            out.append((c["at"][:10], sym, float(c["R"]), "screen"))
+            last = c["end"]
+    return out
+
+
 # ---------------------------------------------------------------- state
 def state(sub):
     r = db.get(db.upk(sub), SK) or {}
@@ -170,7 +234,7 @@ def public(sub):
     st = state(sub)
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
     return {k: st.get(k) for k in ("on", "days", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors")} | {
-        "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": st.get("evals", 0),
+        "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": st.get("evals", 0), "screened": st.get("screened", 0),
         "top": [{**t, "params": t["g"]} for t in smcopt._dedup(st["top"])[:TOP]], "minTrades": MIN_TRADES}
 
 
@@ -216,23 +280,21 @@ def run(sub, budget_s=470, seed=None):
     base = from_cfg(live)
     seen, top = st["seen"], smcopt._dedup(st["top"])
     st["top"] = top
-    queue = [base] if key(base) not in seen else []
     fixed = {**live, "earnOn": False, "fixR": 0, "maxDays": 0, "pvSetup": False}
+    tdata = train_slice(data, cut)
+    ek = entry_keys()
     n_run, last_save, times = 0, time.time(), []
-    while time.time() - t0 < budget_s - max(times[-5:] or [2]) * 1.5:
-        if queue:
-            g = queue.pop(0)
-        elif not top or rng.random() < 0.3:
-            g = rand_g(rng, base)
-        else:
-            pool = top[:8]
-            g = mutate(rng.choice(pool[:3] if rng.random() < 0.5 else pool)["g"], rng)
+    st["screened"] = st.get("screened", 0)
+
+    def confirm(g):
+        """The exact train result (full engine, train months only); in the list if good enough (then its test)."""
+        nonlocal n_run
         k = key(g)
         if k in seen:
-            continue
+            return
         t1 = time.time()
         cfg = {**fixed, **g}
-        r_tr = smcopt.score(trades(data, cfg, first, cut, "train"), cost=0)
+        r_tr = smcopt.score(trades(tdata, cfg, first), cost=0)
         f = smcopt.fitness(r_tr, MIN_TRADES)
         seen[k] = f
         st["evals"] += 1
@@ -244,11 +306,48 @@ def run(sub, budget_s=470, seed=None):
             top.sort(key=lambda x: -x["fit"])
             del top[TOP:]
         times.append(time.time() - t1)
-        if time.time() - last_save > 45:
-            cur = state(sub)
-            if not cur["on"] or cur.get("stopReq") or (cur.get("resetAt") or "") > st["runStarted"] or cur["days"] != st["days"]:
+
+    first_cycle = True
+    while time.time() - t0 < budget_s - max(times[-5:] or [2]) * 3:
+        # 1. the exits / numbers / setups: the live ones first, then from the best (changed) or random
+        if first_cycle and key(base) not in seen:
+            parent = base
+        elif not top or rng.random() < 0.25:
+            parent = rand_g(rng, base)
+        else:
+            parent = rng.choice(top[:3] if rng.random() < 0.5 else top[:8])["g"]
+            parent = mutate_heavy(parent, rng) if not first_cycle else parent
+        first_cycle = False
+        cands = candidates(tdata, {**fixed, **parent}, first)              # one pass: every candle at the support
+        # 2. the entry rules screened on those candidates (milliseconds each): hill climbing from the parent's mix
+        scored = {}
+        def scr(g):
+            kk = key(g)
+            if kk not in scored:
+                scored[kk] = (smcopt.fitness(smcopt.score(replay(cands, g), cost=0), MIN_TRADES), g)
+                st["screened"] += 1
+            return scored[kk][0]
+        cur = dict(parent)
+        scr(cur)
+        for _ in range(60):
+            x = dict(cur)
+            for kk in rng.sample(ek, rng.choice([1, 1, 2])):
+                x[kk] = not x.get(kk)
+            if scr(x) >= scr(cur):
+                cur = x
+            if time.time() - t0 > budget_s * 0.9:
                 break
-            st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2)
+        # 3. the best screened mixes confirmed by the full engine (the exact trades)
+        for f_, g in sorted(scored.values(), key=lambda v: -v[0])[:3]:
+            if time.time() - t0 > budget_s - max(times[-5:] or [2]) * 1.5:
+                break
+            if key(g) not in seen:
+                confirm(g)
+        if time.time() - last_save > 45:
+            cur_st = state(sub)
+            if not cur_st["on"] or cur_st.get("stopReq") or (cur_st.get("resetAt") or "") > st["runStarted"] or cur_st["days"] != st["days"]:
+                break
+            st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2) if times else None
             _save(sub, st)
             st = {**st, **{k: v for k, v in state(sub).items() if k in USER_KEYS}}
             seen, top = st["seen"], st["top"]
