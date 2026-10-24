@@ -531,3 +531,145 @@ def walls_job(sub, params=None):
     elif not f["left"]:                                  # every day stored: the optimizer starts over on the new data
         save_cfg(sub, {"reset": True})
     return f
+
+
+# ---------------------------------------------------------------- edge builder (daily candles)
+EDGE_SK = "WWEDGE"
+D_ENTRY = [k for k in DAILY_BOOL if k in ("pwTest", "greenOnly", "inGreen", "inNotRed", "fvgOn", "aboveFlip", "abovePW", "belowPW", "emaOn",
+                                          "kcdLower", "kcNotExt", "pwNeCw", "noAboveCW", "cwRoomOn", "inhGreen", "inhNotRed", "sqdOn", "sqdFire", "sqdMom")]
+D_EXIT = [k for k in DAILY_BOOL if k not in D_ENTRY and k != "scaleBE"]
+
+
+def edge_public(sub):
+    it = db.get(db.upk(sub), EDGE_SK) or {}
+    out = json.loads(it["data"]) if it.get("data") else {}
+    if out.get("running") and out["running"] < iso(now_ny() - timedelta(minutes=12)):
+        out["running"] = None
+    return out
+
+
+def _edge_save(sub, e):
+    db.put({"PK": db.upk(sub), "SK": EDGE_SK, "data": json.dumps(e, default=str, separators=(",", ":"))})
+
+
+def edge_start(sub):
+    e = edge_public(sub)
+    if not e.get("running"):
+        e.update(running=iso(now_ny()), step="starting", error=None)
+        _edge_save(sub, e)
+        import research
+        research._invoke(sub, "wwedge", {})
+    return e
+
+
+def edge_run(sub, budget_s=540):
+    """Break the daily strategy apart and build it back one piece at a time, on the optimizer's tickers / period:
+      1. the baseline: the exits alone, every entry rule off (= enter on any day, one trade at a time per ticker);
+      2. each entry rule alone vs the baseline, on the train months, each third of them, and the test months;
+      3. the ladder: from the baseline, add the entry rule that raises the train score the most (t of the R per day
+         capped by the weakest third), step by step until nothing helps; the test months shown for each step (never
+         used to choose);
+      4. each exit switched alone on the final entry.
+    A piece is an edge when it beats the baseline on the train months, in each third and on the test months."""
+    import smcopt
+    import wallwatch
+    t0 = time.time()
+    st = state(sub)
+    _MODE["tf"] = "1D"
+    e = {"running": iso(now_ny()), "step": "loading the daily history", "single": [], "ladder": [], "exits": []}
+    _edge_save(sub, e)
+    live = wallwatch.config(sub)
+    wa = (db.get(db.upk(sub), WALLS_SK) or {}).get("at")
+    data, errs = load(sub, st["days"] + 85, {**live, "tickers": tickers(st, live), "_wallsAt": wa}, budget_s=300)
+    if not data:
+        raise ValueError("No ticker data.")
+    days = st["days"]
+    first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
+    cut = (now_ny() - timedelta(days=int(days * 1.45 * (1 - TRAIN)))).strftime("%Y-%m-%d")
+    d0, d1 = now_ny() - timedelta(days=int(days * 1.45)), now_ny() - timedelta(days=int(days * 1.45 * (1 - TRAIN)))
+    bounds = [first] + [(d0 + (d1 - d0) * i / FOLDS).strftime("%Y-%m-%d") for i in range(1, FOLDS)] + [cut]
+    need = int(st.get("minTrades") or MIN_TRADES)
+    tdata = train_slice(data, cut)
+    fixed = {**live, "earnOn": False, "fixR": 0, "maxDays": 0, "pvSetup": False, "tf": "1D", "fxEntry": "", "fxExit": ""}
+    src = (st.get("top") or [None])[0] if st.get("tf") == "1D" else None
+    g0 = {k: v for k, v in ((src or {}).get("g") or from_cfg(live)).items() if k in DSPACE}
+    g0.update({k: False for k in D_ENTRY})
+    if not (g0.get("stopOn") or g0.get("trailOn") or g0.get("targetOn")):
+        g0["stopOn"] = True
+    e.update(split={"from": first, "cut": cut, "to": now_ny().strftime("%Y-%m-%d")}, nTickers=len(data), exitsFrom="optimizer #1" if src else "your live settings",
+             base=g0, minTrades=need, step="the baseline")
+    _edge_save(sub, e)
+
+    def ev(g, test=True):
+        f, r, fts = fit(trades(tdata, {**fixed, **g}, first), need, bounds)
+        out = {"fit": f, "train": {k: r.get(k) for k in ("n", "win", "avgR", "totR", "t", "dd")}, "thirds": fts}
+        if test:
+            rt = smcopt.score(trades(data, {**fixed, **g}, first, cut, "test"), cost=0)
+            out["test"] = {k: rt.get(k) for k in ("n", "win", "avgR", "totR", "t", "dd")}
+        return out
+
+    def edge_ok(x, ref):
+        a, b = x["train"], ref["train"]
+        return bool(x["train"].get("n") and (a.get("avgR") or 0) > (b.get("avgR") or 0) and ((x.get("test") or {}).get("avgR") or -9) > ((ref.get("test") or {}).get("avgR") or 0)
+                    and all((t or 0) > 0 for t in x["thirds"]))
+
+    base = ev(g0)
+    e["baseline"] = base
+    out_of_time = lambda: time.time() - t0 > budget_s
+    # 2. each entry rule alone
+    e["step"] = "each entry rule alone"
+    for k in D_ENTRY:
+        if out_of_time():
+            break
+        x = ev({**g0, k: True})
+        x.update(rule=k, edge=edge_ok(x, base), dAvg=round((x["train"].get("avgR") or 0) - (base["train"].get("avgR") or 0), 4),
+                 dTest=round(((x.get("test") or {}).get("avgR") or 0) - ((base.get("test") or {}).get("avgR") or 0), 4))
+        e["single"].append(x)
+        _edge_save(sub, e)
+    # 3. the ladder: add the best piece (train only) while it raises the score
+    e["step"] = "building the ladder"
+    cur, cur_r = dict(g0), base
+    e["ladder"].append({"add": None, "g": cur, **base})
+    pool = [x["rule"] for x in sorted(e["single"], key=lambda x: -x["fit"]) if (x["train"].get("n") or 0) >= need][:12]
+    while pool and not out_of_time():
+        best = None
+        for k in pool:
+            if out_of_time():
+                break
+            x = ev({**cur, k: True}, test=False)
+            if (x["train"].get("n") or 0) >= need and (best is None or x["fit"] > best[1]["fit"]):
+                best = (k, x)
+        if not best or best[1]["fit"] <= cur_r["fit"] + 0.05:
+            break
+        cur = {**cur, best[0]: True}
+        cur_r = ev(cur)
+        e["ladder"].append({"add": best[0], "g": cur, **cur_r})
+        pool.remove(best[0])
+        _edge_save(sub, e)
+    # 4. each exit switched alone on the final entry
+    e["step"] = "each exit switched alone"
+    for k in D_EXIT:
+        if out_of_time():
+            break
+        g = {**cur, k: not cur.get(k)}
+        if not (g.get("stopOn") or g.get("trailOn") or g.get("targetOn")):
+            continue
+        x = ev(g)
+        x.update(rule=k, on=g[k], g=g, edge=edge_ok(x, cur_r))
+        e["exits"].append(x)
+        _edge_save(sub, e)
+    e.update(running=None, step=None, at=iso(now_ny()), partial=out_of_time())
+    _edge_save(sub, e)
+    return e
+
+
+def edge_job(sub, params=None):
+    try:
+        return {"rules": len(edge_run(sub).get("single") or [])}
+    except Exception as ex:
+        e = edge_public(sub)
+        e.update(running=None, step=None, error=str(ex)[:200], at=iso(now_ny()))
+        _edge_save(sub, e)
+        return {"error": str(ex)[:200]}
+    finally:
+        _MODE["tf"] = "1h"

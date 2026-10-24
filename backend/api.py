@@ -1035,6 +1035,19 @@ def wallwatch_opt_set(sub, claims, body, q):
     return out
 
 
+@route("GET", "/bot/wallwatch/edge")
+def wallwatch_edge(sub, claims, body, q):
+    import wwopt
+    return wwopt.edge_public(sub)
+
+
+@route("POST", "/bot/wallwatch/edge")
+def wallwatch_edge_run(sub, claims, body, q):
+    """Edge builder: each daily rule alone vs the baseline, then the ladder (background)."""
+    import wwopt
+    return wwopt.edge_start(sub)
+
+
 @route("POST", "/bot/wallwatch/opt/walls")
 def wallwatch_opt_walls(sub, claims, body, q):
     """The walls history of the optimizer's tickers over its whole period (background, chained runs)."""

@@ -6307,6 +6307,10 @@ def test_unusual_flow_optimizer():
         wwopt.run("wwo", budget_s=6, seed=4)
         pd_ = wwopt.public("wwo")
         assert pd_["tried"] >= 3 and pd_["top"] and set(pd_["top"][0]["params"]) == set(wwopt.DSPACE)
+        ed = wwopt.edge_run("wwo", budget_s=30)                 # edge builder: baseline, each rule alone, ladder, exits
+        assert ed["baseline"]["train"]["n"] and len(ed["single"]) == len(wwopt.D_ENTRY) and ed["ladder"][0]["add"] is None
+        assert not any(ed["base"].get(k) for k in wwopt.D_ENTRY) and ed["exits"] and wwopt.edge_public("wwo")["running"] is None
+        assert all("test" in x and len(x["thirds"]) == 3 for x in ed["single"])
         wwopt.save_cfg("wwo", {"tf": "1h"})
         wwopt._MODE["tf"] = "1h"
         calls = []
