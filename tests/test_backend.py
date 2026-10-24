@@ -6261,6 +6261,34 @@ def test_smart_money_filters_no_repaint():
                 f = full.get((x["t"], x["dir"]))
                 assert f and f.get("fillT") == x["fillT"], (cut, x["t"], x["fillT"], f and f.get("status"))
 
+def test_unusual_flow_optimizer():
+    """Wall watch optimizer: settings scored on the train period only, the test period reported, the best kept
+    (no duplicates), a setting = rules + numbers the Strategy lab takes."""
+    import wwopt, wallwatch, datetime as dt
+    from util import now_ny
+    today = now_ny()
+    days = [(today - dt.timedelta(days=k)).strftime("%Y-%m-%d") for k in range(1, 330)]
+    def fake_detect(bars, walls, first, cfg, *a, **k):    # a "good" rule: trail 2 ATR + VWAP on
+        good = cfg.get("trailAtr") == 2.0 and cfg.get("vwapOn")
+        return [{"at": d + "T10:30", "R": (1.0 if (i % 3) else -0.5) if good else (0.5 if i % 2 else -0.6), "status": "target"}
+                for i, d in enumerate(days) if d >= first][:300], []
+    saved = (wwopt.load, wallwatch.detect_retest, wallwatch.config)
+    try:
+        wwopt.load = lambda sub, n, live, budget_s=300: ({"AAA": {"bars": [], "walls": {}, "datr": {}, "alerts": [], "vmap": {}, "emap": {}}}, [])
+        wallwatch.detect_retest = fake_detect
+        wallwatch.config = lambda sub: {**wallwatch.PARAMS, "tickers": ["AAA"]}
+        wwopt.save_cfg("wwo", {"on": True})
+        st = wwopt.run("wwo", budget_s=6, seed=3)
+        pub = wwopt.public("wwo")
+        assert pub["tried"] > 5 and pub["top"] and pub["split"]["cut"] > pub["split"]["from"]
+        sig = [((t["train"] or {}).get("n"), (t["train"] or {}).get("totR")) for t in pub["top"]]
+        assert len(sig) == len(set(sig))                # no two rows with the same trades
+        best = pub["top"][0]
+        assert best["params"]["trailAtr"] == 2.0 and best["params"]["vwapOn"], best["params"]
+        assert best["test"]["n"] > 0 and set(best["params"]) == set(wwopt.SPACE)
+    finally:
+        wwopt.load, wallwatch.detect_retest, wallwatch.config = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

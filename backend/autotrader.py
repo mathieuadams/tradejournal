@@ -2005,6 +2005,9 @@ def handler(event, context_):
             elif job == "evolve":
                 import evolve
                 out[sub] = evolve.job(sub, event.get("params") or {})
+            elif job == "wwopt":
+                import wwopt
+                out[sub] = wwopt.job(sub, event.get("params") or {})
             elif job == "smcspeed":
                 import smclive
                 cold = _N == 1

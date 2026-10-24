@@ -1017,6 +1017,24 @@ def bot_wallwatch_walls(sub, claims, body, q):
     return {"status": "running"}
 
 
+@route("GET", "/bot/wallwatch/opt")
+def wallwatch_opt(sub, claims, body, q):
+    import wwopt
+    return wwopt.public(sub)
+
+
+@route("PUT", "/bot/wallwatch/opt")
+def wallwatch_opt_set(sub, claims, body, q):
+    """Unusual-flow (wall watch) optimizer: on / off, days, restart."""
+    import research
+    import wwopt
+    b = body or {}
+    out = wwopt.save_cfg(sub, b)
+    if b.get("on") and not out.get("running"):
+        research._invoke(sub, "wwopt", {})
+    return out
+
+
 @route("GET", "/bot/wallwatch/walls")
 def bot_wallwatch_walls_status(sub, claims, body, q):
     """The walls fetch of one ticker (or of the watchlist): running / left / at. Cheap: polled while it runs."""

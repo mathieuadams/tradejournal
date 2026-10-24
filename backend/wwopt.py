@@ -1,0 +1,293 @@
+"""Unusual-flow (wall watch) optimizer: the wall watch rules and numbers tuned on the watchlist's history, the same
+way as the smart-money optimizer (smcopt.py):
+
+  * the data: every ticker of the wall watch lists, hourly candles + walls + call alerts (backtest._ticker_data),
+    loaded once per container;
+  * train = the first 60% of the period, test = the rest (never used to choose);
+  * a setting = the switches of the entry / exit rules and their numbers; scored on the train trades by the t of the R
+    per day (smcopt.score / fitness), at least MIN_TRADES trades, no month over 35% of the profit;
+  * search: random settings + changes of 1-3 rules / numbers of the best ones; the best TOP kept (no two with the same
+    trades). "Use" puts a setting in the Strategy lab (test it there, then "Use these settings live").
+Runs in the background, a run of ~8 minutes starting the next one while it is on."""
+import json
+import random
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+
+import db
+from util import iso, now_ny
+
+SK = "WWOPT"
+VERSION = 1
+MIN_TRADES = 40
+TRAIN = 0.6
+TOP = 15
+MAX_ITEM = 300_000
+
+BOOL_KEYS = ["alertReq", "relFlow", "greenOnly", "aboveFlip", "abovePW", "belowPW", "vwapOn", "emaOn", "emaOverVwap", "kcNotExt",
+             "kcdLower", "kchLower", "orbAbove", "fvgOn", "noAboveCW", "cwRoomOn", "vwapReset", "pwNeCw", "inGreen", "inNotRed",
+             "usePW", "useFlip", "pwSetup", "flipSetup", "mergedSetup",
+             "stopOn", "trailOn", "targetOn", "flipExit", "vwapExit", "emaExit", "fvgExit", "inRedExit", "inYExit", "cwLost", "scaleOn", "scaleBE"]
+NUMS = {"stopAtr": [0.3, 0.5, 0.75, 1.0, 1.5], "trailAtr": [0.5, 1.0, 1.5, 2.0, 3.0], "tgtBuf": [0.0, 0.25, 0.5, 1.0],
+        "retestDays": [2, 3, 5, 8], "retestZone": [0.1, 0.25, 0.5, 0.75], "cwRoom": [0.5, 1.0, 1.5, 2.0], "relMult": [2.0, 3.0, 5.0],
+        "retestMin": [250000, 500000, 1000000], "scaleR": [0.5, 1.0, 1.5, 2.0], "scalePct": [25, 50, 75], "fvgMin": [0.1, 0.2, 0.4]}
+NEEDS = {"stopAtr": "stopOn", "trailAtr": "trailOn", "cwRoom": "cwRoomOn", "relMult": "relFlow", "scaleR": "scaleOn", "scalePct": "scaleOn",
+         "scaleBE": "scaleOn", "fvgMin": "fvgOn"}
+SPACE = {**{k: [True, False] for k in BOOL_KEYS}, **NUMS}
+
+
+def from_cfg(c):
+    import wallwatch
+    return {k: c.get(k, wallwatch.PARAMS.get(k)) for k in SPACE}
+
+
+def key(g):
+    k = dict(g)
+    for n, blk in NEEDS.items():
+        if not k.get(blk):
+            k.pop(n, None)
+    return json.dumps(k, sort_keys=True, default=str)
+
+
+def valid(g):
+    return bool(g.get("usePW") or g.get("useFlip")) and bool(g.get("pwSetup") or g.get("flipSetup") or g.get("mergedSetup")) \
+        and bool(g.get("stopOn") or g.get("trailOn") or g.get("targetOn"))
+
+
+def rand_g(rng, base):
+    for _ in range(50):
+        g = dict(base)
+        for k in rng.sample(list(SPACE), rng.randint(3, 8)):
+            g[k] = rng.choice(SPACE[k])
+        if valid(g):
+            return g
+    return dict(base)
+
+
+def mutate(g, rng):
+    for _ in range(30):
+        x = dict(g)
+        for k in rng.sample(list(SPACE), rng.choice([1, 1, 2, 3])):
+            vs = SPACE[k]
+            if k in NUMS and x.get(k) in vs and rng.random() < 0.7:
+                i = vs.index(x[k]) + rng.choice([-1, 1])
+                x[k] = vs[max(0, min(len(vs) - 1, i))]
+            else:
+                x[k] = rng.choice([v for v in vs if v != x.get(k)] or vs)
+        if valid(x) and x != g:
+            return x
+    return g
+
+
+# ---------------------------------------------------------------- the data
+_CACHE = {}
+
+
+def load(sub, days, live, budget_s=300):
+    """{sym: ticker data} for the wall watch tickers (hourly candles, walls, alerts), loaded in parallel."""
+    import backtest
+    tick = list(live.get("tickers") or [])
+    ck = (sub, days, tuple(sorted(tick)), now_ny().strftime("%Y-%m-%d"), live.get("vwapDays"), live.get("emaLen"), live.get("kcLen"), live.get("kcMult"))
+    if _CACHE.get("k") == ck:
+        return _CACHE["v"], _CACHE["err"]
+    t0, data, errs = time.time(), {}, []
+
+    def one(sym):
+        try:
+            return sym, backtest._ticker_data(sub, sym, days, live, False)
+        except Exception:
+            time.sleep(6)                              # market data rate limit: once more
+            return sym, backtest._ticker_data(sub, sym, days, live, False)
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = [ex.submit(one, t) for t in tick]
+        for f in futs:
+            try:
+                sym, d = f.result(timeout=max(1, budget_s - (time.time() - t0)))
+                if d:
+                    data[sym] = d
+            except Exception as e:
+                errs.append(str(e)[:80] or "time limit")
+    _CACHE.update(k=ck, v=data, err=errs)
+    return data, errs
+
+
+def trades(data, cfg, first, cut=None, part="train"):
+    """[(day, sym, R, exit)] of a setting on the tickers (train: before `cut`, test: from it)."""
+    import wallwatch
+    out = []
+    for sym, d in data.items():
+        try:
+            sigs, _ = wallwatch.detect_retest(d["bars"], d["walls"], first, cfg, d["datr"], d["alerts"], None, d["vmap"], d["emap"], d.get("extra"))
+        except Exception:
+            continue
+        for s in sigs:
+            if s.get("R") is None:
+                continue
+            if cut and ((s["at"][:10] >= cut) if part == "train" else (s["at"][:10] < cut)):
+                continue
+            out.append((s["at"][:10], sym, float(s["R"]), s.get("status")))
+    return out
+
+
+# ---------------------------------------------------------------- state
+def state(sub):
+    r = db.get(db.upk(sub), SK) or {}
+    st = json.loads(r["data"]) if r.get("data") else {}
+    if st and st.get("v") != VERSION:
+        st.update(top=[], seen={}, evals=0, log=[])
+    st["v"] = VERSION
+    for k, v in (("on", False), ("days", 250), ("evals", 0), ("top", []), ("seen", {}), ("log", []), ("runs", 0)):
+        st.setdefault(k, v)
+    return st
+
+
+USER_KEYS = ("on", "days", "stopReq", "resetAt")
+
+
+def _save(sub, st, user=False):
+    if not user:
+        cur = db.get(db.upk(sub), SK)
+        if cur and cur.get("data"):
+            try:
+                live = json.loads(cur["data"])
+                for k in USER_KEYS:
+                    if k in live:
+                        st[k] = live[k]
+            except ValueError:
+                pass
+        if st.get("resetAt") and st["resetAt"] > (st.get("runStarted") or ""):
+            st.update(top=[], seen={}, evals=0, log=[])
+    data = json.dumps(st, default=str, separators=(",", ":"))
+    while len(data.encode()) > MAX_ITEM and st["seen"]:
+        st["seen"] = dict(sorted(st["seen"].items(), key=lambda kv: -kv[1])[:int(len(st["seen"]) * 0.7)])
+        data = json.dumps(st, default=str, separators=(",", ":"))
+    db.put({"PK": db.upk(sub), "SK": SK, "data": data})
+
+
+def public(sub):
+    import smcopt
+    st = state(sub)
+    timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
+    return {k: st.get(k) for k in ("on", "days", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors")} | {
+        "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": st.get("evals", 0),
+        "top": [{**t, "params": t["g"]} for t in smcopt._dedup(st["top"])[:TOP]], "minTrades": MIN_TRADES}
+
+
+def save_cfg(sub, b):
+    st = state(sub)
+    b = b or {}
+    if "on" in b:
+        st["on"] = bool(b["on"])
+        if not st["on"] and st.get("running"):
+            st["stopReq"] = iso(now_ny())
+    if b.get("days"):
+        nd = max(60, min(500, int(b["days"])))
+        if nd != st["days"]:
+            b["reset"] = True
+        st["days"] = nd
+    if b.get("reset"):
+        st.update(top=[], seen={}, evals=0, log=[], resetAt=iso(now_ny()))
+    _save(sub, st, user=True)
+    return public(sub)
+
+
+def run(sub, budget_s=470, seed=None):
+    import smcopt
+    import wallwatch
+    t0 = time.time()
+    rng = random.Random(seed)
+    st = state(sub)
+    st["running"] = st["runStarted"] = iso(now_ny())
+    st["step"] = "loading the watchlist history (hourly candles, walls, call alerts)"
+    st.pop("stopReq", None)
+    _save(sub, st)
+    live = wallwatch.config(sub)
+    data, errs = load(sub, st["days"], live, budget_s=min(300, budget_s * 0.6))
+    if not data:
+        raise ValueError("No ticker data: the wall watch lists are empty, or the market data couldn't be loaded.")
+    days = st["days"]
+    first = (now_ny() - timedelta(days=int(days * 1.45))).strftime("%Y-%m-%d")
+    cut = (now_ny() - timedelta(days=int(days * 1.45 * (1 - TRAIN)))).strftime("%Y-%m-%d")
+    st["split"] = {"from": first, "cut": cut, "to": now_ny().strftime("%Y-%m-%d")}
+    st["nTickers"], st["loadErrors"] = len(data), len(errs)
+    st["step"] = "searching"
+    _save(sub, st)
+    base = from_cfg(live)
+    seen, top = st["seen"], smcopt._dedup(st["top"])
+    st["top"] = top
+    queue = [base] if key(base) not in seen else []
+    fixed = {**live, "earnOn": False, "fixR": 0, "maxDays": 0, "pvSetup": False}
+    n_run, last_save, times = 0, time.time(), []
+    while time.time() - t0 < budget_s - max(times[-5:] or [2]) * 1.5:
+        if queue:
+            g = queue.pop(0)
+        elif not top or rng.random() < 0.3:
+            g = rand_g(rng, base)
+        else:
+            pool = top[:8]
+            g = mutate(rng.choice(pool[:3] if rng.random() < 0.5 else pool)["g"], rng)
+        k = key(g)
+        if k in seen:
+            continue
+        t1 = time.time()
+        cfg = {**fixed, **g}
+        r_tr = smcopt.score(trades(data, cfg, first, cut, "train"), cost=0)
+        f = smcopt.fitness(r_tr, MIN_TRADES)
+        seen[k] = f
+        st["evals"] += 1
+        n_run += 1
+        same = any((x["train"] or {}).get("n") == r_tr.get("n") and (x["train"] or {}).get("totR") == r_tr.get("totR") for x in top)
+        if not same and (len(top) < TOP or f > top[-1]["fit"]):
+            r_te = smcopt.score(trades(data, cfg, first, cut, "test"), cost=0)
+            top.append({"g": g, "fit": f, "train": r_tr, "test": r_te, "at": iso(now_ny())})
+            top.sort(key=lambda x: -x["fit"])
+            del top[TOP:]
+        times.append(time.time() - t1)
+        if time.time() - last_save > 45:
+            cur = state(sub)
+            if not cur["on"] or cur.get("stopReq") or (cur.get("resetAt") or "") > st["runStarted"] or cur["days"] != st["days"]:
+                break
+            st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2)
+            _save(sub, st)
+            st = {**st, **{k: v for k, v in state(sub).items() if k in USER_KEYS}}
+            seen, top = st["seen"], st["top"]
+            last_save = time.time()
+    st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2) if times else None
+    st.update(running=None, step=None, runs=st.get("runs", 0) + 1)
+    best = top[0] if top else None
+    st["last"] = {"at": iso(now_ny()), "tried": n_run, "best": best and best["fit"]}
+    st["log"] = (st["log"] + [{"at": iso(now_ny()), "tried": n_run, "best": best and best["fit"]}])[-20:]
+    _save(sub, st)
+    return st
+
+
+def job(sub, params=None):
+    import research
+    try:
+        run(sub)
+    except Exception as e:
+        st = state(sub)
+        st.update(running=None, step=None, last={"at": iso(now_ny()), "error": str(e)[:200]})
+        st["log"] = (st.get("log") or [])[-19:] + [{"at": iso(now_ny()), "error": str(e)[:120]}]
+        _save(sub, st, user=True)
+        return {"error": str(e)[:200]}
+    st = state(sub)
+    if st["on"] and not (params or {}).get("once"):
+        research._invoke(sub, "wwopt", {})
+    return {"evals": st["evals"]}
+
+
+def kick():
+    import research
+    n = 0
+    for it in db.scan_sk(SK):
+        try:
+            st = json.loads(it["data"])
+        except (KeyError, ValueError):
+            continue
+        if not st.get("on") or (st.get("running") and st["running"] > iso(now_ny() - timedelta(minutes=12))):
+            continue
+        research._invoke(it["PK"][5:], "wwopt", {})
+        n += 1
+    return n

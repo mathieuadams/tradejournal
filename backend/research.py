@@ -1754,6 +1754,11 @@ def auto_kick():
     except Exception as e:
         print("evolution kick failed", e)
     try:
+        import wwopt
+        started += wwopt.kick()
+    except Exception as e:
+        print("wall watch optimizer kick failed", e)
+    try:
         import smcopt
         started += smcopt.kick()
     except Exception as e:

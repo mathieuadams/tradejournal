@@ -1906,7 +1906,7 @@ function vChartWW() {
         return `<li data-sym="${esc(x)}" ${S.fcfQ && !x.includes(S.fcfQ.toUpperCase()) ? 'hidden' : ''}><a href="#botchart?t=${encodeURIComponent(x)}" ${x === sym ? 'aria-current="true"' : ''}>
         <span><b>${esc(x)}</b>${b.open ? ' <span class="exchip" style="font-size:.7rem">open</span>' : ''}${ad && ad.by === 'flow' ? ` <span class="exchip" style="font-size:.7rem" title="Added ${esc((ad.at || '').replace('T', ' ').slice(5, 16))} from unusual call flow ${money(ad.premium || 0, false)}">flow ${esc((ad.at || '').slice(5, 10))}</span>` : ''}<br><span class="muted" style="font-size:.75rem">${b.n} signal${b.n === 1 ? '' : 's'}${b.n ? ` · ${b.t} target` : ''}</span></span>
         <span data-q="${esc(x)}" data-setup="${st.setup ? 1 : ''}" style="text-align:right;font-variant-numeric:tabular-nums;line-height:1.25">${qHtml(x, !!st.setup)}</span></a><span class="wl-act"><button class="btn" data-wlmv="${esc(L.name)}|${esc(x)}" title="Move to another list" style="font-size:.68rem;padding:0 5px">⇄</button><button class="btn" data-wlrm="${esc(L.name)}|${esc(x)}" title="Remove from ${esc(L.name)}" style="font-size:.68rem;padding:0 5px">✕</button></span></li>`; }).join('')}</ul></div>` : ''}</div>`; }).join('')}</aside>`;
-  return `<div class="fcf">${headBar}<div class="fcf-body">${narrow ? '' : chLeft(wwLayerGroups())}<div class="fcf-main">${narrow && sym ? fcLayerBar(id) : ''}${main}${S.ww && !S.hideSettings ? `<div class="ch-settings">${labOn ? labPanel() : wwParams(true)}</div>` : ''}</div>${side}</div></div>`;
+  return `<div class="fcf">${headBar}<div class="fcf-body">${narrow ? '' : chLeft(wwLayerGroups())}<div class="fcf-main">${narrow && sym ? fcLayerBar(id) : ''}${main}${S.ww && !S.hideSettings ? `<div class="ch-settings">${labOn ? labPanel() : wwParams(true)}${wwOptBox()}</div>` : ''}</div>${side}</div></div>`;
 }
 function flowGroups(L, added) {                   // the Unusual flow list by day: today, yesterday, the day before
   const ds = [...new Set((L.tickers || []).map(t => ((added[t] || {}).at || '').slice(0, 10)).filter(Boolean))].sort().reverse().slice(0, 3);
@@ -4609,6 +4609,50 @@ function labSymbol() { const l = wwTickers(), t = (hashParam('t') || '').toUpper
 try { S.chartLab = localStorage.getItem('chartLab') === '1'; } catch (e) { S.chartLab = false; }
 const HOURLY_ONLY = ['hvcAbove', 'hvcBelow', 'alertReq', 'relFlow', 'vwapReset', 'usePW', 'useFlip', 'vwapOn', 'emaOverVwap', 'skewOn', 'spyUp', 'kchLower', 'orbAbove', 'pvEod', 'vwapExit', 'dpLost'];
 const DAILY_PRESET = { tf: '1D', pwTest: true, inGreen: true, fvgOn: true, inYExit: true, greenOnly: false, inNotRed: false, emaOn: false, kcdLower: false, kcNotExt: false, aboveFlip: false, abovePW: false, belowPW: false, cvdUp: false, cvdDn: false, noAboveCW: false, cwRoomOn: false, earnOn: false, pwNeCw: false, stopOn: true, trailOn: false, targetOn: false, flipExit: false, pwExit: false, kcRide: false, cwLost: false, fvgExit: false, scaleOn: false, inRedExit: false, emaExit: false };
+// ---- unusual-flow (wall watch) optimizer: rules + numbers tuned on the watchlist history (backend wwopt.py)
+async function loadWwOpt() {
+  try { S.wwOpt = await api('/bot/wallwatch/opt'); } catch (e) { S.wwOpt = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.wwOptT);
+  if (S.wwOpt && (S.wwOpt.on || S.wwOpt.running)) S.wwOptT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode !== 'smc') loadWwOpt(); else S.wwOpt = undefined; }, 20000);
+}
+async function wwOptSet(body) { try { S.wwOpt = await api('/bot/wallwatch/opt', { method: 'PUT', body }); } catch (e) { toast(e.message); } loadWwOpt(); }
+const WW_NUM_NAMES = { stopAtr: 'stop ATR', trailAtr: 'trail ATR', tgtBuf: 'target under CW %', retestDays: 'alert valid days', retestZone: 'support zone ATR', cwRoom: 'room to CW ATR',
+  relMult: 'unusual x median', retestMin: 'min alert $', scaleR: 'scale at R', scalePct: 'scale %', fvgMin: 'FVG ATR' };
+function wwOptDiff(g) {
+  const lbl = k => (WW_RULES.find(r => r[0] === k) || [])[2] || k;
+  const live = (S.ww && S.ww.config) || {};
+  return Object.keys(g).filter(k => String(g[k]) !== String(live[k])).map(k => typeof g[k] === 'boolean'
+    ? `<span class="exchip" style="font-size:.7rem;${g[k] ? '' : 'opacity:.5;text-decoration:line-through'}">${esc(lbl(k))}</span>`
+    : `<span class="exchip" style="font-size:.7rem">${esc(WW_NUM_NAMES[k] || k)} <b>${esc(String(g[k]))}</b></span>`).join('') || '<span class="muted">= your live settings</span>';
+}
+function wwOptBox() {
+  if (S.wwOpt === undefined) { S.wwOpt = null; setTimeout(loadWwOpt, 0); }
+  const o = S.wwOpt;
+  if (!o) return '<div class="smc-stress"><b>Optimizer (unusual flow)</b> <span class="loading" style="padding:0">loading…</span></div>';
+  if (o.error) return `<div class="smc-stress"><b>Optimizer (unusual flow)</b> <span class="loss">${esc(o.error)}</span></div>`;
+  const Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`, f2 = v => v == null ? '—' : (+v).toFixed(2);
+  const sp = o.split || {}, top = o.top || [];
+  const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Optimizer (unusual flow)</b>
+    <button class="btn ${o.on ? 'coachbtn' : ''}" data-wwopt="${o.on ? 'off' : 'on'}" style="font-size:.8rem">${o.on ? '■ Stop' : '▶ Start'}</button>
+    <select data-wwoptdays style="font-size:.8rem">${[120, 250, 500].map(n => `<option value="${n}" ${o.days === n ? 'selected' : ''}>${n} days</option>`).join('')}</select>
+    <button class="btn" data-wwopt="reset" style="font-size:.8rem">Restart</button>
+    <span class="muted" style="font-size:.76rem">${o.running ? `<span class="loading" style="padding:0">${esc(o.step || 'running')}</span> · ` : o.on ? 'next run starting · ' : ''}${o.tried || 0} settings tried${o.avgEval ? ` · ${o.avgEval}s each` : ''}${o.nTickers ? ` · ${o.nTickers} tickers` : ''}${o.loadErrors ? ` (${o.loadErrors} not loaded)` : ''}</span>
+    ${o.last && o.last.error ? `<span class="loss" style="font-size:.76rem">${esc(o.last.error)}</span>` : ''}</div>
+    ${(o.log || []).length ? `<div class="muted" style="font-size:.72rem">Runs: ${(o.log || []).slice(-6).reverse().map(x => `${esc((x.at || '').slice(11, 16))} ${x.error ? `<span class="loss">${esc(x.error)}</span>` : `${x.tried} tried · best ${x.best != null ? (+x.best).toFixed(2) : '—'}`}`).join(' · ')}</div>` : ''}
+    <div class="muted" style="font-size:.74rem">The wall watch rules (entry and exits) and their numbers, on every ticker of the watchlists, hourly candles, R of the stock trade. Chosen on the train period only${sp.cut ? ` (${esc(sp.from)} → ${esc(sp.cut)})` : ''} by the t of the R per day, ${o.minTrades}+ trades, no month over 35% of the profit; the test period${sp.cut ? ` (${esc(sp.cut)} → ${esc(sp.to)})` : ''} is never used to choose. Starts from your live settings. <b>Use</b> puts a setting in the Strategy lab: test it there (and with options), then "Use these settings live".</div>`;
+  if (!top.length) return `<div class="smc-stress">${ctl}</div>`;
+  const ok = t => (t.test || {}).n >= 20 && (t.test.avgR || 0) > 0 && (t.test.t || 0) >= 1.5;
+  return `<div class="smc-stress">${ctl}<div style="overflow-x:auto"><table class="pos" style="font-size:.78rem;width:100%"><thead><tr><th>#</th><th class="r">Score</th>
+    <th class="r">Train trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">t</th><th class="r">Test trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Total</th><th class="r">t</th><th class="r">DD</th><th>Changes vs live</th><th></th></tr></thead><tbody>
+    ${top.map((t, i) => { const a = t.train || {}, b = t.test || {};
+      return `<tr style="${ok(t) ? 'background:color-mix(in srgb,var(--gain) 9%,transparent)' : ''}"><td>${i + 1}</td><td class="r">${f2(t.fit)}</td>
+        <td class="r">${a.n || 0}</td><td class="r">${a.n ? a.win + '%' : '—'}</td><td class="r">${Rf(a.avgR)}</td><td class="r">${f2(a.t)}</td>
+        <td class="r">${b.n || 0}</td><td class="r">${b.n ? b.win + '%' : '—'}</td><td class="r">${Rf(b.avgR)}</td><td class="r">${Rf(b.totR)}</td><td class="r">${f2(b.t)}</td><td class="r">${b.n ? f2(b.dd) + 'R' : '—'}</td>
+        <td><details><summary style="cursor:pointer;font-size:.74rem">show</summary><div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px">${wwOptDiff(t.params)}</div></details></td>
+        <td><button class="btn" data-wwoptuse="${i}" style="font-size:.74rem;padding:1px 7px" title="Put these settings in the Strategy lab (the live bot doesn't change)">Use</button></td></tr>`; }).join('')}</tbody></table></div>
+    <div class="muted" style="font-size:.74rem">Green rows: still positive on the test period (20+ trades, t ≥ 1.5).</div></div>`;
+}
 function labPanel() {
   const L = labCfg() || {};
   const tf = (S.labDraft && S.labDraft.tf) || L.tf || '1h';
@@ -5209,7 +5253,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -5248,6 +5292,10 @@ document.addEventListener('click', e => {
     if (S.smcDraft && Object.keys(S.smcDraft).length) {   // blocks changed on screen but not applied: applied now (what is saved = what is shown)
       const c = { ...S.smcCfg, ...S.smcDraft }; S.smcCfg = c; S.smcDraft = null; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {} }
     smcLiveSet({ cfg: { ...S.smcCfg, tf: S.smcTf }, name: nm, source: S.smcSrc || null }); return; }
+  if (el.dataset.wwopt) { const v = el.dataset.wwopt; wwOptSet(v === 'reset' ? { reset: true } : { on: v === 'on' }); return; }
+  if (el.dataset.wwoptuse) { const t = ((S.wwOpt || {}).top || [])[+el.dataset.wwoptuse]; if (!t) return;
+    S.lab = { ...(labCfg() || {}), ...t.params }; S.labDraft = null; S.labSw = null; S.labDirty = false; try { localStorage.setItem('labCfg', JSON.stringify(S.lab)); } catch (err) {}
+    S.chartLab = true; try { localStorage.setItem('chartLab', '1'); } catch (err) {} toast('Put in the Strategy lab: test it, then "Use these settings live"'); render(); return; }
   if (el.dataset.smcopt) { const v = el.dataset.smcopt, start = { ...S.smcCfg, tf: S.smcTf };
     smcOptSet(v === 'reset' ? { reset: true, start } : v === 'on' ? { on: true, start } : { on: false }); return; }
   if (el.dataset.smcoptuse) { const t = ((S.smcOpt || {}).top || [])[+el.dataset.smcoptuse]; if (!t) return;
@@ -5653,6 +5701,7 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-smclivemodeo]')) smcLiveSet({ orderMode: e.target.value });
   if (e.target.matches && e.target.matches('[data-smclivereststop]')) smcLiveSet({ restStop: e.target.checked });
   if (e.target.matches && e.target.matches('[data-smcwindays]')) S.smcWinDays = +e.target.value;
+  if (e.target.matches && e.target.matches('[data-wwoptdays]')) wwOptSet({ days: +e.target.value });
   if (e.target.matches && e.target.matches('[data-smcfeed]')) { const f = e.target.value;
     api('/daytrade/feed', { method: 'PUT', body: { feed: f } }).then(() => { toast(f === 'sip' ? 'Real-time SIP data on: the optimizer starts again' : 'IEX data'); S.smcDs = {}; S.smcOpt = undefined; loadSmcLive(); })
       .catch(err => { toast(err.message); loadSmcLive(); }); }
