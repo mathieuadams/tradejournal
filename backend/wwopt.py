@@ -19,8 +19,10 @@ import db
 from util import iso, now_ny
 
 SK = "WWOPT"
-VERSION = 3                                            # 3: one run at a time (parallel runs overwrote the results)
-MIN_TRADES = 40
+VERSION = 4                                            # 4: scored on the weakest third of the train period too
+MIN_TRADES = 40                                        # default; the panel picks 40 / 80 / 150
+MIN_CHOICES = (40, 80, 150)
+FOLDS = 3                                              # the train period cut in 3: the edge must be there in each part
 TRAIN = 0.6
 TOP = 15
 MAX_ITEM = 300_000
@@ -35,6 +37,21 @@ NUMS = {"stopAtr": [0.3, 0.5, 0.75, 1.0, 1.5], "trailAtr": [0.5, 1.0, 1.5, 2.0, 
 NEEDS = {"stopAtr": "stopOn", "trailAtr": "trailOn", "cwRoom": "cwRoomOn", "relMult": "relFlow", "scaleR": "scaleOn", "scalePct": "scaleOn",
          "scaleBE": "scaleOn", "fvgMin": "fvgOn"}
 SPACE = {**{k: [True, False] for k in BOOL_KEYS}, **NUMS}
+# daily candles (wallwatch.detect_daily, entry at the daily close): the rules that engine reads
+DAILY_BOOL = ["pwTest", "greenOnly", "inGreen", "inNotRed", "fvgOn", "aboveFlip", "abovePW", "belowPW", "emaOn", "kcdLower", "kcNotExt",
+              "pwNeCw", "noAboveCW", "cwRoomOn", "inhGreen", "inhNotRed", "sqdOn", "sqdFire", "sqdMom",
+              "stopOn", "trailOn", "targetOn", "flipExit", "emaExit", "fvgExit", "inRedExit", "inYExit", "inhYExit", "cwLost", "kcRide",
+              "pwExit", "sqdExit", "scaleOn", "scaleBE"]
+DAILY_NUMS = {k: NUMS[k] for k in ("stopAtr", "trailAtr", "tgtBuf", "retestZone", "cwRoom", "scaleR", "scalePct", "fvgMin")}
+DSPACE = {**{k: [True, False] for k in DAILY_BOOL}, **DAILY_NUMS}
+TFS = ("1h", "1D")
+_MODE = {"tf": "1h"}                                   # the timeframe of the run going (its search space)
+
+
+def sp():
+    return DSPACE if _MODE["tf"] == "1D" else SPACE
+
+
 MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
 UNIVERSES = ("mag7", "all")                            # mag7 first, then every ticker of the wall watch lists
 
@@ -45,7 +62,7 @@ def tickers(st, live):
 
 def from_cfg(c):
     import wallwatch
-    return {k: c.get(k, wallwatch.PARAMS.get(k)) for k in SPACE}
+    return {k: c.get(k, wallwatch.PARAMS.get(k)) for k in sp()}
 
 
 def key(g):
@@ -57,6 +74,8 @@ def key(g):
 
 
 def valid(g):
+    if _MODE["tf"] == "1D":
+        return bool(g.get("stopOn") or g.get("trailOn") or g.get("targetOn"))
     return bool(g.get("usePW") or g.get("useFlip")) and bool(g.get("pwSetup") or g.get("flipSetup") or g.get("mergedSetup")) \
         and bool(g.get("stopOn") or g.get("trailOn") or g.get("targetOn"))
 
@@ -64,8 +83,8 @@ def valid(g):
 def rand_g(rng, base):
     for _ in range(50):
         g = dict(base)
-        for k in rng.sample(list(SPACE), rng.randint(3, 8)):
-            g[k] = rng.choice(SPACE[k])
+        for k in rng.sample(list(sp()), rng.randint(3, 8)):
+            g[k] = rng.choice(sp()[k])
         if valid(g):
             return g
     return dict(base)
@@ -74,8 +93,8 @@ def rand_g(rng, base):
 def mutate(g, rng):
     for _ in range(30):
         x = dict(g)
-        for k in rng.sample(list(SPACE), rng.choice([1, 1, 2, 3])):
-            vs = SPACE[k]
+        for k in rng.sample(list(sp()), rng.choice([1, 1, 2, 3])):
+            vs = sp()[k]
             if k in NUMS and x.get(k) in vs and rng.random() < 0.7:
                 i = vs.index(x[k]) + rng.choice([-1, 1])
                 x[k] = vs[max(0, min(len(vs) - 1, i))]
@@ -200,6 +219,21 @@ def replay(cands, g):
     return out
 
 
+def fit(tr, need, bounds):
+    """The t of the R per day (smcopt.fitness), capped by the weakest third of the train period (its t x sqrt(3),
+    the same scale): a mix that is only good in one stretch of months — luck — scores low. Returns (fit, fold ts)."""
+    import smcopt
+    r = smcopt.score(tr, cost=0)
+    f = smcopt.fitness(r, need)
+    fts = []
+    for a, b in zip(bounds, bounds[1:]):
+        rf = smcopt.score([t for t in tr if a <= t[0] < b], cost=0)
+        fts.append(rf.get("t") if rf.get("t") is not None else (-1.0 if (rf.get("totR") or 0) <= 0 else 0.0))
+    if fts and f > 0:
+        f = round(min(f, min(fts) * FOLDS ** 0.5), 3)
+    return f, r, fts
+
+
 # ---------------------------------------------------------------- state
 def state(sub):
     r = db.get(db.upk(sub), SK) or {}
@@ -207,12 +241,12 @@ def state(sub):
     if st and st.get("v") != VERSION:
         st.update(top=[], seen={}, evals=0, log=[])
     st["v"] = VERSION
-    for k, v in (("on", False), ("days", 250), ("universe", "mag7"), ("evals", 0), ("top", []), ("seen", {}), ("log", []), ("runs", 0)):
+    for k, v in (("on", False), ("days", 250), ("universe", "mag7"), ("minTrades", 80), ("tf", "1h"), ("evals", 0), ("top", []), ("seen", {}), ("log", []), ("runs", 0)):
         st.setdefault(k, v)
     return st
 
 
-USER_KEYS = ("on", "days", "universe", "stopReq", "resetAt")
+USER_KEYS = ("on", "days", "universe", "minTrades", "tf", "stopReq", "resetAt")
 
 
 def _save(sub, st, user=False):
@@ -239,10 +273,10 @@ def public(sub):
     import smcopt
     st = state(sub)
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
-    return {k: st.get(k) for k in ("on", "days", "universe", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors", "cycle")} | {
+    return {k: st.get(k) for k in ("on", "days", "universe", "tf", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors", "cycle")} | {
         "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": st.get("evals", 0), "screened": st.get("screened", 0),
         "walls": walls_status(sub),
-        "top": [{**t, "params": t["g"]} for t in smcopt._dedup(st["top"])[:TOP]], "minTrades": MIN_TRADES}
+        "top": [{**t, "params": t["g"]} for t in smcopt._dedup(st["top"])[:TOP]], "minTrades": st.get("minTrades") or MIN_TRADES}
 
 
 def save_cfg(sub, b):
@@ -252,11 +286,19 @@ def save_cfg(sub, b):
         st["on"] = bool(b["on"])
         if not st["on"] and st.get("running"):
             st["stopReq"] = iso(now_ny())
+        if st["on"]:
+            st.pop("stopReq", None)
     if b.get("days"):
         nd = max(60, min(500, int(b["days"])))
         if nd != st["days"]:
             b["reset"] = True
         st["days"] = nd
+    if b.get("minTrades") and int(b["minTrades"]) in MIN_CHOICES and int(b["minTrades"]) != st.get("minTrades"):
+        st["minTrades"] = int(b["minTrades"])
+        b["reset"] = True
+    if b.get("tf") in TFS and b["tf"] != st.get("tf"):
+        st["tf"] = b["tf"]
+        b["reset"] = True
     if b.get("universe") in UNIVERSES and b["universe"] != st.get("universe"):
         st["universe"] = b["universe"]
         b["reset"] = True
@@ -272,13 +314,14 @@ def run(sub, budget_s=470, seed=None):
     t0 = time.time()
     rng = random.Random(seed)
     st = state(sub)
+    tf = _MODE["tf"] = st.get("tf") or "1h"
     st["running"] = st["runStarted"] = iso(now_ny())
     st["step"] = "loading the watchlist history (hourly candles, walls, call alerts)"
     st.pop("stopReq", None)
     _save(sub, st)
     live = wallwatch.config(sub)
     wa = (db.get(db.upk(sub), WALLS_SK) or {}).get("at")
-    data, errs = load(sub, st["days"], {**live, "tickers": tickers(st, live), "_wallsAt": wa}, budget_s=min(300, budget_s * 0.6))
+    data, errs = load(sub, st["days"] + (85 if tf == "1D" else 0), {**live, "tickers": tickers(st, live), "_wallsAt": wa}, budget_s=min(300, budget_s * 0.6))
     if not data:
         raise ValueError("No ticker data: the wall watch lists are empty, or the market data couldn't be loaded.")
     days = st["days"]
@@ -291,8 +334,12 @@ def run(sub, budget_s=470, seed=None):
     base = from_cfg(live)
     seen, top = st["seen"], smcopt._dedup(st["top"])
     st["top"] = top
-    fixed = {**live, "earnOn": False, "fixR": 0, "maxDays": 0, "pvSetup": False}
+    fixed = {**live, "earnOn": False, "fixR": 0, "maxDays": 0, "pvSetup": False, "tf": tf, "fxEntry": "", "fxExit": ""}
     tdata = train_slice(data, cut)
+    need = int(st.get("minTrades") or MIN_TRADES)
+    d0, d1 = now_ny() - timedelta(days=int(days * 1.45)), now_ny() - timedelta(days=int(days * 1.45 * (1 - TRAIN)))
+    bounds = [(d0 + (d1 - d0) * i / FOLDS).strftime("%Y-%m-%d") for i in range(FOLDS)] + [cut]
+    bounds[0] = first
     ek = entry_keys()
     n_run, last_save, times = 0, time.time(), []
     st["screened"] = st.get("screened", 0)
@@ -306,8 +353,8 @@ def run(sub, budget_s=470, seed=None):
             return
         t1 = time.time()
         cfg = {**fixed, **g}
-        r_tr = smcopt.score(trades(tdata, cfg, first), cost=0)
-        f = smcopt.fitness(r_tr, MIN_TRADES)
+        f, r_tr, fts = fit(trades(tdata, cfg, first), need, bounds)
+        r_tr["folds"] = fts
         seen[k] = f
         st["evals"] += 1
         n_run += 1
@@ -320,7 +367,28 @@ def run(sub, budget_s=470, seed=None):
         times.append(time.time() - t1)
 
     first_cycle = True
-    while time.time() - t0 < budget_s - max(times[-5:] or [2]) * 3:
+    while tf == "1D" and time.time() - t0 < budget_s - max(times[-5:] or [0.5]) * 3:
+        if first_cycle and key(base) not in seen:
+            g = base
+        elif not top or rng.random() < 0.2:
+            g = rand_g(rng, base)
+        else:
+            g = mutate(rng.choice(top[:3] if rng.random() < 0.6 else top)["g"], rng)
+        first_cycle = False
+        c0 = time.time()
+        confirm(g)
+        st["cycle"] = round(time.time() - c0, 2)
+        if time.time() - last_save > 45:
+            cur_st = state(sub)
+            if not cur_st["on"] or (cur_st.get("stopReq") or "") > st["runStarted"] or (cur_st.get("resetAt") or "") > st["runStarted"] \
+                    or cur_st["days"] != st["days"] or cur_st.get("universe") != st.get("universe") or cur_st.get("tf") != tf:
+                break
+            st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2) if times else None
+            _save(sub, st)
+            st = {**st, **{k: v for k, v in state(sub).items() if k in USER_KEYS}}
+            seen, top = st["seen"], st["top"]
+            last_save = time.time()
+    while tf == "1h" and time.time() - t0 < budget_s - max(times[-5:] or [2]) * 3:
         # 1. the exits / numbers / setups: the live ones first, then from the best (changed) or random
         if first_cycle and key(base) not in seen:
             parent = base
@@ -342,7 +410,7 @@ def run(sub, budget_s=470, seed=None):
         def scr(g):
             kk = key(g)
             if kk not in scored:
-                scored[kk] = (smcopt.fitness(smcopt.score(replay(cands, g), cost=0), MIN_TRADES), g)
+                scored[kk] = (fit(replay(cands, g), need, bounds)[0], g)
                 st["screened"] += 1
             return scored[kk][0]
         cur = dict(parent)
@@ -366,7 +434,7 @@ def run(sub, budget_s=470, seed=None):
         st["cycle"] = round(time.time() - c0, 1)
         if time.time() - last_save > 45:
             cur_st = state(sub)
-            if not cur_st["on"] or cur_st.get("stopReq") or (cur_st.get("resetAt") or "") > st["runStarted"] or cur_st["days"] != st["days"] or cur_st.get("universe") != st.get("universe"):
+            if not cur_st["on"] or (cur_st.get("stopReq") or "") > st["runStarted"] or (cur_st.get("resetAt") or "") > st["runStarted"] or cur_st["days"] != st["days"] or cur_st.get("universe") != st.get("universe") or cur_st.get("tf") != st.get("tf"):
                 break
             st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2) if times else None
             _save(sub, st)

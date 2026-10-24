@@ -6294,6 +6294,21 @@ def test_unusual_flow_optimizer():
         assert best["test"]["n"] > 0 and set(best["params"]) == set(wwopt.SPACE)
         assert wwopt.tickers({}, {"tickers": ["X"]}) == wwopt.MAG7 and wwopt.tickers({"universe": "all"}, {"tickers": ["X"]}) == ["X"]
         assert wwopt.save_cfg("wwo", {"universe": "all"})["universe"] == "all" and wwopt.public("wwo")["top"] == []
+        bounds = ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"]
+        even = [(f"2026-0{m}-{d:02d}", "A", (1.0 if d % 3 else -0.5), "x") for m in (1, 2, 3) for d in range(1, 28)]
+        lumpy = [(f"2026-0{m}-{d:02d}", "A", (1.0 if d % 3 else -0.5) if m == 1 else (0.6 if d % 2 else -0.7), "x") for m in (1, 2, 3) for d in range(1, 28)]
+        fe, _, fts = wwopt.fit(even, 40, bounds)
+        fl, _, _ = wwopt.fit(lumpy, 40, bounds)
+        assert len(fts) == 3 and fe > 0 and fl < fe          # good in one third only: scored on its weakest third
+        st0 = wwopt.state("wwo"); st0.update(stopReq="2020-01-01T00:00:00"); wwopt._save("wwo", st0, user=True)
+        assert "stopReq" not in wwopt.state("wwo") or wwopt.save_cfg("wwo", {"on": True}) and "stopReq" not in wwopt.state("wwo")
+        wwopt.save_cfg("wwo", {"tf": "1D"})                    # daily candles: the daily rules, every mix through the engine
+        assert wwopt.public("wwo")["tf"] == "1D" and wwopt.public("wwo")["top"] == []
+        wwopt.run("wwo", budget_s=6, seed=4)
+        pd_ = wwopt.public("wwo")
+        assert pd_["tried"] >= 3 and pd_["top"] and set(pd_["top"][0]["params"]) == set(wwopt.DSPACE)
+        wwopt.save_cfg("wwo", {"tf": "1h"})
+        wwopt._MODE["tf"] = "1h"
         calls = []
         wallwatch.fill_walls = lambda sub, **k: calls.append(k) or {"left": 0, "fetched": 5, "total": 5, "errors": []}
         wwopt.save_cfg("wwo", {"universe": "mag7"})

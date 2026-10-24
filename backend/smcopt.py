@@ -333,6 +333,8 @@ def save_cfg(sub, b):
         st["on"] = bool(b["on"])
         if not st["on"] and st.get("running"):
             st["stopReq"] = iso(now_ny())
+        if st["on"]:
+            st.pop("stopReq", None)
     if b.get("days"):
         nd = max(60, min(500, int(b["days"])))
         if nd != st["days"]:
@@ -417,7 +419,7 @@ def run(sub, budget_s=470, seed=None):
         times.append(time.time() - t1)
         if time.time() - last_save > 45:
             cur = state(sub)
-            if not cur["on"] or cur.get("stopReq") or (cur.get("resetAt") or "") > st["runStarted"] or cur["days"] != st["days"] or cur["universe"] != st["universe"]:
+            if not cur["on"] or (cur.get("stopReq") or "") > st["runStarted"] or (cur.get("resetAt") or "") > st["runStarted"] or cur["days"] != st["days"] or cur["universe"] != st["universe"]:
                 break
             st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2)
             _save(sub, st)
