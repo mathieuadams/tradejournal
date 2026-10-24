@@ -6278,7 +6278,7 @@ def test_unusual_flow_optimizer():
             return [], []
         return [{"at": d + "T10:30", "R": r_of(i, cfg.get("trailAtr")), "status": "target"} for i, d in enumerate(ds)
                 if (not cfg.get("vwapOn") or i % 3)], []
-    saved = (wwopt.load, wallwatch.detect_retest, wallwatch.config)
+    saved = (wwopt.load, wallwatch.detect_retest, wallwatch.config, wallwatch.fill_walls)
     try:
         wwopt.load = lambda sub, n, live, budget_s=300: ({"AAA": {"bars": [{"t": d + "T15:30"} for d in sorted(days)], "walls": {}, "datr": {}, "alerts": [], "vmap": {}, "emap": {}}}, [])
         wallwatch.detect_retest = fake_detect
@@ -6294,11 +6294,16 @@ def test_unusual_flow_optimizer():
         assert best["test"]["n"] > 0 and set(best["params"]) == set(wwopt.SPACE)
         assert wwopt.tickers({}, {"tickers": ["X"]}) == wwopt.MAG7 and wwopt.tickers({"universe": "all"}, {"tickers": ["X"]}) == ["X"]
         assert wwopt.save_cfg("wwo", {"universe": "all"})["universe"] == "all" and wwopt.public("wwo")["top"] == []
+        calls = []
+        wallwatch.fill_walls = lambda sub, **k: calls.append(k) or {"left": 0, "fetched": 5, "total": 5, "errors": []}
+        wwopt.save_cfg("wwo", {"universe": "mag7"})
+        assert wwopt.walls_job("wwo")["left"] == 0 and calls[0]["tickers"] == wwopt.MAG7 and calls[0]["days"] == wwopt.walls_days(250) and not calls[0]["mp"]
+        assert wwopt.walls_days(250) >= 258
         assert db.try_lock(db.upk("wwo"), wwopt.SK + "#LOCK", 60)              # a run going: a second one is skipped
         assert wwopt.job("wwo", {"once": True}) == {"skipped": "a run is already going"}
         db.unlock(db.upk("wwo"), wwopt.SK + "#LOCK")
     finally:
-        wwopt.load, wallwatch.detect_retest, wallwatch.config = saved
+        wwopt.load, wallwatch.detect_retest, wallwatch.config, wallwatch.fill_walls = saved
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

@@ -112,7 +112,7 @@ def load(sub, days, live, budget_s=300):
     """{sym: ticker data} for the wall watch tickers (hourly candles, walls, alerts), loaded in parallel."""
     import backtest
     tick = list(live.get("tickers") or [])
-    ck = (sub, days, tuple(sorted(tick)), now_ny().strftime("%Y-%m-%d"), live.get("vwapDays"), live.get("emaLen"), live.get("kcLen"), live.get("kcMult"))
+    ck = (sub, days, tuple(sorted(tick)), now_ny().strftime("%Y-%m-%d"), live.get("_wallsAt"), live.get("vwapDays"), live.get("emaLen"), live.get("kcLen"), live.get("kcMult"))
     if _CACHE.get("k") == ck:
         return _CACHE["v"], _CACHE["err"]
     t0, data, errs = time.time(), {}, []
@@ -241,6 +241,7 @@ def public(sub):
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
     return {k: st.get(k) for k in ("on", "days", "universe", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors", "cycle")} | {
         "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": st.get("evals", 0), "screened": st.get("screened", 0),
+        "walls": walls_status(sub),
         "top": [{**t, "params": t["g"]} for t in smcopt._dedup(st["top"])[:TOP]], "minTrades": MIN_TRADES}
 
 
@@ -276,7 +277,8 @@ def run(sub, budget_s=470, seed=None):
     st.pop("stopReq", None)
     _save(sub, st)
     live = wallwatch.config(sub)
-    data, errs = load(sub, st["days"], {**live, "tickers": tickers(st, live)}, budget_s=min(300, budget_s * 0.6))
+    wa = (db.get(db.upk(sub), WALLS_SK) or {}).get("at")
+    data, errs = load(sub, st["days"], {**live, "tickers": tickers(st, live), "_wallsAt": wa}, budget_s=min(300, budget_s * 0.6))
     if not data:
         raise ValueError("No ticker data: the wall watch lists are empty, or the market data couldn't be loaded.")
     days = st["days"]
@@ -418,3 +420,46 @@ def kick():
         research._invoke(it["PK"][5:], "wwopt", {})
         n += 1
     return n
+
+
+# ---------------------------------------------------------------- the walls history of the optimizer's tickers
+WALLS_SK = "WWOPTWALLS"
+
+
+def walls_days(days):
+    """Weekdays covered by the optimizer's period (it starts days x 1.45 calendar days back)."""
+    return int(days * 1.45 * 5 / 7) + 3
+
+
+def walls_status(sub):
+    it = db.get(db.upk(sub), WALLS_SK) or {}
+    return {k: it.get(k) for k in ("running", "total", "left", "fetched", "errors", "at", "days")}
+
+
+def walls_start(sub):
+    it = db.get(db.upk(sub), WALLS_SK) or {}
+    db.put({**it, "PK": db.upk(sub), "SK": WALLS_SK, "running": iso(now_ny()), "errors": []})
+    import research
+    research._invoke(sub, "wwoptwalls", {})
+    return public(sub)
+
+
+def walls_job(sub, params=None):
+    """Fetch the call wall / put wall / flip of every day of the optimizer's period for its tickers (Mag 7 or the
+    watchlist), ~8 minutes per run, chained until every day is stored; then the optimizer restarts on the full data."""
+    import research
+    import wallwatch
+    st = state(sub)
+    live = wallwatch.config(sub)
+    try:
+        f = wallwatch.fill_walls(sub, days=walls_days(st["days"]), budget_s=500, mp=False, sk=WALLS_SK, tickers=tickers(st, live))
+    except Exception as e:
+        db.put({**(db.get(db.upk(sub), WALLS_SK) or {}), "PK": db.upk(sub), "SK": WALLS_SK, "running": None,
+                "errors": [str(e)[:160]], "at": iso(now_ny())})
+        return {"error": str(e)[:160]}
+    if f["left"] and f["fetched"]:                       # progress made: the next run
+        db.update(db.upk(sub), WALLS_SK, {"running": iso(now_ny())})
+        research._invoke(sub, "wwoptwalls", {})
+    elif not f["left"]:                                  # every day stored: the optimizer starts over on the new data
+        save_cfg(sub, {"reset": True})
+    return f

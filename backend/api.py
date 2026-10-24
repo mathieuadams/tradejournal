@@ -1035,6 +1035,13 @@ def wallwatch_opt_set(sub, claims, body, q):
     return out
 
 
+@route("POST", "/bot/wallwatch/opt/walls")
+def wallwatch_opt_walls(sub, claims, body, q):
+    """The walls history of the optimizer's tickers over its whole period (background, chained runs)."""
+    import wwopt
+    return wwopt.walls_start(sub)
+
+
 @route("GET", "/bot/wallwatch/walls")
 def bot_wallwatch_walls_status(sub, claims, body, q):
     """The walls fetch of one ticker (or of the watchlist): running / left / at. Cheap: polled while it runs."""

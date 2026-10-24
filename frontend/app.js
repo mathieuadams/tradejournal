@@ -4614,7 +4614,7 @@ async function loadWwOpt() {
   try { S.wwOpt = await api('/bot/wallwatch/opt'); } catch (e) { S.wwOpt = { error: e.message }; }
   if (route() === 'botchart') render();
   clearTimeout(S.wwOptT);
-  if (S.wwOpt && (S.wwOpt.on || S.wwOpt.running)) S.wwOptT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode !== 'smc') loadWwOpt(); else S.wwOpt = undefined; }, 20000);
+  if (S.wwOpt && (S.wwOpt.on || S.wwOpt.running || (S.wwOpt.walls || {}).running)) S.wwOptT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode !== 'smc') loadWwOpt(); else S.wwOpt = undefined; }, 20000);
 }
 async function wwOptSet(body) { try { S.wwOpt = await api('/bot/wallwatch/opt', { method: 'PUT', body }); } catch (e) { toast(e.message); } loadWwOpt(); }
 const WW_NUM_NAMES = { stopAtr: 'stop ATR', trailAtr: 'trail ATR', tgtBuf: 'target under CW %', retestDays: 'alert valid days', retestZone: 'support zone ATR', cwRoom: 'room to CW ATR',
@@ -4632,12 +4632,15 @@ function wwOptBox() {
   if (!o) return '<div class="smc-stress"><b>Optimizer (unusual flow)</b> <span class="loading" style="padding:0">loading…</span></div>';
   if (o.error) return `<div class="smc-stress"><b>Optimizer (unusual flow)</b> <span class="loss">${esc(o.error)}</span></div>`;
   const Rf = v => v == null ? '—' : `<b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${v > 0 ? '+' : ''}${(+v).toFixed(2)}R</b>`, f2 = v => v == null ? '—' : (+v).toFixed(2);
-  const sp = o.split || {}, top = o.top || [];
+  const sp = o.split || {}, top = o.top || [], wl = o.walls || {};
   const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Optimizer (unusual flow)</b>
     <button class="btn ${o.on ? 'coachbtn' : ''}" data-wwopt="${o.on ? 'off' : 'on'}" style="font-size:.8rem">${o.on ? '■ Stop' : '▶ Start'}</button>
     <select data-wwoptdays style="font-size:.8rem">${[120, 250, 500].map(n => `<option value="${n}" ${o.days === n ? 'selected' : ''}>${n} days</option>`).join('')}</select>
     <select data-wwoptuni style="font-size:.8rem"><option value="mag7" ${o.universe !== 'all' ? 'selected' : ''}>Mag 7</option><option value="all" ${o.universe === 'all' ? 'selected' : ''}>All watchlist tickers</option></select>
     <button class="btn" data-wwopt="reset" style="font-size:.8rem">Restart</button>
+    <button class="btn ${wl.running ? '' : 'coachbtn'}" data-wwopt="walls" ${wl.running ? 'disabled' : ''} style="font-size:.8rem" title="Fetch the call wall, put wall and flip of every day of the optimizer's period for its tickers (Unusual Whales); the optimizer restarts when every day is stored">${wl.running ? 'Getting walls…' : 'Get walls history'}</button>
+    ${wl.total ? `<span class="muted" style="font-size:.76rem">walls: ${fmtInt(wl.total - (wl.left || 0))} / ${fmtInt(wl.total)} ticker-days stored${wl.left ? ` · ${fmtInt(wl.left)} left` : ' · complete'}</span>` : ''}
+    ${(wl.errors || []).length ? `<span class="loss" style="font-size:.74rem">${esc(wl.errors[0])}</span>` : ''}
     <span class="muted" style="font-size:.76rem">${o.running ? `<span class="loading" style="padding:0">${esc(o.step || 'running')}</span> · ` : o.on ? 'next run starting · ' : ''}${fmtInt(o.screened || 0)} entry mixes screened · ${o.tried || 0} confirmed${o.cycle ? ` · ${o.cycle}s per batch` : ''}${o.nTickers ? ` · ${o.nTickers} tickers` : ''}${o.loadErrors ? ` (${o.loadErrors} not loaded)` : ''}</span>
     ${o.last && o.last.error ? `<span class="loss" style="font-size:.76rem">${esc(o.last.error)}</span>` : ''}</div>
     ${(o.log || []).length ? `<div class="muted" style="font-size:.72rem">Runs: ${(o.log || []).slice(-6).reverse().map(x => `${esc((x.at || '').slice(11, 16))} ${x.error ? `<span class="loss">${esc(x.error)}</span>` : `${x.tried} tried · best ${x.best != null ? (+x.best).toFixed(2) : '—'}`}`).join(' · ')}</div>` : ''}
@@ -5293,6 +5296,7 @@ document.addEventListener('click', e => {
     if (S.smcDraft && Object.keys(S.smcDraft).length) {   // blocks changed on screen but not applied: applied now (what is saved = what is shown)
       const c = { ...S.smcCfg, ...S.smcDraft }; S.smcCfg = c; S.smcDraft = null; try { localStorage.setItem('smcCfg', JSON.stringify(c)); } catch (err) {} }
     smcLiveSet({ cfg: { ...S.smcCfg, tf: S.smcTf }, name: nm, source: S.smcSrc || null }); return; }
+  if (el.dataset.wwopt === 'walls') { el.disabled = true; api('/bot/wallwatch/opt/walls', { method: 'POST' }).then(r => { S.wwOpt = r; toast('Getting the walls history in the background (about 8 minutes per batch)'); loadWwOpt(); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
   if (el.dataset.wwopt) { const v = el.dataset.wwopt; wwOptSet(v === 'reset' ? { reset: true } : { on: v === 'on' }); return; }
   if (el.dataset.wwoptuse) { const t = ((S.wwOpt || {}).top || [])[+el.dataset.wwoptuse]; if (!t) return;
     S.lab = { ...(labCfg() || {}), ...t.params }; S.labDraft = null; S.labSw = null; S.labDirty = false; try { localStorage.setItem('labCfg', JSON.stringify(S.lab)); } catch (err) {}

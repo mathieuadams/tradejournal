@@ -2111,7 +2111,7 @@ def _walls_and_mp(key, sym, d, mp=True):
     return w
 
 
-def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
+def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None, tickers=None):
     """Fetch the walls and the flip of every day for every watchlist ticker (or one ticker), as many as the time allows."""
     import flowdata
     from concurrent.futures import ThreadPoolExecutor
@@ -2120,7 +2120,7 @@ def fill_walls(sub, days=45, budget_s=480, ticker=None, mp=True, sk=None):
     cfg = config(sub)
     key = flowdata._key(sub)
     sk = sk or (f"WWFILL#{ticker}" if ticker else "WWFILL")
-    todo, total = walls_todo([ticker] if ticker else cfg["tickers"], days, need_mp=mp)
+    todo, total = walls_todo(list(tickers) if tickers else [ticker] if ticker else cfg["tickers"], days, need_mp=mp)
     db.put({"PK": pk, "SK": sk, "running": iso(now_ny()), "total": total, "left": len(todo), "days": days,
             "at": (db.get(pk, sk) or {}).get("at")})
     done, errors = 0, []

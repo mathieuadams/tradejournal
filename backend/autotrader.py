@@ -2008,6 +2008,9 @@ def handler(event, context_):
             elif job == "wwopt":
                 import wwopt
                 out[sub] = wwopt.job(sub, event.get("params") or {})
+            elif job == "wwoptwalls":
+                import wwopt
+                out[sub] = wwopt.walls_job(sub, event.get("params") or {})
             elif job == "smcspeed":
                 import smclive
                 cold = _N == 1
