@@ -4636,11 +4636,12 @@ function wwOptBox() {
   const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Optimizer (unusual flow)</b>
     <button class="btn ${o.on ? 'coachbtn' : ''}" data-wwopt="${o.on ? 'off' : 'on'}" style="font-size:.8rem">${o.on ? '■ Stop' : '▶ Start'}</button>
     <select data-wwoptdays style="font-size:.8rem">${[120, 250, 500].map(n => `<option value="${n}" ${o.days === n ? 'selected' : ''}>${n} days</option>`).join('')}</select>
+    <select data-wwoptuni style="font-size:.8rem"><option value="mag7" ${o.universe !== 'all' ? 'selected' : ''}>Mag 7</option><option value="all" ${o.universe === 'all' ? 'selected' : ''}>All watchlist tickers</option></select>
     <button class="btn" data-wwopt="reset" style="font-size:.8rem">Restart</button>
     <span class="muted" style="font-size:.76rem">${o.running ? `<span class="loading" style="padding:0">${esc(o.step || 'running')}</span> · ` : o.on ? 'next run starting · ' : ''}${fmtInt(o.screened || 0)} entry mixes screened · ${o.tried || 0} confirmed${o.cycle ? ` · ${o.cycle}s per batch` : ''}${o.nTickers ? ` · ${o.nTickers} tickers` : ''}${o.loadErrors ? ` (${o.loadErrors} not loaded)` : ''}</span>
     ${o.last && o.last.error ? `<span class="loss" style="font-size:.76rem">${esc(o.last.error)}</span>` : ''}</div>
     ${(o.log || []).length ? `<div class="muted" style="font-size:.72rem">Runs: ${(o.log || []).slice(-6).reverse().map(x => `${esc((x.at || '').slice(11, 16))} ${x.error ? `<span class="loss">${esc(x.error)}</span>` : `${x.tried} tried · best ${x.best != null ? (+x.best).toFixed(2) : '—'}`}`).join(' · ')}</div>` : ''}
-    <div class="muted" style="font-size:.74rem">The wall watch rules (entry and exits) and their numbers, on every ticker of the watchlists, hourly candles, R of the stock trade. Chosen on the train period only${sp.cut ? ` (${esc(sp.from)} → ${esc(sp.cut)})` : ''} by the t of the R per day, ${o.minTrades}+ trades, no month over 35% of the profit; the test period${sp.cut ? ` (${esc(sp.cut)} → ${esc(sp.to)})` : ''} is never used to choose. Starts from your live settings. <b>Use</b> puts a setting in the Strategy lab: test it there (and with options), then "Use these settings live".</div>`;
+    <div class="muted" style="font-size:.74rem">The wall watch rules (entry and exits) and their numbers, on ${o.universe === 'all' ? 'every ticker of the watchlists' : 'the Mag 7 (AAPL MSFT GOOGL AMZN NVDA META TSLA)'}, hourly candles, R of the stock trade. Chosen on the train period only${sp.cut ? ` (${esc(sp.from)} → ${esc(sp.cut)})` : ''} by the t of the R per day, ${o.minTrades}+ trades, no month over 35% of the profit; the test period${sp.cut ? ` (${esc(sp.cut)} → ${esc(sp.to)})` : ''} is never used to choose. Starts from your live settings. <b>Use</b> puts a setting in the Strategy lab: test it there (and with options), then "Use these settings live".</div>`;
   if (!top.length) return `<div class="smc-stress">${ctl}</div>`;
   const ok = t => (t.test || {}).n >= 20 && (t.test.avgR || 0) > 0 && (t.test.t || 0) >= 1.5;
   return `<div class="smc-stress">${ctl}<div style="overflow-x:auto"><table class="pos" style="font-size:.78rem;width:100%"><thead><tr><th>#</th><th class="r">Score</th>
@@ -5702,6 +5703,7 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-smclivereststop]')) smcLiveSet({ restStop: e.target.checked });
   if (e.target.matches && e.target.matches('[data-smcwindays]')) S.smcWinDays = +e.target.value;
   if (e.target.matches && e.target.matches('[data-wwoptdays]')) wwOptSet({ days: +e.target.value });
+  if (e.target.matches && e.target.matches('[data-wwoptuni]')) wwOptSet({ universe: e.target.value });
   if (e.target.matches && e.target.matches('[data-smcfeed]')) { const f = e.target.value;
     api('/daytrade/feed', { method: 'PUT', body: { feed: f } }).then(() => { toast(f === 'sip' ? 'Real-time SIP data on: the optimizer starts again' : 'IEX data'); S.smcDs = {}; S.smcOpt = undefined; loadSmcLive(); })
       .catch(err => { toast(err.message); loadSmcLive(); }); }

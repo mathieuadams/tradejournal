@@ -35,6 +35,12 @@ NUMS = {"stopAtr": [0.3, 0.5, 0.75, 1.0, 1.5], "trailAtr": [0.5, 1.0, 1.5, 2.0, 
 NEEDS = {"stopAtr": "stopOn", "trailAtr": "trailOn", "cwRoom": "cwRoomOn", "relMult": "relFlow", "scaleR": "scaleOn", "scalePct": "scaleOn",
          "scaleBE": "scaleOn", "fvgMin": "fvgOn"}
 SPACE = {**{k: [True, False] for k in BOOL_KEYS}, **NUMS}
+MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+UNIVERSES = ("mag7", "all")                            # mag7 first, then every ticker of the wall watch lists
+
+
+def tickers(st, live):
+    return list(MAG7) if st.get("universe", "mag7") == "mag7" else list(live.get("tickers") or [])
 
 
 def from_cfg(c):
@@ -201,12 +207,12 @@ def state(sub):
     if st and st.get("v") != VERSION:
         st.update(top=[], seen={}, evals=0, log=[])
     st["v"] = VERSION
-    for k, v in (("on", False), ("days", 250), ("evals", 0), ("top", []), ("seen", {}), ("log", []), ("runs", 0)):
+    for k, v in (("on", False), ("days", 250), ("universe", "mag7"), ("evals", 0), ("top", []), ("seen", {}), ("log", []), ("runs", 0)):
         st.setdefault(k, v)
     return st
 
 
-USER_KEYS = ("on", "days", "stopReq", "resetAt")
+USER_KEYS = ("on", "days", "universe", "stopReq", "resetAt")
 
 
 def _save(sub, st, user=False):
@@ -233,7 +239,7 @@ def public(sub):
     import smcopt
     st = state(sub)
     timed_out = bool(st.get("running") and st["running"] < iso(now_ny() - timedelta(minutes=12)))
-    return {k: st.get(k) for k in ("on", "days", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors", "cycle")} | {
+    return {k: st.get(k) for k in ("on", "days", "universe", "evals", "step", "last", "split", "nTickers", "avgEval", "runs", "loadErrors", "cycle")} | {
         "running": None if timed_out else st.get("running"), "log": st["log"][-8:], "tried": st.get("evals", 0), "screened": st.get("screened", 0),
         "top": [{**t, "params": t["g"]} for t in smcopt._dedup(st["top"])[:TOP]], "minTrades": MIN_TRADES}
 
@@ -250,6 +256,9 @@ def save_cfg(sub, b):
         if nd != st["days"]:
             b["reset"] = True
         st["days"] = nd
+    if b.get("universe") in UNIVERSES and b["universe"] != st.get("universe"):
+        st["universe"] = b["universe"]
+        b["reset"] = True
     if b.get("reset"):
         st.update(top=[], seen={}, evals=0, log=[], resetAt=iso(now_ny()))
     _save(sub, st, user=True)
@@ -267,7 +276,7 @@ def run(sub, budget_s=470, seed=None):
     st.pop("stopReq", None)
     _save(sub, st)
     live = wallwatch.config(sub)
-    data, errs = load(sub, st["days"], live, budget_s=min(300, budget_s * 0.6))
+    data, errs = load(sub, st["days"], {**live, "tickers": tickers(st, live)}, budget_s=min(300, budget_s * 0.6))
     if not data:
         raise ValueError("No ticker data: the wall watch lists are empty, or the market data couldn't be loaded.")
     days = st["days"]
@@ -355,7 +364,7 @@ def run(sub, budget_s=470, seed=None):
         st["cycle"] = round(time.time() - c0, 1)
         if time.time() - last_save > 45:
             cur_st = state(sub)
-            if not cur_st["on"] or cur_st.get("stopReq") or (cur_st.get("resetAt") or "") > st["runStarted"] or cur_st["days"] != st["days"]:
+            if not cur_st["on"] or cur_st.get("stopReq") or (cur_st.get("resetAt") or "") > st["runStarted"] or cur_st["days"] != st["days"] or cur_st.get("universe") != st.get("universe"):
                 break
             st["avgEval"] = round(sum(times[-20:]) / len(times[-20:]), 2) if times else None
             _save(sub, st)
