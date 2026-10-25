@@ -6496,6 +6496,48 @@ def test_market_awareness():
     for (k1, _, _, a1), (k2, _, _, a2) in zip(s_full, s_pre):
         assert k1 == k2 and a1[:1800] == a2                # no look-ahead
 
+
+def test_weekly_ranking():
+    """EMA 21/50/200 weekly score (-2..+2), the structures' payoffs at expiration, the score test and the top-down view."""
+    import random, math, datetime as dt, rank
+    assert [rank.score_of(k) for k in range(6)] == [-2, -1, 0, 0, 1, 2]
+    up = [100 * 1.002 ** k for k in range(300)]
+    dn = [100 * 0.998 ** k for k in range(300)]
+    assert rank.scores(up)[-1][0] == 2 and rank.scores(dn)[-1][0] == -2 and rank.scores(up)[100] is None
+    sc = rank.scores(up + dn[:40])
+    assert rank.scores((up + dn[:40])[:320]) == sc[:320]          # no look-ahead
+    flat = rank.structures(100, 100, 0.2, 0.02)
+    assert flat["Long call"] < -0.9 and flat["Long put"] < -0.9 and flat["Iron condor"] > 0 and flat["Bull put spread"] > 0 and flat["Bear call spread"] > 0
+    big = rank.structures(100, 115, 0.2, 0.02)
+    assert big["Long call"] > 2 and big["Call debit spread"] > 0.5 and abs(big["Bear call spread"] + 1) < 1e-9 and big["Long put"] == -1
+    crash = rank.structures(100, 85, 0.2, 0.02)
+    assert abs(crash["Bull put spread"] + 1) < 1e-9 and crash["Long put"] > 2 and -1.0001 < crash["Iron condor"] < -0.7
+    days, d = [], dt.date(2015, 1, 5)
+    while len(days) < 1500:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def walk(seed):
+        r, p, out = random.Random(seed), 100.0, []
+        for k in range(len(days)):
+            p *= 1 + r.gauss(0.0004 + 0.003 * math.sin(k / 120), 0.012)
+            out.append(p)
+        return out
+    S = {s: walk(i) for i, s in enumerate(["SPY", "QQQ", "IWM", "XLK", "XLE", "XLF", "A", "B", "C"])}
+    S["^VIX"] = [18.0] * len(days)
+    S["^IRX"] = [4.0] * len(days)
+    S["A"] = [x * (1 + 0.001 * math.sin(k)) for k, x in enumerate(S["XLK"])]       # A follows XLK
+    r = rank.study(S, days, {"index": ["SPY", "QQQ", "IWM"], "sector": ["XLK", "XLE", "XLF"], "stock": ["A", "B", "C"]}, {"SPY": "S&P 500"}, S["^IRX"], S["^VIX"])
+    assert 280 < r["weeks"] < 320 and len(r["now"]) == 9 and r["now"][0]["struct"] == rank.STRUCT[r["now"][0]["score"]]
+    a = next(x for x in r["now"] if x["sym"] == "A")
+    assert a["sector"] == "XLK" and a["sectorCorr"] > 0.9 and len(a["hist"]) == 8
+    tot = sum(r["dir"]["stock"][v]["5"]["n"] for v in ("2", "1", "0", "-1", "-2"))
+    assert tot > 700 and set(r["strat"]) == {"index", "sector", "stock", "all"} and len(r["strat"]["all"]) == 3
+    assert all(set(r["strat"]["all"][1][v]) == set(rank.STRATS) for v in ("2", "-2"))
+    t5 = r["topdown"]["5"]
+    assert set(r["topdown"]) == {"5", "10", "20"} and sum(x["n"] for v in t5["align"].values() for x in v.values()) > 100
+    assert sum(x["n"] for x in t5["sec"].values()) == sum(x["n"] for v in t5["bySec"].values() for x in v.values()) == sum(x["n"] for v in t5["bySpy"].values() for x in v.values())
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

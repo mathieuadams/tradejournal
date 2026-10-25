@@ -185,9 +185,10 @@ def public(sub, macro=True):
     it = db.get(db.upk(sub), SK) or {}
     out = json.loads(it["data"]) if it.get("data") else {}
     if macro:
-        m = db.get(db.upk(sub), SK + "#MACRO") or {}
-        if m.get("data"):
-            out["macro"] = json.loads(m["data"])
+        for k_, sk_ in (("macro", "#MACRO"), ("rank", "#RANK")):
+            m = db.get(db.upk(sub), SK + sk_) or {}
+            if m.get("data"):
+                out[k_] = json.loads(m["data"])
     if out.get("running") and out["running"] < iso(now_ny() - timedelta(minutes=12)):
         out["running"] = None
     return out
@@ -296,6 +297,14 @@ def run(sub):
         db.put({"PK": db.upk(sub), "SK": SK + "#MACRO", "data": json.dumps(m, default=str, separators=(",", ":"))})
     except Exception as e:
         x["errors"] = (x.get("errors") or []) + [f"market awareness: {str(e)[:120]}"]
+    try:
+        import rank
+        al = {k: macro.align(v, days) for k, v in data.items()}
+        rk = rank.study(al, days, {"index": [m for m, _ in MARKET], "sector": [m for m, _ in SECTORS], "stock": [s for s in stocks if s in data]},
+                        dict(MARKET + SECTORS), al.get("^IRX"), al.get("^VIX"))
+        db.put({"PK": db.upk(sub), "SK": SK + "#RANK", "data": json.dumps(rk, default=str, separators=(",", ":"))})
+    except Exception as e:
+        x["errors"] = (x.get("errors") or []) + [f"weekly ranking: {str(e)[:120]}"]
     x["step"] = None
     _save(sub, x)
     return x
