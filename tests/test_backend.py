@@ -6443,6 +6443,59 @@ def test_market_regimes():
     finally:
         regime._daily, wallwatch.config = saved
 
+
+def test_market_awareness():
+    """Macro states (rates, curve, bonds, credit, dollar, oil, copper/gold, breadth, small caps, width, stock/bond
+    correlation, gamma flip), forward moves per state, selloffs found, early-warning lags and false alarms, no look-ahead."""
+    import random, math, datetime as dt, macro, regime
+    days, d = [], dt.date(2012, 1, 2)
+    while len(days) < 2600:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def walk(seed, drift=0.0004, vol=0.011, base=100.0):
+        r, p, out = random.Random(seed), base, {}
+        for k, x in enumerate(days):
+            p *= 1 + r.gauss(drift + 0.003 * math.sin(k / 150), vol)
+            out[x] = round(p, 3)
+        return out
+    data = {s: walk(i + 3) for i, (s, _) in enumerate(macro.ASSETS)}
+    data["SPY"] = walk(1)
+    for i, s in enumerate(macro.SYMS):
+        data[s] = walk(50 + i, 0, 0.01, 4.0 if s in ("^TNX", "^IRX") else 100)
+    data["^VIX"] = {x: round(13 + 14 * abs(math.sin(k / 80)), 2) for k, x in enumerate(days)}
+    data["^VIX3M"] = {x: round(15 + 9 * abs(math.sin(k / 80)), 2) for k, x in enumerate(days)}
+    stocks = [f"S{k}" for k in range(20)]
+    for k, s in enumerate(stocks):
+        data[s] = walk(200 + k)
+    lab = regime.label_days(data["SPY"], data["^VIX"], data["^VIX3M"])
+    ds = [x for x in days if x in lab]
+    m = macro.study(data, ds, lab, stocks, {x: {"flip": data["SPY"][x] * 0.99} for x in ds})
+    keys = {f["key"] for f in m["factors"]}
+    assert keys >= {"rates", "cycle", "curve", "curveMove", "bonds", "credit", "dollar", "oil", "cugold", "breadth", "small", "width", "sbcorr", "gamma"}
+    for f in m["factors"]:
+        assert abs(sum(v["share"] for v in f["states"].values()) - 100) < 0.6 and f["now"]["state"] in f["states"]
+        assert all(len(v["by"]["SPY"]["f"]) == 3 for v in f["states"].values())
+    spy = macro.align(data["SPY"], ds)
+    eps = macro.selloffs(spy, ds)
+    assert eps and all(e["depth"] <= -8 and e["peak"] < e["trough"] for e in m["episodes"])
+    for s in m["signals"]:
+        assert len(s["det"]) == len(eps) and s["alarms"]["fires"] >= 0
+        for x in s["det"]:
+            if x["on"] and not x["on"].get("already"):
+                assert x["on"]["lag"] >= -20
+    sig = [False] * 50 + [True] * 3 + [False] * 50 + [True] * 1 + [False] * 2 + [True] * 1 + [False] * 50
+    px = [100.0] * len(sig)
+    a = macro.alarms(px, ["d"] * len(sig), sig, [])
+    assert a["fires"] == 2 and a["hit"] == 0         # a blip right after an alarm is the same alarm; no drop: false alarms
+    m2 = macro.study({k: {x: v[x] for x in ds[:1800] if x in v} for k, v in data.items()}, ds[:1800], lab, stocks)
+    f1 = {f["key"]: f for f in m["factors"]}
+    assert all(f["key"] in f1 for f in m2["factors"])
+    s_full = macro.factors({k: macro.align(v, ds) for k, v in data.items()}, ds, None)
+    s_pre = macro.factors({k: macro.align(v, ds[:1800]) for k, v in data.items()}, ds[:1800], None)
+    for (k1, _, _, a1), (k2, _, _, a2) in zip(s_full, s_pre):
+        assert k1 == k2 and a1[:1800] == a2                # no look-ahead
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

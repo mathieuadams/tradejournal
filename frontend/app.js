@@ -2024,6 +2024,59 @@ function regHeat(x) {
     <div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>Ticker</th>${cols.map(c => `<th class="r" style="cursor:pointer;${sortC === c ? 'text-decoration:underline' : ''}" data-regsort="${esc(c)}">${esc(c)}</th>`).join('')}</tr></thead><tbody>
     ${block('market', 'Market')}${block('sector', 'Sectors')}${block('stock', `Watchlist: ${esc(x.list || '')} (${x.nStocks || 0})`)}</tbody></table></div>`;
 }
+// ---- market awareness (backend macro.py): bonds / rates / credit / dollar / commodities / breadth, early warnings
+const macP0 = v => v == null ? '—' : v + '%';
+const macMed = xs => { const v = xs.filter(x => x != null).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
+const macPct = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${(+v).toFixed(d)}%`;
+function macNow(m) {
+  const fs = (m && m.factors) || []; if (!fs.length) return '';
+  const chip = f => { const n = f.now || {}, s = (f.states || {})[n.state] || {}, b = (s.by || {}).SPY || {}, r20 = (b.f || [])[1], w20 = (b.fw || [])[1];
+    const col = r20 == null ? 'var(--line)' : r20 >= 1.2 ? 'var(--gain)' : r20 < 0.6 ? 'var(--loss)' : '#eab308';
+    return `<div style="border:1px solid var(--line);border-left:4px solid ${col};border-radius:6px;padding:5px 8px;min-width:200px;flex:1 1 220px" title="${esc(f.expl)}">
+      <div class="muted" style="font-size:.72rem">${esc(f.name)}</div><div style="font-size:.86rem"><b>${esc(n.state || '—')}</b>${n.days ? ` <span class="muted">· ${n.days} days</span>` : ''}</div>
+      <div class="muted" style="font-size:.72rem">SPY next 20 days in this state: <b class="${r20 > 0 ? 'gain' : 'loss'}">${macPct(r20, 2)}</b> · up ${w20 ?? '—'}% of the time</div></div>`; };
+  return `<h4 style="font-size:.9rem;margin:10px 0 4px">Market awareness today</h4><div style="display:flex;flex-wrap:wrap;gap:6px">${fs.map(chip).join('')}</div>
+    <div class="muted" style="font-size:.72rem;margin-top:3px">Border: green = SPY did better than usual over the next 20 days in that state (avg 20-day move of all days ≈ +1%), red = worse. Hover a box for the rule.</div>`;
+}
+function macWarn(m) {
+  const sg = (m && m.signals) || [], ep = (m && m.episodes) || []; if (!sg.length || !ep.length) return '';
+  const caught = s => s.det.filter(d => d.on && !d.on.already).length, already = s => s.det.filter(d => d.on && d.on.already).length;
+  const row = s => { const ons = s.det.map(d => d.on && !d.on.already ? d.on : null), cl = s.det.map(d => d.clear), a = s.alarms || {};
+    const conf = s.key.startsWith('reg');
+    return `<tr style="${conf ? 'font-weight:600' : ''}"><td>${esc(s.name)}${a.now ? ' <b class="loss" title="on today">● now</b>' : ''}</td>
+      <td class="r">${caught(s)} / ${ep.length}${already(s) ? ` <span class="muted" title="already on 20 days before the high">(+${already(s)} on before)</span>` : ''}</td>
+      <td class="r">${macMed(ons.map(o => o && o.lag)) ?? '—'}</td><td class="r">${macPct(macMed(ons.map(o => o && o.drop)))}</td><td class="r">${macP0(macMed(ons.map(o => o && o.share)))}</td>
+      <td class="r">${a.perYear ?? '—'}</td><td class="r">${macP0(a.hit)}</td><td class="r ${a.fwd20 > 0 ? 'gain' : 'loss'}">${macPct(a.fwd20, 2)}</td><td class="r">${macP0(a.onShare)}</td>
+      <td class="r">${macMed(cl.map(c => c && c.lag)) ?? '—'}</td><td class="r">${macPct(macMed(cl.map(c => c && c.gain)))}</td></tr>`; };
+  const cell = d => { if (!d || !d.on) return '<td class="r muted">missed</td>'; if (d.on.already) return '<td class="r muted">on before</td>';
+    const o = d.on; return `<td class="r" style="background:color-mix(in srgb,${o.lag <= 0 ? 'var(--gain)' : o.share > 50 ? 'var(--loss)' : '#eab308'} 22%,transparent)" title="${esc(`${o.lag} trading days from the high, SPY already ${o.drop}% (${o.share}% of the drop)`)}">${o.lag > 0 ? '+' : ''}${o.lag}d · ${o.drop}%</td>`; };
+  return `<h4 style="font-size:.9rem;margin:14px 0 4px">Early warning: how fast each signal caught the ${ep.length} selloffs of ${Math.round((m.dd || 0.08) * 100)}%+</h4>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>Signal</th><th class="r">Caught</th><th class="r" title="Trading days from the SPY high to the alarm (negative = before the high)">Days after the high</th><th class="r">SPY already</th><th class="r">Of the drop done</th>
+      <th class="r">Alarms / year</th><th class="r" title="Alarms followed by a 5%+ drop within 30 days (or inside a selloff)">True alarms</th><th class="r">SPY 20 days after an alarm</th><th class="r">Time on</th><th class="r" title="Trading days from the low until the signal is off 3 days in a row">All clear: days after the low</th><th class="r">SPY already up</th></tr></thead>
+      <tbody>${sg.map(row).join('')}</tbody></table></div>
+    <div class="muted" style="font-size:.72rem;margin:3px 0">Medians over the selloffs. A fast signal with many false alarms suits cutting size; the confirmed regime (bold) suits choosing the strategy.</div>
+    <details style="margin-top:4px"><summary style="cursor:pointer;font-size:.82rem">Each selloff, each signal</summary><div style="overflow-x:auto"><table class="pos" style="font-size:.72rem;width:100%"><thead><tr><th>High</th><th>Low</th><th class="r">Drop</th><th class="r">Days</th>${sg.map(s => `<th class="r" style="max-width:90px;white-space:normal">${esc(s.name)}</th>`).join('')}</tr></thead><tbody>
+      ${ep.map((e, i) => `<tr><td>${esc(e.peak)}</td><td>${esc(e.trough)}</td><td class="r loss">${e.depth}%</td><td class="r">${e.days}</td>${sg.map(s => cell(s.det[i])).join('')}</tr>`).join('')}</tbody></table></div></details>`;
+}
+function macFactors(m) {
+  const fs = (m && m.factors) || []; if (!fs.length) return '';
+  const fk = S.macF && fs.some(f => f.key === S.macF) ? S.macF : fs[0].key, f = fs.find(x => x.key === fk), hz = m.hz || [5, 20, 60];
+  const hi = Math.max(0, hz.indexOf(S.macH || 20)), h = hz[hi], met = S.macMet || 'f';
+  const sts = Object.keys(f.states || {}), assets = m.assets || [];
+  const head = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0">
+    <select data-macf style="font-size:.8rem">${fs.map(x => `<option value="${esc(x.key)}" ${x.key === fk ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
+    <span class="seg" role="group">${[['f', 'Forward return'], ['fx', 'vs SPY'], ['fw', '% up']].map(([k, l]) => `<button class="btn ${met === k ? 'coachbtn' : ''}" data-macmet="${k}" style="font-size:.76rem;padding:1px 9px">${l}</button>`).join('')}</span>
+    <span class="seg" role="group">${hz.map(x => `<button class="btn ${x === h ? 'coachbtn' : ''}" data-mach="${x}" style="font-size:.76rem;padding:1px 9px">${x} days</button>`).join('')}</span>
+    <span class="muted" style="font-size:.74rem">${esc(f.expl)}</span></div>`;
+  const sum = `<table class="pos" style="font-size:.76rem;width:auto;margin-bottom:6px"><thead><tr><th>State</th><th class="r">% of days</th><th class="r">Times</th><th class="r">Median days</th>${hz.map(x => `<th class="r">SPY ${x}d</th>`).join('')}<th class="r">SPY up (${h}d)</th></tr></thead><tbody>
+    ${sts.map(s => { const v = f.states[s], b = (v.by || {}).SPY || {}; return `<tr style="${(f.now || {}).state === s ? 'font-weight:600' : ''}"><td>${esc(s)}${(f.now || {}).state === s ? ' ← now' : ''}</td><td class="r">${v.share}%</td><td class="r">${v.times}</td><td class="r">${v.median}</td>${(b.f || []).map(x => `<td class="r ${x > 0 ? 'gain' : 'loss'}">${macPct(x, 2)}</td>`).join('')}<td class="r">${macP0((b.fw || [])[hi])}</td></tr>`; }).join('')}</tbody></table>`;
+  const sc = met === 'fw' ? v => (v - 55) / 20 : v => v / (h * 0.25);
+  const cell = (a, s) => { const v = ((((f.states[s] || {}).by || {})[a.sym] || {})[met] || [])[hi]; if (v == null) return '<td class="r muted">—</td>'; const k = Math.max(-1, Math.min(1, sc(v)));
+    return `<td class="r" style="background:color-mix(in srgb,${k >= 0 ? 'var(--gain)' : 'var(--loss)'} ${Math.round(Math.abs(k) * 45)}%,transparent)">${met === 'fw' ? v + '%' : macPct(v, 2)}</td>`; };
+  return `<h4 style="font-size:.9rem;margin:14px 0 4px">Bonds, rates, credit, dollar, commodities, breadth: the market after each state</h4>${head}${sum}
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>Asset</th>${sts.map(s => `<th class="r">${esc(s)}</th>`).join('')}</tr></thead><tbody>
+    ${assets.map(a => `<tr><td><b>${esc(a.sym)}</b> <span class="muted" style="font-size:.72rem">${esc(a.name)}</span></td>${sts.map(s => cell(a, s)).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
 function vChartREG() {
   if (S.reg === undefined) { S.reg = null; setTimeout(loadReg, 0); }
   const x = S.reg || {}, side = false, W = Math.max(320, window.innerWidth - 40);
@@ -2042,10 +2095,13 @@ function vChartREG() {
         <span style="padding:4px 10px;border-radius:8px;background:color-mix(in srgb,${REG_COL[c.label] || '#999'} 25%,transparent);border:1px solid ${REG_COL[c.label] || '#999'}"><b>Now: ${esc(c.label || '')}</b> since ${esc(c.since || '')} (${c.days} trading days)</span>
         <span class="muted">trend ${esc(c.trend || '')} for ${c.trendDays} days · VIX ${c.vix != null ? (+c.vix).toFixed(1) : '—'} (${esc(c.vol || '')} for ${c.volDays} days)${c.stress ? ' · <b class="loss">stress: VIX above VIX3M</b>' : ''}</span>
         <span class="muted">${esc(x.span.from)} → ${esc(x.span.to)} · ${x.span.days} trading days</span></div>
+      ${macNow(x.macro)}
       ${regTimeline(x, W)}
+      ${macWarn(x.macro)}
       <h4 style="font-size:.9rem;margin:12px 0 4px">How long they last</h4>${regDurTable(x)}
       <h4 style="font-size:.9rem;margin:12px 0 4px">What comes next (share of the changes out of each regime)</h4>${regTrans(x)}
       ${regHeat(x)}
+      ${macFactors(x.macro)}
       <details style="margin-top:8px"><summary style="cursor:pointer;font-size:.84rem">Every regime period (${(x.segments || []).length})</summary><div style="overflow-x:auto;max-height:360px"><table class="pos" style="font-size:.76rem;width:auto"><thead><tr><th>Regime</th><th>From</th><th>To</th><th class="r">Days</th><th class="r">SPY</th></tr></thead><tbody>
         ${(x.segments || []).slice().reverse().map(s => `<tr><td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${REG_COL[s.l]};margin-right:5px"></span>${esc(s.l)}</td><td>${esc(s.s)}</td><td>${esc(s.e)}</td><td class="r">${s.d}</td><td class="r ${s.spy > 0 ? 'gain' : s.spy < 0 ? 'loss' : ''}">${s.spy > 0 ? '+' : ''}${s.spy ?? '—'}%</td></tr>`).join('')}</tbody></table></div></details>`; }
   return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main" style="padding:0 6px">${main}</div></div></div>`;
@@ -5521,7 +5577,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-regrun],[data-regmet],[data-regh],[data-regsort],[data-w2zoom],[data-w2tf],[data-w2days],[data-w2sw],[data-w2side],[data-w2default],[data-w2bt],[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwopttf],[data-wwedge],[data-wwedgeuse],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-regrun],[data-regmet],[data-regh],[data-macmet],[data-mach],[data-regsort],[data-w2zoom],[data-w2tf],[data-w2days],[data-w2sw],[data-w2side],[data-w2default],[data-w2bt],[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwopttf],[data-wwedge],[data-wwedgeuse],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -5544,6 +5600,8 @@ document.addEventListener('click', e => {
     .then(r => { S.reg = r; render(); loadReg(); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
   if (el.dataset.regmet) { S.regMet = el.dataset.regmet; render(); return; }
   if (el.dataset.regh) { S.regH = +el.dataset.regh; render(); return; }
+  if (el.dataset.macmet) { S.macMet = el.dataset.macmet; render(); return; }
+  if (el.dataset.mach) { S.macH = +el.dataset.mach; render(); return; }
   if (el.dataset.regsort) { S.regSort = S.regSort === el.dataset.regsort ? null : el.dataset.regsort; render(); return; }
   if (el.dataset.w2zoom) { const q = el.dataset.w2zoom, d = S.w2D && S.w2D.d, N = ((d && d.bars) || []).length; if (N < 3) return;
     const id = 'w2-' + d.t + '-' + d.tf, [a, b] = fcRange(id, N), span = b - a, mid = (a + b) / 2;
@@ -5996,6 +6054,7 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-wwoptuni]')) wwOptSet({ universe: e.target.value });
   if (e.target.matches && e.target.matches('[data-w2cfg]')) { const k = e.target.dataset.w2cfg, v = e.target.value; w2Set(k, e.target.tagName === 'SELECT' && isNaN(+v) ? v : +v); }
   if (e.target.matches && e.target.matches('[data-reglist]')) { S.regList = e.target.value; }
+  if (e.target.matches && e.target.matches('[data-macf]')) { S.macF = e.target.value; render(); }
   if (e.target.matches && e.target.matches('[data-regyears]')) { S.regYears = +e.target.value; }
   if (e.target.matches && e.target.matches('[data-w2btuni]')) { S.w2BtUni = e.target.value; render(); }
   if (e.target.matches && e.target.matches('[data-w2btdays]')) { S.w2BtDays = +e.target.value; render(); }

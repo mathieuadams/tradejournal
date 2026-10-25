@@ -181,9 +181,13 @@ def asset_stats(px, spy, days, lab):
 
 
 # ---------------------------------------------------------------- the study (background job, stored)
-def public(sub):
+def public(sub, macro=True):
     it = db.get(db.upk(sub), SK) or {}
     out = json.loads(it["data"]) if it.get("data") else {}
+    if macro:
+        m = db.get(db.upk(sub), SK + "#MACRO") or {}
+        if m.get("data"):
+            out["macro"] = json.loads(m["data"])
     if out.get("running") and out["running"] < iso(now_ny() - timedelta(minutes=12)):
         out["running"] = None
     return out
@@ -207,7 +211,7 @@ def lists(sub):
 
 def start(sub, b):
     b = b or {}
-    cur = public(sub)
+    cur = public(sub, macro=False)
     if cur.get("running"):
         return cur
     x = {**{k: cur.get(k) for k in ("at", "list", "years")}, "running": iso(now_ny()), "step": "starting",
@@ -225,12 +229,13 @@ def start(sub, b):
 
 
 def run(sub):
+    import macro
     import wallwatch
-    x = public(sub)
+    x = public(sub, macro=False)
     years, lname = int(x.get("years") or 10), x.get("list") or "Main"
     lst = next((L for L in wallwatch.config(sub)["lists"] if L["name"] == lname), None) or wallwatch.config(sub)["lists"][0]
     stocks = [s for s in lst["tickers"] if s not in {m for m, _ in MARKET + SECTORS}]
-    syms = [m for m, _ in MARKET + SECTORS] + stocks + ["^VIX", "^VIX3M"]
+    syms = [m for m, _ in MARKET + SECTORS] + stocks + ["^VIX", "^VIX3M"] + [m for m in macro.SYMS if m not in {a for a, _ in MARKET + SECTORS}]
     x.update(step=f"loading {len(syms)} daily histories", list=lst["name"])
     _save(sub, x)
     data, errs = {}, []
@@ -280,6 +285,18 @@ def run(sub):
              trans=transitions(segs),
              spy=[[d, round(spy[d], 2), LABELS.index(lab[d]["label"]), 1 if lab[d]["stress"] else 0] for d in days[::step]] + ([[days[-1], round(spy[days[-1]], 2), LABELS.index(cur["label"]), 1 if cur["stress"] else 0]] if (len(days) - 1) % step else []),
              assets=assets, nStocks=len([a for a in assets if a["kind"] == "stock"]))
+    x["step"] = "bonds, rates, credit and the early warnings"
+    try:
+        import flowdata
+        gw = flowdata.stored_walls("SPY")
+    except Exception:
+        gw = None
+    try:
+        m = macro.study(data, days, lab, [s for s in stocks if s in data], gw)
+        db.put({"PK": db.upk(sub), "SK": SK + "#MACRO", "data": json.dumps(m, default=str, separators=(",", ":"))})
+    except Exception as e:
+        x["errors"] = (x.get("errors") or []) + [f"market awareness: {str(e)[:120]}"]
+    x["step"] = None
     _save(sub, x)
     return x
 
