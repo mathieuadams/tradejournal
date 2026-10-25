@@ -2008,6 +2008,12 @@ def handler(event, context_):
             elif job == "wwopt":
                 import wwopt
                 out[sub] = wwopt.job(sub, event.get("params") or {})
+            elif job == "ropt":
+                import ropt
+                out[sub] = ropt.job(sub, event.get("params") or {})
+            elif job == "plab":
+                import plab
+                out[sub] = plab.job(sub, event.get("params") or {})
             elif job == "regime":
                 import regime
                 out[sub] = regime.job(sub, event.get("params") or {})

@@ -6538,6 +6538,131 @@ def test_weekly_ranking():
     assert set(r["topdown"]) == {"5", "10", "20"} and sum(x["n"] for v in t5["align"].values() for x in v.values()) > 100
     assert sum(x["n"] for x in t5["sec"].values()) == sum(x["n"] for v in t5["bySec"].values() for x in v.values()) == sum(x["n"] for v in t5["bySpy"].values() for x in v.values())
 
+
+def test_portfolio_lab():
+    """Portfolio lab: one portfolio, fills at the next open, stops, sizing by risk, no margin, max positions, the layer
+    switches, train / test, benchmarks, the ablation and the stored result."""
+    import random, math, datetime as dt, plab, regime, wallwatch
+    days, d = [], dt.date.today() - dt.timedelta(days=2530)
+    while len(days) < 1800 and d < dt.date.today():
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def walk(seed, drift=0.0004, vol=0.014):
+        r, p, out = random.Random(seed), 100.0, {}
+        for k, x in enumerate(days):
+            o = p
+            p *= 1 + r.gauss(drift + 0.003 * math.sin(k / 150), vol)
+            out[x] = (o, max(o, p) * (1 + abs(r.gauss(0, .004))), min(o, p) * (1 - abs(r.gauss(0, .004))), p)
+        return out
+    data = {s: walk(i + 3) for i, s in enumerate([m for m, _ in regime.MARKET + regime.SECTORS] + ["HYG", "IEF"])}
+    data["^VIX"] = {x: (0, 0, 0, 13 + 14 * abs(math.sin(k / 80)) + (9 if k % 250 < 5 else 0)) for k, x in enumerate(days)}
+    data["^VIX3M"] = {x: (0, 0, 0, 15 + 9 * abs(math.sin(k / 80))) for k, x in enumerate(days)}
+    stocks = [f"S{k}" for k in range(20)]
+    for k, s in enumerate(stocks):
+        data[s] = walk(100 + k, 0.0005, 0.018)
+    X = plab.prepare(data, days, stocks, [m for m, _ in regime.SECTORS], 6)
+    st = 260
+    X["cut"] = st + int((len(days) - st) * 0.6)
+    assert any(X["clear"]) and any(X["alarm"]) and any(X["caution"])
+    P = plab.clean({"years": 6, "maxPos": 5})
+    res, eq, tr = plab.evaluate(X, days, stocks, P, st)
+    assert len(eq) == len(days) - st and min(eq) > 0 and res["all"]["trades"]["n"] == len([t for t in tr if t["why"] != "open"])
+    assert {t["sleeve"] for t in tr} == {"trend", "rebound"}
+    for t in tr:
+        i0 = days.index(t["at"])
+        assert abs(t["px"] - data[t["sym"]][t["at"]][0] * (1 + P["slipBp"] / 10000)) < 0.02       # filled at the open (+slippage)
+        if t["why"] == "stop":
+            assert t["R"] <= 0.0 or t["sleeve"] == "trend"                                         # a trailing stop can lock a gain
+    by_day = {}
+    for t in tr:
+        for dd in days[days.index(t["at"]):days.index(t["exitAt"]) if t["exitAt"] else len(days)]:
+            by_day[dd] = by_day.get(dd, 0) + 1
+    assert max(by_day.values()) <= 5                                                               # never more than maxPos
+    off, _, tr2 = plab.evaluate(X, days, stocks, {**P, "reb": False}, st)
+    assert {t["sleeve"] for t in tr2} == {"trend"}
+    no_tr, _, tr3 = plab.evaluate(X, days, stocks, {**P, "trend": False}, st)
+    assert {t["sleeve"] for t in tr3} <= {"rebound"}
+    sp, ew = plab.bench(X, days, stocks, st)
+    assert len(sp) == len(ew) == len(eq) and sp[0] == 100000
+    saved = (plab._bars, wallwatch.config)
+    try:
+        plab._bars = lambda s, y: data.get(s) or walk(hash(s) % 997)
+        wallwatch.config = lambda sub: {"lists": [{"name": "Main", "tickers": stocks}]}
+        import research
+        old = research._invoke
+        research._invoke = lambda *a, **k: None
+        try:
+            plab.start("pl1", {"cfg": {"years": 5, "maxPos": 6}})
+            out = plab.run("pl1")
+        finally:
+            research._invoke = old
+        assert out["running"] is None and out["res"]["test"]["trades"]["n"] > 0 and len(out["ablation"]) == len(plab.LAYERS) + 1
+        assert set(out["bench"]) == {"spy", "ew"} and out["curve"][0][1] == 100000 and out["cfg"]["maxPos"] == 6
+        assert len(db.get(db.upk("pl1"), plab.SK)["data"]) < 380_000
+    finally:
+        plab._bars, wallwatch.config = saved
+
+
+def test_regime_optimizer():
+    """Regime optimizer: features with no look-ahead, trades (stops / exits / short side), strategies searched per
+    phase on the train days, the test days reported, the combined portfolio, the chain lock."""
+    import random, math, datetime as dt, ropt, regime, wallwatch, plab
+    days, d = [], dt.date.today() - dt.timedelta(days=int(7 * 365))
+    while d < dt.date.today():
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def walk(seed, drift=0.0004, vol=0.014):
+        r, p, out = random.Random(seed), 100.0, {}
+        for k, x in enumerate(days):
+            o = p
+            p *= 1 + r.gauss(drift + 0.004 * math.sin(k / 120), vol)
+            out[x] = (o, max(o, p) * (1 + abs(r.gauss(0, .004))), min(o, p) * (1 - abs(r.gauss(0, .004))), p, 1e6 * (1 + r.random()))
+        return out
+    data = {s: walk(i + 3) for i, s in enumerate([m for m, _ in regime.MARKET + regime.SECTORS] + ["HYG", "IEF"])}
+    data["^VIX"] = {x: (0, 0, 0, 13 + 14 * abs(math.sin(k / 80)), 0) for k, x in enumerate(days)}
+    data["^VIX3M"] = {x: (0, 0, 0, 15 + 9 * abs(math.sin(k / 80)), 0) for k, x in enumerate(days)}
+    stocks = [f"S{k}" for k in range(12)]
+    for k, s in enumerate(stocks):
+        data[s] = walk(100 + k, 0.0005, 0.018)
+    B = ropt.build(data, days, stocks, [m for m, _ in regime.SECTORS])
+    rows = plab._al(data["S1"], days)
+    f_full = ropt.features(rows, [None] * len(days), None)
+    f_pre = ropt.features(rows[:1200] + [None] * (len(days) - 1200), [None] * len(days), None)
+    for k in ("pull21", "break20", "rsi2", "sqFire", "fvg", "inGreen"):
+        assert f_full["L"][k][:1200] == f_pre["L"][k][:1200] and f_full["S"][k][:1200] == f_pre["S"][k][:1200]   # no look-ahead
+    assert set(B["phase"]) >= {"bull", "side", "bear"}
+    g = {"side": "short", "rules": ["break20"], "stopAtr": 1.5, "trailAtr": 0, "maxDays": 10, "exitEma": 0}
+    tr = ropt.trades_of(B, g, "bear", 260, len(days), days)
+    assert tr and all(t[3] == "short" and t[2] >= -3 for t in tr)
+    per = {}
+    for t in tr:
+        per.setdefault(t[1], []).append(t[0])
+    assert all(len(v) == len(set(v)) for v in per.values())
+    f = B["F"]["S2"]
+    i = next(i for i in range(300, len(days)) if ropt.signals(B, {**g, "side": "long", "rules": ["green"]}, "S2", i))
+    ex, R = ropt.trade(f, i, {"side": "long", "rules": [], "stopAtr": 1.0, "trailAtr": 0, "maxDays": 5, "exitEma": 0}, len(days))
+    assert i + 1 < ex <= i + 8 and R >= -1.5
+    saved = (plab._bars, wallwatch.config)
+    try:
+        plab._bars = lambda s, y: data.get(s) or walk(hash(s) % 997)
+        wallwatch.config = lambda sub: {"lists": [{"name": "Main", "tickers": stocks}]}
+        ropt._B.clear()
+        ropt.save_cfg("ro1", {"on": True, "years": 5})
+        st = ropt.run("ro1", budget_s=8, seed=2)
+        pub = ropt.public("ro1")
+        assert pub["evals"] > 30 and all(pub["top"][p] for p in ("bull", "side", "bear"))
+        for p in ("bull", "side", "bear"):
+            T = pub["top"][p]
+            assert [x["fit"] for x in T] == sorted([x["fit"] for x in T], reverse=True) and all("test" in x and x["rules"] for x in T)
+        assert set(pub["combined"]["res"]) == {"all", "train", "test"} and pub["combined"]["curve"][0][1] == 100000
+        assert db.try_lock(db.upk("ro1"), ropt.SK + "#LOCK", 60) and ropt.job("ro1", {"once": True}) == {"skipped": "a run is already going"}
+        db.unlock(db.upk("ro1"), ropt.SK + "#LOCK")
+        assert ropt.save_cfg("ro1", {"years": 7})["top"]["bull"] == []
+    finally:
+        plab._bars, wallwatch.config = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

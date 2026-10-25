@@ -1753,7 +1753,7 @@ async function loadTickers() {
   S.tkBusy = false;
   if (route() === 'botchart') render();
 }
-try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = m0 === 'smc' ? 'smc' : m0 === 'ww2' ? 'ww2' : m0 === 'reg' ? 'reg' : ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
+try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = m0 === 'smc' ? 'smc' : m0 === 'ww2' ? 'ww2' : m0 === 'reg' ? 'reg' : m0 === 'plab' ? 'plab' : ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
 function wwReviewBox() {
   const r = S.wwRev;
@@ -1811,7 +1811,7 @@ const FC_REFRESH_MS = 5 * 60 * 1000;               // an open chart reloads its 
 setInterval(() => {                                // the check runs on a redraw: one a minute while a chart is open and seen
   if (route() === 'botchart' && document.visibilityState === 'visible' && !document.querySelector('input:focus,select:focus,textarea:focus')) render();
 }, 60000);
-const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['smc', 'Smart money'], ['ww2', 'Wall watch 2'], ['reg', 'Market regimes']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['smc', 'Smart money'], ['ww2', 'Wall watch 2'], ['reg', 'Market regimes'], ['plab', 'Portfolio lab']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
@@ -2118,6 +2118,120 @@ function rkTest(r) {
       <span class="muted" style="font-size:.74rem">sector = the ETF the stock's daily moves follow the most (see the ranking table)</span></div>
     <div style="display:flex;flex-wrap:wrap;gap:18px">${box('All the stocks of the sectors scored…', secT)}${box('The stock by its own score and its sector\'s', mat(T.bySec, 'Sector'))}${box('The stock by its own score and SPY\'s', mat(T.bySpy, 'SPY'))}
       ${box('In the stock\'s direction (shorts: the move upside down): with its sector and SPY on the same side, or not', alT)}</div>`;
+}
+// ---- Portfolio lab: the layered strategy as one portfolio (backend plab.py)
+async function loadPlab() {
+  try { S.plab = await api('/plab'); S.plabCfg = S.plabCfg || { ...(S.plab.cfg || {}) }; } catch (e) { S.plab = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.plabT); if (S.plab && S.plab.running) S.plabT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'plab') loadPlab(); }, 10000);
+}
+function plabCfg() { return { ...((S.plab && S.plab.defaults) || {}), ...((S.plab && S.plab.cfg) || {}), ...(S.plabCfg || {}) }; }
+function plabCurve(cv, split, W) {
+  if (!cv || cv.length < 2) return '';
+  const H = 280, L = 8, Rr = 70, T = 10, B = H - 22, ms = d => Date.parse(d + 'T12:00:00Z'), t0 = ms(cv[0][0]), t1 = ms(cv[cv.length - 1][0]);
+  const X = d => L + (ms(d) - t0) / Math.max(1, t1 - t0) * (W - L - Rr), vals = cv.flatMap(r => r.slice(1)).filter(v => v > 0);
+  const lo = Math.log(Math.min(...vals)), hi = Math.log(Math.max(...vals)), Y = v => T + (hi - Math.log(v)) / ((hi - lo) || 1) * (B - T);
+  const line = (k, col, w) => `<path d="${cv.map((r, i) => `${i ? 'L' : 'M'}${X(r[0]).toFixed(1)},${Y(r[k]).toFixed(1)}`).join('')}" fill="none" stroke="${col}" stroke-width="${w}"/>`;
+  let g = '';
+  if (split && split.cut) g += `<rect x="${X(split.cut)}" y="${T}" width="${W - Rr - X(split.cut)}" height="${B - T}" fill="var(--coach,#5b5bd6)" opacity=".06"/><text x="${X(split.cut) + 4}" y="${T + 12}" font-size="11" fill="var(--coach,#5b5bd6)">test months →</text>`;
+  const yrs = []; for (let y = +cv[0][0].slice(0, 4) + 1; y <= +cv[cv.length - 1][0].slice(0, 4); y++) yrs.push(y);
+  g += yrs.map(y => `<line x1="${X(y + '-01-01')}" x2="${X(y + '-01-01')}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${X(y + '-01-01') + 3}" y="${H - 6}" font-size="11" fill="var(--muted)">${y}</text>`).join('');
+  [lo, (lo + hi) / 2, hi].forEach(v => { const p = Math.exp(v); g += `<text x="${W - Rr + 5}" y="${Y(p) + 4}" font-size="11" fill="var(--muted)">${p >= 1e6 ? (p / 1e6).toFixed(2) + 'M' : Math.round(p / 1000) + 'k'}</text>`; });
+  const hasEw = cv.some(r => r[3] !== r[2]);
+  g += (hasEw ? line(3, '#94a3b8', 1.2) : '') + line(2, '#0ea5e9', 1.3) + line(1, 'var(--coach,#5b5bd6)', 2);
+  return `<div style="font-size:.76rem;margin:4px 0"><b style="color:var(--coach,#5b5bd6)">━ Strategy</b> &nbsp; <b style="color:#0ea5e9">━ SPY held</b> &nbsp; ${hasEw ? '<b style="color:#94a3b8">━ Watchlist, equal weight</b>' : ''} <span class="muted">· $100k start, log scale</span></div><svg width="${W}" height="${H}" style="display:block">${g}</svg>`;
+}
+function plabRes(x) {
+  const R = x.res || {}, Bm = x.bench || {}, f = (v, u = '%') => v == null ? '—' : `${v > 0 && u === '%' ? '+' : ''}${v}${u}`;
+  const row = (nm, m, tr, bold) => `<td style="${bold ? 'font-weight:600' : ''}">${nm}</td><td class="r ${m.tot > 0 ? 'gain' : 'loss'}">${f(m.tot)}</td><td class="r">${f(m.cagr)}</td><td class="r loss">${m.dd ?? '—'}%</td><td class="r">${m.sharpe ?? '—'}</td><td class="r">${m.expo != null ? m.expo + '%' : '—'}</td>
+    <td class="r">${tr ? tr.n : ''}</td><td class="r">${tr && tr.n ? tr.win + '%' : ''}</td><td class="r">${tr && tr.n ? (tr.avgR > 0 ? '+' : '') + tr.avgR + 'R' : ''}</td><td class="r">${tr && tr.n ? tr.pf ?? '—' : ''}</td>`;
+  const part = (k, l) => { const m = R[k] || {}; if (!m.tot && m.tot !== 0) return '';
+    return `<tr><td colspan="10" style="padding-top:6px"><b>${l}</b> <span class="muted">${esc(m.from || '')} → ${esc(m.to || '')}</span></td></tr><tr>${row('Strategy', m, m.trades, true)}</tr><tr>${row('SPY held', (Bm.spy || {})[k] || {})}</tr><tr>${row('Watchlist equal weight', (Bm.ew || {})[k] || {})}</tr>`; };
+  return `<div style="overflow-x:auto"><table class="pos" style="font-size:.78rem;width:100%"><thead><tr><th></th><th class="r">Total</th><th class="r">CAGR</th><th class="r">Max DD</th><th class="r">Sharpe</th><th class="r" title="Average share of the equity invested">Invested</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">PF</th></tr></thead>
+    <tbody>${part('test', 'Test months (never used to choose)')}${part('train', 'Train months')}${part('all', 'All')}</tbody></table></div>`;
+}
+function plabAbl(x) {
+  const ab = x.ablation || [], base = (x.res || {}).test || {}, bt = base.trades || {};
+  if (!ab.length) return '';
+  const d = (a, b, u, inv) => { if (a == null || b == null) return '—'; const v = +(a - b).toFixed(2), good = inv ? v < 0 : v > 0; return `<span class="${v === 0 ? '' : good ? 'gain' : 'loss'}">${v > 0 ? '+' : ''}${v}${u}</span>`; };
+  return `<h4 style="font-size:.9rem;margin:12px 0 4px">What each layer adds (test months): the strategy with that one layer switched off</h4>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>Switched off</th><th class="r">CAGR</th><th class="r">Max DD</th><th class="r">Sharpe</th><th class="r">Trades</th><th class="r">Avg</th><th class="r" title="The full strategy minus this version: positive = the layer helps">Layer adds: CAGR</th><th class="r">Max DD</th><th class="r">Sharpe</th></tr></thead><tbody>
+    <tr style="font-weight:600"><td>Nothing (the full strategy)</td><td class="r">${base.cagr ?? '—'}%</td><td class="r">${base.dd ?? '—'}%</td><td class="r">${base.sharpe ?? '—'}</td><td class="r">${bt.n ?? '—'}</td><td class="r">${bt.avgR != null ? bt.avgR + 'R' : '—'}</td><td></td><td></td><td></td></tr>
+    ${ab.map(a => { const t = (a.res || {}).test || {}, tt = t.trades || {};
+      return `<tr><td>${esc(a.name)}</td><td class="r">${t.cagr ?? '—'}%</td><td class="r">${t.dd ?? '—'}%</td><td class="r">${t.sharpe ?? '—'}</td><td class="r">${tt.n ?? '—'}</td><td class="r">${tt.avgR != null ? tt.avgR + 'R' : '—'}</td>
+        <td class="r">${d(base.cagr, t.cagr, '%')}</td><td class="r">${d(base.dd, t.dd, '%')}</td><td class="r">${d(base.sharpe, t.sharpe, '')}</td></tr>`; }).join('')}</tbody></table></div>
+    <div class="muted" style="font-size:.72rem;margin-top:2px">Green = the layer improves the test months (for the drawdown: makes it smaller). A layer that doesn't help on the test months should go.</div>`;
+}
+// ---- Regime optimizer: a strategy for bull / sideways / bear (backend ropt.py)
+async function loadRopt() {
+  try { S.ropt = await api('/ropt'); } catch (e) { S.ropt = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.roptT); if (S.ropt && (S.ropt.on || S.ropt.running)) S.roptT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'plab' && S.plabView === 'ropt') loadRopt(); }, 20000);
+}
+async function roptSet(body) { try { S.ropt = await api('/ropt', { method: 'PUT', body }); } catch (e) { toast(e.message); } loadRopt(); }
+function roptView(W) {
+  if (S.ropt === undefined) { S.ropt = null; setTimeout(loadRopt, 0); }
+  const o = S.ropt || {}, lists = o.lists || [];
+  if (S.ropt === null) return '<p class="loading">Loading…</p>';
+  if (o.error) return `<div class="errbox">${esc(o.error)}</div>`;
+  const sp = o.split || {}, pd = o.phaseDays || {}, cb = o.combined || {}, Rf = v => v == null ? '—' : `${v > 0 ? '+' : ''}${(+v).toFixed(2)}R`, f2 = v => v == null ? '—' : (+v).toFixed(2);
+  const ctl = `<div class="smc-stress"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0"><b>Regime optimizer</b>
+    <button class="btn ${o.on ? 'coachbtn' : ''}" data-ropt="${o.on ? 'off' : 'on'}" style="font-size:.8rem">${o.on ? '■ Stop' : '▶ Start'}</button>
+    <select data-roptcfg="list" style="font-size:.8rem">${(lists.length ? lists : [{ name: 'Main', n: '' }]).map(L => `<option value="${esc(L.name)}" ${L.name === o.list ? 'selected' : ''}>${esc(L.name)}${L.n ? ` (${L.n})` : ''}</option>`).join('')}</select>
+    <select data-roptcfg="years" style="font-size:.8rem">${[5, 10, 15].map(n => `<option value="${n}" ${+o.years === n ? 'selected' : ''}>${n} years</option>`).join('')}</select>
+    <button class="btn" data-ropt="reset" style="font-size:.8rem">Restart</button>
+    ${o.top ? '<button class="btn" data-roptjson style="font-size:.8rem">⬇ JSON</button>' : ''}
+    <span class="muted" style="font-size:.76rem">${o.running ? `<span class="loading" style="padding:0">${esc(o.step || 'running')}</span> · ` : o.on ? 'next run starting · ' : ''}${fmtInt(o.evals || 0)} strategies tested${o.nStocks ? ` · ${o.nStocks} stocks` : ''}</span></div>
+    ${(o.log || []).length ? `<div class="muted" style="font-size:.72rem">Runs: ${(o.log || []).slice(-5).reverse().map(x => `${esc((x.at || '').slice(11, 16))} ${x.error ? `<span class="loss">${esc(x.error)}</span>` : `${x.tried} tried`}`).join(' · ')}</div>` : ''}
+    <div class="muted" style="font-size:.74rem">For each market phase (SPY's confirmed trend: Up = bull, Range = sideways, Down = bear) the search tries every mix of 1–4 entry rules — price / EMA / Keltner / squeeze / inertia / FVG / RSI / weekly EMA score / sector score / volume, and the market rules (risk dial, VIX, all clear, breadth) — long or short, with stops, trailing, holding time and EMA exits. A phase's strategy trades only on the days of that phase. Chosen on the train days${sp.cut ? ` (${esc(sp.from)} → ${esc(sp.cut)})` : ''}, the test days${sp.cut ? ` (${esc(sp.cut)} → ${esc(sp.to)})` : ''} only shown. Days per phase: ${(o.phases || []).map(p => `${esc(p.name)} ${pd[p.key] ?? '—'}`).join(' · ')}.</div></div>`;
+  const ok = x => (x.test || {}).n >= 15 && (x.test.avgR || 0) > 0 && (x.test.t || 0) >= 1.5;
+  const phaseT = p => { const T = (o.top || {})[p.key] || [];
+    return `<h4 style="font-size:.9rem;margin:12px 0 4px">${esc(p.name)} <span class="muted" style="font-weight:400;font-size:.76rem">at least ${p.need} trades on the train days</span></h4>${!T.length ? '<p class="muted" style="font-size:.78rem">Nothing yet.</p>' : `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>#</th><th>Side</th><th>Entry rules (all must hold)</th><th>Exits</th><th class="r">Score</th><th class="r">Train trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">t</th><th class="r">Test trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Total</th><th class="r">t</th></tr></thead><tbody>
+      ${T.map((x, i) => { const a = x.train || {}, b = x.test || {}, g = x.g || {};
+        return `<tr style="${ok(x) ? 'background:color-mix(in srgb,var(--gain) 9%,transparent)' : ''}"><td>${i + 1}</td><td class="${g.side === 'long' ? 'gain' : 'loss'}"><b>${esc(g.side)}</b></td><td>${(x.rules || []).map(r => `<span class="exchip" style="font-size:.7rem">${esc(r)}</span>`).join(' ')}</td>
+          <td style="font-size:.72rem;white-space:nowrap">stop ${g.stopAtr}× ATR${g.trailAtr ? ` · trail ${g.trailAtr}×` : ''} · max ${g.maxDays}d${g.exitEma ? ` · close across EMA${g.exitEma}` : ''}</td><td class="r">${f2(x.fit)}</td>
+          <td class="r">${a.n || 0}</td><td class="r">${a.n ? a.win + '%' : '—'}</td><td class="r">${Rf(a.avgR)}</td><td class="r">${f2(a.t)}</td><td class="r">${b.n || 0}</td><td class="r">${b.n ? b.win + '%' : '—'}</td><td class="r">${Rf(b.avgR)}</td><td class="r">${b.n ? Rf(b.totR) : '—'}</td><td class="r">${f2(b.t)}</td></tr>`; }).join('')}</tbody></table></div>`}`; };
+  const f = (v, u = '%') => v == null ? '—' : `${v > 0 && u === '%' ? '+' : ''}${v}${u}`;
+  const R = cb.res || {}, Sp = cb.spy || {};
+  const comb = cb.res ? `<h4 style="font-size:.9rem;margin:12px 0 4px">The best of each phase together, as one portfolio</h4>
+    <div style="font-size:.78rem;margin-bottom:4px">${(o.phases || []).map(p => `<b>${esc(p.name)}:</b> ${(cb.best || {})[p.key] ? cb.best[p.key].map(r => `<span class="exchip" style="font-size:.7rem">${esc(r)}</span>`).join(' ') : '<i>cash</i>'}`).join(' &nbsp; ')}</div>
+    ${plabCurve(cb.curve, sp, W)}
+    <table class="pos" style="font-size:.78rem;width:auto"><thead><tr><th></th><th class="r">Total</th><th class="r">CAGR</th><th class="r">Max DD</th><th class="r">Sharpe</th></tr></thead><tbody>
+      ${[['test', 'Test'], ['train', 'Train'], ['all', 'All']].map(([k, l]) => `<tr><td><b>${l}</b> strategy</td><td class="r">${f((R[k] || {}).tot)}</td><td class="r">${f((R[k] || {}).cagr)}</td><td class="r loss">${f((R[k] || {}).dd)}</td><td class="r">${(R[k] || {}).sharpe ?? '—'}</td></tr><tr><td class="muted">${l} SPY held</td><td class="r">${f((Sp[k] || {}).tot)}</td><td class="r">${f((Sp[k] || {}).cagr)}</td><td class="r loss">${f((Sp[k] || {}).dd)}</td><td class="r">${(Sp[k] || {}).sharpe ?? '—'}</td></tr>`).join('')}</tbody></table>
+    <div class="muted" style="font-size:.72rem">Each run ends with this portfolio: $100k, 1% risk per trade, 10 positions max, 20% max in one, 5 bp slippage per fill. Green rows above: still positive on the test days (15+ trades, t ≥ 1.5).</div>` : '';
+  return `<div style="display:block;width:100%;min-width:0">${ctl}${comb}${(o.phases || []).map(phaseT).join('')}</div>`;
+}
+function vChartPLAB() {
+  if (S.plab === undefined) { S.plab = null; setTimeout(loadPlab, 0); }
+  const x = S.plab || {}, P = plabCfg(), W = Math.max(320, window.innerWidth - 40), lists = x.lists || [];
+  const view = S.plabView || 'ropt', vseg = `<span class="seg" role="group">${[['ropt', 'Regime optimizer'], ['layers', 'Layered strategy']].map(([k, l]) => `<button class="btn ${view === k ? 'coachbtn' : ''}" data-plabview="${k}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+  if (view === 'ropt') return `<div class="fcf"><div class="fcf-head"><b style="font-size:1.25rem">Portfolio lab</b> ${fcModeSeg()} ${vseg}<span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen">✕</a></div><div class="fcf-body"><div class="fcf-main" style="padding:0 6px">${roptView(W)}</div></div></div>`;
+  const head = `<div class="fcf-head"><b style="font-size:1.25rem">Portfolio lab</b> ${fcModeSeg()} ${vseg}
+    <select data-plabcfg="list" style="font-size:.82rem">${(lists.length ? lists : [{ name: 'Main', n: '' }]).map(L => `<option value="${esc(L.name)}" ${L.name === P.list ? 'selected' : ''}>${esc(L.name)}${L.n ? ` (${L.n})` : ''}</option>`).join('')}</select>
+    <select data-plabcfg="years" style="font-size:.82rem">${[5, 10, 15].map(n => `<option value="${n}" ${+P.years === n ? 'selected' : ''}>${n} years</option>`).join('')}</select>
+    <button class="btn coachbtn" data-plabrun ${x.running ? 'disabled' : ''} style="padding:3px 12px">${x.running ? 'Running…' : 'Run the backtest'}</button>
+    ${x.at ? '<button class="btn" data-plabjson style="padding:3px 12px" title="Download the results as a JSON file">⬇ JSON</button>' : ''}
+    <span class="muted" style="font-size:.78rem">${x.running ? `<span class="loading" style="padding:0">${esc(x.step || 'running')}</span>` : x.at ? `last run ${esc(x.at.replace('T', ' ').slice(0, 16))} · ${x.nStocks || 0} stocks · ${x.nTrades || 0} trades` : ''}</span>
+    ${x.error ? `<span class="loss" style="font-size:.78rem">${esc(x.error)}</span>` : ''}<span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen">✕</a></div>`;
+  const sw = (k, l) => { const on = !!P[k]; return `<span class="smc-chip ${on ? 'on' : ''}"><button class="btn" data-plabsw="${k}" style="font-size:.72rem;padding:0 7px;border-radius:10px;${on ? 'background:var(--gain);color:#fff;border-color:transparent' : ''}">${on ? 'ON' : 'OFF'}</button><span style="font-size:.8rem">${esc(l)}</span></span>`; };
+  const num = (k, l, st, w, u) => `<span class="smc-chip on"><span style="font-size:.78rem">${esc(l)}</span> <input data-plabcfg="${k}" type="number" step="${st}" value="${esc(String(P[k] ?? ''))}" style="width:${w}em;padding:0 3px;font-size:.78rem"><span class="muted" style="font-size:.72rem">${esc(u || '')}</span></span>`;
+  const layers = (x.layers || []).map(([k, l]) => sw(k, l)).join('');
+  const settings = `<div style="display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0">
+    <div class="rule-cat"><span class="rule-cat-l">Layers</span><span class="rule-chips">${layers}</span></div>
+    <div class="rule-cat"><span class="rule-cat-l">Sizing / exits</span><span class="rule-chips">${num('riskPct', 'Risk per trade', 0.25, 3.6, '% of equity')}${num('maxPos', 'Max positions', 1, 3.2)}${num('maxPct', 'Max in one', 5, 3.4, '% of equity')}${num('stopAtr', 'Trend stop', 0.25, 3.4, '× ATR')}${num('trailAtr', 'Trailing', 0.25, 3.4, '× ATR')}${num('maxDays', 'Trend max', 5, 3.4, 'days')}${num('rebDays', 'Rebound hold', 5, 3.4, 'days')}${num('rebStopAtr', 'Rebound stop', 0.25, 3.4, '× ATR')}${num('slipBp', 'Slippage', 1, 3.2, 'bp per fill')}
+      <span class="smc-chip on"><span style="font-size:.78rem">Rebound buys</span> <input data-plabcfg="rebound" value="${esc(P.rebound || '')}" style="width:9em;padding:0 3px;font-size:.78rem"></span></span></div>
+    <div class="muted" style="font-size:.72rem">Trend sleeve: a pullback to the 21-day EMA that holds (low at / under it, green close above it, above the 50-day), out on a close under the 50-day, the trailing stop or the max days. Rebound sleeve: bought on the all-clear day (VIX back under VIX3M 3 days in a row after an alarm). Signals at the close, fills at the next open. Change a setting, then Run the backtest.</div></div>`;
+  let main;
+  if (S.plab === null) main = '<p class="loading">Loading…</p>';
+  else if (!x.res) main = `${settings}<p class="muted">Pick the list and the years, then <b>Run the backtest</b> (a few minutes: the strategy, then each layer switched off).</p>`;
+  else { const n = x.now || {};
+    main = `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:4px 0 6px;font-size:.84rem"><b>Risk dial today:</b>
+        ${n.alarm ? '<b class="loss">ALARM (no new trend entries)</b>' : n.caution ? '<b style="color:#d97706">Caution (half risk)</b>' : '<b class="gain">Normal</b>'}
+        ${n.rangeVolatile ? '<span class="loss">· regime Range · Volatile (no entries)</span>' : ''}${n.clearDays != null ? `<span class="gain">· all clear ${n.clearDays} days ago</span>` : ''}</div>
+      ${plabCurve(x.curve, x.split, W)}${plabRes(x)}${plabAbl(x)}${settings}
+      <details style="margin-top:6px"><summary style="cursor:pointer;font-size:.84rem">Trades (${x.nTrades || 0}, latest 400)</summary><div style="overflow-x:auto;max-height:380px"><table class="pos" style="font-size:.74rem;width:100%"><thead><tr><th>Ticker</th><th>Sleeve</th><th>In</th><th class="r">Price</th><th class="r">Shares</th><th>Out</th><th class="r">Price</th><th>Why</th><th class="r">R</th></tr></thead><tbody>
+        ${(x.trades || []).map(t => `<tr><td><b>${esc(t.sym)}</b></td><td>${esc(t.sleeve)}</td><td>${esc(t.at)}</td><td class="r">${t.px}</td><td class="r">${t.sh}</td><td>${esc(t.exitAt || 'open')}</td><td class="r">${t.exitPx}</td><td>${esc(t.why)}</td><td class="r"><b class="${t.R > 0 ? 'gain' : 'loss'}">${t.R > 0 ? '+' : ''}${t.R}</b></td></tr>`).join('')}</tbody></table></div></details>`; }
+  return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main" style="padding:0 6px">${main}</div></div></div>`;
 }
 function vChartREG() {
   if (S.reg === undefined) { S.reg = null; setTimeout(loadReg, 0); }
@@ -3677,6 +3791,7 @@ function dtWhyBox() {
 }
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {
+  if (S.fcfMode === 'plab') return vChartPLAB();
   if (S.fcfMode === 'reg') return vChartREG();
   if (S.fcfMode === 'ww2') return vChartWW2();
   if (S.fcfMode === 'smc') return vChartSMC();
@@ -5623,7 +5738,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-regjson],[data-w2btjson],[data-mregrun],[data-regmet],[data-regh],[data-rkgrp],[data-rkh],[data-macmet],[data-mach],[data-regsort],[data-w2zoom],[data-w2tf],[data-w2days],[data-w2sw],[data-w2side],[data-w2default],[data-w2bt],[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwopttf],[data-wwedge],[data-wwedgeuse],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-plabview],[data-ropt],[data-roptjson],[data-plabrun],[data-plabsw],[data-plabjson],[data-regjson],[data-w2btjson],[data-mregrun],[data-regmet],[data-regh],[data-rkgrp],[data-rkh],[data-macmet],[data-mach],[data-regsort],[data-w2zoom],[data-w2tf],[data-w2days],[data-w2sw],[data-w2side],[data-w2default],[data-w2bt],[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwopttf],[data-wwedge],[data-wwedgeuse],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -5642,12 +5757,18 @@ document.addEventListener('click', e => {
       if (i0 >= 0) SMC_PAIR.forEach(x => { const dd = ((S.smcDs || {})[x] || {}).d; if (!dd || !dd.bars) return; const a0 = dd.bars.findIndex(b => b.t >= d.bars[i0].t), a1 = dd.bars.findIndex(b => b.t >= d.bars[Math.min(d.bars.length - 1, Math.max(0, i1))].t);
         if (a0 >= 0) S.fcZoom[fcKey('smc-' + x)] = [Math.max(0, a0 - 40), Math.min(dd.bars.length - 1, Math.max(a1, a0 + 10) + 25)]; }); }
     render(); return; }
-  if (el.hasAttribute('data-regjson') || el.hasAttribute('data-w2btjson')) {
-    const reg = el.hasAttribute('data-regjson'), obj = reg ? S.reg : (S.w2 || {}).bt, at = ((obj || {}).at || '').slice(0, 16).replace(/[:T]/g, '-');
+  if (el.dataset.plabview) { S.plabView = el.dataset.plabview; render(); return; }
+  if (el.dataset.ropt) { const v = el.dataset.ropt; roptSet(v === 'reset' ? { reset: true } : { on: v === 'on' }); return; }
+  if (el.hasAttribute('data-roptjson')) { const { lists, rules, ...data } = S.ropt || {}; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })), a = document.createElement('a');
+    a.href = url; a.download = `regime-optimizer-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); return; }
+  if (el.hasAttribute('data-plabrun')) { el.disabled = true; api('/plab', { method: 'POST', body: { cfg: plabCfg() } }).then(r => { S.plab = r; render(); loadPlab(); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
+  if (el.dataset.plabsw) { const k = el.dataset.plabsw; S.plabCfg = { ...plabCfg(), [k]: !plabCfg()[k] }; render(); return; }
+  if (el.hasAttribute('data-regjson') || el.hasAttribute('data-w2btjson') || el.hasAttribute('data-plabjson')) {
+    const reg = el.hasAttribute('data-regjson'), pl = el.hasAttribute('data-plabjson'), obj = reg ? S.reg : pl ? S.plab : (S.w2 || {}).bt, at = ((obj || {}).at || '').slice(0, 16).replace(/[:T]/g, '-');
     if (!obj) return;
-    const { lists, running, step, ...data } = obj;
+    const { lists, running, step, defaults, layers, ...data } = obj;
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })), a = document.createElement('a');
-    a.href = url; a.download = `${reg ? 'market-regimes' : 'wallwatch2-backtest'}-${at || 'now'}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); return; }
+    a.href = url; a.download = `${reg ? 'market-regimes' : pl ? 'portfolio-lab' : 'wallwatch2-backtest'}-${at || 'now'}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); return; }
   if (el.hasAttribute('data-mregrun')) { el.disabled = true; api('/regime', { method: 'POST', body: { list: S.regList || (S.reg || {}).list || 'Main', years: S.regYears || (S.reg || {}).years || 10 } })
     .then(r => { S.reg = r; render(); loadReg(); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
   if (el.dataset.regmet) { S.regMet = el.dataset.regmet; render(); return; }
@@ -6109,6 +6230,8 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-wwoptuni]')) wwOptSet({ universe: e.target.value });
   if (e.target.matches && e.target.matches('[data-w2cfg]')) { const k = e.target.dataset.w2cfg, v = e.target.value; w2Set(k, e.target.tagName === 'SELECT' && isNaN(+v) ? v : +v); }
   if (e.target.matches && e.target.matches('[data-reglist]')) { S.regList = e.target.value; }
+  if (e.target.matches && e.target.matches('[data-roptcfg]')) roptSet({ [e.target.dataset.roptcfg]: e.target.value });
+  if (e.target.matches && e.target.matches('[data-plabcfg]')) { const k = e.target.dataset.plabcfg, v = e.target.value; S.plabCfg = { ...plabCfg(), [k]: ['list', 'rebound'].includes(k) ? v : +v }; render(); }
   if (e.target.matches && e.target.matches('[data-macf]')) { S.macF = e.target.value; render(); }
   if (e.target.matches && e.target.matches('[data-regyears]')) { S.regYears = +e.target.value; }
   if (e.target.matches && e.target.matches('[data-w2btuni]')) { S.w2BtUni = e.target.value; render(); }

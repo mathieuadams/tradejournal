@@ -479,6 +479,41 @@ def daytrade_smc(sub, claims, body, q):
     return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
 
 
+@route("GET", "/ropt")
+def ropt_get(sub, claims, body, q):
+    """Regime optimizer: the best strategies for bull / sideways / bear and the combined portfolio."""
+    import regime
+    import ropt
+    return {**ropt.public(sub), "lists": regime.lists(sub)}
+
+
+@route("PUT", "/ropt")
+def ropt_set(sub, claims, body, q):
+    import regime
+    import research
+    import ropt
+    b = body or {}
+    out = ropt.save_cfg(sub, b)
+    if b.get("on") and not out.get("running"):
+        research._invoke(sub, "ropt", {})
+    return {**out, "lists": regime.lists(sub)}
+
+
+@route("GET", "/plab")
+def plab_get(sub, claims, body, q):
+    """Portfolio lab: the layered strategy backtested as one portfolio (the last run and its settings)."""
+    import plab
+    import regime
+    return {**plab.public(sub), "lists": regime.lists(sub)}
+
+
+@route("POST", "/plab")
+def plab_run(sub, claims, body, q):
+    import plab
+    import regime
+    return {**plab.start(sub, body or {}), "lists": regime.lists(sub)}
+
+
 @route("GET", "/regime")
 def regime_get(sub, claims, body, q):
     """Market regimes: the last study (labels, durations, the market / sectors / watchlist in each regime)."""
