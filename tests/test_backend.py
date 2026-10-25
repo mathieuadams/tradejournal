@@ -6383,6 +6383,64 @@ def test_wall_watch_2_long_short():
     finally:
         ww2.bars_of, ww2.walls_of = saved
 
+
+def test_market_regimes():
+    """Market regimes: causal labels (a shorter history gives the same labels), confirmation (no 1-2 day flips),
+    durations / transitions consistent with the segments, next-day returns per regime, the stored study under the
+    item size with a 52-stock list over 10 years."""
+    import random, datetime as dt, regime, wallwatch
+    rnd = random.Random(5)
+    days, d = [], dt.date(2014, 1, 1)
+    while len(days) < 2900:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def walk(seed, drift=0.0004, vol=0.012):
+        r, p, out = random.Random(seed), 100.0, {}
+        for k, x in enumerate(days):
+            p *= 1 + r.gauss(drift + 0.002 * math.sin(k / 120), vol)
+            out[x] = round(p, 2)
+        return out
+    import math
+    spy = walk(1)
+    vix = {x: round(14 + 10 * abs(math.sin(k / 90)) + rnd.random(), 2) for k, x in enumerate(days)}
+    v3 = {x: v + (1.5 if k % 50 else -3) for k, (x, v) in enumerate(vix.items())}
+    lab = regime.label_days(spy, vix, v3)
+    lab2 = regime.label_days({x: spy[x] for x in days[:2000]}, vix, v3)
+    assert all(lab2[x] == lab[x] for x in lab2) and len(lab2) > 1500        # no look-ahead
+    ds = sorted(lab)
+    segs = regime.segments(ds, lab)
+    assert sum(s[3] for s in segs) == len(ds) and all(a[0] != b[0] for a, b in zip(segs, segs[1:]))
+    raw = ["A"] * 10 + ["B", "B"] + ["A"] * 5 + ["B"] * 3 + ["B"] * 4
+    assert regime._confirm(raw) == ["A"] * 17 + ["A", "A", "B"] + ["B"] * 4    # 2 days don't flip it, 3 do
+    du = regime.durations(segs, len(ds))
+    assert abs(sum(v["share"] for v in du.values()) - 100) < 0.5 and all(v["median"] is None or v["p25"] <= v["median"] <= v["p75"] for v in du.values())
+    tr = regime.transitions(segs)
+    assert sum(sum(v.values()) for v in tr.values()) == len(segs) - 1
+    st = regime.asset_stats(spy, spy, ds, lab)
+    assert st["All"]["beta"] == 1.0 and abs(st["All"]["ex"]) < 1e-9 and sum(st[l]["n"] for l in regime.LABELS if l in st) == st["All"]["n"]
+    series = {**{m: walk(k + 10) for k, (m, _) in enumerate(regime.MARKET + regime.SECTORS)}, "SPY": spy, "^VIX": vix, "^VIX3M": v3}
+    stocks = [f"S{k:02d}" for k in range(52)]
+    saved = (regime._daily, wallwatch.config)
+    try:
+        regime._daily = lambda sym, years: series.get(sym) or walk(hash(sym) % 1000)
+        wallwatch.config = lambda sub: {"lists": [{"name": "Main", "tickers": stocks}, {"name": "Other", "tickers": ["ZZ"]}]}
+        import research
+        old = research._invoke
+        research._invoke = lambda *a, **k: None
+        try:
+            x = regime.start("rg1", {"list": "Main", "years": 10})
+            assert x["running"] and regime.lists("rg1")[0] == {"name": "Main", "n": 52}
+            r = regime.run("rg1")
+        finally:
+            research._invoke = old
+        assert r["nStocks"] == 52 and len(r["assets"]) == 52 + 14 and r["current"]["label"] in regime.LABELS and r["running"] is None
+        assert r["current"]["days"] == r["segments"][-1]["d"] and set(r["dur"]) == {"regime", "trend", "vol", "stress"}
+        it = db.get(db.upk("rg1"), regime.SK)
+        assert len(it["data"]) < 390_000 and regime.public("rg1")["span"]["days"] == r["span"]["days"]
+    finally:
+        regime._daily, wallwatch.config = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

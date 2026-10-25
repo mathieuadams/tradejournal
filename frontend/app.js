@@ -1753,7 +1753,7 @@ async function loadTickers() {
   S.tkBusy = false;
   if (route() === 'botchart') render();
 }
-try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = m0 === 'smc' ? 'smc' : m0 === 'ww2' ? 'ww2' : ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
+try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = m0 === 'smc' ? 'smc' : m0 === 'ww2' ? 'ww2' : m0 === 'reg' ? 'reg' : ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
 function wwReviewBox() {
   const r = S.wwRev;
@@ -1811,7 +1811,7 @@ const FC_REFRESH_MS = 5 * 60 * 1000;               // an open chart reloads its 
 setInterval(() => {                                // the check runs on a redraw: one a minute while a chart is open and seen
   if (route() === 'botchart' && document.visibilityState === 'visible' && !document.querySelector('input:focus,select:focus,textarea:focus')) render();
 }, 60000);
-const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['smc', 'Smart money'], ['ww2', 'Wall watch 2']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['smc', 'Smart money'], ['ww2', 'Wall watch 2'], ['reg', 'Market regimes']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
@@ -1972,6 +1972,81 @@ function smcMerged() {                               // the two charts' setups a
   ds.forEach(([, d]) => { const f = d.funnel || {}; ['sweeps', 'mss', 'fvg', 'filled', 'wins'].forEach(k => { fn[k] = (fn[k] || 0) + (f[k] || 0); }); Object.entries(f.why || {}).forEach(([k, v]) => { why[k] = (why[k] || 0) + v; }); });
   const rs = setups.filter(s => s.R != null).map(s => s.R), w = rs.filter(r => r > 0), l = rs.filter(r => r <= 0), tot = rs.reduce((a, r) => a + r, 0), gl = -l.reduce((a, r) => a + r, 0);
   return { params: ds[0][1].params, setups, funnel: { ...fn, why }, stats: rs.length ? { n: rs.length, win: Math.round(w.length / rs.length * 100), avgR: tot / rs.length, totR: tot, pf: gl > 0 ? +(w.reduce((a, r) => a + r, 0) / gl).toFixed(2) : null } : { n: 0 } };
+}
+// ---- Market regimes: every day labeled (SPY trend x VIX), how long each lasts, the market / sectors / watchlist in each (backend regime.py)
+const REG_COL = { 'Up · Calm': '#16a34a', 'Up · Volatile': '#84cc16', 'Range · Calm': '#64748b', 'Range · Volatile': '#eab308', 'Down · Calm': '#f97316', 'Down · Volatile': '#dc2626' };
+async function loadReg() {
+  try { S.reg = await api('/regime'); } catch (e) { S.reg = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.regT); if (S.reg && S.reg.running) S.regT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'reg') loadReg(); }, 10000);
+}
+function regTimeline(x, W) {
+  const pts = x.spy || [], segs = x.segments || []; if (pts.length < 2) return '';
+  const H = 250, L = 8, Rr = 56, T = 10, B = H - 22, d0 = pts[0][0], d1 = pts[pts.length - 1][0];
+  const ms = d => Date.parse(d + 'T12:00:00Z'), t0 = ms(d0), t1 = ms(d1), X = d => L + (ms(d) - t0) / Math.max(1, t1 - t0) * (W - L - Rr);
+  const lo = Math.log(Math.min(...pts.map(p => p[1]))), hi = Math.log(Math.max(...pts.map(p => p[1]))), Y = v => T + (hi - Math.log(v)) / ((hi - lo) || 1) * (B - T);
+  let g = segs.map(s => `<rect x="${X(s.s).toFixed(1)}" y="${T}" width="${Math.max(1, X(s.e) - X(s.s) + 1).toFixed(1)}" height="${B - T}" fill="${REG_COL[s.l] || '#999'}" opacity=".22"><title>${esc(`${s.l} · ${s.s} → ${s.e} · ${s.d} trading days · SPY ${s.spy > 0 ? '+' : ''}${s.spy}%`)}</title></rect>`).join('');
+  pts.forEach((p, i) => { if (p[3] && i) g += `<rect x="${X(pts[i - 1][0]).toFixed(1)}" y="${B - 5}" width="${Math.max(1, X(p[0]) - X(pts[i - 1][0])).toFixed(1)}" height="5" fill="#7c3aed"><title>VIX above VIX3M (stress) ${p[0]}</title></rect>`; });
+  g += `<path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('')}" fill="none" stroke="var(--fg,#111)" stroke-width="1.3"/>`;
+  const yrs = []; for (let y = +d0.slice(0, 4) + 1; y <= +d1.slice(0, 4); y++) yrs.push(y);
+  g += yrs.map(y => `<line x1="${X(y + '-01-01')}" x2="${X(y + '-01-01')}" y1="${T}" y2="${B}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="${X(y + '-01-01') + 3}" y="${H - 6}" font-size="11" fill="var(--muted)">${y}</text>`).join('');
+  [lo, (lo + hi) / 2, hi].forEach(v => { const p = Math.exp(v); g += `<text x="${W - Rr + 5}" y="${Y(p) + 4}" font-size="11" fill="var(--muted)">${p.toFixed(0)}</text>`; });
+  const leg = (x.labels || []).map(l => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px"><span style="width:12px;height:12px;border-radius:2px;background:${REG_COL[l]};opacity:.6;display:inline-block"></span>${esc(l)}</span>`).join('') + '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:12px;height:5px;background:#7c3aed;display:inline-block"></span>stress (VIX > VIX3M)</span>';
+  return `<div style="font-size:.76rem;margin:4px 0">${leg}</div><svg width="${W}" height="${H}" style="display:block">${g}</svg>`;
+}
+function regDurTable(x) {
+  const D = x.dur || {}, f = v => v == null ? '—' : v;
+  const rows = [...(x.labels || []).map(l => [l, (D.regime || {})[l], true]), ...['Up', 'Range', 'Down'].map(l => [`Trend ${l}`, (D.trend || {})[l]]), ...['Calm', 'Volatile'].map(l => [`VIX ${l}`, (D.vol || {})[l]]), ['Stress (VIX > VIX3M)', (D.stress || {}).Stress]];
+  return `<div style="overflow-x:auto"><table class="pos" style="font-size:.78rem;width:100%"><thead><tr><th>Regime</th><th class="r">Times</th><th class="r">% of days</th><th class="r">Mean days</th><th class="r">Median</th><th class="r">Middle half</th><th class="r">Longest</th><th class="r" title="Of the times it started, % still on after this many trading days">Still on after 5 / 10 / 20 / 40 days</th></tr></thead><tbody>
+    ${rows.filter(r => r[1]).map(([l, d, c]) => `<tr><td>${c ? `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${REG_COL[l]};margin-right:5px"></span>` : ''}${esc(l)}</td><td class="r">${d.n}</td><td class="r">${f(d.share)}%</td><td class="r">${f(d.mean)}</td><td class="r">${f(d.median)}</td><td class="r">${d.p25 != null ? `${d.p25}–${d.p75}` : '—'}</td><td class="r">${f(d.max)}</td><td class="r">${['5', '10', '20', '40'].map(k => `${f((d.surv || {})[k])}%`).join(' / ')}</td></tr>`).join('')}</tbody></table></div>`;
+}
+function regTrans(x) {
+  const L = x.labels || [], T = x.trans || {};
+  return `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:auto"><thead><tr><th>From \\ to</th>${L.map(l => `<th class="r">${esc(l)}</th>`).join('')}</tr></thead><tbody>
+    ${L.map(a => { const r = T[a] || {}, tot = Object.values(r).reduce((s, v) => s + v, 0);
+      return `<tr><td>${esc(a)}</td>${L.map(b => { const v = r[b] || 0, p = tot ? Math.round(v / tot * 100) : 0; return `<td class="r" style="${p ? `background:color-mix(in srgb,var(--coach,#5b5bd6) ${Math.round(p * 0.6)}%,transparent)` : ''}">${a === b ? '' : v ? `${p}% <span class="muted">(${v})</span>` : ''}</td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div>`;
+}
+function regHeat(x) {
+  const met = S.regMet || 'ann', cols = [...(x.labels || []), 'Stress', 'All'], A = x.assets || [];
+  const unit = { ann: '%', ex: '%', up: '%', beta: '', cum: '%', vol: '%' }[met];
+  const val = (a, c) => ((a.by || {})[c] || {})[met];
+  const scale = met === 'up' ? v => (v - 50) / 15 : met === 'beta' ? v => (v - 1) / 0.6 : v => v / (met === 'cum' ? 60 : 40);
+  const cell = (a, c) => { const v = val(a, c), n = ((a.by || {})[c] || {}).n; if (v == null) return '<td class="r muted">—</td>'; const s = Math.max(-1, Math.min(1, scale(v)));
+    return `<td class="r" style="background:color-mix(in srgb,${s >= 0 ? 'var(--gain)' : 'var(--loss)'} ${Math.round(Math.abs(s) * 45)}%,transparent)" title="${esc(`${a.sym} in ${c}: ${n} days`)}">${met === 'beta' ? (+v).toFixed(2) : `${v > 0 && met !== 'up' ? '+' : ''}${v}${unit}`}</td>`; };
+  const sortC = S.regSort || null, grp = k => { const xs = A.filter(a => a.kind === k); return sortC ? xs.slice().sort((p, q) => (val(q, sortC) ?? -1e9) - (val(p, sortC) ?? -1e9)) : xs; };
+  const block = (k, title) => { const xs = grp(k); return xs.length ? `<tr><td colspan="${cols.length + 1}" style="font-weight:600;padding-top:8px">${title}</td></tr>${xs.map(a => `<tr><td style="white-space:nowrap"><b>${esc(a.sym)}</b> <span class="muted" style="font-size:.72rem">${esc(a.name || '')}</span></td>${cols.map(c => cell(a, c)).join('')}</tr>`).join('')}` : ''; };
+  const mets = [['ann', 'Return (annualized)'], ['ex', 'vs SPY (annualized)'], ['up', 'Up days %'], ['beta', 'Beta to SPY'], ['cum', 'Compounded'], ['vol', 'Volatility']];
+  return `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0"><b>In each regime</b>
+      <span class="seg" role="group">${mets.map(([k, l]) => `<button class="btn ${met === k ? 'coachbtn' : ''}" data-regmet="${k}" style="font-size:.76rem;padding:1px 9px">${l}</button>`).join('')}</span>
+      <span class="muted" style="font-size:.74rem">the next day's move after a day in that regime; click a column to sort</span></div>
+    <div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th>Ticker</th>${cols.map(c => `<th class="r" style="cursor:pointer;${sortC === c ? 'text-decoration:underline' : ''}" data-regsort="${esc(c)}">${esc(c)}</th>`).join('')}</tr></thead><tbody>
+    ${block('market', 'Market')}${block('sector', 'Sectors')}${block('stock', `Watchlist: ${esc(x.list || '')} (${x.nStocks || 0})`)}</tbody></table></div>`;
+}
+function vChartREG() {
+  if (S.reg === undefined) { S.reg = null; setTimeout(loadReg, 0); }
+  const x = S.reg || {}, side = false, W = Math.max(320, window.innerWidth - 40);
+  const lists = x.lists || [], lname = S.regList || x.list || 'Main', yrs = S.regYears || x.years || 10;
+  const head = `<div class="fcf-head"><b style="font-size:1.25rem">Market regimes</b> ${fcModeSeg()}
+    <select data-reglist style="font-size:.82rem">${(lists.length ? lists : [{ name: 'Main', n: '' }]).map(L => `<option value="${esc(L.name)}" ${L.name === lname ? 'selected' : ''}>${esc(L.name)}${L.n ? ` (${L.n})` : ''}</option>`).join('')}</select>
+    <select data-regyears style="font-size:.82rem">${[5, 10, 15].map(n => `<option value="${n}" ${yrs === n ? 'selected' : ''}>${n} years</option>`).join('')}</select>
+    <button class="btn coachbtn" data-regrun ${x.running ? 'disabled' : ''} style="padding:3px 12px">${x.running ? 'Running…' : x.at ? 'Run again' : 'Run the study'}</button>
+    <span class="muted" style="font-size:.78rem">${x.running ? `<span class="loading" style="padding:0">${esc(x.step || 'running')}</span>` : x.at ? `last run ${esc(x.at.replace('T', ' ').slice(0, 16))}` : ''}</span>
+    ${x.error ? `<span class="loss" style="font-size:.78rem">${esc(x.error)}</span>` : ''}<span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen">✕</a></div>`;
+  let main;
+  if (S.reg === null) main = '<p class="loading">Loading…</p>';
+  else if (!x.span) main = `<p class="muted" style="max-width:780px">Labels every trading day by the trend of SPY (Up: close above a rising 50-day EMA above the 200-day; Down: the mirror; else Range) and the VIX (Calm under 20, Volatile at 20+), a change counting after 3 days in a row. Then: how long each regime lasts, what follows it, and how SPY, QQQ, IWM, the 11 sector ETFs and the watchlist move in each one. Pick the list and the years, then <b>Run the study</b> (a minute or two).</p>`;
+  else { const c = x.current || {};
+    main = `<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:4px 0 8px;font-size:.9rem">
+        <span style="padding:4px 10px;border-radius:8px;background:color-mix(in srgb,${REG_COL[c.label] || '#999'} 25%,transparent);border:1px solid ${REG_COL[c.label] || '#999'}"><b>Now: ${esc(c.label || '')}</b> since ${esc(c.since || '')} (${c.days} trading days)</span>
+        <span class="muted">trend ${esc(c.trend || '')} for ${c.trendDays} days · VIX ${c.vix != null ? (+c.vix).toFixed(1) : '—'} (${esc(c.vol || '')} for ${c.volDays} days)${c.stress ? ' · <b class="loss">stress: VIX above VIX3M</b>' : ''}</span>
+        <span class="muted">${esc(x.span.from)} → ${esc(x.span.to)} · ${x.span.days} trading days</span></div>
+      ${regTimeline(x, W)}
+      <h4 style="font-size:.9rem;margin:12px 0 4px">How long they last</h4>${regDurTable(x)}
+      <h4 style="font-size:.9rem;margin:12px 0 4px">What comes next (share of the changes out of each regime)</h4>${regTrans(x)}
+      ${regHeat(x)}
+      <details style="margin-top:8px"><summary style="cursor:pointer;font-size:.84rem">Every regime period (${(x.segments || []).length})</summary><div style="overflow-x:auto;max-height:360px"><table class="pos" style="font-size:.76rem;width:auto"><thead><tr><th>Regime</th><th>From</th><th>To</th><th class="r">Days</th><th class="r">SPY</th></tr></thead><tbody>
+        ${(x.segments || []).slice().reverse().map(s => `<tr><td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${REG_COL[s.l]};margin-right:5px"></span>${esc(s.l)}</td><td>${esc(s.s)}</td><td>${esc(s.e)}</td><td class="r">${s.d}</td><td class="r ${s.spy > 0 ? 'gain' : s.spy < 0 ? 'loss' : ''}">${s.spy > 0 ? '+' : ''}${s.spy ?? '—'}%</td></tr>`).join('')}</tbody></table></div></details>`; }
+  return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main" style="padding:0 6px">${main}</div></div></div>`;
 }
 // ---- Wall watch 2: a separate long + short copy of the wall watch (backend ww2.py); the live wall watch is untouched
 const W2_LY = [['w2trades', 'Trades (long / short)'], ['w2ema', 'EMA 1 / 2 / 3'], ['w2kc', 'Keltner channel'], ['w2fvg', 'FVG'], ['w2walls', 'Gamma walls'], ['w2sq', 'Squeeze'], ['w2in', 'Inertia'], ['w2cvd', 'CVD']];
@@ -3498,6 +3573,7 @@ function dtWhyBox() {
 }
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {
+  if (S.fcfMode === 'reg') return vChartREG();
   if (S.fcfMode === 'ww2') return vChartWW2();
   if (S.fcfMode === 'smc') return vChartSMC();
   if (S.fcfMode === 'dt') return vChartDT();
@@ -5443,7 +5519,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-w2zoom],[data-w2tf],[data-w2days],[data-w2sw],[data-w2side],[data-w2default],[data-w2bt],[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwopttf],[data-wwedge],[data-wwedgeuse],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-regrun],[data-regmet],[data-regsort],[data-w2zoom],[data-w2tf],[data-w2days],[data-w2sw],[data-w2side],[data-w2default],[data-w2bt],[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwopttf],[data-wwedge],[data-wwedgeuse],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -5462,6 +5538,10 @@ document.addEventListener('click', e => {
       if (i0 >= 0) SMC_PAIR.forEach(x => { const dd = ((S.smcDs || {})[x] || {}).d; if (!dd || !dd.bars) return; const a0 = dd.bars.findIndex(b => b.t >= d.bars[i0].t), a1 = dd.bars.findIndex(b => b.t >= d.bars[Math.min(d.bars.length - 1, Math.max(0, i1))].t);
         if (a0 >= 0) S.fcZoom[fcKey('smc-' + x)] = [Math.max(0, a0 - 40), Math.min(dd.bars.length - 1, Math.max(a1, a0 + 10) + 25)]; }); }
     render(); return; }
+  if (el.hasAttribute('data-regrun')) { el.disabled = true; api('/regime', { method: 'POST', body: { list: S.regList || (S.reg || {}).list || 'Main', years: S.regYears || (S.reg || {}).years || 10 } })
+    .then(r => { S.reg = r; render(); loadReg(); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
+  if (el.dataset.regmet) { S.regMet = el.dataset.regmet; render(); return; }
+  if (el.dataset.regsort) { S.regSort = S.regSort === el.dataset.regsort ? null : el.dataset.regsort; render(); return; }
   if (el.dataset.w2zoom) { const q = el.dataset.w2zoom, d = S.w2D && S.w2D.d, N = ((d && d.bars) || []).length; if (N < 3) return;
     const id = 'w2-' + d.t + '-' + d.tf, [a, b] = fcRange(id, N), span = b - a, mid = (a + b) / 2;
     if (q === 'reset') S.fcZoom[fcKey(id)] = null; else if (q === 'in') fcSetZoom(id, mid - span / 4, mid + span / 4, N); else if (q === 'out') fcSetZoom(id, mid - span, mid + span, N);
@@ -5912,6 +5992,8 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-wwoptdays]')) wwOptSet({ days: +e.target.value });
   if (e.target.matches && e.target.matches('[data-wwoptuni]')) wwOptSet({ universe: e.target.value });
   if (e.target.matches && e.target.matches('[data-w2cfg]')) { const k = e.target.dataset.w2cfg, v = e.target.value; w2Set(k, e.target.tagName === 'SELECT' && isNaN(+v) ? v : +v); }
+  if (e.target.matches && e.target.matches('[data-reglist]')) { S.regList = e.target.value; }
+  if (e.target.matches && e.target.matches('[data-regyears]')) { S.regYears = +e.target.value; }
   if (e.target.matches && e.target.matches('[data-w2btuni]')) { S.w2BtUni = e.target.value; render(); }
   if (e.target.matches && e.target.matches('[data-w2btdays]')) { S.w2BtDays = +e.target.value; render(); }
   if (e.target.matches && e.target.matches('[data-wwoptmin]')) wwOptSet({ minTrades: +e.target.value });

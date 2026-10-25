@@ -2008,6 +2008,9 @@ def handler(event, context_):
             elif job == "wwopt":
                 import wwopt
                 out[sub] = wwopt.job(sub, event.get("params") or {})
+            elif job == "regime":
+                import regime
+                out[sub] = regime.job(sub, event.get("params") or {})
             elif job == "ww2bt":
                 import ww2
                 out[sub] = ww2.bt_job(sub, event.get("params") or {})

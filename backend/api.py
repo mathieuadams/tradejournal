@@ -479,6 +479,19 @@ def daytrade_smc(sub, claims, body, q):
     return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
 
 
+@route("GET", "/regime")
+def regime_get(sub, claims, body, q):
+    """Market regimes: the last study (labels, durations, the market / sectors / watchlist in each regime)."""
+    import regime
+    return {**regime.public(sub), "lists": regime.lists(sub)}
+
+
+@route("POST", "/regime")
+def regime_run(sub, claims, body, q):
+    import regime
+    return {**regime.start(sub, body or {}), "lists": regime.lists(sub)}
+
+
 @route("GET", "/ww2")
 def ww2_get(sub, claims, body, q):
     """Wall watch 2 (long + short copy of the wall watch): the saved settings and the last list backtest."""
