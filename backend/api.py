@@ -479,6 +479,39 @@ def daytrade_smc(sub, claims, body, q):
     return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
 
 
+@route("GET", "/ww2")
+def ww2_get(sub, claims, body, q):
+    """Wall watch 2 (long + short copy of the wall watch): the saved settings and the last list backtest."""
+    import ww2
+    return {"cfg": ww2.get_cfg(sub), "defaults": ww2.PARAMS, "bt": ww2.bt_public(sub), "mag7": ww2.MAG7}
+
+
+@route("PUT", "/ww2/cfg")
+def ww2_cfg(sub, claims, body, q):
+    import ww2
+    return {"cfg": ww2.save_cfg(sub, (body or {}).get("cfg") or {})}
+
+
+@route("POST", "/ww2/chart")
+def ww2_chart(sub, claims, body, q):
+    import ww2
+    b = body or {}
+    return ww2.chart(sub, b.get("t"), b.get("tf") or "1D", b.get("days") or 250, b.get("cfg") if isinstance(b.get("cfg"), dict) else {})
+
+
+@route("POST", "/ww2/bt")
+def ww2_bt(sub, claims, body, q):
+    """The settings on the Mag 7 or every watchlist ticker, train / test (background)."""
+    import ww2
+    return ww2.bt_start(sub, body or {})
+
+
+@route("GET", "/ww2/bt")
+def ww2_bt_get(sub, claims, body, q):
+    import ww2
+    return ww2.bt_public(sub)
+
+
 @route("POST", "/daytrade/smc/windows")
 def daytrade_smc_windows(sub, claims, body, q):
     """The blocks in the morning / midday / afternoon windows, one ticker (the page adds QQQ and SPY up)."""

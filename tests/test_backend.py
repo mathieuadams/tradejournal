@@ -6324,6 +6324,65 @@ def test_unusual_flow_optimizer():
     finally:
         wwopt.load, wallwatch.detect_retest, wallwatch.config, wallwatch.fill_walls = saved
 
+
+def test_wall_watch_2_long_short():
+    """Wall watch 2: long and short trades, mirrored rules, no look-ahead (a shorter history gives the same trades),
+    stops on the next candle, walls / room rules, the chart payload and the list backtest (train / test)."""
+    import random, datetime as dt, ww2
+    rnd = random.Random(7)
+    bars, p, d0 = [], 100.0, dt.date(2024, 1, 1)
+    for k in range(520):
+        o = p
+        p = max(5, p * (1 + rnd.gauss(0.0003, 0.02)))
+        bars.append({"t": (d0 + dt.timedelta(days=k)).isoformat() + "T09:30", "o": o, "h": max(o, p) * (1 + abs(rnd.gauss(0, 0.006))),
+                     "l": min(o, p) * (1 - abs(rnd.gauss(0, 0.006))), "c": p, "v": 1e6})
+    P = {"side": "both", "emaStack": True, "candleDir": True, "tgtOn": True, "tgtR": 2, "oppExit": True}
+    tr, sg, _ = ww2.detect(bars, {}, P)
+    sides = {t["side"] for t in tr}
+    assert sides == {"long", "short"} and all(t["status"] in ("closed", "open") for t in tr)
+    for t in tr:                                        # stop / target R and side consistency
+        if t["why"] == "stop":
+            assert abs(t["R"] + 1) < 1e-6 or t["R"] < -1   # a gap through the stop: worse than -1R
+        if t["why"] == "target":
+            assert t["R"] >= 2 - 1e-6
+        assert (t["stop0"] < t["px"]) == (t["side"] == "long")
+    cut = bars[400]["t"]
+    tr2, _, _ = ww2.detect(bars[:401], {}, P)
+    a = [(t["at"], t["side"], t["exitAt"], t["R"]) for t in tr if t["status"] == "closed" and t["exitAt"] <= cut]
+    b = [(t["at"], t["side"], t["exitAt"], t["R"]) for t in tr2 if t["status"] == "closed"]
+    assert a == b and len(a) > 5                        # no look-ahead
+    assert all(t["side"] == "long" for t in ww2.detect(bars, {}, {**P, "side": "long"})[0])
+    assert all(t["side"] == "short" for t in ww2.detect(bars, {}, {**P, "side": "short"})[0])
+    for k_ in ("emaCross", "priceEma", "emaSlope", "kcOn", "sqFire", "sqMom", "sqOnly", "inOn", "fvgOn", "cvdOn", "trailOn", "beOn", "emaExit", "kcExit", "inExit", "sqExit", "fvgExit", "timeOn", "reverse"):
+        ww2.detect(bars, {}, {**P, k_: True})          # every rule runs
+    for m in ("break", "revert"):
+        ww2.detect(bars, {}, {**P, "kcOn": True, "kcMode": m})
+    walls = {b_["t"][:10]: {"callWall": b_["c"] * 1.1, "putWall": b_["c"] * 0.9, "flip": b_["c"] * 1.5} for b_ in bars}
+    trw, _, _ = ww2.detect(bars, walls, {**P, "wallOn": True})
+    assert trw and all(t["side"] == "short" for t in trw)   # every close is under the flip: shorts only
+    assert not ww2.detect(bars, walls, {**P, "roomOn": True, "roomAtr": 50})[0]
+    assert ww2.clean({"side": "x", "ema1": "abc", "pEma": 9})["side"] == "both" and ww2.clean({"pEma": 9})["pEma"] == 3
+    saved = (ww2.bars_of, ww2.walls_of)
+    try:
+        ww2.bars_of = lambda sym, tf, days: bars
+        ww2.walls_of = lambda sym: {}
+        ch = ww2.chart("u1", "nvda", "1D", 250, P)
+        assert ch["t"] == "NVDA" and len(ch["bars"]) <= 250 and len(ch["ema"][0]) == len(ch["bars"]) == len(ch["sq"]) == len(ch["walls"])
+        assert ch["stats"]["n"] and set(ch["stats"]) >= {"long", "short", "win", "avgR"}
+        assert ww2.save_cfg("u1", {"side": "short"})["side"] == "short" and ww2.get_cfg("u1")["side"] == "short"
+        import research
+        old_inv = research._invoke
+        research._invoke = lambda *a, **k: None
+        try:
+            x = ww2.bt_start("u1", {"universe": "mag7", "days": 300, "cfg": P})
+            assert x["running"] and ww2.bt_start("u1", {})["running"] == x["running"]   # one at a time
+            r = ww2.bt_run("u1")
+            assert r["loaded"] == 7 and r["all"]["n"] == r["train"]["n"] + r["test"]["n"] and r["running"] is None and len(r["byTicker"]) == 7 and {x["sym"] for x in r["byTicker"]} == set(ww2.MAG7)
+        finally:
+            research._invoke = old_inv
+    finally:
+        ww2.bars_of, ww2.walls_of = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
