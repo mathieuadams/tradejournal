@@ -6650,13 +6650,17 @@ def test_regime_optimizer():
         wallwatch.config = lambda sub: {"lists": [{"name": "Main", "tickers": stocks}]}
         ropt._B.clear()
         ropt.save_cfg("ro1", {"on": True, "years": 5})
-        st = ropt.run("ro1", budget_s=8, seed=2)
+        st = ropt.run("ro1", budget_s=12, seed=2)
         pub = ropt.public("ro1")
         assert pub["evals"] > 30 and all(pub["top"][p] for p in ("bull", "side", "bear"))
         for p in ("bull", "side", "bear"):
             T = pub["top"][p]
             assert [x["fit"] for x in T] == sorted([x["fit"] for x in T], reverse=True) and all("test" in x and x["rules"] for x in T)
         assert set(pub["combined"]["res"]) == {"all", "train", "test"} and pub["combined"]["curve"][0][1] == 100000
+        x0 = pub["top"]["bull"][0]
+        assert {"base", "edge", "edgeT"} <= set(x0["train"]) and abs(x0["train"]["edge"] - (x0["train"]["avgR"] - x0["train"]["base"])) < 0.01
+        cb = pub["combined"]
+        assert cb["tried"] >= 2 and {"riskPct", "maxPos", "cautionMult", "alarmBlock"} <= set(cb["P"]) and cb["others"][0]["fit"] >= cb["others"][-1]["fit"]
         assert db.try_lock(db.upk("ro1"), ropt.SK + "#LOCK", 60) and ropt.job("ro1", {"once": True}) == {"skipped": "a run is already going"}
         db.unlock(db.upk("ro1"), ropt.SK + "#LOCK")
         assert ropt.save_cfg("ro1", {"years": 7})["top"]["bull"] == []

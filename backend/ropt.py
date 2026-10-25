@@ -18,7 +18,7 @@ import db
 from util import iso, now_ny
 
 SK = "ROPT"
-VERSION = 1
+VERSION = 2                                            # 2: scored on the edge over the phase's baseline
 TRAIN = 0.6
 TOP = 10
 PHASES = (("bull", "Up", "Bull (SPY trend Up)"), ("side", "Range", "Sideways (Range)"), ("bear", "Down", "Bear (SPY trend Down)"))
@@ -255,6 +255,25 @@ def stats(tr):
     return smcopt.score(tr, cost=0)
 
 
+def baseline(B, g, ph, a, b, days):
+    """The same side and exits, entered on EVERY day of the phase (one trade at a time per ticker): what simply being
+    long (or short) the watchlist made. A strategy's edge = its R minus this average R."""
+    k = (ph, g["side"], g["stopAtr"], g["trailAtr"], g["maxDays"], g["exitEma"], a, b)
+    c = B.setdefault("base", {})
+    if k not in c:
+        tr = trades_of(B, {**g, "rules": []}, ph, a, b, days)
+        rs = [t[2] for t in tr]
+        c[k] = {"n": len(rs), "avgR": round(sum(rs) / len(rs), 4) if rs else 0.0, "win": round(sum(1 for r in rs if r > 0) / len(rs) * 100) if rs else None}
+    return c[k]
+
+
+def edge_stats(B, g, ph, a, b, days):
+    """(raw stats, baseline, stats of R - baseline avg R) of a strategy on days [a, b)."""
+    tr = trades_of(B, g, ph, a, b, days)
+    base = baseline(B, g, ph, a, b, days)
+    return stats(tr), base, stats([(d, s_, r - base["avgR"], sd) for d, s_, r, sd in tr])
+
+
 # ---------------------------------------------------------------- the combined portfolio (capital, max positions)
 def portfolio(B, best, days, a, P):
     X, F = B["X"], B["F"]
@@ -305,7 +324,9 @@ def portfolio(B, best, days, a, P):
         g = best.get(ph)
         if not g or i >= n - 1:
             continue
-        risk = P["riskPct"] / 100 * eq[-1]
+        if P.get("alarmBlock") and X["alarm"][i]:
+            continue
+        risk = P["riskPct"] / 100 * eq[-1] * (P.get("cautionMult", 1.0) if X["caution"][i] else 1.0)
         free = P["maxPos"] - len(pos)
         cands = []
         for s, f in F.items():
@@ -323,7 +344,7 @@ def state(sub):
     r = db.get(db.upk(sub), SK) or {}
     st = json.loads(r["data"]) if r.get("data") else {}
     if st.get("v") != VERSION:
-        st.update(top={p: [] for p, _, _ in PHASES}, seen={}, evals=0, log=[])
+        st.update(top={p: [] for p, _, _ in PHASES}, seen={}, evals=0, log=[], combined=None)
     st["v"] = VERSION
     for k, v in (("on", False), ("years", 15), ("list", "Main"), ("top", {p: [] for p, _, _ in PHASES}), ("seen", {}), ("evals", 0), ("log", []),
                  ("pf", {"riskPct": 1.0, "maxPos": 10, "maxPct": 20.0, "slipBp": 5.0})):
@@ -346,7 +367,7 @@ def _save(sub, st, user=False):
             except ValueError:
                 pass
         if st.get("resetAt") and st["resetAt"] > (st.get("runStarted") or ""):
-            st.update(top={p: [] for p, _, _ in PHASES}, seen={}, evals=0, log=[])
+            st.update(top={p: [] for p, _, _ in PHASES}, seen={}, evals=0, log=[], combined=None)
     data = json.dumps(st, default=str, separators=(",", ":"))
     while len(data) > 330_000 and st["seen"]:
         st["seen"] = dict(list(st["seen"].items())[-int(len(st["seen"]) * 0.6):])
@@ -378,7 +399,7 @@ def save_cfg(sub, b):
     if isinstance(b.get("pf"), dict):
         st["pf"] = {**st["pf"], **{k: float(v) for k, v in b["pf"].items() if k in st["pf"]}}
     if b.get("reset"):
-        st.update(top={p: [] for p, _, _ in PHASES}, seen={}, evals=0, log=[], resetAt=iso(now_ny()))
+        st.update(top={p: [] for p, _, _ in PHASES}, seen={}, evals=0, log=[], combined=None, resetAt=iso(now_ny()))
     _save(sub, st, user=True)
     return public(sub)
 
@@ -443,24 +464,25 @@ def run(sub, budget_s=470, seed=None):
         k = ph + key(g)
         if k in seen:
             return seen[k]
-        tr = trades_of(B, g, ph, a, cut, days)
-        r = stats(tr)
-        f = smcopt.fitness(r, NEED[ph])
+        r, base, ed = edge_stats(B, g, ph, a, cut, days)
+        f = smcopt.fitness({**ed, "n": r.get("n", 0)}, NEED[ph])
         seen[k] = f
         st["evals"] += 1
         n_run += 1
         T = top[ph]
         same = any((x["train"] or {}).get("n") == r.get("n") and (x["train"] or {}).get("totR") == r.get("totR") for x in T)
         if not same and (len(T) < TOP or f > T[-1]["fit"]):
-            te = stats(trades_of(B, g, ph, cut, n, days))
-            T.append({"g": g, "fit": f, "train": _slim(r), "test": _slim(te), "rules": label(g), "at": iso(now_ny())})
+            te, tb, tx = edge_stats(B, g, ph, cut, n, days)
+            T.append({"g": g, "fit": f, "train": {**_slim(r), "base": base["avgR"], "edge": ed.get("avgR"), "edgeT": ed.get("t")},
+                      "test": {**_slim(te), "base": tb["avgR"], "edge": tx.get("avgR"), "edgeT": tx.get("t")}, "rules": label(g), "at": iso(now_ny())})
             T.sort(key=lambda x: -x["fit"])
             del T[TOP:]
         return f
 
     last_save = time.time()
     k_ph = 0
-    while time.time() - t0 < budget_s:
+    reserve = min(60.0, budget_s * 0.2)
+    while time.time() - t0 < budget_s - reserve:          # the last minute: the portfolio search
         ph = PHASES[k_ph % 3][0]
         k_ph += 1
         T = top[ph]
@@ -486,9 +508,8 @@ def run(sub, budget_s=470, seed=None):
             st = {**st, **{k: v for k, v in state(sub).items() if k in USER}}
             seen, top = st["seen"], st["top"]
             last_save = time.time()
-    # the best of each phase together, as one portfolio
-    best = {p: (top[p][0]["g"] if top[p] and top[p][0]["fit"] > 0 else None) for p, _, _ in PHASES}
-    eq = portfolio(B, best, days, a, {**{"riskPct": 1.0, "maxPos": 10, "maxPct": 20.0, "slipBp": 5.0}, **(st.get("pf") or {})})
+    # the portfolio: which strategy (of the best 3, or cash) per phase, the sizing and the risk-dial cuts, chosen on
+    # the Sharpe of the train days; the test days only shown
     import plab
     sp = [B["X"]["A"]["SPY"]["c"][i] for i in range(a, n)]
     spn = [x / sp[0] * 100000 if x else None for x in sp]
@@ -496,10 +517,37 @@ def run(sub, budget_s=470, seed=None):
         spn[i] = spn[i] or spn[i - 1]
     c = cut - a
     ds = days[a:]
-    st["combined"] = {"best": {p: (label(g) if g else None) for p, g in best.items()},
-                      "res": {k: plab.metrics(eq[x:y], ds[x:y]) for k, (x, y) in (("all", (0, len(eq))), ("train", (0, c)), ("test", (c, len(eq))))},
-                      "spy": {k: plab.metrics(spn[x:y], ds[x:y]) for k, (x, y) in (("all", (0, len(eq))), ("train", (0, c)), ("test", (c, len(eq))))},
-                      "curve": [[ds[i], round(eq[i]), round(spn[i]), round(spn[i])] for i in range(0, len(eq), max(1, len(eq) // 500))]}
+    parts = (("all", (0, n - a)), ("train", (0, c)), ("test", (c, n - a)))
+    st["step"] = "the portfolio: strategies per phase, sizing, risk-dial cuts"
+    opts = {p: [None] + [x["g"] for x in top[p][:3] if x["fit"] > 0] for p, _, _ in PHASES}
+    base_pf = {"riskPct": 1.0, "maxPos": 10, "maxPct": 20.0, "slipBp": 5.0, "cautionMult": 1.0, "alarmBlock": False, **(st.get("pf") or {})}
+    tried, pfs = set(), []
+
+    def pf_eval(choice, P):
+        kk = json.dumps([choice, P], sort_keys=True)
+        if kk in tried:
+            return
+        tried.add(kk)
+        best = {p: (opts[p][choice[p]] if choice[p] < len(opts[p]) else None) for p in opts}
+        eq = portfolio(B, best, days, a, P)
+        res = {k: plab.metrics(eq[x:y], ds[x:y]) for k, (x, y) in parts}
+        pfs.append({"choice": {p: (label(best[p]) if best[p] else None) for p in best}, "pick": choice, "P": P, "res": res,
+                    "fit": (res["train"].get("sharpe") or -9), "_eq": eq})
+    first = {p: (1 if len(opts[p]) > 1 else 0) for p in opts}
+    pf_eval(first, base_pf)
+    t1 = time.time()
+    while time.time() - t1 < reserve * 0.8 and time.time() - t0 < budget_s + 30:
+        ch = {p: rng.randrange(len(opts[p])) for p in opts}
+        P = {**base_pf, "riskPct": rng.choice([0.5, 0.75, 1.0, 1.5]), "maxPos": rng.choice([5, 8, 10, 15, 20]), "maxPct": rng.choice([10.0, 15.0, 20.0, 30.0]),
+             "cautionMult": rng.choice([1.0, 0.5, 0.0]), "alarmBlock": rng.choice([False, True])}
+        pf_eval(ch, P)
+    pfs.sort(key=lambda x: -x["fit"])
+    top_pf = pfs[0]
+    eq = top_pf["_eq"]
+    st["combined"] = {"best": top_pf["choice"], "P": top_pf["P"], "res": top_pf["res"],
+                      "spy": {k: plab.metrics(spn[x:y], ds[x:y]) for k, (x, y) in parts},
+                      "curve": [[ds[i], round(eq[i]), round(spn[i]), round(spn[i])] for i in range(0, len(eq), max(1, len(eq) // 500))],
+                      "tried": len(pfs), "others": [{k: v for k, v in x.items() if k != "_eq"} for x in pfs[:8]]}
     st.update(running=None, step=None, runs=st.get("runs", 0) + 1)
     st["log"] = (st["log"] + [{"at": iso(now_ny()), "tried": n_run, "best": {p: (top[p][0]["fit"] if top[p] else None) for p, _, _ in PHASES}}])[-20:]
     _save(sub, st)
