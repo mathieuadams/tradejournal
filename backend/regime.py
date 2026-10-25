@@ -22,7 +22,9 @@ CONFIRM = 3
 VIX_HI = 20.0
 MARKET = [("SPY", "S&P 500"), ("QQQ", "Nasdaq 100"), ("IWM", "Russell 2000 (RTY)")]
 SECTORS = [("XLK", "Technology"), ("XLC", "Communication"), ("XLY", "Consumer discr."), ("XLF", "Financials"), ("XLV", "Health care"),
-           ("XLI", "Industrials"), ("XLE", "Energy"), ("XLB", "Materials"), ("XLP", "Consumer staples"), ("XLU", "Utilities"), ("XLRE", "Real estate")]
+           ("XLI", "Industrials"), ("XLE", "Energy"), ("XLB", "Materials"), ("XLP", "Consumer staples"), ("XLU", "Utilities"), ("XLRE", "Real estate"),
+           ("SMH", "Semiconductors")]
+HORIZONS = (5, 10, 20)                                 # forward returns, in trading days
 TRENDS = ("Up", "Range", "Down")
 VOLS = ("Calm", "Volatile")
 LABELS = [f"{t} · {v}" for t in TRENDS for v in VOLS]
@@ -142,14 +144,21 @@ def transitions(segs):
 def asset_stats(px, spy, days, lab):
     """Per regime: the next-day returns of the asset (close of a labeled day -> the next close). avg / annualized %,
     up days %, compounded %, excess vs SPY (avg per day, annualized) and beta to SPY in that regime."""
-    rows = {}
+    rows, fwd = {}, {}
     ds = [d for d in days if d in px]
-    for a, b in zip(ds, ds[1:]):
+    for i, (a, b) in enumerate(zip(ds, ds[1:])):
         if a not in lab or b not in spy or a not in spy:
             continue
         r, m = px[b] / px[a] - 1, spy[b] / spy[a] - 1
-        for l in (lab[a]["label"], lab[a]["trend"], lab[a]["vol"], "All") + (("Stress",) if lab[a]["stress"] else ()):
+        ls = (lab[a]["label"], lab[a]["trend"], lab[a]["vol"], "All") + (("Stress",) if lab[a]["stress"] else ())
+        for l in ls:
             rows.setdefault(l, []).append((r, m))
+        for k, h in enumerate(HORIZONS):              # the move over the next h trading days (windows overlap)
+            if i + h < len(ds) and ds[i + h] in spy:
+                e = ds[i + h]
+                fr, fm = px[e] / px[a] - 1, spy[e] / spy[a] - 1
+                for l in ls:
+                    fwd.setdefault(l, [[] for _ in HORIZONS])[k].append((fr, fm))
     out = {}
     for l, xs in rows.items():
         n = len(xs)
@@ -164,6 +173,10 @@ def asset_stats(px, spy, days, lab):
         out[l] = {"n": n, "avg": round(mr * 100, 3), "ann": round(mr * 252 * 100, 1), "up": round(sum(1 for x in rs if x > 0) / n * 100),
                   "cum": round((cum - 1) * 100, 1), "ex": round((mr - mm) * 252 * 100, 1), "beta": round(cov / var, 2) if var > 0 else None,
                   "vol": round(sd * math.sqrt(252) * 100, 1)}
+        fs = fwd.get(l) or [[] for _ in HORIZONS]      # forward: avg %, % of windows up, avg % vs SPY
+        out[l]["f"] = [round(sum(x[0] for x in w) / len(w) * 100, 2) if w else None for w in fs]
+        out[l]["fw"] = [round(sum(1 for x in w if x[0] > 0) / len(w) * 100) if w else None for w in fs]
+        out[l]["fx"] = [round(sum(x[0] - x[1] for x in w) / len(w) * 100, 2) if w else None for w in fs]
     return out
 
 

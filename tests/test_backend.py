@@ -6434,7 +6434,9 @@ def test_market_regimes():
             r = regime.run("rg1")
         finally:
             research._invoke = old
-        assert r["nStocks"] == 52 and len(r["assets"]) == 52 + 14 and r["current"]["label"] in regime.LABELS and r["running"] is None
+        assert r["nStocks"] == 52 and len(r["assets"]) == 52 + 15 and any(a["sym"] == "SMH" for a in r["assets"])
+        b0 = r["assets"][0]["by"]["All"]
+        assert len(b0["f"]) == 3 and all(0 <= v <= 100 for v in b0["fw"]) and r["assets"][0]["sym"] == "SPY" and b0["fx"] == [0.0, 0.0, 0.0] and r["current"]["label"] in regime.LABELS and r["running"] is None
         assert r["current"]["days"] == r["segments"][-1]["d"] and set(r["dur"]) == {"regime", "trend", "vol", "stress"}
         it = db.get(db.upk("rg1"), regime.SK)
         assert len(it["data"]) < 390_000 and regime.public("rg1")["span"]["days"] == r["span"]["days"]
