@@ -23,6 +23,7 @@ import db
 from util import iso, now_ny
 
 SK = "PLAB"
+ETF_LIST = "__etf"                                     # the universe = SPY, QQQ, IWM and the sector ETFs
 TRAIN = 0.6
 PARAMS = {"years": 15, "list": "Main", "riskPct": 1.0, "maxPos": 10, "maxPct": 20.0, "stopAtr": 2.0, "trailAtr": 3.0, "maxDays": 40,
           "rebDays": 20, "rebStopAtr": 3.0, "slipBp": 5.0, "rebound": "SPY,QQQ,IWM,SMH",
@@ -348,8 +349,8 @@ def run(sub, budget_s=540):
     cfg = wallwatch.config(sub)
     lst = next((L for L in cfg["lists"] if L["name"] == P["list"]), None) or cfg["lists"][0]
     etfs = [m for m, _ in regime.MARKET + regime.SECTORS]
-    stocks = [s for s in lst["tickers"] if s not in etfs]
-    syms = etfs + stocks + ["^VIX", "^VIX3M", "HYG", "IEF"]
+    stocks = list(etfs) if P["list"] == ETF_LIST else [s for s in lst["tickers"] if s not in etfs]   # ETFs: no hindsight in the pick
+    syms = list(dict.fromkeys(etfs + stocks + ["^VIX", "^VIX3M", "HYG", "IEF"]))
     x.update(step=f"loading {len(syms)} daily histories")
     _save(sub, x)
     data = {}

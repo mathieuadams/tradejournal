@@ -415,13 +415,13 @@ def load(sub, st):
     cfg = wallwatch.config(sub)
     lst = next((L for L in cfg["lists"] if L["name"] == st["list"]), None) or cfg["lists"][0]
     etfs = [m for m, _ in regime.MARKET + regime.SECTORS]
-    stocks = [s for s in lst["tickers"] if s not in etfs]
+    stocks = list(etfs) if st["list"] == plab.ETF_LIST else [s for s in lst["tickers"] if s not in etfs]
     k = (sub, st["years"], tuple(stocks), now_ny().strftime("%Y-%m-%d"))
     if _B.get("k") == k:
         return _B["v"]
     data = {}
     with ThreadPoolExecutor(max_workers=6) as ex:
-        for s, f in [(s, ex.submit(plab._bars, s, st["years"])) for s in etfs + stocks + ["^VIX", "^VIX3M", "HYG", "IEF"]]:
+        for s, f in [(s, ex.submit(plab._bars, s, st["years"])) for s in dict.fromkeys(etfs + stocks + ["^VIX", "^VIX3M", "HYG", "IEF"])]:
             try:
                 d = f.result(timeout=300)
                 if d:

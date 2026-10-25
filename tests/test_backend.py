@@ -6600,6 +6600,11 @@ def test_portfolio_lab():
         assert out["running"] is None and out["res"]["test"]["trades"]["n"] > 0 and len(out["ablation"]) == len(plab.LAYERS) + 1
         assert set(out["bench"]) == {"spy", "ew"} and out["curve"][0][1] == 100000 and out["cfg"]["maxPos"] == 6
         assert len(db.get(db.upk("pl1"), plab.SK)["data"]) < 380_000
+        research._invoke = lambda *a, **k: None
+        plab.start("pl2", {"cfg": {"years": 5, "list": plab.ETF_LIST}})
+        research._invoke = old
+        o2 = plab.run("pl2")
+        assert o2["nStocks"] == len(regime.MARKET + regime.SECTORS) and all(t["sym"] in dict(regime.MARKET + regime.SECTORS) for t in o2["trades"])
     finally:
         plab._bars, wallwatch.config = saved
 

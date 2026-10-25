@@ -484,7 +484,7 @@ def ropt_get(sub, claims, body, q):
     """Regime optimizer: the best strategies for bull / sideways / bear and the combined portfolio."""
     import regime
     import ropt
-    return {**ropt.public(sub), "lists": regime.lists(sub)}
+    return {**ropt.public(sub), "lists": [{"name": "__etf", "label": "Index + sector ETFs (no stock picking)", "n": 15}] + regime.lists(sub)}
 
 
 @route("PUT", "/ropt")
@@ -496,7 +496,7 @@ def ropt_set(sub, claims, body, q):
     out = ropt.save_cfg(sub, b)
     if b.get("on") and not out.get("running"):
         research._invoke(sub, "ropt", {})
-    return {**out, "lists": regime.lists(sub)}
+    return {**out, "lists": [{"name": "__etf", "label": "Index + sector ETFs (no stock picking)", "n": 15}] + regime.lists(sub)}
 
 
 @route("GET", "/plab")
@@ -504,14 +504,14 @@ def plab_get(sub, claims, body, q):
     """Portfolio lab: the layered strategy backtested as one portfolio (the last run and its settings)."""
     import plab
     import regime
-    return {**plab.public(sub), "lists": regime.lists(sub)}
+    return {**plab.public(sub), "lists": [{"name": "__etf", "label": "Index + sector ETFs (no stock picking)", "n": 15}] + regime.lists(sub)}
 
 
 @route("POST", "/plab")
 def plab_run(sub, claims, body, q):
     import plab
     import regime
-    return {**plab.start(sub, body or {}), "lists": regime.lists(sub)}
+    return {**plab.start(sub, body or {}), "lists": [{"name": "__etf", "label": "Index + sector ETFs (no stock picking)", "n": 15}] + regime.lists(sub)}
 
 
 @route("GET", "/regime")
