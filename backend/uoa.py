@@ -52,7 +52,8 @@ def fetch(sub, key, sym, side, days, min_prem, budget_s):
     mk = f"{META}{sym}#{side}"
     meta = db.get(pk, mk) or {}
     start = (now_ny() - timedelta(days=int(days * 1.45) + 3)).strftime("%Y-%m-%dT%H:%M:%S")
-    if meta.get("done") and meta.get("days", 0) >= days and meta.get("minPrem") == min_prem:
+    deep = meta.get("exhausted") or (meta.get("oldest") or "9999") <= (now_ny() - timedelta(days=int(days * 1.45) - 5)).strftime("%Y-%m-%d")
+    if meta.get("done") and deep and meta.get("days", 0) >= days and meta.get("minPrem") == min_prem:
         stop = max(start, (meta.get("newest") or start))          # top-up: only what's new
         older = None
     else:
@@ -60,7 +61,7 @@ def fetch(sub, key, sym, side, days, min_prem, budget_s):
         older = meta.get("cursor") if meta.get("minPrem") == min_prem and meta.get("days") == days else None
     base = {"limit": 200, "min_premium": int(min_prem), "min_dte": 0, "max_dte": 800, "ticker_symbol": sym, "is_ask_side": "true",
             "is_call": "true" if side == "call" else "false", "is_put": "true" if side == "put" else "false"}
-    t0, n, by_m, newest, oldest, finished = time.time(), 0, {}, meta.get("newest"), meta.get("oldest"), False
+    t0, n, by_m, newest, oldest, finished, why = time.time(), 0, {}, meta.get("newest"), meta.get("oldest"), False, None
     while time.time() - t0 < budget_s:
         q = dict(base)
         if older:
@@ -86,8 +87,8 @@ def fetch(sub, key, sym, side, days, min_prem, budget_s):
             n += 1
             newest = max(newest or "", created)
             oldest = min(oldest or "9999", et[:10])
-        if len(page) < 200:
-            finished = True
+        if not page:                                   # (a short page isn't the end: the plan may cap the page size)
+            finished, why = True, "empty"
             break
         oc = min((a.get("created_at") or "") for a in page)
         if not oc or oc.replace(" ", "T")[:19] < stop or oc == older:
@@ -101,20 +102,24 @@ def fetch(sub, key, sym, side, days, min_prem, budget_s):
         cur += [r for r in rows if (r.get("id") or (r["t"], r["p"])) not in seen]
         db.put({**it, "PK": pk, "SK": _key(sym, m), side: sorted(cur, key=lambda r: r["t"])[-6000:]})
     meta.update(days=days, minPrem=min_prem, newest=newest, oldest=oldest, at=iso(now_ny()), n=int(meta.get("n") or 0) + n,
-                cursor=None if finished else older, done=bool(finished or meta.get("done")))
+                cursor=None if finished else older, done=bool(finished or meta.get("done")),
+                exhausted=bool(meta.get("exhausted") or why == "empty"))
     db.put({"PK": pk, "SK": mk, **meta})
     return finished, n
 
 
 def hist_public(sub):
     st = db.get(db.upk(sub), HIST_SK) or {}
-    return {k: st.get(k) for k in ("running", "days", "minPrem", "total", "done", "alerts", "errors", "at", "oldest")}
+    return {k: st.get(k) for k in ("running", "days", "minPrem", "total", "done", "alerts", "errors", "at", "oldest", "newestOldest")}
 
 
 def hist_start(sub, b):
     import research
     b = b or {}
     st = db.get(db.upk(sub), HIST_SK) or {}
+    if b.get("reload"):                                # page everything again (after a fix of the paging)
+        for it in db.q_prefix(db.upk(sub), META):
+            db.put({**it, "done": False, "cursor": None, "newest": None})
     st.update(PK=db.upk(sub), SK=HIST_SK, running=iso(now_ny()), days=max(60, min(800, int(b.get("days") or st.get("days") or 500))),
               minPrem=int(b.get("minPrem") or st.get("minPrem") or 100000), errors=[], doneList=[])
     db.put(st)
@@ -150,9 +155,9 @@ def hist_job(sub, params=None, budget_s=480):
         if ok:
             done.add(sym)
     n = sum(int((db.get(pk, f"{META}{s}#{sd}") or {}).get("n") or 0) for s in tick for sd in ("call", "put")) if len(done) >= len(tick) else st.get("alerts")
-    olds = [x for x in ((db.get(pk, f"{META}{s}#call") or {}).get("oldest") for s in list(done)[:30]) if x]
+    olds = [x for x in ((db.get(pk, f"{META}{s}#{sd}") or {}).get("oldest") for s in done for sd in ("call", "put")) if x]
     st.update(doneList=sorted(done), done=len(done), total=len(tick), errors=errs[-8:], at=iso(now_ny()), alerts=n,
-              oldest=min(olds) if olds else st.get("oldest"), running=iso(now_ny()) if len(done) < len(tick) else None)
+              oldest=min(olds) if olds else st.get("oldest"), newestOldest=max(olds) if olds else None, running=iso(now_ny()) if len(done) < len(tick) else None)
     db.put(st)
     if len(done) < len(tick):
         research._invoke(sub, "uoahist", {})

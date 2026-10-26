@@ -6743,6 +6743,10 @@ def test_unusual_flow_study():
         assert {"cluster", "repeat", "total", "mixed"} <= set(out["factors"]["call"]) and "single (none in 5 days)" in out["factors"]["call"]["cluster"]
         assert out["pairs"]["call"] and all(set(p["train"]) == {"1", "3", "5", "10"} for p in out["pairs"]["call"])
         assert len(db.get(db.upk("uo1"), uoa.SK)["data"]) < 380_000
+        flowdata._get = lambda key, q: {"data": fake_get(key, q)["data"][:50]}      # a plan that caps a page at 50
+        uoa.fetch("uo2", "k", "AAA", "call", 600, 100000, 60)
+        deep = uoa.stored("uo2", "AAA")["call"]
+        assert len(deep) == len(uoa.stored("uo1", "AAA")["call"]) and deep[0]["t"][:10] == st["call"][0]["t"][:10]
     finally:
         flowdata._get, flowdata._key, plab._bars, wallwatch.config, research._invoke = saved
 
