@@ -17,7 +17,13 @@ def api_key():
     if _key is None:
         import boto3
         v = boto3.client("secretsmanager").get_secret_value(SecretId=os.environ["ANTHROPIC_SECRET_ARN"])
-        _key = v["SecretString"].strip()
+        raw = v["SecretString"].strip()
+        if raw.startswith("{"):                        # stored as JSON ({"ANTHROPIC_API_KEY": "sk-ant-..."}): take the key
+            try:
+                raw = next((str(x) for x in json.loads(raw).values() if str(x).startswith("sk-")), raw)
+            except ValueError:
+                pass
+        _key = raw.strip().strip('"').strip("'").strip()
     if not _key or _key.startswith("REPLACE"):
         _key = None  # re-read next time, so a key added later works without a redeploy
         raise Unavailable("The AI coach isn't configured yet. Add your Anthropic API key (see README).")
@@ -25,6 +31,7 @@ def api_key():
 
 
 def messages(model, system, msgs, max_tokens=1500, tools=None, extra=None):
+    global _key
     body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": msgs}
     if tools:
         body["tools"] = tools
@@ -38,10 +45,17 @@ def messages(model, system, msgs, max_tokens=1500, tools=None, extra=None):
             with urllib.request.urlopen(req, timeout=60 if max_tokens <= 4000 else 240) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt < 2:          # the key was changed since this container read it: read it again
+                _key = None
+                continue
             if e.code in (429, 500, 502, 503, 529) and attempt < 2:
                 time.sleep(2 * (attempt + 1))
                 continue
             detail = e.read().decode(errors="replace")[:300]
+            if e.code == 401:
+                k = _key or ""
+                raise Unavailable(f"Anthropic rejected the API key stored for the app (ends ...{k[-4:] if len(k) > 8 else '?'}): "
+                                  "update it in GitHub → Settings → Secrets → Actions → ANTHROPIC_API_KEY (every deploy copies it to AWS), then redeploy.")
             raise Unavailable(f"The AI service returned an error ({e.code}): {detail}")
         except urllib.error.URLError as e:
             if attempt < 2:
