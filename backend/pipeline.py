@@ -796,15 +796,38 @@ def accounts(sub, strats=None):
     strats = strats if strats is not None else strategies(sub)
     out = []
     used = {s["account"]: s for s in strats if s.get("account") and s["stage"] in ("paper", "live")}
+    on = _bots_on(sub)
     for sk, name in BOT_ACCOUNTS:
         it = db.get(_pk(sub), sk)
+        s = used.get(sk)
         out.append({"sk": sk, "name": name, "connected": bool(it), "env": (it or {}).get("env"), "keyHint": (it or {}).get("keyHint"),
-                    "bot": True, "usedBy": name.split(" account")[0].replace("Options bot", "Options flow bot")})
+                    "bot": True, "botOn": on.get(sk) or None, "usedBy": s["name"] if s else None, "usedById": s["id"] if s else None})
     for it in db.q_prefix(_pk(sub), ACC):
         s = used.get(it["SK"])
         out.append({"sk": it["SK"], "name": it.get("name") or it["SK"][len(ACC):], "connected": True, "env": it.get("env"), "keyHint": it.get("keyHint"),
                     "bot": False, "usedBy": s["name"] if s else None, "usedById": s["id"] if s else None})
     return out
+
+
+def _bots_on(sub):
+    """{account: 'the bot trading on it'} for the older bots that are switched on."""
+    on = {}
+    try:
+        import autotrader
+        c = autotrader.settings(sub)
+        if c.get("flowAuto") and c.get("autoSubmit"):
+            on["BROKER#alpaca"] = "Options flow bot"
+    except Exception as e:
+        print("bots on: flow", e)
+    for mod, sk, name in (("smclive", "BROKER#alpacaday", "Smart money QQQ / SPY"), ("daytrade", "BROKER#alpacaday", "Day trading QQQ / SPY"),
+                          ("stockday", "BROKER#alpacastock", "Stocks in play")):
+        try:
+            c = __import__(mod).config(sub)
+            if c.get("enabled") and c.get("trade"):
+                on[sk] = (on[sk] + " + " if sk in on else "") + name
+        except Exception as e:
+            print("bots on:", mod, e)
+    return on
 
 
 def connect(sub, b):
@@ -884,8 +907,8 @@ def action(sub, pid, b):
         acc = next((x for x in accounts(sub) if x["sk"] == sk), None)
         if not acc or not acc["connected"]:
             raise BadRequest("Pick a connected account.")
-        if acc["bot"]:
-            raise BadRequest(f"{acc['name']} is used by the {acc['usedBy']}: give the strategy an account of its own.")
+        if acc.get("botOn") and not b.get("share"):
+            raise BadRequest(f"The {acc['botOn']} is trading on {acc['name']}: confirm sharing the account (its P&L mixes with the bot's).")
         if acc.get("usedById") and acc["usedById"] != pid:
             raise BadRequest(f"{acc['name']} is already used by {acc['usedBy']}.")
         if a == "live" and acc.get("env") != "live":

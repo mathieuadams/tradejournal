@@ -5772,7 +5772,7 @@ function vResearch() {
   const ss = (P.strategies || []).filter(s => s.stage === 'research'), ret = (P.strategies || []).filter(s => s.stage === 'retired');
   const next = s => { const st = s.protocol.steps, j = s.job || {};
     if (j.running) return `<span class="loading" style="padding:0">${esc(j.msg || 'running')}</span>`;
-    if (s.protocol.ready) return '<span class="verdict ok">Ready → promote to paper</span>';
+    if (s.protocol.ready) return `<span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap" data-ppstop>${ppAccSel(P, s.id, 'paper')}<button class="btn coachbtn" data-pppromote="${s.id}|paper">Paper trade</button></span>`;
     const f = st.find(x => x.status !== 'done' && !(x.key === 'study' && x.status === 'weak'));
     return f ? `${f.status === 'failed' ? '<span class="loss">Failed at</span>' : 'Next:'} ${esc(f.name)}` : ''; };
   const rows = ss.map(s => `<tr data-ppopen="${s.id}" style="cursor:pointer"><td class="ppw"><b>${esc(s.name)}</b><div class="muted" style="font-size:.76rem">${esc(s.rule)}</div></td>
@@ -5942,8 +5942,8 @@ function ppImprove(s, R, busy) {
 }
 function ppAccSel(D, id, want) {
   const acc = (D.accounts || []).filter(a => a.connected);
-  return `<select id="pp-acc-${id}" style="min-width:260px"><option value="">Pick an account…</option>${acc.map(a => { const bad = a.bot ? `used by the ${a.usedBy}` : a.usedById && a.usedById !== id ? `used by ${a.usedBy}` : a.env !== want ? `${a.env} keys` : '';
-    return `<option value="${esc(a.sk)}" ${bad ? 'disabled' : ''}>${esc(a.name)} ··${esc(a.keyHint || '')}${bad ? ` (${esc(bad)})` : ' (free)'}</option>`; }).join('')}</select>`;
+  return `<select id="pp-acc-${id}" data-ppaccsel="${id}" style="min-width:260px" aria-label="Account"><option value="">Pick an account…</option>${acc.map(a => { const bad = a.usedById && a.usedById !== id ? `used by ${a.usedBy}` : a.env !== want ? `${a.env} keys` : '';
+    return `<option value="${esc(a.sk)}" ${bad ? 'disabled' : ''} ${a.botOn ? `data-share="${esc(a.botOn)}"` : ''}>${esc(a.name)} ··${esc(a.keyHint || '')}${bad ? ` (${esc(bad)})` : a.botOn ? ` (shared with the ${esc(a.botOn)})` : ' (free)'}</option>`; }).join('')}</select>`;
 }
 const ppAccForm = () => `<details style="margin-top:10px"><summary class="muted">Connect another Alpaca account</summary><div class="form-grid" style="margin-top:8px">
     <div class="field"><label for="ppa-name">Name</label><input id="ppa-name" placeholder="Paper 2"></div><div class="field"><label for="ppa-key">API key</label><input id="ppa-key" autocomplete="off"></div>
@@ -6020,7 +6020,7 @@ document.addEventListener('click', e => {
   const el = e.target.closest('[data-ppopen],[data-pptab],[data-pprun],[data-ppsym],[data-ppnew],[data-ppcadd],[data-ppcdel],[data-ppcreate],[data-pppromote],[data-ppact],[data-ppdel],[data-ppacc]');
   if (!el) return;
   const d = el.dataset;
-  if (d.ppopen) { location.hash = '#botstrat?id=' + d.ppopen; return; }
+  if (d.ppopen) { if (e.target.closest('[data-ppstop]')) return; location.hash = '#botstrat?id=' + d.ppopen; return; }
   if (d.pptab) { const [id, t] = d.pptab.split('|'); S.ppTab = { ...(S.ppTab || {}), [id]: t }; render(); return; }
   if (d.ppsym) { const [id, t] = d.ppsym.split('|'); S.ppSym = { ...(S.ppSym || {}), [id]: t }; render(); return; }
   if (d.pprun) { const [id, step] = d.pprun.split('|'); el.disabled = true;
@@ -6033,12 +6033,14 @@ document.addEventListener('click', e => {
       universe: N.uni === '__tk' ? { tickers: N.tickers } : { list: N.uni } };
     api('/pipeline', { method: 'POST', body }).then(r => { const id = r.strategy.id; S.pipeD = { ...(S.pipeD || {}), [id]: r }; S.ppNew = false; S.ppNewD = null; S.pipe = undefined;
       return api(`/pipeline/${id}/run`, { method: 'POST', body: { step: 'all' } }).then(r2 => { S.pipeD[id] = r2; location.hash = '#botstrat?id=' + id; loadPipeD(id, true); }); }).catch(err => toast(err.message)); return; }
-  if (d.pppromote) { const [id, stage] = d.pppromote.split('|'), acc = ($('#pp-acc-' + id) || {}).value;
+  if (d.pppromote) { const [id, stage] = d.pppromote.split('|'), sel = $('#pp-acc-' + id), acc = (sel || {}).value;
     if (!acc) { toast('Pick an account'); return; }
+    const sh = sel.selectedOptions[0] && sel.selectedOptions[0].dataset.share;
+    if (sh && !confirm(`The ${sh} also trades on this account: the strategy's orders and P&L will mix with the bot's on the broker side (the pipeline still tracks its own trades). Use it anyway?`)) return;
     if (stage === 'live' && !confirm('Go LIVE: this strategy will place real orders on that account. Continue?')) return;
     const alloc = $('#pp-alloc'), mx = $('#pp-maxpos');
     const pre = alloc ? api('/pipeline/' + id, { method: 'PUT', body: { action: 'update', allocPct: +alloc.value, maxPos: +mx.value } }) : Promise.resolve();
-    pre.then(() => api('/pipeline/' + id, { method: 'PUT', body: { action: stage, account: acc } })).then(r => { S.pipeD[id] = r; S.pipe = undefined; S.ppTab = { ...(S.ppTab || {}), [id]: 'paper' }; toast(stage === 'live' ? 'Live' : 'On paper: first run tonight after the close'); render(); }).catch(err => toast(err.message)); return; }
+    pre.then(() => api('/pipeline/' + id, { method: 'PUT', body: { action: stage, account: acc, share: !!sh } })).then(r => { S.pipeD[id] = r; S.pipe = undefined; S.ppTab = { ...(S.ppTab || {}), [id]: 'paper' }; toast(stage === 'live' ? 'Live' : 'On paper: first run tonight after the close'); render(); }).catch(err => toast(err.message)); return; }
   if (d.ppact) { const [id, a] = d.ppact.split('|');
     if (a === 'retire' && !confirm('Retire this strategy?')) return;
     api('/pipeline/' + id, { method: 'PUT', body: { action: a } }).then(r => { S.pipeD[id] = r; S.pipe = undefined; render(); }).catch(err => toast(err.message)); return; }

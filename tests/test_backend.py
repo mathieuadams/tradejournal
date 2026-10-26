@@ -6843,11 +6843,14 @@ def test_strategy_pipeline():
         res = pipeline.results("pp1", s["id"])
         res["validation"]["passed"] = True
         pipeline._save_results("pp1", s["id"], res)
+        bo = pipeline._bots_on
+        pipeline._bots_on = lambda sub: {"BROKER#alpaca": "Options flow bot"}
         try:
             pipeline.action("pp1", s["id"], {"action": "paper", "account": "BROKER#alpaca"})
             assert False
         except Exception as e:
-            assert "account of its own" in str(e)
+            assert "confirm sharing" in str(e)
+        pipeline._bots_on = bo
         P = pipeline.action("pp1", s["id"], {"action": "paper", "account": "BROKER#alpacapipe#01"})
         assert P["strategy"]["stage"] == "paper" and P["strategy"]["kill"]["status"] == "armed"
         acc = {a["sk"]: a for a in P["accounts"]}
