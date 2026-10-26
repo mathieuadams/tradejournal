@@ -2008,6 +2008,12 @@ def handler(event, context_):
             elif job == "wwopt":
                 import wwopt
                 out[sub] = wwopt.job(sub, event.get("params") or {})
+            elif job == "uoahist":
+                import uoa
+                out[sub] = uoa.hist_job(sub, event.get("params") or {})
+            elif job == "uoastudy":
+                import uoa
+                out[sub] = uoa.study_job(sub, event.get("params") or {})
             elif job == "ropt":
                 import ropt
                 out[sub] = ropt.job(sub, event.get("params") or {})

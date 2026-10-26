@@ -479,6 +479,25 @@ def daytrade_smc(sub, claims, body, q):
     return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
 
 
+@route("GET", "/uoa")
+def uoa_get(sub, claims, body, q):
+    """Unusual options activity study: the alert history (calls + puts) and the study by condition."""
+    import uoa
+    return {"hist": uoa.hist_public(sub), "study": uoa.study_public(sub)}
+
+
+@route("POST", "/uoa/history")
+def uoa_hist(sub, claims, body, q):
+    import uoa
+    return {"hist": uoa.hist_start(sub, body or {})}
+
+
+@route("POST", "/uoa/study")
+def uoa_study(sub, claims, body, q):
+    import uoa
+    return {"study": uoa.study_start(sub, body or {})}
+
+
 @route("GET", "/ropt")
 def ropt_get(sub, claims, body, q):
     """Regime optimizer: the best strategies for bull / sideways / bear and the combined portfolio."""

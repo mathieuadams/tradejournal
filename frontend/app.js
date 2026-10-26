@@ -1753,7 +1753,7 @@ async function loadTickers() {
   S.tkBusy = false;
   if (route() === 'botchart') render();
 }
-try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = m0 === 'smc' ? 'smc' : m0 === 'ww2' ? 'ww2' : m0 === 'reg' ? 'reg' : m0 === 'plab' ? 'plab' : ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
+try { const m0 = localStorage.getItem('fcfMode'); S.fcfMode = m0 === 'smc' ? 'smc' : m0 === 'ww2' ? 'ww2' : m0 === 'reg' ? 'reg' : m0 === 'plab' ? 'plab' : m0 === 'uoa' ? 'uoa' : ['dt', 'sd'].includes(m0) ? 'dt' : 'ww'; } catch (e) { S.fcfMode = 'ww'; }   // Wall watch, or Day trading
 function fcfSetMode(m) { S.fcfMode = m; try { localStorage.setItem('fcfMode', m); } catch (e) {} }
 function wwReviewBox() {
   const r = S.wwRev;
@@ -1811,7 +1811,7 @@ const FC_REFRESH_MS = 5 * 60 * 1000;               // an open chart reloads its 
 setInterval(() => {                                // the check runs on a redraw: one a minute while a chart is open and seen
   if (route() === 'botchart' && document.visibilityState === 'visible' && !document.querySelector('input:focus,select:focus,textarea:focus')) render();
 }, 60000);
-const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['smc', 'Smart money'], ['ww2', 'Wall watch 2'], ['reg', 'Market regimes'], ['plab', 'Portfolio lab']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
+const fcModeSeg = () => `<span class="seg" role="group" aria-label="Tickers">${[['ev', 'Evaluated'], ['ww', 'Wall watch'], ['dt', 'Day trading'], ['smc', 'Smart money'], ['ww2', 'Wall watch 2'], ['reg', 'Market regimes'], ['plab', 'Portfolio lab'], ['uoa', 'Flow study']].map(([m, l]) => `<button class="btn ${S.fcfMode === m ? 'coachbtn' : ''}" data-fcfmode="${m}" style="padding:3px 10px">${l}</button>`).join('')}</span>`;
 function vChartWW() {
   const list = wwTickers(), t0 = (hashParam('t') || '').toUpperCase(), held = ((S.ww && S.ww.positions) || []).map(x => x.symbol);
   const sym = t0 && (list.includes(t0) || held.includes(t0) || S.chartLab) ? t0 : (list[0] || t0), labOn = !!S.chartLab && !!S.ww && !!labCfg(), id = (labOn ? 'ww-lab-' : 'ww-') + sym;
@@ -2236,6 +2236,56 @@ function vChartPLAB() {
       ${plabCurve(x.curve, x.split, W)}${plabRes(x)}${plabAbl(x)}${settings}
       <details style="margin-top:6px"><summary style="cursor:pointer;font-size:.84rem">Trades (${x.nTrades || 0}, latest 400)</summary><div style="overflow-x:auto;max-height:380px"><table class="pos" style="font-size:.74rem;width:100%"><thead><tr><th>Ticker</th><th>Sleeve</th><th>In</th><th class="r">Price</th><th class="r">Shares</th><th>Out</th><th class="r">Price</th><th>Why</th><th class="r">R</th></tr></thead><tbody>
         ${(x.trades || []).map(t => `<tr><td><b>${esc(t.sym)}</b></td><td>${esc(t.sleeve)}</td><td>${esc(t.at)}</td><td class="r">${t.px}</td><td class="r">${t.sh}</td><td>${esc(t.exitAt || 'open')}</td><td class="r">${t.exitPx}</td><td>${esc(t.why)}</td><td class="r"><b class="${t.R > 0 ? 'gain' : 'loss'}">${t.R > 0 ? '+' : ''}${t.R}</b></td></tr>`).join('')}</tbody></table></div></details>`; }
+  return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main" style="padding:0 6px">${main}</div></div></div>`;
+}
+// ---- Options flow study: when do unusual call / put buys lead the stock (backend uoa.py)
+async function loadUoa() {
+  try { S.uoa = await api('/uoa'); } catch (e) { S.uoa = { error: e.message }; }
+  if (route() === 'botchart') render();
+  clearTimeout(S.uoaT); const r = S.uoa && ((S.uoa.hist || {}).running || (S.uoa.study || {}).running);
+  if (r) S.uoaT = setTimeout(() => { if (route() === 'botchart' && S.fcfMode === 'uoa') loadUoa(); }, 15000);
+}
+function vChartUOA() {
+  if (S.uoa === undefined) { S.uoa = null; setTimeout(loadUoa, 0); }
+  const U = S.uoa || {}, H = U.hist || {}, X = U.study || {}, side = S.uoaSide || 'call', hz = S.uoaH || 5, met = S.uoaMet || 'vs';
+  const pc = v => v == null ? '—' : `${v > 0 ? '+' : ''}${(+v).toFixed(2)}%`;
+  const head = `<div class="fcf-head"><b style="font-size:1.25rem">Options flow study</b> ${fcModeSeg()}
+    ${X.at ? '<button class="btn" data-uoajson style="padding:3px 12px">⬇ JSON</button>' : ''}<span style="flex:1"></span><a class="btn" href="#botevals" aria-label="Close full screen">✕</a></div>`;
+  const hist = `<div class="smc-stress"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b>1. The alert history</b>
+      <select data-uoaprem style="font-size:.8rem">${[100000, 250000, 500000, 1000000].map(v => `<option value="${v}" ${(S.uoaPrem || H.minPrem || 100000) === v ? 'selected' : ''}>alerts ≥ $${v >= 1e6 ? v / 1e6 + 'M' : v / 1e3 + 'K'}</option>`).join('')}</select>
+      <select data-uoadays style="font-size:.8rem">${[250, 500, 800].map(v => `<option value="${v}" ${(S.uoaDays || H.days || 500) === v ? 'selected' : ''}>${v} days back</option>`).join('')}</select>
+      <button class="btn coachbtn" data-uoahist ${H.running ? 'disabled' : ''} style="font-size:.8rem">${H.running ? 'Getting the alerts…' : H.at ? 'Top up / get more' : 'Get the alert history'}</button>
+      <span class="muted" style="font-size:.76rem">${H.total ? `${H.done || 0} / ${H.total} tickers loaded` : ''}${H.alerts ? ` · ${fmtInt(H.alerts)} alerts` : ''}${H.oldest ? ` · back to ${esc(H.oldest)}` : ''}${H.running ? ' · runs in the background (8-minute rounds)' : ''}</span>
+      ${(H.errors || []).length ? `<span class="loss" style="font-size:.74rem">${esc(H.errors[H.errors.length - 1])}</span>` : ''}</div>
+    <div class="muted" style="font-size:.74rem;margin-top:3px">Every call AND put alert of the size above bought at the ask (60%+), any expiration, for every watchlist ticker, from Unusual Whales, with the strike, expiration, sweep and volume / open interest. How far back depends on your Unusual Whales plan.</div></div>`;
+  const study = `<div class="smc-stress"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><b>2. The study</b>
+      <button class="btn coachbtn" data-uoastudy ${X.running ? 'disabled' : ''} style="font-size:.8rem">${X.running ? 'Running…' : X.at ? 'Run again' : 'Run the study'}</button>
+      <span class="muted" style="font-size:.76rem">${X.running ? `<span class="loading" style="padding:0">${esc(X.step || 'running')}</span>` : X.at ? `last run ${esc(X.at.replace('T', ' ').slice(0, 16))} · ${fmtInt(X.n || 0)} events · ${X.nTickers} tickers` : ''}</span>
+      ${X.error ? `<span class="loss" style="font-size:.76rem">${esc(X.error)}</span>` : ''}</div>
+    <div class="muted" style="font-size:.74rem;margin-top:3px">A ticker's alerts of one side on one day = one event (the biggest alert, the count, the total). The move: from that day's close over the next 1 / 3 / 5 / 10 trading days <b>in the alert's direction</b> (puts: the move upside down), raw or vs SPY. Train = the first 60% of the events${X.split && X.split.cut ? ` (to ${esc(X.split.cut)})` : ''}, test = the rest.</div></div>`;
+  if (!X.sides) return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main" style="padding:0 6px">${hist}${study}</div></div></div>`;
+  const cell = a => !a || !a.n ? '<td class="r muted">—</td><td></td><td></td><td></td>' : `<td class="r">${a.n}</td><td class="r ${a.avg > 0 ? 'gain' : 'loss'}">${pc(a.avg)}</td><td class="r">${a.win}%</td><td class="r">${a.t ?? '—'}</td>`;
+  const ok = (tr, te) => tr && te && tr.n >= 30 && te.n >= 20 && tr.avg > 0 && te.avg > 0 && (tr.t || 0) >= 1.5 && (te.t || 0) >= 1.5;
+  const H4 = `<th class="r">Events</th><th class="r">Avg</th><th class="r">Right</th><th class="r">t</th>`;
+  const ctl = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0 4px">
+    <span class="seg" role="group">${[['call', 'Calls'], ['put', 'Puts']].map(([k, l]) => `<button class="btn ${side === k ? 'coachbtn' : ''}" data-uoaside="${k}" style="padding:2px 12px">${l}</button>`).join('')}</span>
+    <span class="seg" role="group">${(X.hz || [1, 3, 5, 10]).map(h => `<button class="btn ${hz === h ? 'coachbtn' : ''}" data-uoah="${h}" style="padding:2px 10px">next ${h} day${h > 1 ? 's' : ''}</button>`).join('')}</span>
+    <span class="seg" role="group">${[['vs', 'vs SPY'], ['raw', 'raw move']].map(([k, l]) => `<button class="btn ${met === k ? 'coachbtn' : ''}" data-uoamet="${k}" style="padding:2px 10px">${l}</button>`).join('')}</span></div>`;
+  const sumT = `<table class="pos" style="font-size:.78rem;width:auto"><thead><tr><th></th><th colspan="4" class="r">Train</th><th colspan="4" class="r">Test</th><th colspan="4" class="r">All</th></tr><tr><th></th>${H4}${H4}${H4}</tr></thead><tbody>
+    ${['call', 'put'].map(sd => { const S_ = X.sides[sd] || {}; return `<tr><td><b>${sd === 'call' ? 'Call alerts' : 'Put alerts'}</b></td>${['train', 'test', 'all'].map(p => cell((((S_[p] || {})[hz]) || {})[met])).join('')}</tr>`; }).join('')}</tbody></table>`;
+  const F = (X.factors || {})[side] || {}, names = X.factorNames || {};
+  const facT = `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th></th><th></th><th colspan="4" class="r">Train</th><th colspan="4" class="r">Test</th></tr><tr><th>Condition</th><th></th>${H4}${H4}</tr></thead><tbody>
+    ${Object.keys(F).map(fk => Object.keys(F[fk]).map((v, i) => { const tr = ((F[fk][v].train || {})[hz] || {})[met], te = ((F[fk][v].test || {})[hz] || {})[met];
+      return `<tr style="${ok(tr, te) ? 'background:color-mix(in srgb,var(--gain) 10%,transparent)' : ''}"><td>${i ? '' : `<b>${esc(names[fk] || fk)}</b>`}</td><td>${esc(v)}</td>${cell(tr)}${cell(te)}</tr>`; }).join('')).join('')}</tbody></table></div>`;
+  const P = (X.pairs || {})[side] || [];
+  const pairT = `<div style="overflow-x:auto"><table class="pos" style="font-size:.76rem;width:100%"><thead><tr><th></th><th></th><th colspan="4" class="r">Train</th><th colspan="4" class="r">Test</th></tr><tr><th>#</th><th>Conditions (both)</th>${H4}${H4}</tr></thead><tbody>
+    ${P.map((p, i) => { const k = met === 'vs' ? '' : 'Raw', tr = (p['train' + k] || {})[hz], te = (p['test' + k] || {})[hz];
+      return `<tr style="${ok(tr, te) ? 'background:color-mix(in srgb,var(--gain) 10%,transparent)' : ''}"><td>${i + 1}</td><td><span class="exchip" style="font-size:.7rem">${esc(names[p.a[0]] || p.a[0])}: ${esc(p.a[1])}</span> <span class="exchip" style="font-size:.7rem">${esc(names[p.b[0]] || p.b[0])}: ${esc(p.b[1])}</span></td>${cell(tr)}${cell(te)}</tr>`; }).join('')}</tbody></table></div>`;
+  const main = `${hist}${study}${ctl}
+    <h4 style="font-size:.9rem;margin:8px 0 4px">All events: the stock's move in the alert's direction</h4>${sumT}
+    <h4 style="font-size:.9rem;margin:12px 0 4px">${side === 'call' ? 'Call' : 'Put'} alerts, one condition at a time</h4>${facT}
+    <h4 style="font-size:.9rem;margin:12px 0 4px">${side === 'call' ? 'Call' : 'Put'} alerts, the best pairs of conditions <span class="muted" style="font-weight:400;font-size:.76rem">(chosen on the train 5-day move vs SPY, 60+ events)</span></h4>${pairT}
+    <div class="muted" style="font-size:.72rem;margin:4px 0 10px">Green: the move is in the alert's direction on BOTH the train and the test events (t ≥ 1.5, enough events). "Right" = the share of events where the stock went the alert's way. The windows overlap (a stock's events a few days apart share days), so the t values are on the high side.</div>`;
   return `<div class="fcf">${head}<div class="fcf-body"><div class="fcf-main" style="padding:0 6px">${main}</div></div></div>`;
 }
 function vChartREG() {
@@ -3796,6 +3846,7 @@ function dtWhyBox() {
 }
 function dtPut(body, msg) { return api('/daytrade', { method: 'PUT', body }).then(r => { S.dt = r; if (msg) toast(msg); S.dtFc = null; render(); }).catch(err => toast(err.message)); }
 function vChartFull() {
+  if (S.fcfMode === 'uoa') return vChartUOA();
   if (S.fcfMode === 'plab') return vChartPLAB();
   if (S.fcfMode === 'reg') return vChartREG();
   if (S.fcfMode === 'ww2') return vChartWW2();
@@ -5743,7 +5794,7 @@ document.addEventListener('scroll', e => {             // remember where the cha
 async function reload() { const [me, tr] = await Promise.all([api('/me'), api('/trades')]); S.me = me; S.trades = tr.trades.sort(chron); if (!cur) render(); }
 window.addEventListener('hashchange', () => { S.fcfY = 0; render(); window.scrollTo(0, 0); });
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-plabview],[data-ropt],[data-roptjson],[data-plabrun],[data-plabsw],[data-plabjson],[data-regjson],[data-w2btjson],[data-mregrun],[data-regmet],[data-regh],[data-rkgrp],[data-rkh],[data-macmet],[data-mach],[data-regsort],[data-w2zoom],[data-w2tf],[data-w2days],[data-w2sw],[data-w2side],[data-w2default],[data-w2bt],[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwopttf],[data-wwedge],[data-wwedgeuse],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
+  const el = e.target.closest('[data-uoahist],[data-uoastudy],[data-uoaside],[data-uoah],[data-uoamet],[data-uoajson],[data-plabview],[data-ropt],[data-roptjson],[data-plabrun],[data-plabsw],[data-plabjson],[data-regjson],[data-w2btjson],[data-mregrun],[data-regmet],[data-regh],[data-rkgrp],[data-rkh],[data-macmet],[data-mach],[data-regsort],[data-w2zoom],[data-w2tf],[data-w2days],[data-w2sw],[data-w2side],[data-w2default],[data-w2bt],[data-rx],[data-stview],[data-chleft],[data-chwl],[data-flowday],[data-smcopt],[data-smcoptuse],[data-wwopt],[data-wwopttf],[data-wwedge],[data-wwedgeuse],[data-wwoptuse],[data-smclivespeed],[data-smclivetest],[data-smclivecheck],[data-smcwinrun],[data-smczoom],[data-smclive],[data-smclivesave],[data-smcstrun],[data-smcststop],[data-smcsw],[data-smcfilled],[data-smctf],[data-smcdays],[data-smcreload],[data-smcopen],[data-smcsel],[data-smcapply],[data-smcdefault],[data-mvday],[data-mvreload],[data-chartdaily],[data-hideanalysis],[data-sdsw],[data-sdset],[data-sdapply],[data-sdwatch],[data-sdprep],[data-sdbt],[data-sdchart],[data-sddisconnect],[data-dtrob],[data-dtsearch],[data-dtsrchuse],[data-dtwexp],[data-dtcmpcur],[data-dtpresel],[data-dtpresave],[data-dtpredel],[data-dtpreload],[data-dtcmp],[data-dtstudy],[data-dtsw],[data-dtapply],[data-dttf],[data-dtdays],[data-dtreload],[data-dtdisconnect],[data-dtbt],[data-wwreview],[data-wwrevhide],[data-wwrevcloseall],[data-wltoggle],[data-wlnew],[data-wldel],[data-wlren],[data-wlrm],[data-wlmv],[data-labtolive],[data-optrun],[data-optsym],[data-optshow],[data-labtf],[data-labpreset],[data-rsrun],[data-trycombo],[data-rtlab],[data-rtsrc],[data-hidesettings],[data-hidestats],[data-chartlab],[data-labsw],[data-labapply],[data-labreset],[data-labtest],[data-regrun],[data-pvrun],[data-wwdays],[data-wwallrules],[data-fcalllayers],[data-rtrob],[data-itdrun],[data-rthist],[data-rtrun],[data-wwsw],[data-wwflow],[data-wwrule],[data-wwparams],[data-wwtk],[data-wwfill],[data-fcfmode],[data-wwsel],[data-wwchart],[data-wwrun],[data-wwsave],[data-eoprep],[data-eorun],[data-eouse],[data-exsave],[data-actsave],[data-fcdays],[data-fczoom],[data-replay],[data-fclayer],[data-fcd],[data-fce],[data-evload],[data-fcreload],[data-wallsfill],[data-stmode],[data-stdel],[data-stload],[data-mcrun],[data-exadd],[data-exdel],[data-exclear],[data-exsearch],[data-exuse],[data-burstgrp],[data-burstsave],[data-burstrun],[data-fci],[data-shwhy],[data-shclaude],[data-shopen],[data-botsave],[data-evpage],[data-uwtest],[data-reeval],[data-evticker],[data-evopen],[data-resclose],[data-bottoggle],#ana-run,#nt-save,#nt-test,[data-savesettings],[data-rescan],#fl-load,[data-undo],#rm-csv,#uw-save,#uw-del,[data-botchase],#bot-eval,#bs-save,[data-botrun],[data-botorder],[data-aicheck],[data-aireview],#refresh-btn,#sh-run,[data-botclose],[data-botdismiss],[data-botshow],#tc-run,#mkt-refresh,[data-gexlink],[data-gex],#gx-run,[data-coach],[data-sort],[data-cal],[data-bars],[data-day],[data-range],[data-open],[data-tf],[data-tag],[data-emo],[data-wi],[data-bd],[data-ask],[data-score],#dr-close,#scrim,#rp-play,#save-plan,#rv-run,#j-save,#rep-run,#s-save,#al-save,#al-sync,#al-del,#sch-connect,#sch-reconnect,#sch-sync,#sch-del,#al-show,#ctx-run,#ctx-all,#q-run,#q-all,#rebuild,#signout');
   if (!el) return;
   if (el.dataset.rx) { rsAction(el.dataset.rx.split('|')); return; }
   if (el.dataset.mvday) { S.mvDay = +el.dataset.mvday; render(); return; }
@@ -5762,6 +5813,14 @@ document.addEventListener('click', e => {
       if (i0 >= 0) SMC_PAIR.forEach(x => { const dd = ((S.smcDs || {})[x] || {}).d; if (!dd || !dd.bars) return; const a0 = dd.bars.findIndex(b => b.t >= d.bars[i0].t), a1 = dd.bars.findIndex(b => b.t >= d.bars[Math.min(d.bars.length - 1, Math.max(0, i1))].t);
         if (a0 >= 0) S.fcZoom[fcKey('smc-' + x)] = [Math.max(0, a0 - 40), Math.min(dd.bars.length - 1, Math.max(a1, a0 + 10) + 25)]; }); }
     render(); return; }
+  if (el.hasAttribute('data-uoahist')) { el.disabled = true; api('/uoa/history', { method: 'POST', body: { minPrem: S.uoaPrem || ((S.uoa || {}).hist || {}).minPrem || 100000, days: S.uoaDays || ((S.uoa || {}).hist || {}).days || 500 } })
+    .then(r => { S.uoa = { ...(S.uoa || {}), ...r }; toast('Getting the alert history in the background'); loadUoa(); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
+  if (el.hasAttribute('data-uoastudy')) { el.disabled = true; api('/uoa/study', { method: 'POST', body: {} }).then(r => { S.uoa = { ...(S.uoa || {}), ...r }; loadUoa(); }).catch(err => { el.disabled = false; toast(err.message); }); return; }
+  if (el.dataset.uoaside) { S.uoaSide = el.dataset.uoaside; render(); return; }
+  if (el.dataset.uoah) { S.uoaH = +el.dataset.uoah; render(); return; }
+  if (el.dataset.uoamet) { S.uoaMet = el.dataset.uoamet; render(); return; }
+  if (el.hasAttribute('data-uoajson')) { const url = URL.createObjectURL(new Blob([JSON.stringify((S.uoa || {}).study || {}, null, 1)], { type: 'application/json' })), a = document.createElement('a');
+    a.href = url; a.download = `flow-study-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); return; }
   if (el.dataset.plabview) { S.plabView = el.dataset.plabview; render(); return; }
   if (el.dataset.ropt) { const v = el.dataset.ropt; roptSet(v === 'reset' ? { reset: true } : { on: v === 'on' }); return; }
   if (el.hasAttribute('data-roptjson')) { const { lists, rules, ...data } = S.ropt || {}; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })), a = document.createElement('a');
@@ -6235,6 +6294,8 @@ document.addEventListener('change', e => {         // stress test list / days
   if (e.target.matches && e.target.matches('[data-wwoptuni]')) wwOptSet({ universe: e.target.value });
   if (e.target.matches && e.target.matches('[data-w2cfg]')) { const k = e.target.dataset.w2cfg, v = e.target.value; w2Set(k, e.target.tagName === 'SELECT' && isNaN(+v) ? v : +v); }
   if (e.target.matches && e.target.matches('[data-reglist]')) { S.regList = e.target.value; }
+  if (e.target.matches && e.target.matches('[data-uoaprem]')) S.uoaPrem = +e.target.value;
+  if (e.target.matches && e.target.matches('[data-uoadays]')) S.uoaDays = +e.target.value;
   if (e.target.matches && e.target.matches('[data-roptcfg]')) roptSet({ [e.target.dataset.roptcfg]: e.target.value });
   if (e.target.matches && e.target.matches('[data-plabcfg]')) { const k = e.target.dataset.plabcfg, v = e.target.value; S.plabCfg = { ...plabCfg(), [k]: ['list', 'rebound'].includes(k) ? v : +v }; render(); }
   if (e.target.matches && e.target.matches('[data-macf]')) { S.macF = e.target.value; render(); }

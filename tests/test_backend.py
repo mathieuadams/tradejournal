@@ -6672,6 +6672,79 @@ def test_regime_optimizer():
     finally:
         plab._bars, wallwatch.config = saved
 
+
+def test_unusual_flow_study():
+    """Flow study: call + put alert history paged back (resumable), one event per ticker / day / side, the move in the
+    alert's direction (puts upside down), conditions alone and in pairs, train / test."""
+    import random, math, datetime as dt, uoa, flowdata, plab, wallwatch, research
+    from util import now_ny
+    days, d = [], dt.date.today() - dt.timedelta(days=900)
+    while d < dt.date.today():
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def walk(seed):
+        r, p, out = random.Random(seed), 100.0, {}
+        for x in days:
+            o = p
+            p *= 1 + r.gauss(0.0003, 0.015)
+            out[x] = (o, max(o, p) * 1.003, min(o, p) * 0.997, p, 1e6)
+        return out
+    data = {s: walk(i) for i, s in enumerate(["SPY", "AAA", "BBB", "HYG", "IEF"])}
+    data["^VIX"] = {x: (0, 0, 0, 14 + 10 * abs(math.sin(k / 70)), 0) for k, x in enumerate(days)}
+    data["^VIX3M"] = {x: (0, 0, 0, 16 + 6 * abs(math.sin(k / 70)), 0) for k, x in enumerate(days)}
+    # alerts: calls the day before the stock rises, puts the day before it falls
+    rnd = random.Random(3)
+    feed = []
+    for s in ("AAA", "BBB"):
+        px = data[s]
+        for k in range(30, len(days) - 6):
+            if rnd.random() < 0.25:
+                up = px[days[k + 5]][3] > px[days[k]][3]
+                side = "call" if (up if rnd.random() < 0.8 else not up) else "put"
+                u = px[days[k]][3]
+                for j in range(rnd.choice([1, 1, 3])):
+                    feed.append({"id": f"{s}{k}{j}", "ticker": s, "type": side, "created_at": f"{days[k]}T{15 + j}:00:00Z", "total_premium": rnd.choice([150e3, 600e3, 2e6]),
+                                 "total_ask_side_prem": 0.9 * 2e6, "strike": round(u * (1.05 if side == "call" else 0.95), 2), "expiry": days[min(len(days) - 1, k + 20)],
+                                 "underlying_price": u, "has_sweep": j == 0, "volume_oi_ratio": 1.5})
+    feed.sort(key=lambda a: a["created_at"], reverse=True)
+    def fake_get(key, q):
+        xs = [a for a in feed if a["ticker"] == q["ticker_symbol"] and a["type"] == ("call" if q["is_call"] == "true" else "put")
+              and (not q.get("older_than") or a["created_at"] < q["older_than"])]
+        return {"data": xs[:200]}
+    saved = (flowdata._get, flowdata._key, plab._bars, wallwatch.config, research._invoke)
+    try:
+        flowdata._get, flowdata._key = fake_get, lambda sub: "k"
+        plab._bars = lambda s, y: data.get(s) or {}
+        wallwatch.config = lambda sub: {"tickers": ["AAA", "BBB"], "lists": [{"name": "Main", "tickers": ["AAA", "BBB"]}]}
+        calls = []
+        research._invoke = lambda sub, job, p: calls.append(job)
+        h = uoa.hist_start("uo1", {"days": 600, "minPrem": 100000})
+        assert h["running"] and calls == ["uoahist"]
+        for _ in range(5):
+            r = uoa.hist_job("uo1", budget_s=60)
+            if r.get("done") == 2:
+                break
+        hp = uoa.hist_public("uo1")
+        assert hp["done"] == 2 and not hp["running"] and hp["alerts"] > 100
+        st = uoa.stored("uo1", "AAA")
+        assert st["call"] and st["put"] and all(a["t"] <= b["t"] for a, b in zip(st["call"], st["call"][1:]))
+        n0 = len(st["call"])
+        uoa.fetch("uo1", "k", "AAA", "call", 600, 100000, 30)               # a top-up adds nothing new
+        assert len(uoa.stored("uo1", "AAA")["call"]) == n0
+        ev = uoa.events(st["call"], "call")
+        assert len(ev) == len({a["t"][:10] for a in st["call"]}) and all(e["n"] >= 1 for e in ev)
+        uoa.study_start("uo1", {})
+        out = uoa.run_study("uo1")
+        assert out["n"] > 100 and out["running"] is None
+        c5, p5 = out["sides"]["call"]["all"]["5"]["raw"], out["sides"]["put"]["all"]["5"]["raw"]
+        assert c5["avg"] > 0 and p5["avg"] > 0 and c5["win"] > 60     # both read the right way (puts upside down)
+        assert "phase" in out["factors"]["call"] and set(out["factors"]["call"]["prem"]) >= {"100-250K", "250K-1M", "1-5M"}
+        assert out["pairs"]["call"] and all(set(p["train"]) == {"1", "3", "5", "10"} for p in out["pairs"]["call"])
+        assert len(db.get(db.upk("uo1"), uoa.SK)["data"]) < 380_000
+    finally:
+        flowdata._get, flowdata._key, plab._bars, wallwatch.config, research._invoke = saved
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
