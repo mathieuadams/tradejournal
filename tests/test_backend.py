@@ -6743,10 +6743,29 @@ def test_unusual_flow_study():
         assert {"cluster", "repeat", "total", "mixed"} <= set(out["factors"]["call"]) and "single (none in 5 days)" in out["factors"]["call"]["cluster"]
         assert out["pairs"]["call"] and all(set(p["train"]) == {"1", "3", "5", "10"} for p in out["pairs"]["call"])
         assert len(db.get(db.upk("uo1"), uoa.SK)["data"]) < 380_000
+        v = out["validation"]
+        assert [r["key"] for r in v["rules"]] == [r["key"] for r in uoa.RULES]
+        r0 = v["rules"][0]
+        assert len(r0["grid"]) == len(uoa.HOLDS) * len(uoa.STOPS) and [c["bp"] for c in r0["costs"]] == list(uoa.COSTS)
+        if r0["events"]:
+            g = r0["grid"][0]
+            assert g["baseTrain"].get("n", 0) > 0 and (g["edgeTrain"] is None or abs(g["edgeTrain"] - (g["train"]["avg"] - g["baseTrain"]["avg"])) < 0.01)
+            assert r0["costs"][0]["all"]["avg"] > r0["costs"][-1]["all"]["avg"]          # more cost, less result
+        A = {"r": [(10, 10.5, 9.5, 10, 0), (10, 10.2, 9.0, 9.5, 0), (9.5, 11, 9.4, 10.8, 0)], "c": [10, 9.5, 10.8], "atr": [0.5, 0.5, 0.5]}
+        assert abs(uoa._trade(A, 0, "call", 2, 0, 0) - 8.0) < 1e-9 and abs(uoa._trade(A, 0, "call", 2, 1.0, 0) + 5.0) < 1e-9
+        assert abs(uoa._trade(A, 0, "put", 2, 0, 0) + 8.0) < 1e-9
         flowdata._get = lambda key, q: {"data": fake_get(key, q)["data"][:50]}      # a plan that caps a page at 50
         uoa.fetch("uo2", "k", "AAA", "call", 600, 100000, 60)
         deep = uoa.stored("uo2", "AAA")["call"]
         assert len(deep) == len(uoa.stored("uo1", "AAA")["call"]) and deep[0]["t"][:10] == st["call"][0]["t"][:10]
+        import util
+        old_now = uoa.now_ny
+        uoa.now_ny = lambda: util.now_ny().replace(hour=17, minute=0) if util.now_ny().weekday() < 5 else util.now_ny()
+        calls.clear()
+        k = uoa.daily_kick()
+        if util.now_ny().weekday() < 5:
+            assert k >= 1 and "uoahist" in calls and uoa.daily_kick() == 0         # once a day
+        uoa.now_ny = old_now
     finally:
         flowdata._get, flowdata._key, plab._bars, wallwatch.config, research._invoke = saved
 

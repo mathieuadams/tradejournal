@@ -1758,6 +1758,8 @@ def auto_kick():
         started += wwopt.kick()
         import ropt
         started += ropt.kick()
+        import uoa
+        started += uoa.daily_kick()
     except Exception as e:
         print("wall watch optimizer kick failed", e)
     try:

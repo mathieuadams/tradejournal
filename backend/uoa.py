@@ -353,7 +353,7 @@ def run_study(sub):
                         r = A["c"][j] / A["c"][i] - 1
                         fw[h] = round(sg * r * 100, 3)
                         fx[h] = round(sg * (r - (spyc[j] / spyc[i] - 1)) * 100, 3)
-                rows.append({"s": s, "d": ev["d"], "side": side, "f": f, "fw": fw, "fx": fx})
+                rows.append({"s": s, "d": ev["d"], "side": side, "f": f, "fw": fw, "fx": fx, "i": i})
     rows.sort(key=lambda r: r["d"])
     cut = rows[int(len(rows) * TRAIN)]["d"] if rows else None
     x["step"] = f"{len(rows)} events: by condition, alone and in pairs"
@@ -395,6 +395,14 @@ def run_study(sub):
                           "test": {str(h): agg(sel(te), h, "fx") for h in HZ}, "trainRaw": {str(h): agg(sel(tr), h, "fw") for h in HZ},
                           "testRaw": {str(h): agg(sel(te), h, "fw") for h in HZ}})
         out["pairs"][side] = pairs
+    x["step"] = "validating the candidate rules"
+    _save(sub, x)
+    try:
+        out["validation"] = validate(rows, X, days, cut, ctx0, [s for s in tick if s in X["A"]])
+    except Exception as e:
+        out["validation"] = {"error": str(e)[:160]}
+    for r in rows:
+        r.pop("i", None)
     x.update(running=None, step=None, at=iso(now_ny()), error=None, n=len(rows), nTickers=len(tick), hz=list(HZ),
              factorNames=dict(FACTORS), **out)
     _save(sub, x)
@@ -409,3 +417,121 @@ def study_job(sub, params=None):
         x.update(running=None, step=None, error=str(e)[:200])
         _save(sub, x)
         return {"error": str(e)[:200]}
+
+
+# ---------------------------------------------------------------- 3. validation of a candidate rule (stage 2 -> 3)
+RULES = [
+    {"key": "callSpyWeak", "name": "Call alerts while SPY is under its 50-day", "side": "call", "cond": {"spy50": "under"}},
+    {"key": "callSpyWeakStock", "name": "… and the stock under its 50-day too", "side": "call", "cond": {"spy50": "under", "e50": "under"}},
+    {"key": "callCaution", "name": "Call alerts while the risk dial says caution", "side": "call", "cond": {"dial": "caution"}},
+]
+HOLDS = (3, 5, 10, 20)
+STOPS = (0, 2.0, 3.0)
+COSTS = (5, 10, 20, 40)
+
+
+def _trade(A, i, side, hold, stop, cost_bp, entry="close"):
+    """One trade of the stock (long for a call alert, short for a put): entry at the event day's close (or the next
+    open), out after `hold` trading days at the close, or at the stop (k x ATR, on the daily lows / highs). % net."""
+    r, c, atr = A["r"], A["c"], A["atr"]
+    n = len(c)
+    d = 1 if side == "call" else -1
+    j0 = i if entry == "close" else i + 1
+    if j0 >= n or not r[j0] or not atr[i]:
+        return None
+    px = c[i] if entry == "close" else r[j0][0]
+    st = px - d * stop * atr[i] if stop else None
+    for k in range(j0 + 1, min(n, j0 + hold + 1)):
+        if not r[k]:
+            continue
+        o, h, l, cl = r[k][:4]
+        if st is not None and ((d > 0 and l <= st) or (d < 0 and h >= st)):
+            ex = min(o, st) if d > 0 else max(o, st)
+            return d * (ex / px - 1) * 100 - cost_bp / 100
+        if k == j0 + hold:
+            return d * (cl / px - 1) * 100 - cost_bp / 100
+    return None
+
+
+def _cond_ok(f, cond):
+    return all(f.get(k) == v for k, v in cond.items())
+
+
+def _base_f(ctx0, A, i):
+    """The conditions a baseline day needs (market + the stock vs its 50-day)."""
+    return {"spy50": None if ctx0["spy"][i] is None or ctx0["spy50"][i] is None else ("above" if ctx0["spy"][i] > ctx0["spy50"][i] else "under"),
+            "dial": "alarm" if ctx0["alarm"][i] else "caution" if ctx0["caution"][i] else "normal",
+            "e50": None if A["c"][i] is None or A["e50"][i] is None else ("above" if A["c"][i] > A["e50"][i] else "under"),
+            "phase": ctx0["phase"][i]}
+
+
+def validate(rows, X, days, cut, ctx0, tick, cost_bp=10):
+    """For each candidate rule: the trade results by holding time x stop (train / test), vs the baseline (every
+    ticker on every day where the same conditions hold, same trade), the cost stress, the months, the tickers."""
+    out = []
+    first = rows[0]["d"] if rows else days[0]
+    base_cache = {}
+    for R in RULES:
+        ev = [r for r in rows if r["side"] == R["side"] and _cond_ok(r["f"], R["cond"])]
+        grid = []
+        for hold in HOLDS:
+            for stop in STOPS:
+                tr, te = [], []
+                for r in ev:
+                    x = _trade(X["A"][r["s"]], r["i"], R["side"], hold, stop, cost_bp)
+                    if x is not None:
+                        (tr if r["d"] < cut else te).append(x)
+                bk = (R["side"], tuple(sorted(R["cond"].items())), hold, stop)
+                if bk not in base_cache:                # the baseline: every ticker, every matching day (every 4th day: lighter)
+                    btr, bte = [], []
+                    for s in tick:
+                        A = X["A"][s]
+                        for i in range(0, len(days), 4):
+                            if days[i] < first or A["c"][i] is None or not _cond_ok(_base_f(ctx0, A, i), R["cond"]):
+                                continue
+                            x = _trade(A, i, R["side"], hold, stop, cost_bp)
+                            if x is not None:
+                                (btr if days[i] < cut else bte).append(x)
+                    base_cache[bk] = (_agg(btr), _agg(bte))
+                b_tr, b_te = base_cache[bk]
+                a_tr, a_te = _agg(tr), _agg(te)
+                grid.append({"hold": hold, "stop": stop, "train": a_tr, "test": a_te, "baseTrain": b_tr, "baseTest": b_te,
+                             "edgeTrain": round(a_tr["avg"] - b_tr["avg"], 3) if a_tr.get("n") and b_tr.get("n") else None,
+                             "edgeTest": round(a_te["avg"] - b_te["avg"], 3) if a_te.get("n") and b_te.get("n") else None})
+        costs = []
+        for c_ in COSTS:
+            xs = [_trade(X["A"][r["s"]], r["i"], R["side"], 10, 0, c_) for r in ev]
+            costs.append({"bp": c_, "all": _agg(xs)})
+        months = {}
+        for r in ev:
+            x = _trade(X["A"][r["s"]], r["i"], R["side"], 10, 0, cost_bp)
+            if x is not None:
+                months.setdefault(r["d"][:7], []).append(x)
+        by_t = {}
+        for r in ev:
+            by_t[r["s"]] = by_t.get(r["s"], 0) + 1
+        top = sorted(by_t.items(), key=lambda kv: -kv[1])[:8]
+        out.append({**{k: R[k] for k in ("key", "name", "side")}, "cond": R["cond"], "events": len(ev),
+                    "trainEvents": sum(1 for r in ev if r["d"] < cut), "testEvents": sum(1 for r in ev if r["d"] >= cut),
+                    "grid": grid, "costs": costs, "months": [{"m": m, **_agg(v)} for m, v in sorted(months.items())],
+                    "tickers": [{"s": k, "n": v} for k, v in top], "top5Share": round(sum(v for _, v in top[:5]) / len(ev) * 100) if ev else None})
+    return {"rules": out, "costBp": cost_bp, "holds": list(HOLDS), "stops": list(STOPS)}
+
+
+# ---------------------------------------------------------------- the daily top-up (after the close)
+def daily_kick():
+    """Every weekday after 16:30 ET: top up the alert history of every user who has one (only the new alerts)."""
+    n = 0
+    now = now_ny()
+    if now.weekday() >= 5 or now.strftime("%H:%M") < "16:30":
+        return 0
+    for it in db.scan_sk(HIST_SK):
+        if it.get("running") and it["running"] > iso(now - timedelta(minutes=30)):
+            continue
+        if (it.get("daily") or "") >= now.strftime("%Y-%m-%d") or not it.get("at"):
+            continue
+        sub = it["PK"][5:]
+        db.put({**it, "daily": now.strftime("%Y-%m-%d")})
+        hist_start(sub, {})
+        n += 1
+    return n
