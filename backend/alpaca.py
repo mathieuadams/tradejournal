@@ -51,9 +51,20 @@ def _get(url, c):
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode(errors="replace")[:200]
+        except Exception:
+            detail = ""
+        if e.code == 403 and "/stocks/" in url and "subscription" in detail.lower():
+            err = BadRequest("Alpaca: your market data plan doesn't cover this feed (" + detail.strip() + ").")
+            err.code = "plan"
+            raise err
         if e.code in (401, 403):
-            raise BadRequest("Alpaca rejected these API keys. Check the key, secret and paper/live setting.")
-        raise Unavailable(f"Alpaca returned an error ({e.code}).")
+            err = BadRequest(f"Alpaca rejected the request ({e.code}{': ' + detail.strip() if detail.strip() else ''}). "
+                             + ("Check the key, secret and paper/live setting." if e.code == 401 else "Check the account's permissions / data plan."))
+            err.code = e.code
+            raise err
+        raise Unavailable(f"Alpaca returned an error ({e.code}){': ' + detail.strip() if detail.strip() else ''}.")
     except urllib.error.URLError as e:
         raise Unavailable(f"Alpaca couldn't be reached: {e.reason}")
 
@@ -100,7 +111,15 @@ def bars(c, sym, start_local, end_local, tf_min, max_pages=10, feed=None):
              "adjustment": "raw", "feed": feed or c.get("feed", "iex")}
         if token:
             q["page_token"] = token
-        page = _get(f"{DATA}/v2/stocks/{urllib.parse.quote(sym)}/bars?" + urllib.parse.urlencode(q), c)
+        try:
+            page = _get(f"{DATA}/v2/stocks/{urllib.parse.quote(sym)}/bars?" + urllib.parse.urlencode(q), c)
+        except BadRequest as e:                     # the real-time SIP feed isn't in the plan (any more): fall back to IEX
+            if q["feed"] == "sip" and getattr(e, "code", None) in ("plan", 403):
+                print("alpaca: SIP refused, falling back to IEX:", e)
+                q["feed"] = feed = "iex"
+                page = _get(f"{DATA}/v2/stocks/{urllib.parse.quote(sym)}/bars?" + urllib.parse.urlencode(q), c)
+            else:
+                raise
         for b in page.get("bars") or []:
             out.append({"t": _utc_to_local_iso(b["t"]), "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b.get("v", 0)})
         token = page.get("next_page_token")
