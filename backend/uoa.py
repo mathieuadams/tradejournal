@@ -287,16 +287,19 @@ def study_start(sub, b):
     return x
 
 
-def run_study(sub):
+def build(sub, x=None):
+    """The events of every watchlist ticker (with their conditions and forward moves) + the prepared daily data.
+    Shared by the study and the strategy pipeline."""
     import macro
     import plab
     import rank
     import regime
     import wallwatch
-    x = study_public(sub)
+    x = x if x is not None else {}
     tick = wallwatch.config(sub)["tickers"]
     x.update(step=f"loading the alerts and the daily candles of {len(tick)} tickers")
-    _save(sub, x)
+    if x.get("_save"):
+        _save(sub, x)
     al = {s: stored(sub, s) for s in tick}
     tick = [s for s in tick if al[s]["call"] or al[s]["put"]]
     if not tick:
@@ -314,7 +317,8 @@ def run_study(sub):
                 pass
     days = sorted(data["SPY"])
     x["step"] = "the market and the stocks' conditions"
-    _save(sub, x)
+    if x.get("_save"):
+        _save(sub, x)
     X = plab.prepare(data, days, [s for s in tick if s in data], [], years)
     spyc = X["A"]["SPY"]["c"]
     lab = regime.label_days({d: v[3] for d, v in data["SPY"].items()}, {d: v[3] for d, v in data["^VIX"].items()},
@@ -355,6 +359,15 @@ def run_study(sub):
                         fx[h] = round(sg * (r - (spyc[j] / spyc[i] - 1)) * 100, 3)
                 rows.append({"s": s, "d": ev["d"], "side": side, "f": f, "fw": fw, "fx": fx, "i": i})
     rows.sort(key=lambda r: r["d"])
+    return {"rows": rows, "X": X, "days": days, "ctx0": ctx0, "tick": tick, "data": data, "lab": lab}
+
+
+def run_study(sub):
+    x = study_public(sub)
+    x["_save"] = True
+    B = build(sub, x)
+    x.pop("_save", None)
+    rows, X, days, ctx0, tick = B["rows"], B["X"], B["days"], B["ctx0"], B["tick"]
     cut = rows[int(len(rows) * TRAIN)]["d"] if rows else None
     x["step"] = f"{len(rows)} events: by condition, alone and in pairs"
     _save(sub, x)

@@ -479,6 +479,56 @@ def daytrade_smc(sub, claims, body, q):
     return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
 
 
+@route("GET", "/pipeline")
+def pipe_list(sub, claims, body, q):
+    """Strategy pipeline: every strategy (research / paper / live), the older bots, the accounts, today's market cell."""
+    import pipeline
+    return pipeline.overview(sub)
+
+
+@route("POST", "/pipeline")
+def pipe_new(sub, claims, body, q):
+    import pipeline
+    return pipeline.detail(sub, pipeline.create(sub, body or {})["id"])
+
+
+@route("POST", "/pipeline/accounts")
+def pipe_acc(sub, claims, body, q):
+    import pipeline
+    return {"accounts": pipeline.connect(sub, body or {})}
+
+
+@route("GET", r"/pipeline/(?P<pid>[a-f0-9]{10})")
+def pipe_get(sub, claims, body, q, pid):
+    import pipeline
+    return pipeline.detail(sub, pid)
+
+
+@route("PUT", r"/pipeline/(?P<pid>[a-f0-9]{10})")
+def pipe_put(sub, claims, body, q, pid):
+    import pipeline
+    return pipeline.action(sub, pid, body or {})
+
+
+@route("DELETE", r"/pipeline/(?P<pid>[a-f0-9]{10})")
+def pipe_del(sub, claims, body, q, pid):
+    import pipeline
+    return pipeline.delete(sub, pid)
+
+
+@route("POST", r"/pipeline/(?P<pid>[a-f0-9]{10})/run")
+def pipe_run(sub, claims, body, q, pid):
+    import pipeline
+    pipeline.run_start(sub, pid, (body or {}).get("step") or "all")
+    return pipeline.detail(sub, pid)
+
+
+@route("GET", r"/pipeline/(?P<pid>[a-f0-9]{10})/chart")
+def pipe_chart(sub, claims, body, q, pid):
+    import pipeline
+    return pipeline.chart(sub, pid, q.get("t"))
+
+
 @route("GET", "/uoa")
 def uoa_get(sub, claims, body, q):
     """Unusual options activity study: the alert history (calls + puts) and the study by condition."""

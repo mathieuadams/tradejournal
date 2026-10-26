@@ -1,0 +1,1161 @@
+"""Strategy pipeline: every strategy goes through the same protocol, then gets its own paper account.
+
+  1. Data download  - the history the rule needs (flow: the unusual-options alert history; daily: the daily candles)
+  2. Study          - every signal of the rule, traded the way paper will trade it (buy the next open, sell the open
+                      `hold` days later, optional k x ATR stop), vs the baseline (every ticker on every day where the
+                      same MARKET conditions hold, same trade): by holding time, by market condition (the conditions
+                      map: SPY trend x VIX), by each condition of the stock / the alert, train (first 60%) vs test.
+  3. Validation     - hold x stop grid, cost stress, months, tickers, the hard gates, then Claude reviews it all
+                      (the risk committee) and answers pass / fail / more data.
+  4. Promote        - all gates + Claude pass -> paper on an account of its own; it only trades in the approved cells
+                      of the conditions map. Kill switch: paper drifting below the backtest (z < -2) or a drawdown
+                      over 2x the backtest's -> paused. Enough paper trades in line -> ready for live.
+
+Items: PIPE#<id> (the strategy), PIPER#<id> (protocol results), PIPET#<id> (backtest trades, for the chart),
+PIPEPOS#<id>#<day>#<sym> (paper positions), PIPEMKT (today's market cell), BROKER#alpacapipe#<n> (extra accounts)."""
+import json
+import math
+import time
+import urllib.error
+import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+
+import db
+from util import BadRequest, NotFound, iso, now_ny
+
+SP = "PIPE#"
+RES = "PIPER#"
+TRD = "PIPET#"
+POS = "PIPEPOS#"
+MKT = "PIPEMKT"
+ACC = "BROKER#alpacapipe#"
+TRAIN = 0.6
+HZ = (1, 3, 5, 10, 20)
+HOLDS = (3, 5, 10, 20)
+STOPS = (0, 2.0, 3.0)
+COSTS = (5, 10, 20, 40)
+COST_BP = 10
+STAGES = ("research", "paper", "live", "retired")
+MARKET_KEYS = ("phase", "vix", "dial", "spy50", "clear")
+PHASES = ("bull", "sideways", "bear")
+VOLS = ("calm", "volatile")                               # VIX under / over 20
+
+BOT_ACCOUNTS = [("BROKER#alpaca", "Options bot account"), ("BROKER#alpacaday", "Day-trading account (QQQ / SPY)"),
+                ("BROKER#alpacastock", "Stocks-in-play account")]
+
+DAILY_FACTORS = [
+    ("phase", "Market phase (SPY trend)"), ("vix", "VIX"), ("dial", "Risk dial"), ("spy50", "SPY vs its 50-day"), ("clear", "VIX all-clear day"),
+    ("ws", "Stock's weekly EMA score"), ("e21", "Stock vs its 21-day"), ("e50", "Stock vs its 50-day"), ("e200", "Stock vs its 200-day"),
+    ("mom", "Stock's last 20 days"), ("drop5", "Stock's last 5 days"),
+]
+VALUES = {
+    "phase": ["bull", "sideways", "bear"], "vix": ["under 15", "15-20", "20-30", "30+"], "dial": ["normal", "caution", "alarm"],
+    "spy50": ["above", "under"], "clear": ["yes", "no"], "ws": ["+2", "+1", "0", "-1", "-2"], "e21": ["above", "under"],
+    "e50": ["above", "under"], "e200": ["above", "under"], "mom": ["down 5%+", "down 0-5%", "up 0-5%", "up 5%+"],
+    "drop5": ["down 5%+", "down 2-5%", "flat / up"],
+    "prem": ["100-250K", "250K-1M", "1-5M", "5M+"], "rel": ["3x+ its median", "normal size"], "dte": ["0-7", "8-30", "31-90", "91+"],
+    "mny": ["in the money", "at the money", "OTM 2-10%", "OTM 10%+"], "sweep": ["sweep", "no sweep"], "open": ["opening (vol > OI)", "vol <= OI"],
+    "tod": ["before 10:30", "10:30-15:00", "last hour"], "burst": ["1", "2-4", "5+"],
+    "cluster": ["single (none in 5 days)", "first day of a burst", "cluster 1-2 days", "cluster 3+ days"],
+    "repeat": ["same contract 2x+", "different contracts"], "total": ["under 500K", "500K-2M", "2-10M", "10M+"], "mixed": ["other side too", "this side only"],
+}
+
+SEEDS = [
+    {"seed": "flowSpyWeak", "name": "Flow: calls while SPY < 50-day", "kind": "flow", "side": "long", "flowSide": "call", "cond": {"spy50": "under"},
+     "hold": 5, "stop": 0, "desc": "Buy the stock the open after unusual call buying (bought at the ask) while SPY is under its 50-day. Out after 5 days."},
+    {"seed": "bearDip", "name": "Bear-phase dip buy", "kind": "daily", "side": "long", "universe": {"list": "__etf"}, "cond": {"phase": "bear", "drop5": "down 5%+"},
+     "hold": 10, "stop": 0, "desc": "Index / sector ETFs down 5%+ in 5 days while the market phase is bear: buy the next open, out after 10 days."},
+    {"seed": "vixClear", "name": "VIX all-clear buy", "kind": "daily", "side": "long", "universe": {"tickers": ["SPY", "QQQ"]}, "cond": {"clear": "yes"},
+     "hold": 20, "stop": 0, "desc": "VIX back under VIX3M 3 days in a row after a stress alarm: buy SPY / QQQ the next open, out after 20 days."},
+]
+
+
+# ---------------------------------------------------------------- storage
+def _pk(sub):
+    return db.upk(sub)
+
+
+def _load_json(it, k):
+    return json.loads(it[k]) if it and it.get(k) else {}
+
+
+def _strip(it):
+    return {k: v for k, v in (it or {}).items() if k not in ("PK", "SK")}
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def get(sub, pid):
+    it = db.get(_pk(sub), SP + pid)
+    if not it:
+        raise NotFound("No such strategy.")
+    return _norm(it)
+
+
+def _norm(it):
+    s = _strip(it)
+    for k in ("cond", "universe", "job", "kill", "signals", "plan"):
+        if isinstance(s.get(k), str):
+            try:
+                s[k] = json.loads(s[k])
+            except ValueError:
+                s[k] = {}
+    for k in ("hold", "stop", "allocPct", "maxPos"):
+        if s.get(k) is not None:
+            s[k] = float(s[k]) if k in ("stop", "allocPct") else int(s[k])
+    s.setdefault("cells", None)
+    return s
+
+
+def _save(sub, s):
+    item = {"PK": _pk(sub), "SK": SP + s["id"]}
+    for k, v in s.items():
+        item[k] = json.dumps(v, default=str) if k in ("cond", "universe", "job", "kill", "signals", "plan") else v
+    for k in ("stop", "allocPct"):
+        if item.get(k) is not None:
+            item[k] = str(item[k])
+    db.put(item)
+
+
+def results(sub, pid):
+    return _load_json(db.get(_pk(sub), RES + pid), "data")
+
+
+def _save_results(sub, pid, r):
+    db.put({"PK": _pk(sub), "SK": RES + pid, "data": json.dumps(r, default=str, separators=(",", ":"))})
+
+
+def strategies(sub):
+    items = [_norm(i) for i in db.q_prefix(_pk(sub), SP)]
+    have = {s.get("seed") for s in items}
+    if not db.get(_pk(sub), "PIPESEEDED"):            # the candidates found so far, once
+        for x in SEEDS:
+            if x["seed"] not in have:
+                items.append(create(sub, x, seed=True))
+        db.put({"PK": _pk(sub), "SK": "PIPESEEDED", "at": iso(now_ny())})
+    return sorted(items, key=lambda s: s.get("createdAt") or "")
+
+
+def create(sub, b, seed=False):
+    b = b or {}
+    name = str(b.get("name") or "").strip()[:80]
+    if not name:
+        raise BadRequest("Give the strategy a name.")
+    kind = b.get("kind") if b.get("kind") in ("flow", "daily") else "daily"
+    cond = clean_cond(b.get("cond") or {}, kind)
+    if kind == "daily" and not cond:
+        raise BadRequest("Add at least one entry condition.")
+    s = {"id": uuid.uuid4().hex[:10], "name": name, "desc": str(b.get("desc") or "")[:400], "kind": kind,
+         "side": "short" if b.get("side") == "short" else "long", "flowSide": "put" if b.get("flowSide") == "put" else "call",
+         "cond": cond, "universe": _universe(b.get("universe")) if kind == "daily" else {"list": "__watch"},
+         "hold": int(_clip(b.get("hold"), 1, 60, 5)), "stop": float(_clip(b.get("stop"), 0, 10, 0)),
+         "allocPct": float(_clip(b.get("allocPct"), 1, 50, 10)), "maxPos": int(_clip(b.get("maxPos"), 1, 30, 5)),
+         "stage": "research", "account": None, "createdAt": iso(now_ny()), "history": [{"at": iso(now_ny()), "what": "created"}]}
+    if seed:
+        s["seed"] = b["seed"]
+    _save(sub, s)
+    return s
+
+
+def _clip(v, lo, hi, dflt):
+    v = _num(v)
+    return dflt if v is None else max(lo, min(hi, v))
+
+
+def _universe(u):
+    u = u or {}
+    if u.get("tickers"):
+        tk = u["tickers"].replace(",", " ").split() if isinstance(u["tickers"], str) else u["tickers"]
+        tk = [str(t).strip().upper()[:10] for t in tk if str(t).strip()][:80]
+        if tk:
+            return {"tickers": tk}
+    return {"list": str(u.get("list") or "__etf")[:60]}
+
+
+def clean_cond(c, kind):
+    keys = {k for k, _ in DAILY_FACTORS} if kind == "daily" else {k for k, _ in _flow_factors()}
+    out = {}
+    for k, v in (c or {}).items():
+        if k in keys and str(v) in VALUES.get(k, []):
+            out[k] = str(v)
+    return out
+
+
+def _flow_factors():
+    import uoa
+    return uoa.FACTORS + [("clear", "VIX all-clear day")]
+
+
+def factor_names(kind):
+    return dict(DAILY_FACTORS if kind == "daily" else _flow_factors())
+
+
+def describe(s):
+    names = factor_names(s["kind"])
+    c = " and ".join(f"{names.get(k, k)} = {v}" for k, v in (s.get("cond") or {}).items())
+    who = f"unusual {s.get('flowSide', 'call')} buying" if s["kind"] == "flow" else "signal"
+    return (f"{'Short' if s['side'] == 'short' else 'Buy'} the next open after {who}" + (f" when {c}" if c else "") +
+            f"; out at the open {s['hold']} trading days later" + (f", stop {s['stop']:g} x ATR" if s.get("stop") else ", no stop"))
+
+
+# ---------------------------------------------------------------- the trade (exactly how paper trades it)
+def trade(A, i, d, hold, stop, cost_bp):
+    """Signal known at day i's close. Buy (d=1) / short (d=-1) at the open of i+1, out at the open of i+1+hold,
+    or at the stop (k x ATR of day i, checked on the daily lows / highs while held). % net of the cost."""
+    r, atr = A["r"], A["atr"]
+    n = len(r)
+    j0, jx = i + 1, i + 1 + hold
+    if jx >= n or not r[j0] or not r[jx] or not atr[i]:
+        return None
+    px = r[j0][0]
+    if not px:
+        return None
+    st = px - d * stop * atr[i] if stop else None
+    for k in range(j0, jx):
+        if not r[k]:
+            continue
+        o, h, l = r[k][:3]
+        if st is not None and ((d > 0 and l <= st) or (d < 0 and h >= st)):
+            ex = st if k == j0 else (min(o, st) if d > 0 else max(o, st))
+            return d * (ex / px - 1) * 100 - cost_bp / 100, k
+    return d * (r[jx][0] / px - 1) * 100 - cost_bp / 100, jx
+
+
+def _agg(xs):
+    xs = [x for x in xs if x is not None]
+    n = len(xs)
+    if not n:
+        return {"n": 0}
+    m = sum(xs) / n
+    sd = math.sqrt(sum((x - m) ** 2 for x in xs) / max(1, n - 1))
+    return {"n": n, "avg": round(m, 3), "win": round(sum(1 for x in xs if x > 0) / n * 100), "t": round(m / sd * math.sqrt(n), 2) if sd > 0 else None,
+            "sd": round(sd, 3), "tot": round(sum(xs), 2)}
+
+
+def _edge(a, b):
+    return round(a["avg"] - b["avg"], 3) if a.get("n") and b.get("n") else None
+
+
+def _dd(xs):
+    peak = cur = dd = 0.0
+    for x in xs:
+        cur += x
+        peak = max(peak, cur)
+        dd = max(dd, peak - cur)
+    return round(dd, 2)
+
+
+# ---------------------------------------------------------------- the data every step reads
+def _mkt_f(ctx0, X, i):
+    v = ctx0["vix"][i]
+    import uoa
+    return {"phase": ctx0["phase"][i], "vix": uoa._bucket(v, (15, 20, 30), ("under 15", "15-20", "20-30", "30+")),
+            "dial": "alarm" if ctx0["alarm"][i] else "caution" if ctx0["caution"][i] else "normal",
+            "spy50": None if ctx0["spy"][i] is None or ctx0["spy50"][i] is None else ("above" if ctx0["spy"][i] > ctx0["spy50"][i] else "under"),
+            "clear": "yes" if X["clear"][i] else "no"}
+
+
+def _cell(ctx0, i):
+    p, v = ctx0["phase"][i], ctx0["vix"][i]
+    return f"{p}|{'calm' if v < 20 else 'volatile'}" if p and v is not None else None
+
+
+def _stock_f(A, ctx, i, ws):
+    import uoa
+    c = A["c"][i]
+    f = {}
+    w = ws[i] if ws else None
+    f["ws"] = None if w is None else ("+2" if w == 2 else "+1" if w == 1 else "0" if w == 0 else "-1" if w == -1 else "-2")
+    for k, arr in (("e21", A["e21"]), ("e50", A["e50"]), ("e200", ctx["e200"])):
+        f[k] = None if c is None or arr[i] is None else ("above" if c > arr[i] else "under")
+    m = c / A["c"][i - 20] - 1 if i >= 20 and c and A["c"][i - 20] else None
+    f["mom"] = uoa._bucket(None if m is None else m * 100, (-5, 0, 5), ("down 5%+", "down 0-5%", "up 0-5%", "up 5%+"))
+    m5 = c / A["c"][i - 5] - 1 if i >= 5 and c and A["c"][i - 5] else None
+    f["drop5"] = None if m5 is None else ("down 5%+" if m5 <= -0.05 else "down 2-5%" if m5 <= -0.02 else "flat / up")
+    return f
+
+
+def _universe_tickers(sub, s):
+    import regime
+    import wallwatch
+    u = s.get("universe") or {}
+    if u.get("tickers"):
+        return list(u["tickers"])
+    etfs = [m for m, _ in regime.MARKET + regime.SECTORS]
+    if u.get("list") == "__etf":
+        return etfs
+    cfg = wallwatch.config(sub)
+    lst = next((L for L in cfg["lists"] if L["name"] == u.get("list")), None) or cfg["lists"][0]
+    return list(lst["tickers"])
+
+
+def build(sub, s, prog=None):
+    """{rows: [{s, d, i, f, cell}], X, days, ctx0, tick} - the signals of the strategy with their conditions."""
+    import macro
+    import plab
+    import regime
+    import uoa
+    if s["kind"] == "flow":
+        if prog is not None:
+            prog("loading the alert history and the daily candles")
+        B = uoa.build(sub)
+        X, days, ctx0 = B["X"], B["days"], B["ctx0"]
+        rows = []
+        for r in B["rows"]:
+            if r["side"] != s.get("flowSide", "call"):
+                continue
+            f = {**r["f"], "clear": "yes" if X["clear"][r["i"]] else "no"}
+            if all(f.get(k) == v for k, v in s["cond"].items()):
+                rows.append({"s": r["s"], "d": r["d"], "i": r["i"], "f": f, "cell": _cell(ctx0, r["i"])})
+        B["first"] = B["rows"][0]["d"] if B["rows"] else (days[0] if days else None)
+        B.update(rows=rows, names=dict(_flow_factors()))
+        return B
+    tick = _universe_tickers(sub, s)
+    years = 15 if (s.get("universe") or {}).get("list") == "__etf" or (s.get("universe") or {}).get("tickers") else 8
+    syms = list(dict.fromkeys(tick + ["SPY", "^VIX", "^VIX3M", "HYG", "IEF"]))
+    if prog is not None:
+        prog(f"loading {len(syms)} daily histories")
+    data = {}
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for sy, f in [(sy, ex.submit(plab._bars, sy, years)) for sy in syms]:
+            try:
+                d = f.result(timeout=300)
+                if d:
+                    data[sy] = d
+            except Exception:
+                pass
+    if "SPY" not in data or "^VIX" not in data:
+        raise ValueError("The SPY / VIX history couldn't be loaded. Try again in a minute.")
+    days = sorted(data["SPY"])
+    tick = [t for t in tick if t in data]
+    X = plab.prepare(data, days, tick, [], years)
+    lab = regime.label_days({d: v[3] for d, v in data["SPY"].items()}, {d: v[3] for d, v in data["^VIX"].items()},
+                            {d: v[3] for d, v in data.get("^VIX3M", {}).items()})
+    ctx0 = {"phase": [{"Up": "bull", "Range": "sideways", "Down": "bear"}.get((lab.get(d) or {}).get("trend")) for d in days],
+            "vix": macro.align({d: v[3] for d, v in data["^VIX"].items()}, days), "alarm": X["alarm"], "caution": X["caution"],
+            "spy": X["A"]["SPY"]["c"], "spy50": X["A"]["SPY"]["e50"]}
+    if prog is not None:
+        prog(f"scanning {len(tick)} tickers for the signals")
+    rows, ctxs = [], {}
+    for t in tick:
+        A = X["A"][t]
+        clf = macro.align({d: v[3] for d, v in data[t].items()}, days)
+        ctx = {"e200": macro.ema(clf, 200)}
+        ctxs[t] = ctx
+        nxt = 0
+        for i in range(200, len(days)):
+            if A["c"][i] is None or i < nxt:
+                continue
+            f = {**_mkt_f(ctx0, X, i), **_stock_f(A, ctx, i, X["w"].get(t))}
+            if all(f.get(k) == v for k, v in s["cond"].items()):
+                rows.append({"s": t, "d": days[i], "i": i, "f": f, "cell": _cell(ctx0, i)})
+                nxt = i + s["hold"] + 1                 # one position per ticker at a time, like paper
+    rows.sort(key=lambda r: r["d"])
+    return {"rows": rows, "X": X, "days": days, "ctx0": ctx0, "tick": tick, "data": data, "names": dict(DAILY_FACTORS),
+            "first": days[200] if len(days) > 200 else days[0], "ctxs": ctxs}
+
+
+def _baseline(B, s, hold, stop, cost_bp, cut, cache):
+    """Every ticker, every 4th day, where the MARKET conditions of the rule hold: same trade."""
+    mk = {k: v for k, v in s["cond"].items() if k in MARKET_KEYS}
+    key = (hold, stop, cost_bp)
+    if key in cache:
+        return cache[key]
+    X, days, ctx0 = B["X"], B["days"], B["ctx0"]
+    d = -1 if s["side"] == "short" else 1
+    tr, te, by_cell = [], [], {}
+    for t in B["tick"]:
+        A = X["A"].get(t)
+        if not A:
+            continue
+        for i in range(0, len(days), 4):
+            if days[i] < B["first"] or A["c"][i] is None:
+                continue
+            if mk and not all(_mkt_f(ctx0, X, i).get(k) == v for k, v in mk.items()):
+                continue
+            x = trade(A, i, d, hold, stop, cost_bp)
+            if x is None:
+                continue
+            (tr if days[i] < cut else te).append(x[0])
+            by_cell.setdefault((_cell(ctx0, i), days[i] < cut), []).append(x[0])
+    cache[key] = (_agg(tr), _agg(te), {k: _agg(v) for k, v in by_cell.items()})
+    return cache[key]
+
+
+# ---------------------------------------------------------------- 1. data
+def step_data(sub, s, prog):
+    import uoa
+    out = {"at": iso(now_ny()), "kind": s["kind"]}
+    if s["kind"] == "flow":
+        h = uoa.hist_public(sub)
+        import wallwatch
+        tick = wallwatch.config(sub)["tickers"]
+        by_y, n = {}, 0
+        for t in tick:
+            al = uoa.stored(sub, t)
+            for a in al.get(s.get("flowSide", "call")) or []:
+                y = a["t"][:4]
+                b = by_y.setdefault(y, {"y": y, "n": 0, "leaps": 0})
+                b["n"] += 1
+                n += 1
+                try:
+                    from datetime import datetime
+                    if (datetime.strptime(a["x"], "%Y-%m-%d") - datetime.strptime(a["t"][:10], "%Y-%m-%d")).days > 90:
+                        b["leaps"] += 1
+                except (TypeError, ValueError, KeyError):
+                    pass
+        out.update(source="Unusual Whales flow alerts (bought at the ask)", alerts=n, tickers=len(tick), loaded=h.get("done"),
+                   oldest=h.get("oldest"), minPrem=h.get("minPrem"), running=bool(h.get("running")),
+                   byYear=[{**b, "leapsPct": round(b["leaps"] / b["n"] * 100) if b["n"] else 0} for b in sorted(by_y.values(), key=lambda b: b["y"])],
+                   topup="every trading day at 16:30 ET")
+        notes = []
+        old = [b for b in out["byYear"] if b["leapsPct"] >= 50]
+        if old:
+            notes.append(f"{', '.join(b['y'] for b in old)}: mostly LEAPS (90+ days) - the older history only keeps contracts not expired yet. It gets cleaner as the daily top-up adds up.")
+        if not n:
+            notes.append("No alert history yet: get it below (Unusual Whales).")
+        out["notes"] = notes
+        out["ok"] = n > 0
+        if h.get("running"):
+            out["ok"] = n > 0
+        return out
+    B = build(sub, s, prog)
+    cov = []
+    for t in B["tick"]:
+        ds = sorted(B["data"][t])
+        cov.append({"s": t, "from": ds[0], "to": ds[-1], "days": len(ds)})
+    want = _universe_tickers(sub, s)
+    out.update(source="Daily candles (Yahoo) + SPY, VIX, VIX3M, HYG / IEF", tickers=len(B["tick"]), coverage=cov,
+               missing=[t for t in want if t not in B["tick"]], days=len(B["days"]), first=B["days"][0], last=B["days"][-1],
+               notes=([f"No data for {', '.join(t for t in want if t not in B['tick'])}."] if any(t not in B["tick"] for t in want) else []), ok=bool(B["tick"]))
+    return out
+
+
+# ---------------------------------------------------------------- 2. study
+def step_study(sub, s, prog):
+    B = build(sub, s, prog)
+    rows, X = B["rows"], B["X"]
+    if not rows:
+        return {"at": iso(now_ny()), "events": 0, "error": "No signal in the history: loosen the conditions."}
+    cut = rows[int(len(rows) * TRAIN)]["d"] if len(rows) > 1 else rows[0]["d"]
+    d = -1 if s["side"] == "short" else 1
+    spyA = X["A"]["SPY"]
+    prog(f"{len(rows)} signals: by holding time, market condition and each condition")
+    cache = {}
+    summ = {}
+    for h in HZ:
+        P = {"train": [], "test": [], "all": []}
+        V = {"train": [], "test": [], "all": []}
+        for r in rows:
+            x = trade(X["A"][r["s"]], r["i"], d, h, 0, COST_BP)
+            if x is None:
+                continue
+            sx = trade(spyA, r["i"], d, h, 0, 0)
+            p = "train" if r["d"] < cut else "test"
+            for k in (p, "all"):
+                P[k].append(x[0])
+                if sx:
+                    V[k].append(x[0] - sx[0])
+        btr, bte, _ = _baseline(B, s, h, 0, COST_BP, cut, cache)
+        a = {k: _agg(v) for k, v in P.items()}
+        summ[str(h)] = {"train": a["train"], "test": a["test"], "all": a["all"], "vsSpy": {k: _agg(v) for k, v in V.items()},
+                        "baseTrain": btr, "baseTest": bte, "edgeTrain": _edge(a["train"], btr), "edgeTest": _edge(a["test"], bte)}
+    hold, stop = s["hold"], s["stop"]
+    _, _, bcell = _baseline(B, s, hold, stop, COST_BP, cut, cache)
+    cells = []
+    for ph in PHASES:
+        for vo in VOLS:
+            ck = f"{ph}|{vo}"
+            tr, te = [], []
+            for r in rows:
+                if r["cell"] != ck:
+                    continue
+                x = trade(X["A"][r["s"]], r["i"], d, hold, stop, COST_BP)
+                if x is not None:
+                    (tr if r["d"] < cut else te).append(x[0])
+            a_tr, a_te = _agg(tr), _agg(te)
+            b_tr, b_te = bcell.get((ck, True), {"n": 0}), bcell.get((ck, False), {"n": 0})
+            e_tr, e_te = _edge(a_tr, b_tr), _edge(a_te, b_te)
+            n = a_tr.get("n", 0) + a_te.get("n", 0)
+            if n < 20 or a_tr.get("n", 0) < 8 or a_te.get("n", 0) < 5:
+                status = "thin"
+            elif (e_tr or 0) > 0 and (e_te or 0) > 0 and a_tr["avg"] > 0 and a_te["avg"] > 0:
+                status = "edge"
+            else:
+                status = "no edge"
+            cells.append({"cell": ck, "phase": ph, "vol": vo, "train": a_tr, "test": a_te, "baseTrain": b_tr, "baseTest": b_te,
+                          "edgeTrain": e_tr, "edgeTest": e_te, "n": n, "status": status})
+    facs = {}
+    for fk in B["names"]:
+        vals = {}
+        for r in rows:
+            v = r["f"].get(fk)
+            if v is None:
+                continue
+            x = trade(X["A"][r["s"]], r["i"], d, hold, stop, COST_BP)
+            if x is None:
+                continue
+            vals.setdefault(v, {"train": [], "test": []})["train" if r["d"] < cut else "test"].append(x[0])
+        if len(vals) > 1:
+            facs[fk] = {v: {"train": _agg(xs["train"]), "test": _agg(xs["test"])} for v, xs in sorted(vals.items())}
+    last = {}
+    for r in rows:
+        last[r["s"]] = r["d"]
+    return {"at": iso(now_ny()), "events": len(rows), "trainEvents": sum(1 for r in rows if r["d"] < cut),
+            "testEvents": sum(1 for r in rows if r["d"] >= cut), "split": {"from": rows[0]["d"], "cut": cut, "to": rows[-1]["d"]},
+            "hz": list(HZ), "sum": summ, "map": cells, "factors": facs, "factorNames": B["names"], "hold": hold, "stop": stop,
+            "lastSignal": last, "tickers": B["tick"], "costBp": COST_BP}
+
+
+# ---------------------------------------------------------------- 3. validation
+GATES = [("trainEdge", "Train edge vs baseline > 0", True), ("testEdge", "Test edge vs baseline > 0", True),
+         ("trades", "At least 30 trades", True), ("cost20", "Still positive at 20 bp cost", True),
+         ("conc", "No single ticker over 35% of the trades", True), ("testT", "Test t-stat at least 1.5", False),
+         ("months", "Best 3 months under 60% of the profit", False), ("dd", "Test drawdown under 3x the average year", False)]
+
+
+def step_validate(sub, s, prog):
+    B = build(sub, s, prog)
+    rows, X = B["rows"], B["X"]
+    if len(rows) < 2:
+        return {"at": iso(now_ny()), "error": "Not enough signals to validate.", "gates": [], "passed": False}
+    cut = rows[int(len(rows) * TRAIN)]["d"]
+    d = -1 if s["side"] == "short" else 1
+    cache = {}
+    prog(f"{len(rows)} signals: hold x stop grid vs the baseline")
+    grid = []
+    for hold in sorted(set(HOLDS) | {s["hold"]}):
+        for stop in sorted(set(STOPS) | {s["stop"]}):
+            tr, te = [], []
+            for r in rows:
+                x = trade(X["A"][r["s"]], r["i"], d, hold, stop, COST_BP)
+                if x is not None:
+                    (tr if r["d"] < cut else te).append(x[0])
+            btr, bte, _ = _baseline(B, s, hold, stop, COST_BP, cut, cache)
+            a_tr, a_te = _agg(tr), _agg(te)
+            grid.append({"hold": hold, "stop": stop, "train": a_tr, "test": a_te, "baseTrain": btr, "baseTest": bte,
+                         "edgeTrain": _edge(a_tr, btr), "edgeTest": _edge(a_te, bte), "chosen": hold == s["hold"] and stop == s["stop"]})
+    prog("costs, months, tickers, drawdown")
+    trades, te_x = [], []
+    for r in rows:
+        x = trade(X["A"][r["s"]], r["i"], d, s["hold"], s["stop"], COST_BP)
+        if x is None:
+            continue
+        trades.append({"s": r["s"], "d": r["d"], "in": B["days"][r["i"] + 1], "out": B["days"][x[1]], "pct": round(x[0], 2), "cell": r["cell"],
+                       "test": r["d"] >= cut})
+        if r["d"] >= cut:
+            te_x.append(x[0])
+    costs = []
+    for c_ in COSTS:
+        costs.append({"bp": c_, "all": _agg([t["pct"] + COST_BP / 100 - c_ / 100 for t in trades])})
+    months = {}
+    for t in trades:
+        months.setdefault(t["d"][:7], []).append(t["pct"])
+    mlist = [{"m": m, **_agg(v)} for m, v in sorted(months.items())]
+    by_t = {}
+    for t in trades:
+        by_t.setdefault(t["s"], []).append(t["pct"])
+    tick = sorted(({"s": k, **_agg(v)} for k, v in by_t.items()), key=lambda z: -z["n"])
+    ch = next(g for g in grid if g["chosen"])
+    tot = sum(t["pct"] for t in trades)
+    pos_m = sorted((m["tot"] for m in mlist if m.get("tot", 0) > 0), reverse=True)
+    top3 = round(sum(pos_m[:3]) / sum(pos_m) * 100) if pos_m and sum(pos_m) > 0 else None
+    top1 = round(tick[0]["n"] / len(trades) * 100) if trades and tick else None
+    yrs = max(0.5, (len(B["days"]) - B["days"].index(cut) if cut in B["days"] else 250) / 252)
+    dd_te = _dd(te_x)
+    avg_year = (sum(te_x) / yrs) if te_x else 0
+    c20 = next((c for c in costs if c["bp"] == 20), {}).get("all", {})
+    gv = {"trainEdge": (ch["edgeTrain"], "> 0"), "testEdge": (ch["edgeTest"], "> 0"), "trades": (len(trades), "≥ 30"),
+          "cost20": (c20.get("avg"), "> 0"), "conc": (top1, "≤ 35%" if len(B["tick"]) >= 8 else "n/a (few tickers)"),
+          "testT": (ch["test"].get("t"), "≥ 1.5"), "months": (top3, "< 60%"), "dd": (dd_te, f"< {round(3 * avg_year, 1)}" if avg_year > 0 else "")}
+    ok = {"trainEdge": (ch["edgeTrain"] or 0) > 0, "testEdge": (ch["edgeTest"] or 0) > 0, "trades": len(trades) >= 30,
+          "cost20": (c20.get("avg") or 0) > 0, "conc": len(B["tick"]) < 8 or (top1 or 100) <= 35,
+          "testT": (ch["test"].get("t") or 0) >= 1.5, "months": top3 is not None and top3 < 60, "dd": avg_year > 0 and dd_te < 3 * avg_year}
+    gates = [{"key": k, "name": n, "hard": hard, "ok": bool(ok[k]), "value": gv[k][0], "need": gv[k][1]} for k, n, hard in GATES]
+    eq, cur = [], 0.0
+    for t in trades:
+        cur += t["pct"]
+        eq.append([t["d"], round(cur, 2)])
+    return {"at": iso(now_ny()), "hold": s["hold"], "stop": s["stop"], "grid": grid, "costs": costs, "months": mlist, "tickers": tick[:15],
+            "top1Share": top1, "top3Months": top3, "trades": len(trades), "chosen": ch, "testDD": dd_te, "allDD": _dd([t["pct"] for t in trades]),
+            "gates": gates, "passed": all(g["ok"] for g in gates if g["hard"]), "equity": eq[-400:], "split": {"cut": cut},
+            "holds": sorted(set(HOLDS) | {s["hold"]}), "stops": sorted(set(STOPS) | {s["stop"]}), "costBp": COST_BP,
+            "_trades": trades}
+
+
+AI_SYSTEM = """You are the risk committee of a small quant trading firm. A researcher submits a strategy that went through
+the firm's protocol (data, study vs a baseline, train / test split, hold x stop grid, cost stress, months, tickers, gates).
+Decide if it goes to a paper account. Be strict and concrete: an edge that is only in a few months, a few tickers, one market
+condition, or that vanishes with costs or on the test period is not an edge. The baseline is every ticker on every day with
+the same market conditions and the same trade, so the edge column is what the signal adds. Say which conditions-map cells
+(phase|calm or phase|volatile) it should be allowed to trade in (only cells with an edge in train AND test, or none).
+Plain words, no jargon, short sentences. Numbers are % per trade net of costs."""
+AI_SCHEMA = {"type": "object", "properties": {
+    "verdict": {"type": "string", "enum": ["pass", "fail", "more data"]},
+    "summary": {"type": "string", "description": "3-5 sentences: the verdict and why"},
+    "checks": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "ok": {"type": "boolean"}, "note": {"type": "string"}},
+                                          "required": ["name", "ok", "note"]}},
+    "concerns": {"type": "array", "items": {"type": "string"}},
+    "approvedCells": {"type": "array", "items": {"type": "string"}},
+    "paperPlan": {"type": "object", "properties": {"minTrades": {"type": "integer"}, "expectAvgPct": {"type": "number"},
+                                                   "maxDrawdownPct": {"type": "number"}, "watch": {"type": "string"}},
+                  "required": ["minTrades", "expectAvgPct", "maxDrawdownPct", "watch"]}},
+    "required": ["verdict", "summary", "checks", "concerns", "approvedCells", "paperPlan"]}
+
+
+def step_ai(sub, s, res):
+    import os
+    import claude
+    v, st, dt = res.get("validation") or {}, res.get("study") or {}, res.get("data") or {}
+    if not v.get("grid"):
+        raise BadRequest("Run the validation first.")
+    payload = {"strategy": {"name": s["name"], "rule": describe(s), "kind": s["kind"], "side": s["side"], "universe": st.get("tickers")},
+               "data": {k: dt.get(k) for k in ("source", "alerts", "tickers", "oldest", "first", "last", "notes", "byYear")},
+               "study": {"events": st.get("events"), "split": st.get("split"), "byHold": st.get("sum"), "conditionsMap": st.get("map")},
+               "validation": {k: v.get(k) for k in ("hold", "stop", "chosen", "grid", "costs", "months", "tickers", "top1Share", "top3Months",
+                                                    "trades", "testDD", "allDD", "gates")}}
+    out = claude.json_call(os.environ.get("COACH_MODEL", "claude-sonnet-5"), AI_SYSTEM, payload, 3000, AI_SCHEMA)
+    out["approvedCells"] = [c for c in (out.get("approvedCells") or []) if c in {f"{p}|{q}" for p in PHASES for q in VOLS}]
+    out["at"] = iso(now_ny())
+    return out
+
+
+# ---------------------------------------------------------------- the protocol job
+def protocol(sub, s, res):
+    """Where the strategy is in the protocol: each step done / failed / to do, and whether it can be promoted."""
+    dt, st, v, ai = res.get("data") or {}, res.get("study") or {}, res.get("validation") or {}, res.get("ai") or {}
+    stale = lambda r, k: bool(r.get("at")) and r.get("cfg") not in (None, k)
+    e_te = (((st.get("sum") or {}).get(str(s["hold"])) or {}).get("edgeTest") or 0)
+    steps = [
+        {"key": "data", "name": "Data download", "status": "done" if dt.get("ok") else "failed" if dt.get("at") else "todo"},
+        {"key": "study", "name": "Study", "status": "todo" if not st.get("at") else "failed" if st.get("error") or not st.get("events") else
+         ("done" if any(c["status"] == "edge" for c in st.get("map") or []) or e_te > 0 else "weak")},
+        {"key": "validate", "name": "Validation", "status": "todo" if not v.get("at") else "done" if v.get("passed") else "failed"},
+        {"key": "ai", "name": "AI review", "status": "todo" if not ai.get("at") else "done" if ai.get("verdict") == "pass" else "failed"},
+    ]
+    for x, r, k in zip(steps, (dt, st, v, ai), (_data_key(s), _cfg_key(s), _cfg_key(s), _cfg_key(s))):
+        if stale(r, k):
+            x["status"] = "stale"
+    ready = all(x["status"] == "done" for x in steps[2:]) and steps[0]["status"] == "done"
+    return {"steps": steps, "ready": ready}
+
+
+def _data_key(s):
+    return json.dumps([s["kind"], s.get("universe")], sort_keys=True)
+
+
+def _cfg_key(s):
+    return json.dumps([s["kind"], s["side"], s.get("flowSide"), s["cond"], s.get("universe"), s["hold"], s["stop"]], sort_keys=True)
+
+
+def run_start(sub, pid, step):
+    import research
+    s = get(sub, pid)
+    if step not in ("data", "study", "validate", "ai", "all"):
+        raise BadRequest("Unknown step.")
+    j = s.get("job") or {}
+    if j.get("running") and j["running"] > iso(now_ny() - timedelta(minutes=14)):
+        return s
+    if step == "data" and s["kind"] == "flow":
+        import uoa
+        uoa.hist_start(sub, {})
+    s["job"] = {"running": iso(now_ny()), "step": step, "msg": "starting", "error": None}
+    _save(sub, s)
+    research._invoke(sub, "pipe", {"id": pid, "step": step})
+    return s
+
+
+def job(sub, params):
+    pid, step = params.get("id"), params.get("step") or "all"
+    s = get(sub, pid)
+
+    def prog(msg):
+        s["job"] = {**(s.get("job") or {}), "running": iso(now_ny()), "msg": msg}
+        _save(sub, s)
+    res = results(sub, pid)
+    steps = ["data", "study", "validate", "ai"] if step == "all" else [step]
+    try:
+        for k in steps:
+            s["job"] = {"running": iso(now_ny()), "step": k, "msg": {"data": "downloading the data", "study": "running the study",
+                                                                     "validate": "validating", "ai": "Claude is reviewing"}[k], "error": None}
+            _save(sub, s)
+            if k == "data":
+                res["data"] = step_data(sub, s, prog)
+            elif k == "study":
+                res["study"] = step_study(sub, s, prog)
+            elif k == "validate":
+                v = step_validate(sub, s, prog)
+                tr = v.pop("_trades", [])
+                by = {}
+                for t in tr:
+                    by.setdefault(t["s"], []).append([t["in"], t["out"], t["pct"]])
+                db.put({"PK": _pk(sub), "SK": TRD + pid, "data": json.dumps({k2: v2[-120:] for k2, v2 in by.items()}, separators=(",", ":"))})
+                res["validation"] = v
+                if (res.get("ai") or {}).get("at"):
+                    res["ai"]["stale"] = True
+            elif k == "ai":
+                if step == "all" and not (res.get("validation") or {}).get("passed"):
+                    s.setdefault("history", []).append({"at": iso(now_ny()), "what": "AI review skipped: the validation failed (ask Claude from the AI review tab anyway)"})
+                    break
+                res["ai"] = step_ai(sub, s, res)
+                if s.get("cells") is None:
+                    s["cells"] = res["ai"]["approvedCells"]
+            res[k if k != "validate" else "validation"]["cfg"] = _data_key(s) if k == "data" else _cfg_key(s)
+            _save_results(sub, pid, res)
+            s.setdefault("history", []).append({"at": iso(now_ny()), "what": f"{k}: " + _summary_line(k, res)})
+            s["history"] = s["history"][-40:]
+        s["job"] = {"running": None, "step": None, "msg": None, "error": None, "at": iso(now_ny())}
+    except Exception as e:
+        print("pipeline job failed", pid, step, repr(e))
+        s["job"] = {"running": None, "step": None, "msg": None, "error": str(e)[:200], "at": iso(now_ny())}
+    _save(sub, s)
+    return {"id": pid, "error": s["job"].get("error")}
+
+
+def _summary_line(k, res):
+    if k == "data":
+        d = res.get("data") or {}
+        return f"{d.get('alerts') or d.get('days') or 0} {'alerts' if d.get('kind') == 'flow' else 'days'}, {d.get('tickers') or 0} tickers"
+    if k == "study":
+        st = res.get("study") or {}
+        return f"{st.get('events', 0)} signals, {sum(1 for c in st.get('map') or [] if c['status'] == 'edge')} cells with an edge"
+    if k == "validate":
+        v = res.get("validation") or {}
+        return ("passed" if v.get("passed") else "failed") + f" ({sum(1 for g in v.get('gates') or [] if g['ok'])}/{len(v.get('gates') or [])} checks)"
+    return (res.get("ai") or {}).get("verdict") or ""
+
+
+# ---------------------------------------------------------------- accounts
+def accounts(sub, strats=None):
+    strats = strats if strats is not None else strategies(sub)
+    out = []
+    used = {s["account"]: s for s in strats if s.get("account") and s["stage"] in ("paper", "live")}
+    for sk, name in BOT_ACCOUNTS:
+        it = db.get(_pk(sub), sk)
+        out.append({"sk": sk, "name": name, "connected": bool(it), "env": (it or {}).get("env"), "keyHint": (it or {}).get("keyHint"),
+                    "bot": True, "usedBy": name.split(" account")[0].replace("Options bot", "Options flow bot")})
+    for it in db.q_prefix(_pk(sub), ACC):
+        s = used.get(it["SK"])
+        out.append({"sk": it["SK"], "name": it.get("name") or it["SK"][len(ACC):], "connected": True, "env": it.get("env"), "keyHint": it.get("keyHint"),
+                    "bot": False, "usedBy": s["name"] if s else None, "usedById": s["id"] if s else None})
+    return out
+
+
+def connect(sub, b):
+    import alpaca
+    name = str((b or {}).get("name") or "").strip()[:40]
+    key, secret = str(b.get("key") or "").strip(), str(b.get("secret") or "").strip()
+    env = "live" if b.get("env") == "live" else "paper"
+    if not name or not key or not secret:
+        raise BadRequest("Enter a name, the API key and the secret.")
+    for a in accounts(sub):
+        if a.get("keyHint") and a["keyHint"] == key[-4:]:
+            raise BadRequest(f"These look like the keys of {a['name']}: each strategy needs an account of its own.")
+    n = len(db.q_prefix(_pk(sub), ACC)) + 1
+    sk = f"{ACC}{n:02d}"
+    alpaca.save_creds(sub, key, secret, env, "iex", sk=sk)
+    it = db.get(_pk(sub), sk) or {}
+    db.put({**it, "name": name})
+    return accounts(sub)
+
+
+def _creds(sub, sk):
+    import alpaca
+    return alpaca.creds(sub, sk)
+
+
+def _alp(c, method, path, body=None):
+    base = "https://api.alpaca.markets" if c.get("env") == "live" else "https://paper-api.alpaca.markets"
+    req = urllib.request.Request(base + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"APCA-API-KEY-ID": c["key"], "APCA-API-SECRET-KEY": c["secret"], "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise BadRequest(f"Alpaca refused the request ({e.code}): {e.read().decode(errors='replace')[:200]}")
+
+
+# ---------------------------------------------------------------- stage changes
+def action(sub, pid, b):
+    s = get(sub, pid)
+    a = (b or {}).get("action")
+    res = results(sub, pid)
+    now = iso(now_ny())
+    if a == "update":
+        before = _cfg_key(s)
+        if s["stage"] in ("paper", "live"):
+            raise BadRequest("Pause it and send it back to research before changing the rule.")
+        for k in ("name", "desc"):
+            if b.get(k) is not None:
+                s[k] = str(b[k]).strip()[:400 if k == "desc" else 80] or s[k]
+        if b.get("cond") is not None:
+            s["cond"] = clean_cond(b["cond"], s["kind"])
+        for k, lo, hi in (("hold", 1, 60), ("stop", 0, 10), ("allocPct", 1, 50), ("maxPos", 1, 30)):
+            if b.get(k) is not None:
+                s[k] = type(s[k])(_clip(b[k], lo, hi, s[k]))
+        if b.get("side") in ("long", "short"):
+            s["side"] = b["side"]
+        if b.get("flowSide") in ("call", "put"):
+            s["flowSide"] = b["flowSide"]
+        if b.get("universe") is not None and s["kind"] == "daily":
+            s["universe"] = _universe(b["universe"])
+        if _cfg_key(s) != before:
+            s["history"].append({"at": now, "what": "rule changed: the protocol starts again"})
+    elif a == "cells":
+        ok = {f"{p}|{q}" for p in PHASES for q in VOLS}
+        s["cells"] = [c for c in (b.get("cells") or []) if c in ok]
+        s["history"].append({"at": now, "what": "approved conditions: " + (", ".join(s["cells"]) or "none")})
+    elif a in ("paper", "live"):
+        pr = protocol(sub, s, res)
+        if a == "paper" and not pr["ready"]:
+            raise BadRequest("Every step of the protocol must pass first (data, study, validation, AI review).")
+        if a == "live" and s["stage"] != "paper":
+            raise BadRequest("Only a paper strategy goes live.")
+        sk = b.get("account")
+        acc = next((x for x in accounts(sub) if x["sk"] == sk), None)
+        if not acc or not acc["connected"]:
+            raise BadRequest("Pick a connected account.")
+        if acc["bot"]:
+            raise BadRequest(f"{acc['name']} is used by the {acc['usedBy']}: give the strategy an account of its own.")
+        if acc.get("usedById") and acc["usedById"] != pid:
+            raise BadRequest(f"{acc['name']} is already used by {acc['usedBy']}.")
+        if a == "live" and acc.get("env") != "live":
+            raise BadRequest("Pick an account connected with LIVE keys.")
+        if a == "paper" and acc.get("env") == "live":
+            raise BadRequest("That account has live keys: paper needs a paper account.")
+        if not s.get("cells"):
+            s["cells"] = (res.get("ai") or {}).get("approvedCells") or [c["cell"] for c in (res.get("study") or {}).get("map") or [] if c["status"] == "edge"]
+        s.update(stage=a, account=sk, since=now, kill={"status": "armed"})
+        s["plan"] = (res.get("ai") or {}).get("paperPlan") or {}
+        s["history"].append({"at": now, "what": f"promoted to {a} on {acc['name']}"})
+    elif a == "pause":
+        s["kill"] = {"status": "paused", "why": "paused by you", "at": now}
+        s["history"].append({"at": now, "what": "paused"})
+    elif a == "resume":
+        s["kill"] = {"status": "armed"}
+        s["history"].append({"at": now, "what": "resumed"})
+    elif a == "research":
+        s.update(stage="research", account=None, kill={})
+        s["history"].append({"at": now, "what": "back to research (open positions still exit by their rule)"})
+    elif a == "retire":
+        s.update(stage="retired", account=None, kill={})
+        s["history"].append({"at": now, "what": "retired"})
+    elif a == "unretire":
+        s.update(stage="research")
+        s["history"].append({"at": now, "what": "back to research"})
+    else:
+        raise BadRequest("Unknown action.")
+    s["history"] = s["history"][-40:]
+    _save(sub, s)
+    return detail(sub, pid)
+
+
+def delete(sub, pid):
+    s = get(sub, pid)
+    if s["stage"] in ("paper", "live"):
+        raise BadRequest("Send it back to research first.")
+    for sk in (SP + pid, RES + pid, TRD + pid):
+        db.delete(_pk(sub), sk)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- views
+def positions(sub, pid):
+    return sorted((_strip(p) for p in db.q_prefix(_pk(sub), POS + pid + "#")), key=lambda p: p.get("signalDay") or "")
+
+
+def paper_stats(s, pos, res):
+    closed = [p for p in pos if p.get("status") == "closed" and p.get("pct") is not None]
+    xs = [float(p["pct"]) for p in closed]
+    a = _agg(xs)
+    v = (res.get("validation") or {}).get("chosen") or {}
+    bt = v.get("test") or {}
+    z = None
+    if a.get("n", 0) >= 5 and bt.get("sd"):
+        z = round((a["avg"] - bt["avg"]) / (bt["sd"] / math.sqrt(a["n"])), 2)
+    return {"closed": a, "open": sum(1 for p in pos if p.get("status") in ("pending", "open", "exiting")),
+            "pl": round(sum(float(p.get("pl") or 0) for p in closed), 2), "dd": _dd(xs), "z": z, "bt": bt,
+            "btDD": (res.get("validation") or {}).get("testDD")}
+
+
+def market(sub, fresh=False):
+    it = db.get(_pk(sub), MKT) or {}
+    today = now_ny().strftime("%Y-%m-%d")
+    if it.get("at", "")[:10] == today and not fresh:
+        return _strip(it)
+    try:
+        import macro
+        import plab
+        import regime
+        spy, vix, v3 = plab._bars("SPY", 2), plab._bars("^VIX", 2), plab._bars("^VIX3M", 2)
+        days = sorted(spy)
+        lab = regime.label_days({d: v[3] for d, v in spy.items()}, {d: v[3] for d, v in vix.items()}, {d: v[3] for d, v in v3.items()})
+        d = days[-1]
+        ph = {"Up": "bull", "Range": "sideways", "Down": "bear"}.get((lab.get(d) or {}).get("trend"))
+        vv = macro.align({x: v[3] for x, v in vix.items()}, days)[-1]
+        out = {"d": d, "phase": ph, "vix": round(vv, 2) if vv else None, "cell": f"{ph}|{'calm' if vv < 20 else 'volatile'}" if ph and vv else None,
+               "label": (lab.get(d) or {}).get("label"), "at": iso(now_ny())}
+        db.put({"PK": _pk(sub), "SK": MKT, **out})
+        return out
+    except Exception as e:
+        print("pipeline market failed", e)
+        return _strip(it)
+
+
+def bots(sub):
+    """The bots that ran before the pipeline existed: shown on the Running page as they are."""
+    out = []
+    try:
+        import autotrader
+        cfg = autotrader.settings(sub)
+        items = [i for i in db.q_prefix(_pk(sub), "BOT#") if i.get("status") == "closed" and i.get("realizedPl") is not None]
+        out.append({"key": "flowbot", "name": "Options flow bot", "desc": "Calls bought from unusual options flow, exits managed by the bot",
+                    "on": bool(cfg.get("flowAuto")), "orders": bool(cfg.get("autoSubmit")), "account": "Options bot account", "stage": "paper",
+                    "closed": len(items), "pl": round(sum(float(i["realizedPl"]) for i in items), 2), "open": "#botflow"})
+    except Exception as e:
+        print("flow bot view failed", e)
+    try:
+        import smclive
+        c = smclive.config(sub)
+        recs = [r for r in db.q_prefix(_pk(sub), smclive.POS) if r.get("R") is not None]
+        rs = [float(r["R"]) for r in recs]
+        out.append({"key": "smc", "name": "Smart money QQQ / SPY", "desc": "1-minute smart money setups on QQQ / SPY", "on": bool(c.get("enabled")),
+                    "orders": bool(c.get("trade")), "account": "Day-trading account (QQQ / SPY)", "stage": "paper", "closed": len(rs),
+                    "avgR": round(sum(rs) / len(rs), 2) if rs else None, "totR": round(sum(rs), 1) if rs else None, "mode": "smc"})
+    except Exception as e:
+        print("smc view failed", e)
+    for mod, key, name, desc, mode, acc in (("daytrade", "dt", "Day trading QQQ / SPY", "1-minute day-trading strategy", "dt", "Day-trading account (QQQ / SPY)"),
+                                            ("stockday", "sd", "Stocks in play", "Opening-range breakout on the top relative-volume stocks", "sd", "Stocks-in-play account")):
+        try:
+            m = __import__(mod)
+            c = m.config(sub)
+            if c.get("enabled") or c.get("trade"):
+                out.append({"key": key, "name": name, "desc": desc, "on": bool(c.get("enabled")), "orders": bool(c.get("trade")), "account": acc,
+                            "stage": "paper", "mode": mode})
+        except Exception as e:
+            print(mod, "view failed", e)
+    return out
+
+
+def _summary(sub, s, res=None):
+    res = res if res is not None else results(sub, s["id"])
+    pr = protocol(sub, s, res)
+    st, v, ai = res.get("study") or {}, res.get("validation") or {}, res.get("ai") or {}
+    ch = v.get("chosen") or {}
+    out = {**{k: s.get(k) for k in ("id", "name", "desc", "kind", "side", "flowSide", "cond", "universe", "hold", "stop", "allocPct", "maxPos",
+                                    "stage", "account", "since", "kill", "cells", "job", "signals", "plan")},
+           "rule": describe(s), "protocol": pr, "events": st.get("events"),
+           "bt": {"testAvg": (ch.get("test") or {}).get("avg"), "testEdge": ch.get("edgeTest"), "trainEdge": ch.get("edgeTrain"), "n": v.get("trades")},
+           "verdict": ai.get("verdict")}
+    if s["stage"] in ("paper", "live"):
+        out["paper"] = paper_stats(s, positions(sub, s["id"]), res)
+    return out
+
+
+def overview(sub):
+    ss = strategies(sub)
+    return {"strategies": [_summary(sub, s) for s in ss], "bots": bots(sub), "accounts": accounts(sub, ss), "market": market(sub),
+            "catalog": {"daily": DAILY_FACTORS, "flow": _flow_factors(), "values": VALUES}}
+
+
+def detail(sub, pid):
+    s = get(sub, pid)
+    res = results(sub, pid)
+    return {"strategy": _summary(sub, s, res), "history": s.get("history") or [], "results": res, "positions": positions(sub, pid),
+            "accounts": accounts(sub), "market": market(sub), "factorNames": factor_names(s["kind"]),
+            "catalog": {"factors": DAILY_FACTORS if s["kind"] == "daily" else _flow_factors(), "values": VALUES}}
+
+
+def chart(sub, pid, sym):
+    import plab
+    s = get(sub, pid)
+    sym = (sym or "").strip().upper()[:10]
+    if not sym:
+        raise BadRequest("Pick a ticker.")
+    bars = plab._bars(sym, 2)
+    days = sorted(bars)[-260:]
+    tr = _load_json(db.get(_pk(sub), TRD + pid), "data").get(sym, [])
+    pos = [p for p in positions(sub, pid) if p.get("symbol") == sym]
+    return {"symbol": sym, "bars": [[d, *bars[d][:4]] for d in days], "trades": [t for t in tr if t[1] >= days[0]] if days else [],
+            "paper": [{k: p.get(k) for k in ("status", "fillDay", "fillPrice", "exitDay", "exitPrice", "pct", "side")} for p in pos], "side": s["side"]}
+
+
+# ---------------------------------------------------------------- paper / live: every trading day after the close
+def daily_kick():
+    now = now_ny()
+    if now.weekday() >= 5 or now.strftime("%H:%M") < "18:00":
+        return 0
+    import research
+    n = 0
+    for sub in db.owners():
+        try:
+            if not any(s.get("stage") in ("paper", "live") for s in (_norm(i) for i in db.q_prefix(_pk(sub), SP))):
+                continue
+            it = db.get(_pk(sub), "PIPETICK") or {}
+            if (it.get("day") or "") >= now.strftime("%Y-%m-%d"):
+                continue
+            db.put({"PK": _pk(sub), "SK": "PIPETICK", **{k: v for k, v in it.items() if k not in ("PK", "SK")}, "day": now.strftime("%Y-%m-%d")})
+            research._invoke(sub, "pipetick", {})
+            n += 1
+        except Exception as e:
+            print("pipeline kick failed", e)
+    return n
+
+
+def tick(sub, today=None):
+    """Sync the paper positions, exits due, kill switch, then today's signals -> orders at the next open."""
+    log = []
+    mk = market(sub, fresh=True)
+    for s in strategies(sub):
+        if s["stage"] not in ("paper", "live") or not s.get("account"):
+            continue
+        try:
+            log.append(_tick_one(sub, s, mk, today))
+        except Exception as e:
+            print("pipeline tick failed", s["id"], repr(e))
+            log.append({"id": s["id"], "error": str(e)[:200]})
+    it = db.get(_pk(sub), "PIPETICK") or {}
+    db.put({"PK": _pk(sub), "SK": "PIPETICK", "day": it.get("day"), "at": iso(now_ny()), "log": json.dumps(log, default=str)[:30000]})
+    return {"strategies": len(log)}
+
+
+def _tick_one(sub, s, mk, today=None):
+    c = _creds(sub, s["account"])
+    if not c:
+        raise ValueError("The account isn't connected any more.")
+    B = build(sub, s)
+    days, X = B["days"], B["X"]
+    today = today or now_ny().strftime("%Y-%m-%d")
+    ti = len(days) - 1
+    out = {"id": s["id"], "name": s["name"], "day": days[-1], "actions": []}
+    d = -1 if s["side"] == "short" else 1
+    pos = positions(sub, s["id"])
+    for p in pos:                                      # 1. sync
+        st = p.get("status")
+        key = {"PK": _pk(sub), "SK": f"{POS}{s['id']}#{p['signalDay']}#{p['symbol']}"}
+        if st == "pending":
+            o = _alp(c, "GET", f"/v2/orders/{p['orderId']}") or {}
+            if o.get("status") == "filled":
+                p.update(status="open", fillPrice=float(o["filled_avg_price"]), fillDay=(o.get("filled_at") or today)[:10], qty=int(float(o["filled_qty"])))
+                A = X["A"].get(p["symbol"])
+                si = days.index(p["signalDay"]) if p["signalDay"] in days else None
+                if s.get("stop") and A and si is not None and A["atr"][si]:
+                    sp = round(p["fillPrice"] - d * s["stop"] * A["atr"][si], 2)
+                    so = _alp(c, "POST", "/v2/orders", {"symbol": p["symbol"], "qty": str(p["qty"]), "side": "sell" if d > 0 else "buy", "type": "stop",
+                                                         "stop_price": str(sp), "time_in_force": "gtc", "client_order_id": f"pp-{s['id']}-{p['symbol']}-{p['signalDay']}-s"})
+                    p.update(stopPx=sp, stopOrderId=(so or {}).get("id"))
+                out["actions"].append(f"{p['symbol']}: filled {p['fillPrice']}")
+                st = "open"
+            elif o.get("status") in ("canceled", "expired", "rejected"):
+                p.update(status="canceled", why=o.get("status"))
+                out["actions"].append(f"{p['symbol']}: entry {o.get('status')}")
+        if st == "open":
+            if p.get("stopOrderId"):
+                so = _alp(c, "GET", f"/v2/orders/{p['stopOrderId']}") or {}
+                if so.get("status") == "filled":
+                    _close(p, float(so["filled_avg_price"]), (so.get("filled_at") or today)[:10], d, "stop")
+                    out["actions"].append(f"{p['symbol']}: stopped {p['exitPrice']}")
+                    db.put({**key, **p})
+                    continue
+            j0 = days.index(p["fillDay"]) if p.get("fillDay") in days else None
+            if j0 is not None and ti - j0 >= s["hold"] - 1:
+                if p.get("stopOrderId"):
+                    _alp(c, "DELETE", f"/v2/orders/{p['stopOrderId']}")
+                eo = _alp(c, "POST", "/v2/orders", {"symbol": p["symbol"], "qty": str(p["qty"]), "side": "sell" if d > 0 else "buy", "type": "market",
+                                                     "time_in_force": "opg", "client_order_id": f"pp-{s['id']}-{p['symbol']}-{p['signalDay']}-x"})
+                p.update(status="exiting", exitOrderId=(eo or {}).get("id"), exitSent=today)
+                out["actions"].append(f"{p['symbol']}: exit at the next open (held {s['hold']} days)")
+        elif st == "exiting":
+            o = _alp(c, "GET", f"/v2/orders/{p['exitOrderId']}") or {}
+            if o.get("status") == "filled":
+                _close(p, float(o["filled_avg_price"]), (o.get("filled_at") or today)[:10], d, "time")
+                out["actions"].append(f"{p['symbol']}: closed {p['exitPrice']} ({p['pct']:+.2f}%)")
+        db.put({**key, **p})
+    res = results(sub, s["id"])                        # 2. kill switch
+    ps = paper_stats(s, positions(sub, s["id"]), res)
+    kill = s.get("kill") or {"status": "armed"}
+    n = ps["closed"].get("n", 0)
+    why = None
+    if kill.get("status") == "armed":
+        if ps["z"] is not None and n >= 10 and ps["z"] < -2:
+            why = f"paper is drifting below the backtest (z {ps['z']} over {n} trades)"
+        elif ps["btDD"] and ps["dd"] > 2 * float(ps["btDD"]) and n >= 5:
+            why = f"paper drawdown {ps['dd']}% is over 2x the backtest's ({ps['btDD']}%)"
+        if why:
+            kill = {"status": "paused", "why": why, "at": iso(now_ny())}
+            s["history"].append({"at": iso(now_ny()), "what": "kill switch: " + why})
+            out["actions"].append("kill switch: " + why)
+    plan = s.get("plan") or {}
+    s["ready"] = s["stage"] == "paper" and n >= int(plan.get("minTrades") or 30) and (ps["z"] is None or ps["z"] >= -1)
+    s["kill"] = kill
+    sig = []                                           # 3. today's signals
+    if days[-1] == today:
+        cell = _cell(B["ctx0"], ti)
+        allowed = cell in (s.get("cells") or [])
+        held = {p["symbol"] for p in positions(sub, s["id"]) if p.get("status") in ("pending", "open", "exiting")}
+        todays = [r for r in B["rows"] if r["d"] == today] if s["kind"] == "flow" else _today_rows(B, s, ti)
+        acct = _alp(c, "GET", "/v2/account") or {}
+        eq = float(acct.get("equity") or 0)
+        room = s["maxPos"] - len(held)
+        for r in todays:
+            act = None
+            if kill.get("status") != "armed":
+                act = "skipped: kill switch paused"
+            elif not allowed:
+                act = f"skipped: market {_cell_name(cell)} isn't approved"
+            elif r["s"] in held:
+                act = "skipped: already held"
+            elif room <= 0:
+                act = f"skipped: {s['maxPos']} positions max"
+            else:
+                px = X["A"][r["s"]]["c"][ti]
+                qty = int(eq * s["allocPct"] / 100 // px) if px and eq else 0
+                if qty < 1:
+                    act = "skipped: size under 1 share"
+                else:
+                    o = _alp(c, "POST", "/v2/orders", {"symbol": r["s"], "qty": str(qty), "side": "buy" if d > 0 else "sell", "type": "market",
+                                                        "time_in_force": "opg", "client_order_id": f"pp-{s['id']}-{r['s']}-{today}"})
+                    db.put({"PK": _pk(sub), "SK": f"{POS}{s['id']}#{today}#{r['s']}", "symbol": r["s"], "signalDay": today, "side": s["side"],
+                            "qty": qty, "status": "pending", "orderId": (o or {}).get("id"), "cell": cell, "at": iso(now_ny())})
+                    room -= 1
+                    held.add(r["s"])
+                    act = f"order: {'buy' if d > 0 else 'short'} {qty} at the next open"
+            sig.append({"s": r["s"], "action": act})
+        out["cell"], out["allowed"] = cell, allowed
+    s["signals"] = {"d": days[-1], "list": sig, "at": iso(now_ny())}
+    out["signals"] = sig
+    _save(sub, s)
+    return out
+
+
+def _cell_name(c):
+    p, v = (c or "|").split("|")
+    return f"{ {'bull': 'Up', 'sideways': 'Range', 'bear': 'Down'}.get(p, p)} · {'Calm' if v == 'calm' else 'Volatile'}" if p else "unknown"
+
+
+def _today_rows(B, s, ti):
+    X, ctx0 = B["X"], B["ctx0"]
+    rows = []
+    for t in B["tick"]:
+        A = X["A"][t]
+        if A["c"][ti] is None:
+            continue
+        f = {**_mkt_f(ctx0, X, ti), **_stock_f(A, B["ctxs"][t], ti, X["w"].get(t))}
+        if all(f.get(k) == v for k, v in s["cond"].items()):
+            rows.append({"s": t, "d": B["days"][ti], "i": ti, "f": f})
+    return rows
+
+
+def _close(p, px, day, d, why):
+    p.update(status="closed", exitPrice=px, exitDay=day, exitWhy=why, pct=round(d * (px / p["fillPrice"] - 1) * 100, 3),
+             pl=round(d * (px - p["fillPrice"]) * p["qty"], 2))

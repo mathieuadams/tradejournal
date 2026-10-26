@@ -4354,7 +4354,7 @@ function botHome() {
   const today = nyTime(Date.now()).slice(0, 10);
   const evToday = items.filter(i => (i.createdAt || '').startsWith(today) && !i.orderId).length;
   const card = (k, v, sub, c) => `<div class="period"><h3>${k}</h3><div class="big" ${c != null ? `style="color:${c >= 0 ? 'var(--gain)' : 'var(--loss)'}"` : ''}>${v}</div><p>${sub}</p></div>`;
-  return `<section><div class="cal-head"><h2>Paper bot</h2><a href="#bot" class="linkbtn">Open the paper bot</a></div>
+  return `<section><div class="cal-head"><h2>Paper bot</h2><a href="#botflow" class="linkbtn">Open the options bot</a></div>
     <div class="periods" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
       ${card('Paper account', money(ac.equity, false), `Today ${money(ac.dayChange)}`, null)}
       ${card('Bot P&L', money(sm.total || 0), `${money(sm.realized || 0)} closed · ${money(sm.unrealized || 0)} open`, sm.total || 0)}
@@ -5712,20 +5712,353 @@ setInterval(() => {
   else if (route() === 'gex' && S.flow && S.flowAuto !== false && !S.flowBusy && $('#fl-prem')) loadFlow();
 }, 60000);
 
+/* ---------- strategy pipeline: Running / Research / one strategy (backend pipeline.py) ---------- */
+// Every strategy: 1 Data download → 2 Study → 3 Validation → 4 AI review → Promote to its own paper account → Live.
+const PP_STEPS = [['data', '1 · Data'], ['study', '2 · Study'], ['validate', '3 · Validation'], ['ai', '4 · AI review'], ['promote', '5 · Promote']];
+const ppPc = (v, d = 2) => v == null ? '—' : `${v > 0 ? '+' : ''}${(+v).toFixed(d)}%`;
+const ppCls = v => v == null ? 'muted' : v > 0 ? 'gain' : v < 0 ? 'loss' : '';
+const ppCell = c => { const [p, v] = (c || '').split('|'); return p ? `${{ bull: 'Up', sideways: 'Range', bear: 'Down' }[p] || p} · ${v === 'calm' ? 'Calm' : 'Volatile'}` : '—'; };
+const ppStIcon = st => ({ done: '<b class="gain">✓</b>', failed: '<b class="loss">✕</b>', weak: '<b style="color:var(--warn,#c98a1b)">!</b>', stale: '<span class="muted" title="The rule changed since: run it again">↻</span>', todo: '<span class="muted">·</span>' }[st] || '');
+const ppStTxt = st => ({ done: 'passed', failed: 'failed', weak: 'weak', stale: 'to rerun', todo: 'to do' }[st] || st);
+async function loadPipe() {
+  try { S.pipe = await api('/pipeline'); } catch (e) { S.pipe = { error: e.message }; }
+  if (['bot', 'botresearch'].includes(route())) render();
+}
+async function loadPipeD(id, quiet) {
+  if (!id) return;
+  try { S.pipeD = { ...(S.pipeD || {}), [id]: await api('/pipeline/' + id) }; } catch (e) { if (!quiet) toast(e.message); S.pipeD = { ...(S.pipeD || {}), [id]: { error: e.message } }; }
+  if (route() === 'botstrat') render();
+  clearTimeout(S.pipeT);
+  const j = ((S.pipeD[id] || {}).strategy || {}).job || {};
+  if (j.running) S.pipeT = setTimeout(() => { if (route() === 'botstrat' && hashParam('id') === id) loadPipeD(id, true); }, 8000);
+}
+function ppMarket(m) {
+  if (!m || !m.cell) return '';
+  return `<span class="muted" style="font-size:.85rem">Market ${esc(m.d || '')}: <b style="color:var(--ink)">${ppCell(m.cell)}</b>${m.vix ? ` · VIX ${(+m.vix).toFixed(1)}` : ''}</span>`;
+}
+const ppSub = () => '';                             // (the section's sub-navigation is drawn by subnav())
+const ppAccName = (P, sk) => ((P.accounts || []).find(a => a.sk === sk) || {}).name || sk || '—';
+function vRunning() {
+  const P = S.pipe;
+  if (!P) return ppSub('bot') + head('Running', '', '') + '<p class="loading">Loading…</p>';
+  if (P.error) return ppSub('bot') + head('Running', '', '') + `<div class="errbox">${esc(P.error)}</div>`;
+  const run = (P.strategies || []).filter(s => ['paper', 'live'].includes(s.stage)), m = P.market || {};
+  const card = (k, v, sub, col) => `<div class="period"><h3>${k}</h3><div class="big" style="${col ? 'color:' + col : ''}">${v}</div><p>${sub || ''}</p></div>`;
+  const openN = run.reduce((a, s) => a + ((s.paper || {}).open || 0), 0), pl = run.reduce((a, s) => a + ((s.paper || {}).pl || 0), 0);
+  const rows = run.map(s => { const p = s.paper || {}, c = p.closed || {}, k = s.kill || {}, ok = (s.cells || []).includes(m.cell), sig = ((s.signals || {}).list || []);
+    return `<tr data-ppopen="${s.id}" style="cursor:pointer"><td class="ppw"><b>${esc(s.name)}</b><div class="muted" style="font-size:.76rem">${esc(s.rule)}</div></td>
+      <td><span class="verdict ${s.stage === 'live' ? 'ok' : 'mid'}">${s.stage === 'live' ? 'Live' : 'Paper'}</span></td><td>${esc(ppAccName(P, s.account))}</td>
+      <td class="${m.cell ? (ok ? 'gain' : 'loss') : 'muted'}">${m.cell ? (ok ? 'approved · trades' : 'not approved · waits') : '—'}</td>
+      <td class="r">${c.n || 0}${s.stage === 'paper' ? ` / ${(s.plan || {}).minTrades || 30}` : ''}${p.open ? ` <span class="muted">· ${p.open} open</span>` : ''}</td>
+      <td class="r"><span class="${ppCls(c.avg)}">${ppPc(c.avg)}</span> <span class="muted">vs ${ppPc((s.bt || {}).testAvg)}</span></td>
+      <td class="r ${ppCls(p.pl)}">${money(p.pl || 0)}</td><td class="r">${p.z ?? '—'}</td>
+      <td class="${k.status === 'paused' ? 'loss' : 'gain'}" title="${esc(k.why || '')}">${k.status === 'paused' ? 'Paused' : 'Armed'}</td>
+      <td class="muted" style="font-size:.78rem">${sig.length ? `${sig.length} signal${sig.length > 1 ? 's' : ''} ${esc((s.signals || {}).d || '')}` : (s.signals || {}).d ? `none ${esc(s.signals.d)}` : 'first run tonight'}</td></tr>`; }).join('');
+  const bots = (P.bots || []).map(b => `<tr><td class="ppw"><b>${esc(b.name)}</b><div class="muted" style="font-size:.76rem">${esc(b.desc)}</div></td><td><span class="verdict mid">Paper</span></td><td>${esc(b.account)}</td>
+      <td class="${b.on ? 'gain' : 'muted'}">${b.on ? 'on' : 'off'}${b.on ? ` · orders ${b.orders ? 'on' : 'off'}` : ''}</td>
+      <td class="r">${b.closed ?? '—'}</td><td class="r">${b.avgR != null ? `${b.avgR > 0 ? '+' : ''}${b.avgR}R avg · ${b.totR}R` : b.pl != null ? `<span class="${ppCls(b.pl)}">${money(b.pl)}</span>` : '—'}</td>
+      <td>${b.open ? `<a class="btn" href="${b.open}">Open</a>` : `<button class="btn" data-fcfmode="${b.mode}">Open</button>`}</td></tr>`).join('');
+  return ppSub('bot') + head('Running', 'Only the strategies trading on a paper or live account. Everything else stays in Research.', ppMarket(m))
+    + `<section class="periods" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">${card('Paper', run.filter(s => s.stage === 'paper').length, 'strategies')}${card('Live', run.filter(s => s.stage === 'live').length, 'strategies')}${card('Open positions', openN, 'pipeline strategies')}${card('Paper P&L', money(pl), 'closed trades', pl >= 0 ? 'var(--gain)' : 'var(--loss)')}</section>
+    <section><h2>Pipeline strategies</h2>${run.length ? `<div class="tablewrap"><table class="ppt" style="font-size:.84rem"><thead><tr><th>Strategy</th><th>Stage</th><th>Account</th><th>Today's market</th><th class="r">Trades</th><th class="r" title="Average per closed trade, vs the backtest's test period">Avg vs backtest</th><th class="r">P&L</th><th class="r" title="How far paper is from the backtest: under -2 pauses it">z</th><th>Kill switch</th><th>Last run</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<div class="tablewrap"><p class="empty">Nothing on paper yet. A strategy lands here once it passes every step in <a href="#botresearch">Research</a> and you promote it to a paper account.</p></div>`}
+      <p class="muted" style="font-size:.8rem;margin:6px 0 0">Every trading day after the close (18:10 ET): fills synced, exits due sent for the next open, kill switch checked, today's signals → orders at the next open, only in the approved market conditions.</p></section>
+    ${bots ? `<section><h2>Bots from before the pipeline</h2><div class="tablewrap"><table class="ppt" style="font-size:.84rem"><thead><tr><th>Bot</th><th>Stage</th><th>Account</th><th>Status</th><th class="r">Closed</th><th class="r">Result</th><th></th></tr></thead><tbody>${bots}</tbody></table></div></section>` : ''}`;
+}
+function vResearch() {
+  const P = S.pipe;
+  if (!P) return ppSub('botresearch') + head('Research', '', '') + '<p class="loading">Loading…</p>';
+  if (P.error) return ppSub('botresearch') + head('Research', '', '') + `<div class="errbox">${esc(P.error)}</div>`;
+  const ss = (P.strategies || []).filter(s => s.stage === 'research'), ret = (P.strategies || []).filter(s => s.stage === 'retired');
+  const next = s => { const st = s.protocol.steps, j = s.job || {};
+    if (j.running) return `<span class="loading" style="padding:0">${esc(j.msg || 'running')}</span>`;
+    if (s.protocol.ready) return '<span class="verdict ok">Ready → promote to paper</span>';
+    const f = st.find(x => x.status !== 'done' && !(x.key === 'study' && x.status === 'weak'));
+    return f ? `${f.status === 'failed' ? '<span class="loss">Failed at</span>' : 'Next:'} ${esc(f.name)}` : ''; };
+  const rows = ss.map(s => `<tr data-ppopen="${s.id}" style="cursor:pointer"><td class="ppw"><b>${esc(s.name)}</b><div class="muted" style="font-size:.76rem">${esc(s.rule)}</div></td>
+      ${s.protocol.steps.map(x => `<td title="${esc(x.name)}: ${ppStTxt(x.status)}">${ppStIcon(x.status)} <span style="font-size:.78rem">${ppStTxt(x.status)}</span></td>`).join('')}
+      <td class="r">${s.events ?? '—'}</td><td class="r ${ppCls((s.bt || {}).testEdge)}">${ppPc((s.bt || {}).testEdge)}</td><td>${next(s)}</td></tr>`).join('');
+  return ppSub('botresearch') + head('Research', 'Every strategy goes through the same protocol: 1 Data download → 2 Study → 3 Validation → 4 AI review → promote to its own paper account.',
+    `<button class="btn coachbtn" data-ppnew>${S.ppNew ? 'Cancel' : '+ New strategy'}</button>`)
+    + (S.ppNew ? ppNewForm(P) : '')
+    + `<div class="tablewrap"><table class="ppt" style="font-size:.84rem"><thead><tr><th>Strategy</th><th>1 · Data</th><th>2 · Study</th><th>3 · Validation</th><th>4 · AI review</th><th class="r">Signals</th><th class="r" title="Test period: average per trade minus the baseline's">Test edge</th><th>Next</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">No strategy in research.</td></tr>'}</tbody></table></div>
+    ${ret.length ? `<section><h2>Retired</h2><div class="tablewrap"><table class="ppt" style="font-size:.82rem"><tbody>${ret.map(s => `<tr data-ppopen="${s.id}" style="cursor:pointer"><td class="ppw"><b>${esc(s.name)}</b> <span class="muted">${esc(s.rule)}</span></td><td class="r ${ppCls((s.bt || {}).testEdge)}">${ppPc((s.bt || {}).testEdge)}</td></tr>`).join('')}</tbody></table></div></section>` : ''}`;
+}
+function ppNewForm(P) {
+  const N = S.ppNewD || (S.ppNewD = { kind: 'daily', side: 'long', flowSide: 'call', cond: {}, hold: 5, stop: 0, uni: '__etf', tickers: '' });
+  const cat = P.catalog || {}, facs = (N.kind === 'flow' ? cat.flow : cat.daily) || [], vals = cat.values || {};
+  const lists = (S.ww && S.ww.lists) ? S.ww.lists.map(l => l.name) : ['Main'];
+  const chips = Object.entries(N.cond).map(([k, v]) => `<span class="exchip">${esc((facs.find(f => f[0] === k) || [k, k])[1])} = ${esc(v)} <button class="linkbtn" data-ppcdel="${esc(k)}" aria-label="Remove">✕</button></span>`).join(' ');
+  return `<section class="panel"><h2>New strategy</h2><div class="form-grid">
+    <div class="field"><label for="ppn-name">Name</label><input id="ppn-name" value="${esc(N.name || '')}"></div>
+    <div class="field"><label for="ppn-kind">Signal</label><select id="ppn-kind"><option value="daily" ${N.kind === 'daily' ? 'selected' : ''}>Daily rule (price, trend, market)</option><option value="flow" ${N.kind === 'flow' ? 'selected' : ''}>Unusual options flow</option></select></div>
+    ${N.kind === 'flow' ? `<div class="field"><label for="ppn-fs">Alerts</label><select id="ppn-fs"><option value="call" ${N.flowSide === 'call' ? 'selected' : ''}>Call buying</option><option value="put" ${N.flowSide === 'put' ? 'selected' : ''}>Put buying</option></select></div>` :
+      `<div class="field"><label for="ppn-uni">Universe</label><select id="ppn-uni"><option value="__etf" ${N.uni === '__etf' ? 'selected' : ''}>Index + sector ETFs</option>${lists.map(l => `<option value="${esc(l)}" ${N.uni === l ? 'selected' : ''}>Watchlist: ${esc(l)}</option>`).join('')}<option value="__tk" ${N.uni === '__tk' ? 'selected' : ''}>These tickers…</option></select></div>
+      ${N.uni === '__tk' ? `<div class="field"><label for="ppn-tk">Tickers</label><input id="ppn-tk" value="${esc(N.tickers)}" placeholder="SPY QQQ"></div>` : ''}`}
+    <div class="field"><label for="ppn-side">Trade</label><select id="ppn-side"><option value="long" ${N.side === 'long' ? 'selected' : ''}>Buy the stock</option><option value="short" ${N.side === 'short' ? 'selected' : ''}>Short the stock</option></select></div>
+    <div class="field"><label for="ppn-hold">Hold (trading days)</label><input id="ppn-hold" type="number" min="1" max="60" value="${N.hold}"></div>
+    <div class="field"><label for="ppn-stop">Stop (× ATR, 0 = none)</label><input id="ppn-stop" type="number" min="0" max="10" step="0.5" value="${N.stop}"></div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0">${chips || '<span class="muted">No condition yet.</span>'}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><select id="ppn-f" aria-label="Condition">${facs.map(([k, l]) => `<option value="${k}" ${S.ppF === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      <select id="ppn-v" aria-label="Value">${(vals[S.ppF || (facs[0] || [])[0]] || []).map(v => `<option>${esc(v)}</option>`).join('')}</select><button class="btn" data-ppcadd>Add condition</button></div>
+    <p class="muted" style="font-size:.8rem;margin:8px 0">Traded exactly like paper will trade it: the signal is known at the close, buy the next open, out at the open ${N.hold} trading days later${+N.stop ? `, stop ${N.stop} × ATR` : ''}.</p>
+    <button class="btn coachbtn" data-ppcreate>Create and start the protocol</button></section>`;
+}
+function ppReadNew() {
+  const N = S.ppNewD; if (!N) return;
+  const g = id => { const el = $('#' + id); return el ? el.value : undefined; };
+  if (g('ppn-name') !== undefined) N.name = g('ppn-name');
+  if (g('ppn-kind')) N.kind = g('ppn-kind'); if (g('ppn-fs')) N.flowSide = g('ppn-fs'); if (g('ppn-uni')) N.uni = g('ppn-uni');
+  if (g('ppn-tk') !== undefined) N.tickers = g('ppn-tk'); if (g('ppn-side')) N.side = g('ppn-side');
+  if (g('ppn-hold')) N.hold = +g('ppn-hold'); if (g('ppn-stop') !== undefined) N.stop = +g('ppn-stop');
+}
+// ---- one strategy: the protocol on the left, the chart + watchlist on the right (always the same)
+function vStrat() {
+  const id = hashParam('id'), D = (S.pipeD || {})[id];
+  if (!D) return ppSub('') + '<p class="loading">Loading…</p>';
+  if (D.error) return ppSub('') + `<div class="errbox">${esc(D.error)}</div><p><a href="#botresearch">‹ Research</a></p>`;
+  const s = D.strategy, R = D.results || {}, j = s.job || {}, run = ['paper', 'live'].includes(s.stage);
+  const tabs = run ? [...PP_STEPS.slice(0, 4), ['paper', s.stage === 'live' ? '5 · Live' : '5 · Paper']] : PP_STEPS;
+  let tab = (S.ppTab || {})[id];
+  if (!tab || !tabs.some(t => t[0] === tab)) { const f = s.protocol.steps.find(x => x.status !== 'done' && !(x.key === 'study' && x.status === 'weak')); tab = run ? 'paper' : f ? f.key : 'promote'; }
+  const stOf = k => (s.protocol.steps.find(x => x.key === k) || {}).status;
+  const tabBtn = ([k, l]) => `<button class="btn ${tab === k ? 'coachbtn' : ''}" data-pptab="${id}|${k}" style="flex:1 1 120px;min-height:40px">${l} ${k === 'promote' ? (s.protocol.ready ? '<b class="gain">✓</b>' : '') : k === 'paper' ? '' : ppStIcon(stOf(k))}</button>`;
+  const body = { data: ppData, study: ppStudy, validate: ppValid, ai: ppAI, promote: ppPromote, paper: ppPaper }[tab](s, R, D);
+  const stage = { research: ['mid', 'Research'], paper: ['mid', 'Paper'], live: ['ok', 'Live'], retired: ['bad', 'Retired'] }[s.stage] || ['mid', s.stage];
+  return ppSub(run ? 'bot' : 'botresearch') + `<header class="page-head"><div><p style="margin:0 0 4px"><a href="#${run ? 'bot' : 'botresearch'}">‹ ${run ? 'Running' : 'Research'}</a></p>
+      <h1>${esc(s.name)} <span class="verdict ${stage[0]}" style="font-size:.8rem;vertical-align:middle">${stage[1]}</span></h1><p>${esc(s.rule)}${s.desc ? `<br><span class="muted">${esc(s.desc)}</span>` : ''}</p></div>${ppMarket(D.market)}</header>
+    ${j.running ? `<div class="smc-stress"><span class="loading" style="padding:0">${esc(j.msg || 'running')}</span> <span class="muted" style="font-size:.8rem">runs in the background; this page refreshes by itself</span></div>` : j.error ? `<div class="errbox">${esc(j.error)}</div>` : ''}
+    <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+      <div style="flex:999 1 620px;min-width:0"><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${tabs.map(tabBtn).join('')}</div>${body}
+        ${(D.history || []).length ? `<details style="margin-top:14px"><summary class="muted">History (${D.history.length})</summary><ul style="font-size:.8rem;margin:6px 0">${D.history.slice().reverse().map(h => `<li><span class="muted">${esc((h.at || '').replace('T', ' ').slice(0, 16))}</span> ${esc(h.what)}</li>`).join('')}</ul></details>` : ''}</div>
+      <aside style="flex:1 1 380px;min-width:0;display:flex;flex-direction:column;gap:12px">${ppSide(s, R, D)}</aside></div>`;
+}
+const ppRun = (id, step, label, busy) => `<button class="btn coachbtn" data-pprun="${id}|${step}" ${busy ? 'disabled' : ''}>${busy ? 'Running…' : label}</button>`;
+const ppAggTd = a => !a || !a.n ? '<td class="r muted">—</td><td class="r"></td><td class="r"></td><td class="r"></td>' : `<td class="r">${a.n}</td><td class="r ${ppCls(a.avg)}">${ppPc(a.avg)}</td><td class="r">${a.win}%</td><td class="r">${a.t ?? '—'}</td>`;
+const ppH4 = '<th class="r">n</th><th class="r">Avg</th><th class="r">Win</th><th class="r">t</th>';
+function ppData(s, R) {
+  const d = R.data || {}, busy = !!(s.job || {}).running;
+  let t = '';
+  if (d.kind === 'flow') t = `<p>${esc(d.source)} · <b>${fmtInt(d.alerts || 0)}</b> ${esc(s.flowSide || 'call')} alerts · ${d.tickers} tickers${d.oldest ? ` · back to ${esc(d.oldest)}` : ''}${d.minPrem ? ` · alerts ≥ $${fmtInt(d.minPrem)}` : ''} · topped up ${esc(d.topup || '')}${d.running ? ' · <span class="loading" style="padding:0">getting more</span>' : ''}</p>
+      ${(d.byYear || []).length ? `<div class="tablewrap"><table class="ppt" style="font-size:.8rem;width:auto"><thead><tr><th>Year</th><th class="r">Alerts</th><th class="r" title="Contracts 90+ days out: the old history keeps mostly those">LEAPS share</th></tr></thead><tbody>${d.byYear.map(b => `<tr><td>${esc(b.y)}</td><td class="r">${fmtInt(b.n)}</td><td class="r ${b.leapsPct >= 50 ? 'loss' : ''}">${b.leapsPct}%</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+  else if (d.at) t = `<p>${esc(d.source)} · <b>${d.tickers}</b> tickers · ${fmtInt(d.days)} trading days ${esc(d.first)} → ${esc(d.last)}</p>
+      <div class="tablewrap" style="max-height:260px;overflow:auto"><table class="ppt" style="font-size:.8rem;width:auto"><thead><tr><th>Ticker</th><th>From</th><th>To</th><th class="r">Days</th></tr></thead><tbody>${(d.coverage || []).map(c => `<tr><td><b>${esc(c.s)}</b></td><td>${esc(c.from)}</td><td>${esc(c.to)}</td><td class="r">${fmtInt(c.days)}</td></tr>`).join('')}</tbody></table></div>`;
+  return `<section class="panel"><div class="cal-head"><h2>1 · Data download</h2>${ppRun(s.id, 'data', d.at ? 'Download again' : 'Download the data', busy)}</div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">${s.kind === 'flow' ? 'The unusual-options alert history of every watchlist ticker (Unusual Whales, bought at the ask), plus the daily candles of the tickers, SPY, VIX and VIX3M.' : 'The daily candles of every ticker of the universe, plus SPY, VIX, VIX3M and HYG / IEF for the market conditions.'}</p>
+    ${d.at ? t + (d.notes || []).map(n => `<p class="muted" style="font-size:.82rem;margin:4px 0">⚠ ${esc(n)}</p>`).join('') + `<p class="muted" style="font-size:.76rem">Checked ${esc(d.at.replace('T', ' ').slice(0, 16))}</p>` : '<p class="muted">Not downloaded yet.</p>'}</section>`;
+}
+function ppMap(s, st, edit) {
+  const by = {}; (st.map || []).forEach(c => { by[c.cell] = c; });
+  const on = new Set(s.cells || []);
+  const col = c => c.status === 'edge' ? 'color-mix(in srgb,var(--gain) 18%,var(--surface))' : c.status === 'no edge' ? 'color-mix(in srgb,var(--loss) 14%,var(--surface))' : 'var(--sunk)';
+  return `<div style="overflow-x:auto"><div style="display:grid;grid-template-columns:90px repeat(3,minmax(130px,1fr));gap:6px;min-width:500px;font-size:.8rem">
+    <div></div>${['Up', 'Range', 'Down'].map(t => `<div class="muted" style="padding:4px">SPY ${t}</div>`).join('')}
+    ${['calm', 'volatile'].map(v => `<div class="muted" style="padding:8px 4px">VIX ${v === 'calm' ? 'Calm (< 20)' : 'Volatile'}</div>${['bull', 'sideways', 'bear'].map(p => { const c = by[`${p}|${v}`] || { n: 0, status: 'thin', train: {}, test: {} };
+      return `<div style="background:${col(c)};border-radius:8px;padding:8px;border:2px solid ${on.has(c.cell || `${p}|${v}`) ? 'var(--coach)' : 'transparent'}">
+        <div><b>${c.status === 'edge' ? 'Edge' : c.status === 'no edge' ? 'No edge' : 'Too few'}</b> <span class="muted">${c.n || 0} trades</span></div>
+        <div>train ${ppPc((c.train || {}).avg)} <span class="muted">edge</span> <span class="${ppCls(c.edgeTrain)}">${ppPc(c.edgeTrain)}</span></div>
+        <div>test ${ppPc((c.test || {}).avg)} <span class="muted">edge</span> <span class="${ppCls(c.edgeTest)}">${ppPc(c.edgeTest)}</span></div>
+        ${edit ? `<label style="display:block;margin-top:4px"><input type="checkbox" data-ppcellchk="${s.id}|${p}|${v}" ${on.has(`${p}|${v}`) ? 'checked' : ''}> trade here</label>` : on.has(`${p}|${v}`) ? '<div class="muted">✓ approved</div>' : ''}</div>`; }).join('')}`).join('')}
+  </div></div>`;
+}
+function ppStudy(s, R) {
+  const st = R.study || {}, busy = !!(s.job || {}).running, hz = st.hz || [1, 3, 5, 10, 20];
+  if (!st.at) return `<section class="panel"><div class="cal-head"><h2>2 · Study</h2>${ppRun(s.id, 'study', 'Run the study', busy)}</div><p class="muted">Not run yet.</p></section>`;
+  if (st.error) return `<section class="panel"><div class="cal-head"><h2>2 · Study</h2>${ppRun(s.id, 'study', 'Run again', busy)}</div><div class="errbox">${esc(st.error)}</div></section>`;
+  const sumT = `<div class="tablewrap"><table class="ppt" style="font-size:.78rem"><thead><tr><th>Hold</th><th colspan="4" class="r">Train</th><th colspan="4" class="r">Test</th><th class="r" title="Same trade, every ticker, every day with the same market conditions">Baseline train / test</th><th class="r">Edge train</th><th class="r">Edge test</th><th class="r">vs SPY (test)</th></tr><tr><th></th>${ppH4}${ppH4}<th></th><th></th><th></th><th></th></tr></thead><tbody>
+    ${hz.map(h => { const x = (st.sum || {})[h] || {}; return `<tr style="${+h === s.hold ? 'background:var(--sunk)' : ''}"><td><b>${h} day${h > 1 ? 's' : ''}</b>${+h === s.hold ? ' <span class="muted">(rule)</span>' : ''}</td>${ppAggTd(x.train)}${ppAggTd(x.test)}<td class="r">${ppPc((x.baseTrain || {}).avg)} / ${ppPc((x.baseTest || {}).avg)}</td><td class="r ${ppCls(x.edgeTrain)}">${ppPc(x.edgeTrain)}</td><td class="r ${ppCls(x.edgeTest)}"><b>${ppPc(x.edgeTest)}</b></td><td class="r ${ppCls(((x.vsSpy || {}).test || {}).avg)}">${ppPc(((x.vsSpy || {}).test || {}).avg)}</td></tr>`; }).join('')}</tbody></table></div>`;
+  const F = st.factors || {}, names = st.factorNames || {};
+  const facT = `<div class="tablewrap" style="max-height:420px;overflow:auto"><table class="ppt" style="font-size:.76rem"><thead><tr><th>Condition</th><th></th><th colspan="4" class="r">Train</th><th colspan="4" class="r">Test</th></tr><tr><th></th><th></th>${ppH4}${ppH4}</tr></thead><tbody>
+    ${Object.keys(F).map(fk => Object.keys(F[fk]).map((v, i) => { const tr = F[fk][v].train, te = F[fk][v].test, good = tr.n >= 20 && te.n >= 10 && tr.avg > 0 && te.avg > 0;
+      return `<tr style="${good ? 'background:color-mix(in srgb,var(--gain) 9%,transparent)' : ''}"><td>${i ? '' : `<b>${esc(names[fk] || fk)}</b>`}</td><td>${esc(v)}</td>${ppAggTd(tr)}${ppAggTd(te)}</tr>`; }).join('')).join('')}</tbody></table></div>`;
+  return `<section class="panel"><div class="cal-head"><h2>2 · Study</h2>${ppRun(s.id, 'study', 'Run again', busy)}</div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px"><b>${fmtInt(st.events)}</b> signals ${esc(st.split.from)} → ${esc(st.split.to)} · train = before ${esc(st.split.cut)} (${fmtInt(st.trainEvents)}), test = after (${fmtInt(st.testEvents)}) · % per trade net of ${st.costBp} bp · bought the next open, sold at the open N days later. <b>Edge</b> = the trade minus the baseline: what the signal adds.</p>
+    <h3 style="font-size:.95rem;margin:10px 0 6px">By holding time</h3>${sumT}
+    <h3 style="font-size:.95rem;margin:14px 0 6px">Conditions map <span class="muted" style="font-weight:400;font-size:.8rem">(hold ${s.hold} days${s.stop ? `, stop ${s.stop} × ATR` : ''}: the rule as it will trade)</span></h3>
+    ${ppMap(s, st, s.stage === 'research')}<p class="muted" style="font-size:.76rem;margin:4px 0 0">Edge = positive edge in train AND test with enough trades. Paper only trades in the ticked cells (Claude's review proposes them).</p>
+    <h3 style="font-size:.95rem;margin:14px 0 6px">By condition <span class="muted" style="font-weight:400;font-size:.8rem">(green: positive in train and test)</span></h3>${facT}
+    <p class="muted" style="font-size:.76rem">Run ${esc(st.at.replace('T', ' ').slice(0, 16))}</p></section>`;
+}
+function ppEq(eq, cut) {
+  if (!eq || eq.length < 2) return '';
+  const W = 640, H = 150, ys = eq.map(e => e[1]), lo = Math.min(0, ...ys), hi = Math.max(0, ...ys), sp = hi - lo || 1;
+  const X = i => 4 + i / (eq.length - 1) * (W - 8), Y = v => 6 + (hi - v) / sp * (H - 22);
+  const ci = eq.findIndex(e => e[0] >= cut);
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Cumulative % of every trade"><line x1="4" x2="${W - 4}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)"/>
+    ${ci > 0 ? `<rect x="${X(ci)}" y="0" width="${W - 4 - X(ci)}" height="${H - 16}" fill="var(--sunk)" opacity=".7"/><text x="${X(ci) + 4}" y="12" font-size="10" fill="var(--muted)">test</text>` : ''}
+    <path d="${eq.map((e, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(e[1]).toFixed(1)}`).join(' ')}" fill="none" stroke="${ys[ys.length - 1] >= 0 ? 'var(--gain)' : 'var(--loss)'}" stroke-width="1.6"/>
+    <text x="4" y="${H - 3}" font-size="10" fill="var(--muted)">${esc(eq[0][0])}</text><text x="${W - 4}" y="${H - 3}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(eq[eq.length - 1][0])} · ${ppPc(ys[ys.length - 1], 1)} total</text></svg>`;
+}
+function ppMonths(ms) {
+  if (!ms || !ms.length) return '';
+  const W = 640, H = 110, mx = Math.max(...ms.map(m => Math.abs(m.tot || 0))) || 1, bw = (W - 8) / ms.length;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Total % by month"><line x1="4" x2="${W - 4}" y1="${H / 2}" y2="${H / 2}" stroke="var(--line)"/>
+    ${ms.map((m, i) => { const h = Math.abs(m.tot || 0) / mx * (H / 2 - 6); return `<rect x="${(4 + i * bw).toFixed(1)}" y="${(m.tot >= 0 ? H / 2 - h : H / 2).toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${h.toFixed(1)}" fill="${m.tot >= 0 ? 'var(--gain)' : 'var(--loss)'}"><title>${esc(m.m)}: ${m.n} trades, ${ppPc(m.tot, 1)}</title></rect>`; }).join('')}
+    <text x="4" y="${H - 2}" font-size="10" fill="var(--muted)">${esc(ms[0].m)}</text><text x="${W - 4}" y="${H - 2}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(ms[ms.length - 1].m)}</text></svg>`;
+}
+function ppValid(s, R) {
+  const v = R.validation || {}, busy = !!(s.job || {}).running;
+  if (!v.at) return `<section class="panel"><div class="cal-head"><h2>3 · Validation</h2>${ppRun(s.id, 'validate', 'Validate', busy)}</div><p class="muted">Not run yet.</p></section>`;
+  if (v.error) return `<section class="panel"><div class="cal-head"><h2>3 · Validation</h2>${ppRun(s.id, 'validate', 'Validate again', busy)}</div><div class="errbox">${esc(v.error)}</div></section>`;
+  const gates = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:6px">${(v.gates || []).map(g => `<div style="background:var(--sunk);border-radius:8px;padding:8px 10px;font-size:.82rem">${g.ok ? '<b class="gain">✓</b>' : g.hard ? '<b class="loss">✕</b>' : '<b style="color:var(--warn,#c98a1b)">!</b>'} ${esc(g.name)}<div class="muted" style="font-size:.76rem">${g.value == null ? '—' : esc(String(g.value))}${typeof g.value === 'number' && ['trainEdge', 'testEdge', 'cost20', 'dd'].includes(g.key) ? '%' : ['conc', 'months'].includes(g.key) && g.value != null ? '%' : ''} · need ${esc(g.need)}${g.hard ? '' : ' · warning only'}</div></div>`).join('')}</div>`;
+  const G = {}; (v.grid || []).forEach(g => { G[g.hold + '|' + g.stop] = g; });
+  const grid = `<div class="tablewrap"><table class="ppt" style="font-size:.78rem;width:auto"><thead><tr><th>Hold \\ stop</th>${(v.stops || []).map(st => `<th class="r">${st ? st + ' × ATR' : 'no stop'}</th>`).join('')}</tr></thead><tbody>
+    ${(v.holds || []).map(h => `<tr><td><b>${h} days</b></td>${(v.stops || []).map(st => { const g = G[h + '|' + st] || {}; return `<td class="r" style="${g.chosen ? 'outline:2px solid var(--coach);outline-offset:-2px' : ''}"><span class="${ppCls(g.edgeTest)}"><b>${ppPc(g.edgeTest)}</b></span> <span class="muted">test edge</span><br><span class="${ppCls(g.edgeTrain)}">${ppPc(g.edgeTrain)}</span> <span class="muted">train · ${(g.test || {}).n || 0}+${(g.train || {}).n || 0}</span></td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const ch = v.chosen || {};
+  return `<section class="panel"><div class="cal-head"><h2>3 · Validation ${v.passed ? '<span class="verdict ok">Passed</span>' : '<span class="verdict bad">Failed</span>'}</h2>${ppRun(s.id, 'validate', 'Validate again', busy)}</div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">The rule as it will trade: hold ${v.hold} days${v.stop ? `, stop ${v.stop} × ATR` : ', no stop'} · ${fmtInt(v.trades)} trades · test: ${ch.test ? `${ch.test.n} trades, avg ${ppPc(ch.test.avg)}, ${ch.test.win}% winners, t ${ch.test.t ?? '—'}` : '—'} · baseline test ${ppPc((ch.baseTest || {}).avg)}</p>
+    <h3 style="font-size:.95rem;margin:8px 0 6px">The gates</h3>${gates}
+    <h3 style="font-size:.95rem;margin:14px 0 6px">Every trade, cumulative %</h3>${ppEq(v.equity, (v.split || {}).cut)}
+    <p class="muted" style="font-size:.78rem;margin:2px 0 0">Max drawdown ${ppPc(-v.allDD, 1)} (test ${ppPc(-v.testDD, 1)}) in % points of trade return.</p>
+    <h3 style="font-size:.95rem;margin:14px 0 6px">Hold × stop <span class="muted" style="font-weight:400;font-size:.8rem">(edge vs the baseline; outlined = the rule)</span></h3>${grid}
+    <div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:12px">
+      <div style="flex:1 1 220px"><h3 style="font-size:.95rem;margin:0 0 6px">Costs</h3><table class="ppt" style="font-size:.78rem;width:auto"><thead><tr><th>Cost</th><th class="r">Avg</th><th class="r">Win</th></tr></thead><tbody>${(v.costs || []).map(c => `<tr><td>${c.bp} bp</td><td class="r ${ppCls(c.all.avg)}">${ppPc(c.all.avg)}</td><td class="r">${c.all.win ?? '—'}%</td></tr>`).join('')}</tbody></table></div>
+      <div style="flex:1 1 260px"><h3 style="font-size:.95rem;margin:0 0 6px">Tickers <span class="muted" style="font-weight:400;font-size:.8rem">top ticker ${v.top1Share ?? '—'}%</span></h3><div style="max-height:220px;overflow:auto"><table class="ppt" style="font-size:.78rem;width:auto"><thead><tr><th>Ticker</th>${ppH4}</tr></thead><tbody>${(v.tickers || []).map(t => `<tr><td><b>${esc(t.s)}</b></td>${ppAggTd(t)}</tr>`).join('')}</tbody></table></div></div></div>
+    <h3 style="font-size:.95rem;margin:14px 0 6px">Months <span class="muted" style="font-weight:400;font-size:.8rem">best 3 months = ${v.top3Months ?? '—'}% of the profit</span></h3>${ppMonths(v.months)}
+    <p class="muted" style="font-size:.76rem">Run ${esc(v.at.replace('T', ' ').slice(0, 16))}</p></section>`;
+}
+function ppAI(s, R) {
+  const a = R.ai || {}, busy = !!(s.job || {}).running, v = R.validation || {};
+  const vc = { pass: ['ok', 'Pass'], fail: ['bad', 'Fail'], 'more data': ['mid', 'More data'] }[a.verdict] || ['mid', a.verdict];
+  return `<section class="panel"><div class="cal-head"><h2>4 · AI review ${a.verdict ? `<span class="verdict ${vc[0]}">${vc[1]}</span>` : ''}</h2>${v.at ? ppRun(s.id, 'ai', a.at ? 'Ask Claude again' : 'Ask Claude to review', busy) : ''}</div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Claude gets every number of the protocol (data, study, conditions map, grid, costs, months, tickers, gates) and acts as the risk committee: pass, fail or more data, and which market conditions it may trade in.</p>
+    ${!v.at ? '<p class="muted">Run the validation first.</p>' : !a.at ? '<p class="muted">Not reviewed yet.</p>' : `${a.stale ? '<p class="loss" style="font-size:.82rem">The validation ran again since this review: ask again.</p>' : ''}
+      <p style="line-height:1.5">${esc(a.summary)}</p>
+      ${(a.checks || []).length ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:6px">${a.checks.map(c => `<div style="background:var(--sunk);border-radius:8px;padding:8px 10px;font-size:.82rem">${c.ok ? '<b class="gain">✓</b>' : '<b class="loss">✕</b>'} <b>${esc(c.name)}</b><div class="muted" style="font-size:.78rem">${esc(c.note)}</div></div>`).join('')}</div>` : ''}
+      ${(a.concerns || []).length ? `<h3 style="font-size:.95rem;margin:12px 0 4px">Concerns</h3><ul style="font-size:.84rem;margin:0">${a.concerns.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
+      <h3 style="font-size:.95rem;margin:12px 0 4px">Approved conditions</h3><p style="margin:0">${(a.approvedCells || []).length ? a.approvedCells.map(c => `<span class="exchip">${ppCell(c)}</span>`).join(' ') : '<span class="muted">none</span>'}</p>
+      ${a.paperPlan ? `<h3 style="font-size:.95rem;margin:12px 0 4px">Paper plan</h3><p style="font-size:.84rem;margin:0">At least <b>${a.paperPlan.minTrades}</b> paper trades · expect about <b>${ppPc(a.paperPlan.expectAvgPct)}</b> per trade · stop it if the drawdown passes <b>${ppPc(-a.paperPlan.maxDrawdownPct, 1)}</b>. ${esc(a.paperPlan.watch || '')}</p>` : ''}
+      <p class="muted" style="font-size:.76rem">Reviewed ${esc(a.at.replace('T', ' ').slice(0, 16))}</p>`}</section>`;
+}
+function ppAccSel(D, id, want) {
+  const acc = (D.accounts || []).filter(a => a.connected);
+  return `<select id="pp-acc-${id}" style="min-width:260px"><option value="">Pick an account…</option>${acc.map(a => { const bad = a.bot ? `used by the ${a.usedBy}` : a.usedById && a.usedById !== id ? `used by ${a.usedBy}` : a.env !== want ? `${a.env} keys` : '';
+    return `<option value="${esc(a.sk)}" ${bad ? 'disabled' : ''}>${esc(a.name)} ··${esc(a.keyHint || '')}${bad ? ` (${esc(bad)})` : ' (free)'}</option>`; }).join('')}</select>`;
+}
+const ppAccForm = () => `<details style="margin-top:10px"><summary class="muted">Connect another Alpaca account</summary><div class="form-grid" style="margin-top:8px">
+    <div class="field"><label for="ppa-name">Name</label><input id="ppa-name" placeholder="Paper 2"></div><div class="field"><label for="ppa-key">API key</label><input id="ppa-key" autocomplete="off"></div>
+    <div class="field"><label for="ppa-sec">Secret</label><input id="ppa-sec" type="password" autocomplete="off"></div><div class="field"><label for="ppa-env">Keys</label><select id="ppa-env"><option value="paper">Paper</option><option value="live">Live</option></select></div></div>
+    <button class="btn" data-ppacc>Connect</button> <span class="muted" style="font-size:.78rem">Each strategy trades its own account, so its P&L stays clean. Free paper accounts: Alpaca → Paper trading → new account.</span></details>`;
+function ppPromote(s, R, D) {
+  const pr = s.protocol, miss = pr.steps.filter(x => x.status !== 'done' && x.key !== 'study');
+  return `<section class="panel"><h2>5 · Promote to paper</h2>
+    ${!pr.ready ? `<p>Not yet: every step must pass first.</p><ul style="font-size:.86rem">${miss.map(x => `<li>${ppStIcon(x.status)} ${esc(x.name)}: ${ppStTxt(x.status)}</li>`).join('')}</ul>` : `<p class="gain"><b>Every step passed.</b></p>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:8px 0">
+      <div class="field" style="margin:0"><label for="pp-acc-${s.id}">Paper account</label>${ppAccSel(D, s.id, 'paper')}</div>
+      <div class="field" style="margin:0"><label for="pp-alloc">Per position (% of the account)</label><input id="pp-alloc" type="number" min="1" max="50" value="${s.allocPct}" style="width:7em"></div>
+      <div class="field" style="margin:0"><label for="pp-maxpos">Max positions</label><input id="pp-maxpos" type="number" min="1" max="30" value="${s.maxPos}" style="width:6em"></div>
+      <button class="btn coachbtn" data-pppromote="${s.id}|paper">Promote to paper</button></div>
+    <p class="muted" style="font-size:.8rem">Trades only in: ${(s.cells || []).length ? s.cells.map(ppCell).join(', ') : `<span class="loss">no market condition approved yet: tick cells in the Study tab, or ask Claude</span>`}. Kill switch: paused if paper drifts below the backtest (z under −2 after 10 trades) or the drawdown passes 2× the backtest's.</p>`}
+    ${ppAccForm()}
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">${s.stage === 'retired' ? `<button class="btn" data-ppact="${s.id}|unretire">Back to research</button>` : `<button class="btn" data-ppact="${s.id}|retire">Retire</button>`} <button class="btn" data-ppdel="${s.id}">Delete</button></div></section>`;
+}
+function ppPaper(s, R, D) {
+  const p = s.paper || {}, c = p.closed || {}, k = s.kill || {}, bt = p.bt || {}, plan = s.plan || {};
+  const pos = D.positions || [], sig = (s.signals || {}).list || [];
+  const card = (h, v, sub, cls) => `<div style="background:var(--sunk);border-radius:8px;padding:10px"><div class="muted" style="font-size:.76rem">${h}</div><div style="font-size:1.2rem;font-weight:650" class="${cls || ''}">${v}</div><div class="muted" style="font-size:.76rem">${sub || ''}</div></div>`;
+  return `<section class="panel"><div class="cal-head"><h2>${s.stage === 'live' ? 'Live' : 'Paper'} · ${esc(ppAccName(D, s.account))}</h2><span>${k.status === 'paused' ? `<button class="btn coachbtn" data-ppact="${s.id}|resume">Resume</button>` : `<button class="btn" data-ppact="${s.id}|pause">Pause</button>`} <button class="btn" data-ppact="${s.id}|research">Back to research</button></span></div>
+    ${k.status === 'paused' ? `<div class="errbox">Kill switch: paused${k.why ? ` — ${esc(k.why)}` : ''}. Open positions still exit by the rule; no new entries.</div>` : ''}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:6px 0 12px">
+      ${card('Closed trades', `${c.n || 0}${s.stage === 'paper' ? ` / ${plan.minTrades || 30}` : ''}`, `${p.open || 0} open`)}${card('Avg per trade', ppPc(c.avg), `backtest test ${ppPc(bt.avg)}`, ppCls(c.avg))}
+      ${card('Winners', c.n ? c.win + '%' : '—', `backtest ${bt.win ?? '—'}%`)}${card('P&L', money(p.pl || 0), 'closed trades', ppCls(p.pl))}
+      ${card('Drawdown', ppPc(-(p.dd || 0), 1), `limit ${p.btDD ? ppPc(-2 * p.btDD, 1) : '—'} (2× backtest)`)}${card('z vs backtest', p.z ?? '—', 'pauses under −2', p.z != null && p.z < -1 ? 'loss' : '')}</div>
+    ${s.ready && s.stage === 'paper' ? `<div class="smc-stress"><b class="gain">Ready for live:</b> ${c.n} paper trades in line with the backtest.
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:6px"><div class="field" style="margin:0"><label for="pp-acc-${s.id}">Live account</label>${ppAccSel(D, s.id, 'live')}</div><button class="btn coachbtn" data-pppromote="${s.id}|live">Go live</button></div></div>` : ''}
+    <h3 style="font-size:.95rem;margin:12px 0 6px">Last run ${esc((s.signals || {}).d || '')}</h3>
+    ${sig.length ? `<ul style="font-size:.84rem;margin:0">${sig.map(x => `<li><b>${esc(x.s)}</b> ${esc(x.action || '')}</li>`).join('')}</ul>` : `<p class="muted" style="margin:0">${(s.signals || {}).d ? 'No signal that day.' : 'The first run is tonight after the close (18:10 ET).'}</p>`}
+    <p class="muted" style="font-size:.78rem">Trades only in: ${(s.cells || []).map(ppCell).join(', ') || 'none'} · ${s.allocPct}% of the account per position · ${s.maxPos} positions max.</p>
+    <h3 style="font-size:.95rem;margin:12px 0 6px">Positions</h3>${pos.length ? `<div class="tablewrap"><table class="ppt" style="font-size:.8rem"><thead><tr><th>Signal</th><th>Ticker</th><th>Status</th><th class="r">Qty</th><th>In</th><th>Out</th><th class="r">%</th><th class="r">P&L</th><th>Market</th></tr></thead><tbody>
+      ${pos.slice().reverse().map(x => `<tr data-ppsym="${s.id}|${esc(x.symbol)}" style="cursor:pointer"><td>${esc(x.signalDay)}</td><td><b>${esc(x.symbol)}</b></td><td>${esc(x.status)}${x.exitWhy ? ` <span class="muted">(${esc(x.exitWhy)})</span>` : ''}</td><td class="r">${x.qty ?? ''}</td><td>${x.fillPrice != null ? `${(+x.fillPrice).toFixed(2)} <span class="muted">${esc(x.fillDay || '')}</span>` : '—'}</td><td>${x.exitPrice != null ? `${(+x.exitPrice).toFixed(2)} <span class="muted">${esc(x.exitDay || '')}</span>` : '—'}</td><td class="r ${ppCls(x.pct)}">${ppPc(x.pct)}</td><td class="r ${ppCls(x.pl)}">${x.pl != null ? money(x.pl) : '—'}</td><td class="muted">${ppCell(x.cell)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No position yet.</p>'}</section>`;
+}
+// ---- the side: the chart of the picked ticker + the watchlist of the strategy
+function ppSide(s, R, D) {
+  const st = R.study || {}, last = st.lastSignal || {}, held = new Set((D.positions || []).filter(p => ['pending', 'open', 'exiting'].includes(p.status)).map(p => p.symbol));
+  const today = {}; ((s.signals || {}).list || []).forEach(x => { today[x.s] = x.action; });
+  const tk = [...new Set([...(st.tickers || ((R.data || {}).coverage || []).map(c => c.s)), ...Object.keys(last)])];
+  const order = tk.slice().sort((a, b) => (held.has(b) - held.has(a)) || ((today[b] ? 1 : 0) - (today[a] ? 1 : 0)) || String(last[b] || '').localeCompare(String(last[a] || '')));
+  const sym = (S.ppSym || {})[s.id] || order[0];
+  const key = s.id + ':' + sym, ch = (S.ppChart || {})[key];
+  if (sym && ch === undefined) { S.ppChart = { ...(S.ppChart || {}), [key]: null }; api(`/pipeline/${s.id}/chart?t=${encodeURIComponent(sym)}`).then(r => { S.ppChart[key] = r; render(); }).catch(e => { S.ppChart[key] = { error: e.message }; render(); }); }
+  const chart = !sym ? '<p class="muted">The tickers show up after the data download.</p>' : !ch ? '<p class="loading">Loading the chart…</p>' : ch.error ? `<p class="loss">${esc(ch.error)}</p>` : ppCandles(ch);
+  return `<section class="panel" style="margin:0;padding:12px"><div style="display:flex;justify-content:space-between;align-items:baseline"><b>${esc(sym || '')} · daily</b><span class="muted" style="font-size:.74rem">▲ backtest entries · ● paper fills</span></div>${chart}</section>
+    <section class="panel" style="margin:0;padding:12px"><b>Watchlist · signals</b> <span class="muted" style="font-size:.76rem">${tk.length} tickers</span>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;max-height:460px;overflow:auto">${order.map(t => `<button class="btn ${t === sym ? 'coachbtn' : ''}" data-ppsym="${s.id}|${esc(t)}" style="display:flex;justify-content:space-between;gap:8px;text-align:left;min-height:40px"><b>${esc(t)}</b><span style="font-size:.76rem${t === sym ? '' : ''}" class="${t === sym ? '' : held.has(t) ? 'gain' : today[t] ? '' : 'muted'}">${held.has(t) ? 'in position' : today[t] ? esc(today[t]).slice(0, 34) : last[t] ? 'last signal ' + esc(last[t]) : 'no signal'}</span></button>`).join('') || '<span class="muted">—</span>'}</div></section>`;
+}
+function ppCandles(ch) {
+  const bars = (ch.bars || []).slice(-180);
+  if (bars.length < 2) return '<p class="muted">No candles.</p>';
+  const W = 520, H = 300, pl = 4, pr = 50, pt = 8, pb = 22, n = bars.length;
+  const lo = Math.min(...bars.map(b => b[3])), hi = Math.max(...bars.map(b => b[2])), pad = (hi - lo) * .05 || 1;
+  const Y = v => pt + (hi + pad - v) / (hi - lo + 2 * pad) * (H - pt - pb), bw = (W - pl - pr) / n, X = i => pl + i * bw + bw / 2;
+  const ix = {}; bars.forEach((b, i) => { ix[b[0]] = i; });
+  const near = d => { if (ix[d] != null) return ix[d]; const j = bars.findIndex(b => b[0] >= d); return j < 0 ? null : j; };
+  let zones = '', marks = '';
+  (ch.trades || []).forEach(t => { const a = near(t[0]), b = near(t[1]); if (a == null) return; const e = b == null ? n - 1 : b;
+    zones += `<rect x="${(X(a) - bw / 2).toFixed(1)}" y="${pt}" width="${((e - a + 1) * bw).toFixed(1)}" height="${H - pt - pb}" fill="${t[2] >= 0 ? 'var(--gain)' : 'var(--loss)'}" opacity=".10"><title>${esc(t[0])} → ${esc(t[1])}: ${ppPc(t[2])}</title></rect>`;
+    marks += `<polygon points="${X(a)},${Y(bars[a][3]) + 4} ${X(a) - 5},${Y(bars[a][3]) + 13} ${X(a) + 5},${Y(bars[a][3]) + 13}" fill="var(--coach)"/>`; });
+  (ch.paper || []).forEach(p => { const a = p.fillDay ? near(p.fillDay) : null; if (a != null && p.fillPrice) marks += `<circle cx="${X(a)}" cy="${Y(p.fillPrice)}" r="4.5" fill="var(--ink)" stroke="var(--surface)"/>`;
+    const b = p.exitDay ? near(p.exitDay) : null; if (b != null && p.exitPrice) marks += `<circle cx="${X(b)}" cy="${Y(p.exitPrice)}" r="4.5" fill="none" stroke="var(--ink)" stroke-width="2"/>`; });
+  const cl = bars.map(b => b[4]); let ma = '';
+  for (const [k, col] of [[21, '#5b8def'], [50, '#e0a544']]) { const pts = []; for (let i = k - 1; i < n; i++) pts.push(`${X(i).toFixed(1)},${Y(cl.slice(i - k + 1, i + 1).reduce((a, b) => a + b, 0) / k).toFixed(1)}`); if (pts.length > 1) ma += `<polyline points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="1.2"/>`; }
+  const c = bars.map((b, i) => { const up = b[4] >= b[1], col = up ? 'var(--candle-up)' : 'var(--candle-dn)', y1 = Y(Math.max(b[1], b[4])), y2 = Y(Math.min(b[1], b[4]));
+    return `<line x1="${X(i).toFixed(1)}" x2="${X(i).toFixed(1)}" y1="${Y(b[2]).toFixed(1)}" y2="${Y(b[3]).toFixed(1)}" stroke="${col}"/><rect x="${(X(i) - bw * .35).toFixed(1)}" y="${y1.toFixed(1)}" width="${Math.max(1, bw * .7).toFixed(1)}" height="${Math.max(1, y2 - y1).toFixed(1)}" fill="${col}"/>`; }).join('');
+  const yt = [0, .5, 1].map(f => lo + (hi - lo) * f).map(v => `<text x="${W - pr + 4}" y="${Y(v) + 4}" font-size="10" fill="var(--muted)">${v.toFixed(2)}</text><line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" stroke-width=".5"/>`).join('');
+  const xt = [0, Math.floor(n / 2), n - 1].map(i => `<text x="${X(i)}" y="${H - 6}" font-size="10" text-anchor="middle" fill="var(--muted)">${esc(bars[i][0].slice(5))}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="${esc(ch.symbol)} daily candles with the strategy's trades">${yt}${xt}${zones}${c}${ma}${marks}<text x="${pl + 4}" y="${pt + 10}" font-size="10" fill="#5b8def">MA21</text><text x="${pl + 40}" y="${pt + 10}" font-size="10" fill="#c98a1b">MA50</text></svg>`;
+}
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-ppopen],[data-pptab],[data-pprun],[data-ppsym],[data-ppnew],[data-ppcadd],[data-ppcdel],[data-ppcreate],[data-pppromote],[data-ppact],[data-ppdel],[data-ppacc]');
+  if (!el) return;
+  const d = el.dataset;
+  if (d.ppopen) { location.hash = '#botstrat?id=' + d.ppopen; return; }
+  if (d.pptab) { const [id, t] = d.pptab.split('|'); S.ppTab = { ...(S.ppTab || {}), [id]: t }; render(); return; }
+  if (d.ppsym) { const [id, t] = d.ppsym.split('|'); S.ppSym = { ...(S.ppSym || {}), [id]: t }; render(); return; }
+  if (d.pprun) { const [id, step] = d.pprun.split('|'); el.disabled = true;
+    api(`/pipeline/${id}/run`, { method: 'POST', body: { step } }).then(r => { S.pipeD[id] = r; S.pipe = undefined; render(); loadPipeD(id, true); toast('Started: runs in the background'); }).catch(err => { toast(err.message); el.disabled = false; }); return; }
+  if (d.ppnew !== undefined) { S.ppNew = !S.ppNew; if (S.ppNew && !S.ww) loadWatch(); render(); return; }
+  if (d.ppcadd !== undefined) { ppReadNew(); const k = $('#ppn-f').value, v = $('#ppn-v').value; if (k && v) S.ppNewD.cond[k] = v; render(); return; }
+  if (d.ppcdel) { ppReadNew(); delete S.ppNewD.cond[d.ppcdel]; render(); return; }
+  if (d.ppcreate !== undefined) { ppReadNew(); const N = S.ppNewD;
+    const body = { name: N.name, kind: N.kind, side: N.side, flowSide: N.flowSide, cond: N.cond, hold: N.hold, stop: N.stop,
+      universe: N.uni === '__tk' ? { tickers: N.tickers } : { list: N.uni } };
+    api('/pipeline', { method: 'POST', body }).then(r => { const id = r.strategy.id; S.pipeD = { ...(S.pipeD || {}), [id]: r }; S.ppNew = false; S.ppNewD = null; S.pipe = undefined;
+      return api(`/pipeline/${id}/run`, { method: 'POST', body: { step: 'all' } }).then(r2 => { S.pipeD[id] = r2; location.hash = '#botstrat?id=' + id; loadPipeD(id, true); }); }).catch(err => toast(err.message)); return; }
+  if (d.pppromote) { const [id, stage] = d.pppromote.split('|'), acc = ($('#pp-acc-' + id) || {}).value;
+    if (!acc) { toast('Pick an account'); return; }
+    if (stage === 'live' && !confirm('Go LIVE: this strategy will place real orders on that account. Continue?')) return;
+    const alloc = $('#pp-alloc'), mx = $('#pp-maxpos');
+    const pre = alloc ? api('/pipeline/' + id, { method: 'PUT', body: { action: 'update', allocPct: +alloc.value, maxPos: +mx.value } }) : Promise.resolve();
+    pre.then(() => api('/pipeline/' + id, { method: 'PUT', body: { action: stage, account: acc } })).then(r => { S.pipeD[id] = r; S.pipe = undefined; S.ppTab = { ...(S.ppTab || {}), [id]: 'paper' }; toast(stage === 'live' ? 'Live' : 'On paper: first run tonight after the close'); render(); }).catch(err => toast(err.message)); return; }
+  if (d.ppact) { const [id, a] = d.ppact.split('|');
+    if (a === 'retire' && !confirm('Retire this strategy?')) return;
+    api('/pipeline/' + id, { method: 'PUT', body: { action: a } }).then(r => { S.pipeD[id] = r; S.pipe = undefined; render(); }).catch(err => toast(err.message)); return; }
+  if (d.ppdel) { if (!confirm('Delete this strategy and its results?')) return;
+    api('/pipeline/' + d.ppdel, { method: 'DELETE' }).then(() => { S.pipe = undefined; location.hash = '#botresearch'; }).catch(err => toast(err.message)); return; }
+  if (d.ppacc !== undefined) { api('/pipeline/accounts', { method: 'POST', body: { name: $('#ppa-name').value, key: $('#ppa-key').value, secret: $('#ppa-sec').value, env: $('#ppa-env').value } })
+    .then(r => { const id = hashParam('id'); if (S.pipeD && S.pipeD[id]) S.pipeD[id].accounts = r.accounts; toast('Account connected'); render(); }).catch(err => toast(err.message)); return; }
+});
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.ppcellchk) { const [id, p, v] = t.dataset.ppcellchk.split('|'), s = ((S.pipeD || {})[id] || {}).strategy; if (!s) return;
+    const cells = new Set(s.cells || []); const k = `${p}|${v}`; if (t.checked) cells.add(k); else cells.delete(k);
+    api('/pipeline/' + id, { method: 'PUT', body: { action: 'cells', cells: [...cells] } }).then(r => { S.pipeD[id] = r; render(); }).catch(err => toast(err.message)); return; }
+  if (['ppn-kind', 'ppn-uni', 'ppn-f'].includes(t.id)) { ppReadNew(); if (t.id === 'ppn-kind') S.ppNewD.cond = {}; if (t.id === 'ppn-f') S.ppF = t.value; render(); }
+});
+
 /* ---------- router & events ---------- */
 /* ---------- navigation groups: Trades (list, stats, coach, journal) and Settings (general, import) ---------- */
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Overview'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
+  bot: [['bot', 'Running'], ['botresearch', 'Research'], ['botflow', 'Options bot'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
-const isBotRoute = () => ['bot', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
-const groupOf = v => Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
+const isBotRoute = () => ['bot', 'botresearch', 'botstrat', 'botflow', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
+const groupOf = v => v === 'botstrat' ? 'bot' : Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
   if (!g) return '';
   return `<nav class="subnav" aria-label="${{ trades: 'Trades', settings: 'Settings', bot: 'Paper bot' }[g]} sections">${GROUPS[g].map(([r, l]) =>
-    `<a href="#${r}" ${r === v ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
+    `${r === 'botflow' ? '<span class="muted" style="align-self:center;font-size:.78rem;padding:0 4px 0 10px">Labs</span>' : ''}<a href="#${r}" ${r === v || (v === 'botstrat' && r === (['paper', 'live'].includes((((S.pipeD || {})[hashParam('id')] || {}).strategy || {}).stage) ? 'bot' : 'botresearch')) ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
 }
 function toggleAccount(force) {
   const m = $('#acct-menu'); if (!m) return;
@@ -5739,7 +6072,10 @@ document.addEventListener('click', e => {
   if (e.target.closest('#acct-menu a')) toggleAccount(false);
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleAccount(false); });
-const VIEWS = { bot: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
+const VIEWS = { bot: [vRunning, () => { if (S.pipe === undefined) { S.pipe = null; loadPipe(); } }],
+  botresearch: [vResearch, () => { if (S.pipe === undefined) { S.pipe = null; loadPipe(); } }],
+  botstrat: [vStrat, () => { const id = hashParam('id'); if (id && !((S.pipeD || {})[id]) && S.ppLoading !== id) { S.ppLoading = id; loadPipeD(id).finally(() => { S.ppLoading = null; }); } }],
+  botflow: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
   botevals: [vBotEvals, () => {
     if (!S.bot) loadBot();
     const t = evTicker(), mode = t ? `t:${t}` : 'group';

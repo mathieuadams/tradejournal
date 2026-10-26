@@ -476,3 +476,8 @@ tr.sel td{background:var(--sunk)}
 .fc-nav-win{position:absolute;top:0;bottom:0;background:rgba(91,91,214,.18);border:1px solid var(--coach,#5b5bd6);border-radius:4px;cursor:grab;box-sizing:border-box}
 .fc-nav-win:active{cursor:grabbing}.fc-nav-h{position:absolute;top:0;bottom:0;width:9px;cursor:ew-resize;background:var(--coach,#5b5bd6);opacity:.55}
 .fc-nav-h[data-h="l"]{left:-1px;border-radius:4px 0 0 4px}.fc-nav-h[data-h="r"]{right:-1px;border-radius:0 4px 4px 0}
+
+/* strategy pipeline tables: plain tables that scroll sideways on phones, the strategy column wraps */
+table.ppt{width:100%;border-collapse:collapse}
+table.ppt td.ppw{white-space:normal;min-width:240px;max-width:460px}
+table.ppt th{white-space:nowrap}

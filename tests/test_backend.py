@@ -6754,6 +6754,14 @@ def test_unusual_flow_study():
         A = {"r": [(10, 10.5, 9.5, 10, 0), (10, 10.2, 9.0, 9.5, 0), (9.5, 11, 9.4, 10.8, 0)], "c": [10, 9.5, 10.8], "atr": [0.5, 0.5, 0.5]}
         assert abs(uoa._trade(A, 0, "call", 2, 0, 0) - 8.0) < 1e-9 and abs(uoa._trade(A, 0, "call", 2, 1.0, 0) + 5.0) < 1e-9
         assert abs(uoa._trade(A, 0, "put", 2, 0, 0) + 8.0) < 1e-9
+        import pipeline                                  # the pipeline reads the same events (a flow strategy)
+        fs = pipeline.create("uo1", {"name": "Calls", "kind": "flow", "flowSide": "call", "cond": {"sweep": "sweep"}, "hold": 5})
+        dd = pipeline.step_data("uo1", fs, lambda m: None)
+        assert dd["ok"] and dd["alerts"] == sum(len(uoa.stored("uo1", t)["call"]) for t in ("AAA", "BBB")) and dd["byYear"]
+        fst = pipeline.step_study("uo1", fs, lambda m: None)
+        assert fst["events"] > 20 and all(set(r) >= {"train", "test"} for r in fst["sum"].values()) and "prem" in fst["factors"]
+        fv = pipeline.step_validate("uo1", fs, lambda m: None)
+        assert fv["trades"] > 20 and fv["chosen"]["hold"] == 5 and fv["chosen"]["train"]["avg"] > 0
         flowdata._get = lambda key, q: {"data": fake_get(key, q)["data"][:50]}      # a plan that caps a page at 50
         uoa.fetch("uo2", "k", "AAA", "call", 600, 100000, 60)
         deep = uoa.stored("uo2", "AAA")["call"]
@@ -6768,6 +6776,151 @@ def test_unusual_flow_study():
         uoa.now_ny = old_now
     finally:
         flowdata._get, flowdata._key, plab._bars, wallwatch.config, research._invoke = saved
+
+
+def test_strategy_pipeline():
+    """Pipeline: same protocol for every strategy (data, study vs baseline + conditions map, validation grid + gates,
+    AI review), promote to its own paper account, the daily paper run (orders at the next open, exits, kill switch)."""
+    import random, math, datetime as dt, pipeline, plab, wallwatch, research, claude
+    days, d = [], dt.date.today() - dt.timedelta(days=2400)
+    while d <= dt.date.today():
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def walk(seed, drift=0.0003):
+        r, p, out = random.Random(seed), 100.0, {}
+        for x in days:
+            o = p * (1 + r.gauss(0, 0.002))
+            p = o * (1 + r.gauss(drift, 0.015))
+            out[x] = (o, max(o, p) * 1.004, min(o, p) * 0.996, p, 1e6)
+        return out
+    data = {s: walk(i) for i, s in enumerate(["SPY", "QQQ", "AAA", "BBB", "HYG", "IEF"])}
+    data["^VIX"] = {x: (0, 0, 0, 14 + 12 * abs(math.sin(k / 90)), 0) for k, x in enumerate(days)}
+    data["^VIX3M"] = {x: (0, 0, 0, 17 + 6 * abs(math.sin(k / 90)), 0) for k, x in enumerate(days)}
+    saved = (plab._bars, wallwatch.config, research._invoke, claude.json_call, pipeline._alp, pipeline._creds)
+    try:
+        plab._bars = lambda s, y: data.get(s) or {}
+        wallwatch.config = lambda sub: {"tickers": ["AAA", "BBB"], "lists": [{"name": "Main", "tickers": ["AAA", "BBB"]}]}
+        calls = []
+        research._invoke = lambda sub, job, p: calls.append((job, p))
+        ov = pipeline.overview("pp1")
+        assert [s["name"] for s in ov["strategies"]][:3] == [x["name"] for x in pipeline.SEEDS]
+        assert len(pipeline.overview("pp1")["strategies"]) == 3                 # seeded once
+        s = pipeline.create("pp1", {"name": "Dip", "kind": "daily", "universe": {"tickers": "SPY QQQ AAA BBB"}, "cond": {"drop5": "down 2-5%", "bogus": 1}, "hold": 5})
+        assert s["cond"] == {"drop5": "down 2-5%"} and s["universe"] == {"tickers": ["SPY", "QQQ", "AAA", "BBB"]}
+        pipeline.run_start("pp1", s["id"], "all")
+        assert calls[-1] == ("pipe", {"id": s["id"], "step": "all"})
+        claude.json_call = lambda model, system, payload, mt, schema: {"verdict": "pass", "summary": "ok", "checks": [], "concerns": [],
+                                                                       "approvedCells": ["bull|calm", "bull|volatile", "sideways|calm", "sideways|volatile", "bear|calm", "bear|volatile", "nope"],
+                                                                       "paperPlan": {"minTrades": 30, "expectAvgPct": 0.2, "maxDrawdownPct": 10, "watch": "x"}}
+        assert pipeline.job("pp1", {"id": s["id"], "step": "all"})["error"] is None
+        D = pipeline.detail("pp1", s["id"])
+        R = D["results"]
+        assert R["data"]["ok"] and R["data"]["tickers"] == 4
+        st = R["study"]
+        assert st["events"] > 100 and set(st["sum"]) == {str(h) for h in pipeline.HZ} and len(st["map"]) == 6
+        g5 = st["sum"]["5"]
+        assert g5["baseTrain"]["n"] > 0 and abs(g5["edgeTrain"] - (g5["train"]["avg"] - g5["baseTrain"]["avg"])) < 0.01
+        assert "drop5" not in st["factors"] and "phase" in st["factors"]      # the rule's own condition has one value
+        v = R["validation"]
+        assert len(v["grid"]) == len(v["holds"]) * len(v["stops"]) and sum(1 for g in v["grid"] if g["chosen"]) == 1
+        assert [c["bp"] for c in v["costs"]] == list(pipeline.COSTS) and v["costs"][0]["all"]["avg"] > v["costs"][-1]["all"]["avg"]
+        assert [g["key"] for g in v["gates"]] == [k for k, _, _ in pipeline.GATES] and "_trades" not in v
+        assert R["ai"]["approvedCells"] == ["bull|calm", "bull|volatile", "sideways|calm", "sideways|volatile", "bear|calm", "bear|volatile"]
+        steps = {x["key"]: x["status"] for x in D["strategy"]["protocol"]["steps"]}
+        assert steps["data"] == "done" and steps["ai"] == "done"
+        ch = pipeline.chart("pp1", s["id"], "AAA")
+        assert len(ch["bars"]) == 260 and all(t[0] <= t[1] for t in ch["trades"])
+        # the trade: next open in, open `hold` days later out; the stop on the lows
+        A = {"r": [(10, 10, 10, 10, 0), (10, 10.5, 9.5, 10.2, 0), (10.2, 10.4, 8.9, 9.0, 0), (9.2, 9.5, 9, 9.3, 0)], "atr": [0.5, 0.5, 0.5, 0.5]}
+        assert abs(pipeline.trade(A, 0, 1, 2, 0, 0)[0] - (-8.0)) < 1e-9 and pipeline.trade(A, 0, 1, 2, 0, 0)[1] == 3
+        assert abs(pipeline.trade(A, 0, 1, 2, 2.0, 0)[0] - (-10.0)) < 1e-9 and pipeline.trade(A, 0, 1, 2, 2.0, 0)[1] == 2
+        assert abs(pipeline.trade(A, 0, -1, 2, 0, 0)[0] - 8.0) < 1e-9 and pipeline.trade(A, 1, 1, 2, 0, 0) is None
+        # promote: gates must pass, its own account, never a bot account
+        import db
+        db.put({"PK": db.upk("pp1"), "SK": "BROKER#alpaca", "env": "paper", "keyHint": "1111"})
+        db.put({"PK": db.upk("pp1"), "SK": "BROKER#alpacapipe#01", "env": "paper", "keyHint": "2222", "name": "Paper 1"})
+        res = pipeline.results("pp1", s["id"])
+        res["validation"]["passed"] = True
+        pipeline._save_results("pp1", s["id"], res)
+        try:
+            pipeline.action("pp1", s["id"], {"action": "paper", "account": "BROKER#alpaca"})
+            assert False
+        except Exception as e:
+            assert "account of its own" in str(e)
+        P = pipeline.action("pp1", s["id"], {"action": "paper", "account": "BROKER#alpacapipe#01"})
+        assert P["strategy"]["stage"] == "paper" and P["strategy"]["kill"]["status"] == "armed"
+        acc = {a["sk"]: a for a in P["accounts"]}
+        assert acc["BROKER#alpacapipe#01"]["usedBy"] == "Dip" and acc["BROKER#alpaca"]["bot"]
+        s2 = pipeline.create("pp1", {"name": "Other", "kind": "daily", "cond": {"phase": "bull"}})
+        r2 = pipeline.results("pp1", s2["id"])
+        try:
+            pipeline.action("pp1", s2["id"], {"action": "paper", "account": "BROKER#alpacapipe#01"})
+            assert False
+        except Exception as e:
+            assert "protocol" in str(e)
+        # the daily paper run
+        orders, book = [], {}
+        def alp(c, method, path, body=None):
+            if path == "/v2/account":
+                return {"equity": "100000"}
+            if method == "POST":
+                oid = f"o{len(orders)}"
+                orders.append(body)
+                book[oid] = {"id": oid, "status": "new", **body}
+                return {"id": oid}
+            if method == "GET" and path.startswith("/v2/orders/"):
+                return book.get(path.split("/")[-1])
+            if method == "DELETE":
+                return {}
+        pipeline._alp, pipeline._creds = alp, lambda sub, sk: {"key": "k", "secret": "s", "env": "paper"}
+        st_ = pipeline.get("pp1", s["id"])
+        B = pipeline.build("pp1", st_)
+        last = B["days"][-1]
+        tr0 = pipeline._today_rows
+        pipeline._today_rows = lambda B_, s_, ti: [{"s": "AAA", "d": last, "i": ti, "f": {}}, {"s": "BBB", "d": last, "i": ti, "f": {}}]
+        cond_today = pipeline._today_rows(B, st_, 0)
+        out = pipeline._tick_one("pp1", st_, {}, today=last)
+        pipeline._today_rows = tr0
+        assert out["day"] == last and len(out["signals"]) == len(cond_today)
+        placed = [o for o in orders if o["time_in_force"] == "opg" and o["side"] == "buy"]
+        assert len(placed) == sum(1 for x in out["signals"] if (x["action"] or "").startswith("order"))
+        # fill the entries, then the exits come after `hold` days, then the kill switch
+        pos = pipeline.positions("pp1", s["id"])
+        assert len(pos) == 2 and all(p["status"] == "pending" for p in pos) or not out.get("allowed")
+        if pos:
+            for o in book.values():
+                o.update(status="filled", filled_avg_price="100", filled_qty=o["qty"], filled_at=B["days"][-5] + "T09:30:00Z")
+            out2 = pipeline._tick_one("pp1", pipeline.get("pp1", s["id"]), {}, today=last)
+            ps = pipeline.positions("pp1", s["id"])
+            ps = [p for p in ps if p["symbol"] in ("AAA", "BBB")]
+            assert all(p["status"] == "exiting" for p in ps) and any("exit at the next open" in a for a in out2["actions"])
+            for o in book.values():
+                o.update(status="filled", filled_avg_price="90", filled_qty=o["qty"], filled_at=last + "T09:30:00Z")
+            pipeline._tick_one("pp1", pipeline.get("pp1", s["id"]), {}, today="1999-01-01")
+            ps = [p for p in pipeline.positions("pp1", s["id"]) if p["symbol"] in ("AAA", "BBB")]
+            assert all(p["status"] == "closed" and abs(p["pct"] + 10) < 1e-6 for p in ps)
+        # the kill switch: paper far below the backtest
+        for k in range(12):
+            db.put({"PK": db.upk("pp1"), "SK": f"{pipeline.POS}{s['id']}#2020-01-{k + 1:02d}#ZZ{k}", "symbol": f"ZZ{k}", "signalDay": f"2020-01-{k + 1:02d}",
+                    "status": "closed", "pct": -6.0, "pl": -600})
+        out3 = pipeline._tick_one("pp1", pipeline.get("pp1", s["id"]), {}, today="1999-01-01")
+        assert pipeline.get("pp1", s["id"])["kill"]["status"] == "paused" and any("kill switch" in a for a in out3["actions"])
+        ov = pipeline.overview("pp1")
+        run = [x for x in ov["strategies"] if x["stage"] == "paper"]
+        assert run and run[0]["paper"]["closed"]["n"] >= 12
+        # rule change sends nothing live: must go back to research first; then every step is stale
+        try:
+            pipeline.action("pp1", s["id"], {"action": "update", "hold": 10})
+            assert False
+        except Exception as e:
+            assert "research" in str(e)
+        pipeline.action("pp1", s["id"], {"action": "research"})
+        D2 = pipeline.action("pp1", s["id"], {"action": "update", "hold": 10})
+        assert {x["key"]: x["status"] for x in D2["strategy"]["protocol"]["steps"]}["validate"] == "stale" and not D2["strategy"]["protocol"]["ready"]
+        assert {x["key"]: x["status"] for x in D2["strategy"]["protocol"]["steps"]}["data"] == "done"
+    finally:
+        plab._bars, wallwatch.config, research._invoke, claude.json_call, pipeline._alp, pipeline._creds = saved
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

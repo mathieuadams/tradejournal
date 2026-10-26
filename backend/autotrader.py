@@ -2011,6 +2011,12 @@ def handler(event, context_):
             elif job == "uoahist":
                 import uoa
                 out[sub] = uoa.hist_job(sub, event.get("params") or {})
+            elif job == "pipe":
+                import pipeline
+                out[sub] = pipeline.job(sub, event.get("params") or {})
+            elif job == "pipetick":
+                import pipeline
+                out[sub] = pipeline.tick(sub)
             elif job == "uoastudy":
                 import uoa
                 out[sub] = uoa.study_job(sub, event.get("params") or {})

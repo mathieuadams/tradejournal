@@ -1763,6 +1763,11 @@ def auto_kick():
     except Exception as e:
         print("wall watch optimizer kick failed", e)
     try:
+        import pipeline
+        started += pipeline.daily_kick()
+    except Exception as e:
+        print("pipeline kick failed", e)
+    try:
         import smcopt
         started += smcopt.kick()
     except Exception as e:
