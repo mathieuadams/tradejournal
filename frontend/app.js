@@ -6050,15 +6050,16 @@ document.addEventListener('change', e => {
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Running'], ['botresearch', 'Research'], ['botflow', 'Options bot'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
+  bot: [['bot', 'Running'], ['botresearch', 'Research']],
+  lab: [['botflow', 'Options bot'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
 const isBotRoute = () => ['bot', 'botresearch', 'botstrat', 'botflow', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
 const groupOf = v => v === 'botstrat' ? 'bot' : Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
   if (!g) return '';
-  return `<nav class="subnav" aria-label="${{ trades: 'Trades', settings: 'Settings', bot: 'Paper bot' }[g]} sections">${GROUPS[g].map(([r, l]) =>
-    `${r === 'botflow' ? '<span class="muted" style="align-self:center;font-size:.78rem;padding:0 4px 0 10px">Labs</span>' : ''}<a href="#${r}" ${r === v || (v === 'botstrat' && r === (['paper', 'live'].includes((((S.pipeD || {})[hashParam('id')] || {}).strategy || {}).stage) ? 'bot' : 'botresearch')) ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
+  return `<nav class="subnav" aria-label="${{ trades: 'Trades', settings: 'Settings', bot: 'Paper bot', lab: 'Research lab' }[g]} sections">${GROUPS[g].map(([r, l]) =>
+    `<a href="#${r}" ${r === v || (v === 'botstrat' && r === (['paper', 'live'].includes((((S.pipeD || {})[hashParam('id')] || {}).strategy || {}).stage) ? 'bot' : 'botresearch')) ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
 }
 function toggleAccount(force) {
   const m = $('#acct-menu'); if (!m) return;
@@ -6107,7 +6108,7 @@ function render(force) {
   const v = route();
   const grp = groupOf(v);
   document.querySelectorAll('.nav a[data-r]').forEach(a => {
-    const on = a.dataset.r === v || (grp === 'trades' && a.dataset.r === 'trades') || (grp === 'bot' && a.dataset.r === 'bot');
+    const on = a.dataset.r === v || (grp === 'trades' && a.dataset.r === 'trades') || (grp === 'bot' && a.dataset.r === 'bot') || (grp === 'lab' && a.dataset.r === 'lab');
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   document.querySelectorAll('.nav .nav-sub a').forEach(a => { if (a.dataset.r === v) a.setAttribute('aria-current', 'page'); });
