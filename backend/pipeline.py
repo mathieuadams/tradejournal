@@ -38,6 +38,7 @@ STOPS = (0, 2.0, 3.0)
 COSTS = (5, 10, 20, 40)
 COST_BP = 10
 STAGES = ("research", "paper", "live", "retired")
+AI_REQUIRED = False                                        # the AI review is optional for now: promote = data + validation passed
 MARKET_KEYS = ("phase", "vix", "dial", "spy50", "clear")
 PHASES = ("bull", "sideways", "bear")
 VOLS = ("calm", "volatile")                               # VIX under / over 20
@@ -697,7 +698,9 @@ def protocol(sub, s, res):
     for x, r, k in zip(steps, (dt, st, v, ai), (_data_key(s), _cfg_key(s), _cfg_key(s), _cfg_key(s))):
         if stale(r, k):
             x["status"] = "stale"
-    ready = all(x["status"] == "done" for x in steps[2:]) and steps[0]["status"] == "done"
+    if not AI_REQUIRED:
+        steps[3]["optional"] = True
+    ready = steps[0]["status"] == "done" and steps[2]["status"] == "done" and (steps[3]["status"] == "done" or not AI_REQUIRED)
     return {"steps": steps, "ready": ready}
 
 
@@ -734,7 +737,7 @@ def job(sub, params):
         s["job"] = {**(s.get("job") or {}), "running": iso(now_ny()), "msg": msg}
         _save(sub, s)
     res = results(sub, pid)
-    steps = ["data", "study", "validate", "ai"] if step == "all" else [step]
+    steps = (["data", "study", "validate", "ai"] if AI_REQUIRED else ["data", "study", "validate"]) if step == "all" else [step]
     try:
         for k in steps:
             s["job"] = {"running": iso(now_ny()), "step": k, "msg": {"data": "downloading the data", "study": "running the study",
@@ -900,7 +903,7 @@ def action(sub, pid, b):
     elif a in ("paper", "live"):
         pr = protocol(sub, s, res)
         if a == "paper" and not pr["ready"]:
-            raise BadRequest("Every step of the protocol must pass first (data, study, validation, AI review).")
+            raise BadRequest("The protocol must pass first (data, validation" + (", AI review)." if AI_REQUIRED else ")."))
         if a == "live" and s["stage"] != "paper":
             raise BadRequest("Only a paper strategy goes live.")
         sk = b.get("account")
@@ -917,6 +920,8 @@ def action(sub, pid, b):
             raise BadRequest("That account has live keys: paper needs a paper account.")
         if not s.get("cells"):
             s["cells"] = (res.get("ai") or {}).get("approvedCells") or [c["cell"] for c in (res.get("study") or {}).get("map") or [] if c["status"] == "edge"]
+        if not s.get("cells"):
+            raise BadRequest("No market condition is approved: tick at least one cell of the conditions map (2 · Study).")
         s.update(stage=a, account=sk, since=now, kill={"status": "armed"})
         s["plan"] = (res.get("ai") or {}).get("paperPlan") or {}
         s["history"].append({"at": now, "what": f"promoted to {a} on {acc['name']}"})

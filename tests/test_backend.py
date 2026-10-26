@@ -6814,6 +6814,8 @@ def test_strategy_pipeline():
                                                                        "approvedCells": ["bull|calm", "bull|volatile", "sideways|calm", "sideways|volatile", "bear|calm", "bear|volatile", "nope"],
                                                                        "paperPlan": {"minTrades": 30, "expectAvgPct": 0.2, "maxDrawdownPct": 10, "watch": "x"}}
         assert pipeline.job("pp1", {"id": s["id"], "step": "all"})["error"] is None
+        assert "ai" not in pipeline.results("pp1", s["id"])                  # the AI review is optional: not run by "all"
+        assert pipeline.job("pp1", {"id": s["id"], "step": "ai"})["error"] is None
         D = pipeline.detail("pp1", s["id"])
         R = D["results"]
         assert R["data"]["ok"] and R["data"]["tickers"] == 4

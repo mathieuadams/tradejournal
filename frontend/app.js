@@ -5773,10 +5773,10 @@ function vResearch() {
   const next = s => { const st = s.protocol.steps, j = s.job || {};
     if (j.running) return `<span class="loading" style="padding:0">${esc(j.msg || 'running')}</span>`;
     if (s.protocol.ready) return `<span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap" data-ppstop>${ppAccSel(P, s.id, 'paper')}<button class="btn coachbtn" data-pppromote="${s.id}|paper">Paper trade</button></span>`;
-    const f = st.find(x => x.status !== 'done' && !(x.key === 'study' && x.status === 'weak'));
+    const f = st.find(x => x.status !== 'done' && !x.optional && !(x.key === 'study' && x.status === 'weak'));
     return f ? `${f.status === 'failed' ? '<span class="loss">Failed at</span>' : 'Next:'} ${esc(f.name)}` : ''; };
   const rows = ss.map(s => `<tr data-ppopen="${s.id}" style="cursor:pointer"><td class="ppw"><b>${esc(s.name)}</b><div class="muted" style="font-size:.76rem">${esc(s.rule)}</div></td>
-      ${s.protocol.steps.map(x => `<td title="${esc(x.name)}: ${ppStTxt(x.status)}">${ppStIcon(x.status)} <span style="font-size:.78rem">${ppStTxt(x.status)}</span></td>`).join('')}
+      ${s.protocol.steps.map(x => `<td title="${esc(x.name)}: ${ppStTxt(x.status)}">${ppStIcon(x.status)} <span style="font-size:.78rem">${ppStTxt(x.status)}${x.optional ? ' <span class="muted">(optional)</span>' : ''}</span></td>`).join('')}
       <td class="r">${s.events ?? '—'}</td><td class="r ${ppCls((s.bt || {}).testEdge)}">${ppPc((s.bt || {}).testEdge)}</td><td>${next(s)}</td></tr>`).join('');
   return ppSub('botresearch') + head('Research', 'Every strategy goes through the same protocol: 1 Data download → 2 Study → 3 Validation → 4 AI review → promote to its own paper account.',
     `<button class="btn coachbtn" data-ppnew>${S.ppNew ? 'Cancel' : '+ New strategy'}</button>`)
@@ -5820,7 +5820,7 @@ function vStrat() {
   const s = D.strategy, R = D.results || {}, j = s.job || {}, run = ['paper', 'live'].includes(s.stage);
   const tabs = run ? [...PP_STEPS.slice(0, 4), ['paper', s.stage === 'live' ? '5 · Live' : '5 · Paper']] : PP_STEPS;
   let tab = (S.ppTab || {})[id];
-  if (!tab || !tabs.some(t => t[0] === tab)) { const f = s.protocol.steps.find(x => x.status !== 'done' && !(x.key === 'study' && x.status === 'weak')); tab = run ? 'paper' : f ? f.key : 'promote'; }
+  if (!tab || !tabs.some(t => t[0] === tab)) { const f = s.protocol.steps.find(x => x.status !== 'done' && !x.optional && !(x.key === 'study' && x.status === 'weak')); tab = run ? 'paper' : f ? f.key : 'promote'; }
   const stOf = k => (s.protocol.steps.find(x => x.key === k) || {}).status;
   const tabBtn = ([k, l]) => `<button class="btn ${tab === k ? 'coachbtn' : ''}" data-pptab="${id}|${k}" style="flex:1 1 120px;min-height:40px">${l} ${k === 'promote' ? (s.protocol.ready ? '<b class="gain">✓</b>' : '') : k === 'paper' ? '' : ppStIcon(stOf(k))}</button>`;
   const body = { data: ppData, study: ppStudy, validate: ppValid, ai: ppAI, promote: ppPromote, paper: ppPaper }[tab](s, R, D);
@@ -5920,7 +5920,7 @@ function ppValid(s, R) {
 function ppAI(s, R) {
   const a = R.ai || {}, busy = !!(s.job || {}).running, v = R.validation || {};
   const vc = { pass: ['ok', 'Pass'], fail: ['bad', 'Fail'], 'more data': ['mid', 'More data'] }[a.verdict] || ['mid', a.verdict];
-  return `<section class="panel"><div class="cal-head"><h2>4 · AI review ${a.verdict ? `<span class="verdict ${vc[0]}">${vc[1]}</span>` : ''}</h2>${v.at ? ppRun(s.id, 'ai', a.at ? 'Ask Claude again' : 'Ask Claude to review', busy) : ''}</div>
+  return `<section class="panel"><div class="cal-head"><h2>4 · AI review${(s.protocol.steps.find(x => x.key === 'ai') || {}).optional ? ' <span class="muted" style="font-size:.8rem;font-weight:400">(optional: not needed to promote)</span>' : ''} ${a.verdict ? `<span class="verdict ${vc[0]}">${vc[1]}</span>` : ''}</h2>${v.at ? ppRun(s.id, 'ai', a.at ? 'Ask Claude again' : 'Ask Claude to review', busy) : ''}</div>
     <p class="muted" style="font-size:.84rem;margin:0 0 8px">Claude gets every number of the protocol (data, study, conditions map, grid, costs, months, tickers, gates) and acts as the risk committee: pass, fail or more data, and which market conditions it may trade in.</p>
     ${!v.at ? '<p class="muted">Run the validation first.</p>' : !a.at ? '<p class="muted">Not reviewed yet.</p>' : `${a.stale ? '<p class="loss" style="font-size:.82rem">The validation ran again since this review: ask again.</p>' : ''}
       <p style="line-height:1.5">${esc(a.summary)}</p>
@@ -5950,7 +5950,7 @@ const ppAccForm = () => `<details style="margin-top:10px"><summary class="muted"
     <div class="field"><label for="ppa-sec">Secret</label><input id="ppa-sec" type="password" autocomplete="off"></div><div class="field"><label for="ppa-env">Keys</label><select id="ppa-env"><option value="paper">Paper</option><option value="live">Live</option></select></div></div>
     <button class="btn" data-ppacc>Connect</button> <span class="muted" style="font-size:.78rem">Each strategy trades its own account, so its P&L stays clean. Free paper accounts: Alpaca → Paper trading → new account.</span></details>`;
 function ppPromote(s, R, D) {
-  const pr = s.protocol, miss = pr.steps.filter(x => x.status !== 'done' && x.key !== 'study');
+  const pr = s.protocol, miss = pr.steps.filter(x => x.status !== 'done' && x.key !== 'study' && !x.optional);
   return `<section class="panel"><h2>5 · Promote to paper</h2>
     ${!pr.ready ? `<p>Not yet: every step must pass first.</p><ul style="font-size:.86rem">${miss.map(x => `<li>${ppStIcon(x.status)} ${esc(x.name)}: ${ppStTxt(x.status)}</li>`).join('')}</ul>` : `<p class="gain"><b>Every step passed.</b></p>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:8px 0">
