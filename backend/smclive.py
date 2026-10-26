@@ -33,12 +33,15 @@ DEFAULT = {"enabled": False, "trade": False, "tickers": ["QQQ", "SPY"], "riskUsd
            "restStop": True,
            # what is bought: "shares" or "opt0dte" (same-day call for a long, put for a short; the strategy reads the
            # chart of the stock, the option is bought / sold at market)
-           "instrument": "shares", "optPick": "atm", "optRiskPct": 0.5, "optMaxContracts": 50, "optFlatT": "15:25",                           # market mode: a stop order resting at Alpaca at the strategy's stop
+           "instrument": "shares", "optPick": "atm", "optRiskPct": 0.5, "optMaxContracts": 50, "optFlatT": "13:00", "optFlatFix": 1,                           # market mode: a stop order resting at Alpaca at the strategy's stop
            "cfg": {}, "name": "", "savedAt": None, "source": None}
 
 
 def config(sub):
     r = db.get(db.upk(sub), SK) or {}
+    if r and r.get("optFlatFix") != 1:                # one time: options sold by 13:00 (the field could not be changed)
+        r = {**r, "optFlatT": "13:00", "optFlatFix": 1}
+        db.put(r)
     out = {k: r.get(k, v) for k, v in DEFAULT.items()}
     out["cfg"] = smc.clean(out.get("cfg") or {})
     return out
@@ -911,7 +914,9 @@ def _enter_option(c, pk, cfg, sym, s, last, acct, today, lag, notes_late=None):
     """The strategy filled on the stock: buy today's call (long) / put (short) at market, sized by the premium."""
     P = cfg["cfg"]
     hm = last[11:16]
-    cut = min(P["endT"] if not P.get("win2On") else max(P["endT"], P["endT2"]), "15:10")
+    ft = _hhmm(cfg.get("optFlatT") or "13:00") or "13:00"          # no new option in the last 15 minutes before "sold by"
+    fh, fm = divmod(int(ft[:2]) * 60 + int(ft[3:]) - 15, 60)
+    cut = min(P["endT"] if not P.get("win2On") else max(P["endT"], P["endT2"]), "15:10", f"{fh:02d}:{fm:02d}")
     key = f"{POS}{sym}#{s['t']}"
     base = {"PK": pk, "SK": key, "symbol": sym, "t": s["t"], "dir": s["dir"], "entry": s["entry"], "stop": s["stop"], "tp1": s["tp1"],
             "tp2": s["tp2"], "tp1Name": s.get("tp1Name"), "tp2Name": s.get("tp2Name"), "kind": "option", "mode": "market", "candle": last,
@@ -962,7 +967,7 @@ def _manage_opt(c, pk, r, s, last, flat, P, lag):
     trail, early exit) at market after the candle, and always out before the 0DTE cutoff (optFlatT)."""
     acts, upd, ev = [], {}, list(r.get("events") or [])
     occ = r["optSym"]
-    cfg_flat = _hhmm((config_cache.get(pk) or {}).get("optFlatT", "15:25")) or "15:25"
+    cfg_flat = _hhmm((config_cache.get(pk) or {}).get("optFlatT", "13:00")) or "13:00"
     if not ("09:31" <= cfg_flat <= "15:29"):
         cfg_flat = "15:25"
     flat = flat or last[11:16] >= min(cfg_flat, "15:28")

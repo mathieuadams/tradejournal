@@ -2728,7 +2728,8 @@ function smcLiveBox() {
     ${c.instrument === 'opt0dte' ? `<label style="font-size:.76rem">strike <select data-smcliveopick style="font-size:.76rem">${[['atm', 'at the money'], ['otm1', '1 strike OTM'], ['otm2', '2 strikes OTM'], ['itm1', '1 strike ITM']].map(([k, l]) => `<option value="${k}" ${(c.optPick || 'atm') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label style="font-size:.76rem" title="Premium spent per trade, % of the account value: the most a trade can lose (1R = the premium)">premium <input data-smclivef="optRiskPct" type="number" step="0.1" value="${c.optRiskPct ?? 0.5}" style="width:4em">%</label>
       <label style="font-size:.76rem">max <input data-smclivef="optMaxContracts" type="number" value="${c.optMaxContracts ?? 50}" style="width:3.5em"> contracts</label>
-      <label style="font-size:.76rem" title="0DTE options are sold before Alpaca's 15:30 ET cutoff for SPY / QQQ; no new option after 15:10">sold by <input data-smclivet="optFlatT" type="time" step="60" min="09:31" max="15:29" value="${esc(/^\d\d:\d\d$/.test(c.optFlatT || '') ? c.optFlatT : '15:25')}" style="width:6.5em"></label>` : ''}
+      <label style="font-size:.76rem" title="0DTE options are sold at this time at the latest (Alpaca's cutoff is 15:30 ET); no new option in the 15 minutes before">sold by <select data-smclivet="optFlatT" style="font-size:.76rem">${(() => { const cur = /^\d\d:\d\d$/.test(c.optFlatT || '') ? c.optFlatT : '13:00', ts = []; for (let m = 10 * 60; m <= 15 * 60 + 25; m += 5) ts.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`); if (!ts.includes(cur)) ts.push(cur);
+        return ts.sort().map(t => `<option value="${t}" ${t === cur ? 'selected' : ''}>${t} ET</option>`).join(''); })()}</select></label>` : ''}
     <span class="muted" style="font-size:.74rem" title="Every entry and exit is a market order sent right after the candle where the saved strategy enters / exits">market orders</span>
     ${c.instrument === 'opt0dte' ? '<span class="muted" style="font-size:.74rem" title="While an option is open the stock is checked every second against the strategy stop / TP1 / TP2: crossed, the option is sold at market at once; early exits (time, VWAP...) at the candle close">options: exits watched every second on the stock</span>' : ''}<label style="font-size:.76rem;${c.instrument === 'opt0dte' ? 'display:none' : ''}" title="The strategy's stop and targets rest at Alpaca as OCO orders (TP1 part + the rest at TP2; one fills, Alpaca cancels the other; moved with breakeven / trail): they fill the moment they are touched, not at the close of the candle"><input type="checkbox" data-smclivereststop ${c.restStop !== false ? 'checked' : ''}> stop + targets at Alpaca</label>
     <span class="muted" style="font-size:.74rem">tickers ${esc((c.tickers || []).join(' '))}</span></div>
@@ -6024,7 +6025,7 @@ document.addEventListener('click', e => {
   if (d.pptab) { const [id, t] = d.pptab.split('|'); S.ppTab = { ...(S.ppTab || {}), [id]: t }; render(); return; }
   if (d.ppsym) { const [id, t] = d.ppsym.split('|'); S.ppSym = { ...(S.ppSym || {}), [id]: t }; render(); return; }
   if (d.pprun) { const [id, step] = d.pprun.split('|'); el.disabled = true;
-    api(`/pipeline/${id}/run`, { method: 'POST', body: { step } }).then(r => { S.pipeD[id] = r; S.pipe = undefined; render(); loadPipeD(id, true); toast('Started: runs in the background'); }).catch(err => { toast(err.message); el.disabled = false; }); return; }
+    api(`/pipeline/${id}/run`, { method: 'POST', body: { step } }).then(r => { S.pipeD = { ...(S.pipeD || {}), [id]: r }; S.pipe = undefined; render(); loadPipeD(id, true); toast('Started: runs in the background'); }).catch(err => { toast(err.message); el.disabled = false; }); return; }
   if (d.ppnew !== undefined) { S.ppNew = !S.ppNew; if (S.ppNew && !S.ww) loadWatch(); render(); return; }
   if (d.ppcadd !== undefined) { ppReadNew(); const k = $('#ppn-f').value, v = $('#ppn-v').value; if (k && v) S.ppNewD.cond[k] = v; render(); return; }
   if (d.ppcdel) { ppReadNew(); delete S.ppNewD.cond[d.ppcdel]; render(); return; }
@@ -6032,7 +6033,7 @@ document.addEventListener('click', e => {
     const body = { name: N.name, kind: N.kind, side: N.side, flowSide: N.flowSide, cond: N.cond, hold: N.hold, stop: N.stop,
       universe: N.uni === '__tk' ? { tickers: N.tickers } : { list: N.uni } };
     api('/pipeline', { method: 'POST', body }).then(r => { const id = r.strategy.id; S.pipeD = { ...(S.pipeD || {}), [id]: r }; S.ppNew = false; S.ppNewD = null; S.pipe = undefined;
-      return api(`/pipeline/${id}/run`, { method: 'POST', body: { step: 'all' } }).then(r2 => { S.pipeD[id] = r2; location.hash = '#botstrat?id=' + id; loadPipeD(id, true); }); }).catch(err => toast(err.message)); return; }
+      return api(`/pipeline/${id}/run`, { method: 'POST', body: { step: 'all' } }).then(r2 => { S.pipeD = { ...(S.pipeD || {}), [id]: r2 }; location.hash = '#botstrat?id=' + id; loadPipeD(id, true); }); }).catch(err => toast(err.message)); return; }
   if (d.pppromote) { const [id, stage] = d.pppromote.split('|'), sel = $('#pp-acc-' + id), acc = (sel || {}).value;
     if (!acc) { toast('Pick an account'); return; }
     const sh = sel.selectedOptions[0] && sel.selectedOptions[0].dataset.share;
@@ -6040,10 +6041,10 @@ document.addEventListener('click', e => {
     if (stage === 'live' && !confirm('Go LIVE: this strategy will place real orders on that account. Continue?')) return;
     const alloc = $('#pp-alloc'), mx = $('#pp-maxpos');
     const pre = alloc ? api('/pipeline/' + id, { method: 'PUT', body: { action: 'update', allocPct: +alloc.value, maxPos: +mx.value } }) : Promise.resolve();
-    pre.then(() => api('/pipeline/' + id, { method: 'PUT', body: { action: stage, account: acc, share: !!sh } })).then(r => { S.pipeD[id] = r; S.pipe = undefined; S.ppTab = { ...(S.ppTab || {}), [id]: 'paper' }; toast(stage === 'live' ? 'Live' : 'On paper: first run tonight after the close'); render(); }).catch(err => toast(err.message)); return; }
+    pre.then(() => api('/pipeline/' + id, { method: 'PUT', body: { action: stage, account: acc, share: !!sh } })).then(r => { S.pipeD = { ...(S.pipeD || {}), [id]: r }; S.pipe = undefined; S.ppTab = { ...(S.ppTab || {}), [id]: 'paper' }; toast(stage === 'live' ? 'Live' : 'On paper: first run tonight after the close'); render(); }).catch(err => toast(err.message)); return; }
   if (d.ppact) { const [id, a] = d.ppact.split('|');
     if (a === 'retire' && !confirm('Retire this strategy?')) return;
-    api('/pipeline/' + id, { method: 'PUT', body: { action: a } }).then(r => { S.pipeD[id] = r; S.pipe = undefined; render(); }).catch(err => toast(err.message)); return; }
+    api('/pipeline/' + id, { method: 'PUT', body: { action: a } }).then(r => { S.pipeD = { ...(S.pipeD || {}), [id]: r }; S.pipe = undefined; render(); }).catch(err => toast(err.message)); return; }
   if (d.ppdel) { if (!confirm('Delete this strategy and its results?')) return;
     api('/pipeline/' + d.ppdel, { method: 'DELETE' }).then(() => { S.pipe = undefined; location.hash = '#botresearch'; }).catch(err => toast(err.message)); return; }
   if (d.ppacc !== undefined) { api('/pipeline/accounts', { method: 'POST', body: { name: $('#ppa-name').value, key: $('#ppa-key').value, secret: $('#ppa-sec').value, env: $('#ppa-env').value } })
@@ -6053,7 +6054,7 @@ document.addEventListener('change', e => {
   const t = e.target;
   if (t.dataset && t.dataset.ppcellchk) { const [id, p, v] = t.dataset.ppcellchk.split('|'), s = ((S.pipeD || {})[id] || {}).strategy; if (!s) return;
     const cells = new Set(s.cells || []); const k = `${p}|${v}`; if (t.checked) cells.add(k); else cells.delete(k);
-    api('/pipeline/' + id, { method: 'PUT', body: { action: 'cells', cells: [...cells] } }).then(r => { S.pipeD[id] = r; render(); }).catch(err => toast(err.message)); return; }
+    api('/pipeline/' + id, { method: 'PUT', body: { action: 'cells', cells: [...cells] } }).then(r => { S.pipeD = { ...(S.pipeD || {}), [id]: r }; render(); }).catch(err => toast(err.message)); return; }
   if (['ppn-kind', 'ppn-uni', 'ppn-f'].includes(t.id)) { ppReadNew(); if (t.id === 'ppn-kind') S.ppNewD.cond = {}; if (t.id === 'ppn-f') S.ppF = t.value; render(); }
 });
 
