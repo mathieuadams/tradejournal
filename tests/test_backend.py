@@ -6919,6 +6919,16 @@ def test_strategy_pipeline():
         D2 = pipeline.action("pp1", s["id"], {"action": "update", "hold": 10})
         assert {x["key"]: x["status"] for x in D2["strategy"]["protocol"]["steps"]}["validate"] == "stale" and not D2["strategy"]["protocol"]["ready"]
         assert {x["key"]: x["status"] for x in D2["strategy"]["protocol"]["steps"]}["data"] == "done"
+        # fix it with Claude: new versions in Research, each one through the whole protocol
+        claude.json_call = lambda model, system, payload, mt, schema: {"diagnosis": "thin", "variants": [
+            {"name": "Dip in bull", "cond": {"drop5": "down 2-5%", "phase": "bull", "junk": "x"}, "hold": 3, "stop": 0, "why": "only bull"},
+            {"name": "Same", "cond": {"drop5": "down 2-5%"}, "hold": 10, "stop": 0, "why": "dupe of the current one"}]}
+        calls.clear()
+        res = pipeline.results("pp1", s["id"])
+        imp = pipeline.step_improve("pp1", pipeline.get("pp1", s["id"]), res)
+        assert [v["name"] for v in imp["variants"]] == ["Dip in bull"] and ("pipe", {"id": imp["variants"][0]["id"], "step": "all"}) in calls
+        nv = pipeline.get("pp1", imp["variants"][0]["id"])
+        assert nv["cond"] == {"drop5": "down 2-5%", "phase": "bull"} and nv["hold"] == 3 and nv["parent"] == s["id"]
     finally:
         plab._bars, wallwatch.config, research._invoke, claude.json_call, pipeline._alp, pipeline._creds = saved
 

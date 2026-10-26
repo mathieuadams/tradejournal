@@ -5928,7 +5928,17 @@ function ppAI(s, R) {
       ${(a.concerns || []).length ? `<h3 style="font-size:.95rem;margin:12px 0 4px">Concerns</h3><ul style="font-size:.84rem;margin:0">${a.concerns.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
       <h3 style="font-size:.95rem;margin:12px 0 4px">Approved conditions</h3><p style="margin:0">${(a.approvedCells || []).length ? a.approvedCells.map(c => `<span class="exchip">${ppCell(c)}</span>`).join(' ') : '<span class="muted">none</span>'}</p>
       ${a.paperPlan ? `<h3 style="font-size:.95rem;margin:12px 0 4px">Paper plan</h3><p style="font-size:.84rem;margin:0">At least <b>${a.paperPlan.minTrades}</b> paper trades · expect about <b>${ppPc(a.paperPlan.expectAvgPct)}</b> per trade · stop it if the drawdown passes <b>${ppPc(-a.paperPlan.maxDrawdownPct, 1)}</b>. ${esc(a.paperPlan.watch || '')}</p>` : ''}
-      <p class="muted" style="font-size:.76rem">Reviewed ${esc(a.at.replace('T', ' ').slice(0, 16))}</p>`}</section>`;
+      <p class="muted" style="font-size:.76rem">Reviewed ${esc(a.at.replace('T', ' ').slice(0, 16))}</p>`}</section>
+    ${a.at ? ppImprove(s, R, busy) : ''}`;
+}
+function ppImprove(s, R, busy) {
+  const im = R.improve || {}, all = (S.pipe && S.pipe.strategies) || [];
+  const st = id => { const x = all.find(y => y.id === id); if (!x) return ''; if ((x.job || {}).running) return '<span class="loading" style="padding:0">running the protocol</span>';
+    return x.protocol.steps.map(z => ppStIcon(z.status)).join(' ') + (x.protocol.ready ? ' <span class="verdict ok">ready</span>' : ''); };
+  if (S.pipe === undefined && (im.variants || []).length) { S.pipe = null; loadPipe(); }
+  return `<section class="panel"><div class="cal-head"><h2>Fix it with Claude</h2><button class="btn coachbtn" data-pprun="${s.id}|improve" ${busy ? 'disabled' : ''}>${busy ? 'Running…' : im.at ? 'Ask for more versions' : 'Ask Claude for better versions'}</button></div>
+    <p class="muted" style="font-size:.84rem;margin:0 0 8px">Claude reads the study (every condition, train vs test), the grid and the committee's concerns, then designs up to 3 new versions (added conditions, another hold / stop). Each one is created in Research and goes through the whole protocol by itself; this one stays as it is.</p>
+    ${im.at ? `${im.diagnosis ? `<p style="line-height:1.5">${esc(im.diagnosis)}</p>` : ''}${(im.variants || []).length ? `<div class="tablewrap"><table class="ppt" style="font-size:.82rem"><tbody>${im.variants.map(v => `<tr data-ppopen="${v.id}" style="cursor:pointer"><td class="ppw"><b>${esc(v.name)}</b><div class="muted" style="font-size:.76rem">${esc(v.rule)}</div><div style="font-size:.78rem">${esc(v.why)}</div></td><td>${st(v.id)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No new version (they already exist or the conditions were not valid).</p>'}<p class="muted" style="font-size:.76rem">Asked ${esc(im.at.replace('T', ' ').slice(0, 16))}</p>` : ''}</section>`;
 }
 function ppAccSel(D, id, want) {
   const acc = (D.accounts || []).filter(a => a.connected);
@@ -6111,7 +6121,8 @@ function render(force) {
     const on = a.dataset.r === v || (grp === 'trades' && a.dataset.r === 'trades') || (grp === 'bot' && a.dataset.r === 'bot') || (grp === 'lab' && a.dataset.r === 'lab');
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
-  document.querySelectorAll('.nav .nav-sub a').forEach(a => { if (a.dataset.r === v) a.setAttribute('aria-current', 'page'); });
+  document.querySelectorAll('.nav .nav-sub a').forEach(a => { const isBot = v === 'botstrat' && ['paper', 'live'].includes((((S.pipeD || {})[hashParam('id')] || {}).strategy || {}).stage) ? 'bot' : v === 'botstrat' ? 'botresearch' : v;
+    if (a.dataset.r === isBot) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   document.querySelectorAll('.nav .nav-sub').forEach(x => { x.hidden = grp !== (x.dataset.group || 'trades'); });
   document.querySelectorAll('[data-acct]').forEach(b => b.classList.toggle('on', grp === 'settings'));
   const keep = {};                                      // scroll positions survive the redraw (watchlists, side panel, chart page)

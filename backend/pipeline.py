@@ -627,6 +627,60 @@ def step_ai(sub, s, res):
     return out
 
 
+IMPROVE_SYSTEM = """You are the head of research of a small quant trading firm. A strategy went through the firm's protocol and
+the risk committee did not pass it (or passed it with doubts). From its study (results by holding time, by market
+condition, and by each condition of the stock / the alert, train vs test) and its validation (hold x stop grid, costs,
+months, tickers, gates) and the committee's concerns, design up to 3 NEW versions that fix the problems: add or change
+conditions that were positive in BOTH train and test with enough trades, pick the hold / stop that held in both, drop what
+only worked in train. Every version is tested again through the whole protocol, so prefer few, simple, distinct changes
+over curve fitting (at most 2 conditions added each). Use only the condition keys and values listed in `allowed`.
+Explain each version in one plain sentence."""
+IMPROVE_SCHEMA = {"type": "object", "properties": {
+    "diagnosis": {"type": "string", "description": "2-3 sentences: what is wrong with the current version"},
+    "variants": {"type": "array", "maxItems": 3, "items": {"type": "object", "properties": {
+        "name": {"type": "string"}, "cond": {"type": "object", "description": "the FULL entry conditions {key: value}"},
+        "hold": {"type": "integer"}, "stop": {"type": "number"}, "why": {"type": "string"}}, "required": ["name", "cond", "hold", "stop", "why"]}}},
+    "required": ["diagnosis", "variants"]}
+
+
+def step_improve(sub, s, res):
+    import os
+    import claude
+    st, v, ai = res.get("study") or {}, res.get("validation") or {}, res.get("ai") or {}
+    if not st.get("factors") or not v.get("grid"):
+        raise BadRequest("Run the study and the validation first.")
+    allowed = {k: VALUES.get(k, []) for k, _ in (DAILY_FACTORS if s["kind"] == "daily" else _flow_factors())}
+    payload = {"strategy": {"name": s["name"], "rule": describe(s), "cond": s["cond"], "hold": s["hold"], "stop": s["stop"], "kind": s["kind"]},
+               "study": {"events": st.get("events"), "split": st.get("split"), "byHold": st.get("sum"), "conditionsMap": st.get("map"),
+                         "byCondition": st.get("factors"), "names": st.get("factorNames")},
+               "validation": {k: v.get(k) for k in ("grid", "costs", "months", "tickers", "gates", "top3Months", "trades")},
+               "committee": {k: ai.get(k) for k in ("verdict", "summary", "checks", "concerns")}, "allowed": allowed}
+    out = claude.json_call(os.environ.get("COACH_MODEL", "claude-sonnet-5"), IMPROVE_SYSTEM, payload, 4000, IMPROVE_SCHEMA)
+    have = {_cfg_key(x) for x in strategies(sub)}
+    made = []
+    for x in (out.get("variants") or [])[:3]:
+        cond = clean_cond(x.get("cond") or {}, s["kind"])
+        if not cond and s["kind"] == "daily":
+            continue
+        b = {"name": str(x.get("name") or "")[:60] or s["name"] + " v2", "kind": s["kind"], "side": s["side"], "flowSide": s.get("flowSide"),
+             "universe": s.get("universe"), "cond": cond, "hold": x.get("hold") or s["hold"], "stop": x.get("stop") if x.get("stop") is not None else s["stop"],
+             "desc": str(x.get("why") or "")[:400], "allocPct": s["allocPct"], "maxPos": s["maxPos"]}
+        tmp = {**b, "hold": int(_clip(b["hold"], 1, 60, 5)), "stop": float(_clip(b["stop"], 0, 10, 0)), "universe": _universe(b["universe"]) if s["kind"] == "daily" else {"list": "__watch"}}
+        if _cfg_key(tmp) in have:
+            continue
+        n = create(sub, b)
+        n["parent"] = s["id"]
+        n["history"].append({"at": iso(now_ny()), "what": f"designed by Claude from {s['name']}"})
+        _save(sub, n)
+        have.add(_cfg_key(n))
+        try:
+            run_start(sub, n["id"], "all")
+        except Exception as e:
+            print("variant start failed", e)
+        made.append({"id": n["id"], "name": n["name"], "rule": describe(n), "why": b["desc"]})
+    return {"at": iso(now_ny()), "diagnosis": out.get("diagnosis") or "", "variants": made}
+
+
 # ---------------------------------------------------------------- the protocol job
 def protocol(sub, s, res):
     """Where the strategy is in the protocol: each step done / failed / to do, and whether it can be promoted."""
@@ -658,7 +712,7 @@ def _cfg_key(s):
 def run_start(sub, pid, step):
     import research
     s = get(sub, pid)
-    if step not in ("data", "study", "validate", "ai", "all"):
+    if step not in ("data", "study", "validate", "ai", "all", "improve"):
         raise BadRequest("Unknown step.")
     j = s.get("job") or {}
     if j.get("running") and j["running"] > iso(now_ny() - timedelta(minutes=14)):
@@ -684,7 +738,8 @@ def job(sub, params):
     try:
         for k in steps:
             s["job"] = {"running": iso(now_ny()), "step": k, "msg": {"data": "downloading the data", "study": "running the study",
-                                                                     "validate": "validating", "ai": "Claude is reviewing"}[k], "error": None}
+                                                                     "validate": "validating", "ai": "Claude is reviewing",
+                                                                     "improve": "Claude is designing better versions"}[k], "error": None}
             _save(sub, s)
             if k == "data":
                 res["data"] = step_data(sub, s, prog)
@@ -707,6 +762,8 @@ def job(sub, params):
                 res["ai"] = step_ai(sub, s, res)
                 if s.get("cells") is None:
                     s["cells"] = res["ai"]["approvedCells"]
+            elif k == "improve":
+                res["improve"] = step_improve(sub, s, res)
             res[k if k != "validate" else "validation"]["cfg"] = _data_key(s) if k == "data" else _cfg_key(s)
             _save_results(sub, pid, res)
             s.setdefault("history", []).append({"at": iso(now_ny()), "what": f"{k}: " + _summary_line(k, res)})
@@ -729,6 +786,8 @@ def _summary_line(k, res):
     if k == "validate":
         v = res.get("validation") or {}
         return ("passed" if v.get("passed") else "failed") + f" ({sum(1 for g in v.get('gates') or [] if g['ok'])}/{len(v.get('gates') or [])} checks)"
+    if k == "improve":
+        return f"{len((res.get('improve') or {}).get('variants') or [])} new versions from Claude, each running the protocol"
     return (res.get("ai") or {}).get("verdict") or ""
 
 
