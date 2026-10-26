@@ -437,7 +437,7 @@ def _trade(A, i, side, hold, stop, cost_bp, entry="close"):
     n = len(c)
     d = 1 if side == "call" else -1
     j0 = i if entry == "close" else i + 1
-    if j0 >= n or not r[j0] or not atr[i]:
+    if j0 + hold >= n or not r[j0] or not atr[i]:        # the whole holding time must be known (else only the stops count)
         return None
     px = c[i] if entry == "close" else r[j0][0]
     st = px - d * stop * atr[i] if stop else None
