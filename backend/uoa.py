@@ -185,6 +185,8 @@ FACTORS = [
     ("ws", "Stock's weekly EMA score"), ("e50", "Stock vs its 50-day"), ("e200", "Stock vs its 200-day"), ("mom", "Stock's last 20 days"),
     ("prem", "Premium (biggest alert)"), ("rel", "Unusual for the ticker"), ("dte", "Days to expiration"), ("mny", "Moneyness"),
     ("sweep", "Sweep"), ("open", "Opening (volume > open interest)"), ("tod", "Time of the day"), ("burst", "Alerts that day (same side)"),
+    ("cluster", "Single vs cluster (same side, last 5 days)"), ("repeat", "Same contract bought again that day"), ("total", "Total premium that day"),
+    ("mixed", "Other side that day"),
 ]
 
 
@@ -196,7 +198,11 @@ def events(alerts, side):
     out = []
     for d, xs in sorted(by.items()):
         big = max(xs, key=lambda a: a["p"])
-        out.append({"d": d, "side": side, "big": big, "n": len(xs), "tot": sum(a["p"] for a in xs), "first": min(a["t"] for a in xs)})
+        ks = {}
+        for a in xs:
+            ks[(a.get("k"), a.get("x"))] = ks.get((a.get("k"), a.get("x")), 0) + 1
+        out.append({"d": d, "side": side, "big": big, "n": len(xs), "tot": sum(a["p"] for a in xs), "first": min(a["t"] for a in xs),
+                    "rep": max(ks.values()) if ks else 1})
     return out
 
 
@@ -235,6 +241,11 @@ def features(ev, ctx, i, hist_prem):
     hm = ev["first"][11:16]
     f["tod"] = "before 10:30" if hm < "10:30" else "last hour" if hm >= "15:00" else "10:30-15:00"
     f["burst"] = "1" if ev["n"] == 1 else "2-4" if ev["n"] < 5 else "5+"
+    pr = ev.get("prior", 0)                           # days of the 5 before with alerts of the same side
+    f["cluster"] = "single (none in 5 days)" if pr == 0 and ev["n"] == 1 else "first day of a burst" if pr == 0 else "cluster 1-2 days" if pr <= 2 else "cluster 3+ days"
+    f["repeat"] = "same contract 2x+" if ev.get("rep", 1) >= 2 else "different contracts"
+    f["total"] = _bucket(ev["tot"], (500e3, 2e6, 10e6), ("under 500K", "500K-2M", "2-10M", "10M+"))
+    f["mixed"] = "other side too" if ev.get("mixed") else "this side only"
     return f
 
 
@@ -316,8 +327,14 @@ def run_study(sub):
         ctx = {**ctx0, "c": A["c"], "e50": A["e50"], "e200": macro.ema(clf, 200), "ws": X["w"][s]}
         for side in ("call", "put"):
             hist = []
+            other = {a["t"][:10] for a in al[s]["put" if side == "call" else "call"]}
+            seen_i = []
             for ev in events(al[s][side], side):
                 i = pos.get(ev["d"])
+                ev["mixed"] = ev["d"] in other
+                ev["prior"] = sum(1 for j in seen_i[-6:] if i is not None and i - 5 <= j < i)
+                if i is not None:
+                    seen_i.append(i)
                 if i is None or A["c"][i] is None:
                     hist.append(ev["big"]["p"])
                     continue

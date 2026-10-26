@@ -6740,6 +6740,7 @@ def test_unusual_flow_study():
         c5, p5 = out["sides"]["call"]["all"]["5"]["raw"], out["sides"]["put"]["all"]["5"]["raw"]
         assert c5["avg"] > 0 and p5["avg"] > 0 and c5["win"] > 60     # both read the right way (puts upside down)
         assert "phase" in out["factors"]["call"] and set(out["factors"]["call"]["prem"]) >= {"100-250K", "250K-1M", "1-5M"}
+        assert {"cluster", "repeat", "total", "mixed"} <= set(out["factors"]["call"]) and "single (none in 5 days)" in out["factors"]["call"]["cluster"]
         assert out["pairs"]["call"] and all(set(p["train"]) == {"1", "3", "5", "10"} for p in out["pairs"]["call"])
         assert len(db.get(db.upk("uo1"), uoa.SK)["data"]) < 380_000
     finally:
