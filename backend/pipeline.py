@@ -67,8 +67,11 @@ VALUES = {
     "repeat": ["same contract 2x+", "different contracts"], "total": ["under 500K", "500K-2M", "2-10M", "10M+"], "mixed": ["other side too", "this side only"],
 }
 
-SEED_V = 3                                                 # new candidates are added once each time this goes up
+SEED_V = 4                                                 # new candidates are added once each time this goes up
 SEEDS = [
+    {"seed": "retest", "v": 4, "name": "Breakout retest (resistance turned support)", "kind": "intraday",
+     "ip": {"setup": "retest", "tf": 60, "lookback": 20, "window": 10, "tol": 0.5, "ema": "either", "tgtR": 2, "hold": 5, "days": 250, "list": "Main"},
+     "desc": "A close above the 20-day high, a pullback to that level and the 10 / 20-day EMA within 10 days, a bullish reversal 1-hour candle there: buy, stop under its low, 2R target."},
     {"seed": "range50", "v": 3, "name": "Range 50% retrace (NQ scalper setup)", "kind": "intraday",
      "ip": {"tickers": ["QQQ", "SPY"], "tf": 1, "legPct": 0.35, "stopBuf": 0, "side": "both", "days": 250},
      "desc": "A leg (a high to the low under it), the retrace to its 50%, then back to 25% of the range: buy there, target the 50%, stop under the low. Mirror for the short."},
@@ -182,7 +185,7 @@ def create(sub, b, seed=False):
          "ip": _ip(b.get("ip")) if kind == "intraday" else None,
          "stage": "research", "account": None, "createdAt": iso(now_ny()), "history": [{"at": iso(now_ny()), "what": "created"}]}
     if kind == "intraday":
-        s["universe"] = {"tickers": s["ip"]["tickers"]}
+        s["universe"] = {"tickers": s["ip"]["tickers"]} if s["ip"].get("tickers") else {"list": s["ip"].get("list") or "Main"}
         s["cond"], s["hold"], s["stop"] = {}, 1, 0.0
         s["side"] = "short" if s["ip"]["side"] == "short" else "long"
     if seed:
@@ -192,8 +195,14 @@ def create(sub, b, seed=False):
 
 
 def _ip(p):
+    return _imod(p).clean(p)
+
+
+def _imod(p):
+    """The intraday set-up's engine: range50 (50% range retrace) or retest (breakout retest)."""
     import range50
-    return range50.clean(p)
+    import retest
+    return retest if (p or {}).get("setup") == "retest" else range50
 
 
 def _clip(v, lo, hi, dflt):
@@ -233,17 +242,15 @@ INTRA_FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("s", "Ticker")
 
 def factor_names(kind):
     if kind == "intraday":
-        return dict(INTRA_FACTORS)
+        import range50
+        import retest
+        return {**dict(range50.FACTORS), **dict(retest.FACTORS)}
     return dict(DAILY_FACTORS if kind == "daily" else _flow_factors())
 
 
 def describe(s):
     if s["kind"] == "intraday":
-        p = s.get("ip") or {}
-        return (f"{', '.join(p.get('tickers') or [])} {p.get('tf', 1)}-minute: after a leg of at least {p.get('legPct')}% "
-                f"({'down legs → long' if p.get('side') == 'long' else 'up legs → short' if p.get('side') == 'short' else 'both sides'}), "
-                f"a retrace to the range's 50%, then back to {round(p.get('entryLvl', 0.25) * 100)}%: enter there, target the 50%, "
-                f"stop {'at the range end' if not p.get('stopBuf') else f'{round(p.get('stopBuf') * 100)}% of the range past its end'}, flat at 15:55")
+        return _imod(s.get("ip")).describe(s.get("ip") or {})
     names = factor_names(s["kind"])
     c = " and ".join(f"{names.get(k, k)} = {v}" for k, v in (s.get("cond") or {}).items())
     who = f"unusual {s.get('flowSide', 'call')} buying" if s["kind"] == "flow" else "signal"
@@ -1029,7 +1036,7 @@ def action(sub, pid, b):
             s["side"] = b["side"]
         if b.get("ip") is not None and s["kind"] == "intraday":
             s["ip"] = _ip({**(s.get("ip") or {}), **b["ip"]})
-            s["universe"] = {"tickers": s["ip"]["tickers"]}
+            s["universe"] = {"tickers": s["ip"]["tickers"]} if s["ip"].get("tickers") else {"list": s["ip"].get("list") or "Main"}
         if "exitRange" in b and s["kind"] == "daily":
             s["exitRange"] = bool(b["exitRange"])
         if b.get("flowSide") in ("call", "put"):
@@ -1426,40 +1433,31 @@ def _cells_by_day():
 
 
 def _intra_all(sub, s, prog, p=None):
-    import range50
     p = p or s["ip"]
+    M = _imod(p)
     try:
         cells = _cells_by_day()
     except Exception as e:
         print("intraday cells failed", e)
         cells = {}
-    tr, base = range50.all_trades(sub, p, cells, prog)
+    tr, base = M.all_trades(sub, p, cells, prog)
     for x, b in zip(tr, base):
         x["base"] = b[2]
-        x["tod"] = range50.tod(x["in"])
-        x["wd"] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][__import__("datetime").date.fromisoformat(x["d"]).weekday()]
-        m_in = int(x["in"][11:13]) * 60 + int(x["in"][14:16])
-        m_t = int(x["touch"][11:13]) * 60 + int(x["touch"][14:16])
-        w = m_in - m_t
-        x["wait"] = "under 5 min" if w < 5 else "5-15 min" if w < 15 else "15-60 min" if w < 60 else "60 min+"
-        rel = x["R"] / (abs(x["e"]) * p["legPct"] / 100) if x["e"] else 1
-        x["size"] = "1-1.5x" if rel < 1.5 else "1.5-2x" if rel < 2 else "2x+"
+        M.decorate(x, p)
     return tr
 
 
 def intra_data(sub, s, prog):
-    import range50
     p = s["ip"]
-    cov = []
-    for sym in p["tickers"]:
-        prog(f"{sym}: {p['days']} days of minute candles (Alpaca)")
-        by = range50.bars(sub, sym, p["days"], p["tf"])
-        ds = sorted(by)
-        if ds:
-            cov.append({"s": sym, "from": ds[0], "to": ds[-1], "days": len(ds), "bars": sum(len(v) for v in by.values())})
-    return {"at": iso(now_ny()), "kind": "intraday", "source": f"Alpaca {p['tf']}-minute candles, regular hours (QQQ stands in for NQ: no futures on Alpaca)",
-            "tickers": len(cov), "coverage": cov, "days": max([c["days"] for c in cov] or [0]), "first": min([c["from"] for c in cov] or [""]),
-            "last": max([c["to"] for c in cov] or [""]), "missing": [t for t in p["tickers"] if t not in [c["s"] for c in cov]], "notes": [], "ok": bool(cov)}
+    M = _imod(p)
+    cov = M.coverage(sub, p, prog)
+    want = M.tickers(sub, p)
+    src = (f"Alpaca {p['tf']}-minute candles, regular hours (QQQ stands in for NQ: no futures on Alpaca)" if p.get("setup") != "retest" else
+           f"Daily candles (Yahoo) for the breakout levels + Alpaca 15-minute candles{' (made into 1-hour candles from 09:30)' if p['tf'] == 60 else ''}")
+    return {"at": iso(now_ny()), "kind": "intraday", "source": src, "tickers": len(cov), "coverage": cov, "days": max([c["days"] for c in cov] or [0]),
+            "first": min([c["from"] for c in cov] or [""]), "last": max([c["to"] for c in cov] or [""]),
+            "missing": [t for t in want if t not in [c["s"] for c in cov]],
+            "notes": ([f"No candles for {', '.join(t for t in want if t not in [c['s'] for c in cov])}."] if len(cov) < len(want) else []), "ok": bool(cov)}
 
 
 def _net(x, bp):
@@ -1482,16 +1480,17 @@ def _io(tr, cut, bp=COST_I):
 
 
 def intra_study(sub, s, prog):
-    import range50
     p = s["ip"]
+    M = _imod(p)
+    rk, rvals, runit = M.ROW
     tr = _intra_all(sub, s, prog)
     if not tr:
-        return {"at": iso(now_ny()), "events": 0, "error": "No setup in the history: lower the leg size."}
+        return {"at": iso(now_ny()), "events": 0, "error": "No set-up in the history: loosen the rule."}
     cut = _split(tr)
-    prog(f"{len(tr)} setups: by leg size, market condition and each condition")
+    prog(f"{len(tr)} set-ups: by {runit}, market condition and each condition")
     summ = {}
-    for lg in sorted(set(range50.LEGS) | {p["legPct"]}):
-        t2 = tr if lg == p["legPct"] else _intra_all(sub, s, None, {**p, "legPct": lg})
+    for lg in sorted(set(rvals) | {p[rk]}):
+        t2 = tr if lg == p[rk] else _intra_all(sub, s, None, {**p, rk: lg})
         summ[f"{lg:g}"] = _io(t2, _split(t2) or cut)
     cells = []
     for ph in PHASES:
@@ -1504,7 +1503,7 @@ def intra_study(sub, s, prog):
             cells.append({"cell": ck, "phase": ph, "vol": vo, **{k: x[k] for k in ("train", "test", "baseTrain", "baseTest", "edgeTrain", "edgeTest")},
                           "n": n, "status": status})
     facs = {}
-    for fk, _ in INTRA_FACTORS:
+    for fk, _ in M.FACTORS:
         vals = {}
         for t in tr:
             vals.setdefault(t.get(fk), {"train": [], "test": []})["train" if t["d"] < cut else "test"].append(_net(t, COST_I))
@@ -1518,14 +1517,16 @@ def intra_study(sub, s, prog):
         why[t["why"]] = why.get(t["why"], 0) + 1
     return {"at": iso(now_ny()), "events": len(tr), "trainEvents": sum(1 for t in tr if t["d"] < cut), "testEvents": sum(1 for t in tr if t["d"] >= cut),
             "split": {"from": min(t["d"] for t in tr), "cut": cut, "to": max(t["d"] for t in tr)}, "hz": list(summ), "sum": summ, "map": cells,
-            "factors": facs, "factorNames": dict(INTRA_FACTORS), "lastSignal": last, "tickers": p["tickers"], "costBp": COST_I,
-            "rowLabel": "Leg size", "rowNames": {k: f"{k}% leg" for k in summ}, "ruleRow": f"{p['legPct']:g}", "exits": why,
+            "factors": facs, "factorNames": dict(M.FACTORS), "lastSignal": last, "tickers": M.tickers(sub, p), "costBp": COST_I,
+            "rowLabel": runit[0].upper() + runit[1:] if not runit.startswith("%") else "Leg size", "rowNames": {k: f"{k}{runit}" for k in summ},
+            "ruleRow": f"{p[rk]:g}", "exits": why,
             "mapNote": "the rule as it will trade; the cell is the market at the previous close", "intraday": True}
 
 
 def intra_validate(sub, s, prog):
-    import range50
     p = s["ip"]
+    M = _imod(p)
+    (rk, rvals, runit), (ck_, cvals) = M.ROW, M.COL
     cells = sorted(s.get("cells") or [])
     tr0 = _intra_all(sub, s, prog)
     if len(tr0) < 2:
@@ -1535,15 +1536,16 @@ def intra_validate(sub, s, prog):
     tr = flt(tr0)
     if len(tr) < 2:
         return {"at": iso(now_ny()), "error": "Not enough setups in the ticked market conditions.", "gates": [], "passed": False, "cells": cells}
-    prog(f"{len(tr)} setups: leg size x stop grid vs the random-timing baseline")
+    prog(f"{len(tr)} set-ups: the grid vs the random-timing baseline")
     grid = []
-    legs, stops = sorted(set(range50.LEGS) | {p["legPct"]}), sorted(set(range50.STOPS) | {p["stopBuf"]})
+    legs = sorted(set(rvals) | {p[rk]})
+    stops = list(cvals) + ([p[ck_]] if p[ck_] not in cvals else [])
     for lg in legs:
         for sb in stops:
-            t2 = tr if (lg == p["legPct"] and sb == p["stopBuf"]) else flt(_intra_all(sub, s, None, {**p, "legPct": lg, "stopBuf": sb}))
+            t2 = tr if (lg == p[rk] and sb == p[ck_]) else flt(_intra_all(sub, s, None, {**p, rk: lg, ck_: sb}))
             x = _io(t2, cut)
             grid.append({"hold": lg, "stop": sb, **{k: x[k] for k in ("train", "test", "baseTrain", "baseTest", "edgeTrain", "edgeTest")},
-                         "rTest": x["rTest"], "chosen": lg == p["legPct"] and sb == p["stopBuf"]})
+                         "rTest": x["rTest"], "chosen": lg == p[rk] and sb == p[ck_]})
     ch = next(g for g in grid if g["chosen"])
     costs = [{"bp": c_, "all": _agg([_net(x, c_) for x in tr])} for c_ in COSTS_I]
     months = {}
@@ -1574,9 +1576,10 @@ def intra_validate(sub, s, prog):
     for x in sorted(tr, key=lambda z: z["in"]):
         cur += _net(x, COST_I)
         eq.append([x["d"], round(cur, 2)])
-    return {"at": iso(now_ny()), "hold": p["legPct"], "stop": p["stopBuf"], "grid": grid, "costs": costs, "months": mlist, "tickers": tick,
+    return {"at": iso(now_ny()), "hold": p[rk], "stop": p[ck_], "grid": grid, "costs": costs, "months": mlist, "tickers": tick,
             "top1Share": None, "top3Months": top3, "trades": len(tr), "chosen": ch, "testDD": dd_te, "allDD": _dd([_net(x, COST_I) for x in tr]),
             "gates": gates, "passed": all(g["ok"] for g in gates if g["hard"]), "equity": eq[-400:], "split": {"cut": cut}, "cells": cells,
-            "holds": legs, "stops": stops, "costBp": COST_I, "gridRow": "Leg \\ stop", "rowUnit": "% leg", "colUnit": "of the range past the end",
-            "rTest": ch.get("rTest"), "intraday": True,
-            "_trades": [{"s": x["s"], "in": x["d"], "out": x["d"], "pct": round(_net(x, COST_I), 3)} for x in tr]}
+            "holds": legs, "stops": stops, "costBp": COST_I, "gridRow": f"{'Leg' if rk == 'legPct' else 'Target'} \\ {'stop' if ck_ == 'stopBuf' else 'EMA'}",
+            "rowNames": {str(v): f"{v:g}{runit}" for v in legs}, "colNames": {str(v): M.COL_NAMES.get(v, str(v)) for v in stops},
+            "rTest": ch.get("rTest"), "intraday": True, "ruleText": M.describe(p),
+            "_trades": [{"s": x["s"], "in": x["d"], "out": (x.get("out") or x["d"])[:10], "pct": round(_net(x, COST_I), 3)} for x in tr]}

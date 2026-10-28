@@ -19,7 +19,7 @@ _CACHE = {}
 
 def clean(p):
     p = {**DEFAULT, **(p or {})}
-    out = {"tf": 5 if str(p.get("tf")) == "5" else 1, "side": p.get("side") if p.get("side") in ("long", "short", "both") else "both"}
+    out = {"setup": "range50", "tf": 5 if str(p.get("tf")) == "5" else 1, "side": p.get("side") if p.get("side") in ("long", "short", "both") else "both"}
     for k, lo, hi in (("legPct", 0.05, 5), ("stopBuf", 0, 1), ("days", 20, 800), ("entryLvl", 0.05, 0.45), ("targetLvl", 0.3, 1.0)):
         try:
             out[k] = max(lo, min(hi, float(p.get(k))))
@@ -182,3 +182,43 @@ def all_trades(sub, p, cells=None, prog=None):
 def tod(t):
     hm = t[11:16]
     return "09:30-10:00" if hm < "10:00" else "10:00-11:00" if hm < "11:00" else "11:00-13:00" if hm < "13:00" else "13:00-14:30" if hm < "14:30" else "14:30-15:30"
+
+
+ROW = ("legPct", LEGS, "% leg")
+COL = ("stopBuf", STOPS)
+COL_NAMES = {0.0: "at the range end", 0.1: "10% past the end", 0.25: "25% past the end"}
+FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("s", "Ticker"), ("wd", "Weekday"), ("wait", "Minutes from the 50% to the entry"),
+           ("size", "Leg size vs the rule's minimum")]
+
+
+def describe(p):
+    side = 'down legs → long' if p.get('side') == 'long' else 'up legs → short' if p.get('side') == 'short' else 'both sides'
+    stop = 'at the range end' if not p.get('stopBuf') else f"{round(p['stopBuf'] * 100)}% of the range past its end"
+    return (f"{', '.join(p.get('tickers') or [])} {p.get('tf', 1)}-minute: after a leg of at least {p.get('legPct')}% ({side}), a retrace to "
+            f"the range's 50%, then back to {round(p.get('entryLvl', 0.25) * 100)}%: enter there, target the 50%, stop {stop}, flat at 15:55")
+
+
+def tickers(sub, p):
+    return list(p["tickers"])
+
+
+def decorate(x, p):
+    import datetime as dt
+    x["tod"] = tod(x["in"])
+    x["wd"] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][dt.date.fromisoformat(x["d"]).weekday()]
+    w = (int(x["in"][11:13]) * 60 + int(x["in"][14:16])) - (int(x["touch"][11:13]) * 60 + int(x["touch"][14:16]))
+    x["wait"] = "under 5 min" if w < 5 else "5-15 min" if w < 15 else "15-60 min" if w < 60 else "60 min+"
+    rel = x["R"] / (abs(x["e"]) * p["legPct"] / 100) if x["e"] else 1
+    x["size"] = "1-1.5x" if rel < 1.5 else "1.5-2x" if rel < 2 else "2x+"
+
+
+def coverage(sub, p, prog):
+    cov = []
+    for sym in p["tickers"]:
+        if prog:
+            prog(f"{sym}: {p['days']} days of minute candles (Alpaca)")
+        by = bars(sub, sym, p["days"], p["tf"])
+        ds = sorted(by)
+        if ds:
+            cov.append({"s": sym, "from": ds[0], "to": ds[-1], "days": len(ds), "bars": sum(len(v) for v in by.values())})
+    return cov

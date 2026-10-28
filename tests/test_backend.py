@@ -6808,7 +6808,7 @@ def test_strategy_pipeline():
         assert len(pipeline.overview("pp1")["strategies"]) == len(pipeline.SEEDS)   # seeded once
         db_ = __import__("db")                         # an older store (version 1): only the newer candidates are added
         db_.put({"PK": db_.upk("pp0"), "SK": "PIPESEEDED", "at": "x"})
-        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "range50"] and len(pipeline.strategies("pp0")) == 2
+        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "range50", "retest"] and len(pipeline.strategies("pp0")) == 3
         hb = next(x for x in pipeline.strategies("pp0") if x["seed"] == "highBase")
         assert hb["cond"]["hi52"] == "within 10%" and "ath" not in hb["cond"]
         pipeline._save("pp0", {**hb, "cond": {"base": "breakout of the base", "ath": "within 10%", "sqz5": "yes"}})   # stored before: migrated
@@ -7039,6 +7039,83 @@ def test_intraday_range50():
             assert "intraday" in str(e)
     finally:
         daytrade.minute_bars, plab._bars = saved
+
+
+def test_breakout_retest():
+    """Breakout retest: a close above the 20-day high, a pullback to the level + EMA, a bullish reversal candle there,
+    buy the next candle, stop under its low, R target; the protocol on it (intraday kind, retest set-up)."""
+    import random, datetime as dt, retest, pipeline, plab, alpaca, daytrade
+    days = []
+    x = dt.date(2026, 1, 5)
+    while len(days) < 60:
+        if x.weekday() < 5:
+            days.append(x.isoformat())
+        x += dt.timedelta(days=1)
+    daily = {}
+    for i, d in enumerate(days):
+        if i < 30:
+            daily[d] = (98, 100, 96, 98, 1)                # a range under 100
+        elif i == 30:
+            daily[d] = (99, 104, 99, 103, 1)              # breakout close 103 > 100
+        else:
+            daily[d] = (101, 106, 100.2, 104, 1)
+    cand = lambda d, hm, o, h, l, c: (f"{d}T{hm}", o, h, l, c)
+    intra = {days[32]: [cand(days[32], "09:30", 102, 102.5, 101, 101.2), cand(days[32], "10:30", 101.2, 101.4, 100.1, 101.3),   # hammer at 100
+                        cand(days[32], "11:30", 101.3, 102, 101, 101.8), cand(days[32], "12:30", 101.8, 102.5, 101.7, 102.4),
+                        cand(days[32], "13:30", 102.4, 104, 102.3, 103.9)]}
+    p = retest.clean({"ema": "off", "tgtR": 2, "hold": 5})
+    tr, cs = retest.setups(daily, intra, p, "AAA")
+    assert len(tr) == 1 and tr[0]["pat"] == "hammer" and tr[0]["e"] == 101.3 and tr[0]["why"] == "target"
+    stop = 100.1 * 0.999
+    assert abs(tr[0]["x"] - (101.3 + 2 * (101.3 - stop))) < 1e-9 and abs(tr[0]["r"] - 2) < 1e-9 and tr[0]["depth"] == "at the level (±0.3%)"
+    assert retest.setups(daily, intra, {**p, "ema": "20"})[0] == []        # the 20-day EMA (~98-99) isn't tested by that candle
+    # the protocol on random data
+    ds = []
+    x = dt.date.today() - dt.timedelta(days=500)
+    while x < dt.date.today():
+        if x.weekday() < 5:
+            ds.append(x.isoformat())
+        x += dt.timedelta(days=1)
+    def walk(seed):
+        r, p_, out = random.Random(seed), 100.0, {}
+        for d in ds:
+            o = p_
+            p_ *= 1 + r.gauss(0.0006, 0.018)
+            out[d] = (o, max(o, p_) * 1.006, min(o, p_) * 0.994, p_, 1)
+        return out
+    D = {s_: walk(i) for i, s_ in enumerate(["SPY", "AAA", "BBB", "CCC"])}
+    D["^VIX"] = {d: (0, 0, 0, 15 + (i % 30) / 3, 0) for i, d in enumerate(ds)}
+    D["^VIX3M"] = {d: (0, 0, 0, 20, 0) for d in ds}
+    def bars15(c, sym, a, b, tf, max_pages=10, feed=None):
+        r, out = random.Random(sym + "i"), []
+        for d in ds[-250:]:
+            o0, h0, l0, c0, _ = D[sym][d]
+            px = o0
+            for k in range(26):
+                m = 570 + 15 * k
+                tgt = o0 + (c0 - o0) * (k + 1) / 26
+                o = px
+                px = tgt * (1 + r.gauss(0, 0.002))
+                out.append({"t": f"{d}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": min(h0, max(o, px) * 1.001), "l": max(l0, min(o, px) * 0.999), "c": px, "v": 1})
+        return out
+    saved = (plab._bars, alpaca.bars, daytrade.data_creds, __import__("wallwatch").config)
+    try:
+        plab._bars = lambda s_, y: D.get(s_, {})
+        alpaca.bars = bars15
+        daytrade.data_creds = lambda sub: {"key": "k", "secret": "s", "feed": "iex"}
+        __import__("wallwatch").config = lambda sub: {"tickers": ["AAA", "BBB", "CCC"], "lists": [{"name": "Main", "tickers": ["AAA", "BBB", "CCC"]}]}
+        retest._CACHE.clear()
+        s = pipeline.create("rt1", {"name": "Retest", "kind": "intraday", "ip": {"setup": "retest", "ema": "off", "tol": 1.0}})
+        assert s["ip"]["setup"] == "retest" and s["universe"] == {"list": "Main"} and "pullback" in pipeline.describe(s)
+        dd_ = pipeline.step_data("rt1", s, lambda m: None)
+        assert dd_["ok"] and len(dd_["coverage"]) == 3
+        st = pipeline.step_study("rt1", s, lambda m: None)
+        assert st.get("events", 0) > 5, st
+        assert set(st["sum"]) == {"1", "2", "3"} and st["ruleRow"] == "2" and "pat" in st["factors"] or len({t for t in st["factors"]}) >= 1
+        v = pipeline.step_validate("rt1", s, lambda m: None)
+        assert v["intraday"] and len(v["grid"]) == 3 * 4 and v["colNames"]["off"] == "no EMA" and v["rowNames"]["2.0"] == "2R target"
+    finally:
+        plab._bars, alpaca.bars, daytrade.data_creds, __import__("wallwatch").config = saved
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
