@@ -6804,8 +6804,22 @@ def test_strategy_pipeline():
         calls = []
         research._invoke = lambda sub, job, p: calls.append((job, p))
         ov = pipeline.overview("pp1")
-        assert [s["name"] for s in ov["strategies"]][:3] == [x["name"] for x in pipeline.SEEDS]
-        assert len(pipeline.overview("pp1")["strategies"]) == 3                 # seeded once
+        assert sorted(s["name"] for s in ov["strategies"]) == sorted(x["name"] for x in pipeline.SEEDS)
+        assert len(pipeline.overview("pp1")["strategies"]) == len(pipeline.SEEDS)   # seeded once
+        db_ = __import__("db")                         # an older store (version 1): only the newer candidates are added
+        db_.put({"PK": db_.upk("pp0"), "SK": "PIPESEEDED", "at": "x"})
+        assert [s["seed"] for s in pipeline.strategies("pp0")] == ["highBase"] and len(pipeline.strategies("pp0")) == 1
+        # high base: a tight 15-day base near the high, a squeeze, the breakout; the range exit
+        rows_ = [(100, 101, 99, 100, 0)] * 30 + [(100, 100.6, 99.6, 100.1, 0)] * 15 + [(100.2, 104, 100, 103.5, 0), (103.6, 104, 103, 103.8, 0),
+                 (103.8, 104, 98, 98.5, 0), (98, 99, 97, 98, 0), (98, 99, 97, 98, 0)] + [(98, 99, 97, 98, 0)] * 10
+        A_ = {"r": rows_, "c": [x[3] for x in rows_], "e21": [None] * len(rows_), "e50": [None] * len(rows_), "atr": [1.0] * len(rows_)}
+        cx = pipeline._stock_ctx(A_, A_["c"])
+        f45 = pipeline._stock_f(A_, cx, 45, None)
+        assert f45["base"] == "breakout of the base" and f45["ath"] == "within 10%" and f45["sqz5"] == "yes"
+        assert abs(cx["bl"][45] - 99.6) < 1e-9
+        xr = pipeline.trade(A_, 45, 1, 5, 0, 0, lvl=cx["bl"][45])          # in at 103.6, closes 98.5 < 99.6 -> out the next open 98
+        assert xr[1] == 48 and abs(xr[0] - (98 / 103.6 - 1) * 100) < 1e-9
+        assert pipeline.trade(A_, 45, 1, 5, 0, 0)[1] == 51
         s = pipeline.create("pp1", {"name": "Dip", "kind": "daily", "universe": {"tickers": "SPY QQQ AAA BBB"}, "cond": {"drop5": "down 2-5%", "bogus": 1}, "hold": 5})
         assert s["cond"] == {"drop5": "down 2-5%"} and s["universe"] == {"tickers": ["SPY", "QQQ", "AAA", "BBB"]}
         pipeline.run_start("pp1", s["id"], "all")

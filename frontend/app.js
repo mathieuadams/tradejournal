@@ -5798,7 +5798,7 @@ function ppNewForm(P) {
       ${N.uni === '__tk' ? `<div class="field"><label for="ppn-tk">Tickers</label><input id="ppn-tk" value="${esc(N.tickers)}" placeholder="SPY QQQ"></div>` : ''}`}
     <div class="field"><label for="ppn-side">Trade</label><select id="ppn-side"><option value="long" ${N.side === 'long' ? 'selected' : ''}>Buy the stock</option><option value="short" ${N.side === 'short' ? 'selected' : ''}>Short the stock</option></select></div>
     <div class="field"><label for="ppn-hold">Hold (trading days)</label><input id="ppn-hold" type="number" min="1" max="60" value="${N.hold}"></div>
-    <div class="field"><label for="ppn-stop">Stop (× ATR, 0 = none)</label><input id="ppn-stop" type="number" min="0" max="10" step="0.5" value="${N.stop}"></div></div>
+    <div class="field"><label for="ppn-stop">Stop (× ATR, 0 = none)</label><input id="ppn-stop" type="number" min="0" max="10" step="0.5" value="${N.stop}"></div>${N.kind === 'daily' ? `<div class="field"><label><input type="checkbox" id="ppn-xr" ${N.exitRange ? 'checked' : ''}> Also exit the open after a close below the base (15-day range low)</label></div>` : ''}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0">${chips || '<span class="muted">No condition yet.</span>'}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><select id="ppn-f" aria-label="Condition">${facs.map(([k, l]) => `<option value="${k}" ${S.ppF === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
       <select id="ppn-v" aria-label="Value">${(vals[S.ppF || (facs[0] || [])[0]] || []).map(v => `<option>${esc(v)}</option>`).join('')}</select><button class="btn" data-ppcadd>Add condition</button></div>
@@ -5812,6 +5812,7 @@ function ppReadNew() {
   if (g('ppn-kind')) N.kind = g('ppn-kind'); if (g('ppn-fs')) N.flowSide = g('ppn-fs'); if (g('ppn-uni')) N.uni = g('ppn-uni');
   if (g('ppn-tk') !== undefined) N.tickers = g('ppn-tk'); if (g('ppn-side')) N.side = g('ppn-side');
   if (g('ppn-hold')) N.hold = +g('ppn-hold'); if (g('ppn-stop') !== undefined) N.stop = +g('ppn-stop');
+  if ($('#ppn-xr')) N.exitRange = $('#ppn-xr').checked;
 }
 // ---- one strategy: the protocol on the left, the chart + watchlist on the right (always the same)
 function vStrat() {
@@ -6030,7 +6031,7 @@ document.addEventListener('click', e => {
   if (d.ppcadd !== undefined) { ppReadNew(); const k = $('#ppn-f').value, v = $('#ppn-v').value; if (k && v) S.ppNewD.cond[k] = v; render(); return; }
   if (d.ppcdel) { ppReadNew(); delete S.ppNewD.cond[d.ppcdel]; render(); return; }
   if (d.ppcreate !== undefined) { ppReadNew(); const N = S.ppNewD;
-    const body = { name: N.name, kind: N.kind, side: N.side, flowSide: N.flowSide, cond: N.cond, hold: N.hold, stop: N.stop,
+    const body = { name: N.name, kind: N.kind, side: N.side, flowSide: N.flowSide, cond: N.cond, hold: N.hold, stop: N.stop, exitRange: !!N.exitRange,
       universe: N.uni === '__tk' ? { tickers: N.tickers } : { list: N.uni } };
     api('/pipeline', { method: 'POST', body }).then(r => { const id = r.strategy.id; S.pipeD = { ...(S.pipeD || {}), [id]: r }; S.ppNew = false; S.ppNewD = null; S.pipe = undefined;
       return api(`/pipeline/${id}/run`, { method: 'POST', body: { step: 'all' } }).then(r2 => { S.pipeD = { ...(S.pipeD || {}), [id]: r2 }; location.hash = '#botstrat?id=' + id; loadPipeD(id, true); }); }).catch(err => toast(err.message)); return; }

@@ -50,12 +50,16 @@ DAILY_FACTORS = [
     ("phase", "Market phase (SPY trend)"), ("vix", "VIX"), ("dial", "Risk dial"), ("spy50", "SPY vs its 50-day"), ("clear", "VIX all-clear day"),
     ("ws", "Stock's weekly EMA score"), ("e21", "Stock vs its 21-day"), ("e50", "Stock vs its 50-day"), ("e200", "Stock vs its 200-day"),
     ("mom", "Stock's last 20 days"), ("drop5", "Stock's last 5 days"),
+    ("ath", "Stock vs its all-time high (in the data)"), ("base", "High base (last 15 days)"), ("sqz", "Daily squeeze (Bollinger inside Keltner)"),
+    ("sqz5", "Daily squeeze in the last 5 days"),
 ]
 VALUES = {
     "phase": ["bull", "sideways", "bear"], "vix": ["under 15", "15-20", "20-30", "30+"], "dial": ["normal", "caution", "alarm"],
     "spy50": ["above", "under"], "clear": ["yes", "no"], "ws": ["+2", "+1", "0", "-1", "-2"], "e21": ["above", "under"],
     "e50": ["above", "under"], "e200": ["above", "under"], "mom": ["down 5%+", "down 0-5%", "up 0-5%", "up 5%+"],
     "drop5": ["down 5%+", "down 2-5%", "flat / up"],
+    "ath": ["within 10%", "10-25% below", "25%+ below"], "base": ["breakout of the base", "in the base", "no base"],
+    "sqz": ["on", "fired today", "off"], "sqz5": ["yes", "no"],
     "prem": ["100-250K", "250K-1M", "1-5M", "5M+"], "rel": ["3x+ its median", "normal size"], "dte": ["0-7", "8-30", "31-90", "91+"],
     "mny": ["in the money", "at the money", "OTM 2-10%", "OTM 10%+"], "sweep": ["sweep", "no sweep"], "open": ["opening (vol > OI)", "vol <= OI"],
     "tod": ["before 10:30", "10:30-15:00", "last hour"], "burst": ["1", "2-4", "5+"],
@@ -63,7 +67,12 @@ VALUES = {
     "repeat": ["same contract 2x+", "different contracts"], "total": ["under 500K", "500K-2M", "2-10M", "10M+"], "mixed": ["other side too", "this side only"],
 }
 
+SEED_V = 2                                                 # new candidates are added once each time this goes up
 SEEDS = [
+    {"seed": "highBase", "v": 2, "name": "High base breakout + squeeze", "kind": "daily", "side": "long", "universe": {"list": "Main"},
+     "cond": {"base": "breakout of the base", "ath": "within 10%", "sqz5": "yes"}, "hold": 5, "stop": 0, "exitRange": True,
+     "desc": "A tight 15-day base within 10% of the all-time high, a daily squeeze in the last 5 days, today's close breaks above the base: "
+             "buy the next open, out after 5 days, or the open after a close back below the base's low."},
     {"seed": "flowSpyWeak", "name": "Flow: calls while SPY < 50-day", "kind": "flow", "side": "long", "flowSide": "call", "cond": {"spy50": "under"},
      "hold": 5, "stop": 0, "desc": "Buy the stock the open after unusual call buying (bought at the ask) while SPY is under its 50-day. Out after 5 days."},
     {"seed": "bearDip", "name": "Bear-phase dip buy", "kind": "daily", "side": "long", "universe": {"list": "__etf"}, "cond": {"phase": "bear", "drop5": "down 5%+"},
@@ -136,11 +145,13 @@ def _save_results(sub, pid, r):
 def strategies(sub):
     items = [_norm(i) for i in db.q_prefix(_pk(sub), SP)]
     have = {s.get("seed") for s in items}
-    if not db.get(_pk(sub), "PIPESEEDED"):            # the candidates found so far, once
+    sd = db.get(_pk(sub), "PIPESEEDED")
+    v0 = int((sd or {}).get("v") or (1 if sd else 0))
+    if v0 < SEED_V:                                    # the candidates found so far, each added once
         for x in SEEDS:
-            if x["seed"] not in have:
+            if x["seed"] not in have and int(x.get("v") or 1) > v0:
                 items.append(create(sub, x, seed=True))
-        db.put({"PK": _pk(sub), "SK": "PIPESEEDED", "at": iso(now_ny())})
+        db.put({"PK": _pk(sub), "SK": "PIPESEEDED", "at": iso(now_ny()), "v": SEED_V})
     return sorted(items, key=lambda s: s.get("createdAt") or "")
 
 
@@ -158,6 +169,7 @@ def create(sub, b, seed=False):
          "cond": cond, "universe": _universe(b.get("universe")) if kind == "daily" else {"list": "__watch"},
          "hold": int(_clip(b.get("hold"), 1, 60, 5)), "stop": float(_clip(b.get("stop"), 0, 10, 0)),
          "allocPct": float(_clip(b.get("allocPct"), 1, 50, 10)), "maxPos": int(_clip(b.get("maxPos"), 1, 30, 5)),
+         "exitRange": bool(b.get("exitRange")) and kind == "daily",
          "stage": "research", "account": None, "createdAt": iso(now_ny()), "history": [{"at": iso(now_ny()), "what": "created"}]}
     if seed:
         s["seed"] = b["seed"]
@@ -203,11 +215,12 @@ def describe(s):
     c = " and ".join(f"{names.get(k, k)} = {v}" for k, v in (s.get("cond") or {}).items())
     who = f"unusual {s.get('flowSide', 'call')} buying" if s["kind"] == "flow" else "signal"
     return (f"{'Short' if s['side'] == 'short' else 'Buy'} the next open after {who}" + (f" when {c}" if c else "") +
-            f"; out at the open {s['hold']} trading days later" + (f", stop {s['stop']:g} x ATR" if s.get("stop") else ", no stop"))
+            f"; out at the open {s['hold']} trading days later" + (f", stop {s['stop']:g} x ATR" if s.get("stop") else ", no stop") +
+            (" or the open after a close below the base's low" if s.get("exitRange") else ""))
 
 
 # ---------------------------------------------------------------- the trade (exactly how paper trades it)
-def trade(A, i, d, hold, stop, cost_bp):
+def trade(A, i, d, hold, stop, cost_bp, lvl=None):
     """Signal known at day i's close. Buy (d=1) / short (d=-1) at the open of i+1, out at the open of i+1+hold,
     or at the stop (k x ATR of day i, checked on the daily lows / highs while held). % net of the cost."""
     r, atr = A["r"], A["atr"]
@@ -226,7 +239,14 @@ def trade(A, i, d, hold, stop, cost_bp):
         if st is not None and ((d > 0 and l <= st) or (d < 0 and h >= st)):
             ex = st if k == j0 else (min(o, st) if d > 0 else max(o, st))
             return d * (ex / px - 1) * 100 - cost_bp / 100, k
+        if lvl and k + 1 < jx and r[k + 1] and ((d > 0 and r[k][3] < lvl) or (d < 0 and r[k][3] > lvl)):   # closed back in / below the range
+            return d * (r[k + 1][0] / px - 1) * 100 - cost_bp / 100, k + 1
     return d * (r[jx][0] / px - 1) * 100 - cost_bp / 100, jx
+
+
+def _tr(s, A, r, d, hold, stop, cost_bp):
+    """The strategy's trade of one signal row (with its range exit when the strategy has one)."""
+    return trade(A, r["i"], d, hold, stop, cost_bp, r.get("lvl") if s.get("exitRange") else None)
 
 
 def _agg(xs):
@@ -280,7 +300,54 @@ def _stock_f(A, ctx, i, ws):
     f["mom"] = uoa._bucket(None if m is None else m * 100, (-5, 0, 5), ("down 5%+", "down 0-5%", "up 0-5%", "up 5%+"))
     m5 = c / A["c"][i - 5] - 1 if i >= 5 and c and A["c"][i - 5] else None
     f["drop5"] = None if m5 is None else ("down 5%+" if m5 <= -0.05 else "down 2-5%" if m5 <= -0.02 else "flat / up")
+    if "ath" in ctx:
+        hi = ctx["ath"][i]
+        f["ath"] = None if not hi or c is None else ("within 10%" if c >= hi * 0.9 else "10-25% below" if c >= hi * 0.75 else "25%+ below")
+        bh, bl = ctx["bh"][i], ctx["bl"][i]
+        if bh is None or c is None:
+            f["base"] = None
+        elif (bh - bl) / bh <= BASE_RANGE:
+            f["base"] = "breakout of the base" if c > bh else "in the base"
+        else:
+            f["base"] = "no base"
+        sq = ctx["sq"]
+        f["sqz"] = None if sq[i] is None else "on" if sq[i] else "fired today" if i and sq[i - 1] else "off"
+        f["sqz5"] = None if sq[i] is None else ("yes" if any(sq[j] for j in range(max(0, i - 4), i + 1)) else "no")
     return f
+
+
+BASE_N, BASE_RANGE = 15, 0.15                          # a base: the 15 days before, high-to-low range at most 15% of the high
+
+
+def _stock_ctx(A, clf):
+    """Per ticker, once: EMA 200, the running high, the base before each day, the daily squeeze."""
+    import macro
+    r, c = A["r"], A["c"]
+    n = len(c)
+    ctx = {"e200": macro.ema(clf, 200)}
+    ath, hi = [], None
+    for i in range(n):
+        if r[i]:
+            hi = r[i][1] if hi is None else max(hi, r[i][1])
+        ath.append(hi)
+    ctx["ath"] = ath
+    bh, bl = [None] * n, [None] * n
+    for i in range(BASE_N, n):
+        w = [x for x in r[i - BASE_N:i] if x]
+        if len(w) >= BASE_N - 2:
+            bh[i], bl[i] = max(x[1] for x in w), min(x[2] for x in w)
+    ctx["bh"], ctx["bl"] = bh, bl
+    e20 = macro.ema(clf, 20)
+    sq = [None] * n
+    for i in range(20, n):                              # Bollinger (20, 2 sd) inside Keltner (EMA 20 +- 1.5 x ATR)
+        xs = [x for x in clf[i - 19:i + 1] if x is not None]
+        if len(xs) < 18 or e20[i] is None or not A["atr"][i]:
+            continue
+        m = sum(xs) / len(xs)
+        sd = math.sqrt(sum((x - m) ** 2 for x in xs) / len(xs))
+        sq[i] = (m + 2 * sd) < (e20[i] + 1.5 * A["atr"][i]) and (m - 2 * sd) > (e20[i] - 1.5 * A["atr"][i])
+    ctx["sq"] = sq
+    return ctx
 
 
 def _universe_tickers(sub, s):
@@ -348,7 +415,7 @@ def build(sub, s, prog=None):
     for t in tick:
         A = X["A"][t]
         clf = macro.align({d: v[3] for d, v in data[t].items()}, days)
-        ctx = {"e200": macro.ema(clf, 200)}
+        ctx = _stock_ctx(A, clf)
         ctxs[t] = ctx
         nxt = 0
         for i in range(200, len(days)):
@@ -356,7 +423,7 @@ def build(sub, s, prog=None):
                 continue
             f = {**_mkt_f(ctx0, X, i), **_stock_f(A, ctx, i, X["w"].get(t))}
             if all(f.get(k) == v for k, v in s["cond"].items()):
-                rows.append({"s": t, "d": days[i], "i": i, "f": f, "cell": _cell(ctx0, i)})
+                rows.append({"s": t, "d": days[i], "i": i, "f": f, "cell": _cell(ctx0, i), "lvl": ctx["bl"][i]})
                 nxt = i + s["hold"] + 1                 # one position per ticker at a time, like paper
     rows.sort(key=lambda r: r["d"])
     return {"rows": rows, "X": X, "days": days, "ctx0": ctx0, "tick": tick, "data": data, "names": dict(DAILY_FACTORS),
@@ -455,7 +522,7 @@ def step_study(sub, s, prog):
         P = {"train": [], "test": [], "all": []}
         V = {"train": [], "test": [], "all": []}
         for r in rows:
-            x = trade(X["A"][r["s"]], r["i"], d, h, 0, COST_BP)
+            x = _tr(s, X["A"][r["s"]], r, d, h, 0, COST_BP)
             if x is None:
                 continue
             sx = trade(spyA, r["i"], d, h, 0, 0)
@@ -478,7 +545,7 @@ def step_study(sub, s, prog):
             for r in rows:
                 if r["cell"] != ck:
                     continue
-                x = trade(X["A"][r["s"]], r["i"], d, hold, stop, COST_BP)
+                x = _tr(s, X["A"][r["s"]], r, d, hold, stop, COST_BP)
                 if x is not None:
                     (tr if r["d"] < cut else te).append(x[0])
             a_tr, a_te = _agg(tr), _agg(te)
@@ -500,7 +567,7 @@ def step_study(sub, s, prog):
             v = r["f"].get(fk)
             if v is None:
                 continue
-            x = trade(X["A"][r["s"]], r["i"], d, hold, stop, COST_BP)
+            x = _tr(s, X["A"][r["s"]], r, d, hold, stop, COST_BP)
             if x is None:
                 continue
             vals.setdefault(v, {"train": [], "test": []})["train" if r["d"] < cut else "test"].append(x[0])
@@ -536,7 +603,7 @@ def step_validate(sub, s, prog):
         for stop in sorted(set(STOPS) | {s["stop"]}):
             tr, te = [], []
             for r in rows:
-                x = trade(X["A"][r["s"]], r["i"], d, hold, stop, COST_BP)
+                x = _tr(s, X["A"][r["s"]], r, d, hold, stop, COST_BP)
                 if x is not None:
                     (tr if r["d"] < cut else te).append(x[0])
             btr, bte, _ = _baseline(B, s, hold, stop, COST_BP, cut, cache)
@@ -546,7 +613,7 @@ def step_validate(sub, s, prog):
     prog("costs, months, tickers, drawdown")
     trades, te_x = [], []
     for r in rows:
-        x = trade(X["A"][r["s"]], r["i"], d, s["hold"], s["stop"], COST_BP)
+        x = _tr(s, X["A"][r["s"]], r, d, s["hold"], s["stop"], COST_BP)
         if x is None:
             continue
         trades.append({"s": r["s"], "d": r["d"], "in": B["days"][r["i"] + 1], "out": B["days"][x[1]], "pct": round(x[0], 2), "cell": r["cell"],
@@ -665,8 +732,8 @@ def step_improve(sub, s, res):
             continue
         b = {"name": str(x.get("name") or "")[:60] or s["name"] + " v2", "kind": s["kind"], "side": s["side"], "flowSide": s.get("flowSide"),
              "universe": s.get("universe"), "cond": cond, "hold": x.get("hold") or s["hold"], "stop": x.get("stop") if x.get("stop") is not None else s["stop"],
-             "desc": str(x.get("why") or "")[:400], "allocPct": s["allocPct"], "maxPos": s["maxPos"]}
-        tmp = {**b, "hold": int(_clip(b["hold"], 1, 60, 5)), "stop": float(_clip(b["stop"], 0, 10, 0)), "universe": _universe(b["universe"]) if s["kind"] == "daily" else {"list": "__watch"}}
+             "desc": str(x.get("why") or "")[:400], "allocPct": s["allocPct"], "maxPos": s["maxPos"], "exitRange": s.get("exitRange")}
+        tmp = {**b, "exitRange": bool(b.get("exitRange")) and s["kind"] == "daily", "hold": int(_clip(b["hold"], 1, 60, 5)), "stop": float(_clip(b["stop"], 0, 10, 0)), "universe": _universe(b["universe"]) if s["kind"] == "daily" else {"list": "__watch"}}
         if _cfg_key(tmp) in have:
             continue
         n = create(sub, b)
@@ -709,7 +776,8 @@ def _data_key(s):
 
 
 def _cfg_key(s):
-    return json.dumps([s["kind"], s["side"], s.get("flowSide"), s["cond"], s.get("universe"), s["hold"], s["stop"]], sort_keys=True)
+    k = [s["kind"], s["side"], s.get("flowSide"), s["cond"], s.get("universe"), s["hold"], s["stop"]]
+    return json.dumps(k + (["range"] if s.get("exitRange") else []), sort_keys=True)
 
 
 def run_start(sub, pid, step):
@@ -890,6 +958,8 @@ def action(sub, pid, b):
                 s[k] = type(s[k])(_clip(b[k], lo, hi, s[k]))
         if b.get("side") in ("long", "short"):
             s["side"] = b["side"]
+        if "exitRange" in b and s["kind"] == "daily":
+            s["exitRange"] = bool(b["exitRange"])
         if b.get("flowSide") in ("call", "put"):
             s["flowSide"] = b["flowSide"]
         if b.get("universe") is not None and s["kind"] == "daily":
@@ -1155,17 +1225,20 @@ def _tick_one(sub, s, mk, today=None):
                     db.put({**key, **p})
                     continue
             j0 = days.index(p["fillDay"]) if p.get("fillDay") in days else None
-            if j0 is not None and ti - j0 >= s["hold"] - 1:
+            A_ = X["A"].get(p["symbol"])
+            back = bool(s.get("exitRange") and p.get("lvl") and A_ and A_["c"][ti] and j0 is not None and ti >= j0 and
+                        ((d > 0 and A_["c"][ti] < float(p["lvl"])) or (d < 0 and A_["c"][ti] > float(p["lvl"]))))
+            if back or (j0 is not None and ti - j0 >= s["hold"] - 1):
                 if p.get("stopOrderId"):
                     _alp(c, "DELETE", f"/v2/orders/{p['stopOrderId']}")
                 eo = _alp(c, "POST", "/v2/orders", {"symbol": p["symbol"], "qty": str(p["qty"]), "side": "sell" if d > 0 else "buy", "type": "market",
                                                      "time_in_force": "opg", "client_order_id": f"pp-{s['id']}-{p['symbol']}-{p['signalDay']}-x"})
-                p.update(status="exiting", exitOrderId=(eo or {}).get("id"), exitSent=today)
-                out["actions"].append(f"{p['symbol']}: exit at the next open (held {s['hold']} days)")
+                p.update(status="exiting", exitOrderId=(eo or {}).get("id"), exitSent=today, exitWhyNext="range" if back else "time")
+                out["actions"].append(f"{p['symbol']}: exit at the next open " + ("(closed below the base)" if back else f"(held {s['hold']} days)"))
         elif st == "exiting":
             o = _alp(c, "GET", f"/v2/orders/{p['exitOrderId']}") or {}
             if o.get("status") == "filled":
-                _close(p, float(o["filled_avg_price"]), (o.get("filled_at") or today)[:10], d, "time")
+                _close(p, float(o["filled_avg_price"]), (o.get("filled_at") or today)[:10], d, p.get("exitWhyNext") or "time")
                 out["actions"].append(f"{p['symbol']}: closed {p['exitPrice']} ({p['pct']:+.2f}%)")
         db.put({**key, **p})
     res = results(sub, s["id"])                        # 2. kill switch
@@ -1213,7 +1286,7 @@ def _tick_one(sub, s, mk, today=None):
                     o = _alp(c, "POST", "/v2/orders", {"symbol": r["s"], "qty": str(qty), "side": "buy" if d > 0 else "sell", "type": "market",
                                                         "time_in_force": "opg", "client_order_id": f"pp-{s['id']}-{r['s']}-{today}"})
                     db.put({"PK": _pk(sub), "SK": f"{POS}{s['id']}#{today}#{r['s']}", "symbol": r["s"], "signalDay": today, "side": s["side"],
-                            "qty": qty, "status": "pending", "orderId": (o or {}).get("id"), "cell": cell, "at": iso(now_ny())})
+                            "qty": qty, "status": "pending", "orderId": (o or {}).get("id"), "cell": cell, "at": iso(now_ny()), "lvl": r.get("lvl")})
                     room -= 1
                     held.add(r["s"])
                     act = f"order: {'buy' if d > 0 else 'short'} {qty} at the next open"
@@ -1239,7 +1312,7 @@ def _today_rows(B, s, ti):
             continue
         f = {**_mkt_f(ctx0, X, ti), **_stock_f(A, B["ctxs"][t], ti, X["w"].get(t))}
         if all(f.get(k) == v for k, v in s["cond"].items()):
-            rows.append({"s": t, "d": B["days"][ti], "i": ti, "f": f})
+            rows.append({"s": t, "d": B["days"][ti], "i": ti, "f": f, "lvl": B["ctxs"][t]["bl"][ti]})
     return rows
 
 
