@@ -6809,13 +6809,22 @@ def test_strategy_pipeline():
         db_ = __import__("db")                         # an older store (version 1): only the newer candidates are added
         db_.put({"PK": db_.upk("pp0"), "SK": "PIPESEEDED", "at": "x"})
         assert [s["seed"] for s in pipeline.strategies("pp0")] == ["highBase"] and len(pipeline.strategies("pp0")) == 1
+        hb = pipeline.strategies("pp0")[0]
+        assert hb["cond"]["hi52"] == "within 10%" and "ath" not in hb["cond"]
+        pipeline._save("pp0", {**hb, "cond": {"base": "breakout of the base", "ath": "within 10%", "sqz5": "yes"}})   # stored before: migrated
+        assert pipeline.strategies("pp0")[0]["cond"] == {"base": "breakout of the base", "sqz5": "yes", "hi52": "within 10%"}
         # high base: a tight 15-day base near the high, a squeeze, the breakout; the range exit
         rows_ = [(100, 101, 99, 100, 0)] * 30 + [(100, 100.6, 99.6, 100.1, 0)] * 15 + [(100.2, 104, 100, 103.5, 0), (103.6, 104, 103, 103.8, 0),
                  (103.8, 104, 98, 98.5, 0), (98, 99, 97, 98, 0), (98, 99, 97, 98, 0)] + [(98, 99, 97, 98, 0)] * 10
         A_ = {"r": rows_, "c": [x[3] for x in rows_], "e21": [None] * len(rows_), "e50": [None] * len(rows_), "atr": [1.0] * len(rows_)}
         cx = pipeline._stock_ctx(A_, A_["c"])
         f45 = pipeline._stock_f(A_, cx, 45, None)
-        assert f45["base"] == "breakout of the base" and f45["ath"] == "within 10%" and f45["sqz5"] == "yes"
+        assert f45["base"] == "breakout of the base" and f45["ath"] == "within 10%" and f45["sqz5"] == "yes" and f45["hi52"] is None   # < 200 days: no 52-week high yet
+        rows2 = [(200, 201, 199, 200, 0)] * 10 + [(100, 101, 99, 100, 0)] * 300
+        A2 = {"r": rows2, "c": [x[3] for x in rows2], "e21": [None] * 310, "e50": [None] * 310, "atr": [1.0] * 310}
+        c2 = pipeline._stock_ctx(A2, A2["c"])
+        f2 = pipeline._stock_f(A2, c2, 300, None)
+        assert f2["hi52"] == "within 10%" and f2["ath"] == "25%+ below"   # the old 201 high is out of the last 252 days
         assert abs(cx["bl"][45] - 99.6) < 1e-9
         xr = pipeline.trade(A_, 45, 1, 5, 0, 0, lvl=cx["bl"][45])          # in at 103.6, closes 98.5 < 99.6 -> out the next open 98
         assert xr[1] == 48 and abs(xr[0] - (98 / 103.6 - 1) * 100) < 1e-9

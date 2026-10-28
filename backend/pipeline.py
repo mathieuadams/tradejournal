@@ -50,7 +50,7 @@ DAILY_FACTORS = [
     ("phase", "Market phase (SPY trend)"), ("vix", "VIX"), ("dial", "Risk dial"), ("spy50", "SPY vs its 50-day"), ("clear", "VIX all-clear day"),
     ("ws", "Stock's weekly EMA score"), ("e21", "Stock vs its 21-day"), ("e50", "Stock vs its 50-day"), ("e200", "Stock vs its 200-day"),
     ("mom", "Stock's last 20 days"), ("drop5", "Stock's last 5 days"),
-    ("ath", "Stock vs its all-time high (in the data)"), ("base", "High base (last 15 days)"), ("sqz", "Daily squeeze (Bollinger inside Keltner)"),
+    ("hi52", "Stock vs its 52-week high"), ("ath", "Stock vs its all-time high (in the data)"), ("base", "High base (last 15 days)"), ("sqz", "Daily squeeze (Bollinger inside Keltner)"),
     ("sqz5", "Daily squeeze in the last 5 days"),
 ]
 VALUES = {
@@ -58,7 +58,7 @@ VALUES = {
     "spy50": ["above", "under"], "clear": ["yes", "no"], "ws": ["+2", "+1", "0", "-1", "-2"], "e21": ["above", "under"],
     "e50": ["above", "under"], "e200": ["above", "under"], "mom": ["down 5%+", "down 0-5%", "up 0-5%", "up 5%+"],
     "drop5": ["down 5%+", "down 2-5%", "flat / up"],
-    "ath": ["within 10%", "10-25% below", "25%+ below"], "base": ["breakout of the base", "in the base", "no base"],
+    "ath": ["within 10%", "10-25% below", "25%+ below"], "hi52": ["within 10%", "10-25% below", "25%+ below"], "base": ["breakout of the base", "in the base", "no base"],
     "sqz": ["on", "fired today", "off"], "sqz5": ["yes", "no"],
     "prem": ["100-250K", "250K-1M", "1-5M", "5M+"], "rel": ["3x+ its median", "normal size"], "dte": ["0-7", "8-30", "31-90", "91+"],
     "mny": ["in the money", "at the money", "OTM 2-10%", "OTM 10%+"], "sweep": ["sweep", "no sweep"], "open": ["opening (vol > OI)", "vol <= OI"],
@@ -70,8 +70,8 @@ VALUES = {
 SEED_V = 2                                                 # new candidates are added once each time this goes up
 SEEDS = [
     {"seed": "highBase", "v": 2, "name": "High base breakout + squeeze", "kind": "daily", "side": "long", "universe": {"list": "Main"},
-     "cond": {"base": "breakout of the base", "ath": "within 10%", "sqz5": "yes"}, "hold": 5, "stop": 0, "exitRange": True,
-     "desc": "A tight 15-day base within 10% of the all-time high, a daily squeeze in the last 5 days, today's close breaks above the base: "
+     "cond": {"base": "breakout of the base", "hi52": "within 10%", "sqz5": "yes"}, "hold": 5, "stop": 0, "exitRange": True,
+     "desc": "A tight 15-day base within 10% of the 52-week high, a daily squeeze in the last 5 days, today's close breaks above the base: "
              "buy the next open, out after 5 days, or the open after a close back below the base's low."},
     {"seed": "flowSpyWeak", "name": "Flow: calls while SPY < 50-day", "kind": "flow", "side": "long", "flowSide": "call", "cond": {"spy50": "under"},
      "hold": 5, "stop": 0, "desc": "Buy the stock the open after unusual call buying (bought at the ask) while SPY is under its 50-day. Out after 5 days."},
@@ -145,6 +145,12 @@ def _save_results(sub, pid, r):
 def strategies(sub):
     items = [_norm(i) for i in db.q_prefix(_pk(sub), SP)]
     have = {s.get("seed") for s in items}
+    for x in items:
+        if x.get("seed") == "highBase" and x.get("stage") == "research" and x.get("cond", {}).get("ath") == "within 10%" and "hi52" not in x["cond"]:
+            x["cond"] = {**{k: v for k, v in x["cond"].items() if k != "ath"}, "hi52": "within 10%"}
+            x["desc"] = x.get("desc", "").replace("all-time high", "52-week high")
+            x.setdefault("history", []).append({"at": iso(now_ny()), "what": "rule changed: near the 52-week high (not the all-time high)"})
+            _save(sub, x)
     sd = db.get(_pk(sub), "PIPESEEDED")
     v0 = int((sd or {}).get("v") or (1 if sd else 0))
     if v0 < SEED_V:                                    # the candidates found so far, each added once
@@ -303,6 +309,8 @@ def _stock_f(A, ctx, i, ws):
     if "ath" in ctx:
         hi = ctx["ath"][i]
         f["ath"] = None if not hi or c is None else ("within 10%" if c >= hi * 0.9 else "10-25% below" if c >= hi * 0.75 else "25%+ below")
+        h52 = ctx["hi52"][i]
+        f["hi52"] = None if not h52 or c is None else ("within 10%" if c >= h52 * 0.9 else "10-25% below" if c >= h52 * 0.75 else "25%+ below")
         bh, bl = ctx["bh"][i], ctx["bl"][i]
         if bh is None or c is None:
             f["base"] = None
@@ -331,6 +339,17 @@ def _stock_ctx(A, clf):
             hi = r[i][1] if hi is None else max(hi, r[i][1])
         ath.append(hi)
     ctx["ath"] = ath
+    from collections import deque
+    h52, dq = [None] * n, deque()                       # the highest high of the last 252 trading days (sliding max)
+    for i in range(n):
+        if r[i]:
+            while dq and dq[-1][1] <= r[i][1]:
+                dq.pop()
+            dq.append((i, r[i][1]))
+        while dq and dq[0][0] <= i - 252:
+            dq.popleft()
+        h52[i] = dq[0][1] if dq and i >= 200 else None
+    ctx["hi52"] = h52
     bh, bl = [None] * n, [None] * n
     for i in range(BASE_N, n):
         w = [x for x in r[i - BASE_N:i] if x]
