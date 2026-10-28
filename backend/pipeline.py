@@ -67,8 +67,11 @@ VALUES = {
     "repeat": ["same contract 2x+", "different contracts"], "total": ["under 500K", "500K-2M", "2-10M", "10M+"], "mixed": ["other side too", "this side only"],
 }
 
-SEED_V = 4                                                 # new candidates are added once each time this goes up
+SEED_V = 5                                                 # new candidates are added once each time this goes up
 SEEDS = [
+    {"seed": "orbfvg", "v": 5, "name": "Opening range breakout + FVG retest (3:1)", "kind": "intraday",
+     "ip": {"setup": "orbfvg", "tickers": ["QQQ", "SPY"], "rangeMin": 5, "tgtR": 3, "fvgWin": 5, "confWin": 10, "lastEntry": "11:30", "side": "both", "days": 250},
+     "desc": "The 09:30 5-minute range, a 1-minute close outside it leaving a fair value gap, the retest of the gap and an engulfing candle the breakout's way: enter, stop beyond the retest, 3R target."},
     {"seed": "retest", "v": 4, "name": "Breakout retest (resistance turned support)", "kind": "intraday",
      "ip": {"setup": "retest", "tf": 60, "lookback": 20, "window": 10, "tol": 0.5, "ema": "either", "tgtR": 2, "hold": 5, "days": 250, "list": "Main"},
      "desc": "A close above the 20-day high, a pullback to that level and the 10 / 20-day EMA within 10 days, a bullish reversal 1-hour candle there: buy, stop under its low, 2R target."},
@@ -200,9 +203,10 @@ def _ip(p):
 
 def _imod(p):
     """The intraday set-up's engine: range50 (50% range retrace) or retest (breakout retest)."""
+    import orb
     import range50
     import retest
-    return retest if (p or {}).get("setup") == "retest" else range50
+    return {"retest": retest, "orbfvg": orb}.get((p or {}).get("setup"), range50)
 
 
 def _clip(v, lo, hi, dflt):
@@ -242,9 +246,10 @@ INTRA_FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("s", "Ticker")
 
 def factor_names(kind):
     if kind == "intraday":
+        import orb
         import range50
         import retest
-        return {**dict(range50.FACTORS), **dict(retest.FACTORS)}
+        return {**dict(range50.FACTORS), **dict(retest.FACTORS), **dict(orb.FACTORS)}
     return dict(DAILY_FACTORS if kind == "daily" else _flow_factors())
 
 
@@ -1452,7 +1457,7 @@ def intra_data(sub, s, prog):
     M = _imod(p)
     cov = M.coverage(sub, p, prog)
     want = M.tickers(sub, p)
-    src = (f"Alpaca {p['tf']}-minute candles, regular hours (QQQ stands in for NQ: no futures on Alpaca)" if p.get("setup") != "retest" else
+    src = (f"Alpaca {p.get('tf', 1)}-minute candles, regular hours (QQQ stands in for NQ: no futures on Alpaca)" if p.get("setup") != "retest" else
            f"Daily candles (Yahoo) for the breakout levels + Alpaca 15-minute candles{' (made into 1-hour candles from 09:30)' if p['tf'] == 60 else ''}")
     return {"at": iso(now_ny()), "kind": "intraday", "source": src, "tickers": len(cov), "coverage": cov, "days": max([c["days"] for c in cov] or [0]),
             "first": min([c["from"] for c in cov] or [""]), "last": max([c["to"] for c in cov] or [""]),
@@ -1579,7 +1584,8 @@ def intra_validate(sub, s, prog):
     return {"at": iso(now_ny()), "hold": p[rk], "stop": p[ck_], "grid": grid, "costs": costs, "months": mlist, "tickers": tick,
             "top1Share": None, "top3Months": top3, "trades": len(tr), "chosen": ch, "testDD": dd_te, "allDD": _dd([_net(x, COST_I) for x in tr]),
             "gates": gates, "passed": all(g["ok"] for g in gates if g["hard"]), "equity": eq[-400:], "split": {"cut": cut}, "cells": cells,
-            "holds": legs, "stops": stops, "costBp": COST_I, "gridRow": f"{'Leg' if rk == 'legPct' else 'Target'} \\ {'stop' if ck_ == 'stopBuf' else 'EMA'}",
+            "holds": legs, "stops": stops, "costBp": COST_I,
+            "gridRow": f"{'Leg' if rk == 'legPct' else 'Target'} \\ {'stop' if ck_ == 'stopBuf' else 'EMA' if ck_ == 'ema' else 'opening range'}",
             "rowNames": {str(v): f"{v:g}{runit}" for v in legs}, "colNames": {str(v): M.COL_NAMES.get(v, str(v)) for v in stops},
             "rTest": ch.get("rTest"), "intraday": True, "ruleText": M.describe(p),
             "_trades": [{"s": x["s"], "in": x["d"], "out": (x.get("out") or x["d"])[:10], "pct": round(_net(x, COST_I), 3)} for x in tr]}

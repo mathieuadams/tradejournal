@@ -6808,7 +6808,7 @@ def test_strategy_pipeline():
         assert len(pipeline.overview("pp1")["strategies"]) == len(pipeline.SEEDS)   # seeded once
         db_ = __import__("db")                         # an older store (version 1): only the newer candidates are added
         db_.put({"PK": db_.upk("pp0"), "SK": "PIPESEEDED", "at": "x"})
-        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "range50", "retest"] and len(pipeline.strategies("pp0")) == 3
+        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "orbfvg", "range50", "retest"] and len(pipeline.strategies("pp0")) == 4
         hb = next(x for x in pipeline.strategies("pp0") if x["seed"] == "highBase")
         assert hb["cond"]["hi52"] == "within 10%" and "ath" not in hb["cond"]
         pipeline._save("pp0", {**hb, "cond": {"base": "breakout of the base", "ath": "within 10%", "sqz5": "yes"}})   # stored before: migrated
@@ -7116,6 +7116,57 @@ def test_breakout_retest():
         assert v["intraday"] and len(v["grid"]) == 3 * 4 and v["colNames"]["off"] == "no EMA" and v["rowNames"]["2.0"] == "2R target"
     finally:
         plab._bars, alpaca.bars, daytrade.data_creds, __import__("wallwatch").config = saved
+
+
+def test_orb_fvg():
+    """Opening range breakout + FVG retest + engulfing: the 5-minute range, a close outside it leaving a gap, the retest
+    of the gap, an engulfing the breakout's way, stop beyond the retest, 3R; the long side is the mirror."""
+    import random, datetime as dt, orb, pipeline, daytrade, plab, range50
+    rows = [(100, 101, 99.5, 100.5)] * 5 + [            # 09:30-09:34: range 99.5-101
+        (100.5, 100.6, 99.4, 99.45),                    # 09:35 close under the range (the breakout)
+        (99.45, 99.5, 98.6, 98.7),                      # 09:36
+        (98.7, 98.8, 98.0, 98.1),                       # 09:37 high 98.8 < 99.4 (the 09:35 low): a gap 98.8-99.4
+        (98.1, 98.3, 97.9, 98.2),
+        (98.2, 98.9, 98.15, 98.85),                     # 09:39 back into the gap (high 98.9 >= 98.8), bullish
+        (98.85, 98.95, 98.0, 98.1),                     # 09:40 bearish engulfing (open >= prev close, close <= prev open)
+        (98.1, 98.2, 97.9, 98.0)] + [(98.0, 98.1, 95.0, 95.2)] * 5 + [(95.2, 95.3, 95.1, 95.2)] * 60
+    B = [(f"2026-01-02T{(570 + i) // 60:02d}:{(570 + i) % 60:02d}", *r) for i, r in enumerate(rows)]
+    p = orb.clean({"side": "both"})
+    tr = orb.setups(B, p)
+    assert len(tr) == 1 and tr[0]["side"] == "short" and tr[0]["in"].endswith("09:41") and tr[0]["e"] == 98.1
+    assert tr[0]["stop"] == 98.95 and tr[0]["why"] == "target" and abs(tr[0]["r"] - 3) < 1e-9
+    M = [(t_, -o + 200, -l + 200, -h + 200, -c + 200) for t_, o, h, l, c in B]      # the mirror: a long
+    tl = orb.setups(M, p)
+    assert len(tl) == 1 and tl[0]["side"] == "long" and abs(tl[0]["e"] - 101.9) < 1e-9 and abs(tl[0]["r"] - 3) < 1e-9
+    assert orb.setups(B, {**p, "lastEntry": "09:38"}) == []
+    days = []
+    d = dt.date.today() - dt.timedelta(days=100)
+    while d < dt.date.today():
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def mb(sub, sym, n, now=None, feed=None):
+        r, px, out = random.Random(sym + "o"), 500.0, []
+        for dd in days:
+            for m in range(9 * 60 + 30, 16 * 60):
+                o = px
+                px *= 1 + r.gauss(0, 0.0012)
+                out.append({"t": f"{dd}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, px) * 1.0003, "l": min(o, px) * 0.9997, "c": px, "v": 1})
+        return out
+    saved = (daytrade.minute_bars, plab._bars)
+    try:
+        daytrade.minute_bars = mb
+        range50._CACHE.clear()
+        plab._bars = lambda s_, y: {}
+        s = pipeline.create("ob1", {"name": "ORB", "kind": "intraday", "ip": {"setup": "orbfvg", "tickers": "QQQ SPY", "days": 60}})
+        assert s["ip"]["setup"] == "orbfvg" and "fair value gap" in pipeline.describe(s)
+        st = pipeline.step_study("ob1", s, lambda m: None)
+        assert st.get("events", 0) > 10, st
+        assert set(st["sum"]) == {"2", "3", "4"} and st["ruleRow"] == "3"
+        v = pipeline.step_validate("ob1", s, lambda m: None)
+        assert len(v["grid"]) == 3 * 3 and v["colNames"]["15"] == "15-min range" and "opening range" in v["gridRow"]
+    finally:
+        daytrade.minute_bars, plab._bars = saved
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
