@@ -449,10 +449,11 @@ def build(sub, s, prog=None):
             "first": days[200] if len(days) > 200 else days[0], "ctxs": ctxs}
 
 
-def _baseline(B, s, hold, stop, cost_bp, cut, cache):
-    """Every ticker, every 4th day, where the MARKET conditions of the rule hold: same trade."""
+def _baseline(B, s, hold, stop, cost_bp, cut, cache, cells=None):
+    """Every ticker, every 4th day, where the MARKET conditions of the rule hold (and, given cells, only in those
+    market cells): same trade."""
     mk = {k: v for k, v in s["cond"].items() if k in MARKET_KEYS}
-    key = (hold, stop, cost_bp)
+    key = (hold, stop, cost_bp, tuple(sorted(cells or [])))
     if key in cache:
         return cache[key]
     X, days, ctx0 = B["X"], B["days"], B["ctx0"]
@@ -466,6 +467,8 @@ def _baseline(B, s, hold, stop, cost_bp, cut, cache):
             if days[i] < B["first"] or A["c"][i] is None:
                 continue
             if mk and not all(_mkt_f(ctx0, X, i).get(k) == v for k, v in mk.items()):
+                continue
+            if cells and _cell(ctx0, i) not in cells:
                 continue
             x = trade(A, i, d, hold, stop, cost_bp)
             if x is None:
@@ -613,7 +616,12 @@ def step_validate(sub, s, prog):
     rows, X = B["rows"], B["X"]
     if len(rows) < 2:
         return {"at": iso(now_ny()), "error": "Not enough signals to validate.", "gates": [], "passed": False}
-    cut = rows[int(len(rows) * TRAIN)]["d"]
+    cut = rows[int(len(rows) * TRAIN)]["d"]                 # the same split as the study
+    cells = sorted(s.get("cells") or [])
+    if cells:                                          # validated as it will trade: only in the ticked market cells
+        rows = [r for r in rows if r.get("cell") in cells]
+        if len(rows) < 2:
+            return {"at": iso(now_ny()), "error": "Not enough signals in the ticked market conditions.", "gates": [], "passed": False, "cells": cells}
     d = -1 if s["side"] == "short" else 1
     cache = {}
     prog(f"{len(rows)} signals: hold x stop grid vs the baseline")
@@ -625,7 +633,7 @@ def step_validate(sub, s, prog):
                 x = _tr(s, X["A"][r["s"]], r, d, hold, stop, COST_BP)
                 if x is not None:
                     (tr if r["d"] < cut else te).append(x[0])
-            btr, bte, _ = _baseline(B, s, hold, stop, COST_BP, cut, cache)
+            btr, bte, _ = _baseline(B, s, hold, stop, COST_BP, cut, cache, cells)
             a_tr, a_te = _agg(tr), _agg(te)
             grid.append({"hold": hold, "stop": stop, "train": a_tr, "test": a_te, "baseTrain": btr, "baseTest": bte,
                          "edgeTrain": _edge(a_tr, btr), "edgeTest": _edge(a_te, bte), "chosen": hold == s["hold"] and stop == s["stop"]})
@@ -673,7 +681,7 @@ def step_validate(sub, s, prog):
     return {"at": iso(now_ny()), "hold": s["hold"], "stop": s["stop"], "grid": grid, "costs": costs, "months": mlist, "tickers": tick[:15],
             "top1Share": top1, "top3Months": top3, "trades": len(trades), "chosen": ch, "testDD": dd_te, "allDD": _dd([t["pct"] for t in trades]),
             "gates": gates, "passed": all(g["ok"] for g in gates if g["hard"]), "equity": eq[-400:], "split": {"cut": cut},
-            "holds": sorted(set(HOLDS) | {s["hold"]}), "stops": sorted(set(STOPS) | {s["stop"]}), "costBp": COST_BP,
+            "cells": cells, "holds": sorted(set(HOLDS) | {s["hold"]}), "stops": sorted(set(STOPS) | {s["stop"]}), "costBp": COST_BP,
             "_trades": trades}
 
 
@@ -781,7 +789,7 @@ def protocol(sub, s, res):
         {"key": "validate", "name": "Validation", "status": "todo" if not v.get("at") else "done" if v.get("passed") else "failed"},
         {"key": "ai", "name": "AI review", "status": "todo" if not ai.get("at") else "done" if ai.get("verdict") == "pass" else "failed"},
     ]
-    for x, r, k in zip(steps, (dt, st, v, ai), (_data_key(s), _cfg_key(s), _cfg_key(s), _cfg_key(s))):
+    for x, r, k in zip(steps, (dt, st, v, ai), (_data_key(s), _cfg_key(s), _val_key(s), _val_key(s))):
         if stale(r, k):
             x["status"] = "stale"
     if not AI_REQUIRED:
@@ -792,6 +800,10 @@ def protocol(sub, s, res):
 
 def _data_key(s):
     return json.dumps([s["kind"], s.get("universe")], sort_keys=True)
+
+
+def _val_key(s):
+    return json.dumps([_cfg_key(s), sorted(s.get("cells") or [])])
 
 
 def _cfg_key(s):
@@ -854,7 +866,7 @@ def job(sub, params):
                     s["cells"] = res["ai"]["approvedCells"]
             elif k == "improve":
                 res["improve"] = step_improve(sub, s, res)
-            res[k if k != "validate" else "validation"]["cfg"] = _data_key(s) if k == "data" else _cfg_key(s)
+            res[k if k != "validate" else "validation"]["cfg"] = _data_key(s) if k == "data" else _cfg_key(s) if k == "study" else _val_key(s)
             _save_results(sub, pid, res)
             s.setdefault("history", []).append({"at": iso(now_ny()), "what": f"{k}: " + _summary_line(k, res)})
             s["history"] = s["history"][-40:]
@@ -988,7 +1000,7 @@ def action(sub, pid, b):
     elif a == "cells":
         ok = {f"{p}|{q}" for p in PHASES for q in VOLS}
         s["cells"] = [c for c in (b.get("cells") or []) if c in ok]
-        s["history"].append({"at": now, "what": "approved conditions: " + (", ".join(s["cells"]) or "none")})
+        s["history"].append({"at": now, "what": "approved conditions: " + (", ".join(s["cells"]) or "none") + " (validate again)"})
     elif a in ("paper", "live"):
         pr = protocol(sub, s, res)
         if a == "paper" and not pr["ready"]:

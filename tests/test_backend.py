@@ -6854,6 +6854,14 @@ def test_strategy_pipeline():
         assert R["ai"]["approvedCells"] == ["bull|calm", "bull|volatile", "sideways|calm", "sideways|volatile", "bear|calm", "bear|volatile"]
         steps = {x["key"]: x["status"] for x in D["strategy"]["protocol"]["steps"]}
         assert steps["data"] == "done" and steps["ai"] == "done"
+        # the validation counts only the ticked market cells (as paper will trade), and goes stale when they change
+        sv = pipeline.get("pp1", s["id"])
+        one = next(c["cell"] for c in st["map"] if c["n"] > 0)
+        pipeline.action("pp1", s["id"], {"action": "cells", "cells": [one]})
+        assert {x["key"]: x["status"] for x in pipeline.detail("pp1", s["id"])["strategy"]["protocol"]["steps"]}["validate"] == "stale"
+        vc = pipeline.step_validate("pp1", pipeline.get("pp1", s["id"]), lambda m: None)
+        assert vc["cells"] == [one] and vc["trades"] < v["trades"] and vc["trades"] > 0
+        pipeline.action("pp1", s["id"], {"action": "cells", "cells": sv.get("cells") or []})
         ch = pipeline.chart("pp1", s["id"], "AAA")
         assert len(ch["bars"]) == 260 and all(t[0] <= t[1] for t in ch["trades"])
         # the trade: next open in, open `hold` days later out; the stop on the lows
@@ -6865,6 +6873,7 @@ def test_strategy_pipeline():
         import db
         db.put({"PK": db.upk("pp1"), "SK": "BROKER#alpaca", "env": "paper", "keyHint": "1111"})
         db.put({"PK": db.upk("pp1"), "SK": "BROKER#alpacapipe#01", "env": "paper", "keyHint": "2222", "name": "Paper 1"})
+        pipeline.job("pp1", {"id": s["id"], "step": "validate"})          # the cells changed (Claude's): validated again
         res = pipeline.results("pp1", s["id"])
         res["validation"]["passed"] = True
         pipeline._save_results("pp1", s["id"], res)
