@@ -6808,7 +6808,7 @@ def test_strategy_pipeline():
         assert len(pipeline.overview("pp1")["strategies"]) == len(pipeline.SEEDS)   # seeded once
         db_ = __import__("db")                         # an older store (version 1): only the newer candidates are added
         db_.put({"PK": db_.upk("pp0"), "SK": "PIPESEEDED", "at": "x"})
-        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "orbfvg", "range50", "retest"] and len(pipeline.strategies("pp0")) == 4
+        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "orbfvg", "range50", "retest", "silver"] and len(pipeline.strategies("pp0")) == 5
         hb = next(x for x in pipeline.strategies("pp0") if x["seed"] == "highBase")
         assert hb["cond"]["hi52"] == "within 10%" and "ath" not in hb["cond"]
         pipeline._save("pp0", {**hb, "cond": {"base": "breakout of the base", "ath": "within 10%", "sqz5": "yes"}})   # stored before: migrated
@@ -7165,6 +7165,56 @@ def test_orb_fvg():
         assert set(st["sum"]) == {"2", "3", "4"} and st["ruleRow"] == "3"
         v = pipeline.step_validate("ob1", s, lambda m: None)
         assert len(v["grid"]) == 3 * 3 and v["colNames"]["15"] == "15-min range" and "opening range" in v["gridRow"]
+    finally:
+        daytrade.minute_bars, plab._bars = saved
+
+
+def test_silver_bullet():
+    """ICT Silver Bullet, as the Pine script: swing low = sell-side liquidity, a sweep under it -> long bias, in 10-11 ET
+    the first bullish FVG enters at its close, stop under the sweep extreme - 2 ticks, target 2R; outside the sessions
+    nothing; the protocol runs on it."""
+    import random, datetime as dt, silver, pipeline, daytrade, plab, range50
+    rows = []
+    for i in range(20):                                # 09:40-09:59: a swing low at 99 (09:45)
+        lo = 99.0 if i == 5 else 99.5
+        rows.append((100, 100.4, lo, 100))
+    rows += [(100, 100.1, 98.8, 99.0),                  # 10:00 sweeps 99 -> long bias, sweep extreme 98.8
+             (99.0, 99.3, 98.9, 99.2), (99.2, 99.8, 99.25, 99.7),   # 10:02: low 99.25 > high two back (99.1? no: 10:00 high 100.1)
+             (99.7, 99.9, 99.6, 99.85), (99.85, 100.6, 99.95, 100.5)]  # 10:04: low 99.95 > 10:02 high 99.8: a bull FVG -> long at 100.5
+    rows += [(100.5, 104.0, 100.4, 103.9)] + [(103.9, 104, 103.8, 103.9)] * 20
+    C = [(f"2026-01-05T{(580 + i) // 60:02d}:{(580 + i) % 60:02d}", *r) for i, r in enumerate(rows)]
+    p = silver.clean({"pivLen": 3, "rr": 2, "bufTicks": 2})
+    tr = silver.run(C, p)
+    assert len(tr) == 1 and tr[0]["side"] == "long" and tr[0]["in"].endswith("10:03") and tr[0]["e"] == 99.85   # 10:03 low 99.6 > 10:01 high 99.3
+    assert abs(tr[0]["stop"] - (98.8 - 0.02)) < 1e-9 and tr[0]["why"] == "target" and abs(tr[0]["r"] - 2) < 1e-9
+    late = [(f"2026-01-05T{(700 + i) // 60:02d}:{(700 + i) % 60:02d}", *r) for i, r in enumerate(rows)]   # 11:40: no session
+    assert silver.run(late, p) == []
+    days = []
+    d = dt.date.today() - dt.timedelta(days=80)
+    while d < dt.date.today():
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def mb(sub, sym, n, now=None, feed=None):
+        r, px, out = random.Random(sym + "s"), 500.0, []
+        for dd in days:
+            for m in range(9 * 60 + 30, 16 * 60):
+                o = px
+                px *= 1 + r.gauss(0, 0.0012)
+                out.append({"t": f"{dd}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, px) * 1.0003, "l": min(o, px) * 0.9997, "c": px, "v": 1})
+        return out
+    saved = (daytrade.minute_bars, plab._bars)
+    try:
+        daytrade.minute_bars = mb
+        range50._CACHE.clear()
+        plab._bars = lambda s_, y: {}
+        s = pipeline.create("sb1", {"name": "SB", "kind": "intraday", "ip": {"setup": "silver", "tickers": "QQQ", "days": 50}})
+        assert s["ip"]["setup"] == "silver" and "Silver Bullet" in pipeline.describe(s)
+        st = pipeline.step_study("sb1", s, lambda m: None)
+        assert st.get("events", 0) > 10, st
+        assert set(st["sum"]) == {"1.5", "2", "3"} and st["ruleRow"] == "2" and "sess" in st["factors"]
+        v = pipeline.step_validate("sb1", s, lambda m: None)
+        assert len(v["grid"]) == 3 * 3 and "swing length" in v["gridRow"]
     finally:
         daytrade.minute_bars, plab._bars = saved
 

@@ -67,8 +67,11 @@ VALUES = {
     "repeat": ["same contract 2x+", "different contracts"], "total": ["under 500K", "500K-2M", "2-10M", "10M+"], "mixed": ["other side too", "this side only"],
 }
 
-SEED_V = 5                                                 # new candidates are added once each time this goes up
+SEED_V = 6                                                 # new candidates are added once each time this goes up
 SEEDS = [
+    {"seed": "silver", "v": 6, "name": "ICT Silver Bullet", "kind": "intraday",
+     "ip": {"setup": "silver", "tickers": ["QQQ", "SPY"], "tf": 1, "pivLen": 3, "expiry": 30, "rr": 2, "bufTicks": 2, "flatEod": True, "days": 250},
+     "desc": "Your Pine script: a sweep of the last swing high / low sets the bias, the first fair value gap the bias way in 10-11 or 14-15 ET enters at the close, stop beyond the sweep, 2R."},
     {"seed": "orbfvg", "v": 5, "name": "Opening range breakout + FVG retest (3:1)", "kind": "intraday",
      "ip": {"setup": "orbfvg", "tickers": ["QQQ", "SPY"], "rangeMin": 5, "tgtR": 3, "fvgWin": 5, "confWin": 10, "lastEntry": "11:30", "side": "both", "days": 250},
      "desc": "The 09:30 5-minute range, a 1-minute close outside it leaving a fair value gap, the retest of the gap and an engulfing candle the breakout's way: enter, stop beyond the retest, 3R target."},
@@ -206,7 +209,8 @@ def _imod(p):
     import orb
     import range50
     import retest
-    return {"retest": retest, "orbfvg": orb}.get((p or {}).get("setup"), range50)
+    import silver
+    return {"retest": retest, "orbfvg": orb, "silver": silver}.get((p or {}).get("setup"), range50)
 
 
 def _clip(v, lo, hi, dflt):
@@ -249,7 +253,8 @@ def factor_names(kind):
         import orb
         import range50
         import retest
-        return {**dict(range50.FACTORS), **dict(retest.FACTORS), **dict(orb.FACTORS)}
+        import silver
+        return {**dict(range50.FACTORS), **dict(retest.FACTORS), **dict(orb.FACTORS), **dict(silver.FACTORS)}
     return dict(DAILY_FACTORS if kind == "daily" else _flow_factors())
 
 
@@ -1585,7 +1590,7 @@ def intra_validate(sub, s, prog):
             "top1Share": None, "top3Months": top3, "trades": len(tr), "chosen": ch, "testDD": dd_te, "allDD": _dd([_net(x, COST_I) for x in tr]),
             "gates": gates, "passed": all(g["ok"] for g in gates if g["hard"]), "equity": eq[-400:], "split": {"cut": cut}, "cells": cells,
             "holds": legs, "stops": stops, "costBp": COST_I,
-            "gridRow": f"{'Leg' if rk == 'legPct' else 'Target'} \\ {'stop' if ck_ == 'stopBuf' else 'EMA' if ck_ == 'ema' else 'opening range'}",
+            "gridRow": f"{'Leg' if rk == 'legPct' else 'Target'} \\ {'stop' if ck_ == 'stopBuf' else 'EMA' if ck_ == 'ema' else 'swing length' if ck_ == 'pivLen' else 'opening range'}",
             "rowNames": {str(v): f"{v:g}{runit}" for v in legs}, "colNames": {str(v): M.COL_NAMES.get(v, str(v)) for v in stops},
             "rTest": ch.get("rTest"), "intraday": True, "ruleText": M.describe(p),
             "_trades": [{"s": x["s"], "in": x["d"], "out": (x.get("out") or x["d"])[:10], "pct": round(_net(x, COST_I), 3)} for x in tr]}
