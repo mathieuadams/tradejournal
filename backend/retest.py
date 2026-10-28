@@ -172,7 +172,7 @@ def setups(daily, intra, p, sym=""):
                             depth = "under the level" if l < lvl * (1 - 0.003) else "at the level (±0.3%)" if l <= lvl * 1.003 else "just above it"
                             conf = any(em[q] and abs(em[q] / lvl - 1) <= 0.01 for q in ("10", "20"))
                             trade = {"s": sym, "d": day0, "in": cs[k + 1][0], "out": tx, "e": e, "x": x, "why": why, "side": "long",
-                                     "pct": (x / e - 1) * 100, "r": (x - e) / R, "riskPct": R / e * 100, "lvl": lvl, "pat": pat, "depth": depth,
+                                     "pct": (x / e - 1) * 100, "r": (x - e) / R, "riskPct": R / e * 100, "lvl": lvl, "pat": pat, "depth": depth, "bkDay": d, "stop": stop, "tgt": e + p["tgtR"] * R,
                                      "dsb": f"{w} day{'s' if w > 1 else ''}" if w <= 3 else "4+ days", "conf": "yes" if conf else "no",
                                      "bk": "under 1%" if bk < 1 else "1-3%" if bk < 3 else "3%+", "touch": t, "k": k + 1, "kx": kx}
                             busy_until = tx[:10]

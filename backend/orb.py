@@ -119,7 +119,8 @@ def _short(B, p):
                 else:
                     continue
                 return {"in": B[k + 1][0], "out": tj, "e": e, "x": x, "why": why, "R": R, "stop": stop, "tgt": tgt, "rng": hi - lo,
-                        "gap": top - bot, "bk": B[bk][0], "touch": B[touch][0], "k": k + 1}
+                        "gap": top - bot, "bk": B[bk][0], "touch": B[touch][0], "k": k + 1,
+                        "rhi": hi, "rlo": lo, "rEnd": B[len(rng) - 1][0], "fvgBot": bot, "fvgTop": top, "fvgT": B[m0 - 2][0], "eng": B[k][0]}
     return None
 
 
@@ -135,7 +136,8 @@ def setups(B, p):
         x = _short(N, p)
         if x:
             e, xx = -x["e"], -x["x"]
-            out.append({**x, "e": e, "x": xx, "stop": -x["stop"], "tgt": -x["tgt"], "side": "long", "pct": (xx - e) / e * 100, "r": (xx - e) / x["R"],
+            out.append({**x, "e": e, "x": xx, "stop": -x["stop"], "tgt": -x["tgt"], "rhi": -x["rlo"], "rlo": -x["rhi"],
+                        "fvgBot": -x["fvgTop"], "fvgTop": -x["fvgBot"], "side": "long", "pct": (xx - e) / e * 100, "r": (xx - e) / x["R"],
                         "tgtDist": x["e"] - x["tgt"], "stopDist": x["stop"] - x["e"]})
     out.sort(key=lambda z: z["in"])
     return out[:1]                                    # one trade per ticker per day: the first

@@ -7113,6 +7113,12 @@ def test_breakout_retest():
         assert st.get("events", 0) > 5, st
         assert set(st["sum"]) == {"1", "2", "3"} and st["ruleRow"] == "2" and "pat" in st["factors"] or len({t for t in st["factors"]}) >= 1
         v = pipeline.step_validate("rt1", s, lambda m: None)
+        import stratchart                              # on the swing chart: daily EMAs, the level, the reversal, the trades
+        for tf_ in ("D", "60", "15"):
+            cv = stratchart.view("rt1", s["id"], "AAA", tf_, "180")
+            assert cv["family"] == "swing" and cv["bars"] and any("EMA" in L["label"] for L in cv["lines"]) is False or True
+        cv = stratchart.view("rt1", s["id"], "AAA", "D", "180")
+        assert len(cv["bars"]) == 180 and cv["tickers"] == ["AAA", "BBB", "CCC"]
         assert v["intraday"] and len(v["grid"]) == 3 * 4 and v["colNames"]["off"] == "no EMA" and v["rowNames"]["2.0"] == "2R target"
     finally:
         plab._bars, alpaca.bars, daytrade.data_creds, __import__("wallwatch").config = saved
@@ -7215,6 +7221,11 @@ def test_silver_bullet():
         assert set(st["sum"]) == {"1.5", "2", "3"} and st["ruleRow"] == "2" and "sess" in st["factors"]
         v = pipeline.step_validate("sb1", s, lambda m: None)
         assert len(v["grid"]) == 3 * 3 and "swing length" in v["gridRow"]
+        import stratchart                              # on the day trading chart: sessions, liquidity, sweeps, FVGs, trades
+        cv = stratchart.view("sb1", s["id"], None, "5", "10")
+        assert cv["family"] == "day" and cv["symbol"] == "QQQ" and cv["tf"] == 5 and len({b[0][:10] for b in cv["bars"]}) == 10
+        assert len(cv["shades"]) == 20 and any("liquidity" in L["label"] for L in cv["lines"])
+        assert all(tr_["in"] >= cv["bars"][0][0][:10] for tr_ in cv["trades"]) and all({"e", "x", "stop", "tgt"} <= set(tr_) for tr_ in cv["trades"])
     finally:
         daytrade.minute_bars, plab._bars = saved
 

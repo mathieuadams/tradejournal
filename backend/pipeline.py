@@ -1198,8 +1198,10 @@ def _summary(sub, s, res=None):
     pr = protocol(sub, s, res)
     st, v, ai = res.get("study") or {}, res.get("validation") or {}, res.get("ai") or {}
     ch = v.get("chosen") or {}
+    import stratchart
     out = {**{k: s.get(k) for k in ("id", "name", "desc", "kind", "side", "flowSide", "cond", "universe", "hold", "stop", "allocPct", "maxPos",
-                                    "stage", "account", "since", "kill", "cells", "job", "signals", "plan")},
+                                    "stage", "account", "since", "kill", "cells", "job", "signals", "plan", "ip")},
+           "family": stratchart.family(s),
            "rule": describe(s), "protocol": pr, "events": st.get("events"),
            "bt": {"testAvg": (ch.get("test") or {}).get("avg"), "testEdge": ch.get("edgeTest"), "trainEdge": ch.get("edgeTrain"), "n": v.get("trades")},
            "verdict": ai.get("verdict")}

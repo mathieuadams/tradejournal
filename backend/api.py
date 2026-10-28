@@ -523,6 +523,13 @@ def pipe_run(sub, claims, body, q, pid):
     return pipeline.detail(sub, pid)
 
 
+@route("GET", r"/pipeline/(?P<pid>[a-f0-9]{10})/view")
+def pipe_view(sub, claims, body, q, pid):
+    """A strategy on a ticker's chart: its indicators, entries and exits (day: 1 / 5 min; swing: 15 min / 1 h / daily)."""
+    import stratchart
+    return stratchart.view(sub, pid, q.get("t"), q.get("tf"), q.get("days"))
+
+
 @route("GET", r"/pipeline/(?P<pid>[a-f0-9]{10})/chart")
 def pipe_chart(sub, claims, body, q, pid):
     import pipeline

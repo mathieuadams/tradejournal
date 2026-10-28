@@ -5723,7 +5723,7 @@ const ppStIcon = st => ({ done: '<b class="gain">✓</b>', failed: '<b class="lo
 const ppStTxt = st => ({ done: 'passed', failed: 'failed', weak: 'weak', stale: 'to rerun', todo: 'to do' }[st] || st);
 async function loadPipe() {
   try { S.pipe = await api('/pipeline'); } catch (e) { S.pipe = { error: e.message }; }
-  if (['bot', 'botresearch'].includes(route())) render();
+  if (['bot', 'botresearch', 'botcharts'].includes(route())) render();
 }
 async function loadPipeD(id, quiet) {
   if (!id) return;
@@ -6098,15 +6098,136 @@ document.addEventListener('change', e => {
   if (['ppn-kind', 'ppn-uni', 'ppn-f'].includes(t.id)) { ppReadNew(); if (t.id === 'ppn-kind') S.ppNewD.cond = {}; if (t.id === 'ppn-f') S.ppF = t.value; render(); }
 });
 
+/* ---------- strategy charts: day trading (1 / 5 min) and swing (15 min / 1 h / daily), any strategy, its indicators and trades ---------- */
+const SC_MODES = { day: { tfs: [[1, '1m'], [5, '5m']], days: [1, 3, 5, 10], tf: 1, d: 3 }, swing: { tfs: [['15', '15m'], ['60', '1h'], ['D', 'Daily']], days: [10, 30, 90, 180], tf: 'D', d: 90 } };
+function scState() {
+  const m = S.scMode || 'day', st = (S.sc || (S.sc = {}))[m] || (S.sc[m] = { tf: SC_MODES[m].tf, days: SC_MODES[m].d, id: null, t: null });
+  return [m, st];
+}
+async function scLoad() {
+  const [m, st] = scState();
+  if (!st.id) return;
+  const key = [st.id, st.t || '', st.tf, st.days].join('|');
+  if (S.scKey === key && (S.scView || S.scErr || S.scBusy === key)) return;
+  S.scKey = key; S.scView = null; S.scErr = null; S.scZoom = null; S.scBusy = key; render();
+  try {
+    const v = await api(`/pipeline/${st.id}/view?${new URLSearchParams({ t: st.t || '', tf: st.tf, days: st.days })}`);
+    if (S.scKey !== key) return;
+    S.scView = v; if (!st.t) { st.t = v.symbol; S.scKey = [st.id, st.t, st.tf, st.days].join('|'); }
+  } catch (e) { if (S.scKey === key) S.scErr = e.message; }
+  if (S.scBusy === key) S.scBusy = null;
+  if (route() === 'botcharts') render();
+}
+function vCharts() {
+  const P = S.pipe;
+  if (!P) return head('Strategy charts', '', '') + '<p class="loading">Loading…</p>';
+  const [m, st] = scState(), M = SC_MODES[m];
+  const ss = (P.strategies || []).filter(s => (s.family || 'swing') === m && s.stage !== 'retired');
+  if (st.id && !ss.some(s => s.id === st.id)) st.id = null;
+  if (!st.id && ss.length) { st.id = ss[0].id; st.t = null; }
+  const cur = ss.find(s => s.id === st.id), v = S.scView && S.scView.id === st.id ? S.scView : null;
+  const seg = (items, val, attr) => `<span class="seg" role="group">${items.map(([k, l]) => `<button class="btn ${String(val) === String(k) ? 'coachbtn' : ''}" ${attr}="${k}" style="padding:3px 12px">${l}</button>`).join('')}</span>`;
+  const legend = v ? [...new Map([...(v.lines || []), ...(v.boxes || []), ...(v.marks || []), ...(v.shades || [])].map(x => [x.label, x.color])).entries()] : [];
+  const trades = v ? (v.trades || []) : [];
+  const rs = trades.filter(t => t.r != null), tot = trades.reduce((a, t) => a + (t.pct || 0), 0);
+  return head('Strategy charts', m === 'day' ? 'Day trading strategies on 1 / 5-minute candles: the indicators of the strategy, its entries and exits' : 'Swing strategies on 15-minute / 1-hour / daily candles: the indicators of the strategy, its entries and exits', '')
+    + `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">${seg([['day', 'Day trading'], ['swing', 'Swing trading']], m, 'data-scmode')}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${ss.length ? ss.map(s => `<button class="btn ${s.id === st.id ? 'coachbtn' : ''}" data-scid="${s.id}" title="${esc(s.rule)}" style="min-height:40px">${esc(s.name)} <span class="${s.id === st.id ? '' : 'muted'}" style="font-size:.72rem;opacity:.8">${esc(s.stage)}</span></button>`).join('')
+      : `<span class="muted">No ${m === 'day' ? 'day trading' : 'swing'} strategy yet: add one in <a href="#botresearch">Research</a>.</span>`}</div>
+    ${cur ? `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px">
+      <select data-scsym aria-label="Ticker" style="min-width:110px">${((v && v.tickers) || [st.t || '']).filter(Boolean).map(t => `<option ${t === (st.t || (v && v.symbol)) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
+      ${seg(M.tfs, st.tf, 'data-sctf')} ${seg(M.days.map(d => [d, d + (m === 'day' ? (d > 1 ? ' days' : ' day') : ' days')]), st.days, 'data-scdays')}
+      <button class="btn" data-sczoom="reset" title="Show the whole period">Reset zoom</button>
+      <span class="muted" style="font-size:.76rem">wheel = zoom · drag = move</span></div>
+      <p class="muted" style="font-size:.8rem;margin:0 0 6px">${esc(cur.rule)}</p>
+      <section class="panel" style="padding:8px;position:relative">${S.scErr ? `<div class="errbox">${esc(S.scErr)}</div>` : !v ? '<p class="loading" style="height:520px">Loading the chart…</p>' : `<canvas id="sc-cv" style="width:100%;height:540px;display:block;cursor:crosshair"></canvas><div id="sc-tip" class="muted" style="position:absolute;top:10px;left:14px;font-size:.76rem;pointer-events:none"></div>`}</section>
+      ${legend.length ? `<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:.78rem;margin:6px 0">${legend.map(([l, c]) => `<span><i style="display:inline-block;width:12px;height:3px;background:${c};vertical-align:middle;margin-right:4px"></i>${esc(l)}</span>`).join('')}
+        <span><i style="display:inline-block;width:12px;height:8px;background:rgba(229,83,75,.35);vertical-align:middle;margin-right:4px"></i>risk</span><span><i style="display:inline-block;width:12px;height:8px;background:rgba(45,164,78,.35);vertical-align:middle;margin-right:4px"></i>reward</span></div>` : ''}
+      ${v ? `<section><h2 style="font-size:1rem">Trades in this window <span class="muted" style="font-weight:400;font-size:.8rem">${trades.length} · total ${ppPc(tot)}${rs.length ? ` · avg ${(rs.reduce((a, t) => a + t.r, 0) / rs.length).toFixed(2)}R` : ''} · computed like the backtest${(v.paper || []).length ? ` · ${v.paper.length} paper` : ''}</span></h2>
+        ${trades.length ? `<div class="tablewrap"><table class="ppt" style="font-size:.8rem"><thead><tr><th>In</th><th>Out</th><th>Side</th><th class="r">Entry</th><th class="r">Stop</th><th class="r">Target</th><th class="r">Exit</th><th>Why</th><th class="r">R</th><th class="r">%</th></tr></thead><tbody>
+          ${trades.slice().reverse().map((t, k) => `<tr data-scgo="${trades.length - 1 - k}" style="cursor:pointer"><td>${esc(t.in.replace('T', ' '))}</td><td>${esc(t.out.replace('T', ' '))}</td><td>${esc(t.side)}</td><td class="r">${(+t.e).toFixed(2)}</td><td class="r">${t.stop != null ? (+t.stop).toFixed(2) : '—'}</td><td class="r">${t.tgt != null ? (+t.tgt).toFixed(2) : '—'}</td><td class="r">${(+t.x).toFixed(2)}</td><td>${esc(t.why || '')}</td><td class="r ${ppCls(t.r)}">${t.r != null ? t.r : '—'}</td><td class="r ${ppCls(t.pct)}">${ppPc(t.pct)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No trade of this strategy in this window.</p>'}</section>` : ''}` : ''}`;
+}
+function scLb(bars, t) {                             // the first bar at or after t (string compare: dates and times)
+  let lo = 0, hi = bars.length;
+  while (lo < hi) { const md = (lo + hi) >> 1; if (bars[md][0] < t) lo = md + 1; else hi = md; }
+  return Math.min(lo, bars.length - 1);
+}
+function scDraw(hover) {
+  const cv = $('#sc-cv'), v = S.scView;
+  if (!cv || !v || !(v.bars || []).length) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim() || '#888';
+  const bars = v.bars, n = bars.length, z = S.scZoom || (S.scZoom = { a: 0, b: n });
+  const a = Math.max(0, Math.floor(z.a)), b = Math.min(n, Math.ceil(z.b)), pl = 6, pr = 62, pt = 10, pb = 24;
+  const vis = bars.slice(a, b); if (!vis.length) return;
+  let lo = Math.min(...vis.map(x => x[3])), hi = Math.max(...vis.map(x => x[2]));
+  const pad = (hi - lo) * .06 || 1; lo -= pad; hi += pad;
+  const bw = (W - pl - pr) / (z.b - z.a), X = i => pl + (i - z.a + .5) * bw, Y = p => pt + (hi - p) / (hi - lo) * (H - pt - pb);
+  const I = t => scLb(bars, t);
+  g.font = '11px system-ui, sans-serif';
+  for (let k = 0; k <= 5; k++) { const p = lo + (hi - lo) * k / 5; g.strokeStyle = css('--line'); g.lineWidth = .5; g.beginPath(); g.moveTo(pl, Y(p)); g.lineTo(W - pr, Y(p)); g.stroke(); g.fillStyle = css('--muted'); g.fillText(p.toFixed(2), W - pr + 4, Y(p) + 4); }
+  const step = Math.max(1, Math.ceil((b - a) / 8));
+  for (let i = a; i < b; i += step) { g.fillStyle = css('--muted'); const t = bars[i][0]; g.fillText(t.length > 10 ? (t.slice(5, 10) + ' ' + t.slice(11, 16)) : t.slice(5), X(i) - 24, H - 6); }
+  g.save(); g.beginPath(); g.rect(pl, pt, W - pl - pr, H - pt - pb); g.clip();
+  const alpha = (c, al) => { const h = c.replace('#', ''); return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${al})`; };
+  (v.shades || []).forEach(s => { const i0 = I(s.t0), i1 = I(s.t1); g.fillStyle = alpha(s.color, .07); g.fillRect(X(i0) - bw / 2, pt, (i1 - i0) * bw, H - pt - pb); });
+  (v.boxes || []).forEach(s => { const i0 = I(s.t0), i1 = I(s.t1); g.fillStyle = alpha(s.color, .12); g.strokeStyle = alpha(s.color, .6); g.lineWidth = 1;
+    g.fillRect(X(i0) - bw / 2, Y(s.hi), (i1 - i0 + 1) * bw, Y(s.lo) - Y(s.hi)); g.strokeRect(X(i0) - bw / 2, Y(s.hi), (i1 - i0 + 1) * bw, Y(s.lo) - Y(s.hi)); });
+  (v.trades || []).forEach(t => { if (t.stop == null && t.tgt == null) return; const i0 = I(t.in), i1 = Math.max(i0 + 1, I(t.out)), x0 = X(i0) - bw / 2, w = (i1 - i0 + 1) * bw;
+    if (t.stop != null) { g.fillStyle = 'rgba(229,83,75,.22)'; g.fillRect(x0, Math.min(Y(t.e), Y(t.stop)), w, Math.abs(Y(t.stop) - Y(t.e))); }
+    if (t.tgt != null) { g.fillStyle = 'rgba(45,164,78,.20)'; g.fillRect(x0, Math.min(Y(t.e), Y(t.tgt)), w, Math.abs(Y(t.tgt) - Y(t.e))); } });
+  for (let i = a; i < b; i++) { const [, o, h, l, c] = bars[i], up = c >= o; g.strokeStyle = g.fillStyle = up ? css('--candle-up') || '#2da44e' : css('--candle-dn') || '#e5534b';
+    g.lineWidth = 1; g.beginPath(); g.moveTo(X(i), Y(h)); g.lineTo(X(i), Y(l)); g.stroke(); const y1 = Y(Math.max(o, c)), y2 = Y(Math.min(o, c)); g.fillRect(X(i) - Math.max(.5, bw * .35), y1, Math.max(1, bw * .7), Math.max(1, y2 - y1)); }
+  (v.lines || []).forEach(L => { const pts = (L.pts || []).filter(p => p && p[1] != null); if (pts.length < 2) return; g.strokeStyle = L.color; g.lineWidth = 1.4; g.setLineDash(L.dash ? [5, 4] : []); g.beginPath();
+    pts.forEach((p, k) => { const x = X(I(p[0])), y = Y(p[1]); if (!k) g.moveTo(x, y); else if (L.step) { g.lineTo(x, Y(pts[k - 1][1])); g.lineTo(x, y); } else g.lineTo(x, y); }); g.stroke(); g.setLineDash([]); });
+  (v.marks || []).forEach(mk => { if (mk.price == null) return; const x = X(I(mk.t)), y = Y(mk.price), r = mk.small ? 3.5 : 5; g.fillStyle = mk.color; g.beginPath();
+    if (mk.shape === 'up') { g.moveTo(x, y + 4); g.lineTo(x - r, y + 4 + 2 * r); g.lineTo(x + r, y + 4 + 2 * r); } else if (mk.shape === 'down') { g.moveTo(x, y - 4); g.lineTo(x - r, y - 4 - 2 * r); g.lineTo(x + r, y - 4 - 2 * r); } else g.arc(x, y, r, 0, 7); g.fill(); });
+  (v.trades || []).forEach(t => { const i0 = I(t.in), i1 = I(t.out), win = (t.pct || 0) >= 0; g.strokeStyle = win ? '#2da44e' : '#e5534b'; g.lineWidth = 1.6; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(X(i0), Y(t.e)); g.lineTo(X(i1), Y(t.x)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = css('--coach') || '#5b5bd6'; g.beginPath(); const d = t.side === 'short' ? -1 : 1; g.moveTo(X(i0) - 6, Y(t.e)); g.lineTo(X(i0) + 1, Y(t.e) - 5 * d); g.lineTo(X(i0) + 1, Y(t.e) + 5 * d); g.fill();
+    g.strokeStyle = css('--ink') || '#000'; g.lineWidth = 2; g.beginPath(); g.moveTo(X(i1) - 4, Y(t.x) - 4); g.lineTo(X(i1) + 4, Y(t.x) + 4); g.moveTo(X(i1) - 4, Y(t.x) + 4); g.lineTo(X(i1) + 4, Y(t.x) - 4); g.stroke(); });
+  (v.paper || []).forEach(p => { [[p.fillDay, p.fillPrice], [p.exitDay, p.exitPrice]].forEach(([d, px]) => { if (d && px) { g.fillStyle = css('--ink'); g.beginPath(); g.arc(X(I(d)), Y(+px), 4.5, 0, 7); g.fill(); } }); });
+  g.restore();
+  if (hover != null && hover >= a && hover < b) { const [t, o, h, l, c] = bars[hover]; g.strokeStyle = css('--muted'); g.lineWidth = .6; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(X(hover), pt); g.lineTo(X(hover), H - pb); g.stroke(); g.setLineDash([]);
+    const tip = $('#sc-tip'); if (tip) tip.textContent = `${t.replace('T', ' ')}  O ${o.toFixed(2)}  H ${h.toFixed(2)}  L ${l.toFixed(2)}  C ${c.toFixed(2)}`; }
+}
+(function scEvents() {
+  let drag = null;
+  document.addEventListener('wheel', e => { const cv = e.target.closest && e.target.closest('#sc-cv'); if (!cv || !S.scView) return; e.preventDefault();
+    const z = S.scZoom, n = S.scView.bars.length, r = cv.getBoundingClientRect(), f = (e.clientX - r.left - 6) / (r.width - 68), at = z.a + f * (z.b - z.a), k = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+    let w = Math.max(15, Math.min(n, (z.b - z.a) * k)), a = at - f * w; a = Math.max(0, Math.min(n - w, a)); S.scZoom = { a, b: a + w }; scDraw(); }, { passive: false });
+  document.addEventListener('mousedown', e => { if (e.target.id === 'sc-cv') drag = { x: e.clientX, z: { ...S.scZoom } }; });
+  document.addEventListener('mouseup', () => { drag = null; });
+  document.addEventListener('mousemove', e => { const cv = $('#sc-cv'); if (!cv || !S.scView) return;
+    const r = cv.getBoundingClientRect(), z = S.scZoom || { a: 0, b: S.scView.bars.length }, bw = (r.width - 68) / (z.b - z.a), n = S.scView.bars.length;
+    if (drag) { const dx = (e.clientX - drag.x) / bw, w = drag.z.b - drag.z.a; let a = drag.z.a - dx; a = Math.max(0, Math.min(n - w, a)); S.scZoom = { a, b: a + w }; scDraw(); return; }
+    if (e.target === cv) scDraw(Math.floor(z.a + (e.clientX - r.left - 6) / bw)); });
+})();
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-scmode],[data-scid],[data-sctf],[data-scdays],[data-sczoom],[data-scgo]'); if (!el) return;
+  const d = el.dataset, [m, st] = scState();
+  if (d.scmode) { S.scMode = d.scmode; S.scView = null; S.scKey = null; render(); scLoad(); return; }
+  if (d.scid) { st.id = d.scid; st.t = null; scLoad(); return; }
+  if (d.sctf) { st.tf = d.sctf; scLoad(); return; }
+  if (d.scdays) { st.days = +d.scdays; scLoad(); return; }
+  if (d.sczoom) { S.scZoom = null; scDraw(); return; }
+  if (d.scgo !== undefined && S.scView) { const t = S.scView.trades[+d.scgo], bars = S.scView.bars, n = bars.length, i0 = scLb(bars, t.in), i1 = scLb(bars, t.out), w = Math.max(40, (i1 - i0) * 3);
+    const a = Math.max(0, Math.min(n - w, i0 - w / 3)); S.scZoom = { a, b: Math.min(n, a + w) }; scDraw(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+});
+document.addEventListener('change', e => { if (e.target.matches && e.target.matches('[data-scsym]')) { const [, st] = scState(); st.t = e.target.value; scLoad(); } });
+window.addEventListener('resize', () => { if (route() === 'botcharts') scDraw(); });
+
 /* ---------- router & events ---------- */
 /* ---------- navigation groups: Trades (list, stats, coach, journal) and Settings (general, import) ---------- */
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
-  bot: [['bot', 'Running'], ['botresearch', 'Research']],
+  bot: [['bot', 'Running'], ['botresearch', 'Research'], ['botcharts', 'Charts']],
   lab: [['botflow', 'Options bot'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
-const isBotRoute = () => ['bot', 'botresearch', 'botstrat', 'botflow', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
+const isBotRoute = () => ['bot', 'botresearch', 'botcharts', 'botstrat', 'botflow', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
 const groupOf = v => v === 'botstrat' ? 'bot' : Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
@@ -6128,6 +6249,7 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleAccount(false); });
 const VIEWS = { bot: [vRunning, () => { if (S.pipe === undefined) { S.pipe = null; loadPipe(); } }],
   botresearch: [vResearch, () => { if (S.pipe === undefined) { S.pipe = null; loadPipe(); } }],
+  botcharts: [vCharts, () => { if (S.pipe === undefined) { S.pipe = null; loadPipe().then(() => scLoad()); } else if (S.pipe) { scLoad(); } scDraw(); }],
   botstrat: [vStrat, () => { const id = hashParam('id'); if (id && !((S.pipeD || {})[id]) && S.ppLoading !== id) { S.ppLoading = id; loadPipeD(id).finally(() => { S.ppLoading = null; }); } }],
   botflow: [() => vBot(), () => { loadBot(); loadNtStatus(); }],
   botevals: [vBotEvals, () => {

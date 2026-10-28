@@ -62,6 +62,7 @@ def _run_long(B, th_pct, stop_buf, ent=0.25, tgt=0.5):
     """The long setups of one session (B: [(t, o, h, l, c)] with prices maybe negated for the short side)."""
     out = []
     H, L, Li, st = None, None, None, "leg"
+    Ht = None
     lv = None
     k = 0
     n = len(B)
@@ -69,18 +70,18 @@ def _run_long(B, th_pct, stop_buf, ent=0.25, tgt=0.5):
         t, o, h, l, c = B[k]
         if st == "leg":
             if H is None or h > H:
-                H, L, Li = h, None, None
+                H, L, Li, Ht = h, None, None, t
             elif L is None or l < L:
                 L, Li = l, k
             if L is not None and k > Li and (H - L) >= abs(H) * th_pct / 100 and h >= L + 0.5 * (H - L):
                 R = H - L
-                lv = {"H": H, "L": L, "R": R, "E": L + ent * R, "T": L + tgt * R, "S": L - stop_buf * R, "touch": t}
+                lv = {"H": H, "L": L, "R": R, "E": L + ent * R, "T": L + tgt * R, "S": L - stop_buf * R, "touch": t, "legT": Ht}
                 st = "retraced"
             k += 1
             continue
         if st == "retraced":                               # (a new low under L goes through the 25% first: it fills)
             if h > lv["H"]:                                # back over the top: a new leg
-                H, L, Li, st = h, None, None, "leg"
+                H, L, Li, st, Ht = h, None, None, "leg", t
                 k += 1
                 continue
             if l <= lv["E"] and t[11:16] < LAST_ENTRY:     # the limit at 25% fills
@@ -120,14 +121,16 @@ def setups(B, p):
         for x in _run_long(B, p["legPct"], p["stopBuf"], p["entryLvl"], p["targetLvl"]):
             out.append({"side": "long", "in": x["in"], "out": x["out"], "e": x["e"], "x": x["x"], "why": x["why"], "R": x["R"],
                         "pct": (x["x"] / x["e"] - 1) * 100, "r": (x["x"] - x["e"]) / (x["e"] - x["S"]) if x["e"] > x["S"] else None,
-                        "touch": x["touch"], "k": x["k"], "tgtDist": x["T"] - x["e"], "stopDist": x["e"] - x["S"]})
+                        "touch": x["touch"], "k": x["k"], "tgtDist": x["T"] - x["e"], "stopDist": x["e"] - x["S"], "legT": x.get("legT"),
+                        "lv": {"top": x["H"], "bot": x["L"], "mid": x["T"], "ent": x["E"], "stop": x["S"]}})
     if p["side"] in ("short", "both"):
         N = [(t, -o, -l, -h, -c) for t, o, h, l, c in B]
         for x in _run_long(N, p["legPct"], p["stopBuf"], p["entryLvl"], p["targetLvl"]):
             e, xx = -x["e"], -x["x"]
             out.append({"side": "short", "in": x["in"], "out": x["out"], "e": e, "x": xx, "why": x["why"], "R": x["R"],
                         "pct": (e - xx) / e * 100, "r": (x["x"] - x["e"]) / (x["e"] - x["S"]) if x["e"] > x["S"] else None,
-                        "touch": x["touch"], "k": x["k"], "tgtDist": x["T"] - x["e"], "stopDist": x["e"] - x["S"]})
+                        "touch": x["touch"], "k": x["k"], "tgtDist": x["T"] - x["e"], "stopDist": x["e"] - x["S"], "legT": x.get("legT"),
+                        "lv": {"top": -x["L"], "bot": -x["H"], "mid": -x["T"], "ent": -x["E"], "stop": -x["S"]}})
     return out
 
 

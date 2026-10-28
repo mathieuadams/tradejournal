@@ -49,13 +49,14 @@ def tickers(sub, p):
     return list(p["tickers"])
 
 
-def run(C, p):
+def run(C, p, trace=None):
     """C: continuous candles [(t, o, h, l, c)] (regular hours, every day in a row). The trades, as the Pine script takes them."""
     L, n = p["pivLen"], len(C)
     buf = p["bufTicks"] * 0.01
     lastPH = lastPL = None
     rTop = rBot = None
     bias, biasBar, sweepExt = 0, 0, None
+    sweepT = sweepLvl = None
     pos = None
     out = []
     H = [c[2] for c in C]
@@ -103,9 +104,13 @@ def run(C, p):
             rBot = l
         sH = lastPH is not None and h > lastPH
         sL = lastPL is not None and l < lastPL
+        if trace is not None:
+            trace.append((t, lastPH, lastPL))
         if sH and not sL:
+            sweepT, sweepLvl = t, lastPH
             bias, biasBar, sweepExt, lastPH = -1, i, h, None
         elif sL and not sH:
+            sweepT, sweepLvl = t, lastPL
             bias, biasBar, sweepExt, lastPL = 1, i, l, None
         elif bias == -1:
             sweepExt = max(sweepExt, h)
@@ -124,14 +129,14 @@ def run(C, p):
                 risk = c - stop
                 if risk > 0.01:
                     pos = {"d": 1, "e": c, "stop": stop, "tgt": c + risk * p["rr"], "in": t, "R": risk, "k": i, "sess": SESS[hr], "zone": zone,
-                           "sweepBars": i - biasBar}
+                           "sweepBars": i - biasBar, "sweepT": sweepT, "sweepLvl": sweepLvl, "fvgT": C[i - 2][0], "fvgBot": H[i - 2], "fvgTop": l}
                     bias = 0
             elif bias == -1 and bear and p["side"] in ("short", "both"):
                 stop = max(sweepExt, H[i - 2]) + buf
                 risk = stop - c
                 if risk > 0.01:
                     pos = {"d": -1, "e": c, "stop": stop, "tgt": c - risk * p["rr"], "in": t, "R": risk, "k": i, "sess": SESS[hr], "zone": zone,
-                           "sweepBars": i - biasBar}
+                           "sweepBars": i - biasBar, "sweepT": sweepT, "sweepLvl": sweepLvl, "fvgT": C[i - 2][0], "fvgBot": h, "fvgTop": Lo[i - 2]}
                     bias = 0
     if pos:
         pos.update(x=C[-1][4], out=C[-1][0], why="close")
