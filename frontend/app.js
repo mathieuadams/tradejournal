@@ -5944,8 +5944,9 @@ function ppImprove(s, R, busy) {
 }
 function ppAccSel(D, id, want) {
   const acc = (D.accounts || []).filter(a => a.connected);
-  return `<select id="pp-acc-${id}" data-ppaccsel="${id}" style="min-width:260px" aria-label="Account"><option value="">Pick an account…</option>${acc.map(a => { const bad = a.usedById && a.usedById !== id ? `used by ${a.usedBy}` : a.env !== want ? `${a.env} keys` : '';
-    return `<option value="${esc(a.sk)}" ${bad ? 'disabled' : ''} ${a.botOn ? `data-share="${esc(a.botOn)}"` : ''}>${esc(a.name)} ··${esc(a.keyHint || '')}${bad ? ` (${esc(bad)})` : a.botOn ? ` (shared with the ${esc(a.botOn)})` : ' (free)'}</option>`; }).join('')}</select>`;
+  return `<select id="pp-acc-${id}" data-ppaccsel="${id}" style="min-width:260px" aria-label="Account"><option value="">Pick an account…</option>${acc.map(a => { const bad = a.env !== want ? `${a.env} keys` : '', mine = (a.usedByIds || []).includes(id), oth = (a.usedByIds || []).filter(x => x !== id).length;
+    const tags = [a.botOn ? `the ${a.botOn}` : '', oth ? a.usedBy.split(', ').filter((_, k) => a.usedByIds[k] !== id).join(', ') : ''].filter(Boolean);
+    return `<option value="${esc(a.sk)}" ${bad ? 'disabled' : ''} ${a.botOn ? `data-share="${esc(a.botOn)}"` : ''}>${esc(a.name)} ··${esc(a.keyHint || '')}${bad ? ` (${esc(bad)})` : tags.length ? ` (also: ${esc(tags.join(', '))})` : mine ? '' : ' (free)'}</option>`; }).join('')}</select>`;
 }
 const ppAccForm = () => `<details style="margin-top:10px"><summary class="muted">Connect another Alpaca account</summary><div class="form-grid" style="margin-top:8px">
     <div class="field"><label for="ppa-name">Name</label><input id="ppa-name" placeholder="Paper 2"></div><div class="field"><label for="ppa-key">API key</label><input id="ppa-key" autocomplete="off"></div>

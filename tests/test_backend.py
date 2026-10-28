@@ -6889,6 +6889,10 @@ def test_strategy_pipeline():
         assert P["strategy"]["stage"] == "paper" and P["strategy"]["kill"]["status"] == "armed"
         acc = {a["sk"]: a for a in P["accounts"]}
         assert acc["BROKER#alpacapipe#01"]["usedBy"] == "Dip" and acc["BROKER#alpaca"]["bot"]
+        s3 = pipeline.create("pp1", {"name": "Second on the account", "kind": "daily", "cond": {"phase": "bull"}})
+        pipeline._save("pp1", {**pipeline.get("pp1", s3["id"]), "stage": "paper", "account": "BROKER#alpacapipe#01", "cells": ["bull|calm"], "kill": {"status": "armed"}})
+        acc2 = {a["sk"]: a for a in pipeline.accounts("pp1")}["BROKER#alpacapipe#01"]
+        assert set(acc2["usedByIds"]) == {s["id"], s3["id"]}                # two strategies, one account
         s2 = pipeline.create("pp1", {"name": "Other", "kind": "daily", "cond": {"phase": "bull"}})
         r2 = pipeline.results("pp1", s2["id"])
         try:
@@ -6915,10 +6919,12 @@ def test_strategy_pipeline():
         B = pipeline.build("pp1", st_)
         last = B["days"][-1]
         tr0 = pipeline._today_rows
-        pipeline._today_rows = lambda B_, s_, ti: [{"s": "AAA", "d": last, "i": ti, "f": {}}, {"s": "BBB", "d": last, "i": ti, "f": {}}]
+        db.put({"PK": db.upk("pp1"), "SK": f"{pipeline.POS}{s3['id']}#{last}#CCC", "symbol": "CCC", "signalDay": last, "status": "open", "qty": 1, "fillPrice": 1, "fillDay": last})
+        pipeline._today_rows = lambda B_, s_, ti: [{"s": "AAA", "d": last, "i": ti, "f": {}}, {"s": "BBB", "d": last, "i": ti, "f": {}}, {"s": "CCC", "d": last, "i": ti, "f": {}}]
         cond_today = pipeline._today_rows(B, st_, 0)
         out = pipeline._tick_one("pp1", st_, {}, today=last)
         pipeline._today_rows = tr0
+        assert any(x["s"] == "CCC" and "holds it on this account" in (x["action"] or "") for x in out["signals"]) or not out.get("allowed")
         assert out["day"] == last and len(out["signals"]) == len(cond_today)
         placed = [o for o in orders if o["time_in_force"] == "opg" and o["side"] == "buy"]
         assert len(placed) == sum(1 for x in out["signals"] if (x["action"] or "").startswith("order"))

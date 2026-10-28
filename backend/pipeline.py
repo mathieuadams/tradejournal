@@ -897,17 +897,20 @@ def _summary_line(k, res):
 def accounts(sub, strats=None):
     strats = strats if strats is not None else strategies(sub)
     out = []
-    used = {s["account"]: s for s in strats if s.get("account") and s["stage"] in ("paper", "live")}
+    used = {}                                          # an account can carry several strategies: each one tracks its own trades
+    for x in strats:
+        if x.get("account") and x["stage"] in ("paper", "live"):
+            used.setdefault(x["account"], []).append(x)
     on = _bots_on(sub)
     for sk, name in BOT_ACCOUNTS:
         it = db.get(_pk(sub), sk)
-        s = used.get(sk)
+        u = used.get(sk) or []
         out.append({"sk": sk, "name": name, "connected": bool(it), "env": (it or {}).get("env"), "keyHint": (it or {}).get("keyHint"),
-                    "bot": True, "botOn": on.get(sk) or None, "usedBy": s["name"] if s else None, "usedById": s["id"] if s else None})
+                    "bot": True, "botOn": on.get(sk) or None, "usedBy": ", ".join(x["name"] for x in u) or None, "usedByIds": [x["id"] for x in u]})
     for it in db.q_prefix(_pk(sub), ACC):
-        s = used.get(it["SK"])
+        u = used.get(it["SK"]) or []
         out.append({"sk": it["SK"], "name": it.get("name") or it["SK"][len(ACC):], "connected": True, "env": it.get("env"), "keyHint": it.get("keyHint"),
-                    "bot": False, "usedBy": s["name"] if s else None, "usedById": s["id"] if s else None})
+                    "bot": False, "usedBy": ", ".join(x["name"] for x in u) or None, "usedByIds": [x["id"] for x in u]})
     return out
 
 
@@ -1013,8 +1016,6 @@ def action(sub, pid, b):
             raise BadRequest("Pick a connected account.")
         if acc.get("botOn") and not b.get("share"):
             raise BadRequest(f"The {acc['botOn']} is trading on {acc['name']}: confirm sharing the account (its P&L mixes with the bot's).")
-        if acc.get("usedById") and acc["usedById"] != pid:
-            raise BadRequest(f"{acc['name']} is already used by {acc['usedBy']}.")
         if a == "live" and acc.get("env") != "live":
             raise BadRequest("Pick an account connected with LIVE keys.")
         if a == "paper" and acc.get("env") == "live":
@@ -1294,6 +1295,12 @@ def _tick_one(sub, s, mk, today=None):
         cell = _cell(B["ctx0"], ti)
         allowed = cell in (s.get("cells") or [])
         held = {p["symbol"] for p in positions(sub, s["id"]) if p.get("status") in ("pending", "open", "exiting")}
+        others = {}                                    # the other strategies on the same account: one position per ticker per account
+        for o2 in strategies(sub):                     # (Alpaca nets a ticker's shares, so two strategies can't both hold it)
+            if o2["id"] != s["id"] and o2.get("account") == s["account"] and o2["stage"] in ("paper", "live"):
+                for p in positions(sub, o2["id"]):
+                    if p.get("status") in ("pending", "open", "exiting"):
+                        others[p["symbol"]] = o2["name"]
         todays = [r for r in B["rows"] if r["d"] == today] if s["kind"] == "flow" else _today_rows(B, s, ti)
         acct = _alp(c, "GET", "/v2/account") or {}
         eq = float(acct.get("equity") or 0)
@@ -1306,6 +1313,8 @@ def _tick_one(sub, s, mk, today=None):
                 act = f"skipped: market {_cell_name(cell)} isn't approved"
             elif r["s"] in held:
                 act = "skipped: already held"
+            elif r["s"] in others:
+                act = f"skipped: {others[r['s']]} holds it on this account"
             elif room <= 0:
                 act = f"skipped: {s['maxPos']} positions max"
             else:
