@@ -6808,11 +6808,11 @@ def test_strategy_pipeline():
         assert len(pipeline.overview("pp1")["strategies"]) == len(pipeline.SEEDS)   # seeded once
         db_ = __import__("db")                         # an older store (version 1): only the newer candidates are added
         db_.put({"PK": db_.upk("pp0"), "SK": "PIPESEEDED", "at": "x"})
-        assert [s["seed"] for s in pipeline.strategies("pp0")] == ["highBase"] and len(pipeline.strategies("pp0")) == 1
-        hb = pipeline.strategies("pp0")[0]
+        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "range50"] and len(pipeline.strategies("pp0")) == 2
+        hb = next(x for x in pipeline.strategies("pp0") if x["seed"] == "highBase")
         assert hb["cond"]["hi52"] == "within 10%" and "ath" not in hb["cond"]
         pipeline._save("pp0", {**hb, "cond": {"base": "breakout of the base", "ath": "within 10%", "sqz5": "yes"}})   # stored before: migrated
-        assert pipeline.strategies("pp0")[0]["cond"] == {"base": "breakout of the base", "sqz5": "yes", "hi52": "within 10%"}
+        assert next(x for x in pipeline.strategies("pp0") if x["seed"] == "highBase")["cond"] == {"base": "breakout of the base", "sqz5": "yes", "hi52": "within 10%"}
         # high base: a tight 15-day base near the high, a squeeze, the breakout; the range exit
         rows_ = [(100, 101, 99, 100, 0)] * 30 + [(100, 100.6, 99.6, 100.1, 0)] * 15 + [(100.2, 104, 100, 103.5, 0), (103.6, 104, 103, 103.8, 0),
                  (103.8, 104, 98, 98.5, 0), (98, 99, 97, 98, 0), (98, 99, 97, 98, 0)] + [(98, 99, 97, 98, 0)] * 10
@@ -6974,6 +6974,71 @@ def test_strategy_pipeline():
         assert nv["cond"] == {"drop5": "down 2-5%", "phase": "bull"} and nv["hold"] == 3 and nv["parent"] == s["id"]
     finally:
         plab._bars, wallwatch.config, research._invoke, claude.json_call, pipeline._alp, pipeline._creds = saved
+
+
+def test_intraday_range50():
+    """Intraday 50% range retrace: the setup (leg, 50% retrace, entry at 25%, target 50%, stop at the end), both sides,
+    the same protocol (data, study by leg size / market cell / condition, validation grid vs random timing)."""
+    import random, datetime as dt, range50, pipeline, daytrade, plab
+    B = [(f"2026-01-02T09:{30 + i:02d}", o, h, l, c) for i, (o, h, l, c) in enumerate(
+        [(100, 100, 99, 99.5), (99.5, 99.5, 94, 94.2), (94, 94, 90, 90.5), (90.5, 93, 90.4, 92.8), (92.8, 95.2, 92.6, 95),
+         (95, 95, 93, 93.2), (93.2, 93.3, 92.4, 92.6), (92.6, 94, 92.5, 93.9), (93.9, 95.5, 93.8, 95.4)])]
+    xs = range50.setups(B, range50.clean({"legPct": 5}))
+    lg = [x for x in xs if x["side"] == "long"][0]
+    assert lg["e"] == 92.5 and lg["x"] == 95 and lg["why"] == "target" and abs(lg["r"] - 1) < 1e-9
+    sh = [x for x in xs if x["side"] == "short"][0]
+    assert abs(sh["e"] - 93.9) < 1e-9 and sh["why"] == "stop" and sh["pct"] < 0
+    assert range50.setups(B, {**range50.clean({}), "legPct": 20}) == []      # no leg big enough
+    # the protocol on random minute candles
+    days = []
+    d = dt.date.today() - dt.timedelta(days=120)
+    while d < dt.date.today():
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    def mb(sub, sym, n, now=None, feed=None):
+        r, p, out = random.Random(sym), 500.0, []
+        for dd in days:
+            for m in range(9 * 60 + 30, 16 * 60):
+                o = p
+                p *= 1 + r.gauss(0, 0.0012)
+                out.append({"t": f"{dd}T{m // 60:02d}:{m % 60:02d}", "o": o, "h": max(o, p) * 1.0002, "l": min(o, p) * 0.9998, "c": p, "v": 1})
+        return out
+    def walk(seed):
+        r, p, out = random.Random(seed), 100.0, {}
+        x = dt.date.today() - dt.timedelta(days=1500)
+        while x <= dt.date.today():
+            if x.weekday() < 5:
+                o = p
+                p *= 1 + r.gauss(0.0003, 0.012)
+                out[x.isoformat()] = (o, max(o, p), min(o, p), p, 1)
+            x += dt.timedelta(days=1)
+        return out
+    vix = {k: (0, 0, 0, 15 + (i % 40) / 4, 0) for i, k in enumerate(walk(1))}
+    saved = (daytrade.minute_bars, plab._bars)
+    try:
+        daytrade.minute_bars = mb
+        range50._CACHE.clear()
+        plab._bars = lambda s_, y: {"SPY": walk(1), "^VIX": vix, "^VIX3M": {k: (0, 0, 0, 20, 0) for k in vix}}.get(s_, {})
+        s = pipeline.create("ir1", {"name": "R50", "kind": "intraday", "ip": {"tickers": "QQQ", "legPct": 0.5, "days": 80}})
+        assert s["kind"] == "intraday" and s["ip"]["tickers"] == ["QQQ"] and s["universe"] == {"tickers": ["QQQ"]} and "50%" in pipeline.describe(s)
+        dd_ = pipeline.step_data("ir1", s, lambda m: None)
+        assert dd_["ok"] and dd_["coverage"][0]["bars"] > 1000
+        st = pipeline.step_study("ir1", s, lambda m: None)
+        assert st["events"] > 30 and st["ruleRow"] == "0.5" and set(st["sum"]) >= {"0.2", "0.5"} and len(st["map"]) == 6
+        r0 = st["sum"]["0.5"]
+        assert r0["baseTrain"]["n"] > 0 and abs(r0["edgeTrain"] - (r0["train"]["avg"] - r0["baseTrain"]["avg"])) < 0.01
+        assert {"side", "tod"} <= set(st["factors"])
+        v = pipeline.step_validate("ir1", s, lambda m: None)
+        assert v["intraday"] and len(v["grid"]) == len(v["holds"]) * len(v["stops"]) and sum(g["chosen"] for g in v["grid"]) == 1
+        assert v["costs"][0]["all"]["avg"] > v["costs"][-1]["all"]["avg"] and len(v["_trades"]) == v["trades"]
+        try:
+            pipeline.action("ir1", s["id"], {"action": "paper", "account": "x"})
+            assert False
+        except Exception as e:
+            assert "intraday" in str(e)
+    finally:
+        daytrade.minute_bars, plab._bars = saved
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

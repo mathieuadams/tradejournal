@@ -67,8 +67,11 @@ VALUES = {
     "repeat": ["same contract 2x+", "different contracts"], "total": ["under 500K", "500K-2M", "2-10M", "10M+"], "mixed": ["other side too", "this side only"],
 }
 
-SEED_V = 2                                                 # new candidates are added once each time this goes up
+SEED_V = 3                                                 # new candidates are added once each time this goes up
 SEEDS = [
+    {"seed": "range50", "v": 3, "name": "Range 50% retrace (NQ scalper setup)", "kind": "intraday",
+     "ip": {"tickers": ["QQQ", "SPY"], "tf": 1, "legPct": 0.35, "stopBuf": 0, "side": "both", "days": 250},
+     "desc": "A leg (a high to the low under it), the retrace to its 50%, then back to 25% of the range: buy there, target the 50%, stop under the low. Mirror for the short."},
     {"seed": "highBase", "v": 2, "name": "High base breakout + squeeze", "kind": "daily", "side": "long", "universe": {"list": "Main"},
      "cond": {"base": "breakout of the base", "hi52": "within 10%", "sqz5": "yes"}, "hold": 5, "stop": 0, "exitRange": True,
      "desc": "A tight 15-day base within 10% of the 52-week high, a daily squeeze in the last 5 days, today's close breaks above the base: "
@@ -111,7 +114,7 @@ def get(sub, pid):
 
 def _norm(it):
     s = _strip(it)
-    for k in ("cond", "universe", "job", "kill", "signals", "plan"):
+    for k in ("cond", "universe", "job", "kill", "signals", "plan", "ip"):
         if isinstance(s.get(k), str):
             try:
                 s[k] = json.loads(s[k])
@@ -127,7 +130,7 @@ def _norm(it):
 def _save(sub, s):
     item = {"PK": _pk(sub), "SK": SP + s["id"]}
     for k, v in s.items():
-        item[k] = json.dumps(v, default=str) if k in ("cond", "universe", "job", "kill", "signals", "plan") else v
+        item[k] = json.dumps(v, default=str) if k in ("cond", "universe", "job", "kill", "signals", "plan", "ip") else v
     for k in ("stop", "allocPct"):
         if item.get(k) is not None:
             item[k] = str(item[k])
@@ -166,7 +169,7 @@ def create(sub, b, seed=False):
     name = str(b.get("name") or "").strip()[:80]
     if not name:
         raise BadRequest("Give the strategy a name.")
-    kind = b.get("kind") if b.get("kind") in ("flow", "daily") else "daily"
+    kind = b.get("kind") if b.get("kind") in ("flow", "daily", "intraday") else "daily"
     cond = clean_cond(b.get("cond") or {}, kind)
     if kind == "daily" and not cond:
         raise BadRequest("Add at least one entry condition.")
@@ -176,11 +179,21 @@ def create(sub, b, seed=False):
          "hold": int(_clip(b.get("hold"), 1, 60, 5)), "stop": float(_clip(b.get("stop"), 0, 10, 0)),
          "allocPct": float(_clip(b.get("allocPct"), 1, 50, 10)), "maxPos": int(_clip(b.get("maxPos"), 1, 30, 5)),
          "exitRange": bool(b.get("exitRange")) and kind == "daily",
+         "ip": _ip(b.get("ip")) if kind == "intraday" else None,
          "stage": "research", "account": None, "createdAt": iso(now_ny()), "history": [{"at": iso(now_ny()), "what": "created"}]}
+    if kind == "intraday":
+        s["universe"] = {"tickers": s["ip"]["tickers"]}
+        s["cond"], s["hold"], s["stop"] = {}, 1, 0.0
+        s["side"] = "short" if s["ip"]["side"] == "short" else "long"
     if seed:
         s["seed"] = b["seed"]
     _save(sub, s)
     return s
+
+
+def _ip(p):
+    import range50
+    return range50.clean(p)
 
 
 def _clip(v, lo, hi, dflt):
@@ -199,6 +212,8 @@ def _universe(u):
 
 
 def clean_cond(c, kind):
+    if kind == "intraday":
+        return {}
     keys = {k for k, _ in DAILY_FACTORS} if kind == "daily" else {k for k, _ in _flow_factors()}
     out = {}
     for k, v in (c or {}).items():
@@ -212,11 +227,23 @@ def _flow_factors():
     return uoa.FACTORS + [("clear", "VIX all-clear day")]
 
 
+INTRA_FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("s", "Ticker"), ("wd", "Weekday"), ("wait", "Minutes from the 50% to the entry"),
+                 ("size", "Leg size vs the rule's minimum")]
+
+
 def factor_names(kind):
+    if kind == "intraday":
+        return dict(INTRA_FACTORS)
     return dict(DAILY_FACTORS if kind == "daily" else _flow_factors())
 
 
 def describe(s):
+    if s["kind"] == "intraday":
+        p = s.get("ip") or {}
+        return (f"{', '.join(p.get('tickers') or [])} {p.get('tf', 1)}-minute: after a leg of at least {p.get('legPct')}% "
+                f"({'down legs → long' if p.get('side') == 'long' else 'up legs → short' if p.get('side') == 'short' else 'both sides'}), "
+                f"a retrace to the range's 50%, then back to {round(p.get('entryLvl', 0.25) * 100)}%: enter there, target the 50%, "
+                f"stop {'at the range end' if not p.get('stopBuf') else f'{round(p.get('stopBuf') * 100)}% of the range past its end'}, flat at 15:55")
     names = factor_names(s["kind"])
     c = " and ".join(f"{names.get(k, k)} = {v}" for k, v in (s.get("cond") or {}).items())
     who = f"unusual {s.get('flowSide', 'call')} buying" if s["kind"] == "flow" else "signal"
@@ -482,6 +509,8 @@ def _baseline(B, s, hold, stop, cost_bp, cut, cache, cells=None):
 # ---------------------------------------------------------------- 1. data
 def step_data(sub, s, prog):
     import uoa
+    if s["kind"] == "intraday":
+        return intra_data(sub, s, prog)
     out = {"at": iso(now_ny()), "kind": s["kind"]}
     if s["kind"] == "flow":
         h = uoa.hist_public(sub)
@@ -530,6 +559,8 @@ def step_data(sub, s, prog):
 
 # ---------------------------------------------------------------- 2. study
 def step_study(sub, s, prog):
+    if s["kind"] == "intraday":
+        return intra_study(sub, s, prog)
     B = build(sub, s, prog)
     rows, X = B["rows"], B["X"]
     if not rows:
@@ -612,6 +643,8 @@ GATES = [("trainEdge", "Train edge vs baseline > 0", True), ("testEdge", "Test e
 
 
 def step_validate(sub, s, prog):
+    if s["kind"] == "intraday":
+        return intra_validate(sub, s, prog)
     B = build(sub, s, prog)
     rows, X = B["rows"], B["X"]
     if len(rows) < 2:
@@ -742,6 +775,8 @@ def step_improve(sub, s, res):
     import os
     import claude
     st, v, ai = res.get("study") or {}, res.get("validation") or {}, res.get("ai") or {}
+    if s["kind"] == "intraday":
+        raise BadRequest("Claude's versions aren't available for the intraday strategies yet: change the leg size / stop yourself (Validation grid).")
     if not st.get("factors") or not v.get("grid"):
         raise BadRequest("Run the study and the validation first.")
     allowed = {k: VALUES.get(k, []) for k, _ in (DAILY_FACTORS if s["kind"] == "daily" else _flow_factors())}
@@ -781,7 +816,7 @@ def protocol(sub, s, res):
     """Where the strategy is in the protocol: each step done / failed / to do, and whether it can be promoted."""
     dt, st, v, ai = res.get("data") or {}, res.get("study") or {}, res.get("validation") or {}, res.get("ai") or {}
     stale = lambda r, k: bool(r.get("at")) and r.get("cfg") not in (None, k)
-    e_te = (((st.get("sum") or {}).get(str(s["hold"])) or {}).get("edgeTest") or 0)
+    e_te = (((st.get("sum") or {}).get(st.get("ruleRow") or str(s["hold"])) or {}).get("edgeTest") or 0)
     steps = [
         {"key": "data", "name": "Data download", "status": "done" if dt.get("ok") else "failed" if dt.get("at") else "todo"},
         {"key": "study", "name": "Study", "status": "todo" if not st.get("at") else "failed" if st.get("error") or not st.get("events") else
@@ -799,7 +834,7 @@ def protocol(sub, s, res):
 
 
 def _data_key(s):
-    return json.dumps([s["kind"], s.get("universe")], sort_keys=True)
+    return json.dumps([s["kind"], s.get("universe")] + ([(s.get("ip") or {}).get("tf"), (s.get("ip") or {}).get("days")] if s["kind"] == "intraday" else []), sort_keys=True)
 
 
 def _val_key(s):
@@ -808,7 +843,7 @@ def _val_key(s):
 
 def _cfg_key(s):
     k = [s["kind"], s["side"], s.get("flowSide"), s["cond"], s.get("universe"), s["hold"], s["stop"]]
-    return json.dumps(k + (["range"] if s.get("exitRange") else []), sort_keys=True)
+    return json.dumps(k + (["range"] if s.get("exitRange") else []) + ([s.get("ip")] if s["kind"] == "intraday" else []), sort_keys=True)
 
 
 def run_start(sub, pid, step):
@@ -992,6 +1027,9 @@ def action(sub, pid, b):
                 s[k] = type(s[k])(_clip(b[k], lo, hi, s[k]))
         if b.get("side") in ("long", "short"):
             s["side"] = b["side"]
+        if b.get("ip") is not None and s["kind"] == "intraday":
+            s["ip"] = _ip({**(s.get("ip") or {}), **b["ip"]})
+            s["universe"] = {"tickers": s["ip"]["tickers"]}
         if "exitRange" in b and s["kind"] == "daily":
             s["exitRange"] = bool(b["exitRange"])
         if b.get("flowSide") in ("call", "put"):
@@ -1006,6 +1044,8 @@ def action(sub, pid, b):
         s["history"].append({"at": now, "what": "approved conditions: " + (", ".join(s["cells"]) or "none") + " (validate again)"})
     elif a in ("paper", "live"):
         pr = protocol(sub, s, res)
+        if s["kind"] == "intraday":
+            raise BadRequest("Paper trading of the intraday strategies isn't wired yet: the research protocol works, the minute-by-minute paper engine comes next.")
         if a == "paper" and not pr["ready"]:
             raise BadRequest("The protocol must pass first (data, validation" + (", AI review)." if AI_REQUIRED else ")."))
         if a == "live" and s["stage"] != "paper":
@@ -1359,3 +1399,184 @@ def _today_rows(B, s, ti):
 def _close(p, px, day, d, why):
     p.update(status="closed", exitPrice=px, exitDay=day, exitWhy=why, pct=round(d * (px / p["fillPrice"] - 1) * 100, 3),
              pl=round(d * (px - p["fillPrice"]) * p["qty"], 2))
+
+
+# ---------------------------------------------------------------- intraday (range50.py): the same protocol on minute candles
+COST_I = 2                                             # bp, round trip: QQQ / SPY spreads + a tick of slippage
+COSTS_I = (1, 2, 5, 10)
+
+
+def _cells_by_day():
+    import macro
+    import plab
+    import regime
+    spy, vix, v3 = plab._bars("SPY", 4), plab._bars("^VIX", 4), plab._bars("^VIX3M", 4)
+    days = sorted(spy)
+    lab = regime.label_days({d: v[3] for d, v in spy.items()}, {d: v[3] for d, v in vix.items()}, {d: v[3] for d, v in v3.items()})
+    va = macro.align({d: v[3] for d, v in vix.items()}, days)
+    out = {}
+    for i, d in enumerate(days):                       # the cell known at the previous close (the session itself is unknown)
+        if i == 0:
+            continue
+        pd_ = days[i - 1]
+        ph = {"Up": "bull", "Range": "sideways", "Down": "bear"}.get((lab.get(pd_) or {}).get("trend"))
+        if ph and va[i - 1] is not None:
+            out[d] = f"{ph}|{'calm' if va[i - 1] < 20 else 'volatile'}"
+    return out
+
+
+def _intra_all(sub, s, prog, p=None):
+    import range50
+    p = p or s["ip"]
+    try:
+        cells = _cells_by_day()
+    except Exception as e:
+        print("intraday cells failed", e)
+        cells = {}
+    tr, base = range50.all_trades(sub, p, cells, prog)
+    for x, b in zip(tr, base):
+        x["base"] = b[2]
+        x["tod"] = range50.tod(x["in"])
+        x["wd"] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][__import__("datetime").date.fromisoformat(x["d"]).weekday()]
+        m_in = int(x["in"][11:13]) * 60 + int(x["in"][14:16])
+        m_t = int(x["touch"][11:13]) * 60 + int(x["touch"][14:16])
+        w = m_in - m_t
+        x["wait"] = "under 5 min" if w < 5 else "5-15 min" if w < 15 else "15-60 min" if w < 60 else "60 min+"
+        rel = x["R"] / (abs(x["e"]) * p["legPct"] / 100) if x["e"] else 1
+        x["size"] = "1-1.5x" if rel < 1.5 else "1.5-2x" if rel < 2 else "2x+"
+    return tr
+
+
+def intra_data(sub, s, prog):
+    import range50
+    p = s["ip"]
+    cov = []
+    for sym in p["tickers"]:
+        prog(f"{sym}: {p['days']} days of minute candles (Alpaca)")
+        by = range50.bars(sub, sym, p["days"], p["tf"])
+        ds = sorted(by)
+        if ds:
+            cov.append({"s": sym, "from": ds[0], "to": ds[-1], "days": len(ds), "bars": sum(len(v) for v in by.values())})
+    return {"at": iso(now_ny()), "kind": "intraday", "source": f"Alpaca {p['tf']}-minute candles, regular hours (QQQ stands in for NQ: no futures on Alpaca)",
+            "tickers": len(cov), "coverage": cov, "days": max([c["days"] for c in cov] or [0]), "first": min([c["from"] for c in cov] or [""]),
+            "last": max([c["to"] for c in cov] or [""]), "missing": [t for t in p["tickers"] if t not in [c["s"] for c in cov]], "notes": [], "ok": bool(cov)}
+
+
+def _net(x, bp):
+    return x["pct"] - bp / 100
+
+
+def _split(tr):
+    ds = sorted({x["d"] for x in tr})
+    return ds[int(len(ds) * TRAIN)] if ds else None
+
+
+def _io(tr, cut, bp=COST_I):
+    a = [x for x in tr if x["d"] < cut]
+    b = [x for x in tr if x["d"] >= cut]
+    agg = lambda xs: _agg([_net(x, bp) for x in xs])
+    bag = lambda xs: _agg([v - bp / 100 for x in xs for v in x["base"]])
+    A, Bt, bA, bB = agg(a), agg(b), bag(a), bag(b)
+    return {"train": A, "test": Bt, "all": agg(tr), "baseTrain": bA, "baseTest": bB, "edgeTrain": _edge(A, bA), "edgeTest": _edge(Bt, bB),
+            "rTrain": _agg([x["r"] for x in a if x["r"] is not None]), "rTest": _agg([x["r"] for x in b if x["r"] is not None])}
+
+
+def intra_study(sub, s, prog):
+    import range50
+    p = s["ip"]
+    tr = _intra_all(sub, s, prog)
+    if not tr:
+        return {"at": iso(now_ny()), "events": 0, "error": "No setup in the history: lower the leg size."}
+    cut = _split(tr)
+    prog(f"{len(tr)} setups: by leg size, market condition and each condition")
+    summ = {}
+    for lg in sorted(set(range50.LEGS) | {p["legPct"]}):
+        t2 = tr if lg == p["legPct"] else _intra_all(sub, s, None, {**p, "legPct": lg})
+        summ[f"{lg:g}"] = _io(t2, _split(t2) or cut)
+    cells = []
+    for ph in PHASES:
+        for vo in VOLS:
+            ck = f"{ph}|{vo}"
+            x = _io([t for t in tr if t["cell"] == ck], cut)
+            n = x["train"].get("n", 0) + x["test"].get("n", 0)
+            status = "thin" if n < 20 or x["train"].get("n", 0) < 8 or x["test"].get("n", 0) < 5 else \
+                "edge" if (x["edgeTrain"] or 0) > 0 and (x["edgeTest"] or 0) > 0 and x["train"]["avg"] > 0 and x["test"]["avg"] > 0 else "no edge"
+            cells.append({"cell": ck, "phase": ph, "vol": vo, **{k: x[k] for k in ("train", "test", "baseTrain", "baseTest", "edgeTrain", "edgeTest")},
+                          "n": n, "status": status})
+    facs = {}
+    for fk, _ in INTRA_FACTORS:
+        vals = {}
+        for t in tr:
+            vals.setdefault(t.get(fk), {"train": [], "test": []})["train" if t["d"] < cut else "test"].append(_net(t, COST_I))
+        if len(vals) > 1:
+            facs[fk] = {str(v): {"train": _agg(xs["train"]), "test": _agg(xs["test"])} for v, xs in sorted(vals.items(), key=lambda kv: str(kv[0]))}
+    last = {}
+    for t in tr:
+        last[t["s"]] = t["d"]
+    why = {}
+    for t in tr:
+        why[t["why"]] = why.get(t["why"], 0) + 1
+    return {"at": iso(now_ny()), "events": len(tr), "trainEvents": sum(1 for t in tr if t["d"] < cut), "testEvents": sum(1 for t in tr if t["d"] >= cut),
+            "split": {"from": min(t["d"] for t in tr), "cut": cut, "to": max(t["d"] for t in tr)}, "hz": list(summ), "sum": summ, "map": cells,
+            "factors": facs, "factorNames": dict(INTRA_FACTORS), "lastSignal": last, "tickers": p["tickers"], "costBp": COST_I,
+            "rowLabel": "Leg size", "rowNames": {k: f"{k}% leg" for k in summ}, "ruleRow": f"{p['legPct']:g}", "exits": why,
+            "mapNote": "the rule as it will trade; the cell is the market at the previous close", "intraday": True}
+
+
+def intra_validate(sub, s, prog):
+    import range50
+    p = s["ip"]
+    cells = sorted(s.get("cells") or [])
+    tr0 = _intra_all(sub, s, prog)
+    if len(tr0) < 2:
+        return {"at": iso(now_ny()), "error": "Not enough setups to validate.", "gates": [], "passed": False}
+    cut = _split(tr0)
+    flt = (lambda xs: [x for x in xs if x["cell"] in cells]) if cells else (lambda xs: xs)
+    tr = flt(tr0)
+    if len(tr) < 2:
+        return {"at": iso(now_ny()), "error": "Not enough setups in the ticked market conditions.", "gates": [], "passed": False, "cells": cells}
+    prog(f"{len(tr)} setups: leg size x stop grid vs the random-timing baseline")
+    grid = []
+    legs, stops = sorted(set(range50.LEGS) | {p["legPct"]}), sorted(set(range50.STOPS) | {p["stopBuf"]})
+    for lg in legs:
+        for sb in stops:
+            t2 = tr if (lg == p["legPct"] and sb == p["stopBuf"]) else flt(_intra_all(sub, s, None, {**p, "legPct": lg, "stopBuf": sb}))
+            x = _io(t2, cut)
+            grid.append({"hold": lg, "stop": sb, **{k: x[k] for k in ("train", "test", "baseTrain", "baseTest", "edgeTrain", "edgeTest")},
+                         "rTest": x["rTest"], "chosen": lg == p["legPct"] and sb == p["stopBuf"]})
+    ch = next(g for g in grid if g["chosen"])
+    costs = [{"bp": c_, "all": _agg([_net(x, c_) for x in tr])} for c_ in COSTS_I]
+    months = {}
+    for x in tr:
+        months.setdefault(x["d"][:7], []).append(_net(x, COST_I))
+    mlist = [{"m": m, **_agg(v)} for m, v in sorted(months.items())]
+    by_t = {}
+    for x in tr:
+        by_t.setdefault(x["s"], []).append(_net(x, COST_I))
+    tick = sorted(({"s": k, **_agg(v)} for k, v in by_t.items()), key=lambda z: -z["n"])
+    pos_m = sorted((m["tot"] for m in mlist if m.get("tot", 0) > 0), reverse=True)
+    top3 = round(sum(pos_m[:3]) / sum(pos_m) * 100) if pos_m and sum(pos_m) > 0 else None
+    te_x = [_net(x, COST_I) for x in tr if x["d"] >= cut]
+    ndays = len({x["d"] for x in tr0 if x["d"] >= cut}) or 1
+    avg_year = sum(te_x) / max(0.2, ndays / 252)
+    dd_te = _dd(te_x)
+    c5 = next(c for c in costs if c["bp"] == 5)["all"]
+    gates = [
+        {"key": "trainEdge", "name": "Train edge vs random timing > 0", "hard": True, "ok": (ch["edgeTrain"] or 0) > 0, "value": ch["edgeTrain"], "need": "> 0"},
+        {"key": "testEdge", "name": "Test edge vs random timing > 0", "hard": True, "ok": (ch["edgeTest"] or 0) > 0, "value": ch["edgeTest"], "need": "> 0"},
+        {"key": "trades", "name": "At least 30 trades", "hard": True, "ok": len(tr) >= 30, "value": len(tr), "need": "≥ 30"},
+        {"key": "cost20", "name": "Still positive at 5 bp cost", "hard": True, "ok": (c5.get("avg") or 0) > 0, "value": c5.get("avg"), "need": "> 0"},
+        {"key": "testT", "name": "Test t-stat at least 1.5", "hard": False, "ok": (ch["test"].get("t") or 0) >= 1.5, "value": ch["test"].get("t"), "need": "≥ 1.5"},
+        {"key": "months", "name": "Best 3 months under 60% of the profit", "hard": False, "ok": top3 is not None and top3 < 60, "value": top3, "need": "< 60%"},
+        {"key": "dd", "name": "Test drawdown under 3x the average year", "hard": False, "ok": avg_year > 0 and dd_te < 3 * avg_year, "value": dd_te,
+         "need": f"< {round(3 * avg_year, 1)}" if avg_year > 0 else ""}]
+    eq, cur = [], 0.0
+    for x in sorted(tr, key=lambda z: z["in"]):
+        cur += _net(x, COST_I)
+        eq.append([x["d"], round(cur, 2)])
+    return {"at": iso(now_ny()), "hold": p["legPct"], "stop": p["stopBuf"], "grid": grid, "costs": costs, "months": mlist, "tickers": tick,
+            "top1Share": None, "top3Months": top3, "trades": len(tr), "chosen": ch, "testDD": dd_te, "allDD": _dd([_net(x, COST_I) for x in tr]),
+            "gates": gates, "passed": all(g["ok"] for g in gates if g["hard"]), "equity": eq[-400:], "split": {"cut": cut}, "cells": cells,
+            "holds": legs, "stops": stops, "costBp": COST_I, "gridRow": "Leg \\ stop", "rowUnit": "% leg", "colUnit": "of the range past the end",
+            "rTest": ch.get("rTest"), "intraday": True,
+            "_trades": [{"s": x["s"], "in": x["d"], "out": x["d"], "pct": round(_net(x, COST_I), 3)} for x in tr]}
