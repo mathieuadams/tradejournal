@@ -1331,7 +1331,7 @@ def _wallwatch_exit(sub, rec, p):
                     cv = wallwatch.cvd_roll(hb, int(ww.get("cvdN") or 20))
                     if (ww.get("cvdRiseX") and cv[-1] > cv[-2]) or (ww.get("cvdFallX") and cv[-1] < cv[-2]):
                         return f"CVD {'rising' if cv[-1] > cv[-2] else 'falling'} at the {hb[-1]['t'][11:16]} close ({cv[-2]:,.0f} → {cv[-1]:,.0f})"
-                if ww.get("wtSellX") and ww.get("tf") != "1D" and len(hb) > 40 and __import__("wavetrend").dots(hb)[1][-1]:
+                if ww.get("wtSellX") and ww.get("tf") != "1D" and not ww.get("wtDaily", True) and len(hb) > 40 and __import__("wavetrend").dots(hb)[1][-1]:
                     return f"WaveTrend sell dot at the {hb[-1]['t'][11:16]} close ({hb[-1]['c']:.2f})"
             if now.hour * 60 + now.minute >= 15 * 60 + 50:   # daily: at the close, today's candle so far included
                 hd = hb + [{"t": now.strftime("%Y-%m-%dT%H:%M"), "o": last["c"], "h": last["c"], "l": last["c"], "c": last["c"]}]
@@ -1355,7 +1355,7 @@ def _wallwatch_exit(sub, rec, p):
                         cv = wallwatch.cvd_roll(dd_, int(ww.get("cvdN") or 20))
                         if (ww.get("cvdRiseX") and cv[-1] > cv[-2]) or (ww.get("cvdFallX") and cv[-1] < cv[-2]):
                             return f"daily CVD {'rising' if cv[-1] > cv[-2] else 'falling'} at the close ({last['c']:.2f})"
-                if ww.get("wtSellX") and ww.get("tf") == "1D":
+                if ww.get("wtSellX") and (ww.get("tf") == "1D" or ww.get("wtDaily", True)):
                     dd_ = wallwatch.daily_bars(hd)
                     if len(dd_) > 40 and __import__("wavetrend").dots(dd_)[1][-1]:
                         return f"daily WaveTrend sell dot at the close ({last['c']:.2f})"

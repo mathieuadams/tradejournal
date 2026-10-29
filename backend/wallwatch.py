@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False, "fxEntry": "", "fxExit": "", "hvcAbove": False, "hvcBelow": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "inFall": False, "inhFall": False, "sqhRise": False, "sqhFall": False, "sqdRise": False, "sqdFall": False, "cvdRise": False, "cvdFall": False, "inRiseX": False, "inhRiseX": False, "inhRedX": False, "sqhRiseX": False, "sqdRiseX": False, "cvdRiseX": False, "cvdFallX": False, "wtBuy": False, "wtSellX": False, "wtN": 3,
+          "inYExit": False, "fxEntry": "", "fxExit": "", "hvcAbove": False, "hvcBelow": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "inFall": False, "inhFall": False, "sqhRise": False, "sqhFall": False, "sqdRise": False, "sqdFall": False, "cvdRise": False, "cvdFall": False, "inRiseX": False, "inhRiseX": False, "inhRedX": False, "sqhRiseX": False, "sqdRiseX": False, "cvdRiseX": False, "cvdFallX": False, "wtBuy": False, "wtSellX": False, "wtN": 3, "wtDaily": True,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -128,7 +128,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}|in{int(cfg.get('inN1', 70))}.{int(cfg.get('inN2', 40))}.{int(cfg.get('inN3', 20))}"
             + (("|x" + "".join(str(int(bool(cfg.get(k)))) for k in EXTRA_SW)
                 + "|" + ".".join(f"{float(cfg.get(k, PARAMS[k])):g}" for k in EXTRA_NUM)) if any(cfg.get(k) for k in EXTRA_SW) else "")
-            + (f"|wt{int(bool(cfg.get('wtBuy')))}{int(bool(cfg.get('wtSellX')))}n{int(cfg.get('wtN') or 3)}" if (cfg.get("wtBuy") or cfg.get("wtSellX")) else "")
+            + (f"|wt{int(bool(cfg.get('wtBuy')))}{int(bool(cfg.get('wtSellX')))}n{int(cfg.get('wtN') or 3)}{'D' if cfg.get('wtDaily', True) else 'H'}" if (cfg.get("wtBuy") or cfg.get("wtSellX")) else "")
             + (("|fx" + __import__("hashlib").sha1(f"{cfg.get('fxEntry') or ''}|{cfg.get('fxExit') or ''}".encode()).hexdigest()[:10])
                if (cfg.get("fxEntry") or cfg.get("fxExit")) else ""))
 
@@ -178,7 +178,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "pwExit", "inFall", "inhFall", "sqhRise", "sqhFall", "sqdRise", "sqdFall", "cvdRise", "cvdFall", "inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX", "wtBuy", "wtSellX", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "pwExit", "inFall", "inhFall", "sqhRise", "sqhFall", "sqdRise", "sqdFall", "cvdRise", "cvdFall", "inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX", "wtBuy", "wtSellX", "wtDaily", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     for k in ("fxEntry", "fxExit"):                   # formula rules (formula.py)
@@ -1114,7 +1114,8 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         earnings = None
     sup_keys = tuple(x for x, k in ((("putWall", "put wall"), "usePW"), (("flip", "flip"), "useFlip")) if on(k))
     cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if any(on(k) for k in ("cvdUp", "cvdDn", "cvdRise", "cvdFall", "cvdRiseX", "cvdFallX")) else None
-    wtb_, wtx_ = __import__("wavetrend").dots(bars, int(P.get("wtN") or 3)) if (on("wtBuy") or on("wtSellX")) else (None, None)
+    wtb_, wtx_ = (getattr(__import__("wavetrend"), "dots_daily" if on("wtDaily") else "dots")(bars, int(P.get("wtN") or 3))
+                  if (on("wtBuy") or on("wtSellX")) else (None, None))     # WaveTrend on daily candles (default) or on the strategy's candles
     ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     extra = extra or {}
     kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
@@ -1965,7 +1966,7 @@ def enter(sub, sym, sg):
               "kcRide": bool(cfg.get("kcRide")), "kcLen": int(cfg.get("kcLen") or 21), "kcMult": float(cfg.get("kcMult") or 3),
               "kcDaily": bool(cfg.get("kcDaily", True)),
               "cwLost": bool(cfg.get("cwLost")), "dpLost": bool(cfg.get("dpLost")), "pwExit": bool(cfg.get("pwExit")),
-              **{k_: bool(cfg.get(k_)) for k_ in RISE_FALL_EXITS}, "cvdN": int(cfg.get("cvdN") or 20), "tf": cfg.get("tf") or "1h",
+              **{k_: bool(cfg.get(k_)) for k_ in RISE_FALL_EXITS}, "cvdN": int(cfg.get("cvdN") or 20), "wtDaily": bool(cfg.get("wtDaily", True)), "tf": cfg.get("tf") or "1h",
               "vwapDays": int(cfg.get("vwapDays") or VWAP_DAYS),
               "stopOn": bool(cfg.get("stopOn", True)),
               "target": sg.get("target"), "level": sg.get("level"), "entry": sg["entry"], "stopAtr": float(cfg["stopAtr"]),

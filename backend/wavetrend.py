@@ -109,3 +109,24 @@ def dots(bars, n=1):
     n = max(1, int(n or 1))
     win = lambda xs: [any(xs[max(0, i - n + 1):i + 1]) for i in range(len(xs))]
     return win(r["buy"]), r["sell"]
+
+
+def dots_daily(hbars, n=1):
+    """WaveTrend on DAILY candles built from intraday ones, mapped back to each intraday candle without look-ahead:
+    a day's dot is known at its close (its last candle). buy = a daily buy dot on one of the n-1 previous days, or on
+    this day at its last candle; sell = this day has a sell dot and this is its last candle."""
+    days, idx = [], []
+    for b in hbars:
+        d = b["t"][:10]
+        if not days or days[-1][0] != d:
+            days.append([d, b["c"]])
+        days[-1][1] = b["c"]
+        idx.append(len(days) - 1)
+    r = wt([c for _, c in days])
+    n = max(1, int(n or 1))
+    buy, sell = [], []
+    for i, k in enumerate(idx):
+        last = i + 1 == len(idx) or idx[i + 1] != k
+        buy.append(any(r["buy"][max(0, k - n + 1):k]) or (last and r["buy"][k]))
+        sell.append(bool(last and r["sell"][k]))
+    return buy, sell

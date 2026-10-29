@@ -7296,6 +7296,11 @@ def test_wavetrend_rules():
     assert s["status"] == "wavetrend" and s["exit"] == 101.5 and s["exitWhy"] == "wtSellX"
     assert "|wt10n3" in wallwatch.version({**wallwatch.PARAMS, "wtBuy": True}) and "|wt" not in wallwatch.version(wallwatch.PARAMS)
     assert "wtSellX" in wallwatch.RISE_FALL_EXITS
+    hb = [{"t": f"2026-{1 + k // 28:02d}-{1 + k % 28:02d}T{h}", "c": x} for k, x in enumerate(c[:300]) for h in ("10:30", "15:30")]
+    db_, ds_ = wavetrend.dots_daily(hb, 1)
+    dr = wavetrend.wt(c[:300])
+    assert [i // 2 for i, v in enumerate(db_) if v] == [k for k, v in enumerate(dr["buy"]) if v]          # at the day's last candle only
+    assert all(i % 2 == 1 for i, v in enumerate(db_ + ds_) if v) and sum(ds_) == sum(dr["sell"])
 
 
 if __name__ == "__main__":

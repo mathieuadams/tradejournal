@@ -495,7 +495,7 @@ def rule_test(sub, params=None, budget_s=480):
     common = {k: cfg.get(k) for k in ("retestDays", "retestZone", "cwRoom", "emaLen", "vwapDays", "trailAtr", "tgtBuf", "kcLen", "kcMult", "relFlow", "relMult")}
     base = {**common, **OFF, "stopAtr": stop, "retestMin": vmin, **fixed}
     mine_entry = {k: cfg.get(k) for k in wallwatch.SWITCHES if k not in EXIT_KEYS}
-    mine_entry.update(aboveFlip=cfg.get("aboveFlip"), abovePW=cfg.get("abovePW"), belowPW=cfg.get("belowPW"), cvdUp=cfg.get("cvdUp"), cvdDn=cfg.get("cvdDn"), inFall=cfg.get("inFall"), inhFall=cfg.get("inhFall"), sqhRise=cfg.get("sqhRise"), sqhFall=cfg.get("sqhFall"), sqdRise=cfg.get("sqdRise"), sqdFall=cfg.get("sqdFall"), cvdRise=cfg.get("cvdRise"), cvdFall=cfg.get("cvdFall"), wtBuy=cfg.get("wtBuy"), wtN=cfg.get("wtN"), earnOn=False)      # no earnings history: off in the test
+    mine_entry.update(aboveFlip=cfg.get("aboveFlip"), abovePW=cfg.get("abovePW"), belowPW=cfg.get("belowPW"), cvdUp=cfg.get("cvdUp"), cvdDn=cfg.get("cvdDn"), inFall=cfg.get("inFall"), inhFall=cfg.get("inhFall"), sqhRise=cfg.get("sqhRise"), sqhFall=cfg.get("sqhFall"), sqdRise=cfg.get("sqdRise"), sqdFall=cfg.get("sqdFall"), cvdRise=cfg.get("cvdRise"), cvdFall=cfg.get("cvdFall"), wtBuy=cfg.get("wtBuy"), wtN=cfg.get("wtN"), wtDaily=cfg.get("wtDaily", True), earnOn=False)      # no earnings history: off in the test
     full = bool(P.get("full"))
     variants = [("base", "Base: alert + retest of PW / flip", base)]
     if full:                                           # every rule alone (slower); the default run is base vs your settings
