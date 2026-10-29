@@ -62,13 +62,17 @@ VALUES = {
     "sqz": ["on", "fired today", "off"], "sqz5": ["yes", "no"],
     "prem": ["100-250K", "250K-1M", "1-5M", "5M+"], "rel": ["3x+ its median", "normal size"], "dte": ["0-7", "8-30", "31-90", "91+"],
     "mny": ["in the money", "at the money", "OTM 2-10%", "OTM 10%+"], "sweep": ["sweep", "no sweep"], "open": ["opening (vol > OI)", "vol <= OI"],
+    "quiet": ["first in 30+ days", "10-30 days", "active (< 10 days)"], "voi": ["OI ~0 (vol >= 10x OI)", "vol 1-10x OI", "vol < OI"],
     "tod": ["before 10:30", "10:30-15:00", "last hour"], "burst": ["1", "2-4", "5+"],
     "cluster": ["single (none in 5 days)", "first day of a burst", "cluster 1-2 days", "cluster 3+ days"],
     "repeat": ["same contract 2x+", "different contracts"], "total": ["under 500K", "500K-2M", "2-10M", "10M+"], "mixed": ["other side too", "this side only"],
 }
 
-SEED_V = 6                                                 # new candidates are added once each time this goes up
+SEED_V = 7                                                 # new candidates are added once each time this goes up
 SEEDS = [
+    {"seed": "trulyUnusual", "v": 7, "name": "Flow: truly unusual calls (quiet ticker, OI ~0)", "kind": "flow", "side": "long", "flowSide": "call",
+     "cond": {"quiet": "first in 30+ days", "voi": "OI ~0 (vol >= 10x OI)"}, "hold": 5, "stop": 0,
+     "desc": "A ticker with no call alert in 30+ trading days, then a call bought at the ask on a contract with almost no open interest (volume 10x+ OI): buy the stock the next open, out after 5 days."},
     {"seed": "silver", "v": 6, "name": "ICT Silver Bullet", "kind": "intraday",
      "ip": {"setup": "silver", "tickers": ["QQQ", "SPY"], "tf": 1, "pivLen": 3, "expiry": 30, "rr": 2, "bufTicks": 2, "flatEod": True, "days": 250},
      "desc": "Your Pine script: a sweep of the last swing high / low sets the bias, the first fair value gap the bias way in 10-11 or 14-15 ET enters at the close, stop beyond the sweep, 2R."},

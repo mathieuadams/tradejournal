@@ -192,6 +192,7 @@ FACTORS = [
     ("sweep", "Sweep"), ("open", "Opening (volume > open interest)"), ("tod", "Time of the day"), ("burst", "Alerts that day (same side)"),
     ("cluster", "Single vs cluster (same side, last 5 days)"), ("repeat", "Same contract bought again that day"), ("total", "Total premium that day"),
     ("mixed", "Other side that day"),
+    ("quiet", "Days since the ticker's last alert (same side)"), ("voi", "Contract volume vs open interest"),
 ]
 
 
@@ -251,6 +252,10 @@ def features(ev, ctx, i, hist_prem):
     f["repeat"] = "same contract 2x+" if ev.get("rep", 1) >= 2 else "different contracts"
     f["total"] = _bucket(ev["tot"], (500e3, 2e6, 10e6), ("under 500K", "500K-2M", "2-10M", "10M+"))
     f["mixed"] = "other side too" if ev.get("mixed") else "this side only"
+    g = ev.get("gap")                                  # truly unusual: a ticker that never gets flow, a contract nobody held
+    f["quiet"] = None if g is None and not hist_prem else "first in 30+ days" if g is None or g >= 30 else "10-30 days" if g >= 10 else "active (< 10 days)"
+    vo = b.get("vo")
+    f["voi"] = None if not vo else "OI ~0 (vol >= 10x OI)" if vo >= 10 else "vol 1-10x OI" if vo >= 1 else "vol < OI"
     return f
 
 
@@ -342,6 +347,7 @@ def build(sub, x=None):
                 i = pos.get(ev["d"])
                 ev["mixed"] = ev["d"] in other
                 ev["prior"] = sum(1 for j in seen_i[-6:] if i is not None and i - 5 <= j < i)
+                ev["gap"] = (i - seen_i[-1]) if (i is not None and seen_i) else None      # trading days since this side's last alert
                 if i is not None:
                     seen_i.append(i)
                 if i is None or A["c"][i] is None:

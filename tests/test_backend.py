@@ -6741,6 +6741,7 @@ def test_unusual_flow_study():
         assert c5["avg"] > 0 and p5["avg"] > 0 and c5["win"] > 60     # both read the right way (puts upside down)
         assert "phase" in out["factors"]["call"] and set(out["factors"]["call"]["prem"]) >= {"100-250K", "250K-1M", "1-5M"}
         assert {"cluster", "repeat", "total", "mixed"} <= set(out["factors"]["call"]) and "single (none in 5 days)" in out["factors"]["call"]["cluster"]
+        assert {"quiet", "voi"} <= set(out["factors"]["call"]) and "active (< 10 days)" in out["factors"]["call"]["quiet"]
         assert out["pairs"]["call"] and all(set(p["train"]) == {"1", "3", "5", "10"} for p in out["pairs"]["call"])
         assert len(db.get(db.upk("uo1"), uoa.SK)["data"]) < 380_000
         v = out["validation"]
@@ -6808,7 +6809,7 @@ def test_strategy_pipeline():
         assert len(pipeline.overview("pp1")["strategies"]) == len(pipeline.SEEDS)   # seeded once
         db_ = __import__("db")                         # an older store (version 1): only the newer candidates are added
         db_.put({"PK": db_.upk("pp0"), "SK": "PIPESEEDED", "at": "x"})
-        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "orbfvg", "range50", "retest", "silver"] and len(pipeline.strategies("pp0")) == 5
+        assert sorted(s["seed"] for s in pipeline.strategies("pp0")) == ["highBase", "orbfvg", "range50", "retest", "silver", "trulyUnusual"] and len(pipeline.strategies("pp0")) == 6
         hb = next(x for x in pipeline.strategies("pp0") if x["seed"] == "highBase")
         assert hb["cond"]["hi52"] == "within 10%" and "ath" not in hb["cond"]
         pipeline._save("pp0", {**hb, "cond": {"base": "breakout of the base", "ath": "within 10%", "sqz5": "yes"}})   # stored before: migrated
@@ -6950,7 +6951,7 @@ def test_strategy_pipeline():
         out3 = pipeline._tick_one("pp1", pipeline.get("pp1", s["id"]), {}, today="1999-01-01")
         assert pipeline.get("pp1", s["id"])["kill"]["status"] == "paused" and any("kill switch" in a for a in out3["actions"])
         ov = pipeline.overview("pp1")
-        run = [x for x in ov["strategies"] if x["stage"] == "paper"]
+        run = [x for x in ov["strategies"] if x["stage"] == "paper" and x["id"] == s["id"]]
         assert run and run[0]["paper"]["closed"]["n"] >= 12
         # rule change sends nothing live: must go back to research first; then every step is stale
         try:
@@ -7228,6 +7229,54 @@ def test_silver_bullet():
         assert all(tr_["in"] >= cv["bars"][0][0][:10] for tr_ in cv["trades"]) and all({"e", "x", "stop", "tgt"} <= set(tr_) for tr_ in cv["trades"])
     finally:
         daytrade.minute_bars, plab._bars = saved
+
+
+def test_truly_unusual_scanner():
+    """Schwab chains: a quiet chain (tiny open interest everywhere) with one contract bought big on ~0 OI is a hit
+    (the EGO 36C case); a busy chain or a small premium is not; hits are kept, then followed (stock moves after)."""
+    import oiscan, wallwatch, plab, db, datetime as dt
+    def mk(oi_vol):
+        m = {}
+        for exp, k, vol, oi, bid, ask, last in oi_vol:
+            m.setdefault(f"{exp}:23", {}).setdefault(str(k), []).append({"symbol": f"X {exp} {k}C", "totalVolume": vol, "openInterest": oi,
+                                                                         "bid": bid, "ask": ask, "last": last, "mark": (bid + ask) / 2})
+        return m
+    ego = {"underlyingPrice": 33.73, "callExpDateMap": mk([("2026-11-20", 36.0, 1506, 44, 1.25, 3.40, 3.0), ("2026-11-20", 35.0, 304, 261, 1.7, 2.0, 1.9),
+                                                          ("2026-12-18", 40.0, 15, 1115, 0, 1.15, 0.5)]), "putExpDateMap": mk([("2026-11-20", 31.0, 4, 55, .55, 2.9, 1)])}
+    busy = {"underlyingPrice": 100, "callExpDateMap": mk([("2026-11-20", 100.0, 5000, 100, 2, 2.2, 2.1), ("2026-11-20", 105.0, 10, 90000, 1, 1.1, 1)])}
+    small = {"underlyingPrice": 10, "callExpDateMap": mk([("2026-11-20", 12.0, 500, 2, .2, .3, .3)])}
+    chains = {"EGO": ego, "BUSY": busy, "SMALL": small}
+    calls = []
+    def fake_get(sub, path, q=None):
+        calls.append(path)
+        if path.startswith("/movers"):
+            return {"screeners": [{"symbol": "SMALL"}, {"symbol": "$SPX"}]}
+        return chains.get(q["symbol"], {})
+    saved = (oiscan._get, wallwatch.config, plab._bars, oiscan.time.sleep)
+    try:
+        oiscan._get = fake_get
+        oiscan.time.sleep = lambda s: None
+        wallwatch.config = lambda sub: {"tickers": ["EGO", "BUSY", "SPY"], "lists": []}
+        db.put({"PK": db.upk("oi1"), "SK": "BROKER#schwab", "enc": "x"})
+        c = oiscan.config("oi1")
+        assert oiscan.universe("oi1", c) == ["EGO", "BUSY", "SMALL"]           # SPY skipped, $SPX not a stock
+        hs, coi = oiscan.hits_of(ego, "EGO", c, "2026-10-28T10:05:00")
+        assert len(hs) == 1 and hs[0]["strike"] == 36.0 and hs[0]["ratio"] == 34.2 and hs[0]["askSide"] == "at the ask" and coi == 44 + 261 + 1115 + 55
+        assert oiscan.hits_of(busy, "BUSY", c, "2026-10-28T10:05:00")[0] == []     # the chain isn't quiet
+        assert oiscan.hits_of(small, "SMALL", c, "2026-10-28T10:05:00")[0] == []   # $12.5K premium
+        run = oiscan.scan("oi1")
+        assert run["hits"] == 1 and run["tickers"] == 3
+        oiscan.scan("oi1")                              # the same contract seen again: one hit, first seen kept
+        hits = [h for h in db.q_prefix(db.upk("oi1"), oiscan.HIT)]
+        assert len(hits) == 1 and hits[0]["firstSeen"] <= hits[0]["lastSeen"]
+        day = hits[0]["day"]
+        nxt = [(dt.date.fromisoformat(day) + dt.timedelta(days=k)).isoformat() for k in range(1, 20)]
+        plab._bars = lambda s, y: {d: (0, 0, 0, 33.73 * (1 + 0.01 * (i + 1)), 0) for i, d in enumerate(nxt)}
+        v = oiscan.view("oi1")
+        assert v["hits"][0]["moves"]["1"] == 1.0 and v["summary"]["5"]["win"] == 100
+        assert oiscan.save("oi1", {"minPremium": 500000, "extra": "kgc, iag"})["extra"] == ["IAG", "KGC"]
+    finally:
+        oiscan._get, wallwatch.config, plab._bars, oiscan.time.sleep = saved
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

@@ -479,6 +479,27 @@ def daytrade_smc(sub, claims, body, q):
     return smc.run(sub, b.get("t"), b.get("days") or 5, b.get("cfg") if isinstance(b.get("cfg"), dict) else None)
 
 
+@route("GET", "/oiscan")
+def oiscan_get(sub, claims, body, q):
+    """Truly unusual options: quiet chains with one contract bought big on ~0 open interest (Schwab market data)."""
+    import oiscan
+    return oiscan.view(sub, int(q.get("days") or 60))
+
+
+@route("PUT", "/oiscan")
+def oiscan_put(sub, claims, body, q):
+    import oiscan
+    oiscan.save(sub, body or {})
+    return oiscan.view(sub)
+
+
+@route("POST", "/oiscan/run")
+def oiscan_run(sub, claims, body, q):
+    import research
+    research._invoke(sub, "oiscanone", {})
+    return {"started": True}
+
+
 @route("GET", "/pipeline")
 def pipe_list(sub, claims, body, q):
     """Strategy pipeline: every strategy (research / paper / live), the older bots, the accounts, today's market cell."""

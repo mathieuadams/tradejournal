@@ -6219,15 +6219,48 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => { if (e.target.matches && e.target.matches('[data-scsym]')) { const [, st] = scState(); st.t = e.target.value; scLoad(); } });
 window.addEventListener('resize', () => { if (route() === 'botcharts') scDraw(); });
 
+/* ---------- truly unusual options: quiet chains, one contract bought big on ~0 open interest (backend oiscan.py) ---------- */
+async function loadOi() { try { S.oi = await api('/oiscan'); } catch (e) { S.oi = { error: e.message }; } if (route() === 'botoiscan') render(); }
+function vOiScan() {
+  const O = S.oi;
+  if (!O) return head('Truly unusual options', '', '') + '<p class="loading">Loading…</p>';
+  if (O.error) return head('Truly unusual options', '', '') + `<div class="errbox">${esc(O.error)}</div>`;
+  const c = O.cfg || {}, r = O.run || {}, hs = O.hits || [], sm = O.summary || {};
+  const mv = v => v == null ? '<td class="r muted">—</td>' : `<td class="r ${ppCls(v)}">${ppPc(v)}</td>`;
+  const f = (id, l, v, step) => `<div class="field"><label for="${id}">${l}</label><input id="${id}" type="number" step="${step || 'any'}" value="${v}"></div>`;
+  return head('Truly unusual options', 'A quiet option chain (almost no open interest in any expiration) and one contract where somebody just spent big: volume many times the open interest. From Schwab option chains every 15 minutes; it collects forward.', `<button class="btn coachbtn" data-oirun ${O.schwab ? '' : 'disabled'}>Scan now</button>`)
+    + (!O.schwab ? '<div class="errbox">Connect Schwab in Settings → Brokers (the Schwab app needs the Market Data API).</div>' : '')
+    + `<p class="muted" style="font-size:.84rem">${r.at ? `Last scan ${esc(r.at.replace('T', ' ').slice(0, 16))} ET: ${r.tickers} of ${r.universe} chains read, ${r.hits} hit${r.hits === 1 ? '' : 's'}${(r.errors || []).length ? ` · <span class="loss">${esc(r.errors[r.errors.length - 1])}</span>` : ''}` : 'No scan yet: it runs every 15 minutes in the session, or press Scan now.'}</p>
+    <details class="panel" style="padding:12px 16px"><summary><b>Rules</b> <span class="muted">premium ≥ $${fmtInt(c.minPremium)} · volume ≥ ${c.minVolOi}× OI · whole chain OI ≤ ${fmtInt(c.maxChainOi)} · ${c.movers ? 'watchlists + today\'s movers' : 'watchlists'}${(c.extra || []).length ? ' + ' + c.extra.length + ' tickers' : ''}</span></summary>
+      <div class="form-grid" style="margin-top:10px">${f('oi-prem', 'Premium on the contract at least ($)', c.minPremium, 10000)}${f('oi-ratio', 'Volume at least × open interest', c.minVolOi, 1)}${f('oi-chain', 'Whole chain open interest at most', c.maxChainOi, 1000)}${f('oi-max', 'Chains read per scan at most', c.maxTickers, 10)}</div>
+      <div class="field"><label for="oi-extra">Also scan these tickers</label><input id="oi-extra" value="${esc((c.extra || []).join(' '))}" placeholder="EGO KGC IAG …"></div>
+      <div class="field"><label for="oi-skip">Never scan (huge chains)</label><input id="oi-skip" value="${esc((c.skip || []).join(' '))}"></div>
+      <label><input type="checkbox" id="oi-movers" ${c.movers ? 'checked' : ''}> Add today's NYSE / NASDAQ movers (volume, % up, % down)</label> &nbsp;
+      <label><input type="checkbox" id="oi-on" ${c.enabled ? 'checked' : ''}> Scan every 15 minutes</label>
+      <div style="margin-top:8px"><button class="btn coachbtn" data-oisave>Save</button></div></details>
+    ${Object.keys(sm).length ? `<section class="periods" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">${['1', '3', '5', '10'].filter(k => sm[k]).map(k => `<div class="period"><h3>Stock ${k} day${k > 1 ? 's' : ''} later</h3><div class="big ${ppCls(sm[k].avg)}">${ppPc(sm[k].avg)}</div><p>${sm[k].n} hits · ${sm[k].win}% the right way</p></div>`).join('')}</section>` : ''}
+    <section><h2>Hits <span class="muted" style="font-weight:400;font-size:.8rem">last 60 days · moves in the contract's direction (puts: the stock down) from the stock price when first seen</span></h2>
+    ${hs.length ? `<div class="tablewrap"><table class="ppt" style="font-size:.8rem"><thead><tr><th>First seen</th><th>Ticker</th><th>Contract</th><th class="r">Volume</th><th class="r">OI</th><th class="r">× OI</th><th class="r">Premium</th><th>Fill</th><th class="r">OTM</th><th class="r">Chain OI</th><th class="r">Stock</th><th class="r">+1d</th><th class="r">+3d</th><th class="r">+5d</th><th class="r">+10d</th></tr></thead><tbody>
+      ${hs.map(h => `<tr><td>${esc((h.firstSeen || '').replace('T', ' ').slice(5, 16))}</td><td><b>${esc(h.sym)}</b></td><td>${h.side === 'call' ? 'C' : 'P'} ${h.strike} <span class="muted">${esc(h.exp)} (${h.dte}d)</span></td><td class="r">${fmtInt(h.vol)}</td><td class="r">${fmtInt(h.oi)}</td><td class="r"><b>${h.ratio}×</b></td><td class="r">$${fmtInt(h.prem)}</td><td>${esc(h.askSide || '—')}</td><td class="r">${h.otm != null ? h.otm + '%' : '—'}</td><td class="r">${fmtInt(h.chainOi)}</td><td class="r">${h.firstUnder ? (+h.firstUnder).toFixed(2) : '—'}</td>${['1', '3', '5', '10'].map(k => mv((h.moves || {})[k])).join('')}</tr>`).join('')}</tbody></table></div>`
+      : '<p class="muted">No hit yet.</p>'}</section>`;
+}
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-oirun],[data-oisave]'); if (!el) return;
+  if (el.dataset.oirun !== undefined) { api('/oiscan/run', { method: 'POST' }).then(() => { toast('Scanning: a few minutes'); setTimeout(loadOi, 120000); }).catch(err => toast(err.message)); return; }
+  const b = { minPremium: +$('#oi-prem').value, minVolOi: +$('#oi-ratio').value, maxChainOi: +$('#oi-chain').value, maxTickers: +$('#oi-max').value,
+    extra: $('#oi-extra').value, skip: $('#oi-skip').value, movers: $('#oi-movers').checked, enabled: $('#oi-on').checked };
+  api('/oiscan', { method: 'PUT', body: b }).then(r => { S.oi = r; toast('Saved'); render(); }).catch(err => toast(err.message));
+});
+
 /* ---------- router & events ---------- */
 /* ---------- navigation groups: Trades (list, stats, coach, journal) and Settings (general, import) ---------- */
 const GROUPS = {
   trades: [['trades', 'Trades'], ['analytics', 'Stats'], ['coach', 'Coach'], ['journal', 'Journal']],
   settings: [['settings', 'General'], ['import', 'Import']],
   bot: [['bot', 'Running'], ['botresearch', 'Research'], ['botcharts', 'Charts']],
-  lab: [['botflow', 'Options bot'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
+  lab: [['botoiscan', 'Truly unusual'], ['botflow', 'Options bot'], ['botevals', 'Evaluations'], ['botchart', 'Chart'], ['botwatch', 'Wall watch'], ['botexplore', 'Explorer'], ['botstrats', 'Strategies']],
 };
-const isBotRoute = () => ['bot', 'botresearch', 'botcharts', 'botstrat', 'botflow', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
+const isBotRoute = () => ['bot', 'botresearch', 'botcharts', 'botoiscan', 'botstrat', 'botflow', 'botevals', 'botchart', 'botwatch', 'botlab', 'botexplore', 'botstrats'].includes(route());
 const groupOf = v => v === 'botstrat' ? 'bot' : Object.keys(GROUPS).find(g => GROUPS[g].some(([r]) => r === v));
 function subnav(v) {
   const g = groupOf(v);
@@ -6249,6 +6282,7 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => { if (e.key === 'Escape') toggleAccount(false); });
 const VIEWS = { bot: [vRunning, () => { if (S.pipe === undefined) { S.pipe = null; loadPipe(); } }],
   botresearch: [vResearch, () => { if (S.pipe === undefined) { S.pipe = null; loadPipe(); } }],
+  botoiscan: [vOiScan, () => { if (S.oi === undefined) { S.oi = null; loadOi(); } }],
   botcharts: [vCharts, () => { if (S.pipe === undefined) { S.pipe = null; loadPipe().then(() => scLoad()); } else if (S.pipe) { scLoad(); } scDraw(); }],
   botstrat: [vStrat, () => { const id = hashParam('id'); if (id && !((S.pipeD || {})[id]) && S.ppLoading !== id) { S.ppLoading = id; loadPipeD(id).finally(() => { S.ppLoading = null; }); } }],
   botflow: [() => vBot(), () => { loadBot(); loadNtStatus(); }],

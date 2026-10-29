@@ -467,6 +467,12 @@ Resources:
             ScheduleExpression: cron(20,32,40 9 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "flipsnap"}'
+        OiScan:             # every 15 minutes + after the close: truly unusual options (Schwab option chains)
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(5,20,35,50 9-16 ? * MON-FRI *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "oiscan"}'
         DayTrade:           # every minute: the day-trading account (1-minute strategy on QQQ / SPY)
           Type: ScheduleV2
           Properties:

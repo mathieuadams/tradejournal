@@ -1891,6 +1891,9 @@ def handler(event, context_):
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("proposed", "dismissed", "closed"))})
     elif job == "review":  # end of day: users with open bot positions
         subs = sorted({r["PK"][5:] for r in db.scan_prefix("BOT#", ("open",))})
+    elif job == "oiscan":      # every 15 minutes: truly unusual options (quiet chains, OI ~0, big premium) from Schwab
+        import oiscan
+        return {"oiscan": oiscan.kick()}
     elif job == "rsauto":      # hourly: the AI research agent of the users with its autopilot on
         import research
         return {"started": research.auto_kick()}
@@ -2011,6 +2014,9 @@ def handler(event, context_):
             elif job == "uoahist":
                 import uoa
                 out[sub] = uoa.hist_job(sub, event.get("params") or {})
+            elif job == "oiscanone":
+                import oiscan
+                out[sub] = oiscan.job(sub, event.get("params") or {})
             elif job == "pipe":
                 import pipeline
                 out[sub] = pipeline.job(sub, event.get("params") or {})
