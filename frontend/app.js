@@ -1278,8 +1278,8 @@ async function loadFlowChart(id) {
 }
 S.fcZoom = S.fcZoom || {}; S.fcAutoZ = S.fcAutoZ || {};
 S.fcDp = S.fcDp || {}; S.fcDpBusy = S.fcDpBusy || {};
-S.fcLayers = (() => { try { const v = { w2trades: true, w2ema: true, w2kc: true, w2fvg: true, w2walls: true, w2sq: true, w2in: true, w2cvd: false, smcLv: true, smcSw: true, smcMss: true, smcFvg: true, smcGap: true, smcOb: true, smcTr: true, hvc: true, sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
-const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['hvc', 'Daily HVC'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'CVD'], ['cvd', 'Order flow (real CVD)']];
+S.fcLayers = (() => { try { const v = { w2trades: true, w2ema: true, w2kc: true, w2fvg: true, w2walls: true, w2sq: true, w2in: true, w2cvd: false, smcLv: true, smcSw: true, smcMss: true, smcFvg: true, smcGap: true, smcOb: true, smcTr: true, hvc: true, sig: true, zones: true, pwv: true, fvg: false, inertia: true, inertiah: true, sqz: true, bands: true, lis: true, pmz: true, fibs: true, turn: true, kch: true, vwap: true, ema: true, kc: false, orb: false, spy: false, mp: true, evals: true, flow: true, walls: true, dark: false, acc: true, pres: true, cvd: false, wt: true, ...JSON.parse(localStorage.getItem('fcLayers') || '{}') }; delete v.bt; delete v.ws; return v; } catch (e) { return { evals: true, flow: true, walls: true, dark: false, acc: true }; } })();
+const FC_LAYERS = [['sig', 'Wall watch signals'], ['pwv', 'VWAP reset on walls'], ['fvg', 'FVG'], ['inertia', 'Inertia'], ['inertiah', 'Inertia 1h'], ['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['vwap', 'VWAP'], ['hvc', 'Daily HVC'], ['ema', 'EMA'], ['kc', 'Keltner daily'], ['kch', 'Keltner hourly'], ['orb', 'Opening range'], ['spy', 'SPY trend'], ['mp', 'Expirations & max pain'], ['evals', 'Evaluations'], ['flow', 'Options flow'], ['walls', 'Gamma walls'], ['dark', 'Dark pool'], ['acc', 'Premium total'], ['pres', 'CVD'], ['cvd', 'Order flow (real CVD)'], ['wt', 'WaveTrend [Krypt]']];
 function fcLayerBar(id) {
   const dp = S.fcDp[fcKey(id)], ww = String(id).startsWith('ww-');
   const wwLay = S.fcAllLayers ? ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'hvc', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'] : ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'hvc', 'kc', 'kch', 'walls', 'flow', 'dark', 'pres'];
@@ -1390,11 +1390,13 @@ function fcSvg0(d, id, opts) {
   const AH = !LY.acc || (opts && opts.noAcc) ? 0 : full ? Math.round(opts.H * 0.2) : narrow ? 150 : 110;
   const SH = LY.sqz && ((d.sqzH || []).length || (d.sqzD || []).length) && !(opts && opts.noSqz) ? (full ? Math.max(80, Math.round(opts.H * 0.18)) : narrow ? 110 : 80) : 0;
   const VH = (LY.pres || (LY.cvd && d.cvd)) && bars.some(b => +b.v > 0) ? (full ? Math.max(70, Math.round(opts.H * 0.14)) : narrow ? 100 : 70) : 0;   // buy / sell pressure pane
-  const W = full ? opts.W : narrow ? 560 : 960, PH = (full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340) - (SH ? SH + 10 : 0) - (VH ? VH + 10 : 0);
+  const WTH = LY.wt && !(opts && opts.smcOnly) && all.length > 30 ? (full ? Math.max(90, Math.round(opts.H * 0.16)) : narrow ? 110 : 90) : 0;   // WaveTrend [Krypt] pane
+  const W = full ? opts.W : narrow ? 560 : 960, PH = (full ? opts.H - (AH ? AH + 10 : 0) : narrow ? 470 : 340) - (SH ? SH + 10 : 0) - (VH ? VH + 10 : 0) - (WTH ? WTH + 10 : 0);
   const L = 8, Rr = narrow ? 72 : full ? 64 : 58, T = 16, B = PH - (narrow ? 44 : 40);
-  const H = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0) + (VH ? VH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
+  const H = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0) + (VH ? VH + 10 : 0) + (WTH ? WTH + 10 : 0), AT = PH + 6, AB = AH ? PH + AH - 6 : B, iv = d.interval || 15;
   const ST = PH + (AH ? AH + 10 : 0) + 6, SB = ST + SH - 6;   // squeeze momentum pane
-  const VT = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0) + 6, VB = VT + VH - 6, XB = VH ? VB : SH ? SB : AB;   // pressure pane (bottom)
+  const VT = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0) + 6, VB = VT + VH - 6;   // pressure pane
+  const WTT = PH + (AH ? AH + 10 : 0) + (SH ? SH + 10 : 0) + (VH ? VH + 10 : 0) + 6, WTB = WTT + WTH - 6, XB = WTH ? WTB : VH ? VB : SH ? SB : AB;   // WaveTrend pane (bottom)
   const pl0 = Math.min(...bars.map(b => b.l)), ph0 = Math.max(...bars.map(b => b.h)), span0 = (ph0 - pl0) || ph0 * 0.02;
   const walls = LY.walls ? (d.walls || []).filter(w => w.callWall != null || w.src === 'gap') : [];
   const near = v => v != null && v >= pl0 - span0 * 0.6 && v <= ph0 + span0 * 0.6;      // walls far from price don't squash the chart
@@ -1740,6 +1742,19 @@ function fcSvg0(d, id, opts) {
       if (lv >= lo && lv <= hi) g += `<line x1="${x - cw}" x2="${x + cw}" y1="${yp}" y2="${yp}" stroke="${c}" stroke-width="2.5"/>`;
       g += `<path d="M${x},${yl - 8} L${x + 7},${yl} L${x},${yl + 8} L${x - 7},${yl} Z" fill="${c}" stroke="var(--surface)" stroke-width="1.5"/>`;
       g += `<text x="${x}" y="${sh ? Math.max(T + 2, yl - 12) : Math.min(B + 12, yl + 20)}" text-anchor="middle" font-size="${fs - 1}" font-weight="700" fill="${c}" paint-order="stroke" stroke="var(--surface)" stroke-width="3">${sh ? 'SHORT' : 'LONG'}</text></g>`; });
+  }
+  if (WTH) {                                           // WaveTrend Oscillator [Krypt]: signal (blue), its MA (orange), buy / sell dots
+    const wk = d._wt || (d._wt = wtKrypt(all.map(b => +b.c)));
+    const lim = 1.4, WY = q => WTT + 14 + (lim - Math.max(-lim, Math.min(lim, q))) / (2 * lim) * (WTB - WTT - 14);
+    g += `<line x1="${L}" x2="${W - Rr}" y1="${WTB}" y2="${WTB}" stroke="var(--line)"/>`
+      + [[0.75, '#00bb00', ''], [-0.75, '#e08a00', ''], [0, 'var(--muted)', '3 3']].map(([lv, col, da]) => `<line x1="${L}" x2="${W - Rr}" y1="${WY(lv)}" y2="${WY(lv)}" stroke="${col}" stroke-width=".8"${da ? ` stroke-dasharray="${da}"` : ''}/><text x="${W - Rr + 6}" y="${WY(lv) + 4}" font-size="${fs - 1}" fill="var(--muted)">${lv}</text>`).join('')
+      + `<text x="${L + 2}" y="${WTT + 10}" font-size="${fs}" fill="var(--muted)">WaveTrend [Krypt] 10 21 4 4 · blue = signal, orange = its MA · blue dot = buy, red dot = sell</text>`;
+    [[wk.sig, '#0094ff'], [wk.ma, '#ff6a00']].forEach(([s, col]) => { let p = '', on = false;
+      bars.forEach((b, i) => { const q = s[za + i]; if (!Number.isFinite(q)) { on = false; return; } p += `${on ? 'L' : 'M'}${X(i).toFixed(1)} ${WY(q).toFixed(1)} `; on = true; });
+      if (p) g += `<path d="${p}" fill="none" stroke="${col}" stroke-width="1.5"/>`; });
+    bars.forEach((b, i) => { const q = za + i, buy = wk.buy[q], sell = wk.sell[q]; if (!buy && !sell) return;
+      const y = WY(buy ? wk.sig[q - 1] - 0.75 / 8 : wk.sig[q - 1] + 0.75 / 8);
+      g += `<circle cx="${X(i)}" cy="${y}" r="4" fill="${buy ? '#008fff' : '#ff0000'}"><title>${esc(b.t.replace('T', ' ').slice(5))} · WaveTrend ${buy ? 'BUY' : 'SELL'} signal</title></circle>`; });
   }
   g += `<line class="fc-xh" x1="0" x2="0" y1="${T}" y2="${XB}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" style="display:none;pointer-events:none"/>
     <text class="fc-ohlc" x="${L + 4}" y="${T + 13}" font-size="${fs}" fill="var(--ink)" paint-order="stroke" stroke="var(--surface)" stroke-width="4" style="pointer-events:none"></text>`;
@@ -2858,10 +2873,10 @@ function smcPanel(d, id) {
     <p class="muted" style="font-size:.74rem;margin:6px 0 0">Liquidity: PDH / PDL (previous day), PM high / low (pre-market), ORH / ORL (opening range), the day's swings (EQH / EQL when two are equal). A setup: a pool is swept (✕) → a close beyond the last swing = MSS → the move leaves a fair value gap → price comes back into it (entry) → stop beyond the sweep, TP1 at the next opposite liquidity (partial, rest to breakeven), TP2 after it. Each row shows where it stopped.</p></div>`;
 }
 function wwLayerGroups() {                         // the wall watch chart's indicators, grouped for the left column
-  const all = ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'vwap', 'hvc', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'];
+  const all = ['sig', 'pwv', 'fvg', 'inertia', 'inertiah', 'sqz', 'turn', 'wt', 'vwap', 'hvc', 'ema', 'kc', 'kch', 'orb', 'spy', 'mp', 'walls', 'flow', 'dark', 'acc', 'pres'];
   const name = Object.fromEntries(FC_LAYERS), pick = ks => ks.filter(k => all.includes(k) && name[k]).map(k => [k, name[k]]);
   return [['Signals', pick(['sig', 'pwv'])], ['Options', pick(['walls', 'flow', 'mp', 'acc', 'dark'])], ['Trend', pick(['vwap', 'hvc', 'ema', 'kc', 'kch', 'orb', 'spy'])],
-    ['Momentum', pick(['inertia', 'inertiah', 'sqz', 'turn', 'fvg'])], ['Volume', pick(['pres'])]];
+    ['Momentum', pick(['inertia', 'inertiah', 'sqz', 'turn', 'wt', 'fvg'])], ['Volume', pick(['pres'])]];
 }
 function fcfSymbol() {
   if (S.fcfMode === 'ww') { const l = wwTickers(), t = (hashParam('t') || '').toUpperCase(), hd = ((S.ww && S.ww.positions) || []).map(x => x.symbol); return l.includes(t) || hd.includes(t) ? t : (l[0] || t); }
@@ -3606,7 +3621,7 @@ function vChartDT() {
 }
 const DT_LAYER_GROUPS = [['Trades', [['sig', 'Signals']]], ['Levels', [['zones', 'S/R zones'], ['lis', 'LIS'], ['pmz', 'Pre-market zone'], ['fibs', 'Fibs'], ['walls', 'Gamma walls'], ['dark', 'Dark pool']]],
   ['Trend', [['vwap', 'VWAP'], ['ema', 'EMA'], ['bands', 'EMA bands 9 / 22 / 44'], ['kch', 'Keltner']]],
-  ['Momentum', [['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['inertia', 'Inertia']]], ['Volume & flow', [['pres', 'CVD'], ['cvd', 'Order flow']]]];
+  ['Momentum', [['sqz', 'Squeeze'], ['turn', 'Squeeze turns'], ['inertia', 'Inertia'], ['wt', 'WaveTrend [Krypt]']]], ['Volume & flow', [['pres', 'CVD'], ['cvd', 'Order flow']]]];
 S.chLeftOpen = (() => { try { return localStorage.getItem('chLeft') !== '0'; } catch (e) { return true; } })();
 const chLeftW = () => (S.chLeftOpen ? 196 : 36);
 function chLeft(groups) {                         // left column: every indicator of the chart, on / off, collapsible
