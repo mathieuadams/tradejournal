@@ -7281,6 +7281,23 @@ def test_truly_unusual_scanner():
     finally:
         oiscan._get, wallwatch.config, plab._bars, oiscan.time.sleep = saved
 
+def test_wavetrend_rules():
+    import math
+    import wallwatch
+    import wavetrend
+    c = [100 * (1 + 0.08 * math.sin(i / 9)) for i in range(400)]
+    r = wavetrend.wt(c)
+    assert any(r["buy"]) and any(r["sell"]) and not any(b and s for b, s in zip(r["buy"], r["sell"]))
+    bars = [{"c": x} for x in c]
+    b3, s1 = wavetrend.dots(bars, 3)
+    assert sum(b3) >= sum(r["buy"]) and s1 == r["sell"]
+    s = {"status": "open", "stop": 0, "entry": 100, "stop0": 90, "wtSellX": True, "at": "2026-10-05T10:00", "last": 100, "lastAt": "2026-10-05T10:00"}
+    wallwatch._step(s, {"t": "2026-10-06T11:00", "o": 101, "h": 102, "l": 100.5, "c": 101.5}, {}, 0, False, False, wts=True)
+    assert s["status"] == "wavetrend" and s["exit"] == 101.5 and s["exitWhy"] == "wtSellX"
+    assert "|wt10n3" in wallwatch.version({**wallwatch.PARAMS, "wtBuy": True}) and "|wt" not in wallwatch.version(wallwatch.PARAMS)
+    assert "wtSellX" in wallwatch.RISE_FALL_EXITS
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

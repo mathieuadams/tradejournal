@@ -53,7 +53,7 @@ PARAMS = {"stopAtr": 0.5, "trailAtr": 1.0, "pwSetup": True, "flipSetup": True, "
           # scaleBE: then move the stop of the rest to the entry price
           "scaleOn": False, "scaleR": 1.0, "scalePct": 50, "scaleBE": True,
           # inYExit: sell at the daily close when the daily inertia is no longer green (yellow or red)
-          "inYExit": False, "fxEntry": "", "fxExit": "", "hvcAbove": False, "hvcBelow": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "inFall": False, "inhFall": False, "sqhRise": False, "sqhFall": False, "sqdRise": False, "sqdFall": False, "cvdRise": False, "cvdFall": False, "inRiseX": False, "inhRiseX": False, "inhRedX": False, "sqhRiseX": False, "sqdRiseX": False, "cvdRiseX": False, "cvdFallX": False,
+          "inYExit": False, "fxEntry": "", "fxExit": "", "hvcAbove": False, "hvcBelow": False, "abovePW": False, "belowPW": False, "cvdUp": False, "cvdDn": False, "cvdN": 20, "sqhTurn": False, "sqdTurn": False, "sqTurnN": 1, "pwExit": False, "inFall": False, "inhFall": False, "sqhRise": False, "sqhFall": False, "sqdRise": False, "sqdFall": False, "cvdRise": False, "cvdFall": False, "inRiseX": False, "inhRiseX": False, "inhRedX": False, "sqhRiseX": False, "sqdRiseX": False, "cvdRiseX": False, "cvdFallX": False, "wtBuy": False, "wtSellX": False, "wtN": 3,
           # lab: tf = "1D" runs the whole strategy on daily candles (entry at the daily close); pwTest = the daily low
           # tests the put wall (within the zone) and the day closes above it
           "tf": "1h", "pwTest": False,
@@ -128,6 +128,7 @@ def version(cfg):
             f"|sw{''.join(str(int(bool(cfg.get(k, PARAMS[k])))) for k in SWITCHES)}|e{int(cfg.get('emaLen', 20))}|kc{int(cfg.get('kcLen', 21))}x{float(cfg.get('kcMult', 3.0)):g}{'D' if cfg.get('kcDaily', True) else 'H'}h{int(cfg.get('kchLen', 21))}x{float(cfg.get('kchMult', 3.0)):g}|rel{float(cfg.get('relMult', 3.0)):g}|fvg{float(cfg.get('fvgMin', 0.2)):g}n{float(cfg.get('fvgNear', 0.25)):g}d{int(cfg.get('fvgDays', 10))}|sc{float(cfg.get('scaleR', 1.0)):g}x{float(cfg.get('scalePct', 50)):g}|in{int(cfg.get('inN1', 70))}.{int(cfg.get('inN2', 40))}.{int(cfg.get('inN3', 20))}"
             + (("|x" + "".join(str(int(bool(cfg.get(k)))) for k in EXTRA_SW)
                 + "|" + ".".join(f"{float(cfg.get(k, PARAMS[k])):g}" for k in EXTRA_NUM)) if any(cfg.get(k) for k in EXTRA_SW) else "")
+            + (f"|wt{int(bool(cfg.get('wtBuy')))}{int(bool(cfg.get('wtSellX')))}n{int(cfg.get('wtN') or 3)}" if (cfg.get("wtBuy") or cfg.get("wtSellX")) else "")
             + (("|fx" + __import__("hashlib").sha1(f"{cfg.get('fxEntry') or ''}|{cfg.get('fxExit') or ''}".encode()).hexdigest()[:10])
                if (cfg.get("fxEntry") or cfg.get("fxExit")) else ""))
 
@@ -158,7 +159,7 @@ def save_config(sub, body):
     if "enabled" in body:
         cur["enabled"] = bool(body["enabled"])
     before = version(cur)
-    for k, lo_, hi_ in (("inN1", 5, 250), ("cvdN", 1, 500), ("sqTurnN", 1, 20), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
+    for k, lo_, hi_ in (("inN1", 5, 250), ("cvdN", 1, 500), ("wtN", 1, 50), ("sqTurnN", 1, 20), ("inhN1", 5, 500), ("sqhLen", 5, 200), ("sqdLen", 5, 200), ("sqFireN", 1, 20), ("inhN2", 5, 500), ("inhN3", 5, 500), ("inN2", 5, 250), ("inN3", 5, 250), ("fvgDays", 1, 250), ("retestMin", 50_000, 100_000_000), ("retestDays", 1, 20), ("earnDays", 0, 60), ("vwapDays", 1, 30), ("emaLen", 2, 200), ("kcLen", 2, 200), ("kchLen", 2, 200)):
         if k in body:
             try:
                 cur[k] = int(max(lo_, min(hi_, float(body[k]))))
@@ -177,7 +178,7 @@ def save_config(sub, body):
             pass
     if "kcDaily" in body:
         cur["kcDaily"] = bool(body["kcDaily"])
-    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "pwExit", "inFall", "inhFall", "sqhRise", "sqhFall", "sqdRise", "sqdFall", "cvdRise", "cvdFall", "inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
+    for k in ("pwSetup", "flipSetup", "mergedSetup", "retestSetup", "autoAdd", "trade", "aboveFlip", "abovePW", "belowPW", "cvdUp", "cvdDn", "sqhTurn", "sqdTurn", "pwExit", "inFall", "inhFall", "sqhRise", "sqhFall", "sqdRise", "sqdFall", "cvdRise", "cvdFall", "inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX", "wtBuy", "wtSellX", "flipExit", "earnExit", "inYExit", "pwTest", "inhGreen", "inhNotRed", "inhYExit", "sqhOn", "sqhFire", "sqhMom", "sqhExit", "sqdOn", "sqdFire", "sqdMom", "sqdExit") + SWITCHES:
         if k in body:
             cur[k] = bool(body[k])
     for k in ("fxEntry", "fxExit"):                   # formula rules (formula.py)
@@ -298,7 +299,7 @@ def cvd_roll(bars, n=20):
     return out
 
 
-RISE_FALL_EXITS = ("inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX")
+RISE_FALL_EXITS = ("inRiseX", "inhRiseX", "inhRedX", "sqhRiseX", "sqdRiseX", "cvdRiseX", "cvdFallX", "wtSellX")
 
 
 def fx_series(bars, P, walls, intraday=True, vwap=None, dpl=None, alerts=None):
@@ -421,7 +422,7 @@ RETEST_NEAR = 0.3     # % above the support level that counts as a retest
 RETEST_AWAY = 0.5     # x ATR: price has to close this far above the support (after the alert) before a retest counts
 
 
-def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False, reg=None, hreg=None, sqh=None, sqd=None, cv=None, fx=False):
+def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, dpl=None, bear=False, reg=None, hreg=None, sqh=None, sqd=None, cv=None, fx=False, wts=False):
     """One hourly candle of an open retest trade: stop / target, trailing, and the daily close under the flip.
     Backtest only: fixT (entry + N x risk) and maxDays (sell at the close of the Nth day held).
     kcRide (kcu = upper Keltner band of this candle): an hourly close above the upper band starts a ride -> the target,
@@ -458,7 +459,8 @@ def _step(s, b, walls, k_trail, flip_exit, is_last, vw=None, em=None, kcu=None, 
           ("sqhRiseX", sqh and sqh["up"], "squeeze"),
           ("inRiseX", is_last and reg and reg.get("s") == "G", "inertia"), ("sqdRiseX", is_last and sqd and sqd["up"], "squeeze"),
           ("cvdRiseX", cv and cv[0] is not None and cv[1] is not None and cv[0] > cv[1], "cvd"),
-          ("cvdFallX", cv and cv[0] is not None and cv[1] is not None and cv[0] < cv[1], "cvd"))
+          ("cvdFallX", cv and cv[0] is not None and cv[1] is not None and cv[0] < cv[1], "cvd"),
+          ("wtSellX", wts, "wavetrend"))
     if s.get("fxExit") and fx:
         s.update(status="formula", exitAt=b["t"][:16], exit=b["c"], exitWhy="formula")
         return                                         # the exit formula is true at this close
@@ -1112,6 +1114,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
         earnings = None
     sup_keys = tuple(x for x, k in ((("putWall", "put wall"), "usePW"), (("flip", "flip"), "useFlip")) if on(k))
     cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if any(on(k) for k in ("cvdUp", "cvdDn", "cvdRise", "cvdFall", "cvdRiseX", "cvdFallX")) else None
+    wtb_, wtx_ = __import__("wavetrend").dots(bars, int(P.get("wtN") or 3)) if (on("wtBuy") or on("wtSellX")) else (None, None)
     ema = [ema_map.get(b["t"][:16]) for b in bars] if ema_map else _ema_series([b["c"] for b in bars], int(P.get("emaLen") or 20))
     extra = extra or {}
     kc = [extra["kc"].get(b["t"][:16]) for b in bars] if extra.get("kc") else keltner(bars, int(P.get("kcLen") or 21), float(P.get("kcMult") or 3), bool(P.get("kcDaily", True)))
@@ -1234,7 +1237,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             _step(open_, b, walls, k_trail, flip_exit, is_last=(i + 1 == len(bars) or bars[i + 1]["t"][:10] != day), vw=vwap[i], em=ema[i],
                   kcu=kc[i][1] if kc[i] else None, dpl=dplv.get(day), bear=bear[i], reg=inr[i] if inr else None, hreg=inh[i] if inh else None,
                   sqh=sqh[i] if sqh else None, sqd=sqd_x[i] if sqd_x else None, cv=(cvr[i], cvr[i - 1] if i else None) if cvr else None,
-                  fx=bool(fxx and fxx[i]))
+                  fx=bool(fxx and fxx[i]), wts=bool(wtx_ and wtx_[i]))
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -1300,6 +1303,9 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
                 continue
             if cvr is not None and not cvd_ok(P, cvr[i], None, cvr[i - 1] if i else None):
                 miss(b, f"CVD of the last {int(P.get('cvdN') or 20)} candles {cvr[i]:,.0f}" + (" · not rising" if on("cvdRise") else "") + (" · not falling" if on("cvdFall") else "") + " (CVD rule)")
+                continue
+            if on("wtBuy") and not wtb_[i]:
+                miss(b, f"no WaveTrend buy dot in the last {int(P.get('wtN') or 3)} candles (WaveTrend rule)")
                 continue
             if earn_d and earn_days and 0 <= (earn_d - datetime.strptime(day, "%Y-%m-%d")).days <= earn_days:
                 miss(b, f"earnings {str(earnings)[:10]} within {earn_days} days")
@@ -1404,7 +1410,7 @@ def detect_retest(bars, walls, start=None, cfg=None, datr=None, alerts=None, ear
             _step(alt, bars[j], walls, k_trail, not flip_exit, is_last=(j + 1 == len(bars) or bars[j + 1]["t"][:10] != bars[j]["t"][:10]), vw=vwap[j], em=ema[j],
                   kcu=kc[j][1] if kc[j] else None, dpl=dplv.get(bars[j]["t"][:10]), bear=bear[j], reg=inr[j] if inr else None, hreg=inh[j] if inh else None,
                   sqh=sqh[j] if sqh else None, sqd=sqd_x[j] if sqd_x else None, cv=(cvr[j], cvr[j - 1] if j else None) if cvr else None,
-                  fx=bool(fxx and fxx[j]))
+                  fx=bool(fxx and fxx[j]), wts=bool(wtx_ and wtx_[j]))
             if alt["status"] != "open":
                 break
         ap, ar = _result(alt)
@@ -1473,6 +1479,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None, alerts=None,
         if z["type"] == "bear":
             bear[z["i"]] = True
     cvr = cvd_roll(bars, int(P.get("cvdN") or 20)) if any(on(k) for k in ("cvdUp", "cvdDn", "cvdRise", "cvdFall", "cvdRiseX", "cvdFallX")) else None
+    wtb_, wtx_ = __import__("wavetrend").dots(bars, int(P.get("wtN") or 3)) if (on("wtBuy") or on("wtSellX")) else (None, None)
     fxe, fxx = fx_series(bars, P, walls, False, None, dpl, alerts)
     ver = version(P) + "|1D"
     sigs, open_ = [], None
@@ -1481,7 +1488,7 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None, alerts=None,
         if open_:
             _step(open_, b, walls, k_trail, flip_exit, True, em=ema[i] if on("emaExit") else None,
                   kcu=kc[i][1] if kc[i] else None, bear=bear[i] and on("fvgExit"), reg=inr[i], hreg=inh[i],
-                  sqh=sqh[i], sqd=sqd[i], cv=(cvr[i], cvr[i - 1] if i else None) if cvr else None, fx=bool(fxx and fxx[i]))
+                  sqh=sqh[i], sqd=sqd[i], cv=(cvr[i], cvr[i - 1] if i else None) if cvr else None, fx=bool(fxx and fxx[i]), wts=bool(wtx_ and wtx_[i]))
             if open_["status"] != "open":
                 open_ = None
             continue
@@ -1528,6 +1535,8 @@ def detect_daily(hbars, walls, start=None, cfg=None, earnings=None, alerts=None,
         if on("belowPW") and not (pw and b["c"] < pw):
             continue
         if cvr is not None and not cvd_ok(P, cvr[i], None, cvr[i - 1] if i else None):
+            continue
+        if on("wtBuy") and not wtb_[i]:
             continue
         if fxe is not None and not fxe[i]:
             continue
