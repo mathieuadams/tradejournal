@@ -6138,9 +6138,10 @@ function vCharts() {
       <select data-scsym aria-label="Ticker" style="min-width:110px">${((v && v.tickers) || [st.t || '']).filter(Boolean).map(t => `<option ${t === (st.t || (v && v.symbol)) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
       ${seg(M.tfs, st.tf, 'data-sctf')} ${seg(M.days.map(d => [d, d + (m === 'day' ? (d > 1 ? ' days' : ' day') : ' days')]), st.days, 'data-scdays')}
       <button class="btn" data-sczoom="reset" title="Show the whole period">Reset zoom</button>
+      <label style="font-size:.82rem"><input type="checkbox" data-scwt ${S.scWT === false ? '' : 'checked'}> WaveTrend</label>
       <span class="muted" style="font-size:.76rem">wheel = zoom · drag = move</span></div>
       <p class="muted" style="font-size:.8rem;margin:0 0 6px">${esc(cur.rule)}</p>
-      <section class="panel" style="padding:8px;position:relative">${S.scErr ? `<div class="errbox">${esc(S.scErr)}</div>` : !v ? '<p class="loading" style="height:520px">Loading the chart…</p>' : `<canvas id="sc-cv" style="width:100%;height:540px;display:block;cursor:crosshair"></canvas><div id="sc-tip" class="muted" style="position:absolute;top:10px;left:14px;font-size:.76rem;pointer-events:none"></div>`}</section>
+      <section class="panel" style="padding:8px;position:relative">${S.scErr ? `<div class="errbox">${esc(S.scErr)}</div>` : !v ? '<p class="loading" style="height:520px">Loading the chart…</p>' : `<canvas id="sc-cv" style="width:100%;height:${S.scWT === false ? 540 : 690}px;display:block;cursor:crosshair"></canvas><div id="sc-tip" class="muted" style="position:absolute;top:10px;left:14px;font-size:.76rem;pointer-events:none"></div>`}</section>
       ${legend.length ? `<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:.78rem;margin:6px 0">${legend.map(([l, c]) => `<span><i style="display:inline-block;width:12px;height:3px;background:${c};vertical-align:middle;margin-right:4px"></i>${esc(l)}</span>`).join('')}
         <span><i style="display:inline-block;width:12px;height:8px;background:rgba(229,83,75,.35);vertical-align:middle;margin-right:4px"></i>risk</span><span><i style="display:inline-block;width:12px;height:8px;background:rgba(45,164,78,.35);vertical-align:middle;margin-right:4px"></i>reward</span></div>` : ''}
       ${v ? `<section><h2 style="font-size:1rem">Trades in this window <span class="muted" style="font-weight:400;font-size:.8rem">${trades.length} · total ${ppPc(tot)}${rs.length ? ` · avg ${(rs.reduce((a, t) => a + t.r, 0) / rs.length).toFixed(2)}R` : ''} · computed like the backtest${(v.paper || []).length ? ` · ${v.paper.length} paper` : ''}</span></h2>
@@ -6152,6 +6153,43 @@ function scLb(bars, t) {                             // the first bar at or afte
   while (lo < hi) { const md = (lo + hi) >> 1; if (bars[md][0] < t) lo = md + 1; else hi = md; }
   return Math.min(lo, bars.length - 1);
 }
+// WaveTrend Oscillator [Krypt] (Pine v3, ported line by line): signal = Ehlers super smoother of the EMA of the normalized
+// distance of log(close) from its EMA; MA = SMA(signal, 4); buy / sell dots = its filtered crossovers (hidden divergence logic).
+function wtKrypt(close, n1 = 10, n2 = 21, smoothing = 4, maperiod = 4, ob = 0.75, os = -0.75) {
+  const N = close.length, NA = NaN, fin = Number.isFinite, nz = (x, y) => fin(x) ? x : y;
+  const xema = (src, len) => { const m = 2 / (len + 1), r = new Array(N).fill(NA); for (let i = 0; i < N; i++) r[i] = fin(src[i]) ? m * src[i] + (1 - m) * nz(i ? r[i - 1] : NA, src[i]) : NA; return r; };
+  const ss = (src, lower) => { const a1 = Math.exp(-Math.PI * Math.SQRT2 / lower), c2 = 2 * a1 * Math.cos(Math.SQRT2 * Math.PI / lower), c3 = -a1 * a1, c1 = (1 - c2 - c3) / 2, f = new Array(N).fill(NA);
+    for (let i = 0; i < N; i++) { const s1 = i ? src[i - 1] : NA, f1 = i ? f[i - 1] : NA, f2 = i > 1 ? f[i - 2] : NA; f[i] = nz(c1 * (src[i] + nz(s1, src[i])) + c2 * f1 + c3 * nz(f2, f1), src[i]); } return f; };
+  const sma = (s, n) => s.map((_, i) => { if (i < n - 1) return NA; let t = 0; for (let k = i - n + 1; k <= i; k++) { if (!fin(s[k])) return NA; t += s[k]; } return t / n; });
+  const sum = (s, n) => s.map((_, i) => { if (i < n - 1) return NA; let t = 0; for (let k = i - n + 1; k <= i; k++) { if (!fin(s[k])) return NA; t += s[k]; } return t; });
+  const step = (xs, vals) => { const r = new Array(N).fill(NA); for (let i = 0; i < N; i++) r[i] = nz(xs[i] ? vals[i] : (i ? r[i - 1] : NA), vals[i]); return r; };
+  const casc = (xs, start, wh) => { const r = new Array(N).fill(NA); for (let i = 0; i < N; i++) { const x1 = i ? xs[i - 1] : NA, r1 = i ? r[i - 1] : NA, st = typeof start === 'boolean' ? start : start[i], w = typeof wh === 'boolean' ? wh : wh[i];
+      const v = (st && xs[i] > x1 && !r1 && w) ? xs[i] - x1 : (xs[i] >= x1 && w ? r1 + xs[i] - x1 : 0); r[i] = Math.abs(nz(v, 0)); } return r; };
+  const cdesc = (xs, start, wh) => { const r = new Array(N).fill(NA); for (let i = 0; i < N; i++) { const x1 = i ? xs[i - 1] : NA, r1 = i ? r[i - 1] : NA, st = typeof start === 'boolean' ? start : start[i], w = typeof wh === 'boolean' ? wh : wh[i];
+      const v = (st && xs[i] < x1 && !r1 && w) ? x1 - xs[i] : (xs[i] <= x1 && w ? r1 + x1 - xs[i] : 0); r[i] = Math.abs(nz(v, 0)); } return r; };
+  const lowest = (s, n) => s.map((_, i) => { let m = Infinity; for (let k = Math.max(0, i - n + 1); k <= i; k++) { if (!fin(s[k])) return NA; m = Math.min(m, s[k]); } return i < n - 1 ? NA : m; });
+  const highest = (s, n) => s.map((_, i) => { let m = -Infinity; for (let k = Math.max(0, i - n + 1); k <= i; k++) { if (!fin(s[k])) return NA; m = Math.max(m, s[k]); } return i < n - 1 ? NA : m; });
+  const price = close.map((c, i) => i && fin(close[i - 1]) && c > 0 ? Math.log(c) : NA);
+  const pe = xema(price, n1), delta = price.map((p, i) => p - pe[i]), d = xema(delta.map(Math.abs), n1);
+  const ci = delta.map((x, i) => !fin(d[i]) ? NA : d[i] === 0 ? 0 : x / d[i]);
+  const sig = ss(xema(ci, n2), smoothing), ma = sma(sig, maperiod);
+  const mid = (ob + os) / 2, exoff = (ob - mid) / 7, hu = mid + 0.61803398875, hl = mid - 0.61803398875, req = 5;
+  const ssig = sum(sig, req), sma_ = sum(ma, req);
+  const xo = i => i > 0 && sig[i] > ma[i] && sig[i - 1] <= ma[i - 1], xu = i => i > 0 && sig[i] < ma[i] && sig[i - 1] >= ma[i - 1];
+  const allb = sig.map((_, i) => ma[i] < ob && xo(i) && i > 0 && ssig[i - 1] < sma_[i - 1]);
+  const allt = sig.map((_, i) => ma[i] > os && xu(i) && i > 0 && ssig[i - 1] > sma_[i - 1]);
+  const bsteps = step(allb, ma), tsteps = step(allt, ma);
+  const pb_ = step(allb, lowest(price, req)), pt_ = step(allt, highest(price, req));
+  const cb = casc(pb_, true, true), cdp = cdesc(pt_, true, true), ct = casc(tsteps, true, true), cdb = cdesc(bsteps, true, true);
+  const hb = cdb.map((x, i) => Math.sqrt(x * cb[i])), hr = ct.map((x, i) => Math.sqrt(x * cdp[i]));
+  const hbull = hb.map((x, i) => x / (1 + hr[i])), hbear = hr.map((x, i) => x / (1 + hb[i]));
+  const pbull = casc(bsteps, bsteps.map((x, i) => i > 0 && (bsteps[i - 1] < os || hbull[i - 1] > hbear[i - 1])), sig.map(x => x < ob));
+  const pbear = cdesc(tsteps, tsteps.map((x, i) => i > 0 && (tsteps[i - 1] > ob || hbear[i - 1] > hbull[i - 1])), sig.map(x => x > os));
+  const btr = pbull.map((x, i) => x / (1 + pbear[i])), str = pbear.map((x, i) => x / (1 + pbull[i]));
+  const buy = sig.map((_, i) => allb[i] && ((ma[i] < mid && (sig[i - 1] < os - exoff || btr[i] > hbear[i])) || (ma[i] < hu && hbull[i] > str[i])));
+  const sell = sig.map((_, i) => allt[i] && ((ma[i] > mid && (sig[i - 1] > ob + exoff || str[i] > hbull[i])) || (ma[i] > hl && hbear[i] > btr[i])));
+  return { sig, ma, buy, sell };
+}
 function scDraw(hover) {
   const cv = $('#sc-cv'), v = S.scView;
   if (!cv || !v || !(v.bars || []).length) return;
@@ -6160,7 +6198,7 @@ function scDraw(hover) {
   const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
   const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim() || '#888';
   const bars = v.bars, n = bars.length, z = S.scZoom || (S.scZoom = { a: 0, b: n });
-  const a = Math.max(0, Math.floor(z.a)), b = Math.min(n, Math.ceil(z.b)), pl = 6, pr = 62, pt = 10, pb = 24;
+  const a = Math.max(0, Math.floor(z.a)), b = Math.min(n, Math.ceil(z.b)), pl = 6, pr = 62, pt = 10, pb0 = 24, ph = S.scWT === false ? 0 : 150, pb = pb0 + ph;
   const vis = bars.slice(a, b); if (!vis.length) return;
   let lo = Math.min(...vis.map(x => x[3])), hi = Math.max(...vis.map(x => x[2]));
   const pad = (hi - lo) * .06 || 1; lo -= pad; hi += pad;
@@ -6190,7 +6228,21 @@ function scDraw(hover) {
     g.strokeStyle = css('--ink') || '#000'; g.lineWidth = 2; g.beginPath(); g.moveTo(X(i1) - 4, Y(t.x) - 4); g.lineTo(X(i1) + 4, Y(t.x) + 4); g.moveTo(X(i1) - 4, Y(t.x) + 4); g.lineTo(X(i1) + 4, Y(t.x) - 4); g.stroke(); });
   (v.paper || []).forEach(p => { [[p.fillDay, p.fillPrice], [p.exitDay, p.exitPrice]].forEach(([d, px]) => { if (d && px) { g.fillStyle = css('--ink'); g.beginPath(); g.arc(X(I(d)), Y(+px), 4.5, 0, 7); g.fill(); } }); });
   g.restore();
-  if (hover != null && hover >= a && hover < b) { const [t, o, h, l, c] = bars[hover]; g.strokeStyle = css('--muted'); g.lineWidth = .6; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(X(hover), pt); g.lineTo(X(hover), H - pb); g.stroke(); g.setLineDash([]);
+  if (ph) {                                          // WaveTrend Oscillator [Krypt]: the signal, its MA, the buy / sell dots
+    const w = v._wt || (v._wt = wtKrypt(bars.map(x => x[4])));
+    const top = H - pb0 - ph + 12, bot = H - pb0 - 4, lim = 1.6, WY = q => top + (lim - Math.max(-lim, Math.min(lim, q))) / (2 * lim) * (bot - top);
+    g.save(); g.beginPath(); g.rect(pl, top - 4, W - pl - pr, bot - top + 8); g.clip();
+    g.strokeStyle = css('--line'); g.lineWidth = .6; g.beginPath(); g.moveTo(pl, top - 6); g.lineTo(W - pr, top - 6); g.stroke();
+    [[0.75, '#00bb00'], [-0.75, '#e08a00'], [0, css('--muted')]].forEach(([lv, col]) => { g.strokeStyle = col; g.setLineDash(lv ? [] : [4, 4]); g.lineWidth = .8; g.beginPath(); g.moveTo(pl, WY(lv)); g.lineTo(W - pr, WY(lv)); g.stroke(); g.setLineDash([]); });
+    [[w.sig, '#0094ff'], [w.ma, '#ff6a00']].forEach(([s, col]) => { g.strokeStyle = col; g.lineWidth = 1.4; g.beginPath(); let on = false;
+      for (let i = a; i < b; i++) { const q = s[i]; if (!isFinite(q)) { on = false; continue; } if (on) g.lineTo(X(i), WY(q)); else { g.moveTo(X(i), WY(q)); on = true; } } g.stroke(); });
+    for (let i = a; i < b; i++) { const dot = w.buy[i] ? '#008fff' : w.sell[i] ? '#ff0000' : null; if (!dot) continue; const q = w.buy[i] ? w.sig[i - 1] - 0.75 / 8 : w.sig[i - 1] + 0.75 / 8;
+      g.fillStyle = dot; g.beginPath(); g.arc(X(i), WY(q), 4, 0, 7); g.fill(); }
+    g.restore();
+    g.fillStyle = css('--muted'); g.font = '10px system-ui, sans-serif'; g.fillText('WaveTrend [Krypt] 10 21 4 4', pl + 4, top + 4);
+    [[0.75, '0.75'], [-0.75, '-0.75']].forEach(([lv, t]) => g.fillText(t, W - pr + 4, WY(lv) + 4));
+  }
+  if (hover != null && hover >= a && hover < b) { const [t, o, h, l, c] = bars[hover]; g.strokeStyle = css('--muted'); g.lineWidth = .6; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(X(hover), pt); g.lineTo(X(hover), H - pb0); g.stroke(); g.setLineDash([]);
     const tip = $('#sc-tip'); if (tip) tip.textContent = `${t.replace('T', ' ')}  O ${o.toFixed(2)}  H ${h.toFixed(2)}  L ${l.toFixed(2)}  C ${c.toFixed(2)}`; }
 }
 (function scEvents() {
@@ -6216,7 +6268,7 @@ document.addEventListener('click', e => {
   if (d.scgo !== undefined && S.scView) { const t = S.scView.trades[+d.scgo], bars = S.scView.bars, n = bars.length, i0 = scLb(bars, t.in), i1 = scLb(bars, t.out), w = Math.max(40, (i1 - i0) * 3);
     const a = Math.max(0, Math.min(n - w, i0 - w / 3)); S.scZoom = { a, b: Math.min(n, a + w) }; scDraw(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
 });
-document.addEventListener('change', e => { if (e.target.matches && e.target.matches('[data-scsym]')) { const [, st] = scState(); st.t = e.target.value; scLoad(); } });
+document.addEventListener('change', e => { if (e.target.matches && e.target.matches('[data-scwt]')) { S.scWT = e.target.checked; render(); return; } if (e.target.matches && e.target.matches('[data-scsym]')) { const [, st] = scState(); st.t = e.target.value; scLoad(); } });
 window.addEventListener('resize', () => { if (route() === 'botcharts') scDraw(); });
 
 /* ---------- truly unusual options: quiet chains, one contract bought big on ~0 open interest (backend oiscan.py) ---------- */
