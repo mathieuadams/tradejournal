@@ -135,7 +135,7 @@ def scan(sub, budget_s=480):
     now = now_ny()
     at = iso(now)
     tk = universe(sub, c)
-    t0, n, found, errs = time.time(), 0, 0, []
+    t0, n, found, errs, big = time.time(), 0, 0, [], []
     pk = db.upk(sub)
     for sym in tk:
         if time.time() - t0 > budget_s:
@@ -143,6 +143,9 @@ def scan(sub, budget_s=480):
         try:
             ch = chain(sub, sym)
         except Exception as e:
+            if "buffer overflow" in str(e).lower():     # a chain too big for Schwab to send in one piece is never quiet
+                big.append(sym)
+                continue
             errs.append(f"{sym}: {str(e)[:80]}")
             if "expired" in str(e).lower() or "rejected" in str(e).lower():
                 break
@@ -156,7 +159,7 @@ def scan(sub, budget_s=480):
                     "firstUnder": old.get("firstUnder") or h["under"], "firstVol": old.get("firstVol") or h["vol"], "lastSeen": at})
             found += 1
         time.sleep(0.45)                               # Schwab market data: 120 requests a minute
-    run = {"at": at, "tickers": n, "universe": len(tk), "hits": found, "errors": errs[-8:]}
+    run = {"at": at, "tickers": n, "universe": len(tk), "hits": found, "errors": errs[-8:], "tooBig": big[:40]}
     db.put({"PK": pk, "SK": RUN, **run})
     return run
 

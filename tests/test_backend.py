@@ -7251,21 +7251,24 @@ def test_truly_unusual_scanner():
         calls.append(path)
         if path.startswith("/movers"):
             return {"screeners": [{"symbol": "SMALL"}, {"symbol": "$SPX"}]}
+        if q["symbol"] == "HUGE":
+            from util import Unavailable
+            raise Unavailable('Schwab returned an error (502): {"fault":{"faultstring":"Body buffer overflow"}}')
         return chains.get(q["symbol"], {})
     saved = (oiscan._get, wallwatch.config, plab._bars, oiscan.time.sleep)
     try:
         oiscan._get = fake_get
         oiscan.time.sleep = lambda s: None
-        wallwatch.config = lambda sub: {"tickers": ["EGO", "BUSY", "SPY"], "lists": []}
+        wallwatch.config = lambda sub: {"tickers": ["EGO", "BUSY", "SPY", "HUGE"], "lists": []}
         db.put({"PK": db.upk("oi1"), "SK": "BROKER#schwab", "enc": "x"})
         c = oiscan.config("oi1")
-        assert oiscan.universe("oi1", c) == ["EGO", "BUSY", "SMALL"]           # SPY skipped, $SPX not a stock
+        assert oiscan.universe("oi1", c) == ["EGO", "BUSY", "HUGE", "SMALL"]           # SPY skipped, $SPX not a stock
         hs, coi = oiscan.hits_of(ego, "EGO", c, "2026-10-28T10:05:00")
         assert len(hs) == 1 and hs[0]["strike"] == 36.0 and hs[0]["ratio"] == 34.2 and hs[0]["askSide"] == "at the ask" and coi == 44 + 261 + 1115 + 55
         assert oiscan.hits_of(busy, "BUSY", c, "2026-10-28T10:05:00")[0] == []     # the chain isn't quiet
         assert oiscan.hits_of(small, "SMALL", c, "2026-10-28T10:05:00")[0] == []   # $12.5K premium
         run = oiscan.scan("oi1")
-        assert run["hits"] == 1 and run["tickers"] == 3
+        assert run["hits"] == 1 and run["tickers"] == 3 and run["tooBig"] == ["HUGE"] and not run["errors"]
         oiscan.scan("oi1")                              # the same contract seen again: one hit, first seen kept
         hits = [h for h in db.q_prefix(db.upk("oi1"), oiscan.HIT)]
         assert len(hits) == 1 and hits[0]["firstSeen"] <= hits[0]["lastSeen"]
