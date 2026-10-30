@@ -1,16 +1,10 @@
-"""DynamoDB single-table access. Every item has PK = USER#<cognito sub> and a typed SK.
+"""DynamoDB single-table access.
 
-SK layout
-  PROFILE                         settings, email
-  FILL#<acct>#<ts>#<fillId>       immutable broker fills (audit source of truth)
-  TRADE#<openTs>#<tradeId>        trades derived from fills (rebuilt on every import)
-  JRNL#<tradeId>                  user journal: plan, setup, tags, emotion, notes
-  REVIEW#<tradeId>                AI post-trade review
-  DAY#<yyyy-mm-dd>                daily journal
-  REPORT#<yyyy-mm-dd>             weekly AI report
-  IMPORT#<importId>               CSV import status
-  BROKER#alpaca                   KMS-encrypted read-only API keys
-  AUDIT#<ts>#<tradeId>            before/after of every journal edit
+  USER#<sub> / PROFILE                     email
+  USER#<sub> / DATASOURCE#databento         KMS-encrypted Databento key + download settings
+  USER#<sub> / STRAT#<id>                   a strategy: rules, costs, study / validation summaries, paper state
+  USER#<sub> / JOB#<name>                   background job status
+  FUTDATA / COV#<SYM>                       which candles and footprints are stored (files in the data bucket)
 """
 import os
 from decimal import Decimal

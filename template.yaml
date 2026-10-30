@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Trade Journal - journal, analytics and AI coach (Cognito, CloudFront, HTTP API, Lambda, DynamoDB, S3)
+Description: Tradejournal Futures - NQ / ES research, charts and paper trading on Databento data (Cognito, CloudFront, HTTP API, Lambda, DynamoDB, S3)
 
 Parameters:
   AppName:
@@ -12,12 +12,6 @@ Parameters:
     Type: String
     AllowedPattern: "[a-z0-9-]{3,63}"
     Description: Globally unique prefix for the sign-in page, e.g. tradejournal-mathieu (no "aws", "amazon" or "cognito")
-  ReviewModel:
-    Type: String
-    Default: claude-sonnet-5
-  CoachModel:
-    Type: String
-    Default: claude-sonnet-5
 
 Globals:
   Function:
@@ -30,14 +24,8 @@ Globals:
     Environment:
       Variables:
         TABLE: !Ref Table
-        UPLOAD_BUCKET: !Sub "${AppName}-uploads-${AWS::AccountId}-${AWS::Region}"
-        ANTHROPIC_SECRET_ARN: !Ref AnthropicSecret
+        DATA_BUCKET: !Ref DataBucket
         KMS_KEY_ID: !Ref BrokerKey
-        SCHWAB_SECRET_ARN: !Ref SchwabSecret
-        ALERT_TOPIC_ARN: !Ref AlertsTopic
-        SCHWAB_CALLBACK: !Sub "https://${Distribution.DomainName}/schwab"
-        REVIEW_MODEL: !Ref ReviewModel
-        COACH_MODEL: !Ref CoachModel
 
 Resources:
   # ---------------- data ----------------
@@ -57,12 +45,12 @@ Resources:
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
       SSESpecification: { SSEEnabled: true }
 
-  UploadBucket:
+  DataBucket:                # Databento candles and footprints (gzip JSON), strategy trades
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub "${AppName}-uploads-${AWS::AccountId}-${AWS::Region}"
+      BucketName: !Sub "${AppName}-data-${AWS::AccountId}-${AWS::Region}"
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -71,34 +59,11 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
-      CorsConfiguration:
-        CorsRules:
-          - AllowedMethods: [PUT]
-            AllowedOrigins: [!Sub "https://${Distribution.DomainName}", "http://localhost:5173"]
-            AllowedHeaders: ["*"]
-            MaxAge: 3000
-
-  AnthropicSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Description: Anthropic API key for the AI coach. Set with deploy.sh (ANTHROPIC_API_KEY) or put-secret-value.
-      SecretString: REPLACE_ME
-
-  AlertsTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      DisplayName: Trade Journal alerts
-
-  SchwabSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Description: Schwab developer app key and secret as JSON {"appKey":"...","appSecret":"..."}. Set by deploy.sh from SCHWAB_APP_KEY / SCHWAB_APP_SECRET.
-      SecretString: '{"appKey":"","appSecret":""}'
 
   BrokerKey:
     Type: AWS::KMS::Key
     Properties:
-      Description: Encrypts users' broker API keys
+      Description: Encrypts users' data-vendor and broker API keys
       EnableKeyRotation: true
       KeyPolicy:
         Version: "2012-10-17"
@@ -248,29 +213,17 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: api.handler
-      MemorySize: 1024
+      MemorySize: 1536
       Timeout: 29
       Environment:
         Variables:
-          SYNC_FUNCTION: !Ref SyncFunction
-          WEEKLY_FUNCTION: !Ref WeeklyFunction
-          LIVECOACH_FUNCTION: !Ref LiveCoachFunction
-          BOT_FUNCTION: !Ref BotFunction
+          JOB_FUNCTION: !Ref JobFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - S3WritePolicy: { BucketName: !Sub "${AppName}-uploads-${AWS::AccountId}-${AWS::Region}" }
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
+        - S3CrudPolicy: { BucketName: !Ref DataBucket }
         - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
         - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
-        - LambdaInvokePolicy: { FunctionName: !Ref SyncFunction }
-        - LambdaInvokePolicy: { FunctionName: !Ref WeeklyFunction }
-        - LambdaInvokePolicy: { FunctionName: !Ref LiveCoachFunction }
-        - LambdaInvokePolicy: { FunctionName: !Ref BotFunction }
-        - Statement:
-            - Effect: Allow
-              Action: [sns:Publish, sns:Subscribe, sns:Unsubscribe, sns:ListSubscriptionsByTopic, sns:GetSubscriptionAttributes]
-              Resource: "*"
+        - LambdaInvokePolicy: { FunctionName: !Ref JobFunction }
       Events:
         # One route per method (not ANY) so browser CORS preflight (OPTIONS) is answered by
         # API Gateway itself instead of hitting the JWT authorizer and failing with 401.
@@ -283,235 +236,38 @@ Resources:
         Put:
           Type: HttpApi
           Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: PUT }
-        Patch:
-          Type: HttpApi
-          Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: PATCH }
         Delete:
           Type: HttpApi
           Properties: { ApiId: !Ref HttpApi, Path: "/{proxy+}", Method: DELETE }
 
-  # ---------------- workers ----------------
-  ImporterFunction:
+  # ---------------- background work ----------------
+  JobFunction:              # Databento downloads, studies, validations, paper simulation, the scheduled refresh
     Type: AWS::Serverless::Function
     Properties:
-      Handler: importer.handler
-      MemorySize: 1024
-      Timeout: 300
+      Handler: jobs.handler
+      Timeout: 900
+      MemorySize: 2048
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - S3ReadPolicy: { BucketName: !Sub "${AppName}-uploads-${AWS::AccountId}-${AWS::Region}" }
-      Events:
-        Upload:
-          Type: S3
-          Properties:
-            Bucket: !Ref UploadBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules: [{ Name: prefix, Value: imports/ }]
-
-  ReviewerFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: reviewer.handler
-      Timeout: 180
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
-        - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
+        - S3CrudPolicy: { BucketName: !Ref DataBucket }
         - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
+        - Statement:                                   # a long download continues in a new run of itself
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*JobFunction*"
       Events:
-        TradeInserted:
-          Type: DynamoDB
-          Properties:
-            Stream: !GetAtt Table.StreamArn
-            StartingPosition: LATEST
-            BatchSize: 5
-            MaximumRetryAttempts: 2
-            FilterCriteria:
-              Filters:
-                - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"SK":{"S":[{"prefix":"TRADE#"}]}}}}'
-
-  SyncFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: sync.handler
-      Timeout: 600
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
-        - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
-      Events:
-        MarketHours:
+        Refresh:            # latest candles every 15 minutes in the session, the day's footprint after the close, then paper
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: cron(*/15 9-16 ? * MON-FRI *)
+            ScheduleExpression: cron(5/15 9-16 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "scheduled"}'
         AfterClose:
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: cron(30 17 ? * MON-FRI *)
+            ScheduleExpression: cron(25 17 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
-
-  LiveCoachFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: livecoach.handler
-      Timeout: 600
-      MemorySize: 1024
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
-        - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
-        - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
-      Events:
-        PreMarket:
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(0 9 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"kind": "premarket"}'
-        PreClose:
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(30 15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"kind": "preclose"}'
-
-  SmcFunction:            # smart money live only: its own small function, started early and waiting for the minute
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: autotrader.handler
-      Timeout: 150
-      MemorySize: 1024
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
-      Events:
-        SmcTick:            # EventBridge starts a cron target ~20 s into the minute: the run waits for the next :00
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "smctick", "at": "<aws.scheduler.scheduled-time>"}'
-
-  BotFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: autotrader.handler
-      Timeout: 600
-      MemorySize: 2048                             # more CPU for the backtests and the settings search
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - Statement:                                   # the rule tester's history loader continues in a new run of itself
-            - Effect: Allow
-              Action: lambda:InvokeFunction
-              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*BotFunction*"
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }   # Claude's chart check
-        - Statement:
-            - Effect: Allow
-              Action: [sns:Publish, sns:Subscribe, sns:Unsubscribe, sns:ListSubscriptionsByTopic, sns:GetSubscriptionAttributes]
-              Resource: "*"
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SchwabSecret }
-        - KMSEncryptPolicy: { KeyId: !Ref BrokerKey }
-        - KMSDecryptPolicy: { KeyId: !Ref BrokerKey }
-      Events:
-        Scan:
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(15 10,15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "scan"}'
-        EveryMinute:
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "tick"}'
-        StockDayMorning:    # stocks in play: today's universe + yesterday's opening ranges
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(5 9 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "sdmorning"}'
-        StockDayWatch:      # 09:15 ET: top pre-market stocks with their hourly trend, levels and setup
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(15 9 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "sdwatch"}'
-        StockDayTick:       # stocks in play: scan after the opening range, entries, VWAP exit, flat
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "sdtick"}'
-        FlipSnapDay:        # walls / flip recorded every 30 minutes during the session (intraday gamma, going forward)
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(0,30 10-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "flipsnap"}'
-        ResearchAuto:       # every hour: the AI research agent runs on its own for users with its autopilot on
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(10 * * * ? *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "rsauto"}'
-        FlipSnap:           # the flip / walls as Unusual Whales shows them before / at the open (look-ahead check)
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(20,32,40 9 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "flipsnap"}'
-        OiScan:             # every 15 minutes + after the close: truly unusual options (Schwab option chains)
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(5,20,35,50 9-16 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "oiscan"}'
-        DayTrade:           # every minute: the day-trading account (1-minute strategy on QQQ / SPY)
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(* 9-15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "daytick"}'
-        WallWatch:          # after each hourly candle: CW > flip > PW + green candle crossing the put wall
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(2,32 10-16 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "wallwatch"}'
-        ShadowTracking:     # after the close: what the evaluations the bot didn't take would have done
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(20 16 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "shadow"}'
-        EndOfDayReview:     # Claude: hold overnight or close, while there's time to exit before 16:00
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(40 15 ? * MON-FRI *)
-            ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "review"}'
-
-  WeeklyFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: weekly.handler
-      Timeout: 600
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Table }
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref AnthropicSecret }
-      Events:
-        Sunday:
-          Type: ScheduleV2
-          Properties:
-            ScheduleExpression: cron(0 10 ? * SUN *)
-            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "scheduled"}'
 
 Outputs:
   SiteUrl:
@@ -530,14 +286,7 @@ Outputs:
     Value: !Ref UserPoolClient
   CognitoDomain:
     Value: !Sub "${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
-  AnthropicSecretArn:
-    Value: !Ref AnthropicSecret
-  SchwabSecretArn:
-    Value: !Ref SchwabSecret
-  AlertsTopicArn:
-    Value: !Ref AlertsTopic
-  SchwabCallbackUrl:
-    Description: Register this exact URL as the callback in your Schwab developer app
-    Value: !Sub "https://${Distribution.DomainName}/schwab"
+  DataBucketName:
+    Value: !Ref DataBucket
   TableName:
     Value: !Ref Table

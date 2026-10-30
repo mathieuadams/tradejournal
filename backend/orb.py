@@ -10,7 +10,7 @@
 Same candle through the stop and the target: the stop counts."""
 import datetime as dt
 
-DEFAULT = {"tickers": ["QQQ", "SPY"], "rangeMin": 5, "tgtR": 3.0, "fvgWin": 5, "confWin": 10, "lastEntry": "11:30", "side": "both", "days": 250}
+DEFAULT = {"tickers": ["NQ"], "rangeMin": 5, "tgtR": 3.0, "fvgWin": 5, "confWin": 10, "lastEntry": "11:30", "side": "both", "days": 250}
 ROW = ("tgtR", (2.0, 3.0, 4.0), "R target")
 COL = ("rangeMin", (5, 15, 30))
 COL_NAMES = {5: "5-min range", 15: "15-min range", 30: "30-min range"}
@@ -151,7 +151,7 @@ def all_trades(sub, p, cells=None, prog=None):
     for sym in p["tickers"]:
         if prog:
             prog(f"{sym}: {p['days']} days of 1-minute candles")
-        by = range50.bars(sub, sym, p["days"], 1)
+        by = range50.bars(sub, sym, p["days"], 1, p.get("_start"))
         for d in sorted(by):
             B = by[d]
             if len(B) < 60:

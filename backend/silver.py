@@ -1,4 +1,4 @@
-"""ICT Silver Bullet (ported from the user's Pine v6 strategy, bar for bar), on QQQ / SPY 1 or 5-minute candles.
+"""ICT Silver Bullet (ported from the user's Pine v6 strategy, bar for bar), on NQ / ES 1 or 5-minute candles.
 
   - Liquidity: confirmed swing highs / lows (pivot of `pivLen` bars each side) = buy-side / sell-side liquidity; the most
     recent one on each side is tracked until swept.
@@ -7,13 +7,13 @@
   - Sessions (New York): 10:00-11:00 and 14:00-15:00. (03:00-04:00 London needs futures: stocks have no candles then.)
   - Entry: in a session, flat, after the sweep bar: the first fair value gap in the bias direction (bull: low > high
     two bars back; bear: high < low two bars back) -> enter at that bar's close.
-  - Stop beyond the sweep extreme or the gap's first candle, whichever is further, + `bufTicks` x $0.01;
+  - Stop beyond the sweep extreme or the gap's first candle, whichever is further, + `bufTicks` x 0.25 (one NQ / ES tick);
     target `rr` x the risk. The bias resets after each entry; one position at a time.
   - Exits: the stop / the target (same candle: the stop). The Pine script has no session exit; on stocks the default
     here closes at 15:55 (`flatEod`), switch it off to carry overnight like the script (an open gap fills at the open)."""
 import datetime as dt
 
-DEFAULT = {"tickers": ["QQQ", "SPY"], "tf": 1, "pivLen": 3, "expiry": 30, "rr": 2.0, "bufTicks": 2, "flatEod": True, "days": 250, "side": "both"}
+DEFAULT = {"tickers": ["NQ"], "tf": 1, "pivLen": 3, "expiry": 30, "rr": 2.0, "bufTicks": 2, "flatEod": True, "days": 250, "side": "both"}
 ROW = ("rr", (1.5, 2.0, 3.0), "R target")
 COL = ("pivLen", (2, 3, 5))
 COL_NAMES = {2: "swing length 2", 3: "swing length 3", 5: "swing length 5"}
@@ -52,7 +52,7 @@ def tickers(sub, p):
 def run(C, p, trace=None):
     """C: continuous candles [(t, o, h, l, c)] (regular hours, every day in a row). The trades, as the Pine script takes them."""
     L, n = p["pivLen"], len(C)
-    buf = p["bufTicks"] * 0.01
+    buf = p["bufTicks"] * 0.25                       # NQ / ES tick
     lastPH = lastPL = None
     rTop = rBot = None
     bias, biasBar, sweepExt = 0, 0, None
@@ -157,7 +157,7 @@ def all_trades(sub, p, cells=None, prog=None):
     for sym in p["tickers"]:
         if prog:
             prog(f"{sym}: {p['days']} days of {p['tf']}-minute candles")
-        by = range50.bars(sub, sym, p["days"], p["tf"])
+        by = range50.bars(sub, sym, p["days"], p["tf"], p.get("_start"))
         C = [c for d in sorted(by) for c in by[d]]
         for x in run(C, p):
             d = x["in"][:10]

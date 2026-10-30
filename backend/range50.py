@@ -1,4 +1,4 @@
-"""Intraday 50% range retrace (the "A+ NQ scalper" setup), on QQQ / SPY minute candles (Alpaca: no futures).
+"""Intraday 50% range retrace (the "A+ NQ scalper" setup), on NQ / ES minute candles.
 
 Long (after a DOWN leg, the mirror for a short after an UP leg):
   1. a leg: a high H, then the lowest low L after it, at least `legPct`% of the price (the range R = H - L);
@@ -11,9 +11,9 @@ itself. Same candle hitting the stop and the target: the stop counts (the worst 
 import random
 
 RTH0, RTH1, FLAT, LAST_ENTRY = "09:30", "16:00", "15:55", "15:30"
-LEGS = (0.2, 0.35, 0.5, 0.75)                          # % of the price: the leg size grid (QQQ 0.35% ~ NQ 90 points)
+LEGS = (0.2, 0.35, 0.5, 0.75)                          # % of the price: the leg size grid (NQ 0.35% ~ 85 points)
 STOPS = (0.0, 0.1, 0.25)                               # the stop under the low, as a share of the range
-DEFAULT = {"tf": 1, "legPct": 0.35, "stopBuf": 0.0, "side": "both", "tickers": ["QQQ", "SPY"], "days": 250, "entryLvl": 0.25, "targetLvl": 0.5}
+DEFAULT = {"tf": 1, "legPct": 0.35, "stopBuf": 0.0, "side": "both", "tickers": ["NQ"], "days": 250, "entryLvl": 0.25, "targetLvl": 0.5}
 _CACHE = {}
 
 
@@ -32,30 +32,10 @@ def clean(p):
     return out
 
 
-def bars(sub, sym, days, tf):
-    """{day: [(t, o, h, l, c)]} regular hours, tf minutes."""
-    import daytrade
-    from util import now_ny
-    k = (sub, sym, days, now_ny().strftime("%Y-%m-%d %H"))
-    if k not in _CACHE:
-        if len(_CACHE) > 20:
-            _CACHE.clear()
-        _CACHE[k] = daytrade.minute_bars(sub, sym, days)
-    by = {}
-    for b in _CACHE[k]:
-        hm = b["t"][11:16]
-        if RTH0 <= hm < RTH1:
-            by.setdefault(b["t"][:10], []).append((b["t"], b["o"], b["h"], b["l"], b["c"]))
-    if tf == 1:
-        return by
-    out = {}
-    for d, xs in by.items():                           # 5-minute candles from the 1-minute ones
-        grp = {}
-        for t, o, h, l, c in xs:
-            m = int(t[11:13]) * 60 + int(t[14:16])
-            grp.setdefault(m - m % tf, []).append((t, o, h, l, c))
-        out[d] = [(f"{d}T{m // 60:02d}:{m % 60:02d}", g[0][1], max(x[2] for x in g), min(x[3] for x in g), g[-1][4]) for m, g in sorted(grp.items())]
-    return out
+def bars(sub, sym, days, tf, start=None):
+    """{day: [(t, o, h, l, c)]} regular hours, tf minutes (stored Databento candles)."""
+    import futdata
+    return futdata.rth(sym, days, tf, start=start)
 
 
 def _run_long(B, th_pct, stop_buf, ent=0.25, tgt=0.5):
@@ -170,7 +150,7 @@ def all_trades(sub, p, cells=None, prog=None):
     for sym in p["tickers"]:
         if prog:
             prog(f"{sym}: {p['days']} days of {p['tf']}-minute candles")
-        by = bars(sub, sym, p["days"], p["tf"])
+        by = bars(sub, sym, p["days"], p["tf"], p.get("_start"))
         for d in sorted(by):
             B = by[d]
             if len(B) < 30:
@@ -219,7 +199,7 @@ def coverage(sub, p, prog):
     cov = []
     for sym in p["tickers"]:
         if prog:
-            prog(f"{sym}: {p['days']} days of minute candles (Alpaca)")
+            prog(f"{sym}: {p['days']} days of minute candles")
         by = bars(sub, sym, p["days"], p["tf"])
         ds = sorted(by)
         if ds:
