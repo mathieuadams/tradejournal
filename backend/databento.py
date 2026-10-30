@@ -134,13 +134,36 @@ def list_datasets(key):
 def dataset_range(key):
     """{"start", "end"} (UTC ISO) of the data available now for GLBX.MDP3."""
     r = _json(key, "metadata.get_dataset_range", {"dataset": DATASET}) or {}
-    return {"start": str(r.get("start") or r.get("start_date") or "")[:19], "end": str(r.get("end") or r.get("end_date") or "")[:19]}
+    end = str(r.get("end") or r.get("end_date") or "")[:19]
+    sch = r.get("schema") if isinstance(r.get("schema"), dict) else {}
+    ends = [str(v.get("end"))[:19] for k, v in sch.items() if k in ("ohlcv-1m", "trades") and isinstance(v, dict) and v.get("end")]
+    if ends:                                           # the earliest end of the schemas the app uses
+        end = min(ends + ([end] if end else []))
+    return {"start": str(r.get("start") or r.get("start_date") or "")[:19], "end": end.replace(" ", "T")}
+
+
+def _avail_from(err):
+    """Databento's 422 'has data available up to '2026-10-30 14:00:00+00:00'' -> '2026-10-30T14:00:00' (or None)."""
+    import re
+    m = re.search(r"available up to '(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", str(err))
+    return f"{m.group(1)}T{m.group(2)}" if m else None
+
+
+def _retry_end(fn, end):
+    """Run fn(end); when Databento says the end is past its data, once more with the end it gives."""
+    try:
+        return fn(end)
+    except BadRequest as e:
+        cut = _avail_from(e)
+        if not cut or cut >= end[:19]:
+            raise
+        return fn(cut)
 
 
 def cost(key, schema, syms, start, end):
     """US dollars Databento would bill for this request (0 within a plan's included data)."""
-    r = _json(key, "metadata.get_cost", {"dataset": DATASET, "symbols": ",".join(CONT[s] for s in syms), "schema": schema,
-                                         "start": start, "end": end, "stype_in": "continuous"})
+    r = _retry_end(lambda e: _json(key, "metadata.get_cost", {"dataset": DATASET, "symbols": ",".join(CONT[s] for s in syms), "schema": schema,
+                                                             "start": start, "end": e, "stype_in": "continuous"}), end)
     try:
         return float(r)
     except (TypeError, ValueError):
@@ -151,7 +174,7 @@ def rows(key, schema, sym, start, end, timeout=300):
     """CSV records (dicts) of one continuous contract between start and end (UTC ISO, end exclusive)."""
     params = {"dataset": DATASET, "symbols": CONT[sym], "schema": schema, "start": start, "end": end, "stype_in": "continuous",
               "encoding": "csv", "compression": "none", "pretty_px": "true", "pretty_ts": "true", "map_symbols": "true"}
-    r = _open(key, "POST", "timeseries.get_range", params, timeout=timeout)
+    r = _retry_end(lambda e: _open(key, "POST", "timeseries.get_range", {**params, "end": e}, timeout=timeout), end)
     try:
         for row in csv.DictReader(io.TextIOWrapper(r, encoding="utf-8", newline="")):
             yield row

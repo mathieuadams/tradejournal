@@ -500,7 +500,7 @@ document.addEventListener('click', async e => {
       case 'db-save': await api('/databento', { method: 'PUT', body: { auto: $('#db-auto').checked, autoFp: $('#db-autofp').checked, maxCost: +$('#db-cap').value } }); toast('Saved.'); vData(); break;
       case 'db-test': el.disabled = true; await api('/databento/test', { method: 'POST' }); toast('Databento answered.'); vData(); break;
       case 'db-del': if (!confirm('Disconnect Databento? The stored candles stay.')) return; await api('/databento', { method: 'DELETE' }); vData(); break;
-      case 'est-c': case 'est-f': { const isC = act === 'est-c', out = $(isC ? '#est-c' : '#est-f'); out.textContent = 'Asking Databento…';
+      case 'est-c': case 'est-f': { const isC = act === 'est-c', out = $(isC ? '#est-c' : '#est-f'); out.className = 'muted'; out.textContent = 'Asking Databento…';
         const r = await api('/data/estimate', { method: 'POST', body: { kind: isC ? 'candles' : 'footprint', syms: isC ? (S.dlSyms || ['NQ', 'ES']) : (S.fpSyms || ['NQ']), from: $(isC ? '#dl-from' : '#fp-from').value, to: $(isC ? '#dl-to' : '#fp-to').value } });
         out.textContent = `Estimated cost: $${r.usd.toFixed(2)}${isC ? '' : ' (at most)'}`; break; }
       case 'dl-c': await download('candles'); break;
@@ -524,7 +524,10 @@ document.addEventListener('click', async e => {
         if (r.needConfirm) await api('/data/download', { method: 'POST', body: { kind: 'footprint', syms: [S.chart.sym], from: S.rp.day, to: S.rp.day, confirm: true } });
         toast('Downloading the trades… open the replay again in a minute.'); break; }
     }
-  } catch (err) { toast(err.message); if (el.textContent === 'Checking…') { el.disabled = false; el.textContent = 'Connect'; } }
+  } catch (err) {
+    toast(err.message);
+    if (act === 'est-c' || act === 'est-f' || act === 'dl-c' || act === 'dl-f') { const o = $(act.endsWith('c') ? '#est-c' : '#est-f'); if (o) { o.textContent = err.message; o.className = 'loss'; } }
+    if (el.textContent === 'Checking…') { el.disabled = false; el.textContent = 'Connect'; } }
 });
 document.addEventListener('change', e => {
   if (e.target.id === 'c-strat') { S.chart.strat = e.target.value; loadChart(); }

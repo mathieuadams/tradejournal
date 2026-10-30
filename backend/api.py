@@ -103,11 +103,18 @@ def _weekdays(d0, d1):
 
 def _estimate(sub, kind, syms, d0, d1):
     key = databento.key(sub)
+    avail = databento.dataset_range(key)["end"]         # Databento refuses an end past the data it has (today)
     if kind == "candles":
-        return databento.cost(key, "ohlcv-1m", syms, futdata.utc_iso(d0), futdata.utc_iso((date.fromisoformat(d1) + timedelta(days=1)).isoformat()))
-    total = 0.0                                        # trades: regular hours only, priced on the whole span (an upper bound)
-    total += databento.cost(key, "trades", syms, futdata.utc_iso(d0, "09:30"), futdata.utc_iso(d1, "16:00"))
-    return total
+        s, e = futdata.utc_iso(d0), futdata.utc_iso((date.fromisoformat(d1) + timedelta(days=1)).isoformat())
+        schema = "ohlcv-1m"
+    else:                                              # trades: regular hours only, priced on the whole span (an upper bound)
+        s, e = futdata.utc_iso(d0, "09:30"), futdata.utc_iso(d1, "16:00")
+        schema = "trades"
+    if avail and e > avail:
+        e = avail
+    if avail and s >= e:
+        return 0.0
+    return databento.cost(key, schema, syms, s, e)
 
 
 @route("GET", "/data")

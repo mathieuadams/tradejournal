@@ -124,6 +124,8 @@ def fake_open(key, method, path, params, timeout=60):
         return _Resp(json.dumps(["GLBX.MDP3", "XNAS.ITCH"]).encode())
     if path == "metadata.get_dataset_range":
         return _Resp(json.dumps({"start": "2017-05-21T00:00:00.000000000Z", "end": _end_avail().strftime("%Y-%m-%dT%H:%M:%S.000000000Z")}).encode())
+    if path in ("metadata.get_cost", "timeseries.get_range") and p.get("end", "")[:19] > _end_avail().strftime("%Y-%m-%dT%H:%M:%S"):
+        raise BadRequest("Databento: The end time must be before the available end of the dataset (422).")
     if path == "metadata.get_cost":
         s, e = datetime.fromisoformat(p["start"][:19]), datetime.fromisoformat(p["end"][:19])
         days = max(0.0, (e - s).total_seconds() / 86400)
