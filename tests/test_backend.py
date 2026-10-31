@@ -287,6 +287,16 @@ def test_13_vwap_retest():
     assert not vwapret.session(late, d, {**p, "wait": 1})
 
 
+def test_14_old_rules_still_load():
+    s = strategy.create(SUB, {"setup": "vwapret", "params": {"days": 30}})
+    it = db.get(db.upk(SUB), strategy.SK + s["id"])
+    it["params"].pop("wait")                            # saved before the rule existed
+    db.put(it)
+    st, r = call("GET", "/strategies")
+    assert st == 200 and any(x["id"] == s["id"] and x["params"]["wait"] == 3 for x in r["strategies"])
+    assert call("GET", f"/strategies/{s['id']}")[0] == 200
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

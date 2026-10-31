@@ -56,22 +56,39 @@ def _num(v, lo, hi, name):
     return f
 
 
+def _fresh(s):
+    """A stored strategy with its rules completed by the setup's current defaults (rules added since it was saved)."""
+    try:
+        s["params"] = _params(s["setup"], s.get("params") or {})
+    except Exception as e:
+        print("params refresh failed", s.get("id"), e)
+    return s
+
+
+def _all(sub):
+    return [_fresh(s) for s in db.q_prefix(_pk(sub), SK)]
+
+
 def get(sub, sid):
     s = db.get(_pk(sub), SK + sid)
     if not s:
         raise NotFound("No such strategy.")
-    return s
+    return _fresh(s)
 
 
 def _view(s):
     s = {k: v for k, v in s.items() if k not in ("PK", "SK")}
-    s["describe"] = _mod(s["setup"]).describe(s["params"])
+    try:
+        s["describe"] = _mod(s["setup"]).describe(s["params"])
+    except Exception as e:                             # one odd strategy never breaks the whole list
+        print("describe failed", s.get("id"), e)
+        s["describe"] = ""
     s["setupName"] = NAMES.get(s["setup"], s["setup"])
     return s
 
 
 def listing(sub):
-    return [_view(s) for s in db.q_prefix(_pk(sub), SK)]
+    return [_view(s) for s in _all(sub)]
 
 
 def view(sub, sid):
@@ -372,7 +389,7 @@ def paper_one(sub, s):
 
 def paper_tick(sub):
     n = 0
-    for s in db.q_prefix(_pk(sub), SK):
+    for s in _all(sub):
         if (s.get("paper") or {}).get("on"):
             try:
                 paper_one(sub, s)
@@ -413,7 +430,7 @@ def running(sub):
     rows, fills, today_net, limit, open_n = [], [], 0.0, 0.0, 0
     days = [m["session"] for m in mk if m.get("session")]
     today = max(days) if days else now_ny().strftime("%Y-%m-%d")
-    for s in db.q_prefix(_pk(sub), SK):
+    for s in _all(sub):
         pp = s.get("paper") or {}
         if not pp.get("on") and not pp.get("kill"):
             continue
