@@ -486,15 +486,32 @@ def chart(sym, tf=5, days=3, end=None, rth_only=False):
     n = max(1, min(days, cap))
     full = sessions(sym, n, end=end, rth=False)
     by = {d: [b for b in xs if b[0][:10] == d and RTH0 <= b[0][11:16] < RTH1] for d, xs in full.items()} if rth_only else full
-    bars = []
+    bars, vwap = [], []
     for d in sorted(by):
         bars += [b + [d] for b in agg(by[d], tf)]
+        # the session VWAP from the 1-minute candles (from 18:00), read at each candle's last minute: the strategies' VWAP
+        pv = vv = 0.0
+        at = {}
+        for t, o, h, l, c, v in full.get(d) or []:
+            pv += (h + l + c) / 3 * v
+            vv += v
+            at[t] = pv / vv if vv else c
+        last = None
+        for b in agg(by[d], tf):
+            m = int(b[0][11:13]) * 60 + int(b[0][14:16])
+            for k in range(tf - 1, -1, -1):
+                mm = m + k
+                key = f"{b[0][:11]}{mm // 60 % 24:02d}:{mm % 60:02d}"
+                if key in at:
+                    last = at[key]
+                    break
+            vwap.append(round(last, 2) if last is not None else None)
     zones = sd_zones(full, tf)
     fp = set(cov(sym).get("fp") or [])
     hm = set(cov(sym).get("hm") or [])
     return {"sym": sym, "tf": tf, "spec": SPEC[sym], "bars": bars, "days": sorted(by), "levels": _levels(sym, by),
             "fpDays": sorted(d for d in by if d in fp), "hmDays": sorted(d for d in by if d in hm), "cells": {d: c for d, c in cells(sym).items() if d in by},
-            "zones": zones}
+            "zones": zones, "vwap": vwap}
 
 
 def latest(sym):

@@ -278,6 +278,13 @@ def test_13_vwap_retest():
     assert t["in"] == f"{d}T10:19" and t["rt"] == f"{d}T10:10" and t["cf"] == f"{d}T10:15" and t["r"] == 2
     assert not vwapret.session(B, d, {**p, "trend": 3})               # needs 3 closes under first
     assert not vwapret.session(B, d, {**p, "hours": "on"})            # 10:19 is not overnight
+    thru = list(B)
+    thru[2] = (thru[2][0], 94, 101, 93.5, 100.75, 100)                 # closes through the VWAP: not a test
+    assert not vwapret.session(thru, d, p)
+    late = B[:3] + [(f"{d}T10:15", 99, 99.75, 97, 99.5, 100)] + [(f"{d}T10:20", 99.5, 100.25, 96, 96.5, 100)] + B[4:]
+    u = vwapret.session(late, d, p)[0]                                 # a green inside candle, then the first red one
+    assert u["cf"] == f"{d}T10:20" and u["stop"] == 100.5 and u["e"] == 96.5
+    assert not vwapret.session(late, d, {**p, "wait": 1})
 
 
 if __name__ == "__main__":

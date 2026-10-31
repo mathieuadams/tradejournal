@@ -78,7 +78,7 @@
       for (let i = 0; i < B.length; i++) {
         const b = B[i];
         if (b[6] !== day) { day = b[6]; pv = 0; vv = 0; cd = 0; }
-        pv += (b[2] + b[3] + b[4]) / 3 * b[5]; vv += b[5]; this.vw.push(vv ? pv / vv : b[4]);
+        pv += (b[2] + b[3] + b[4]) / 3 * b[5]; vv += b[5]; this.vw.push(d.vwap && d.vwap[i] != null ? d.vwap[i] : (vv ? pv / vv : b[4]));
         const fd = d.fpDelta && d.fpDelta[day];
         let dl;
         if (fd) { dl = 0; const m0 = toMin(b[0]); for (let m = m0; m < m0 + d.tf; m++) dl += fd[minStr(m)] || 0; this.cvdReal = true; }

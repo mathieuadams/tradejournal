@@ -2,16 +2,18 @@
 
 Short (long = the mirror):
   1. Below VWAP: the `trend` candles before the touch all closed under the VWAP.
-  2. The touch: a green candle that opened under the VWAP and whose high reaches it.
-  3. The entry: the next candle is red and closes under the VWAP: sell at that close.
-  4. Stop: above the higher high of the two candles (+ `bufTicks` ticks). Target: `tgtR` x the risk.
+  2. The test: a green candle that opened under the VWAP, whose high reaches it, and that closes back UNDER it
+     (a close through the VWAP is not a test).
+  3. The entry: the first red candle within the next `wait` candles (closing under the VWAP): sell at its close.
+     A candle closing above the VWAP before that cancels the setup.
+  4. Stop: above the highest high from the test to the entry (+ `bufTicks` ticks). Target: `tgtR` x the risk.
   5. Flat at `flatAt` ET on the session day; at most `maxDay` trades per session; one position at a time;
      `hours`: all (overnight + day), on (overnight only: entries 18:00-09:30), rth (09:30-16:00).
 Same candle through the stop and the target: the stop counts."""
 import datetime as dt
 import random
 
-DEFAULT = {"tickers": ["NQ"], "tf": 5, "trend": 3, "tgtR": 2.0, "bufTicks": 2, "maxDay": 3, "hours": "all", "flatAt": "15:55",
+DEFAULT = {"tickers": ["NQ"], "tf": 5, "trend": 3, "wait": 3, "tgtR": 2.0, "bufTicks": 2, "maxDay": 10, "hours": "all", "flatAt": "15:55",
            "side": "both", "days": 250}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("dist", "Distance from VWAP at entry"), ("risk", "Risk (points)")]
 TICK = 0.25
@@ -22,12 +24,12 @@ def clean(p):
     tf = int(p.get("tf") or 5) if str(p.get("tf")) in ("1", "5", "15") else 5
     out = {"setup": "vwapret", "tf": tf, "hours": p.get("hours") if p.get("hours") in ("all", "on", "rth") else "all",
            "side": p.get("side") if p.get("side") in ("long", "short", "both") else "both"}
-    for k, lo, hi in (("trend", 0, 50), ("tgtR", 0.5, 10), ("bufTicks", 0, 40), ("maxDay", 1, 20), ("days", 20, 3000)):
+    for k, lo, hi in (("trend", 0, 50), ("wait", 1, 20), ("tgtR", 0.5, 10), ("bufTicks", 0, 40), ("maxDay", 1, 20), ("days", 20, 3000)):
         try:
             out[k] = max(lo, min(hi, float(p.get(k))))
         except (TypeError, ValueError):
             out[k] = DEFAULT[k]
-    for k in ("trend", "bufTicks", "maxDay", "days"):
+    for k in ("trend", "wait", "bufTicks", "maxDay", "days"):
         out[k] = int(out[k])
     fa = str(p.get("flatAt") or "15:55")
     out["flatAt"] = fa if len(fa) == 5 and fa[2] == ":" and "09:35" <= fa <= "16:55" else "15:55"
@@ -41,8 +43,8 @@ def describe(p):
     hrs = {"all": "overnight and day", "on": "overnight only", "rth": "regular hours only"}[p["hours"]]
     side = {"long": "long only", "short": "short only", "both": "both sides"}[p["side"]]
     return (f"{', '.join(p['tickers'])} {p['tf']}-minute VWAP retest ({hrs}, {side}): after {p['trend']} closes on one side, a candle against "
-            f"the move touches the VWAP; the next candle closes back away from it in the move's direction: enter at that close, stop past "
-            f"the two candles + {p['bufTicks']} tick(s), target {p['tgtR']:g}R, flat at {p['flatAt']}, at most {p['maxDay']} a session")
+            f"the move tests the VWAP without closing through it; the first candle back in the move's direction (within {p['wait']}) closes: "
+            f"enter at that close, stop past the test + {p['bufTicks']} tick(s), target {p['tgtR']:g}R, flat at {p['flatAt']}, at most {p['maxDay']} a session")
 
 
 def tickers(sub, p):
@@ -93,28 +95,43 @@ def session(B, day, p):
         t, o, h, l, c, vw = B[k]
         if t >= flat:
             break
-        nt, no, nh, nl, nc, nvw = B[k + 1]
         side = None
         if k >= p["trend"]:
             below = all(B[j][4] < B[j][5] for j in range(k - p["trend"], k))
             above = all(B[j][4] > B[j][5] for j in range(k - p["trend"], k))
-            if p["side"] in ("short", "both") and below and c > o and o < vw <= h and nc < no and nc < nvw:
+            # the test: a candle against the move reaches the VWAP but doesn't close through it
+            if p["side"] in ("short", "both") and below and c > o and o < vw <= h and c < vw:
                 side = "short"
-            elif p["side"] in ("long", "both") and above and c < o and o > vw >= l and nc > no and nc > nvw:
+            elif p["side"] in ("long", "both") and above and c < o and o > vw >= l and c > vw:
                 side = "long"
-        if not side or not _in_hours(_end(nt, p["tf"]), day, p["hours"]) or _end(nt, p["tf"]) >= flat:
+        ec = None
+        if side:                                       # the entry: the first candle (within `wait`) back in the move's direction
+            for j in range(k + 1, min(n, k + 1 + p["wait"])):
+                tj, oj, hj, lj, cj, vj = B[j]
+                if (side == "short" and cj > vj) or (side == "long" and cj < vj):
+                    break                              # closed through the VWAP: no trade
+                if (side == "short" and cj < oj) or (side == "long" and cj > oj):
+                    ec = j
+                    break
+        if ec is None:
             k += 1
             continue
+        nt, no, nh, nl, nc, nvw = B[ec]
+        if not _in_hours(_end(nt, p["tf"]), day, p["hours"]) or _end(nt, p["tf"]) >= flat:
+            k += 1
+            continue
+        h = max(b[2] for b in B[k:ec + 1])
+        l = min(b[3] for b in B[k:ec + 1])
         d = -1 if side == "short" else 1
         e = nc
-        stop = (max(h, nh) + p["bufTicks"] * TICK) if d < 0 else (min(l, nl) - p["bufTicks"] * TICK)
+        stop = (h + p["bufTicks"] * TICK) if d < 0 else (l - p["bufTicks"] * TICK)
         R = abs(e - stop)
         if R <= 0:
             k += 1
             continue
         tgt = e + d * p["tgtR"] * R
         x = why = None
-        j = k + 2
+        j = ec + 1
         while j < n:
             tj, oj, hj, lj, cj, _ = B[j]
             if (d < 0 and hj >= stop) or (d > 0 and lj <= stop):
@@ -129,7 +146,7 @@ def session(B, day, p):
         if x is None:
             j, x, why = n - 1, B[-1][4], "close"
         out.append({"in": _end(nt, p["tf"]), "out": B[j][0], "e": e, "x": x, "why": why, "side": side, "stop": stop, "tgt": tgt,
-                    "stopDist": R, "tgtDist": p["tgtR"] * R, "rt": t, "cf": nt, "dist": abs(e - nvw), "k": k + 1,
+                    "stopDist": R, "tgtDist": p["tgtR"] * R, "rt": t, "cf": nt, "dist": abs(e - nvw), "k": ec,
                     "pct": d * (x / e - 1) * 100, "r": d * (x - e) / R})
         done += 1
         k = j + 1                                      # one position at a time: look again after the exit
