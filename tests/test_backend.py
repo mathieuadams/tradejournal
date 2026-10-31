@@ -154,7 +154,7 @@ def test_05_strategy_protocol():
 
 
 def test_06_other_setups():
-    for setup, p in (("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
+    for setup, p in (("vwapret", {"days": 60}), ("vwapret", {"days": 60, "hours": "on", "tf": 1, "trend": 0}), ("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
                      ("wt", {"tf": "15", "days": 60})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
@@ -262,6 +262,22 @@ def test_12_daily_supply_demand():
     assert not [x for x in z if x["day"] == "2026-10-05"]                    # nothing carried from day to day
     st, ch = call("GET", "/chart", q={"sym": "NQ", "tf": "5", "days": "3", "rth": "1"})
     assert st == 200 and isinstance(ch["zones"], list) and all(x["day"] in ch["days"] for x in ch["zones"])
+
+
+def test_13_vwap_retest():
+    import vwapret
+    p = vwapret.clean({"tf": 5, "trend": 2, "tgtR": 2, "bufTicks": 0, "maxDay": 3, "side": "short"})
+    d = "2026-10-06"
+    B = [(f"{d}T10:{5 * k:02d}", *x) for k, x in enumerate([
+        (95, 96, 94, 95, 100), (95, 96, 93, 94, 100),           # two closes under the VWAP (100)
+        (94, 100.5, 93.5, 99, 100),                              # green, opened under, high touches the VWAP
+        (99, 99.5, 96, 96.5, 100),                               # red, closes under: sell 96.5, stop 100.5 (risk 4), target 88.5
+        (96.5, 97, 92, 92.5, 99), (92.5, 93, 88, 88.25, 98)])] # the target is hit
+    t = vwapret.session(B, d, p)[0]
+    assert t["side"] == "short" and t["e"] == 96.5 and t["stop"] == 100.5 and t["tgt"] == 88.5 and t["why"] == "target" and t["x"] == 88.5, t
+    assert t["in"] == f"{d}T10:19" and t["rt"] == f"{d}T10:10" and t["cf"] == f"{d}T10:15" and t["r"] == 2
+    assert not vwapret.session(B, d, {**p, "trend": 3})               # needs 3 closes under first
+    assert not vwapret.session(B, d, {**p, "hours": "on"})            # 10:19 is not overnight
 
 
 if __name__ == "__main__":

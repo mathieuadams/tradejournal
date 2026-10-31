@@ -45,6 +45,10 @@ const SETUPS = {
       ['maType', 'MA type', 'sel', [['SMA', 'SMA'], ['EMA', 'EMA'], ['WMA', 'WMA'], ['HMA', 'HMA'], ['RMA', 'RMA'], ['VWMA', 'VWMA']]], ['maLen', 'MA length', 'num', 1], ['atrLen', 'ATR length', 'num', 1],
       ['atrMult', 'ATR multiplier', 'num', 0.1], ['binMult', 'Profile bin (× ATR)', 'num', 0.01], ['minBars', 'POC retest: trend at least (candles)', 'num', 1],
       ['stop', 'Stop', 'sel', [['band', 'Opposite band'], ['none', 'None (exit on trend change)']]], ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  vwapret: { name: 'VWAP retest (overnight included)', blurb: 'Short: below the VWAP, a green candle touches it from underneath, the next candle is red and closes under it: sell that close. Long: the mirror. VWAP from 18:00, overnight trades allowed.',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min'], [15, '15 min']]], ['hours', 'Hours', 'sel', [['all', 'Overnight + day'], ['on', 'Overnight only'], ['rth', 'Regular hours only']]],
+      ['trend', 'Closes on one side before the touch', 'num', 1], ['tgtR', 'Target (R)', 'num', 0.5], ['bufTicks', 'Stop buffer (ticks)', 'num', 1],
+      ['maxDay', 'Max trades per session', 'num', 1], ['flatAt', 'Flat at (ET)', 'text'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   wt: { name: 'WaveTrend dots', blurb: 'WaveTrend [Krypt]: in at the open after a buy dot, out at the open after a sell dot (and the mirror for shorts).',
     params: [['tf', 'Candles', 'sel', [['1D', 'Daily'], ['60', '1 hour'], ['15', '15 min'], ['5', '5 min']]], ['side', 'Side', 'sel', SIDE], ['stopAtr', 'Stop (× average range, 0 = none)', 'num', 0.25],
       ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['days', 'Candles / sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
@@ -272,6 +276,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   range50: { tf: 1, legPct: 0.35, entryLvl: 0.25, targetLvl: 0.5, stopBuf: 0, side: 'both', days: 250, tickers: ['NQ'] },
   silver: { tf: 1, pivLen: 3, expiry: 30, rr: 2, bufTicks: 2, flatEod: true, side: 'both', days: 250, tickers: ['NQ'] },
   tvpoc: { tf: '15', entry: 'flip', maType: 'SMA', maLen: 25, atrLen: 50, atrMult: 1, binMult: 0.2, minBars: 3, stop: 'band', flatEod: true, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  vwapret: { tf: 5, hours: 'all', trend: 3, tgtR: 2, bufTicks: 2, maxDay: 3, flatAt: '15:55', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 function newForm() {
   const k = S.newSetup;
