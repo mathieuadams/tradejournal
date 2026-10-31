@@ -97,6 +97,11 @@ def handler(event, ctx=None):
         elif job == "study":
             strategy.study(sub, p["id"], prog)
             set_status(sub, name, status="done", msg="Study finished.")
+        elif job == "optimize":
+            if not strategy.optimize(sub, p["id"], prog, dl):
+                _invoke(event)                         # out of time: the next settings in a new run
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="Optimization finished.")
         elif job == "validate":
             strategy.validate(sub, p["id"])
             set_status(sub, name, status="done", msg="Validation finished.")

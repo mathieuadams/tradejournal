@@ -3,14 +3,15 @@
 Short (long = the mirror at the overnight low):
   1. In regular hours, before `lastEntry`, a candle trades above the overnight high (ONH: 18:00-09:30).
   2. The reclaim: a candle closes back under the ONH (the same candle or a later one), before `maxAbove` candles
-     have closed above it (acceptance above = no trade): sell at that close.
+     have closed above it (acceptance above = no trade): sell at that close. Only once the sweep went at least
+     `minDepth` points past the ONH; no trade when the overnight range is under `minOnPct`% of the price.
   3. Stop: above the highest high since the sweep began (+ `bufTicks` ticks).
   4. Target (`tgt`): vwap (the session VWAP at the entry), mid (the middle of the overnight range), other (the other
      side of the overnight range) or r (`tgtR` x the risk). Skipped when the target isn't at least `minRR` x the risk.
   5. One trade per side per session, flat at 15:55."""
 import sessionkit as K
 
-DEFAULT = {"tickers": ["NQ"], "tf": 5, "lastEntry": "10:30", "maxAbove": 3, "bufTicks": 2, "tgt": "vwap", "tgtR": 2.0, "minRR": 1.0,
+DEFAULT = {"tickers": ["NQ"], "tf": 5, "lastEntry": "10:30", "maxAbove": 3, "minDepth": 0.0, "minOnPct": 0.0, "bufTicks": 2, "tgt": "vwap", "tgtR": 2.0, "minRR": 1.0,
            "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("depth", "How far past the overnight level"), ("onr", "Overnight range")]
 
@@ -21,7 +22,7 @@ def clean(p):
            "side": p.get("side") if p.get("side") in ("long", "short", "both") else "both"}
     le = str(p.get("lastEntry") or "10:30")
     out["lastEntry"] = le if len(le) == 5 and le[2] == ":" and "09:35" <= le <= "15:30" else "10:30"
-    K.num(p, out, (("maxAbove", 1, 30, 3), ("bufTicks", 0, 40, 2), ("tgtR", 0.5, 10, 2.0), ("minRR", 0, 10, 1.0), ("days", 20, 3000, 500)),
+    K.num(p, out, (("minDepth", 0, 500, 0.0), ("minOnPct", 0, 5, 0.0), ("maxAbove", 1, 30, 3), ("bufTicks", 0, 40, 2), ("tgtR", 0.5, 10, 2.0), ("minRR", 0, 10, 1.0), ("days", 20, 3000, 500)),
           ("maxAbove", "bufTicks", "days"))
     out["tickers"] = K.tickers_of(p)
     return out
@@ -43,6 +44,8 @@ def engine(day, on, R, F, V, p):
     if not on:
         return []
     onh, onl = max(b[2] for b in on), min(b[3] for b in on)
+    if p.get("minOnPct") and onh - onl < onl * p["minOnPct"] / 100:
+        return []                                      # the overnight range is too tight
     out = []
     for d in ((-1,) if p["side"] == "short" else (1,) if p["side"] == "long" else (-1, 1)):
         lvl = onh if d < 0 else onl
@@ -57,6 +60,8 @@ def engine(day, on, R, F, V, p):
                 continue
             ext = max(ext, h) if d < 0 else min(ext, l)
             back = c < lvl if d < 0 else c > lvl
+            if back and p.get("minDepth") and abs(ext - lvl) < p["minDepth"]:
+                continue                               # back inside, but the sweep wasn't deep enough: wait for a deeper one
             if not back:
                 above += 1
                 if above >= p["maxAbove"]:

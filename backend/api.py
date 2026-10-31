@@ -246,8 +246,8 @@ def strategy_del(sub, claims, body, q, sid):
 @route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/run")
 def strategy_run(sub, claims, body, q, sid):
     step = body.get("step")
-    if step not in ("study", "validate"):
-        raise BadRequest("step must be study or validate.")
+    if step not in ("study", "validate", "optimize"):
+        raise BadRequest("step must be study, validate or optimize.")
     strategy.get(sub, sid)
     if step == "study" and not all(x["ok"] for x in strategy.data_check(sub, sid)):
         raise BadRequest("Not enough data: download at least 60 days of candles on the Data page.")
@@ -257,6 +257,11 @@ def strategy_run(sub, claims, body, q, sid):
 @route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/action")
 def strategy_action(sub, claims, body, q, sid):
     return strategy.action(sub, sid, body.get("action"))
+
+
+@route("GET", "/strategies/(?P<sid>[a-f0-9]{10})/optimize")
+def strategy_opt(sub, claims, body, q, sid):
+    return {"opt": strategy.opt_view(sub, sid)}
 
 
 @route("GET", "/strategies/(?P<sid>[a-f0-9]{10})/trades")

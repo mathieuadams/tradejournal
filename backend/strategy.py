@@ -140,7 +140,7 @@ def delete(sub, sid):
     if s.get("paper", {}).get("on"):
         raise BadRequest("Stop paper trading first.")
     db.delete(_pk(sub), SK + sid)
-    for k in ("study", "paper"):
+    for k in ("study", "paper", "opt"):
         store.delete(f"strat/{sub}/{sid}/{k}")
     return {"ok": True}
 
@@ -278,6 +278,78 @@ def _grid(ts):
             m = metrics(xs)
             out[f"{ph}|{v}"] = {"n": m["n"], "avgR": m.get("avgR"), "exp": m.get("exp"), "total": m.get("total")}
     return out
+
+
+# ---------------------------------------------------------------- optimization
+
+GRIDS = {
+    "onsweep": {"bufTicks": [2, 8], "tgt": ["vwap", "mid", "other"], "lastEntry": ["10:00", "10:30"], "minDepth": [0, 5, 15]},
+    "ibbreak": {"stop": ["mid", "opp", "bar"], "tgtMult": [0.5, 1.0, 1.5], "filter": ["vwap", "overnight", "none"]},
+    "odpull": {"drivePct": [0.15, 0.25, 0.4], "pbMin": [1, 2, 3], "ema": [9, 20], "tgtR": [1.5, 2.0, 3.0]},
+    "vwapret": {"trend": [2, 3, 5], "wait": [1, 3], "tgtR": [1.0, 1.5, 2.0, 3.0], "hours": ["all", "rth"]},
+    "orbema": {"rangeMin": [15, 30], "ema": [9, 20], "minRR": [0, 1, 2], "entryAt": ["close", "open"]},
+    "range50": {"legPct": [0.2, 0.35, 0.5], "entryLvl": [0.2, 0.25, 0.33], "stopBuf": [0, 0.1, 0.25]},
+    "silver": {"pivLen": [3, 5, 10], "rr": [1.0, 1.5, 2.0, 3.0], "expiry": [10, 30]},
+    "orb": {"rangeMin": [5, 15, 30], "tgtR": [1.0, 2.0, 3.0], "lastEntry": ["10:30", "11:30", "13:00"]},
+    "tvpoc": {"entry": ["flip", "poc"], "atrMult": [0.75, 1.0, 1.5], "maLen": [20, 25, 50]},
+    "wt": {"tf": ["1D", "60", "15"], "stopAtr": [0, 1.0, 1.5, 2.0], "side": ["long", "both"]},
+}
+OPT_MIN = 30                                           # train trades a setting needs to be ranked
+
+
+def _combos(setup):
+    import itertools
+    g = GRIDS.get(setup) or {}
+    keys = list(g)
+    return [dict(zip(keys, vals)) for vals in itertools.product(*[g[k] for k in keys])]
+
+
+def _brief(m):
+    return {k: m.get(k) for k in ("n", "win", "avgR", "pf", "exp", "total", "dd", "edge")}
+
+
+def optimize(sub, sid, prog=None, deadline=None):
+    """Every combination of the setup's grid: the trades, split at the same date (first 60% of the sessions = train,
+    the rest = test). Ranked on the train period only; the test columns show whether the ranking holds.
+    Resumable: returns False when out of time (the rows so far are saved)."""
+    import time as _t
+    s = get(sub, sid)
+    if not all(x["ok"] for x in data_check(sub, sid)):
+        raise BadRequest("Not enough data: download at least 60 days of candles (Data page).")
+    combos = _combos(s["setup"])
+    if not combos:
+        raise BadRequest("No settings grid for this setup.")
+    key = f"strat/{sub}/{sid}/opt"
+    cur = store.get_json(key, {}) or {}
+    base = {k: v for k, v in s["params"].items()}
+    if cur.get("base") != base or cur.get("grid") != GRIDS[s["setup"]]:
+        days = [d for d in futdata.trading_days(s["params"]["tickers"][0])][-int(s["params"].get("days") or 250):]
+        cur = {"base": base, "grid": GRIDS[s["setup"]], "split": days[int(len(days) * TRAIN)] if days else None, "rows": [],
+               "total": len(combos), "complete": False, "at": iso(now_ny())}
+    split = cur["split"]
+    for i in range(len(cur["rows"]), len(combos)):
+        if deadline and _t.time() > deadline:
+            store.put_json(key, cur)
+            return False
+        if prog:
+            prog(f"Optimizing: setting {i + 1} of {len(combos)}")
+        c = combos[i]
+        trial = {**s, "params": _params(s["setup"], {**base, **c})}
+        ts = [t for t in run_trades(sub, trial) if t.get("why") != "open"]
+        tr, te = [t for t in ts if t["d"] < split], [t for t in ts if t["d"] >= split]
+        cur["rows"].append({"p": c, "train": _brief(metrics(tr)), "test": _brief(metrics(te))})
+    cur.update(complete=True, at=iso(now_ny()))
+    store.put_json(key, cur)
+    return True
+
+
+def opt_view(sub, sid):
+    get(sub, sid)
+    cur = store.get_json(f"strat/{sub}/{sid}/opt", None)
+    if not cur:
+        return None
+    rows = sorted(cur["rows"], key=lambda r: (r["train"].get("n", 0) >= OPT_MIN, r["train"].get("exp") or -1e9), reverse=True)
+    return {**cur, "rows": rows, "minTrades": OPT_MIN}
 
 
 def validate(sub, sid):

@@ -52,7 +52,8 @@ const SETUPS = {
   onsweep: { name: 'Overnight high / low sweep and reclaim', blurb: 'In the first hour, price runs past the overnight high (or low) and closes back inside: fade it, stop past the sweep, target the VWAP / overnight mid / other side.',
     params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['lastEntry', 'Last entry (ET)', 'text'], ['maxAbove', 'Cancel after (closes outside)', 'num', 1],
       ['tgt', 'Target', 'sel', [['vwap', 'VWAP'], ['mid', 'Middle of the overnight range'], ['other', 'Other side of the overnight range'], ['r', 'Fixed R']]], ['tgtR', 'Fixed R target', 'num', 0.5],
-      ['minRR', 'Skip if the target is under (R)', 'num', 0.25], ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+      ['minRR', 'Skip if the target is under (R)', 'num', 0.25], ['minDepth', 'Sweep at least (points past the level)', 'num', 1], ['minOnPct', 'Overnight range at least (%)', 'num', 0.05],
+      ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   ibbreak: { name: 'Initial balance breakout', blurb: 'The 09:30–10:30 range: trade the first close outside it (on the VWAP side, or with the overnight trend), target 1× the range past the edge.',
     params: [['tf', 'Candles', 'sel', [[5, '5 min'], [15, '15 min'], [1, '1 min']]], ['ibMin', 'Initial balance', 'sel', [[60, '60 min (09:30–10:30)'], [30, '30 min (09:30–10:00)']]],
       ['filter', 'Filter', 'sel', [['vwap', 'Breakout on the VWAP side'], ['overnight', 'With the overnight trend'], ['none', 'None']]], ['onMinPct', 'Overnight trend: move at least (%)', 'num', 0.05], ['stop', 'Stop', 'sel', [['mid', 'Middle of the IB'], ['opp', 'Other side of the IB'], ['bar', 'Breakout candle']]],
@@ -289,7 +290,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   silver: { tf: 1, pivLen: 3, expiry: 30, rr: 2, bufTicks: 2, flatEod: true, side: 'both', days: 250, tickers: ['NQ'] },
   tvpoc: { tf: '15', entry: 'flip', maType: 'SMA', maLen: 25, atrLen: 50, atrMult: 1, binMult: 0.2, minBars: 3, stop: 'band', flatEod: true, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   vwapret: { tf: 5, hours: 'all', trend: 3, wait: 3, tgtR: 2, bufTicks: 2, maxDay: 10, flatAt: '15:55', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
-  onsweep: { tf: 5, lastEntry: '10:30', maxAbove: 3, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  onsweep: { tf: 5, lastEntry: '10:30', maxAbove: 3, minDepth: 0, minOnPct: 0, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   ibbreak: { tf: 5, ibMin: 60, filter: 'vwap', onMinPct: 0.3, stop: 'mid', tgtMult: 1, bufTicks: 2, lastEntry: '14:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   odpull: { tf: 5, driveMin: 15, drivePct: 0.25, strength: 0.25, pbMin: 2, ema: 9, tgtR: 2, bufTicks: 2, lastEntry: '11:30', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
@@ -309,6 +310,8 @@ async function vStrategy(id) {
   S.cur = s;
   let ts = [];
   if (s.study) { try { ts = (await api(`/strategies/${id}/trades?set=${S.trSet}`)).trades; } catch (e) { ts = []; } }
+  let opt = null; try { opt = (await api(`/strategies/${id}/optimize`)).opt; } catch (e) { opt = null; }
+  S.opt = opt;
   const v = s.valid, st = s.study, pp = s.paper || {}, job = s.job || {};
   const locked = !!pp.on;
   const dataOk = Object.values(s.coverage).every(c => c.days >= 60);
@@ -329,7 +332,7 @@ async function vStrategy(id) {
     <div class="row">
       <div class="col-main">
         <section class="panel"><div class="hd"><h2>${v ? 'Validation' : 'Study'}</h2><span class="dim" style="font-size:13px">${v ? `Train = first 60% of the trades, test = the last 40% (from ${esc(v.split || '')}). Costs: $${s.comm} commission + ${s.slip} tick slippage per side, ${s.contracts} contract(s).` : st ? `${esc(st.from)} → ${esc(st.to)}` : 'Run the study to see the trades this rule would have taken.'}</span>
-          <div class="grow"></div><button class="btn sm" data-act="run-study" ${locked || !dataOk ? 'disabled' : ''}>${st ? 'Re-run study' : 'Run study'}</button>${st ? `<button class="btn sm ${v ? '' : 'primary'}" data-act="run-valid" ${locked ? 'disabled' : ''}>${v ? 'Re-validate' : 'Run validation'}</button>` : ''}</div>
+          <div class="grow"></div><button class="btn sm" data-act="run-opt" ${locked || !dataOk ? 'disabled' : ''} title="Test every combination of the key settings">Optimize</button><button class="btn sm" data-act="run-study" ${locked || !dataOk ? 'disabled' : ''}>${st ? 'Re-run study' : 'Run study'}</button>${st ? `<button class="btn sm ${v ? '' : 'primary'}" data-act="run-valid" ${locked ? 'disabled' : ''}>${v ? 'Re-validate' : 'Run validation'}</button>` : ''}</div>
           ${v ? `<div class="tbl-wrap"><table class="tbl" style="min-width:600px"><thead><tr><th>Metric</th><th class="r">Train</th><th class="r">Test</th><th class="r">Random entries (test)</th><th class="r">Test at 2× costs</th></tr></thead><tbody>
             ${mrow('Trades', 'n', x => x.toLocaleString('en-US'))}${mrow('Win rate', 'win', x => x + '%')}${mrow('Avg R', 'avgR', x => sgn(x, 2, 'R'))}${mrow('Profit factor', 'pf', x => x)}
             ${mrow('Avg points / trade', 'pts', x => sgn(x, 2))}${mrow('$ / trade (net)', 'exp', x => money(x))}${mrow('Net total', 'total', x => money(x))}${mrow('Max drawdown', 'dd', x => money(-x))}
@@ -339,6 +342,7 @@ async function vStrategy(id) {
             <div style="flex:2 1 340px;min-width:0"><div class="note" style="margin-bottom:8px">Equity ($, net) · <span class="gain">train</span> then <span class="loss">test</span></div><div class="bars">${equityBars(ts, v && v.split)}</div></div>
             <div style="flex:1 1 220px;min-width:0"><div class="note" style="margin-bottom:8px">R per trade</div><div class="bars" style="gap:3px">${rHist(ts)}</div><div class="note mono" style="display:flex;justify-content:space-between"><span>≤ −1R</span><span>0</span><span>≥ +3R</span></div></div></div>` : ''}
         </section>
+        ${opt ? optHtml(s, opt, locked) : ''}
         ${grid ? `<section class="panel"><div class="hd"><h2>Where it may trade</h2><span class="dim" style="font-size:13px">Test results by market condition (known before the open). Tick the ones paper trading may use.</span></div>
           <div class="bd tbl-wrap"><div class="cells"><div></div><div class="dim" style="font-size:12px;text-align:center">calm</div><div class="dim" style="font-size:12px;text-align:center">volatile</div>
           ${['Bull', 'Sideways', 'Bear'].map(ph => `<div class="muted" style="display:flex;align-items:center">${ph}</div>${['calm', 'volatile'].map(vo => { const k = ph + '|' + vo, g = grid[k] || {}, on = !!(s.cells || {})[k];
@@ -377,6 +381,27 @@ async function vStrategy(id) {
       </aside>
     </div>`);
   if (job.status === 'running') pollJob('/strategies/' + id, x => x.job, () => vStrategy(id));
+}
+function optHtml(s, o, locked) {
+  const keys = Object.keys(o.grid), cur = keys.every(k => true) ? s.params : {};
+  const isCur = r => keys.every(k => String(r.p[k]) === String(cur[k]));
+  const val = (m, k, f) => m && m[k] != null ? f(m[k]) : '—';
+  const best = o.rows.find(r => r.train.n >= o.minTrades);
+  const lab = { bufTicks: 'Stop buffer', tgt: 'Target', lastEntry: 'Last entry', minDepth: 'Min depth', stop: 'Stop', tgtMult: 'Target ×', filter: 'Filter',
+    drivePct: 'Drive %', pbMin: 'Pullback', ema: 'EMA', tgtR: 'Target R', trend: 'Closes before', wait: 'Within', hours: 'Hours', rangeMin: 'Range', minRR: 'Min R',
+    entryAt: 'Entry', legPct: 'Leg %', entryLvl: 'Entry', stopBuf: 'Stop past', pivLen: 'Swing', rr: 'Target R', expiry: 'Bias', entry: 'Entry', atrMult: 'ATR ×',
+    maLen: 'MA', tf: 'Candles', stopAtr: 'Stop ATR', side: 'Side' };
+  return `<section class="panel"><div class="hd"><h2>Optimization</h2><span class="dim" style="font-size:13px">${o.rows.length} of ${o.total} settings tested${o.complete ? '' : ' (running…)'} · ranked on the <b>train</b> period (before ${esc(o.split || '')}); the <b>test</b> columns are the honest check</span></div>
+    ${best ? `<div class="bd note" style="border-bottom:1px solid var(--line)">Best on train: ${keys.map(k => `${lab[k] || k} <b class="mono" style="color:var(--text)">${esc(best.p[k])}</b>`).join(' · ')} →
+      test ${val(best.test, 'n', x => x)} trades, ${val(best.test, 'exp', x => money(x))} / trade, edge ${val(best.test, 'edge', x => sgn(x, 2, ' pts'))}.
+      ${best.test && best.test.exp > 0 && best.test.edge > 0 ? '<span class="gain">Holds on the test period.</span>' : '<span class="loss">Doesn\'t hold on the test period: likely fitted to the past.</span>'}</div>` : ''}
+    <div class="tbl-wrap" style="max-height:460px;overflow:auto"><table class="tbl" style="min-width:${560 + keys.length * 80}px"><thead><tr>${keys.map(k => `<th>${lab[k] || k}</th>`).join('')}
+      <th class="r">Train n</th><th class="r">Train $/tr</th><th class="r">Train PF</th><th class="r">Train edge</th><th class="r">Test n</th><th class="r">Test $/tr</th><th class="r">Test PF</th><th class="r">Test edge</th><th></th></tr></thead><tbody>
+      ${o.rows.map((r, i) => `<tr style="${isCur(r) ? 'background:var(--selB)' : r.train.n < o.minTrades ? 'opacity:.55' : ''}">${keys.map(k => `<td class="mono">${esc(r.p[k])}</td>`).join('')}
+        <td class="r">${val(r.train, 'n', x => x)}</td><td class="r ${cls(r.train.exp)}">${val(r.train, 'exp', x => money(x))}</td><td class="r">${val(r.train, 'pf', x => x)}</td><td class="r ${cls(r.train.edge)}">${val(r.train, 'edge', x => sgn(x, 1))}</td>
+        <td class="r">${val(r.test, 'n', x => x)}</td><td class="r ${cls(r.test.exp)}">${val(r.test, 'exp', x => money(x))}</td><td class="r">${val(r.test, 'pf', x => x)}</td><td class="r ${cls(r.test.edge)}">${val(r.test, 'edge', x => sgn(x, 1))}</td>
+        <td>${isCur(r) ? '<span class="dim" style="font-size:12px">current</span>' : `<button class="btn sm" data-optuse="${i}" ${locked ? 'disabled' : ''}>Use</button>`}</td></tr>`).join('')}
+    </tbody></table></div></section>`;
 }
 function equityBars(ts, split) {
   const xs = ts.filter(t => t.status !== 'open' && t.why !== 'open'); if (!xs.length) return '';
@@ -568,6 +593,7 @@ document.addEventListener('click', async e => {
     if (ds.filter) { S.filter = ds.filter; return vResearch(); }
     if (ds.setup) { S.newSetup = ds.setup; $('#newbox').innerHTML = newForm(); return; }
     if (ds.trset) { S.trSet = ds.trset; return vStrategy(S.cur.id); }
+    if (ds.optuse) { const r = S.opt.rows[+ds.optuse]; await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: { ...S.cur.params, ...r.p } } }); toast('Settings applied: run the study and the validation.'); return vStrategy(S.cur.id); }
     if (ds.cellk) { const on = el.getAttribute('aria-pressed') !== 'true'; await api('/strategies/' + S.cur.id, { method: 'PUT', body: { cells: { [ds.cellk]: on } } }); return vStrategy(S.cur.id); }
     if (ds.csym) { S.chart.sym = ds.csym; S.chart.strat = ''; S.rp = null; return vChart(); }
     if (ds.ctf) { S.chart.tf = +ds.ctf; if (S.rp) { S.rp.k = null; S.rp.delta = null; } return vChart(); }
@@ -593,7 +619,7 @@ document.addEventListener('click', async e => {
       case 'new': S.newSetup = S.newSetup === null ? '' : null; $('#newbox').innerHTML = S.newSetup !== null ? newForm() : ''; break;
       case 'new-close': S.newSetup = null; $('#newbox').innerHTML = ''; break;
       case 'create': { const p = readParams($('#newp')); const s = await api('/strategies', { method: 'POST', body: { setup: S.newSetup, name: $('#new-name').value, params: p } }); S.newSetup = null; S.strats = null; location.hash = '#strategy/' + s.id; break; }
-      case 'run-study': case 'run-valid': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: act === 'run-study' ? 'study' : 'validate' } }); vStrategy(S.cur.id); break;
+      case 'run-study': case 'run-valid': case 'run-opt': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: { 'run-study': 'study', 'run-valid': 'validate', 'run-opt': 'optimize' }[act] } }); if (act === 'run-opt') toast('Optimizing: each setting is a full study, this can take several minutes.'); vStrategy(S.cur.id); break;
       case 'save-rules': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: readParams($('#rules')) } }); toast('Rules saved: run the study again.'); vStrategy(S.cur.id); break;
       case 'save-costs': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { contracts: +$('#pp-c').value, dailyLoss: +$('#pp-dl').value, comm: +$('#pp-comm').value, slip: +$('#pp-slip').value } }); toast('Saved.'); vStrategy(S.cur.id); break;
       case 'paper': case 'paper-stop': case 'retire': case 'unretire': await api(`/strategies/${S.cur.id}/action`, { method: 'POST', body: { action: act === 'paper-stop' ? 'stop' : act } }); S.strats = null; vStrategy(S.cur.id); break;

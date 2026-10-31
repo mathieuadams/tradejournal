@@ -338,6 +338,23 @@ def test_15_session_strategies():
     assert abs(t["tgt"] - (102.65 + 2 * 1.45)) < 1e-9 and t["why"] == "target"
 
 
+def test_16_optimize():
+    import time as _t
+    s = strategy.create(SUB, {"setup": "onsweep", "params": {"days": 40, "minRR": 0}})
+    assert strategy.optimize(SUB, s["id"], deadline=_t.time() - 1) is False          # out of time at once: nothing done, resumable
+    assert strategy.opt_view(SUB, s["id"])["rows"] == []
+    st, r = call("POST", f"/strategies/{s['id']}/run", {"step": "optimize"})
+    assert st == 200 and r["status"] == "done", r
+    st, o = call("GET", f"/strategies/{s['id']}/optimize")
+    o = o["opt"]
+    assert o["complete"] and o["total"] == 36 and len(o["rows"]) == 36 and o["split"]
+    assert set(o["rows"][0]["p"]) == {"bufTicks", "tgt", "lastEntry", "minDepth"} and "edge" in o["rows"][0]["test"]
+    top = o["rows"][0]
+    st, v = call("PUT", f"/strategies/{s['id']}", {"params": {**strategy.get(SUB, s["id"])["params"], **top["p"]}})
+    same = lambda a, b: float(a) == float(b) if isinstance(b, (int, float)) else a == b
+    assert st == 200 and all(same(v["params"][k], x) for k, x in top["p"].items())
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
