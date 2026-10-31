@@ -427,18 +427,59 @@ def _levels(sym, days):
     return out
 
 
+def sd_zones(sessions_bars, tf):
+    """Supply / demand zones, drawn fresh for every session from that session's own candles (the overnight first, then
+    the day): a base of 1-3 small candles (each under 0.7 x the 14-candle average range) right before an impulse candle
+    (range >= 2 x the average, body >= 60% of it). Demand before a move up, supply before a move down. A zone lasts
+    until a candle closes through its far side, or the session ends: the next session starts from a clean chart.
+    sessions_bars: {day: [[t, o, h, l, c, v], ...]} (whole Globex sessions, 1-minute)."""
+    out, a = [], None
+    for day in sorted(sessions_bars):
+        B = agg(sessions_bars[day], tf)
+        atr = []
+        for i, b in enumerate(B):
+            pc = B[i - 1][4] if i else b[1]
+            tr = max(b[2] - b[3], abs(b[2] - pc), abs(b[3] - pc))
+            a = tr if a is None else (a * 13 + tr) / 14   # the average range carries over from the previous session
+            atr.append(a)
+        for i in range(1, len(B)):
+            at = atr[i - 1]
+            _, o, h, l, c, _ = B[i]
+            r = h - l
+            if not (r >= 2 * at and abs(c - o) >= 0.6 * r):
+                continue
+            k, lo, hi, cnt = i - 1, float("inf"), float("-inf"), 0
+            while k >= 0 and cnt < 3 and B[k][2] - B[k][3] <= 0.7 * at:
+                lo, hi, k, cnt = min(lo, B[k][3]), max(hi, B[k][2]), k - 1, cnt + 1
+            if not cnt:
+                continue
+            up = c > o
+            end, broken = B[-1][0], False
+            for j in range(i + 1, len(B)):
+                if (up and B[j][4] < lo) or (not up and B[j][4] > hi):
+                    end, broken = B[j][0], True
+                    break
+            out.append({"k": "demand" if up else "supply", "lo": lo, "hi": hi, "t0": B[k + 1][0], "t1": end, "day": day,
+                        "broken": broken, "on": B[k + 1][0][:10] < day or B[k + 1][0][11:16] < RTH0})
+    return out
+
+
 def chart(sym, tf=5, days=3, end=None, rth_only=False):
     sym = check_sym(sym)
     tf = tf if tf in (1, 5, 15, 60) else 5
     cap = {1: 10, 5: 30, 15: 60, 60: 180}[tf]                 # keeps the answer a few MB at most
-    by = sessions(sym, max(1, min(days, cap)), end=end, rth=rth_only)
+    n = max(1, min(days, cap))
+    full = sessions(sym, n, end=end, rth=False)
+    by = {d: [b for b in xs if b[0][:10] == d and RTH0 <= b[0][11:16] < RTH1] for d, xs in full.items()} if rth_only else full
     bars = []
     for d in sorted(by):
         bars += [b + [d] for b in agg(by[d], tf)]
+    zones = sd_zones(full, tf)
     fp = set(cov(sym).get("fp") or [])
     hm = set(cov(sym).get("hm") or [])
     return {"sym": sym, "tf": tf, "spec": SPEC[sym], "bars": bars, "days": sorted(by), "levels": _levels(sym, by),
-            "fpDays": sorted(d for d in by if d in fp), "hmDays": sorted(d for d in by if d in hm), "cells": {d: c for d, c in cells(sym).items() if d in by}}
+            "fpDays": sorted(d for d in by if d in fp), "hmDays": sorted(d for d in by if d in hm), "cells": {d: c for d, c in cells(sym).items() if d in by},
+            "zones": zones}
 
 
 def latest(sym):

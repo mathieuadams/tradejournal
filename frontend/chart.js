@@ -88,7 +88,15 @@
       this.wt = d.showWT && B.length > 40 ? wtKrypt(B.map(b => b[4])) : null;
       this.ema = null;
       if (d.showEMA) { const n = d.emaLen || 20, m = 2 / (n + 1); let e = null; this.ema = B.map(b => (e = e == null ? b[4] : m * b[4] + (1 - m) * e)); }
-      this.zones = (d.showFVG || d.showSD) ? zones(B, d.showFVG, d.showSD) : [];
+      // FVGs from the chart's candles; supply / demand from the server, redrawn every session from its own overnight + day
+      this.zones = d.showFVG ? zones(B, true, false) : [];
+      if (d.showSD) {
+        const first = {}; B.forEach((b, i) => { if (first[b[6]] == null) first[b[6]] = i; });
+        (d.sdZones || []).forEach(z => { if (first[z.day] == null) return;
+          const i0 = Math.max(this.idxOf(z.t0), first[z.day]), end = this.idxOf(z.t1);
+          if (end < i0) return;
+          this.zones.push({ k: z.k, label: (z.k === 'demand' ? 'Demand' : 'Supply') + (z.on ? ' · ON' : ''), lo: z.lo, hi: z.hi, i0, end, broken: z.broken }); });
+      }
       this.markIdx = (d.marks || []).map(m => ({ ...m, i0: this.idxOf(m.in), i1: this.idxOf(m.out) }));
       const ov = d.overlay || {};
       this.ovLines = (ov.lines || []).map(L => ({ ...L, ix: L.pts.map(([t, v]) => [this.idxOf(t), v, t]) }));
@@ -164,7 +172,7 @@
       this.zones.forEach(z => {
         const end = z.end == null || z.end >= n ? n - 1 + 0.5 : z.end;
         if (end < a || z.i0 >= b || z.i0 >= n) return;
-        const x0 = X(z.i0) - bw / 2, x1 = X(Math.min(end, b)), y0 = Y(z.hi), y1 = Y(z.lo), open = z.end == null || z.end >= n;
+        const x0 = X(z.i0) - bw / 2, x1 = X(Math.min(end, b)), y0 = Y(z.hi), y1 = Y(z.lo), open = z.broken === false || z.end == null || z.end >= n;
         const c = ZC[z.k];
         g.fillStyle = open ? c[0] : c[2]; g.fillRect(x0, y0, Math.max(2, x1 - x0), Math.max(1, y1 - y0));
         if (open) { g.strokeStyle = c[1]; g.strokeRect(x0 + 0.5, y0 + 0.5, Math.max(2, x1 - x0), Math.max(1, y1 - y0)); }

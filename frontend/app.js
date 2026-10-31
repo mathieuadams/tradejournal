@@ -452,7 +452,7 @@ function fpDelta() {
 function drawChart(keep) {
   const c = S.chart, d = S.cd, r = S.rp;
   if (!S.ch || !d) return;
-  S.ch.set({ bars: d.bars, levels: d.levels, marks: d.marks || [], overlay: d.overlay, showEMA: c.ema, emaLen: c.emaLen, showFVG: c.fvg, showSD: c.sd, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
+  S.ch.set({ bars: d.bars, levels: d.levels, marks: d.marks || [], overlay: d.overlay, showEMA: c.ema, emaLen: c.emaLen, showFVG: c.fvg, showSD: c.sd, sdZones: d.zones, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
   const n = r ? r.k + 1 : d.bars.length, B = d.bars, last = B[n - 1], day = last[6];
   const sess = B.slice(0, n).filter(b => b[6] === day), lv = d.levels[day] || {};
   const pc = lv.pdc, chg = pc ? last[4] - pc : null;

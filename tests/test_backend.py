@@ -246,6 +246,22 @@ def test_11_tvpoc_indicator():
     assert tvpoc._sma([1, 2, 3, 4], 2) == [None, 1.5, 2.5, 3.5] and tvpoc._wma([1, 2, 3], 3)[2] == (1 + 4 + 9) / 6
 
 
+def test_12_daily_supply_demand():
+    mk = lambda t, o, h, l, c: [t, o, h, l, c, 100]
+    d1 = [mk(f"2026-10-05T{9 + k // 60:02d}:{k % 60:02d}", 100, 101, 99, 100) for k in range(30)]
+    on = [mk(f"2026-10-05T{18 + k // 60:02d}:{k % 60:02d}", 100, 101, 99, 100) for k in range(20)]
+    on += [mk("2026-10-05T18:20", 100, 100.5, 99.5, 100.2), mk("2026-10-05T18:21", 100.2, 106, 100.1, 105.8)]      # base, then an impulse up
+    on += [mk(f"2026-10-06T{9 + k // 60:02d}:{30 + k % 30:02d}", 105, 106, 104, 105) for k in range(5)]
+    on += [mk("2026-10-06T09:35", 105, 105, 98, 98.5)]                                                                  # closes under the zone
+    z = futdata.sd_zones({"2026-10-05": d1, "2026-10-06": on}, 1)
+    dz = [x for x in z if x["day"] == "2026-10-06"]
+    assert len(dz) == 1 and dz[0]["k"] == "demand" and dz[0]["on"] and dz[0]["lo"] == 99.5 and dz[0]["hi"] == 100.5
+    assert dz[0]["t0"] == "2026-10-05T18:20" and dz[0]["broken"] and dz[0]["t1"] == "2026-10-06T09:35"
+    assert not [x for x in z if x["day"] == "2026-10-05"]                    # nothing carried from day to day
+    st, ch = call("GET", "/chart", q={"sym": "NQ", "tf": "5", "days": "3", "rth": "1"})
+    assert st == 200 and isinstance(ch["zones"], list) and all(x["day"] in ch["days"] for x in ch["zones"])
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
