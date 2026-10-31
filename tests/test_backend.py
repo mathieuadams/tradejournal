@@ -154,7 +154,7 @@ def test_05_strategy_protocol():
 
 
 def test_06_other_setups():
-    for setup, p in (("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
+    for setup, p in (("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
                      ("wt", {"tf": "15", "days": 60})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
@@ -182,6 +182,22 @@ def test_08_scheduled_refresh():
     db.put({"PK": db.upk(SUB), "SK": "PROFILE", "email": "a@b.c"})
     out = jobs.scheduled()
     assert out[SUB] == "ok", out
+
+
+def test_09_orb_ema_rules():
+    import orbema
+    p = orbema.clean({"tf": 5, "rangeMin": 15, "ema": 3, "bufTicks": 1, "minRR": 0, "side": "short"})
+    d = "2026-10-05"
+    t = lambda k: f"{d}T{9 + (30 + 5 * k) // 60:02d}:{(30 + 5 * k) % 60:02d}"
+    #        range (3 candles)     breakout   falls       retest above EMA   back under      entry  ... target hit
+    px = [(100, 101, 99, 100), (100, 100.5, 99.5, 100), (100, 100.5, 99, 99.5), (99.5, 99.5, 97, 97.5), (97.5, 97.5, 95, 95.5),
+          (95.5, 99, 95.5, 98.75), (98.75, 99.25, 96, 96.5), (96.5, 97, 96, 96.5), (96.5, 96.5, 94.5, 94.75)] + [(94.75, 95, 94.5, 94.75)] * 30
+    B = [(t(k), *x) for k, x in enumerate(px)]
+    E = orbema._ema([b[4] for b in B], 3)
+    x = orbema.setups(B, E, p)[0]
+    assert x["side"] == "short" and x["in"] == t(7) and x["e"] == 96.5 and x["stop"] == 99.5 and x["tgt"] == 95.0, x
+    assert x["why"] == "target" and x["x"] == 95.0 and x["bk"] == t(3) and x["rt"] == t(5)
+    assert not orbema.setups(B, E, {**p, "minRR": 1})        # target 1.5 points vs 3 points of risk: skipped
 
 
 if __name__ == "__main__":

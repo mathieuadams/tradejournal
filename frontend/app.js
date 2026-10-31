@@ -30,6 +30,10 @@ const SETUPS = {
   orb: { name: 'Opening range break + FVG retest', blurb: 'A close outside the opening range that leaves a fair value gap, a retest of the gap, an engulfing candle: enter, target in R.',
     params: [['rangeMin', 'Opening range (minutes)', 'sel', [[1, '1'], [5, '5'], [10, '10'], [15, '15'], [30, '30'], [60, '60']]], ['tgtR', 'Target (R)', 'num', 0.5], ['fvgWin', 'Gap within (candles)', 'num', 1],
       ['confWin', 'Confirmation within (candles)', 'num', 1], ['lastEntry', 'Last entry (ET)', 'text'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  orbema: { name: 'Opening range break + 20 EMA retest', blurb: 'A close outside the 15 / 30-minute opening range, then price closes back through the 20 EMA and back out: enter, stop past that candle, target the low / high of the day.',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['rangeMin', 'Opening range (minutes)', 'sel', [[15, '15'], [30, '30']]], ['ema', 'EMA length', 'num', 1],
+      ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['minRR', 'Skip if the target is under (R, 0 = never)', 'num', 0.25], ['lastEntry', 'Last entry (ET)', 'text'],
+      ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   range50: { name: 'Range 50% retrace', blurb: 'A leg, a retrace to its 50%, then back to 25% of the range: enter there, target the 50%, stop past the range end.',
     params: [['tf', 'Candles', 'sel', [[1, '1 min'], [5, '5 min']]], ['legPct', 'Minimum leg (% of price)', 'num', 0.05], ['entryLvl', 'Entry (share of the range)', 'num', 0.05], ['targetLvl', 'Target (share of the range)', 'num', 0.05],
       ['stopBuf', 'Stop past the range end (share)', 'num', 0.05], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
@@ -242,6 +246,7 @@ function readParams(root) {
   return p;
 }
 const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '11:30', side: 'both', days: 250, tickers: ['NQ'] },
+  orbema: { tf: 5, rangeMin: 15, ema: 20, bufTicks: 1, minRR: 1, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   range50: { tf: 1, legPct: 0.35, entryLvl: 0.25, targetLvl: 0.5, stopBuf: 0, side: 'both', days: 250, tickers: ['NQ'] },
   silver: { tf: 1, pivLen: 3, expiry: 30, rr: 2, bufTicks: 2, flatEod: true, side: 'both', days: 250, tickers: ['NQ'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };

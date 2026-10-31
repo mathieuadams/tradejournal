@@ -13,14 +13,15 @@ from collections import defaultdict
 import db
 import futdata
 import orb
+import orbema
 import range50
 import silver
 import store
 import wtswing
 from util import BadRequest, NotFound, iso, now_ny
 
-SETUPS = {"orb": orb, "range50": range50, "silver": silver, "wt": wtswing}
-NAMES = {"orb": "Opening range break + FVG retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "wt": "WaveTrend dots"}
+SETUPS = {"orb": orb, "orbema": orbema, "range50": range50, "silver": silver, "wt": wtswing}
+NAMES = {"orb": "Opening range break + FVG retest", "orbema": "Opening range break + 20 EMA retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "wt": "WaveTrend dots"}
 SK = "STRAT#"
 COSTS = {"contracts": 1, "comm": 2.25, "slip": 1.0, "dailyLoss": 500.0}
 MIN_TRADES, PF_MIN, MONTH_MAX, TRAIN = 100, 1.3, 0.4, 0.6
