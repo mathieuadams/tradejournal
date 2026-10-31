@@ -53,9 +53,9 @@ const SETUPS = {
     params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['lastEntry', 'Last entry (ET)', 'text'], ['maxAbove', 'Cancel after (closes outside)', 'num', 1],
       ['tgt', 'Target', 'sel', [['vwap', 'VWAP'], ['mid', 'Middle of the overnight range'], ['other', 'Other side of the overnight range'], ['r', 'Fixed R']]], ['tgtR', 'Fixed R target', 'num', 0.5],
       ['minRR', 'Skip if the target is under (R)', 'num', 0.25], ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
-  ibbreak: { name: 'Initial balance breakout', blurb: 'The 09:30–10:30 range: trade the first close outside it, in the overnight trend, target 1× the range past the edge.',
+  ibbreak: { name: 'Initial balance breakout', blurb: 'The 09:30–10:30 range: trade the first close outside it (on the VWAP side, or with the overnight trend), target 1× the range past the edge.',
     params: [['tf', 'Candles', 'sel', [[5, '5 min'], [15, '15 min'], [1, '1 min']]], ['ibMin', 'Initial balance', 'sel', [[60, '60 min (09:30–10:30)'], [30, '30 min (09:30–10:00)']]],
-      ['trendFilter', 'Only with the overnight trend', 'bool'], ['stop', 'Stop', 'sel', [['mid', 'Middle of the IB'], ['opp', 'Other side of the IB'], ['bar', 'Breakout candle']]],
+      ['filter', 'Filter', 'sel', [['vwap', 'Breakout on the VWAP side'], ['overnight', 'With the overnight trend'], ['none', 'None']]], ['onMinPct', 'Overnight trend: move at least (%)', 'num', 0.05], ['stop', 'Stop', 'sel', [['mid', 'Middle of the IB'], ['opp', 'Other side of the IB'], ['bar', 'Breakout candle']]],
       ['tgtMult', 'Target (× IB range past the edge)', 'num', 0.25], ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['lastEntry', 'Last entry (ET)', 'text'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   odpull: { name: 'Opening drive, first pullback', blurb: 'A strong 09:30–09:45 move closing near its extreme, then the first pullback to the 9 EMA: enter on the break of the previous candle, stop past the pullback.',
     params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['driveMin', 'Drive', 'sel', [[15, '09:30–09:45'], [30, '09:30–10:00']]], ['drivePct', 'Drive at least (%)', 'num', 0.05],
@@ -290,7 +290,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   tvpoc: { tf: '15', entry: 'flip', maType: 'SMA', maLen: 25, atrLen: 50, atrMult: 1, binMult: 0.2, minBars: 3, stop: 'band', flatEod: true, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   vwapret: { tf: 5, hours: 'all', trend: 3, wait: 3, tgtR: 2, bufTicks: 2, maxDay: 10, flatAt: '15:55', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   onsweep: { tf: 5, lastEntry: '10:30', maxAbove: 3, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
-  ibbreak: { tf: 5, ibMin: 60, trendFilter: true, stop: 'mid', tgtMult: 1, bufTicks: 2, lastEntry: '14:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  ibbreak: { tf: 5, ibMin: 60, filter: 'vwap', onMinPct: 0.3, stop: 'mid', tgtMult: 1, bufTicks: 2, lastEntry: '14:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   odpull: { tf: 5, driveMin: 15, drivePct: 0.25, strength: 0.25, pbMin: 2, ema: 9, tgtR: 2, bufTicks: 2, lastEntry: '11:30', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 function newForm() {

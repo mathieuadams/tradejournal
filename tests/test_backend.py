@@ -154,7 +154,7 @@ def test_05_strategy_protocol():
 
 
 def test_06_other_setups():
-    for setup, p in (("onsweep", {"days": 60, "minRR": 0}), ("onsweep", {"days": 60, "tgt": "other", "tf": 1}), ("ibbreak", {"days": 60, "trendFilter": False}), ("ibbreak", {"days": 60, "ibMin": 30, "stop": "bar", "tf": 15}), ("odpull", {"days": 60, "drivePct": 0.05}), ("vwapret", {"days": 60}), ("vwapret", {"days": 60, "hours": "on", "tf": 1, "trend": 0}), ("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
+    for setup, p in (("onsweep", {"days": 60, "minRR": 0}), ("onsweep", {"days": 60, "tgt": "other", "tf": 1}), ("ibbreak", {"days": 60, "filter": "none"}), ("ibbreak", {"days": 60, "ibMin": 30, "stop": "bar", "tf": 15}), ("odpull", {"days": 60, "drivePct": 0.05}), ("vwapret", {"days": 60}), ("vwapret", {"days": 60, "hours": "on", "tf": 1, "trend": 0}), ("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
                      ("wt", {"tf": "15", "days": 60})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
@@ -320,9 +320,14 @@ def test_15_session_strategies():
     # initial balance (30 min = 6 candles 98..104), a close at 105 breaks up, target 104 + 6 = 110
     rows = [(100, 101, 98, 100)] * 3 + [(100, 104, 99, 103)] * 3 + [(103, 105.5, 102, 105), (105, 108, 104.5, 107.5), (107.5, 111, 107, 110.5)] + [(110, 110, 109, 109.5)] * 3
     R2 = _rth(d, rows)
-    t = ibbreak.engine(d, on, R2, R2, [0] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30, "trendFilter": True, "stop": "mid", "bufTicks": 0}))[0]
+    t = ibbreak.engine(d, on, R2, R2, [0] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30, "filter": "overnight", "stop": "mid", "bufTicks": 0}))[0]
     assert t["side"] == "long" and t["e"] == 105 and t["stop"] == 101 and t["tgt"] == 110 and t["why"] == "target" and t["x"] == 110, t
-    assert not ibbreak.engine(d, [["x", 110, 110, 100, 100, 1]], R2, R2, [0] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30}))   # overnight down
+    down = [["x", 110, 110, 100, 100, 1]]
+    assert not ibbreak.engine(d, down, R2, R2, [0] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30, "filter": "overnight"}))   # overnight down 9%
+    assert ibbreak.engine(d, [["x", 100.2, 101, 99, 100, 1]], R2, R2, [0] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30, "filter": "overnight"}))  # -0.2%: flat
+    assert ibbreak.engine(d, down, R2, R2, [100] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30, "filter": "vwap"}))            # over the VWAP
+    assert not ibbreak.engine(d, down, R2, R2, [106] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30, "filter": "vwap"}))        # under it
+    assert ibbreak.clean({"trendFilter": True})["filter"] == "overnight"                                                          # saved before
     # opening drive up 100 -> 104 (4%), two lower closes back to the EMA, then a break of the previous high
     rows = [(100, 102, 99.8, 101.8), (101.8, 103.5, 101.5, 103.4), (103.4, 104.2, 103, 104)]                              # the drive (15 min)
     rows += [(104, 104.1, 102.6, 102.8), (102.8, 103, 101.2, 101.5), (101.5, 102.4, 101.3, 102.2), (102.2, 103.5, 102, 103.3)]
