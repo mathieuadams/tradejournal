@@ -86,6 +86,8 @@
         cd += dl; this.cvd.push(cd);
       }
       this.wt = d.showWT && B.length > 40 ? wtKrypt(B.map(b => b[4])) : null;
+      this.ema = null;
+      if (d.showEMA) { const n = d.emaLen || 20, m = 2 / (n + 1); let e = null; this.ema = B.map(b => (e = e == null ? b[4] : m * b[4] + (1 - m) * e)); }
       this.markIdx = (d.marks || []).map(m => ({ ...m, i0: this.idxOf(m.in), i1: this.idxOf(m.out) }));
       const ov = d.overlay || {};
       this.ovLines = (ov.lines || []).map(L => ({ ...L, ix: L.pts.map(([t, v]) => [this.idxOf(t), v, t]) }));
@@ -157,6 +159,12 @@
           on ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v)); on = true; });
         g.stroke(); g.lineWidth = 1;
       });
+      // EMA indicator (on the chart's candles)
+      if (this.ema) {
+        g.strokeStyle = '#5FD4C4'; g.lineWidth = 1.4; g.beginPath();
+        for (let i = a; i < b; i++) { const x = X(i), y = Y(this.ema[i]); i === a ? g.moveTo(x, y) : g.lineTo(x, y); }
+        g.stroke(); g.lineWidth = 1;
+      }
       // VWAP
       g.strokeStyle = COL.vwap; g.lineWidth = 1.4; g.beginPath(); let st = false;
       for (let i = a; i < b; i++) { if (i > 0 && B[i][6] !== B[i - 1][6]) st = false; const x = X(i), y = Y(this.vw[i]); st ? g.lineTo(x, y) : g.moveTo(x, y); st = true; }
@@ -224,7 +232,7 @@
           if (this.hover.y < mainH) { g.beginPath(); g.moveTo(pl, this.hover.y + 0.5); g.lineTo(W - pr, this.hover.y + 0.5); g.stroke();
             const p = hi - (this.hover.y - top) / (mainH - top) * (hi - lo); g.fillStyle = '#2C3442'; g.fillRect(W - pr + 1, this.hover.y - 8, pr - 2, 16); g.fillStyle = COL.text; g.textAlign = 'left'; g.fillText(fmt(p), W - pr + 5, this.hover.y); }
           const [t, o, h, l, c, vol] = B[i];
-          const txt = `${t.replace('T', ' ')}   O ${fmt(o)}  H ${fmt(h)}  L ${fmt(l)}  C ${fmt(c)}  V ${vol.toLocaleString('en-US')}   VWAP ${fmt(this.vw[i])}`;
+          const txt = `${t.replace('T', ' ')}   O ${fmt(o)}  H ${fmt(h)}  L ${fmt(l)}  C ${fmt(c)}  V ${vol.toLocaleString('en-US')}   VWAP ${fmt(this.vw[i])}${this.ema ? `   EMA ${this.d.emaLen || 20} ${fmt(this.ema[i])}` : ''}`;
           g.font = '12px JetBrains Mono, monospace'; const tw = g.measureText(txt).width;
           g.fillStyle = 'rgba(15,19,26,.92)'; g.fillRect(pl + 4, 4, tw + 12, 20); g.fillStyle = COL.text; g.textAlign = 'left'; g.fillText(txt, pl + 10, 14);
           g.font = '11px Inter, system-ui, sans-serif';

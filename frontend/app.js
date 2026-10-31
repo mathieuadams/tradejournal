@@ -24,7 +24,7 @@ async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
-const S = { me: null, page: '', timers: [], chart: { sym: 'NQ', tf: 5, days: 3, strat: '', wt: true, cvd: true, prof: true, rth: false }, rp: null, filter: 'All', newSetup: null, trSet: 'study' };
+const S = { me: null, page: '', timers: [], chart: { sym: 'NQ', tf: 5, days: 3, strat: '', wt: true, cvd: true, prof: true, rth: false, ema: true, emaLen: 20 }, rp: null, filter: 'All', newSetup: null, trSet: 'study' };
 const SIDE = [['long', 'Long'], ['short', 'Short'], ['both', 'Both']];
 const SETUPS = {
   orb: { name: 'Opening range break + FVG retest', blurb: 'A close outside the opening range that leaves a fair value gap, a retest of the gap, an engulfing candle: enter, target in R.',
@@ -364,8 +364,8 @@ async function vChart() {
     <div class="row">
       <section class="panel col-main" style="display:block;padding-top:12px">
         <div class="legend"><span>Strategy on the chart</span><select id="c-strat" style="min-height:30px;padding:3px 8px"><option value="">None</option>${S.strats.filter(s => s.params.tickers.includes(c.sym)).map(s => `<option value="${s.id}" ${c.strat === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
-          ${[['prof', 'Volume profile'], ['cvd', 'Delta'], ['wt', 'WaveTrend'], ['rth', 'Regular hours only']].map(([k, l]) => `<button class="chip" data-ctog="${k}" aria-pressed="${!!c[k]}">${l}</button>`).join('')}
-          <div style="flex:1"></div>${c.strat ? '<span><span class="sw" style="border-top:2px solid #E7C35A"></span>Strategy lines · B breakout · R retest · C confirmation</span>' : ''}<span><span class="sw" style="border-top:2px solid var(--vwap)"></span>VWAP</span><span><span class="sw" style="border-top:1px dashed #93A0B2"></span>PDH / PDL / PDC · ONH / ONL</span></div>
+          <span style="display:inline-flex;align-items:center;gap:4px"><button class="chip" data-ctog="ema" aria-pressed="${!!c.ema}">EMA</button><input type="number" id="c-emalen" min="2" max="400" value="${c.emaLen}" aria-label="EMA length" style="width:62px;min-height:28px;padding:2px 6px"></span>${[['prof', 'Volume profile'], ['cvd', 'Delta'], ['wt', 'WaveTrend'], ['rth', 'Regular hours only']].map(([k, l]) => `<button class="chip" data-ctog="${k}" aria-pressed="${!!c[k]}">${l}</button>`).join('')}
+          <div style="flex:1"></div>${c.strat ? '<span><span class="sw" style="border-top:2px solid #E7C35A"></span>Strategy lines · B breakout · R retest · C confirmation</span>' : ''}${c.ema ? `<span><span class="sw" style="border-top:2px solid #5FD4C4"></span>EMA ${c.emaLen}</span>` : ''}<span><span class="sw" style="border-top:2px solid var(--vwap)"></span>VWAP</span><span><span class="sw" style="border-top:1px dashed #93A0B2"></span>PDH / PDL / PDC · ONH / ONL</span></div>
         <div class="chartbox"><canvas id="cv" style="height:${S.rp ? 600 : 640}px"></canvas></div>
         ${S.rp ? replayBar() : `<div class="transport"><span class="muted" style="font-size:13px">Replay a session bar by bar with its order flow:</span><input type="date" id="rp-day" value="${S.lastDay || ''}"><button class="btn" data-act="rp-start">Start replay</button><span class="note">Footprint, tape and real delta need that day's trades (Data page).</span></div>`}
         ${S.rp && S.rpView === 'fp' ? `<div class="bd" style="border-top:1px solid var(--line)"><div id="fpview"></div></div>` : ''}
@@ -416,7 +416,7 @@ function fpDelta() {
 function drawChart(keep) {
   const c = S.chart, d = S.cd, r = S.rp;
   if (!S.ch || !d) return;
-  S.ch.set({ bars: d.bars, levels: d.levels, marks: d.marks || [], overlay: d.overlay, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
+  S.ch.set({ bars: d.bars, levels: d.levels, marks: d.marks || [], overlay: d.overlay, showEMA: c.ema, emaLen: c.emaLen, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
   const n = r ? r.k + 1 : d.bars.length, B = d.bars, last = B[n - 1], day = last[6];
   const sess = B.slice(0, n).filter(b => b[6] === day), lv = d.levels[day] || {};
   const pc = lv.pdc, chg = pc ? last[4] - pc : null;
@@ -538,10 +538,11 @@ document.addEventListener('change', e => {
   if (e.target.id === 'c-strat') {
     S.chart.strat = e.target.value;
     const st = (S.strats || []).find(x => x.id === S.chart.strat), tf = st && +st.params.tf;
-    if (st && [1, 5, 15, 60].includes(tf) && tf !== S.chart.tf && !S.rp) { S.chart.tf = tf; return vChart(); }   // the rule's own candles
-    loadChart();
+    if (st && [1, 5, 15, 60].includes(tf) && tf !== S.chart.tf && !S.rp) S.chart.tf = tf;   // the rule's own candles
+    vChart();
   }
   if (e.target.id === 'rp-scrub') { rpPlay(false); rpMove(+e.target.value); }
+  if (e.target.id === 'c-emalen') { const v = Math.round(+e.target.value); if (v >= 2 && v <= 400) { S.chart.emaLen = v; S.chart.ema = true; vChart(); } }
 });
 document.addEventListener('input', e => { if (e.target.id === 'rp-scrub' && S.rp) { S.rp.k = +e.target.value; S.ch.d.replay = S.rp.k; drawChart(true); } });
 document.addEventListener('keydown', e => {
