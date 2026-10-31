@@ -101,12 +101,23 @@ def _weekdays(d0, d1):
     return out
 
 
-def _estimate(sub, kind, syms, d0, d1):
+def _estimate(sub, kind, syms, d0, d1, window="rth"):
     key = databento.key(sub)
     avail = databento.dataset_range(key)["end"]         # Databento refuses an end past the data it has (today)
     if kind == "candles":
         s, e = futdata.utc_iso(d0), futdata.utc_iso((date.fromisoformat(d1) + timedelta(days=1)).isoformat())
         schema = "ohlcv-1m"
+    elif kind == "book":                               # the order book of each day's window: priced day by day
+        w0, w1 = futdata.WINDOWS.get(window, futdata.WINDOWS["rth"])
+        total = 0.0
+        for d in _weekdays(d0, d1):
+            s, e = futdata.utc_iso(d, w0), futdata.utc_iso(d, w1)
+            if avail and e > avail:
+                e = avail
+            if avail and s >= e:
+                continue
+            total += databento.cost(key, "mbp-10", syms, s, e)
+        return total
     else:                                              # trades: regular hours only, priced on the whole span (an upper bound)
         s, e = futdata.utc_iso(d0, "09:30"), futdata.utc_iso(d1, "16:00")
         schema = "trades"
@@ -124,23 +135,30 @@ def data_view(sub, claims, body, q):
 
 @route("POST", "/data/estimate")
 def data_estimate(sub, claims, body, q):
-    kind = body.get("kind") if body.get("kind") in ("candles", "footprint") else "candles"
+    kind = body.get("kind") if body.get("kind") in ("candles", "footprint", "book") else "candles"
     syms, d0, d1 = _range(body)
-    return {"usd": round(_estimate(sub, kind, syms, d0, d1), 2), "kind": kind}
+    if kind == "book" and len(_weekdays(d0, d1)) > 22:
+        raise BadRequest("The order book is downloaded at most a month (22 sessions) at a time.")
+    return {"usd": round(_estimate(sub, kind, syms, d0, d1, body.get("window") or "rth"), 2), "kind": kind}
 
 
 @route("POST", "/data/download")
 def data_download(sub, claims, body, q):
-    kind = body.get("kind") if body.get("kind") in ("candles", "footprint") else "candles"
+    kind = body.get("kind") if body.get("kind") in ("candles", "footprint", "book") else "candles"
     syms, d0, d1 = _range(body)
+    window = body.get("window") if body.get("window") in futdata.WINDOWS else "rth"
     if kind == "footprint" and len(_weekdays(d0, d1)) > 66:
         raise BadRequest("Footprint (every trade) is downloaded at most 3 months at a time.")
-    usd = _estimate(sub, kind, syms, d0, d1)
+    if kind == "book" and len(_weekdays(d0, d1)) > 22:
+        raise BadRequest("The order book is downloaded at most a month (22 sessions) at a time.")
+    usd = _estimate(sub, kind, syms, d0, d1, window)
     cap = databento.status(sub)["maxCost"]
     if usd > cap and not body.get("confirm"):
         return {"needConfirm": True, "usd": round(usd, 2), "cap": cap}
     if kind == "candles":
         st = jobs.start(sub, "data", "candles", {"syms": syms, "from": d0, "to": d1})
+    elif kind == "book":
+        st = jobs.start(sub, "data", "book", {"syms": syms, "days": _weekdays(d0, d1), "window": window})
     else:
         st = jobs.start(sub, "data", "footprint", {"syms": syms, "days": _weekdays(d0, d1)})
     return {"job": st, "usd": round(usd, 2)}
@@ -180,6 +198,15 @@ def footprint(sub, claims, body, q):
     if not fp:
         raise NotFound("No footprint for that day: download the trades on the Data page.")
     return fp
+
+
+@route("GET", "/heatmap")
+def heatmap(sub, claims, body, q):
+    sym = futdata.check_sym(q.get("sym") or "NQ")
+    hm = futdata.heatmap(sym, _day(q.get("day"), "day"))
+    if not hm:
+        raise NotFound("No order book for that day: download it on the Data page.")
+    return hm
 
 
 # ---------------------------------------------------------------- strategies

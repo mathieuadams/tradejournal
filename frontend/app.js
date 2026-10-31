@@ -24,7 +24,7 @@ async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
-const S = { me: null, page: '', timers: [], chart: { sym: 'NQ', tf: 5, days: 3, strat: '', wt: true, cvd: true, prof: true, rth: false, ema: true, emaLen: 20 }, rp: null, filter: 'All', newSetup: null, trSet: 'study' };
+const S = { me: null, page: '', timers: [], chart: { sym: 'NQ', tf: 5, days: 3, strat: '', wt: true, cvd: true, prof: true, rth: false, ema: true, emaLen: 20, fvg: false, sd: false }, rp: null, filter: 'All', newSetup: null, trSet: 'study' };
 const SIDE = [['long', 'Long'], ['short', 'Short'], ['both', 'Both']];
 const SETUPS = {
   orb: { name: 'Opening range break + FVG retest', blurb: 'A close outside the opening range that leaves a fair value gap, a retest of the gap, an engulfing candle: enter, target in R.',
@@ -66,6 +66,7 @@ function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; if (S.r
 function route() {
   clearTimers();
   if (S.ch) { S.ch.destroy(); S.ch = null; }
+  if (S.heat) { S.heat.destroy(); S.heat = null; }
   const h = (location.hash || '#running').slice(1), [page, arg] = h.split('/');
   S.page = page;
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.r === (page === 'strategy' ? 'research' : page)));
@@ -166,14 +167,26 @@ async function vData() {
             <label class="f">To<input type="date" id="fp-to" value="${t}"></label>
           </div>
           <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center"><button class="btn" data-act="est-f" ${db.connected ? '' : 'disabled'}>Estimate cost</button><button class="btn primary" data-act="dl-f" ${db.connected ? '' : 'disabled'}>Download</button><span id="est-f" class="muted"></span></div>
-          <p class="note">Full order book depth (MBP-10, the heatmap) isn't downloaded: it is many GB per day. The ladder shows the volume traded at each price instead.</p>
+          <p class="note">Not needed when you download the order book below: it contains the trades too.</p>
+          </div></section>
+
+        <section class="panel"><div class="hd"><h2>Download the order book (MBP-10)</h2><span class="dim" style="font-size:12px">Bookmap-style heatmap, real DOM, and the footprint / tape from the same data. Up to 22 sessions at a time.</span></div>
+          <div class="bd"><div class="form" style="align-items:end">
+            <div class="f" style="font-size:13px;color:var(--muted)">Contracts<div class="seg">${['NQ', 'ES'].map(s => `<button data-symb="${s}" aria-pressed="${(S.bkSyms || ['NQ']).includes(s)}">${s}</button>`).join('')}</div></div>
+            <label class="f">From<input type="date" id="bk-from" value="${addDays(t, -1)}"></label>
+            <label class="f">To<input type="date" id="bk-to" value="${t}"></label>
+            <label class="f">Hours (ET)<select id="bk-win"><option value="rth">09:30–16:00</option><option value="am">09:30–11:30</option><option value="open">09:30–10:30</option></select></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center"><button class="btn" data-act="est-b" ${db.connected ? '' : 'disabled'}>Estimate cost</button><button class="btn primary" data-act="dl-b" ${db.connected ? '' : 'disabled'}>Download</button><span id="est-b" class="muted"></span></div>
+          <p class="note">MBP-10 is the 10 best price levels on each side after every change (about 2.5 points of depth on NQ / ES). It is a large download (GBs per day) but priced low per GB: check the estimate first.</p>
           </div></section>
       </div>
       <aside class="col-side">
         <section class="panel"><div class="hd"><h2>Stored</h2><div class="grow"></div><button class="btn sm" data-act="refresh" ${db.connected ? '' : 'disabled'}>Update now</button></div>
           ${Object.entries(cv).map(([s, c]) => `<div class="bd" style="border-top:1px solid var(--row)"><div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px"><b>${s}</b><span class="dim" style="font-size:12px">${esc(c.name)}</span></div>
             <div class="kv kv3"><div><div class="k">Candles</div><div class="v">${c.days ? c.days + ' days' : '—'}</div></div><div><div class="k">From</div><div class="v">${esc(c.from || '—')}</div></div><div><div class="k">To</div><div class="v">${esc((c.to || '—').replace('T', ' '))}</div></div>
-            <div><div class="k">Footprint</div><div class="v">${c.fpDays ? c.fpDays + ' days' : '—'}</div></div><div><div class="k">From</div><div class="v">${esc(c.fpFrom || '—')}</div></div><div><div class="k">To</div><div class="v">${esc(c.fpTo || '—')}</div></div></div></div>`).join('')}
+            <div><div class="k">Footprint</div><div class="v">${c.fpDays ? c.fpDays + ' days' : '—'}</div></div><div><div class="k">From</div><div class="v">${esc(c.fpFrom || '—')}</div></div><div><div class="k">To</div><div class="v">${esc(c.fpTo || '—')}</div></div>
+            <div style="grid-column:1/-1"><div class="k">Order book</div><div class="v">${c.hmDays ? c.hmDays + ' days · ' + esc((c.hmLast || []).slice(-4).join(', ')) : '—'}</div></div></div></div>`).join('')}
         </section>
         <div id="job">${jobHtml(job)}</div>
       </aside>
@@ -190,9 +203,13 @@ function pollJob(path, pick, done) {
   }, 2500);
   S.timers.push(h);
 }
+function dlBody(kind) {
+  if (kind === 'book') return { kind, syms: S.bkSyms || ['NQ'], from: $('#bk-from').value, to: $('#bk-to').value, window: $('#bk-win').value };
+  const isC = kind === 'candles';
+  return { kind, syms: isC ? (S.dlSyms || ['NQ', 'ES']) : (S.fpSyms || ['NQ']), from: $(isC ? '#dl-from' : '#fp-from').value, to: $(isC ? '#dl-to' : '#fp-to').value };
+}
 async function download(kind, confirm) {
-  const isC = kind === 'candles', syms = isC ? (S.dlSyms || ['NQ', 'ES']) : (S.fpSyms || ['NQ']);
-  const body = { kind, syms, from: $(isC ? '#dl-from' : '#fp-from').value, to: $(isC ? '#dl-to' : '#fp-to').value, confirm };
+  const body = { ...dlBody(kind), confirm };
   const r = await api('/data/download', { method: 'POST', body });
   if (r.needConfirm) {
     if (window.confirm(`Databento estimates $${r.usd.toFixed(2)} for this download (your limit is $${r.cap}). Download anyway?`)) return download(kind, true);
@@ -364,19 +381,26 @@ async function vChart() {
     <div class="row">
       <section class="panel col-main" style="display:block;padding-top:12px">
         <div class="legend"><span>Strategy on the chart</span><select id="c-strat" style="min-height:30px;padding:3px 8px"><option value="">None</option>${S.strats.filter(s => s.params.tickers.includes(c.sym)).map(s => `<option value="${s.id}" ${c.strat === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
-          <span style="display:inline-flex;align-items:center;gap:4px"><button class="chip" data-ctog="ema" aria-pressed="${!!c.ema}">EMA</button><input type="number" id="c-emalen" min="2" max="400" value="${c.emaLen}" aria-label="EMA length" style="width:62px;min-height:28px;padding:2px 6px"></span>${[['prof', 'Volume profile'], ['cvd', 'Delta'], ['wt', 'WaveTrend'], ['rth', 'Regular hours only']].map(([k, l]) => `<button class="chip" data-ctog="${k}" aria-pressed="${!!c[k]}">${l}</button>`).join('')}
+          <span style="display:inline-flex;align-items:center;gap:4px"><button class="chip" data-ctog="ema" aria-pressed="${!!c.ema}">EMA</button><input type="number" id="c-emalen" min="2" max="400" value="${c.emaLen}" aria-label="EMA length" style="width:62px;min-height:28px;padding:2px 6px"></span>${[['fvg', 'FVG'], ['sd', 'Supply / demand'], ['prof', 'Volume profile'], ['cvd', 'Delta'], ['wt', 'WaveTrend'], ['rth', 'Regular hours only']].map(([k, l]) => `<button class="chip" data-ctog="${k}" aria-pressed="${!!c[k]}">${l}</button>`).join('')}
           <div style="flex:1"></div>${c.strat ? '<span><span class="sw" style="border-top:2px solid #E7C35A"></span>Strategy lines · B breakout · R retest · C confirmation</span>' : ''}${c.ema ? `<span><span class="sw" style="border-top:2px solid #5FD4C4"></span>EMA ${c.emaLen}</span>` : ''}<span><span class="sw" style="border-top:2px solid var(--vwap)"></span>VWAP</span><span><span class="sw" style="border-top:1px dashed #93A0B2"></span>PDH / PDL / PDC · ONH / ONL</span></div>
-        <div class="chartbox"><canvas id="cv" style="height:${S.rp ? 600 : 640}px"></canvas></div>
-        ${S.rp ? replayBar() : `<div class="transport"><span class="muted" style="font-size:13px">Replay a session bar by bar with its order flow:</span><input type="date" id="rp-day" value="${S.lastDay || ''}"><button class="btn" data-act="rp-start">Start replay</button><span class="note">Footprint, tape and real delta need that day's trades (Data page).</span></div>`}
+        ${S.rp && S.rp.hm ? `<div class="dual ${S.rpLayout === 'stack' ? 'stack' : ''}"><div class="chartbox"><canvas id="cv" style="height:600px"></canvas></div>
+          <div class="heatbox"><div class="legend" style="padding:0 0 8px"><b style="color:var(--text)">Order book</b><span>10 levels each side · 5 s columns</span><div style="flex:1"></div>
+            <div class="seg">${[300, 900, 1800].map(v => `<button data-hmspan="${v}" aria-pressed="${(S.hmSpan || 900) === v}">${v / 60}m</button>`).join('')}</div>
+            <div class="seg">${[[60, '+'], [120, '='], [240, '−']].map(([v, l]) => `<button data-hmrows="${v}" aria-pressed="${(S.hmRows || 120) === v}" aria-label="Zoom ${l}">${l}</button>`).join('')}</div>
+            <div class="seg"><button data-rplayout="side" aria-pressed="${S.rpLayout !== 'stack'}">Side by side</button><button data-rplayout="stack" aria-pressed="${S.rpLayout === 'stack'}">Stacked</button></div></div>
+            <canvas id="hm" style="height:600px;width:100%;display:block"></canvas></div></div>` : `<div class="chartbox"><canvas id="cv" style="height:${S.rp ? 600 : 640}px"></canvas></div>`}
+        ${S.rp ? replayBar() : `<div class="transport"><span class="muted" style="font-size:13px">Replay a session bar by bar with its order flow:</span><input type="date" id="rp-day" value="${S.lastDay || ''}"><button class="btn" data-act="rp-start">Start replay</button><span class="note">The heatmap, DOM, footprint and tape need that day's order book (Data page, or the button in the replay).</span></div>`}
         ${S.rp && S.rpView === 'fp' ? `<div class="bd" style="border-top:1px solid var(--line)"><div id="fpview"></div></div>` : ''}
       </section>
       <aside class="col-side">${S.rp ? `
-        <section class="panel ladder"><div class="hd"><h2>Volume at price</h2><div class="grow"></div><span class="dim" style="font-size:12px">traded so far · bid × ask</span></div><div id="ladder" style="padding:6px 0"></div></section>
+        <section class="panel ladder"><div class="hd"><h2 id="ladder-h">Volume at price</h2><div class="grow"></div><span class="dim" style="font-size:12px">${S.rp.hm ? 'resting size · traded so far' : 'traded so far · bid × ask'}</span></div><div id="ladder" style="padding:6px 0"></div></section>
         <section class="panel tape"><div class="hd"><h2>Time &amp; sales</h2><div class="grow"></div><span class="dim" style="font-size:12px">big prints</span></div><div id="tape" style="padding:6px 0;max-height:360px;overflow:auto"></div></section>` : `
         <section class="panel"><div class="hd"><h2>Session</h2></div><div class="bd" id="sessinfo"><span class="dim">Loading…</span></div></section>`}
       </aside>
     </div>`);
   S.ch = new FC.Chart($('#cv'), { span: S.rp ? 120 : (c.tf === 1 ? 240 : 180) });
+  if (S.heat) { S.heat.destroy(); S.heat = null; }
+  if ($('#hm')) S.heat = new FC.Heat($('#hm'));
   await loadChart();
 }
 function replayBar() {
@@ -388,7 +412,7 @@ function replayBar() {
     <div class="seg" role="group" aria-label="Speed">${[1, 2, 5, 10].map(v => `<button data-rpspeed="${v}" aria-pressed="${r.speed === v}">${v}×</button>`).join('')}</div>
     <label style="flex:1 1 220px;display:flex;align-items:center;gap:10px;font-size:12px" class="dim"><span class="mono" id="rp-time" style="color:var(--text)"></span><input type="range" id="rp-scrub" min="0" max="${(r.n || 1) - 1}" value="${r.k}" style="flex:1" aria-label="Replay position"></label>
     <div class="seg"><button data-rpview="chart" aria-pressed="${S.rpView !== 'fp'}">Candles</button><button data-rpview="fp" aria-pressed="${S.rpView === 'fp'}">+ Footprint</button></div>
-    <span class="mono" style="font-size:13px">${esc(r.day)}</span>${r.fp ? '' : '<button class="btn sm" data-act="rp-getfp">Download this day\'s trades</button>'}
+    <span class="mono" style="font-size:13px">${esc(r.day)}</span>${r.hm ? '' : '<button class="btn sm" data-act="rp-getbook">Download this day\'s order book</button>'}${r.fp || r.hm ? '' : '<button class="btn sm" data-act="rp-getfp">Trades only</button>'}
     <button class="btn sm" data-act="rp-stop">Exit replay</button></div>`;
 }
 async function loadChart() {
@@ -405,6 +429,12 @@ async function loadChart() {
     r.k = Math.min(r.k, r.n - 1);
     const sc = $('#rp-scrub'); if (sc) sc.max = r.n - 1;
     if (r.fp === undefined) { try { r.fp = await api(`/footprint?sym=${c.sym}&day=${r.day}`); } catch (e) { r.fp = null; } if (!r.fp) { const tb = $('.transport'); if (tb) tb.outerHTML = replayBar(); } }
+    if (r.hm === undefined) {
+      r.hm = null;
+      if ((d.hmDays || []).includes(r.day)) { try { r.hm = await api(`/heatmap?sym=${c.sym}&day=${r.day}`); } catch (e) { r.hm = null; } }
+      if (r.hm) return vChart();                    // the side-by-side layout
+      const tb = $('.transport'); if (tb) tb.outerHTML = replayBar();
+    }
   }
   drawChart(false);
 }
@@ -416,7 +446,7 @@ function fpDelta() {
 function drawChart(keep) {
   const c = S.chart, d = S.cd, r = S.rp;
   if (!S.ch || !d) return;
-  S.ch.set({ bars: d.bars, levels: d.levels, marks: d.marks || [], overlay: d.overlay, showEMA: c.ema, emaLen: c.emaLen, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
+  S.ch.set({ bars: d.bars, levels: d.levels, marks: d.marks || [], overlay: d.overlay, showEMA: c.ema, emaLen: c.emaLen, showFVG: c.fvg, showSD: c.sd, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
   const n = r ? r.k + 1 : d.bars.length, B = d.bars, last = B[n - 1], day = last[6];
   const sess = B.slice(0, n).filter(b => b[6] === day), lv = d.levels[day] || {};
   const pc = lv.pdc, chg = pc ? last[4] - pc : null;
@@ -431,6 +461,7 @@ function drawChart(keep) {
       ${c.strat ? `<div class="sep"></div><div class="note" style="margin-bottom:6px">${mk.length} trade(s) of the strategy on these days</div>${mk.slice(-8).reverse().map(t => `<div class="fill" style="padding:6px 0"><span class="t">${esc(t.in.slice(5, 16).replace('T', ' '))}</span><span class="s ${t.side === 'long' ? 'gain' : 'loss'}">${t.side === 'long' ? 'L' : 'S'}</span><span class="w mono">${fmt(t.e)} → ${fmt(t.x)}</span><span class="mono ${cls(t.net)}">${money(t.net)}</span></div>`).join('')}` : ''}
       <div class="note" style="margin-top:10px">Scroll to zoom, drag to pan, double-click to reset.</div>`;
   }
+  if (r && S.heat && r.hm) { const b = d.bars[r.k], end = FC.toMin(b[0]) * 60 + d.tf * 60; S.heat.set({ hm: r.hm, big: r.fp ? r.fp.big : [], tEnd: end, span: S.hmSpan || 900, last: b[4], rows: S.hmRows || 120 }); }
   if (r) { replaySide(); const tm = $('#rp-time'); if (tm) tm.textContent = last[0].slice(11, 16); const sc = $('#rp-scrub'); if (sc) sc.value = r.k; }
 }
 function replayNowEnd() { const r = S.rp, b = S.cd.bars[r.k]; return FC.minStr(FC.toMin(b[0]) + S.cd.tf); }
@@ -447,11 +478,29 @@ function replaySide() {
   const lk = Math.floor(last / step) * step, rows = [];
   for (let j = 15; j >= -15; j--) { const p = +(lk + j * step).toFixed(2); rows.push([p, ...(agg[p] || [0, 0])]); }
   const mx = Math.max(1, ...rows.map(x => Math.max(x[1], x[2])));
-  lad.innerHTML = rows.map(([p, b, a]) => `<div class="lr ${p === lk ? 'last' : ''}"><div class="b"><i style="width:${b / mx * 100}%"></i><span>${b || ''}</span></div><div class="p">${fmt(p)}</div><div class="a"><i style="width:${a / mx * 100}%"></i><span>${a || ''}</span></div></div>`).join('');
+  lad.innerHTML = r.hm ? domHtml(end) : rows.map(([p, b, a]) => `<div class="lr ${p === lk ? 'last' : ''}"><div class="b"><i style="width:${b / mx * 100}%"></i><span>${b || ''}</span></div><div class="p">${fmt(p)}</div><div class="a"><i style="width:${a / mx * 100}%"></i><span>${a || ''}</span></div></div>`).join('');
+  const lh = $('#ladder-h'); if (lh) lh.textContent = r.hm ? 'Order book (DOM)' : 'Volume at price';
   const big = r.fp.big.filter(x => x[0].slice(0, 5) < end).slice(-30).reverse();
   tape.innerHTML = big.length ? big.map(([t, p, s, side]) => `<div class="tr big" style="background:${side === 'B' ? 'rgba(74,158,255,.12)' : side === 'S' ? 'rgba(240,140,46,.12)' : 'transparent'}"><span class="dim">${esc(t)}</span><span>${fmt(p)}</span><span style="text-align:right">${s}</span><span class="${side === 'B' ? 'gain' : 'loss'}">${side}</span></div>`).join('') : '<div class="empty">No big prints yet.</div>';
   const fv = $('#fpview');
   if (fv) fv.innerHTML = footprintHtml(end);
+}
+function domHtml(end) {
+  // the 10 resting levels on each side at the cursor (from the heatmap), with the volume traded at each price so far
+  const r = S.rp, hm = r.hm, tick = hm.tick, es = +end.slice(0, 2) * 3600 + +end.slice(3, 5) * 60;
+  let col = null; for (const c of hm.c) { if (c[0] < es) col = c; else break; }
+  if (!col) return '<div class="empty">No book yet at this time.</div>';
+  const traded = {};
+  r.fp && r.fp.m.forEach(([m, lv]) => { if (m >= end) return; lv.forEach(([p, b, a]) => { const x = traded[p] || (traded[p] = [0, 0]); x[0] += b; x[1] += a; }); });
+  const lv = [];
+  for (let k = col[2].length - 2; k >= 0; k -= 2) lv.push([(hm.base + col[2][k]) * tick, 0, col[2][k + 1]]);
+  for (let k = 0; k < col[1].length; k += 2) lv.push([(hm.base + col[1][k]) * tick, col[1][k + 1], 0]);
+  const mx = Math.max(1, ...lv.map(x => Math.max(x[1], x[2])));
+  return `<div class="lr" style="grid-template-columns:1fr 46px 82px 46px 1fr;color:var(--dim);font-size:11px"><span style="text-align:right">Bids</span><span style="text-align:right">sold</span><span style="text-align:center">Price</span><span>bought</span><span>Asks</span></div>` +
+    lv.map(([p, b, a]) => { const t = traded[p] || [0, 0];
+      return `<div class="lr" style="grid-template-columns:1fr 46px 82px 46px 1fr"><div class="b" style="justify-content:flex-end"><i style="width:${b / mx * 100}%;background:rgba(95,212,196,.3)"></i><span>${b || ''}</span></div>
+        <span class="dim" style="text-align:right">${t[0] || ''}</span><div class="p" style="color:${a ? 'var(--sellT)' : 'var(--buyT)'}">${fmt(p)}</div><span class="dim">${t[1] || ''}</span>
+        <div class="a"><i style="width:${a / mx * 100}%;background:rgba(240,86,60,.3)"></i><span>${a || ''}</span></div></div>`; }).join('');
 }
 function footprintHtml(end) {
   const r = S.rp, d = S.cd, tf = d.tf, k0 = Math.max(0, r.k - 7), bars = d.bars.slice(k0, r.k + 1).filter(b => b[0].slice(0, 10) === r.day && b[0].slice(11, 16) >= '09:30');
@@ -486,6 +535,7 @@ document.addEventListener('click', async e => {
   const ds = el.dataset, act = ds.act;
   try {
     if (ds.symc) { const s = new Set(S.dlSyms || ['NQ', 'ES']); s.has(ds.symc) ? s.delete(ds.symc) : s.add(ds.symc); S.dlSyms = [...s]; el.setAttribute('aria-pressed', s.has(ds.symc)); return; }
+    if (ds.symb) { const s = new Set(S.bkSyms || ['NQ']); s.has(ds.symb) ? s.delete(ds.symb) : s.add(ds.symb); S.bkSyms = [...s]; el.setAttribute('aria-pressed', s.has(ds.symb)); return; }
     if (ds.symf) { const s = new Set(S.fpSyms || ['NQ']); s.has(ds.symf) ? s.delete(ds.symf) : s.add(ds.symf); S.fpSyms = [...s]; el.setAttribute('aria-pressed', s.has(ds.symf)); return; }
     if (ds.dlq) { $('#dl-from').value = addDays(today(), +ds.dlq); return; }
     if (ds.ptick) { el.setAttribute('aria-pressed', el.getAttribute('aria-pressed') !== 'true'); return; }
@@ -499,17 +549,21 @@ document.addEventListener('click', async e => {
     if (ds.ctog) { S.chart[ds.ctog] = !S.chart[ds.ctog]; el.setAttribute('aria-pressed', S.chart[ds.ctog]); if (ds.ctog === 'rth') return loadChart(); return drawChart(true); }
     if (ds.rpspeed) { S.rp.speed = +ds.rpspeed; return rpPlay(S.rp.playing); }
     if (ds.rpview) { S.rpView = ds.rpview; return vChart(); }
+    if (ds.hmspan) { S.hmSpan = +ds.hmspan; document.querySelectorAll('[data-hmspan]').forEach(b => b.setAttribute('aria-pressed', b === el)); return drawChart(true); }
+    if (ds.hmrows) { S.hmRows = +ds.hmrows; document.querySelectorAll('[data-hmrows]').forEach(b => b.setAttribute('aria-pressed', b === el)); return drawChart(true); }
+    if (ds.rplayout) { S.rpLayout = ds.rplayout; return vChart(); }
     switch (act) {
       case 'refresh': await api('/data/refresh', { method: 'POST', body: {} }); toast('Updating the candles…'); if (S.page === 'data') vData(); break;
       case 'db-connect': { const k = $('#db-key').value.trim(); if (!k) return toast('Paste the key first.'); el.disabled = true; el.textContent = 'Checking…'; await api('/databento', { method: 'PUT', body: { key: k } }); toast('Databento connected.'); vData(); break; }
       case 'db-save': await api('/databento', { method: 'PUT', body: { auto: $('#db-auto').checked, autoFp: $('#db-autofp').checked, maxCost: +$('#db-cap').value } }); toast('Saved.'); vData(); break;
       case 'db-test': el.disabled = true; await api('/databento/test', { method: 'POST' }); toast('Databento answered.'); vData(); break;
       case 'db-del': if (!confirm('Disconnect Databento? The stored candles stay.')) return; await api('/databento', { method: 'DELETE' }); vData(); break;
-      case 'est-c': case 'est-f': { const isC = act === 'est-c', out = $(isC ? '#est-c' : '#est-f'); out.className = 'muted'; out.textContent = 'Asking Databento…';
-        const r = await api('/data/estimate', { method: 'POST', body: { kind: isC ? 'candles' : 'footprint', syms: isC ? (S.dlSyms || ['NQ', 'ES']) : (S.fpSyms || ['NQ']), from: $(isC ? '#dl-from' : '#fp-from').value, to: $(isC ? '#dl-to' : '#fp-to').value } });
-        out.textContent = `Estimated cost: $${r.usd.toFixed(2)}${isC ? '' : ' (at most)'}`; break; }
+      case 'est-c': case 'est-f': case 'est-b': { const kind = { 'est-c': 'candles', 'est-f': 'footprint', 'est-b': 'book' }[act], out = $('#' + act); out.className = 'muted'; out.textContent = 'Asking Databento…';
+        const r = await api('/data/estimate', { method: 'POST', body: dlBody(kind) });
+        out.textContent = `Estimated cost: $${r.usd.toFixed(2)}${kind === 'footprint' ? ' (at most)' : ''}`; break; }
       case 'dl-c': await download('candles'); break;
       case 'dl-f': await download('footprint'); break;
+      case 'dl-b': await download('book'); break;
       case 'new': S.newSetup = S.newSetup === null ? '' : null; $('#newbox').innerHTML = S.newSetup !== null ? newForm() : ''; break;
       case 'new-close': S.newSetup = null; $('#newbox').innerHTML = ''; break;
       case 'create': { const p = readParams($('#newp')); const s = await api('/strategies', { method: 'POST', body: { setup: S.newSetup, name: $('#new-name').value, params: p } }); S.newSetup = null; S.strats = null; location.hash = '#strategy/' + s.id; break; }
@@ -524,6 +578,11 @@ document.addEventListener('click', async e => {
       case 'rp-play': rpPlay(!S.rp.playing); break;
       case 'rp-back': rpPlay(false); rpMove(S.rp.k - 1); break;
       case 'rp-fwd': rpPlay(false); rpMove(S.rp.k + 1); break;
+      case 'rp-getbook': { const body = { kind: 'book', syms: [S.chart.sym], from: S.rp.day, to: S.rp.day, window: 'rth' };
+        const r = await api('/data/download', { method: 'POST', body });
+        if (r.needConfirm && !confirm(`Databento estimates $${r.usd.toFixed(2)} for this day's order book (09:30–16:00). Download?`)) return;
+        if (r.needConfirm) await api('/data/download', { method: 'POST', body: { ...body, confirm: true } });
+        toast(`Downloading the order book${r.usd != null ? ` (about $${(+r.usd).toFixed(2)})` : ''}… it takes a few minutes; then start the replay again.`); break; }
       case 'rp-getfp': { const r = await api('/data/download', { method: 'POST', body: { kind: 'footprint', syms: [S.chart.sym], from: S.rp.day, to: S.rp.day } });
         if (r.needConfirm && !confirm(`Databento estimates $${r.usd.toFixed(2)} for this day's trades. Download?`)) return;
         if (r.needConfirm) await api('/data/download', { method: 'POST', body: { kind: 'footprint', syms: [S.chart.sym], from: S.rp.day, to: S.rp.day, confirm: true } });
@@ -531,7 +590,7 @@ document.addEventListener('click', async e => {
     }
   } catch (err) {
     toast(err.message);
-    if (act === 'est-c' || act === 'est-f' || act === 'dl-c' || act === 'dl-f') { const o = $(act.endsWith('c') ? '#est-c' : '#est-f'); if (o) { o.textContent = err.message; o.className = 'loss'; } }
+    if (/^(est|dl)-[cfb]$/.test(act || '')) { const o = $('#est-' + act.slice(-1)); if (o) { o.textContent = err.message; o.className = 'loss'; } }
     if (el.textContent === 'Checking…') { el.disabled = false; el.textContent = 'Connect'; } }
 });
 document.addEventListener('change', e => {

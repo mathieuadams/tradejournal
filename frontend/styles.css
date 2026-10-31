@@ -168,3 +168,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .top { padding: 8px 12px; gap: 10px; }
   .kv { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.dual { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding-right: 12px; }
+.dual.stack { grid-template-columns: minmax(0, 1fr); }
+.heatbox { min-width: 0; }
+@media (max-width: 1250px) { .dual { grid-template-columns: minmax(0, 1fr); } }

@@ -88,6 +88,7 @@
       this.wt = d.showWT && B.length > 40 ? wtKrypt(B.map(b => b[4])) : null;
       this.ema = null;
       if (d.showEMA) { const n = d.emaLen || 20, m = 2 / (n + 1); let e = null; this.ema = B.map(b => (e = e == null ? b[4] : m * b[4] + (1 - m) * e)); }
+      this.zones = (d.showFVG || d.showSD) ? zones(B, d.showFVG, d.showSD) : [];
       this.markIdx = (d.marks || []).map(m => ({ ...m, i0: this.idxOf(m.in), i1: this.idxOf(m.out) }));
       const ov = d.overlay || {};
       this.ovLines = (ov.lines || []).map(L => ({ ...L, ix: L.pts.map(([t, v]) => [this.idxOf(t), v, t]) }));
@@ -158,6 +159,16 @@
         L.ix.forEach(([i, v, t]) => { if (i < a - 1 || i > b || i >= n) { on = false; return; } if (t.slice(0, 10) !== prevDay) on = false; prevDay = t.slice(0, 10);
           on ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v)); on = true; });
         g.stroke(); g.lineWidth = 1;
+      });
+      // supply / demand zones and fair value gaps: from where they formed until broken / filled (or the right edge)
+      this.zones.forEach(z => {
+        const end = z.end == null || z.end >= n ? n - 1 + 0.5 : z.end;
+        if (end < a || z.i0 >= b || z.i0 >= n) return;
+        const x0 = X(z.i0) - bw / 2, x1 = X(Math.min(end, b)), y0 = Y(z.hi), y1 = Y(z.lo), open = z.end == null || z.end >= n;
+        const c = ZC[z.k];
+        g.fillStyle = open ? c[0] : c[2]; g.fillRect(x0, y0, Math.max(2, x1 - x0), Math.max(1, y1 - y0));
+        if (open) { g.strokeStyle = c[1]; g.strokeRect(x0 + 0.5, y0 + 0.5, Math.max(2, x1 - x0), Math.max(1, y1 - y0)); }
+        if (x1 - x0 > 40 && y1 - y0 > 9) { g.fillStyle = c[1]; g.textAlign = 'left'; g.font = '10px Inter, system-ui, sans-serif'; g.fillText(z.label, x0 + 3, y0 + 7); g.font = '11px Inter, system-ui, sans-serif'; }
       });
       // EMA indicator (on the chart's candles)
       if (this.ema) {
@@ -241,10 +252,92 @@
       }
     }
   }
+  // zone colors: [open fill, line / label, filled or broken fill]
+  const ZC = { demand: ['rgba(74,158,255,.13)', 'rgba(125,184,255,.85)', 'rgba(74,158,255,.05)'], supply: ['rgba(240,140,46,.14)', 'rgba(245,165,74,.9)', 'rgba(240,140,46,.05)'],
+    fvgUp: ['rgba(95,212,196,.16)', 'rgba(95,212,196,.9)', 'rgba(95,212,196,.05)'], fvgDn: ['rgba(240,86,60,.15)', 'rgba(240,120,100,.9)', 'rgba(240,86,60,.05)'] };
+  // Fair value gaps: candle i-2's high under candle i's low (bullish) or the mirror, at least 0.1 x the 14-candle average range;
+  // filled when price trades back through the whole gap. Supply / demand: a base (1-3 small candles, each under 0.7 x the
+  // average range) right before an impulse candle (range >= 2 x average, body >= 60% of it); the zone is the base's range,
+  // broken when a candle closes through its far side.
+  function zones(B, fvg, sd) {
+    const n = B.length, atr = []; let a = null;
+    for (let i = 0; i < n; i++) { const pc = i ? B[i - 1][4] : B[i][1], tr = Math.max(B[i][2] - B[i][3], Math.abs(B[i][2] - pc), Math.abs(B[i][3] - pc)); a = a == null ? tr : (a * 13 + tr) / 14; atr.push(a); }
+    const out = [];
+    for (let i = 2; i < n; i++) {
+      const at = atr[i - 1];
+      if (fvg) {
+        if (B[i - 2][2] < B[i][3] && B[i][3] - B[i - 2][2] >= 0.1 * at) out.push({ k: 'fvgUp', label: 'FVG', lo: B[i - 2][2], hi: B[i][3], i0: i - 1, test: (b) => b[3] <= B[i - 2][2], from: i + 1 });
+        if (B[i - 2][3] > B[i][2] && B[i - 2][3] - B[i][2] >= 0.1 * at) out.push({ k: 'fvgDn', label: 'FVG', lo: B[i][2], hi: B[i - 2][3], i0: i - 1, test: (b) => b[2] >= B[i - 2][3], from: i + 1 });
+      }
+      if (sd) {
+        const [, o, h, l, c] = B[i], r = h - l;
+        if (r >= 2 * at && Math.abs(c - o) >= 0.6 * r) {
+          let k = i - 1, lo = Infinity, hi = -Infinity, cnt = 0;
+          while (k >= 0 && cnt < 3 && B[k][2] - B[k][3] <= 0.7 * at) { lo = Math.min(lo, B[k][3]); hi = Math.max(hi, B[k][2]); k--; cnt++; }
+          if (cnt) {
+            const up = c > o;
+            out.push(up ? { k: 'demand', label: 'Demand', lo, hi, i0: k + 1, test: (b) => b[4] < lo, from: i + 1 }
+                        : { k: 'supply', label: 'Supply', lo, hi, i0: k + 1, test: (b) => b[4] > hi, from: i + 1 });
+          }
+        }
+      }
+    }
+    out.forEach(z => { z.end = null; for (let j = z.from; j < n; j++) if (z.test(B[j])) { z.end = j; break; } });
+    return out;
+  }
+
+  // Order book heatmap (Bookmap style): x = time, y = price, color = resting size at that price (10 levels per side),
+  // with the best bid / ask lines and the big trades as bubbles.
+  const HEAT = [[11, 14, 19], [20, 40, 90], [30, 90, 170], [40, 160, 200], [80, 210, 140], [230, 220, 80], [245, 150, 50], [240, 70, 50], [255, 255, 255]];
+  function heatColor(v) { v = Math.max(0, Math.min(1, v)) * (HEAT.length - 1); const i = Math.floor(v), f = v - i, a = HEAT[i], b = HEAT[Math.min(HEAT.length - 1, i + 1)];
+    return `rgb(${a[0] + (b[0] - a[0]) * f | 0},${a[1] + (b[1] - a[1]) * f | 0},${a[2] + (b[2] - a[2]) * f | 0})`; }
+  class Heat {
+    constructor(canvas) { this.cv = canvas; this.ro = new ResizeObserver(() => this.draw()); this.ro.observe(canvas); }
+    destroy() { this.ro.disconnect(); }
+    set(o) { this.o = o; this.draw(); }   // {hm, big, tEnd (seconds of the day), span (seconds), last, rows}
+    draw() {
+      const o = this.o, cv = this.cv; if (!o || !o.hm) return;
+      const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+      if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+      const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.fillStyle = 'rgb(11,14,19)'; g.fillRect(0, 0, W, H);
+      g.font = '11px JetBrains Mono, monospace'; g.textBaseline = 'middle';
+      const hm = o.hm, tick = hm.tick, base = hm.base, pr = 70, depthW = 60, pw = W - pr - depthW, t1 = o.tEnd, t0 = t1 - o.span;
+      const rows = o.rows || 120, mid = Math.round(o.last / tick), top = mid + rows / 2, rh = H / rows;
+      const Y = idx => (top - idx) * rh, X = sec => (sec - t0) / o.span * pw;
+      const cols = hm.c.filter(c => c[0] >= t0 - hm.step && c[0] < t1);
+      let mx = 1; const all = []; cols.forEach(c => { for (let k = 1; k < c[1].length; k += 2) all.push(c[1][k]); for (let k = 1; k < c[2].length; k += 2) all.push(c[2][k]); });
+      if (all.length) { all.sort((x, y) => x - y); mx = all[Math.floor(all.length * 0.97)] || 1; }
+      const cw = Math.max(1, hm.step / o.span * pw + 0.5);
+      cols.forEach(c => {
+        const x = X(c[0]);
+        [c[1], c[2]].forEach(side => { for (let k = 0; k < side.length; k += 2) { const idx = base + side[k], y = Y(idx); if (y < -rh || y > H) continue; g.fillStyle = heatColor(Math.log1p(side[k + 1]) / Math.log1p(mx)); g.fillRect(x, y - rh / 2, cw, Math.max(1, rh)); } });
+      });
+      // best bid / ask
+      [[1, '#5FD4C4'], [2, '#F0563C']].forEach(([s, col]) => { g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath(); let on = false;
+        cols.forEach(c => { if (!c[s].length) { on = false; return; } const y = Y(base + c[s][0]), x = X(c[0]); on ? g.lineTo(x, y) : g.moveTo(x, y); on = true; g.lineTo(x + cw, y); }); g.stroke(); g.lineWidth = 1; });
+      // big trades
+      (o.big || []).forEach(([t, p, sz, side]) => { const sec = +t.slice(0, 2) * 3600 + +t.slice(3, 5) * 60 + +t.slice(6, 8); if (sec < t0 || sec >= t1) return;
+        const r = Math.min(18, 2 + Math.sqrt(sz) * 1.2); g.fillStyle = side === 'B' ? 'rgba(74,158,255,.55)' : side === 'S' ? 'rgba(240,140,46,.6)' : 'rgba(200,200,200,.4)';
+        g.strokeStyle = 'rgba(255,255,255,.5)'; g.beginPath(); g.arc(X(sec), Y(Math.round(p / tick)), r, 0, 7); g.fill(); g.stroke(); });
+      // current book on the right edge
+      const lastc = cols[cols.length - 1];
+      if (lastc) { let m2 = 1; [lastc[1], lastc[2]].forEach(sd => { for (let k = 1; k < sd.length; k += 2) m2 = Math.max(m2, sd[k]); });
+        [[lastc[1], 'rgba(95,212,196,.75)'], [lastc[2], 'rgba(240,86,60,.75)']].forEach(([sd, col]) => { for (let k = 0; k < sd.length; k += 2) { const y = Y(base + sd[k]); g.fillStyle = col; g.fillRect(pw, y - rh / 2 + 0.5, sd[k + 1] / m2 * (depthW - 4), Math.max(1, rh - 1)); } }); }
+      g.strokeStyle = '#232A35'; g.beginPath(); g.moveTo(pw + 0.5, 0); g.lineTo(pw + 0.5, H); g.moveTo(pw + depthW + 0.5, 0); g.lineTo(pw + depthW + 0.5, H); g.stroke();
+      // price axis
+      g.fillStyle = '#93A0B2'; g.textAlign = 'left'; const every = Math.max(1, Math.round(20 / rh));
+      for (let i = top; i > top - rows; i--) { if (i % every) continue; g.fillText(fmt(i * tick), pw + depthW + 6, Y(i)); }
+      g.fillStyle = '#E7EAF0'; g.fillRect(pw + depthW + 1, Y(mid) - 8, pr - 2, 16); g.fillStyle = '#0B0E13'; g.fillText(fmt(o.last), pw + depthW + 5, Y(mid));
+      // time labels
+      g.fillStyle = '#93A0B2'; g.textAlign = 'center';
+      for (let k = 0; k <= 4; k++) { const sec = t0 + o.span * k / 4; g.fillText(`${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(Math.floor(sec / 60) % 60).padStart(2, '0')}`, Math.min(pw - 20, Math.max(20, X(sec))), H - 8); }
+      if (!cols.length) { g.fillStyle = '#93A0B2'; g.textAlign = 'center'; g.fillText('No book data at this time', pw / 2, H / 2); }
+    }
+  }
   function tri(g, x, y, up, c) { g.fillStyle = c; g.beginPath(); if (up) { g.moveTo(x, y - 6); g.lineTo(x - 5, y + 3); g.lineTo(x + 5, y + 3); } else { g.moveTo(x, y + 6); g.lineTo(x - 5, y - 3); g.lineTo(x + 5, y - 3); } g.fill(); }
   function niceStep(r) { const p = Math.pow(10, Math.floor(Math.log10(r))); const m = r / p; return (m < 1.5 ? 1 : m < 3.5 ? 2.5 : m < 7.5 ? 5 : 10) * p; }
   function toMin(t) { return +t.slice(11, 13) * 60 + +t.slice(14, 16); }
   function minStr(m) { return String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); }
 
-  window.FC = { Chart, wtKrypt, fmt, toMin, minStr };
+  window.FC = { Chart, Heat, wtKrypt, fmt, toMin, minStr, zones };
 })();

@@ -206,6 +206,29 @@ def test_09_orb_ema_rules():
     assert len(ov["ranges"]) == 3 and ov["ranges"][0]["t1"][11:16] == "09:44" and any(x[0][11:16] < "09:30" for x in ov["lines"][0]["pts"])
 
 
+def test_10_order_book():
+    import dbn
+    import io as _io
+    rec = dbn.pack_mbp10(1_700_000_000_000_000_000, 100.25, 7, "T", "B", [(100.0, 5), (99.75, 9)], [(100.25, 4)])
+    assert len(rec) == 368
+    rows = list(dbn.records(_io.BytesIO(dbn.header() + rec * 3), chunk=500))      # records split across reads
+    assert len(rows) == 3 and rows[0][0] == dbn.MBP10 and dbn.trade(rows[1][1]) == (100.25, 7, "B")
+    assert dbn.levels(rows[2][1]) == ([(100.0, 5), (99.75, 9)], [(100.25, 4)])
+    day = futdata.trading_days("NQ")[-2]
+    st, r = call("POST", "/data/estimate", {"kind": "book", "syms": ["NQ"], "from": day, "to": day, "window": "am"})
+    assert st == 200 and r["usd"] > 0, r
+    st, r = call("POST", "/data/download", {"kind": "book", "syms": ["NQ"], "from": day, "to": day, "window": "am", "confirm": True})
+    assert st == 200, r
+    st, hm = call("GET", "/heatmap", q={"sym": "NQ", "day": day})
+    assert st == 200 and hm["step"] == 5 and hm["window"] == ["09:30", "11:30"] and len(hm["c"]) == 2 * 3600 // 5, len(hm["c"])
+    c0 = hm["c"][0]
+    assert c0[0] == 9 * 3600 + 30 * 60 and len(c0[1]) == 20 and len(c0[2]) == 20
+    assert (hm["base"] + c0[2][0]) * 0.25 > (hm["base"] + c0[1][0]) * 0.25            # best ask above best bid
+    st, fp = call("GET", "/footprint", q={"sym": "NQ", "day": day})
+    assert st == 200 and fp["m"][0][0] == "09:30" and fp["m"][-1][0] == "11:29"
+    assert futdata.coverage()["NQ"]["hmDays"] == 1
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

@@ -180,3 +180,10 @@ def rows(key, schema, sym, start, end, timeout=300):
             yield row
     finally:
         r.close()
+
+
+def raw(key, schema, sym, start, end, timeout=600):
+    """The binary (DBN, uncompressed) stream of one continuous contract: a file-like object to read and close."""
+    params = {"dataset": DATASET, "symbols": CONT[sym], "schema": schema, "start": start, "end": end, "stype_in": "continuous",
+              "encoding": "dbn", "compression": "none"}
+    return _retry_end(lambda e: _open(key, "POST", "timeseries.get_range", {**params, "end": e}, timeout=timeout), end)

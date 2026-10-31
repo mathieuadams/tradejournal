@@ -46,7 +46,8 @@ def coverage():
         out[s] = {"name": SPEC[s]["name"], "months": len(ms), "from": c["months"][ms[0]]["first"][:10] if ms else None,
                   "to": c["months"][ms[-1]]["last"] if ms else None, "bars": sum(int(c["months"][m].get("n") or 0) for m in ms),
                   "days": len(days), "fpDays": len(c.get("fp") or []), "fpFrom": min(c.get("fp") or [None]) if c.get("fp") else None,
-                  "fpTo": max(c.get("fp") or [None]) if c.get("fp") else None}
+                  "fpTo": max(c.get("fp") or [None]) if c.get("fp") else None, "hmDays": len(c.get("hm") or []),
+                  "hmLast": sorted(c.get("hm") or [])[-12:]}
     return out
 
 
@@ -190,11 +191,98 @@ def download_footprint(sub, sym, day, force=False):
             big.append([t[11:19], px, sz, "B" if side == "B" else "S" if side == "A" else "N"])
     if not mins:
         return False
+    _save_fp(sym, day, mins, big, c)
+    db.put(c)
+    return True
+
+
+def _save_fp(sym, day, mins, big, c):
     store.put_json(f"{sym}/fp/{day}", {"m": [[m, sorted([[p, v[0], v[1]] for p, v in lv.items()], reverse=True)] for m, lv in sorted(mins.items())],
                                        "big": big[-4000:]})
     c["fp"] = sorted(set(c.get("fp") or []) | {day})
+
+
+WINDOWS = {"rth": ("09:30", "16:00"), "am": ("09:30", "11:30"), "open": ("09:30", "10:30")}
+HM_STEP = 5                                            # seconds per heatmap column
+
+
+def download_book(sub, sym, day, window="rth", force=False):
+    """The order book (MBP-10: the 10 best price levels on each side after every event) of the day's window, kept as
+    a heatmap: one column every 5 seconds with the resting size at each of those levels. The trades in the same stream
+    give the footprint too (it replaces a trades download for that day)."""
+    import dbn
+    sym = check_sym(sym)
+    c = cov(sym)
+    if day in (c.get("hm") or []) and not force:
+        return False
+    if date.fromisoformat(day).weekday() >= 5:
+        return False
+    w0, w1 = WINDOWS.get(window, WINDOWS["rth"])
+    key = databento.key(sub)
+    avail = databento.dataset_range(key)["end"]
+    s_utc, e_utc = utc_iso(day, w0), utc_iso(day, w1)
+    if avail and s_utc >= avail:
+        return False
+    if avail and e_utc > avail:
+        e_utc = avail
+    off = int((datetime.strptime(f"{day}T{w0}", "%Y-%m-%dT%H:%M") - datetime.strptime(s_utc, "%Y-%m-%dT%H:%M:%S")).total_seconds())
+    tick, big_min = SPEC[sym]["tick"], SPEC[sym]["big"]
+    mins, big, cols = {}, [], []
+    cur_b, last = None, None
+    lo_i, hi_i = None, None
+
+    def snap(bucket, rec):
+        nonlocal lo_i, hi_i
+        bids, asks = dbn.levels(rec)
+        bi = [v for p, s_ in bids for v in (round(p / tick), s_)]
+        ai = [v for p, s_ in asks for v in (round(p / tick), s_)]
+        for v in bi[0::2] + ai[0::2]:
+            lo_i = v if lo_i is None else min(lo_i, v)
+            hi_i = v if hi_i is None else max(hi_i, v)
+        cols.append([bucket * HM_STEP, bi, ai])
+
+    r = databento.raw(key, "mbp-10", sym, s_utc, e_utc)
+    try:
+        for rt, rec in dbn.records(r):
+            if rt != dbn.MBP10:
+                continue
+            sec = (dbn.ts_recv(rec) // 1_000_000_000 + off) % 86400
+            b_ = sec // HM_STEP
+            if b_ != cur_b:
+                if last is not None:
+                    snap(cur_b, last)
+                cur_b = b_
+            last = rec
+            if rec[28] == dbn.T:
+                px, sz, side = dbn.trade(rec)
+                hm = f"{sec // 3600:02d}:{sec // 60 % 60:02d}"
+                lv = mins.setdefault(hm, {}).setdefault(px, [0, 0])
+                if side == "A":
+                    lv[0] += sz
+                elif side == "B":
+                    lv[1] += sz
+                if sz >= big_min:
+                    big.append([f"{hm}:{sec % 60:02d}", px, sz, "B" if side == "B" else "S" if side == "A" else "N"])
+        if last is not None:
+            snap(cur_b, last)
+    finally:
+        r.close()
+    if not cols:
+        return False
+    base = lo_i or 0                                   # prices as ticks from the lowest level seen
+    for col in cols:
+        col[1] = [v - base if k % 2 == 0 else v for k, v in enumerate(col[1])]
+        col[2] = [v - base if k % 2 == 0 else v for k, v in enumerate(col[2])]
+    store.put_json(f"{sym}/hm/{day}", {"step": HM_STEP, "tick": tick, "base": base, "window": [w0, w1], "c": cols})
+    if mins:
+        _save_fp(sym, day, mins, big, c)
+    c["hm"] = sorted(set(c.get("hm") or []) | {day})
     db.put(c)
     return True
+
+
+def heatmap(sym, day):
+    return store.get_json(f"{check_sym(sym)}/hm/{day}", None, max_age=3600)
 
 
 def footprint(sym, day):
@@ -348,8 +436,9 @@ def chart(sym, tf=5, days=3, end=None, rth_only=False):
     for d in sorted(by):
         bars += [b + [d] for b in agg(by[d], tf)]
     fp = set(cov(sym).get("fp") or [])
+    hm = set(cov(sym).get("hm") or [])
     return {"sym": sym, "tf": tf, "spec": SPEC[sym], "bars": bars, "days": sorted(by), "levels": _levels(sym, by),
-            "fpDays": sorted(d for d in by if d in fp), "cells": {d: c for d, c in cells(sym).items() if d in by}}
+            "fpDays": sorted(d for d in by if d in fp), "hmDays": sorted(d for d in by if d in hm), "cells": {d: c for d, c in cells(sym).items() if d in by}}
 
 
 def latest(sym):

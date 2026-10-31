@@ -159,6 +159,27 @@ def fake_open(key, method, path, params, timeout=60):
                         sz = rnd.choice([1, 1, 2, 3, 5, 8, 25, 60])
                         out.write(f"{ts},{ts},0,1,42,T,{side},0,{px:.2f},{sz},0,0,0,{p['symbols']}\n")
                 t += timedelta(minutes=1)
+        elif p["schema"] == "mbp-10" and p.get("encoding") == "dbn":
+            import dbn
+            buf = io.BytesIO()
+            buf.write(dbn.header())
+            t = s
+            while t < e:
+                if _open_minute(t):
+                    rnd = random.Random(int(t.timestamp()) + 11)
+                    o, c = _price(sym, t), _price(sym, t + timedelta(minutes=1))
+                    for j in range(40):
+                        mid = round((o + (c - o) * j / 39) * 4) / 4
+                        ts = int((t - datetime(1970, 1, 1)).total_seconds() * 1e9) + j * 1_500_000_000
+                        bids = [(mid - 0.25 * (k + 1), rnd.randint(2, 60) + (120 if k == 6 else 0)) for k in range(10)]
+                        asks = [(mid + 0.25 * k, rnd.randint(2, 60) + (150 if k == 4 else 0)) for k in range(10)]
+                        if j % 3 == 0:
+                            side = "B" if rnd.random() < (0.6 if c >= o else 0.4) else "A"
+                            buf.write(dbn.pack_mbp10(ts, asks[0][0] if side == "B" else bids[0][0], rnd.choice([1, 2, 3, 5, 25, 60]), "T", side, bids, asks))
+                        else:
+                            buf.write(dbn.pack_mbp10(ts, mid, 1, "A", "B", bids, asks))
+                t += timedelta(minutes=1)
+            return _Resp(buf.getvalue())
         else:
             raise BadRequest(f"Databento: schema {p['schema']} not in the fake (422).")
         return _Resp(out.getvalue().encode())
