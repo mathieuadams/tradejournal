@@ -154,7 +154,7 @@ def test_05_strategy_protocol():
 
 
 def test_06_other_setups():
-    for setup, p in (("vwapret", {"days": 60}), ("vwapret", {"days": 60, "hours": "on", "tf": 1, "trend": 0}), ("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
+    for setup, p in (("onsweep", {"days": 60, "minRR": 0}), ("onsweep", {"days": 60, "tgt": "other", "tf": 1}), ("ibbreak", {"days": 60, "trendFilter": False}), ("ibbreak", {"days": 60, "ibMin": 30, "stop": "bar", "tf": 15}), ("odpull", {"days": 60, "drivePct": 0.05}), ("vwapret", {"days": 60}), ("vwapret", {"days": 60, "hours": "on", "tf": 1, "trend": 0}), ("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
                      ("wt", {"tf": "15", "days": 60})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
@@ -295,6 +295,42 @@ def test_14_old_rules_still_load():
     st, r = call("GET", "/strategies")
     assert st == 200 and any(x["id"] == s["id"] and x["params"]["wait"] == 3 for x in r["strategies"])
     assert call("GET", f"/strategies/{s['id']}")[0] == 200
+
+
+def _rth(day, rows, start="09:30", tf=5):
+    out, m = [], int(start[:2]) * 60 + int(start[3:])
+    for k, (o, h, l, c) in enumerate(rows):
+        mm = m + tf * k
+        out.append((f"{day}T{mm // 60:02d}:{mm % 60:02d}", o, h, l, c))
+    return out
+
+
+def test_15_session_strategies():
+    import ibbreak
+    import odpull
+    import onsweep
+    d = "2026-10-06"
+    on = [["2026-10-05T18:00", 100, 110, 95, 104, 10], ["2026-10-06T08:00", 104, 108, 96, 105, 10]]        # ONH 110, ONL 95
+    # overnight sweep: pokes over 110, closes back under on the next candle, VWAP 102 below
+    R = _rth(d, [(105, 108, 104, 107), (107, 112, 106, 111), (111, 112.5, 108, 109), (109, 109.5, 101, 101.5), (101.5, 102, 100, 101)] + [(101, 101.5, 100.5, 101)] * 5)
+    V = [102.0] * len(R)
+    t = onsweep.engine(d, on, R, R, V, onsweep.clean({"tf": 5, "side": "short", "minRR": 0, "bufTicks": 0}))[0]
+    assert t["side"] == "short" and t["e"] == 109 and t["stop"] == 112.5 and t["tgt"] == 102 and t["why"] == "target" and t["cf"] == R[2][0], t
+    assert not onsweep.engine(d, on, R, R, V, onsweep.clean({"tf": 5, "side": "short", "minRR": 3, "bufTicks": 0}))   # 7 pts vs 3.5 risk
+    # initial balance (30 min = 6 candles 98..104), a close at 105 breaks up, target 104 + 6 = 110
+    rows = [(100, 101, 98, 100)] * 3 + [(100, 104, 99, 103)] * 3 + [(103, 105.5, 102, 105), (105, 108, 104.5, 107.5), (107.5, 111, 107, 110.5)] + [(110, 110, 109, 109.5)] * 3
+    R2 = _rth(d, rows)
+    t = ibbreak.engine(d, on, R2, R2, [0] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30, "trendFilter": True, "stop": "mid", "bufTicks": 0}))[0]
+    assert t["side"] == "long" and t["e"] == 105 and t["stop"] == 101 and t["tgt"] == 110 and t["why"] == "target" and t["x"] == 110, t
+    assert not ibbreak.engine(d, [["x", 110, 110, 100, 100, 1]], R2, R2, [0] * len(R2), ibbreak.clean({"tf": 5, "ibMin": 30}))   # overnight down
+    # opening drive up 100 -> 104 (4%), two lower closes back to the EMA, then a break of the previous high
+    rows = [(100, 102, 99.8, 101.8), (101.8, 103.5, 101.5, 103.4), (103.4, 104.2, 103, 104)]                              # the drive (15 min)
+    rows += [(104, 104.1, 102.6, 102.8), (102.8, 103, 101.2, 101.5), (101.5, 102.4, 101.3, 102.2), (102.2, 103.5, 102, 103.3)]
+    rows += [(103.3, 107, 103.2, 106.8)] + [(106.8, 107, 106.5, 106.9)] * 5
+    R3 = _rth(d, rows)
+    t = odpull.engine(d, on, R3, R3, [0] * len(R3), odpull.clean({"tf": 5, "drivePct": 1, "pbMin": 2, "ema": 3, "bufTicks": 0, "tgtR": 2}))[0]
+    assert t["side"] == "long" and t["e"] == 102.65 and t["stop"] == 101.2 and t["cf"] == R3[6][0] and t["rt"] == R3[5][0], t
+    assert abs(t["tgt"] - (102.65 + 2 * 1.45)) < 1e-9 and t["why"] == "target"
 
 
 if __name__ == "__main__":
