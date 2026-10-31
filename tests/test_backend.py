@@ -154,7 +154,7 @@ def test_05_strategy_protocol():
 
 
 def test_06_other_setups():
-    for setup, p in (("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
+    for setup, p in (("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
                      ("wt", {"tf": "15", "days": 60})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
@@ -227,6 +227,23 @@ def test_10_order_book():
     st, fp = call("GET", "/footprint", q={"sym": "NQ", "day": day})
     assert st == 200 and fp["m"][0][0] == "09:30" and fp["m"][-1][0] == "11:29"
     assert futdata.coverage()["NQ"]["hmDays"] == 1
+
+
+def test_11_tvpoc_indicator():
+    import tvpoc
+    p = tvpoc.clean({"maLen": 5, "atrLen": 5, "atrMult": 1})
+    up = [(f"2026-10-05T09:{k:02d}", 100, 100.5, 99.5, 100 + (0.1 if k % 2 else -0.1), 100) for k in range(15)]
+    up += [(f"2026-10-05T09:{15 + k:02d}", 100 + 2 * k, 102 + 2 * k, 99.5 + 2 * k, 101.5 + 2 * k, 100) for k in range(15)]
+    dn = [(f"2026-10-05T{10 + k // 60:02d}:{k % 60:02d}", 128 - 3 * k, 129 - 3 * k, 125 - 3 * k, 125.5 - 3 * k, 100) for k in range(30)]
+    C = up + dn
+    ind = tvpoc.indicator(C, p)
+    first_bull = ind["flip"].index(True)
+    assert ind["dir"][first_bull] == 1 and ind["dir"][-1] == -1 and sum(ind["flip"]) == 2
+    k = len(C) - 1
+    assert ind["poc"][k] is not None and min(c[3] for c in C[ind["start"][k]:]) <= ind["poc"][k] <= max(c[2] for c in C[ind["start"][k]:])
+    tr = tvpoc.run(C, {**p, "entry": "flip", "stop": "none", "flatEod": False, "tf": "15"})
+    assert tr[0]["side"] == "long" and tr[0]["why"] == "trend change" and tr[1]["side"] == "short"
+    assert tvpoc._sma([1, 2, 3, 4], 2) == [None, 1.5, 2.5, 3.5] and tvpoc._wma([1, 2, 3], 3)[2] == (1 + 4 + 9) / 6
 
 
 if __name__ == "__main__":

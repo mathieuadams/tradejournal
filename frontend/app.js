@@ -40,6 +40,11 @@ const SETUPS = {
   silver: { name: 'ICT Silver Bullet', blurb: '10:00–11:00 (and the other windows): a liquidity sweep sets the bias, enter on the fair value gap, target in R.',
     params: [['tf', 'Candles', 'sel', [[1, '1 min'], [5, '5 min']]], ['pivLen', 'Swing length', 'num', 1], ['expiry', 'Bias expires after (candles)', 'num', 1], ['rr', 'Target (R)', 'num', 0.5],
       ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['flatEod', 'Flat at 15:55', 'bool'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  tvpoc: { name: 'Trend volume profile + rolling POC', blurb: 'BigBeluga: bands = MA ± ATR; a close over the upper band starts a bull trend, under the lower band a bear one. Enter on the trend change or on a retest of the rolling POC.',
+    params: [['tf', 'Candles', 'sel', [['15', '15 min'], ['5', '5 min'], ['60', '1 hour'], ['1D', 'Daily']]], ['entry', 'Entry', 'sel', [['flip', 'At the trend change'], ['poc', 'Retest of the rolling POC']]],
+      ['maType', 'MA type', 'sel', [['SMA', 'SMA'], ['EMA', 'EMA'], ['WMA', 'WMA'], ['HMA', 'HMA'], ['RMA', 'RMA'], ['VWMA', 'VWMA']]], ['maLen', 'MA length', 'num', 1], ['atrLen', 'ATR length', 'num', 1],
+      ['atrMult', 'ATR multiplier', 'num', 0.1], ['binMult', 'Profile bin (× ATR)', 'num', 0.01], ['minBars', 'POC retest: trend at least (candles)', 'num', 1],
+      ['stop', 'Stop', 'sel', [['band', 'Opposite band'], ['none', 'None (exit on trend change)']]], ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   wt: { name: 'WaveTrend dots', blurb: 'WaveTrend [Krypt]: in at the open after a buy dot, out at the open after a sell dot (and the mirror for shorts).',
     params: [['tf', 'Candles', 'sel', [['1D', 'Daily'], ['60', '1 hour'], ['15', '15 min'], ['5', '5 min']]], ['side', 'Side', 'sel', SIDE], ['stopAtr', 'Stop (× average range, 0 = none)', 'num', 0.25],
       ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['days', 'Candles / sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
@@ -266,6 +271,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   orbema: { tf: 5, rangeMin: 15, ema: 20, emaOn: 'full', entryAt: 'close', bufTicks: 1, minRR: 1, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   range50: { tf: 1, legPct: 0.35, entryLvl: 0.25, targetLvl: 0.5, stopBuf: 0, side: 'both', days: 250, tickers: ['NQ'] },
   silver: { tf: 1, pivLen: 3, expiry: 30, rr: 2, bufTicks: 2, flatEod: true, side: 'both', days: 250, tickers: ['NQ'] },
+  tvpoc: { tf: '15', entry: 'flip', maType: 'SMA', maLen: 25, atrLen: 50, atrMult: 1, binMult: 0.2, minBars: 3, stop: 'band', flatEod: true, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 function newForm() {
   const k = S.newSetup;
