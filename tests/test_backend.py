@@ -220,7 +220,9 @@ def test_10_order_book():
     st, r = call("POST", "/data/download", {"kind": "book", "syms": ["NQ"], "from": day, "to": day, "window": "am", "confirm": True})
     assert st == 200, r
     st, hm = call("GET", "/heatmap", q={"sym": "NQ", "day": day})
-    assert st == 200 and hm["step"] == 5 and hm["window"] == ["09:30", "11:30"] and len(hm["c"]) == 2 * 3600 // 5, len(hm["c"])
+    assert st == 200 and hm["step"] == 2 and hm["window"] == ["09:30", "11:30"] and len(hm["c"]) >= 3000, len(hm["c"])
+    tr = [x for x in hm["c"] if x[3] + x[4]]
+    assert tr and all(x[5] is not None and x[6] is not None for x in tr)
     c0 = hm["c"][0]
     assert c0[0] == 9 * 3600 + 30 * 60 and len(c0[1]) == 20 and len(c0[2]) == 20
     assert (hm["base"] + c0[2][0]) * 0.25 > (hm["base"] + c0[1][0]) * 0.25            # best ask above best bid

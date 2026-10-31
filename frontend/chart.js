@@ -294,52 +294,111 @@
     return out;
   }
 
-  // Order book heatmap (Bookmap style): x = time, y = price, color = resting size at that price (10 levels per side),
-  // with the best bid / ask lines and the big trades as bubbles.
-  const HEAT = [[11, 14, 19], [20, 40, 90], [30, 90, 170], [40, 160, 200], [80, 210, 140], [230, 220, 80], [245, 150, 50], [240, 70, 50], [255, 255, 255]];
-  function heatColor(v) { v = Math.max(0, Math.min(1, v)) * (HEAT.length - 1); const i = Math.floor(v), f = v - i, a = HEAT[i], b = HEAT[Math.min(HEAT.length - 1, i + 1)];
+  // Order book heatmap (Bookmap style): x = time, y = price, color = resting size at that price. The book (10 levels per
+  // side, MBP-10) is carried forward: a level keeps its last known size after it leaves the 10 shown levels, until price
+  // trades through it or it comes back with a new size. Volume dots (green bought / red sold, sized by volume), the last
+  // trade line, large lots, the current order book (COB) on the right and the cumulative volume delta underneath.
+  const BM = [[10, 26, 48], [14, 45, 85], [22, 72, 128], [40, 112, 170], [90, 165, 205], [175, 215, 225], [250, 235, 110], [255, 185, 40], [250, 115, 20], [225, 35, 25]];
+  function bmColor(v) { v = Math.max(0, Math.min(1, v)) * (BM.length - 1); const i = Math.floor(v), f = v - i, a = BM[i], b = BM[Math.min(BM.length - 1, i + 1)];
     return `rgb(${a[0] + (b[0] - a[0]) * f | 0},${a[1] + (b[1] - a[1]) * f | 0},${a[2] + (b[2] - a[2]) * f | 0})`; }
   class Heat {
     constructor(canvas) { this.cv = canvas; this.ro = new ResizeObserver(() => this.draw()); this.ro.observe(canvas); }
     destroy() { this.ro.disconnect(); }
-    set(o) { this.o = o; this.draw(); }   // {hm, big, tEnd (seconds of the day), span (seconds), last, rows}
+    set(o) { this.o = o; this.draw(); }   // {hm, big, tEnd (seconds of the day), span (seconds), last, rows, bigMin}
+    states(t0, t1) {
+      // the carried-forward book at each column of [t0, t1): [[sec, Map(idx -> size) bids, Map asks, col]]
+      const hm = this.o.hm, out = [], bids = new Map(), asks = new Map(), warm = t0 - 600;
+      for (const c of hm.c) {
+        if (c[0] < warm) continue;
+        if (c[0] >= t1) break;
+        const bi = c[1], ai = c[2];
+        if (bi.length) {
+          const best = bi[0], deep = bi[bi.length - 2], seen = new Set();
+          for (let k = 0; k < bi.length; k += 2) { bids.set(bi[k], bi[k + 1]); seen.add(bi[k]); }
+          for (const idx of [...bids.keys()]) if (idx > best || (idx >= deep && idx <= best && !seen.has(idx))) bids.delete(idx);
+        }
+        if (ai.length) {
+          const best = ai[0], deep = ai[ai.length - 2], seen = new Set();
+          for (let k = 0; k < ai.length; k += 2) { asks.set(ai[k], ai[k + 1]); seen.add(ai[k]); }
+          for (const idx of [...asks.keys()]) if (idx < best || (idx <= deep && idx >= best && !seen.has(idx))) asks.delete(idx);
+        }
+        if (c[0] >= t0 - hm.step) out.push([c[0], new Map(bids), new Map(asks), c]);
+      }
+      return out;
+    }
     draw() {
       const o = this.o, cv = this.cv; if (!o || !o.hm) return;
       const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
       if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
-      const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.fillStyle = 'rgb(11,14,19)'; g.fillRect(0, 0, W, H);
+      const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const hm = o.hm, tick = hm.tick, base = hm.base, axisW = 66, cobW = 86, cvdH = 74, timeH = 18;
+      const pw = W - axisW - cobW, ph = H - cvdH - timeH, t1 = o.tEnd, t0 = t1 - o.span;
+      g.fillStyle = 'rgb(8,18,32)'; g.fillRect(0, 0, W, H);
       g.font = '11px JetBrains Mono, monospace'; g.textBaseline = 'middle';
-      const hm = o.hm, tick = hm.tick, base = hm.base, pr = 70, depthW = 60, pw = W - pr - depthW, t1 = o.tEnd, t0 = t1 - o.span;
-      const rows = o.rows || 120, mid = Math.round(o.last / tick), top = mid + rows / 2, rh = H / rows;
+      const rows = o.rows || 120, mid = Math.round(o.last / tick) - base, top = mid + rows / 2, rh = ph / rows;
       const Y = idx => (top - idx) * rh, X = sec => (sec - t0) / o.span * pw;
-      const cols = hm.c.filter(c => c[0] >= t0 - hm.step && c[0] < t1);
-      let mx = 1; const all = []; cols.forEach(c => { for (let k = 1; k < c[1].length; k += 2) all.push(c[1][k]); for (let k = 1; k < c[2].length; k += 2) all.push(c[2][k]); });
-      if (all.length) { all.sort((x, y) => x - y); mx = all[Math.floor(all.length * 0.97)] || 1; }
-      const cw = Math.max(1, hm.step / o.span * pw + 0.5);
-      cols.forEach(c => {
-        const x = X(c[0]);
-        [c[1], c[2]].forEach(side => { for (let k = 0; k < side.length; k += 2) { const idx = base + side[k], y = Y(idx); if (y < -rh || y > H) continue; g.fillStyle = heatColor(Math.log1p(side[k + 1]) / Math.log1p(mx)); g.fillRect(x, y - rh / 2, cw, Math.max(1, rh)); } });
-      });
-      // best bid / ask
-      [[1, '#5FD4C4'], [2, '#F0563C']].forEach(([s, col]) => { g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath(); let on = false;
-        cols.forEach(c => { if (!c[s].length) { on = false; return; } const y = Y(base + c[s][0]), x = X(c[0]); on ? g.lineTo(x, y) : g.moveTo(x, y); on = true; g.lineTo(x + cw, y); }); g.stroke(); g.lineWidth = 1; });
-      // big trades
+      const st = this.states(t0, t1);
+      if (!st.length) { g.fillStyle = '#93A0B2'; g.textAlign = 'center'; g.fillText('No book data at this time', pw / 2, ph / 2); return; }
+      // color scale: the 98th percentile of the sizes on screen
+      const sizes = [];
+      st.forEach(([, b, a]) => { b.forEach((v, k) => { if (k <= top && k >= top - rows) sizes.push(v); }); a.forEach((v, k) => { if (k <= top && k >= top - rows) sizes.push(v); }); });
+      sizes.sort((x, y) => x - y);
+      const mx = Math.max(1, sizes[Math.floor(sizes.length * (o.pct || 0.995))] || 1), C = v => Math.pow(Math.min(1, v / mx), 0.75);   // linear-ish: the walls stand out
+      const cw = Math.max(1, hm.step / o.span * pw) + 0.6;
+      g.save(); g.beginPath(); g.rect(0, 0, pw, ph); g.clip();
+      st.forEach(([sec, b, a]) => { const x = X(sec);
+        b.forEach((v, k) => { const y = Y(k); if (y < -rh || y > ph + rh) return; g.fillStyle = bmColor(C(v)); g.fillRect(x, y - rh / 2, cw, rh + 0.5); });
+        a.forEach((v, k) => { const y = Y(k); if (y < -rh || y > ph + rh) return; g.fillStyle = bmColor(C(v)); g.fillRect(x, y - rh / 2, cw, rh + 0.5); }); });
+      // best bid / ask edges
+      [[1, 'rgba(80,220,120,.9)'], [2, 'rgba(240,80,70,.9)']].forEach(([s, col]) => { g.strokeStyle = col; g.lineWidth = 1; g.beginPath(); let on = false;
+        st.forEach(([sec, , , c]) => { if (!c[s].length) { on = false; return; } const y = Y(c[s][0]) + (s === 1 ? rh / 2 : -rh / 2), x = X(sec); on ? g.lineTo(x, y) : g.moveTo(x, y); on = true; g.lineTo(x + cw, y); }); g.stroke(); });
+      // last trade line
+      g.strokeStyle = 'rgba(255,255,255,.85)'; g.lineWidth = 1.4; g.beginPath(); let on = false;
+      st.forEach(([sec, , , c]) => { if (c[6] == null) return; const x = X(sec) + cw / 2, y = Y(c[6]); on ? g.lineTo(x, y) : g.moveTo(x, y); on = true; }); g.stroke(); g.lineWidth = 1;
+      // volume dots: trades grouped in slices, at their VWAP, green share = bought
+      const slice = Math.max(1, Math.round(o.span / 160 / hm.step)), dots = [];
+      for (let i = 0; i < st.length; i += slice) {
+        let bv = 0, sv = 0, pv = 0;
+        for (let j = i; j < Math.min(st.length, i + slice); j++) { const c = st[j][3]; if (c[3] == null) continue; bv += c[3]; sv += c[4]; if (c[5] != null) pv += c[5] * (c[3] + c[4]); }
+        if (bv + sv) dots.push([X(st[i][0]) + slice * cw / 2, Y(pv / (bv + sv)), bv, sv]);
+      }
+      const vmax = Math.max(1, ...dots.map(d => d[2] + d[3]));
+      dots.forEach(([x, y, bv, sv]) => { const v = bv + sv, r = 2 + 13 * Math.sqrt(v / vmax);
+        g.fillStyle = 'rgba(225,60,55,.85)'; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+        if (bv) { g.fillStyle = 'rgba(60,200,110,.9)'; g.beginPath(); g.moveTo(x, y); g.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * bv / v); g.closePath(); g.fill(); }
+        g.strokeStyle = 'rgba(10,20,30,.6)'; g.beginPath(); g.arc(x, y, r, 0, 7); g.stroke(); });
+      // large lots: rings with the size
       (o.big || []).forEach(([t, p, sz, side]) => { const sec = +t.slice(0, 2) * 3600 + +t.slice(3, 5) * 60 + +t.slice(6, 8); if (sec < t0 || sec >= t1) return;
-        const r = Math.min(18, 2 + Math.sqrt(sz) * 1.2); g.fillStyle = side === 'B' ? 'rgba(74,158,255,.55)' : side === 'S' ? 'rgba(240,140,46,.6)' : 'rgba(200,200,200,.4)';
-        g.strokeStyle = 'rgba(255,255,255,.5)'; g.beginPath(); g.arc(X(sec), Y(Math.round(p / tick)), r, 0, 7); g.fill(); g.stroke(); });
-      // current book on the right edge
-      const lastc = cols[cols.length - 1];
-      if (lastc) { let m2 = 1; [lastc[1], lastc[2]].forEach(sd => { for (let k = 1; k < sd.length; k += 2) m2 = Math.max(m2, sd[k]); });
-        [[lastc[1], 'rgba(95,212,196,.75)'], [lastc[2], 'rgba(240,86,60,.75)']].forEach(([sd, col]) => { for (let k = 0; k < sd.length; k += 2) { const y = Y(base + sd[k]); g.fillStyle = col; g.fillRect(pw, y - rh / 2 + 0.5, sd[k + 1] / m2 * (depthW - 4), Math.max(1, rh - 1)); } }); }
-      g.strokeStyle = '#232A35'; g.beginPath(); g.moveTo(pw + 0.5, 0); g.lineTo(pw + 0.5, H); g.moveTo(pw + depthW + 0.5, 0); g.lineTo(pw + depthW + 0.5, H); g.stroke();
+        const x = X(sec), y = Y(Math.round(p / tick) - base); g.strokeStyle = side === 'B' ? '#7CF0A8' : '#FF8A80'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 5 + Math.sqrt(sz), 0, 7); g.stroke(); g.lineWidth = 1;
+        g.fillStyle = '#FFFFFF'; g.textAlign = 'left'; g.font = '600 10px JetBrains Mono, monospace'; g.fillText(sz, x + 7 + Math.sqrt(sz), y); g.font = '11px JetBrains Mono, monospace'; });
+      g.restore();
+      // COB: the current (carried) book, asks red above, bids green below
+      const [, cb, ca, lc] = st[st.length - 1];
+      g.fillStyle = 'rgb(12,22,36)'; g.fillRect(pw, 0, cobW, ph);
+      let m2 = 1; [cb, ca].forEach(m => m.forEach((v, k) => { if (k <= top && k >= top - rows) m2 = Math.max(m2, v); }));
+      g.textAlign = 'right'; g.font = '10px JetBrains Mono, monospace';
+      [[ca, 'rgba(232,73,74,.85)'], [cb, 'rgba(60,200,110,.85)']].forEach(([m, col]) => m.forEach((v, k) => { const y = Y(k); if (y < 0 || y > ph) return;
+        g.fillStyle = col; g.fillRect(pw + 2, y - rh / 2 + 0.5, v / m2 * (cobW - 30), Math.max(1, rh - 1));
+        if (rh >= 9) { g.fillStyle = '#E7EAF0'; g.fillText(v, pw + cobW - 3, y); } }));
+      g.font = '11px JetBrains Mono, monospace';
       // price axis
-      g.fillStyle = '#93A0B2'; g.textAlign = 'left'; const every = Math.max(1, Math.round(20 / rh));
-      for (let i = top; i > top - rows; i--) { if (i % every) continue; g.fillText(fmt(i * tick), pw + depthW + 6, Y(i)); }
-      g.fillStyle = '#E7EAF0'; g.fillRect(pw + depthW + 1, Y(mid) - 8, pr - 2, 16); g.fillStyle = '#0B0E13'; g.fillText(fmt(o.last), pw + depthW + 5, Y(mid));
-      // time labels
+      g.fillStyle = 'rgb(10,16,26)'; g.fillRect(pw + cobW, 0, axisW, ph);
+      g.fillStyle = '#93A0B2'; g.textAlign = 'left'; const every = Math.max(1, Math.round(18 / rh));
+      for (let i = Math.floor(top); i > top - rows; i--) { if ((i + base) % every) continue; g.fillText(fmt((i + base) * tick), pw + cobW + 5, Y(i)); }
+      const lastIdx = lc[6] != null ? lc[6] : mid;
+      g.fillStyle = '#E7EAF0'; g.fillRect(pw + cobW + 1, Y(lastIdx) - 8, axisW - 2, 16); g.fillStyle = '#0B0E13'; g.fillText(fmt((lastIdx + base) * tick), pw + cobW + 4, Y(lastIdx));
+      // cumulative volume delta (from the first column of the download)
+      let cvd = 0; const cv_ = []; const first = st[0][0];
+      for (const c of hm.c) { if (c[0] >= t1) break; if (c[3] != null) cvd += c[3] - c[4]; if (c[0] >= first) cv_.push([c[0], cvd]); }
+      const y0 = ph + timeH, lo = Math.min(0, ...cv_.map(x => x[1])), hi = Math.max(0, ...cv_.map(x => x[1])), CY = v => y0 + 6 + (hi - v) / (hi - lo || 1) * (cvdH - 12);
+      g.fillStyle = 'rgb(10,16,26)'; g.fillRect(0, y0, W, cvdH);
+      g.strokeStyle = '#2C3442'; g.beginPath(); g.moveTo(0, CY(0) + 0.5); g.lineTo(pw, CY(0) + 0.5); g.stroke();
+      g.strokeStyle = '#F5A54A'; g.lineWidth = 1.5; g.beginPath(); cv_.forEach(([sec, v], i) => { const x = X(sec), y = CY(v); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); g.lineWidth = 1;
+      g.fillStyle = '#93A0B2'; g.textAlign = 'left'; g.fillText('CVD', 6, y0 + 10);
+      g.textAlign = 'right'; g.fillStyle = cvd >= 0 ? '#7CF0A8' : '#FF8A80'; g.fillText((cvd > 0 ? '+' : '') + cvd.toLocaleString('en-US'), pw + cobW - 4, y0 + cvdH / 2);
+      // time axis
       g.fillStyle = '#93A0B2'; g.textAlign = 'center';
-      for (let k = 0; k <= 4; k++) { const sec = t0 + o.span * k / 4; g.fillText(`${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(Math.floor(sec / 60) % 60).padStart(2, '0')}`, Math.min(pw - 20, Math.max(20, X(sec))), H - 8); }
-      if (!cols.length) { g.fillStyle = '#93A0B2'; g.textAlign = 'center'; g.fillText('No book data at this time', pw / 2, H / 2); }
+      for (let k = 0; k <= 5; k++) { const sec = t0 + o.span * k / 5; g.fillText(`${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(Math.floor(sec / 60) % 60).padStart(2, '0')}:${String(Math.floor(sec) % 60).padStart(2, '0')}`, Math.min(pw - 30, Math.max(30, X(sec))), ph + timeH / 2); }
     }
   }
   function tri(g, x, y, up, c) { g.fillStyle = c; g.beginPath(); if (up) { g.moveTo(x, y - 6); g.lineTo(x - 5, y + 3); g.lineTo(x + 5, y + 3); } else { g.moveTo(x, y + 6); g.lineTo(x - 5, y - 3); g.lineTo(x + 5, y - 3); } g.fill(); }

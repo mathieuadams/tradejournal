@@ -203,12 +203,13 @@ def _save_fp(sym, day, mins, big, c):
 
 
 WINDOWS = {"rth": ("09:30", "16:00"), "am": ("09:30", "11:30"), "open": ("09:30", "10:30")}
-HM_STEP = 5                                            # seconds per heatmap column
+HM_STEP = 2                                            # seconds per heatmap column
 
 
 def download_book(sub, sym, day, window="rth", force=False):
     """The order book (MBP-10: the 10 best price levels on each side after every event) of the day's window, kept as
-    a heatmap: one column every 5 seconds with the resting size at each of those levels. The trades in the same stream
+    a heatmap: one column every 2 seconds with the resting size at each of those levels, the volume bought / sold
+    and the last trade price. The trades in the same stream
     give the footprint too (it replaces a trades download for that day)."""
     import dbn
     sym = check_sym(sym)
@@ -231,6 +232,8 @@ def download_book(sub, sym, day, window="rth", force=False):
     cur_b, last = None, None
     lo_i, hi_i = None, None
 
+    tv = [0, 0, 0.0, None]                             # this column's trades: bought, sold, sum price x size, last price
+
     def snap(bucket, rec):
         nonlocal lo_i, hi_i
         bids, asks = dbn.levels(rec)
@@ -239,7 +242,11 @@ def download_book(sub, sym, day, window="rth", force=False):
         for v in bi[0::2] + ai[0::2]:
             lo_i = v if lo_i is None else min(lo_i, v)
             hi_i = v if hi_i is None else max(hi_i, v)
-        cols.append([bucket * HM_STEP, bi, ai])
+        vol = tv[0] + tv[1]
+        # [seconds, bids, asks, bought, sold, VWAP of the column's trades (ticks), last trade (ticks)]
+        cols.append([bucket * HM_STEP, bi, ai, tv[0], tv[1], round(tv[2] / vol / tick) if vol else None,
+                     round(tv[3] / tick) if tv[3] is not None else None])
+        tv[0], tv[1], tv[2] = 0, 0, 0.0
 
     r = databento.raw(key, "mbp-10", sym, s_utc, e_utc)
     try:
@@ -255,6 +262,12 @@ def download_book(sub, sym, day, window="rth", force=False):
             last = rec
             if rec[28] == dbn.T:
                 px, sz, side = dbn.trade(rec)
+                if side == "B":
+                    tv[0] += sz
+                elif side == "A":
+                    tv[1] += sz
+                tv[2] += px * sz
+                tv[3] = px
                 hm = f"{sec // 3600:02d}:{sec // 60 % 60:02d}"
                 lv = mins.setdefault(hm, {}).setdefault(px, [0, 0])
                 if side == "A":
@@ -273,6 +286,8 @@ def download_book(sub, sym, day, window="rth", force=False):
     for col in cols:
         col[1] = [v - base if k % 2 == 0 else v for k, v in enumerate(col[1])]
         col[2] = [v - base if k % 2 == 0 else v for k, v in enumerate(col[2])]
+        col[5] = col[5] - base if col[5] is not None else None
+        col[6] = col[6] - base if col[6] is not None else None
     store.put_json(f"{sym}/hm/{day}", {"step": HM_STEP, "tick": tick, "base": base, "window": [w0, w1], "c": cols})
     if mins:
         _save_fp(sym, day, mins, big, c)
