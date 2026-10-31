@@ -166,6 +166,8 @@ def chart(sub, claims, body, q):
     if q.get("strat") and out["days"]:
         try:
             out["marks"] = strategy.marks(sub, q["strat"], sym, out["days"][0], out["days"][-1])
+            out["overlay"] = strategy.overlay(sub, q["strat"], sym, out["days"][0], out["days"][-1])
+            out["stratTf"] = strategy.get(sub, q["strat"])["params"].get("tf")
         except NotFound:
             out["marks"] = []
     return out

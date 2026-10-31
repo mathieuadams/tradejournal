@@ -154,7 +154,7 @@ def test_05_strategy_protocol():
 
 
 def test_06_other_setups():
-    for setup, p in (("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
+    for setup, p in (("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
                      ("wt", {"tf": "15", "days": 60})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
@@ -186,7 +186,7 @@ def test_08_scheduled_refresh():
 
 def test_09_orb_ema_rules():
     import orbema
-    p = orbema.clean({"tf": 5, "rangeMin": 15, "ema": 3, "bufTicks": 1, "minRR": 0, "side": "short"})
+    p = orbema.clean({"tf": 5, "rangeMin": 15, "ema": 3, "bufTicks": 1, "minRR": 0, "side": "short", "entryAt": "open"})
     d = "2026-10-05"
     t = lambda k: f"{d}T{9 + (30 + 5 * k) // 60:02d}:{(30 + 5 * k) % 60:02d}"
     #        range (3 candles)     breakout   falls       retest above EMA   back under      entry  ... target hit
@@ -198,6 +198,12 @@ def test_09_orb_ema_rules():
     assert x["side"] == "short" and x["in"] == t(7) and x["e"] == 96.5 and x["stop"] == 99.5 and x["tgt"] == 95.0, x
     assert x["why"] == "target" and x["x"] == 95.0 and x["bk"] == t(3) and x["rt"] == t(5)
     assert not orbema.setups(B, E, {**p, "minRR": 1})        # target 1.5 points vs 3 points of risk: skipped
+    y = orbema.setups(B, E, {**p, "entryAt": "close"})[0]   # in at the confirmation candle's close (its last minute)
+    assert y["in"] == f"{d}T10:04" and y["e"] == 96.5 and y["cf"] == t(6) and y["why"] == "target" and y["rlo"] == 99 and y["rhi"] == 101
+    ovr = orbema.overlay("u1", orbema.clean({"tickers": ["NQ"], "days": 60, "emaOn": "rth"}), "NQ", futdata.trading_days("NQ")[-3], futdata.trading_days("NQ")[-1])
+    assert all("09:30" <= x[0][11:16] < "16:00" for x in ovr["lines"][0]["pts"])
+    ov = orbema.overlay("u1", orbema.clean({"tickers": ["NQ"], "days": 60}), "NQ", futdata.trading_days("NQ")[-3], futdata.trading_days("NQ")[-1])
+    assert len(ov["ranges"]) == 3 and ov["ranges"][0]["t1"][11:16] == "09:44" and any(x[0][11:16] < "09:30" for x in ov["lines"][0]["pts"])
 
 
 if __name__ == "__main__":

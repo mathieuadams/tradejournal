@@ -147,6 +147,9 @@ def _normal(s, x, bl, cellmap):
     for k in ("stop", "tgt", "rhi", "rlo", "fvgBot", "fvgTop", "sweepLvl"):
         if x.get(k) is not None:
             t[k] = round(x[k], 2)
+    for k in ("bk", "rt", "cf"):                       # when the setup's steps happened (drawn on the chart)
+        if x.get(k):
+            t[k] = x[k]
     if x.get("lv"):
         t["lv"] = {k: round(v, 2) for k, v in x["lv"].items()}
     return t
@@ -391,6 +394,15 @@ def marks(sub, sid, sym, start, end):
         return []
     s = {**s, "params": {**s["params"], "tickers": [sym]}}
     return [t for t in run_trades(sub, s, start=start, days=60) if start <= t["d"] <= end]
+
+
+def overlay(sub, sid, sym, start, end):
+    """The setup's own lines (its EMA, its ranges) for the chart, when it has any."""
+    s = get(sub, sid)
+    mod = _mod(s["setup"])
+    if sym not in s["params"]["tickers"] or not hasattr(mod, "overlay"):
+        return None
+    return mod.overlay(sub, s["params"], sym, start, end)
 
 
 def running(sub):

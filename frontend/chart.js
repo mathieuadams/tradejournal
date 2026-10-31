@@ -87,6 +87,9 @@
       }
       this.wt = d.showWT && B.length > 40 ? wtKrypt(B.map(b => b[4])) : null;
       this.markIdx = (d.marks || []).map(m => ({ ...m, i0: this.idxOf(m.in), i1: this.idxOf(m.out) }));
+      const ov = d.overlay || {};
+      this.ovLines = (ov.lines || []).map(L => ({ ...L, ix: L.pts.map(([t, v]) => [this.idxOf(t), v, t]) }));
+      this.ovRanges = (ov.ranges || []).map(r => ({ ...r, i0: this.idxOf(r.t0), i1: this.idxOf(r.t1), i2: this.idxOf(r.t2) }));
       if (!keepView || !this.view) this.fit(); else this.draw();
     }
     idxOf(t) { // last bar whose time <= t
@@ -140,6 +143,20 @@
           g.fillStyle = c; g.textAlign = 'left'; g.fillText(lab, X(i0) + 3, y - 7);
         });
       });
+      // the strategy's own lines: opening ranges (box, then dashed to the last entry time) and its EMA
+      (this.ovRanges || []).forEach(r => {
+        if (r.i2 < a || r.i0 >= b) return;
+        g.fillStyle = 'rgba(231,195,90,0.07)'; g.fillRect(X(r.i0) - bw / 2, Y(r.hi), X(r.i1) - X(r.i0) + bw, Y(r.lo) - Y(r.hi));
+        g.strokeStyle = 'rgba(231,195,90,0.6)'; g.setLineDash([5, 4]);
+        [r.hi, r.lo].forEach(p => { g.beginPath(); g.moveTo(X(r.i0) - bw / 2, Y(p) + 0.5); g.lineTo(X(r.i2), Y(p) + 0.5); g.stroke(); });
+        g.setLineDash([]); g.fillStyle = 'rgba(231,195,90,0.85)'; g.textAlign = 'left'; g.fillText('OR', X(r.i0), Y(r.hi) - 7);
+      });
+      (this.ovLines || []).forEach(L => {
+        g.strokeStyle = L.color || '#E7C35A'; g.lineWidth = 1.5; g.beginPath(); let on = false, prevDay = null;
+        L.ix.forEach(([i, v, t]) => { if (i < a - 1 || i > b || i >= n) { on = false; return; } if (t.slice(0, 10) !== prevDay) on = false; prevDay = t.slice(0, 10);
+          on ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v)); on = true; });
+        g.stroke(); g.lineWidth = 1;
+      });
       // VWAP
       g.strokeStyle = COL.vwap; g.lineWidth = 1.4; g.beginPath(); let st = false;
       for (let i = a; i < b; i++) { if (i > 0 && B[i][6] !== B[i - 1][6]) st = false; const x = X(i), y = Y(this.vw[i]); st ? g.lineTo(x, y) : g.moveTo(x, y); st = true; }
@@ -155,6 +172,11 @@
         ln(m.stop, COL.dnT); ln(m.tgt, COL.upT);
         if (m.lv) { ln(m.lv.top, COL.lvl); ln(m.lv.bot, COL.lvl); }
         tri(g, X(m.i0), m.side === 'long' ? Y(B[m.i0][3]) + 10 : Y(B[m.i0][2]) - 10, m.side === 'long', COL.upT);
+        [['bk', 'B'], ['rt', 'R'], ['cf', 'C']].forEach(([k, lab]) => {   // the setup's steps: breakout, retest, confirmation
+          if (!m[k]) return; const i = this.idxOf(m[k]); if (i < a || i >= b || i >= n) return;
+          const y = m.side === 'long' ? Y(B[i][2]) - 12 : Y(B[i][3]) + 12;
+          g.fillStyle = '#E7C35A'; g.font = '600 10px Inter, system-ui, sans-serif'; g.textAlign = 'center'; g.fillText(lab, X(i), y); g.font = '11px Inter, system-ui, sans-serif';
+        });
         if (!open) { g.fillStyle = COL.dnT; g.fillRect(X(m.i1) - 3.5, Y(m.x) - 3.5, 7, 7); }
       });
       // candles

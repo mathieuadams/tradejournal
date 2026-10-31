@@ -31,8 +31,8 @@ const SETUPS = {
     params: [['rangeMin', 'Opening range (minutes)', 'sel', [[1, '1'], [5, '5'], [10, '10'], [15, '15'], [30, '30'], [60, '60']]], ['tgtR', 'Target (R)', 'num', 0.5], ['fvgWin', 'Gap within (candles)', 'num', 1],
       ['confWin', 'Confirmation within (candles)', 'num', 1], ['lastEntry', 'Last entry (ET)', 'text'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   orbema: { name: 'Opening range break + 20 EMA retest', blurb: 'A close outside the 15 / 30-minute opening range, then price closes back through the 20 EMA and back out: enter, stop past that candle, target the low / high of the day.',
-    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['rangeMin', 'Opening range (minutes)', 'sel', [[15, '15'], [30, '30']]], ['ema', 'EMA length', 'num', 1],
-      ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['minRR', 'Skip if the target is under (R, 0 = never)', 'num', 0.25], ['lastEntry', 'Last entry (ET)', 'text'],
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['rangeMin', 'Opening range (minutes)', 'sel', [[15, '15'], [30, '30']]], ['ema', 'EMA length', 'num', 1], ['emaOn', 'EMA on', 'sel', [['full', 'Full session (overnight too)'], ['rth', 'Regular hours only']]],
+      ['entryAt', 'Entry', 'sel', [['close', 'At the confirmation close'], ['open', 'Next candle open']]], ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['minRR', 'Skip if the target is under (R, 0 = never)', 'num', 0.25], ['lastEntry', 'Last entry (ET)', 'text'],
       ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   range50: { name: 'Range 50% retrace', blurb: 'A leg, a retrace to its 50%, then back to 25% of the range: enter there, target the 50%, stop past the range end.',
     params: [['tf', 'Candles', 'sel', [[1, '1 min'], [5, '5 min']]], ['legPct', 'Minimum leg (% of price)', 'num', 0.05], ['entryLvl', 'Entry (share of the range)', 'num', 0.05], ['targetLvl', 'Target (share of the range)', 'num', 0.05],
@@ -246,7 +246,7 @@ function readParams(root) {
   return p;
 }
 const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '11:30', side: 'both', days: 250, tickers: ['NQ'] },
-  orbema: { tf: 5, rangeMin: 15, ema: 20, bufTicks: 1, minRR: 1, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  orbema: { tf: 5, rangeMin: 15, ema: 20, emaOn: 'full', entryAt: 'close', bufTicks: 1, minRR: 1, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   range50: { tf: 1, legPct: 0.35, entryLvl: 0.25, targetLvl: 0.5, stopBuf: 0, side: 'both', days: 250, tickers: ['NQ'] },
   silver: { tf: 1, pivLen: 3, expiry: 30, rr: 2, bufTicks: 2, flatEod: true, side: 'both', days: 250, tickers: ['NQ'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
@@ -365,7 +365,7 @@ async function vChart() {
       <section class="panel col-main" style="display:block;padding-top:12px">
         <div class="legend"><span>Strategy on the chart</span><select id="c-strat" style="min-height:30px;padding:3px 8px"><option value="">None</option>${S.strats.filter(s => s.params.tickers.includes(c.sym)).map(s => `<option value="${s.id}" ${c.strat === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
           ${[['prof', 'Volume profile'], ['cvd', 'Delta'], ['wt', 'WaveTrend'], ['rth', 'Regular hours only']].map(([k, l]) => `<button class="chip" data-ctog="${k}" aria-pressed="${!!c[k]}">${l}</button>`).join('')}
-          <div style="flex:1"></div><span><span class="sw" style="border-top:2px solid var(--vwap)"></span>VWAP</span><span><span class="sw" style="border-top:1px dashed #93A0B2"></span>PDH / PDL / PDC · ONH / ONL</span></div>
+          <div style="flex:1"></div>${c.strat ? '<span><span class="sw" style="border-top:2px solid #E7C35A"></span>Strategy lines · B breakout · R retest · C confirmation</span>' : ''}<span><span class="sw" style="border-top:2px solid var(--vwap)"></span>VWAP</span><span><span class="sw" style="border-top:1px dashed #93A0B2"></span>PDH / PDL / PDC · ONH / ONL</span></div>
         <div class="chartbox"><canvas id="cv" style="height:${S.rp ? 600 : 640}px"></canvas></div>
         ${S.rp ? replayBar() : `<div class="transport"><span class="muted" style="font-size:13px">Replay a session bar by bar with its order flow:</span><input type="date" id="rp-day" value="${S.lastDay || ''}"><button class="btn" data-act="rp-start">Start replay</button><span class="note">Footprint, tape and real delta need that day's trades (Data page).</span></div>`}
         ${S.rp && S.rpView === 'fp' ? `<div class="bd" style="border-top:1px solid var(--line)"><div id="fpview"></div></div>` : ''}
@@ -416,7 +416,7 @@ function fpDelta() {
 function drawChart(keep) {
   const c = S.chart, d = S.cd, r = S.rp;
   if (!S.ch || !d) return;
-  S.ch.set({ bars: d.bars, levels: d.levels, marks: d.marks || [], tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
+  S.ch.set({ bars: d.bars, levels: d.levels, marks: d.marks || [], overlay: d.overlay, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
   const n = r ? r.k + 1 : d.bars.length, B = d.bars, last = B[n - 1], day = last[6];
   const sess = B.slice(0, n).filter(b => b[6] === day), lv = d.levels[day] || {};
   const pc = lv.pdc, chg = pc ? last[4] - pc : null;
@@ -535,7 +535,12 @@ document.addEventListener('click', async e => {
     if (el.textContent === 'Checking…') { el.disabled = false; el.textContent = 'Connect'; } }
 });
 document.addEventListener('change', e => {
-  if (e.target.id === 'c-strat') { S.chart.strat = e.target.value; loadChart(); }
+  if (e.target.id === 'c-strat') {
+    S.chart.strat = e.target.value;
+    const st = (S.strats || []).find(x => x.id === S.chart.strat), tf = st && +st.params.tf;
+    if (st && [1, 5, 15, 60].includes(tf) && tf !== S.chart.tf && !S.rp) { S.chart.tf = tf; return vChart(); }   // the rule's own candles
+    loadChart();
+  }
   if (e.target.id === 'rp-scrub') { rpPlay(false); rpMove(+e.target.value); }
 });
 document.addEventListener('input', e => { if (e.target.id === 'rp-scrub' && S.rp) { S.rp.k = +e.target.value; S.ch.d.replay = S.rp.k; drawChart(true); } });
