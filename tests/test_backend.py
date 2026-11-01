@@ -422,6 +422,17 @@ def test_19_fvg_inversion():
     assert [x for x in notes if x["d"] > 0][0]["text"].startswith("Long skipped: target 2.0R"), notes
 
 
+def test_20_ifvg_asia_migration():
+    import db as _db
+    s = strategy.create(SUB, {"setup": "ifvg", "params": {"days": 40, "asia": "dir"}})
+    it = _db.get(strategy._pk(SUB), strategy.SK + s["id"])
+    it.pop("migAsia", None)
+    _db.put(it)
+    assert strategy.get(SUB, s["id"])["params"]["asia"] == "none"                      # the old default switched off once
+    call("PUT", f"/strategies/{s['id']}", {"params": {**strategy.get(SUB, s["id"])["params"], "asia": "dir"}})
+    assert strategy.get(SUB, s["id"])["params"]["asia"] == "dir"                       # a later choice sticks
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
