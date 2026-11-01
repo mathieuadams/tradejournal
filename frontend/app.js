@@ -62,6 +62,22 @@ const SETUPS = {
     params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['driveMin', 'Drive', 'sel', [[15, '09:30–09:45'], [30, '09:30–10:00']]], ['drivePct', 'Drive at least (%)', 'num', 0.05],
       ['strength', 'Close within (share of the drive range)', 'num', 0.05], ['pbMin', 'Pullback candles at least', 'num', 1], ['ema', 'EMA', 'num', 1], ['tgtR', 'Target (R)', 'num', 0.5],
       ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['lastEntry', 'Last entry (ET)', 'text'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  pdbreak: { name: 'Prior-day high / low break and retest', blurb: 'Daily level, intraday entry: a 15-minute close past yesterday\'s high (or low), then a 5-minute retest that holds: enter, stop back inside, target 1× the daily ATR from the open.',
+    params: [['tf', 'Entry candles', 'sel', [[5, '5 min'], [15, '15 min']]], ['brkTf', 'Break confirmed on', 'sel', [[15, '15-min close'], [5, '5-min close'], [30, '30-min close'], [60, '1-hour close']]],
+      ['bias', 'Daily bias', 'sel', [['close', 'Where yesterday closed (top / bottom of its range)'], ['trend', 'Yesterday vs its 20-day average'], ['none', 'None']]], ['closePct', 'Closed in the top / bottom (share)', 'num', 0.05],
+      ['wait', 'Retest within (candles)', 'num', 1], ['tolTicks', 'Retest within (ticks of the level)', 'num', 1], ['tgt', 'Target', 'sel', [['atr', 'Open ± × daily ATR'], ['r', 'Fixed R']]],
+      ['tgtAtr', 'Target (× daily ATR)', 'num', 0.25], ['tgtR', 'Fixed R target', 'num', 0.5], ['minRR', 'Skip if the target is under (R)', 'num', 0.25], ['bufTicks', 'Stop buffer (ticks)', 'num', 1],
+      ['lastEntry', 'Last entry (ET)', 'text'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  pdsweep: { name: 'Prior-day high / low sweep and reclaim', blurb: 'Daily level, intraday entry: price runs past yesterday\'s high (or low) and closes back inside: fade it, stop past the sweep, target the VWAP / middle / other side of yesterday.',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['levels', 'Levels', 'sel', [['pd', 'Yesterday\'s high / low'], ['outer', 'Outer of yesterday and the overnight']]], ['fresh', 'Skip a level the overnight already took', 'bool'],
+      ['lastEntry', 'Last entry (ET)', 'text'], ['maxAbove', 'Cancel after (closes outside)', 'num', 1], ['minDepth', 'Sweep at least (points past the level)', 'num', 1],
+      ['tgt', 'Target', 'sel', [['vwap', 'VWAP'], ['mid', 'Middle of yesterday\'s range'], ['other', 'Other side of yesterday\'s range'], ['r', 'Fixed R']]], ['tgtR', 'Fixed R target', 'num', 0.5],
+      ['minRR', 'Skip if the target is under (R)', 'num', 0.25], ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  nrbreak: { name: 'Narrow-range day breakout', blurb: 'Daily setup, intraday entry: after an NR7 or inside day, trade the first 15-minute opening-range break in the 20-day trend\'s direction, target 1× the daily ATR.',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [15, '15 min']]], ['cond', 'Yesterday was', 'sel', [['nr7', 'NR7 (narrowest of 7 days)'], ['inside', 'An inside day'], ['either', 'NR7 or inside'], ['any', 'Any day (comparison)']]],
+      ['trend', 'Direction', 'sel', [['sma', 'With the 20-day trend'], ['none', 'Either way']]], ['orMin', 'Opening range', 'sel', [[15, '15 min'], [30, '30 min'], [60, '60 min']]],
+      ['stop', 'Stop', 'sel', [['opp', 'Other side of the range'], ['mid', 'Middle of the range']]], ['tgtAtr', 'Target (× daily ATR from the open)', 'num', 0.25], ['minRR', 'Skip if the target is under (R)', 'num', 0.25],
+      ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['lastEntry', 'Last entry (ET)', 'text'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   wt: { name: 'WaveTrend dots', blurb: 'WaveTrend [Krypt]: in at the open after a buy dot, out at the open after a sell dot (and the mirror for shorts).',
     params: [['tf', 'Candles', 'sel', [['1D', 'Daily'], ['60', '1 hour'], ['15', '15 min'], ['5', '5 min']]], ['side', 'Side', 'sel', SIDE], ['stopAtr', 'Stop (× average range, 0 = none)', 'num', 0.25],
       ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['days', 'Candles / sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
@@ -293,12 +309,24 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   onsweep: { tf: 5, lastEntry: '10:30', maxAbove: 3, minDepth: 0, minOnPct: 0, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   ibbreak: { tf: 5, ibMin: 60, filter: 'vwap', onMinPct: 0.3, stop: 'mid', tgtMult: 1, bufTicks: 2, lastEntry: '14:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   odpull: { tf: 5, driveMin: 15, drivePct: 0.25, strength: 0.25, pbMin: 2, ema: 9, tgtR: 2, bufTicks: 2, lastEntry: '11:30', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  pdbreak: { tf: 5, brkTf: 15, bias: 'close', closePct: 0.33, wait: 12, tolTicks: 4, tgt: 'atr', tgtAtr: 1, tgtR: 2, minRR: 1, bufTicks: 2, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  pdsweep: { tf: 5, levels: 'pd', fresh: true, lastEntry: '11:30', maxAbove: 3, minDepth: 0, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  nrbreak: { tf: 5, cond: 'nr7', trend: 'sma', orMin: 15, stop: 'opp', tgtAtr: 1, minRR: 0.5, bufTicks: 2, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
+// what's been tried for a setup: a badge on its card in New strategy
+function tested(key) {
+  const xs = (S.strats || []).filter(s => s.setup === key), done = xs.filter(s => s.study && s.study.m);
+  if (!xs.length) return '<span class="tbadge new">Not tried yet</span>';
+  if (!done.length) return `<span class="tbadge">Created · no study yet</span>`;
+  const best = Math.max(...done.map(s => ((s.valid && s.valid.test) || s.study.m).avgR ?? -9));
+  const val = xs.some(s => ['validated', 'paper', 'live'].includes(s.stage));
+  return `<span class="tbadge ${val ? 'ok' : 'done'}">${val ? 'Validated' : `Tested ×${done.length}`} · best ${best > -9 ? sgn(best, 2, 'R') : '—'}</span>`;
+}
 function newForm() {
   const k = S.newSetup;
   return `<section class="panel" style="margin-bottom:16px"><div class="hd"><h2>New strategy</h2><div class="grow"></div><button class="btn sm" data-act="new-close">Close</button></div><div class="bd">
     <div class="grid-auto" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:${k ? 16 : 0}px">${Object.entries(SETUPS).map(([key, s]) => `
-      <button class="cell" data-setup="${key}" aria-pressed="${k === key}"><span style="font-weight:600;font-size:14px">${s.name}</span><span class="note">${s.blurb}</span></button>`).join('')}</div>
+      <button class="cell" data-setup="${key}" aria-pressed="${k === key}">${tested(key)}<span style="font-weight:600;font-size:14px">${s.name}</span><span class="note">${s.blurb}</span></button>`).join('')}</div>
     ${k ? `<div id="newp"><label class="f" style="max-width:420px;margin-bottom:12px">Name<input type="text" id="new-name" value="${esc(SETUPS[k].name)}"></label>${paramForm(k, DEF[k])}
       <div style="margin-top:14px"><button class="btn primary" data-act="create">Create</button></div></div>` : ''}
   </div></section>`;

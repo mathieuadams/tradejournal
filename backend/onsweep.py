@@ -46,9 +46,20 @@ def engine(day, on, R, F, V, p):
     onh, onl = max(b[2] for b in on), min(b[3] for b in on)
     if p.get("minOnPct") and onh - onl < onl * p["minOnPct"] / 100:
         return []                                      # the overnight range is too tight
+    out = fade(R, V, p, onh, onl)
+    for x in out:
+        x["onr"] = onh - onl
+    return out
+
+
+def fade(R, V, p, hi, lo, sides=(-1, 1)):
+    """The sweep-and-reclaim of the levels hi (shorts) / lo (longs) on the regular-hours candles R: see the module
+    docstring (mid / other = the middle / other side of hi-lo)."""
     out = []
     for d in ((-1,) if p["side"] == "short" else (1,) if p["side"] == "long" else (-1, 1)):
-        lvl = onh if d < 0 else onl
+        if d not in sides:
+            continue
+        lvl = hi if d < 0 else lo
         swept, ext, above = None, None, 0
         for k, (t, o, h, l, c) in enumerate(R):
             if K.end_of(t, p["tf"])[11:16] > p["lastEntry"]:
@@ -70,13 +81,13 @@ def engine(day, on, R, F, V, p):
             e = c
             stop = ext + p["bufTicks"] * K.TICK if d < 0 else ext - p["bufTicks"] * K.TICK
             risk = abs(stop - e)
-            tgt = {"vwap": V[k], "mid": (onh + onl) / 2, "other": onl if d < 0 else onh, "r": e + d * p["tgtR"] * risk}[p["tgt"]]
+            tgt = {"vwap": V[k], "mid": (hi + lo) / 2, "other": lo if d < 0 else hi, "r": e + d * p["tgtR"] * risk}[p["tgt"]]
             if risk <= 0 or (tgt - e) * d <= 0 or (p["minRR"] and abs(tgt - e) < p["minRR"] * risk):
                 break                                  # the target is behind or too close: no trade this side
             x, ot, why, _ = K.walk(R, k + 1, d, e, stop, tgt)
             out.append({"in": K.end_of(t, p["tf"]), "out": ot, "e": e, "x": x, "why": why, "side": "long" if d > 0 else "short",
-                        "stop": stop, "tgt": tgt, "stopDist": risk, "tgtDist": abs(tgt - e), "rt": R[swept][0], "cf": t,
-                        "depth": abs(ext - lvl), "onr": onh - onl, "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
+                        "stop": stop, "tgt": tgt, "stopDist": risk, "tgtDist": abs(tgt - e), "rt": R[swept][0], "cf": t, "sweepLvl": lvl,
+                        "depth": abs(ext - lvl), "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
             break
     return out
 

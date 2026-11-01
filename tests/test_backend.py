@@ -155,7 +155,9 @@ def test_05_strategy_protocol():
 
 def test_06_other_setups():
     for setup, p in (("onsweep", {"days": 60, "minRR": 0}), ("onsweep", {"days": 60, "tgt": "other", "tf": 1}), ("ibbreak", {"days": 60, "filter": "none"}), ("ibbreak", {"days": 60, "ibMin": 30, "stop": "bar", "tf": 15}), ("odpull", {"days": 60, "drivePct": 0.05}), ("vwapret", {"days": 60}), ("vwapret", {"days": 60, "hours": "on", "tf": 1, "trend": 0}), ("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
-                     ("wt", {"tf": "15", "days": 60})):
+                     ("wt", {"tf": "15", "days": 60}), ("pdbreak", {"days": 80, "bias": "none", "minRR": 0}), ("pdbreak", {"days": 60, "bias": "trend", "brkTf": 5, "tgt": "r"}),
+                     ("pdsweep", {"days": 60, "minRR": 0}), ("pdsweep", {"days": 60, "levels": "outer", "tgt": "other"}), ("nrbreak", {"days": 80, "cond": "any", "trend": "none", "minRR": 0}),
+                     ("nrbreak", {"days": 60, "cond": "either", "orMin": 30, "stop": "mid"})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -353,6 +355,30 @@ def test_16_optimize():
     st, v = call("PUT", f"/strategies/{s['id']}", {"params": {**strategy.get(SUB, s["id"])["params"], **top["p"]}})
     same = lambda a, b: float(a) == float(b) if isinstance(b, (int, float)) else a == b
     assert st == 200 and all(same(v["params"][k], x) for k, x in top["p"].items())
+
+
+def test_17_daily_setups():
+    import nrbreak
+    import pdbreak
+    import pdsweep
+    import sessionkit as K
+    d = "2026-03-10"
+    H = [{"d": f"x{i}", "o": 100, "h": 102, "l": 98, "c": 101} for i in range(19)] + [{"d": "y", "o": 100, "h": 101.2, "l": 99.5, "c": 101.15}]
+    assert nrbreak.kind(H) == (True, True) and abs(K.atr(H) - (4 * 13 + 1.7) / 14) < 1e-9 and K.sma_close(H) > 100
+    rows = [(101, 101.2, 100.6, 101.1)] * 3 + [(101.1, 101.6, 101.0, 101.5)] + [(101.5, 101.6, 101.1, 101.4)] + [(101.4, 102, 101.3, 101.9)] * 2 + [(101.9, 103, 101.8, 102.9)] * 70
+    R = _rth(d, rows)
+    t = nrbreak.engine(d, [], R, R, [0] * len(R), H, nrbreak.clean({"tf": 5, "orMin": 15, "bufTicks": 0, "minRR": 0}))[0]
+    assert t["side"] == "long" and t["e"] == 101.5 and t["stop"] == 100.6 and t["kind"] == [True, True], t
+    assert not nrbreak.engine(d, [], R, R, [0] * len(R), H[:-1] + [{"d": "y", "o": 100, "h": 103, "l": 97, "c": 99}], nrbreak.clean({"tf": 5, "cond": "nr7"}))
+    # prior-day break: a 5-minute close over yesterday's high (101.2), a retest within 4 ticks that closes back over: long at that close
+    t = pdbreak.engine(d, [], R, R, [0] * len(R), H, pdbreak.clean({"tf": 5, "brkTf": 5, "bias": "close", "bufTicks": 0, "minRR": 0, "tgt": "r", "tgtR": 2}))[0]
+    assert t["side"] == "long" and t["e"] == 101.4 and t["stop"] == 101.1 and t["bk"] == R[3][0] and t["rt"] == R[4][0], t
+    # prior-day sweep: price runs over yesterday's high and closes back under it: short
+    rows2 = [(100.5, 100.8, 100.2, 100.6), (100.6, 101.6, 100.5, 101.3), (101.3, 101.4, 100.4, 100.5)] + [(100.5, 100.6, 99.4, 99.6)] * 70
+    R2 = _rth(d, rows2)
+    t = pdsweep.engine(d, [], R2, R2, [99.8] * len(R2), H, pdsweep.clean({"tf": 5, "bufTicks": 0, "minRR": 0}))[0]
+    assert t["side"] == "short" and t["e"] == 100.5 and t["stop"] == 101.6 and t["tgt"] == 99.8, t
+    assert not pdsweep.engine(d, [["x", 100, 101.5, 100, 100.5, 1]], R2, R2, [99.8] * len(R2), H, pdsweep.clean({"tf": 5, "fresh": True, "minRR": 0, "side": "short"}))
 
 
 if __name__ == "__main__":

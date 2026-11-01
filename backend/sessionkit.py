@@ -119,3 +119,69 @@ def run_all(sub, p, engine, label, prog=None, seed=31):
                 trades.append(x)
                 base.append((d, x["side"], baseline(R, x, rnd)))
     return trades, base
+
+
+# ---------------------------------------------------------------- daily context (prior-day levels, ATR, trend)
+
+def day_bar(d, R):
+    return {"d": d, "o": R[0][1], "h": max(b[2] for b in R), "l": min(b[3] for b in R), "c": R[-1][4]}
+
+
+def atr(H, n=14):
+    """Average regular-hours true range of the last n days of H (oldest first)."""
+    trs = [max(y["h"], x["c"]) - min(y["l"], x["c"]) for x, y in zip(H[-n - 1:-1], H[-n:])]
+    return sum(trs) / len(trs) if trs else None
+
+
+def sma_close(H, n=20):
+    return sum(x["c"] for x in H[-n:]) / n if len(H) >= n else None
+
+
+def daily_sessions(sym, p, start=None, need=25):
+    """[(day, on, R, F, V, H)]: the sessions() tuple plus H, the regular-hours daily candles of the sessions before
+    (oldest first, at most `need`), for the strategy's sessions (or those from `start`)."""
+    import datetime as _dt
+    if start or p.get("_start"):
+        s0 = start or p["_start"]
+        q = {**p, "_start": (_dt.date.fromisoformat(s0) - _dt.timedelta(days=int(need * 1.6) + 7)).isoformat()}
+    else:
+        s0, q = None, {**p, "days": p["days"] + need}
+    by = sessions(sym, q)
+    days = sorted(by)
+    keep = set(d for d in days if d >= s0) if s0 else set(days[-p["days"]:])
+    out, H = [], []
+    for d in days:
+        on, R, F, V = by[d]
+        if not R:
+            continue
+        if d in keep:
+            out.append((d, on, R, F, V, list(H[-need:])))
+        H.append(day_bar(d, R))
+    return out
+
+
+def run_daily(sub, p, engine, label, need=25, seed=41):
+    """all_trades for an engine(day, on, R, F, V, H, p) that also reads the days before."""
+    trades, base = [], []
+    rnd = random.Random(seed)
+    for sym in p["tickers"]:
+        for d, on, R, F, V, H in daily_sessions(sym, p, need=need):
+            if len(R) < 10:
+                continue
+            for x in engine(d, on, R, F, V, H, p):
+                x.update(s=sym, d=d, cell=None)
+                trades.append(x)
+                base.append((d, x["side"], baseline(R, x, rnd)))
+    return trades, base
+
+
+def level_lines(sym, p, start, end, names):
+    """Overlay lines of the prior-day levels: names = [(key in the daily candle, label, color)]."""
+    lines = {k: {"name": lab, "color": col, "pts": []} for k, lab, col in names}
+    for d, on, R, F, V, H in daily_sessions(sym, p, start=start, need=2):
+        if d > end or not H:
+            continue
+        y = H[-1]
+        for k in lines:
+            lines[k]["pts"] += [[R[0][0], y[k]], [R[-1][0], y[k]]]
+    return list(lines.values())
