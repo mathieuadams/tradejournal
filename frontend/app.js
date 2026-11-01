@@ -326,7 +326,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   pdsweep: { tf: 5, levels: 'pd', fresh: true, lastEntry: '11:30', maxAbove: 3, minDepth: 0, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   nrbreak: { tf: 5, cond: 'nr7', trend: 'sma', orMin: 15, stop: 'opp', tgtAtr: 1, minRR: 0.5, bufTicks: 2, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   fpdisp: { tf: 5, fair: 'open', minAwayPct: 0.1, bodyMult: 1, stop: 'bar', swingN: 5, bufTicks: 2, minRR: 1, firstEntry: '09:35', lastEntry: '13:00', maxDay: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
-  ifvg: { tf: 5, bias: 'all3', asia: 'dir', minGap: 4, fvgMax: 24, gapFrom: '08:00', stop: 'fvg', bufTicks: 0, tgt: 'liq2r', tgtR: 2, pivLen: 3, liqLook: 150, minRR: 1, lastEntry: '14:00', maxDay: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  ifvg: { tf: 5, bias: 'all3', asia: 'none', minGap: 4, fvgMax: 24, gapFrom: '08:00', stop: 'fvg', bufTicks: 0, tgt: 'liq2r', tgtR: 2, pivLen: 3, liqLook: 150, minRR: 1, lastEntry: '14:00', maxDay: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 // what's been tried for a setup: a badge on its card in New strategy
 function tested(key) {

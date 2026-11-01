@@ -21,7 +21,7 @@ import random
 
 import sessionkit as K
 
-DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "dir", "minGap": 4, "fvgMax": 24, "gapFrom": "08:00", "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
+DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "none", "minGap": 4, "fvgMax": 24, "gapFrom": "08:00", "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
            "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
            ("gap", "Gap size")]
@@ -31,7 +31,7 @@ EMAS = (15, 30, 60)
 def clean(p):
     p = {**DEFAULT, **(p or {})}
     out = {"setup": "ifvg", "tf": 1 if str(p.get("tf")) == "1" else 5, "bias": p.get("bias") if p.get("bias") in ("h1", "all3") else "all3",
-           "asia": p.get("asia") if p.get("asia") in ("dir", "hold", "none") else "dir", "stop": p.get("stop") if p.get("stop") in ("fvg", "swing") else "fvg",
+           "asia": p.get("asia") if p.get("asia") in ("dir", "hold", "none") else "none", "stop": p.get("stop") if p.get("stop") in ("fvg", "swing") else "fvg",
            "tgt": p.get("tgt") if p.get("tgt") in ("liq2r", "liq", "r") else "liq2r", "side": p.get("side") if p.get("side") in ("long", "short", "both") else "both"}
     le = str(p.get("lastEntry") or "14:00")
     out["lastEntry"] = le if len(le) == 5 and le[2] == ":" and "09:40" <= le <= "15:30" else "14:00"
