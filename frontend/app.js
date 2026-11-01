@@ -78,6 +78,12 @@ const SETUPS = {
       ['trend', 'Direction', 'sel', [['sma', 'With the 20-day trend'], ['none', 'Either way']]], ['orMin', 'Opening range', 'sel', [[15, '15 min'], [30, '30 min'], [60, '60 min']]],
       ['stop', 'Stop', 'sel', [['opp', 'Other side of the range'], ['mid', 'Middle of the range']]], ['tgtAtr', 'Target (× daily ATR from the open)', 'num', 0.25], ['minRR', 'Skip if the target is under (R)', 'num', 0.25],
       ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['lastEntry', 'Last entry (ET)', 'text'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  fpdisp: { name: 'Fair price displacement', blurb: 'Fair price = the 09:30 open (or the VWAP). Above it, a red candle with a bigger body than the previous one that closes below its wick: short, target the fair price (long: the mirror).',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min'], [15, '15 min']]], ['fair', 'Fair price', 'sel', [['open', 'The 09:30 open'], ['vwap', 'The VWAP']]],
+      ['minAwayPct', 'Away from it at least (%)', 'num', 0.05], ['bodyMult', 'Body at least (× the previous)', 'num', 0.25],
+      ['stop', 'Stop', 'sel', [['bar', 'Past the displacement candle'], ['swing', 'Past the last swing (N candles)']]], ['swingN', 'Swing: last N candles', 'num', 1],
+      ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['minRR', 'Skip if the target is under (R)', 'num', 0.25], ['firstEntry', 'First entry (ET)', 'text'], ['lastEntry', 'Last entry (ET)', 'text'],
+      ['maxDay', 'Max trades per session', 'num', 1], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   wt: { name: 'WaveTrend dots', blurb: 'WaveTrend [Krypt]: in at the open after a buy dot, out at the open after a sell dot (and the mirror for shorts).',
     params: [['tf', 'Candles', 'sel', [['1D', 'Daily'], ['60', '1 hour'], ['15', '15 min'], ['5', '5 min']]], ['side', 'Side', 'sel', SIDE], ['stopAtr', 'Stop (× average range, 0 = none)', 'num', 0.25],
       ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['days', 'Candles / sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
@@ -312,6 +318,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   pdbreak: { tf: 5, brkTf: 15, bias: 'close', closePct: 0.33, wait: 12, tolTicks: 4, tgt: 'atr', tgtAtr: 1, tgtR: 2, minRR: 1, bufTicks: 2, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   pdsweep: { tf: 5, levels: 'pd', fresh: true, lastEntry: '11:30', maxAbove: 3, minDepth: 0, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   nrbreak: { tf: 5, cond: 'nr7', trend: 'sma', orMin: 15, stop: 'opp', tgtAtr: 1, minRR: 0.5, bufTicks: 2, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  fpdisp: { tf: 5, fair: 'open', minAwayPct: 0.1, bodyMult: 1, stop: 'bar', swingN: 5, bufTicks: 2, minRR: 1, firstEntry: '09:35', lastEntry: '13:00', maxDay: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 // what's been tried for a setup: a badge on its card in New strategy
 function tested(key) {

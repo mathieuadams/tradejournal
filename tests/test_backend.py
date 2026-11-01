@@ -157,7 +157,7 @@ def test_06_other_setups():
     for setup, p in (("onsweep", {"days": 60, "minRR": 0}), ("onsweep", {"days": 60, "tgt": "other", "tf": 1}), ("ibbreak", {"days": 60, "filter": "none"}), ("ibbreak", {"days": 60, "ibMin": 30, "stop": "bar", "tf": 15}), ("odpull", {"days": 60, "drivePct": 0.05}), ("vwapret", {"days": 60}), ("vwapret", {"days": 60, "hours": "on", "tf": 1, "trend": 0}), ("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
                      ("wt", {"tf": "15", "days": 60}), ("pdbreak", {"days": 80, "bias": "none", "minRR": 0}), ("pdbreak", {"days": 60, "bias": "trend", "brkTf": 5, "tgt": "r"}),
                      ("pdsweep", {"days": 60, "minRR": 0}), ("pdsweep", {"days": 60, "levels": "outer", "tgt": "other"}), ("nrbreak", {"days": 80, "cond": "any", "trend": "none", "minRR": 0}),
-                     ("nrbreak", {"days": 60, "cond": "either", "orMin": 30, "stop": "mid"})):
+                     ("nrbreak", {"days": 60, "cond": "either", "orMin": 30, "stop": "mid"}), ("fpdisp", {"days": 60, "minRR": 0}), ("fpdisp", {"days": 60, "fair": "vwap", "stop": "swing", "tf": 1})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -379,6 +379,19 @@ def test_17_daily_setups():
     t = pdsweep.engine(d, [], R2, R2, [99.8] * len(R2), H, pdsweep.clean({"tf": 5, "bufTicks": 0, "minRR": 0}))[0]
     assert t["side"] == "short" and t["e"] == 100.5 and t["stop"] == 101.6 and t["tgt"] == 99.8, t
     assert not pdsweep.engine(d, [["x", 100, 101.5, 100, 100.5, 1]], R2, R2, [99.8] * len(R2), H, pdsweep.clean({"tf": 5, "fresh": True, "minRR": 0, "side": "short"}))
+
+
+def test_18_fair_price_displacement():
+    import fpdisp
+    d = "2026-03-10"
+    # opens 100 (fair), runs to 103, a small green candle, then a red one with a bigger body closing under its low: short to 100
+    rows = [(100, 101, 99.8, 100.9), (100.9, 102, 100.8, 101.9), (101.9, 103, 101.8, 102.8), (102.8, 103.2, 102.6, 103.0), (103.0, 103.1, 101.9, 102.0)]
+    rows += [(102.0, 102.1, 101, 101.2), (101.2, 101.3, 99.9, 100.1)] + [(100.1, 100.3, 99.8, 100)] * 60
+    R = _rth(d, rows)
+    t = fpdisp.engine(d, [], R, R, [0] * len(R), fpdisp.clean({"tf": 5, "bufTicks": 0, "minRR": 0, "maxDay": 1}))[0]
+    assert t["side"] == "short" and t["e"] == 102.0 and t["stop"] == 103.1 and t["tgt"] == 100 and t["why"] == "target" and t["cf"] == R[4][0], t
+    assert not fpdisp.engine(d, [], R, R, [0] * len(R), fpdisp.clean({"tf": 5, "bodyMult": 6, "minRR": 0}))          # body only 5x the previous 0.2
+    assert not fpdisp.engine(d, [], R, R, [0] * len(R), fpdisp.clean({"tf": 5, "minRR": 3}))                         # 2 pts vs 1.6 risk
 
 
 if __name__ == "__main__":

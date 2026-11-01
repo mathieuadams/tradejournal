@@ -18,6 +18,7 @@ import range50
 import silver
 import ibbreak
 import odpull
+import fpdisp
 import nrbreak
 import onsweep
 import pdbreak
@@ -28,8 +29,8 @@ import store
 import wtswing
 from util import BadRequest, NotFound, iso, now_ny
 
-SETUPS = {"orb": orb, "orbema": orbema, "range50": range50, "silver": silver, "tvpoc": tvpoc, "vwapret": vwapret, "wt": wtswing, "onsweep": onsweep, "ibbreak": ibbreak, "odpull": odpull, "pdbreak": pdbreak, "pdsweep": pdsweep, "nrbreak": nrbreak}
-NAMES = {"orb": "Opening range break + FVG retest", "orbema": "Opening range break + 20 EMA retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "tvpoc": "Trend volume profile + rolling POC", "vwapret": "VWAP retest (overnight included)", "onsweep": "Overnight high / low sweep and reclaim", "ibbreak": "Initial balance breakout", "odpull": "Opening drive, first pullback", "wt": "WaveTrend dots", "pdbreak": "Prior-day high / low break and retest", "pdsweep": "Prior-day high / low sweep and reclaim", "nrbreak": "Narrow-range day breakout"}
+SETUPS = {"orb": orb, "orbema": orbema, "range50": range50, "silver": silver, "tvpoc": tvpoc, "vwapret": vwapret, "wt": wtswing, "onsweep": onsweep, "ibbreak": ibbreak, "odpull": odpull, "pdbreak": pdbreak, "pdsweep": pdsweep, "nrbreak": nrbreak, "fpdisp": fpdisp}
+NAMES = {"orb": "Opening range break + FVG retest", "orbema": "Opening range break + 20 EMA retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "tvpoc": "Trend volume profile + rolling POC", "vwapret": "VWAP retest (overnight included)", "onsweep": "Overnight high / low sweep and reclaim", "ibbreak": "Initial balance breakout", "odpull": "Opening drive, first pullback", "wt": "WaveTrend dots", "pdbreak": "Prior-day high / low break and retest", "pdsweep": "Prior-day high / low sweep and reclaim", "nrbreak": "Narrow-range day breakout", "fpdisp": "Fair price displacement"}
 SK = "STRAT#"
 COSTS = {"contracts": 1, "comm": 2.25, "slip": 1.0, "dailyLoss": 500.0}
 MIN_TRADES, PF_MIN, MONTH_MAX, TRAIN = 100, 1.3, 0.4, 0.6
@@ -286,6 +287,7 @@ def _grid(ts):
 # ---------------------------------------------------------------- optimization
 
 GRIDS = {
+    "fpdisp": {"fair": ["open", "vwap"], "bodyMult": [1.0, 1.5, 2.0], "stop": ["bar", "swing"], "lastEntry": ["11:00", "13:00", "15:00"]},
     "pdbreak": {"bias": ["close", "trend", "none"], "brkTf": [5, 15], "tgtAtr": [0.75, 1.0, 1.5]},
     "pdsweep": {"levels": ["pd", "outer"], "tgt": ["vwap", "mid", "other"], "lastEntry": ["10:30", "11:30", "13:00"], "minDepth": [0, 5]},
     "nrbreak": {"cond": ["nr7", "inside", "either", "any"], "orMin": [15, 30], "trend": ["sma", "none"], "tgtAtr": [0.75, 1.0]},
