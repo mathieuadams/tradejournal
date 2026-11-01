@@ -413,6 +413,8 @@ def test_19_fvg_inversion():
     t = ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0, "maxDay": 1}))[0]
     assert t["side"] == "long" and t["e"] == 102.4 and t["fvgTop"] == 102.0 and t["fvgBot"] == 101.6 and t["stop"] == 101.6, t
     assert abs(t["tgt"] - 104) < 1e-6, t                                 # the nearest untaken swing high (104) = 2R here
+    t = ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0, "maxDay": 1, "stop": "swing"}))[0]
+    assert t["stop"] == 100.6 and abs(t["tgt"] - (102.4 + 2 * 1.8)) < 1e-6 and t["tk"] == "2R", t   # liquidity 104 is under 2R (106.0): 2R
     notes = []
     assert not ifvg.day_trades(d, [("2026-03-09T18:00", 97, 98, 94, 95, 1)], R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0, "asia": "dir"}), notes)   # Asia closed down
     L = [x for x in notes if x["d"] > 0]

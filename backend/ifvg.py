@@ -14,7 +14,7 @@ Long (short = the mirror):
   4. Stop (`stop`): fvg = the gap's lower end; swing = the lowest low since the gap formed (- `bufTicks` ticks).
   5. Target (`tgt`): the previous liquidity = the nearest untaken swing high above the entry (`pivLen` candles each side,
      in the last `liqLook` candles, overnight included).
-       liq2r = that liquidity, or 2R when it's farther (and 2R when there is none);  liq = the liquidity;  r = `tgtR` x the risk.
+       liq2r = that liquidity, but at least 2R (2R when it's closer or there is none);  liq = the liquidity;  r = `tgtR` x the risk.
      Skipped when the target is under `minRR` x the risk.
   6. One position at a time, at most `maxDay` a session, flat at 15:55."""
 import random
@@ -46,7 +46,7 @@ def clean(p):
 def describe(p):
     b = "the hourly 20 EMA (price on its side, EMA sloping that way)" if p["bias"] == "h1" else "the 15 / 30 / 60-minute 20 EMAs (price on their side, all sloping that way)"
     a = {"dir": ", confirmed by the Asian session's direction", "hold": ", price on the bias side of the Asian session's middle", "none": ""}[p["asia"]]
-    tg = {"liq2r": "the previous liquidity (capped at 2R)", "liq": "the previous liquidity", "r": f"{p['tgtR']:g}R"}[p["tgt"]]
+    tg = {"liq2r": "the previous liquidity (at least 2R)", "liq": "the previous liquidity", "r": f"{p['tgtR']:g}R"}[p["tgt"]]
     side = {"long": "long only", "short": "short only", "both": "both sides"}[p["side"]]
     return (f"{', '.join(p['tickers'])} {p['tf']}-minute, NYSE session: bias from {b}{a}. A fair value gap against the bias (the pullback), then a close "
             f"through it (inversion, within {p['fvgMax']} candles): enter at that close ({side}, before {p['lastEntry']}), stop at "
@@ -169,7 +169,7 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
             liq = liquidity(Fall, fi[t], d, e, p) if t in fi else None
             two = e + d * 2 * risk
             if p["tgt"] == "liq2r":
-                tgt, tk = (liq, "liquidity") if liq is not None and (liq - two) * d < 0 else (two, "2R")
+                tgt, tk = (liq, "liquidity") if liq is not None and (liq - two) * d > 0 else (two, "2R")   # liquidity under 2R away: 2R
             elif p["tgt"] == "liq":
                 tgt, tk = liq, "liquidity"
             else:
