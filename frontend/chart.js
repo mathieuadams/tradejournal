@@ -101,6 +101,7 @@
       const ov = d.overlay || {};
       this.ovLines = (ov.lines || []).map(L => ({ ...L, ix: L.pts.map(([t, v]) => [this.idxOf(t), v, t]) }));
       this.ovRanges = (ov.ranges || []).map(r => ({ ...r, i0: this.idxOf(r.t0), i1: this.idxOf(r.t1), i2: this.idxOf(r.t2) }));
+      this.ovNotes = (ov.notes || []).map(x => ({ ...x, i: this.idxOf(x.t), g0: x.gap ? this.idxOf(x.gap[0]) : null }));
       if (!keepView || !this.view) this.fit(); else this.draw();
     }
     idxOf(t) { // last bar whose time <= t
@@ -160,7 +161,16 @@
         g.fillStyle = 'rgba(231,195,90,0.07)'; g.fillRect(X(r.i0) - bw / 2, Y(r.hi), X(r.i1) - X(r.i0) + bw, Y(r.lo) - Y(r.hi));
         g.strokeStyle = 'rgba(231,195,90,0.6)'; g.setLineDash([5, 4]);
         [r.hi, r.lo].forEach(p => { g.beginPath(); g.moveTo(X(r.i0) - bw / 2, Y(p) + 0.5); g.lineTo(X(r.i2), Y(p) + 0.5); g.stroke(); });
-        g.setLineDash([]); g.fillStyle = 'rgba(231,195,90,0.85)'; g.textAlign = 'left'; g.fillText('OR', X(r.i0), Y(r.hi) - 7);
+        g.setLineDash([]); g.fillStyle = 'rgba(231,195,90,0.85)'; g.textAlign = 'left'; g.fillText(r.label || 'OR', X(r.i0), Y(r.hi) - 7);
+      });
+      // the strategy's decisions: each gap closed through (inverted), taken or why not
+      (this.ovNotes || []).forEach(x => {
+        if (x.i < a || x.i >= b) return;
+        const c = x.ok ? (x.d > 0 ? '#4FA3FF' : '#F2994A') : 'rgba(170,178,190,0.85)';
+        if (x.gap && x.g0 != null) { g.strokeStyle = c; g.setLineDash([3, 3]); g.strokeRect(X(x.g0) - bw / 2, Y(x.gap[2]), X(x.i) - X(x.g0) + bw, Math.max(1, Y(x.gap[1]) - Y(x.gap[2]))); g.setLineDash([]); }
+        const y = x.d > 0 ? Y(x.p) + 16 : Y(x.p) - 16;
+        g.fillStyle = c; g.beginPath(); g.arc(X(x.i), x.d > 0 ? Y(x.p) + 5 : Y(x.p) - 5, 3, 0, 7); g.fill();
+        g.font = '10px Inter, system-ui, sans-serif'; g.textAlign = 'center'; g.fillText(x.text, X(x.i), y); g.font = '11px Inter, system-ui, sans-serif';
       });
       (this.ovLines || []).forEach(L => {
         g.strokeStyle = L.color || '#E7C35A'; g.lineWidth = 1.5; g.beginPath(); let on = false, prevDay = null;

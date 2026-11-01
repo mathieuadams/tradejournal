@@ -7,10 +7,10 @@ Long (short = the mirror):
        all3 = above the 15-, 30- and 60-minute 20 EMAs and all three rising.
      Asian session check (`asia`, 18:00-02:00 ET): dir = the Asian session closed up (long) / down (short);
      hold = the price is above the Asian session's middle (long) / under it (short); none.
-  2. The pullback: a bearish fair value gap (candle 1's low above candle 3's high, at least `minGap` ticks) forms in
-     regular hours.
+  2. The pullback: a bearish fair value gap (candle 1's low above candle 3's high, at least `minGap` ticks) forms
+     from `gapFrom` (08:00 = pre-market included; 18:00 = the whole overnight).
   3. The inversion: within `fvgMax` candles, a candle closes above the gap's top: buy at that close (from 09:35,
-     before `lastEntry`), when the bias is long at that candle.
+     before `lastEntry`), when the bias is long at that candle. A gap closed through outside those conditions is used up.
   4. Stop (`stop`): fvg = the gap's lower end; swing = the lowest low since the gap formed (- `bufTicks` ticks).
   5. Target (`tgt`): the previous liquidity = the nearest untaken swing high above the entry (`pivLen` candles each side,
      in the last `liqLook` candles, overnight included).
@@ -21,8 +21,8 @@ import random
 
 import sessionkit as K
 
-DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "dir", "minGap": 4, "fvgMax": 24, "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
-           "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "12:00", "maxDay": 2, "side": "both", "days": 500}
+DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "dir", "minGap": 4, "fvgMax": 24, "gapFrom": "08:00", "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
+           "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
            ("gap", "Gap size")]
 EMAS = (15, 30, 60)
@@ -33,8 +33,10 @@ def clean(p):
     out = {"setup": "ifvg", "tf": 1 if str(p.get("tf")) == "1" else 5, "bias": p.get("bias") if p.get("bias") in ("h1", "all3") else "all3",
            "asia": p.get("asia") if p.get("asia") in ("dir", "hold", "none") else "dir", "stop": p.get("stop") if p.get("stop") in ("fvg", "swing") else "fvg",
            "tgt": p.get("tgt") if p.get("tgt") in ("liq2r", "liq", "r") else "liq2r", "side": p.get("side") if p.get("side") in ("long", "short", "both") else "both"}
-    le = str(p.get("lastEntry") or "12:00")
-    out["lastEntry"] = le if len(le) == 5 and le[2] == ":" and "09:40" <= le <= "15:30" else "12:00"
+    le = str(p.get("lastEntry") or "14:00")
+    out["lastEntry"] = le if len(le) == 5 and le[2] == ":" and "09:40" <= le <= "15:30" else "14:00"
+    gf = str(p.get("gapFrom") or "08:00")
+    out["gapFrom"] = gf if len(gf) == 5 and gf[2] == ":" and ("04:00" <= gf <= "09:30" or gf == "18:00") else "08:00"
     K.num(p, out, (("minGap", 0, 200, 4), ("fvgMax", 1, 100, 24), ("bufTicks", 0, 40, 0), ("tgtR", 0.5, 10, 2.0), ("pivLen", 1, 10, 3), ("liqLook", 10, 600, 150),
                    ("minRR", 0, 10, 1.0), ("maxDay", 1, 10, 2), ("days", 20, 3000, 500)), ("minGap", "fvgMax", "bufTicks", "pivLen", "liqLook", "maxDay", "days"))
     out["tickers"] = K.tickers_of(p)
@@ -113,72 +115,79 @@ def liquidity(F, i, d, e, p):
     return best
 
 
-def day_trades(day, on, R, Fd, Fall, fi, E, p):
-    """fi: {time: index in Fall}."""
-    if len(R) < 5:
+def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
+    """The session's trades. Gaps form on the full session's candles Fd (from `gapFrom`, pre-market included); entries in
+    regular hours. notes: a list that gets every inversion and why it was / wasn't taken (for the chart)."""
+    if len(Fd) < 5:
         return []
     asia = asia_of(on)
-    out, gaps, k, buf = [], [], 2, p["bufTicks"] * K.TICK
-    while k < len(R) and len(out) < p["maxDay"]:
-        t, o, h, l, c = R[k]
-        if K.end_of(t, p["tf"])[11:16] > p["lastEntry"]:
+    out, gaps, buf, k = [], [], p["bufTicks"] * K.TICK, 2
+    rth0 = f"{day}T09:30"
+    while k < len(Fd) and len(out) < p["maxDay"]:
+        t, o, h, l, c = Fd[k]
+        today = t[:10] == day
+        if today and K.end_of(t, p["tf"])[11:16] > p["lastEntry"]:
             break
-        a, b3 = R[k - 2], R[k]
-        # new gaps formed by candles k-2, k-1, k: bearish (a low > b3 high) -> a long setup when inverted; bullish -> short
-        if a[3] - b3[2] >= p["minGap"] * K.TICK:
-            gaps.append({"d": 1, "top": a[3], "bot": b3[2], "k": k})
-        if b3[3] - a[2] >= p["minGap"] * K.TICK:
-            gaps.append({"d": -1, "top": b3[3], "bot": a[2], "k": k})
+        a, b3 = Fd[k - 2], Fd[k]
+        if (today and t[11:16] >= p["gapFrom"]) or p["gapFrom"] == "18:00":
+            if a[3] - b3[2] >= p["minGap"] * K.TICK:      # bearish gap (candle 1's low over candle 3's high): a long when inverted
+                gaps.append({"d": 1, "top": a[3], "bot": b3[2], "k": k})
+            if b3[3] - a[2] >= p["minGap"] * K.TICK:      # bullish gap: a short when inverted
+                gaps.append({"d": -1, "top": b3[3], "bot": a[2], "k": k})
         gaps = [g for g in gaps if k - g["k"] <= p["fvgMax"]]
-        hit = None
-        for g in gaps:
-            if g["k"] == k:
-                continue
-            if (g["d"] > 0 and c > g["top"]) or (g["d"] < 0 and c < g["bot"]):
-                hit = g
-                break
-        if hit is None or K.end_of(t, p["tf"])[11:16] < "09:35":
+        hit = next((g for g in gaps if g["k"] != k and ((g["d"] > 0 and c > g["top"]) or (g["d"] < 0 and c < g["bot"]))), None)
+        if hit is None:
             k += 1
             continue
         gaps.remove(hit)                                         # inverted: used up either way
-        d = hit["d"]
-        ok = not ((p["side"] == "long" and d < 0) or (p["side"] == "short" and d > 0))
+        d, why = hit["d"], None
         row = E.get(t)
         bias = bias_at(row, c, p) if row else 0
         ad = 0 if not asia else (1 if asia["c"] > asia["o"] else -1 if asia["c"] < asia["o"] else 0)
         am = 0 if not asia else (1 if c > (asia["h"] + asia["l"]) / 2 else -1)
-        if p["asia"] == "dir":
-            ok = ok and ad == d
-        elif p["asia"] == "hold":
-            ok = ok and am == d
-        if not ok or bias != d:
-            k += 1
-            continue
+        if t < rth0 or K.end_of(t, p["tf"])[11:16] < "09:35":
+            why = "before 09:35"
+        elif (p["side"] == "long" and d < 0) or (p["side"] == "short" and d > 0):
+            why = "other side"
+        elif bias != d:
+            why = "bias " + ("flat" if not bias else "against")
+        elif p["asia"] == "dir" and ad != d:
+            why = "Asia closed against"
+        elif p["asia"] == "hold" and am != d:
+            why = "Asia middle against"
         e = c
         if p["stop"] == "fvg":
             stop = hit["bot"] - buf if d > 0 else hit["top"] + buf
         else:
-            seg = R[hit["k"] - 2:k + 1]
+            seg = Fd[hit["k"] - 2:k + 1]
             stop = (min(x[3] for x in seg) - buf) if d > 0 else (max(x[2] for x in seg) + buf)
         risk = (e - stop) * d
-        if risk <= 0:
+        tgt = tk = None
+        if not why and risk <= 0:
+            why = "no risk"
+        if not why:
+            liq = liquidity(Fall, fi[t], d, e, p) if t in fi else None
+            two = e + d * 2 * risk
+            if p["tgt"] == "liq2r":
+                tgt, tk = (liq, "liquidity") if liq is not None and (liq - two) * d < 0 else (two, "2R")
+            elif p["tgt"] == "liq":
+                tgt, tk = liq, "liquidity"
+            else:
+                tgt, tk = e + d * p["tgtR"] * risk, "R"
+            if tgt is None:
+                why = "no liquidity"
+            elif (tgt - e) * d <= 0 or (p["minRR"] and abs(tgt - e) < p["minRR"] * risk):
+                why = f"target {abs(tgt - e) / risk:.1f}R < {p['minRR']:g}R"
+        if notes is not None:
+            notes.append({"t": t, "p": e, "d": d, "ok": not why, "text": ("Long" if d > 0 else "Short") + (" entry" if not why else f" skipped: {why}"),
+                          "gap": [Fd[hit["k"] - 2][0], hit["bot"], hit["top"]]})
+        if why:
             k += 1
             continue
-        liq = liquidity(Fall, fi[t], d, e, p) if t in fi else None
-        two = e + d * 2 * risk
-        if p["tgt"] == "liq2r":
-            tgt, tk = (liq, "liquidity") if liq is not None and (liq - two) * d < 0 else (two, "2R")
-        elif p["tgt"] == "liq":
-            tgt, tk = liq, "liquidity"
-        else:
-            tgt, tk = e + d * p["tgtR"] * risk, "R"
-        if tgt is None or (tgt - e) * d <= 0 or (p["minRR"] and abs(tgt - e) < p["minRR"] * risk):
-            k += 1
-            continue
-        x, ot, why, j = K.walk(R, k + 1, d, e, stop, tgt)
+        x, ot, ex, j = K.walk(Fd, k + 1, d, e, stop, tgt)
         al = sum(1 for em, up, dn in row if (c - em) * d > 0 and (up if d > 0 else dn)) if row else 0
-        out.append({"in": K.end_of(t, p["tf"]), "out": ot, "e": e, "x": x, "why": why, "side": "long" if d > 0 else "short", "stop": stop, "tgt": tgt,
-                    "stopDist": risk, "tgtDist": abs(tgt - e), "fvgTop": hit["top"], "fvgBot": hit["bot"], "rt": R[hit["k"]][0], "cf": t,
+        out.append({"in": K.end_of(t, p["tf"]), "out": ot, "e": e, "x": x, "why": ex, "side": "long" if d > 0 else "short", "stop": stop, "tgt": tgt,
+                    "stopDist": risk, "tgtDist": abs(tgt - e), "fvgTop": hit["top"], "fvgBot": hit["bot"], "rt": Fd[hit["k"]][0], "cf": t,
                     "al": al, "as": ad == d, "tk": tk, "gap": hit["top"] - hit["bot"], "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
         k = j + 1
     return out
@@ -224,11 +233,11 @@ def decorate(x, p):
 
 
 def overlay(sub, p, sym, start, end):
-    """The three EMAs and each session's Asian range."""
+    """The three EMAs, each session's Asian range and every inversion: taken, or why not."""
     rows, Fall, fi, E = _series(sym, {**p, "_start": start})
     cols = {15: "#5FD4C4", 30: "#E7C35A", 60: "#E07AE0"}
     lines = {n: {"name": f"EMA 20 ({n}m)", "color": cols[n], "pts": []} for n in EMAS}
-    rng = []
+    rng, notes = [], []
     for d, on, R, F, V in rows:
         if d > end:
             continue
@@ -237,5 +246,6 @@ def overlay(sub, p, sym, start, end):
                 lines[n]["pts"].append([b[0], round(em, 2)])
         a = [b for b in on if b[0][11:16] >= "18:00" or b[0][11:16] < "02:00"]
         if a:
-            rng.append({"day": d, "hi": max(b[2] for b in a), "lo": min(b[3] for b in a), "t0": a[0][0], "t1": a[-1][0], "t2": f"{d}T09:30"})
-    return {"lines": list(lines.values()), "ranges": rng}
+            rng.append({"day": d, "hi": max(b[2] for b in a), "lo": min(b[3] for b in a), "t0": a[0][0], "t1": a[-1][0], "t2": f"{d}T09:30", "label": "Asia"})
+        day_trades(d, on, R, F, Fall, fi, E, p, notes)
+    return {"lines": list(lines.values()), "ranges": rng, "notes": notes}

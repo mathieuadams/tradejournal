@@ -413,7 +413,13 @@ def test_19_fvg_inversion():
     t = ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0, "maxDay": 1}))[0]
     assert t["side"] == "long" and t["e"] == 102.4 and t["fvgTop"] == 102.0 and t["fvgBot"] == 101.6 and t["stop"] == 101.6, t
     assert abs(t["tgt"] - 104) < 1e-6, t                                 # the nearest untaken swing high (104) = 2R here
-    assert not ifvg.day_trades(d, [("2026-03-09T18:00", 97, 98, 94, 95, 1)], R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0}))   # Asia closed down
+    notes = []
+    assert not ifvg.day_trades(d, [("2026-03-09T18:00", 97, 98, 94, 95, 1)], R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0}), notes)   # Asia closed down
+    L = [x for x in notes if x["d"] > 0]
+    assert L[0]["text"] == "Long skipped: Asia closed against" and L[0]["t"] == R[5][0] and notes[0]["text"] == "Short skipped: bias against", notes
+    notes = []
+    ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 3}), notes)
+    assert [x for x in notes if x["d"] > 0][0]["text"].startswith("Long skipped: target 2.0R"), notes
 
 
 if __name__ == "__main__":
