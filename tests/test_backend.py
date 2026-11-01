@@ -157,7 +157,8 @@ def test_06_other_setups():
     for setup, p in (("onsweep", {"days": 60, "minRR": 0}), ("onsweep", {"days": 60, "tgt": "other", "tf": 1}), ("ibbreak", {"days": 60, "filter": "none"}), ("ibbreak", {"days": 60, "ibMin": 30, "stop": "bar", "tf": 15}), ("odpull", {"days": 60, "drivePct": 0.05}), ("vwapret", {"days": 60}), ("vwapret", {"days": 60, "hours": "on", "tf": 1, "trend": 0}), ("tvpoc", {"days": 120}), ("tvpoc", {"days": 60, "entry": "poc", "tf": "5", "maType": "HMA", "stop": "none"}), ("tvpoc", {"tf": "1D", "maType": "VWMA", "days": 250}), ("orbema", {"days": 120, "rangeMin": 30}), ("orbema", {"days": 60, "emaOn": "rth", "entryAt": "open"}), ("orbema", {"days": 120, "tf": 1, "minRR": 0}), ("orb", {"days": 120}), ("silver", {"days": 60, "tf": 5}), ("wt", {"tf": "1D", "side": "both", "days": 250}),
                      ("wt", {"tf": "15", "days": 60}), ("pdbreak", {"days": 80, "bias": "none", "minRR": 0}), ("pdbreak", {"days": 60, "bias": "trend", "brkTf": 5, "tgt": "r"}),
                      ("pdsweep", {"days": 60, "minRR": 0}), ("pdsweep", {"days": 60, "levels": "outer", "tgt": "other"}), ("nrbreak", {"days": 80, "cond": "any", "trend": "none", "minRR": 0}),
-                     ("nrbreak", {"days": 60, "cond": "either", "orMin": 30, "stop": "mid"}), ("fpdisp", {"days": 60, "minRR": 0}), ("fpdisp", {"days": 60, "fair": "vwap", "stop": "swing", "tf": 1})):
+                     ("nrbreak", {"days": 60, "cond": "either", "orMin": 30, "stop": "mid"}), ("fpdisp", {"days": 60, "minRR": 0}), ("fpdisp", {"days": 60, "fair": "vwap", "stop": "swing", "tf": 1}),
+                     ("ifvg", {"days": 60, "asia": "none", "bias": "h1", "minRR": 0}), ("ifvg", {"days": 60, "tgt": "liq", "stop": "swing"})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -392,6 +393,27 @@ def test_18_fair_price_displacement():
     assert t["side"] == "short" and t["e"] == 102.0 and t["stop"] == 103.1 and t["tgt"] == 100 and t["why"] == "target" and t["cf"] == R[4][0], t
     assert not fpdisp.engine(d, [], R, R, [0] * len(R), fpdisp.clean({"tf": 5, "bodyMult": 6, "minRR": 0}))          # body only 5x the previous 0.2
     assert not fpdisp.engine(d, [], R, R, [0] * len(R), fpdisp.clean({"tf": 5, "minRR": 3}))                         # 2 pts vs 1.6 risk
+
+
+def test_19_fvg_inversion():
+    import ifvg
+    d = "2026-03-10"
+    # bias long: 3 EMAs rising under price. A pullback leaves a bearish gap (102.0 -> 101.0), then a close above 102.0: long
+    up = [(f"2026-03-09T{18 + i // 12:02d}:{i % 12 * 5:02d}", 0, 0, 0, 90 + i * 0.05) for i in range(60)]
+    E = ifvg.ema_track([(t, c, c, c, c) for t, o, h, l, c in up])
+    assert all(r for e, r, dn in E[up[-1][0]])
+    row = E[up[-1][0]]
+    rows = [(100, 101, 99.8, 100.9), (100.9, 103, 100.8, 102.8), (102.8, 103.5, 102.0, 102.2), (102.2, 102.3, 101.4, 101.5), (101.5, 101.6, 100.6, 100.8),
+            (100.8, 102.5, 100.7, 102.4)] + [(102.4, 105, 102.3, 104.8)] * 60
+    R = _rth(d, rows)
+    Eday = {b[0]: row for b in R}
+    F = [(f"2026-03-10T08:{i * 5:02d}", 103, 104, 102, 103) for i in range(3)] + [(f"2026-03-10T08:15", 103, 104.5, 102, 103)] + [(f"2026-03-10T08:{20 + i * 5:02d}", 103, 104, 102, 103) for i in range(4)] + R
+    fi = {b[0]: i for i, b in enumerate(F)}
+    on = [("2026-03-09T18:00", 95, 96, 94, 95, 1), ("2026-03-10T01:55", 96, 97, 95.5, 97, 1)]
+    t = ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0, "maxDay": 1}))[0]
+    assert t["side"] == "long" and t["e"] == 102.4 and t["fvgTop"] == 102.0 and t["fvgBot"] == 101.6 and t["stop"] == 101.6, t
+    assert abs(t["tgt"] - 104) < 1e-6, t                                 # the nearest untaken swing high (104) = 2R here
+    assert not ifvg.day_trades(d, [("2026-03-09T18:00", 97, 98, 94, 95, 1)], R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0}))   # Asia closed down
 
 
 if __name__ == "__main__":
