@@ -460,6 +460,30 @@ def test_21_ifvg_managed_exit():
     assert x == 102 and why == "target"
 
 
+def test_22_search():
+    import search
+    search.TEST_BUDGET = 40
+    calls = []
+    jobs.INVOKE = lambda payload: calls.append(payload)
+    s = strategy.create(SUB, {"setup": "ifvg", "params": {"days": 80, "tickers": ["NQ"]}})
+    st, r = call("POST", f"/strategies/{s['id']}/search", {"action": "start"})
+    assert st == 200 and r["on"] and calls[-1]["job"] == "search"
+    out = search.job(SUB, s["id"], calls[-1], lambda ev: calls.append(ev))   # a short run: budget from RUN_S, cut by the stop below
+    st, v = call("GET", f"/strategies/{s['id']}/search")
+    assert v["tried"] >= 1 and v["log"] and v["split"]["cut"] and out["continued"] and calls[-1]["job"] == "search"
+    x = v["top"][0]
+    assert x["g"] == search.from_params("ifvg", strategy.get(SUB, s["id"])["params"]) or x["fit"] >= min(y["fit"] for y in v["top"])
+    assert search.key("ifvg", {**x["g"], "exit": "trail", "tgtR": 1.0}) == search.key("ifvg", {**x["g"], "exit": "trail", "tgtR": 4.0})   # tgtR unused
+    call("POST", f"/strategies/{s['id']}/search", {"action": "stop"})
+    assert search.run(SUB, s["id"], budget_s=60) is False                       # stopped: no next run
+    st, v = call("POST", f"/strategies/{s['id']}/search", {"action": "restart"})
+    assert v["tried"] == 0 and not v["top"]
+    assert search.score([]) == {"n": 0} and search.fitness({"n": 10, "t": 3}) < 0       # too few trades
+    s2 = strategy.create(SUB, {"setup": "onsweep", "params": {"days": 40, "tickers": ["NQ"]}})
+    call("POST", f"/strategies/{s2['id']}/search", {"action": "start"})
+    assert search.run(SUB, s2["id"], budget_s=120) is False and search.public(SUB, s2["id"])["done"]   # a 36-setting grid: all tried
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

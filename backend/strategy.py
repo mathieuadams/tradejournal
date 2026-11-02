@@ -152,7 +152,8 @@ def delete(sub, sid):
     if s.get("paper", {}).get("on"):
         raise BadRequest("Stop paper trading first.")
     db.delete(_pk(sub), SK + sid)
-    for k in ("study", "paper", "opt"):
+    db.delete(_pk(sub), "SEARCH#" + sid)
+    for k in ("study", "paper", "opt", "search"):
         store.delete(f"strat/{sub}/{sid}/{k}")
     return {"ok": True}
 

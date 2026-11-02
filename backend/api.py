@@ -264,6 +264,18 @@ def strategy_opt(sub, claims, body, q, sid):
     return {"opt": strategy.opt_view(sub, sid)}
 
 
+@route("GET", "/strategies/(?P<sid>[a-f0-9]{10})/search")
+def strategy_search(sub, claims, body, q, sid):
+    import search
+    return search.public(sub, sid)
+
+
+@route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/search")
+def strategy_search_ctl(sub, claims, body, q, sid):
+    import search
+    return search.control(sub, sid, body.get("action"))
+
+
 @route("GET", "/strategies/(?P<sid>[a-f0-9]{10})/trades")
 def strategy_trades(sub, claims, body, q, sid):
     return {"trades": strategy.trades(sub, sid, q.get("set") or "study")}

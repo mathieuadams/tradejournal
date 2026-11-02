@@ -358,8 +358,8 @@ async function vStrategy(id) {
   S.cur = s;
   let ts = [];
   if (s.study) { try { ts = (await api(`/strategies/${id}/trades?set=${S.trSet}`)).trades; } catch (e) { ts = []; } }
-  let opt = null; try { opt = (await api(`/strategies/${id}/optimize`)).opt; } catch (e) { opt = null; }
-  S.opt = opt;
+  let srch = null; try { srch = await api(`/strategies/${id}/search`); } catch (e) { srch = null; }
+  S.srch = srch;
   const v = s.valid, st = s.study, pp = s.paper || {}, job = s.job || {};
   const locked = !!pp.on;
   const dataOk = Object.values(s.coverage).every(c => c.days >= 60);
@@ -380,7 +380,7 @@ async function vStrategy(id) {
     <div class="row">
       <div class="col-main">
         <section class="panel"><div class="hd"><h2>${v ? 'Validation' : 'Study'}</h2><span class="dim" style="font-size:13px">${v ? `Train = first 60% of the trades, test = the last 40% (from ${esc(v.split || '')}). Costs: $${s.comm} commission + ${s.slip} tick slippage per side, ${s.contracts} contract(s).` : st ? `${esc(st.from)} → ${esc(st.to)}` : 'Run the study to see the trades this rule would have taken.'}</span>
-          <div class="grow"></div><button class="btn sm" data-act="run-opt" ${locked || !dataOk ? 'disabled' : ''} title="Test every combination of the key settings">Optimize</button><button class="btn sm" data-act="run-study" ${locked || !dataOk ? 'disabled' : ''}>${st ? 'Re-run study' : 'Run study'}</button>${st ? `<button class="btn sm ${v ? '' : 'primary'}" data-act="run-valid" ${locked ? 'disabled' : ''}>${v ? 'Re-validate' : 'Run validation'}</button>` : ''}</div>
+          <div class="grow"></div><button class="btn sm" data-act="run-study" ${locked || !dataOk ? 'disabled' : ''}>${st ? 'Re-run study' : 'Run study'}</button>${st ? `<button class="btn sm ${v ? '' : 'primary'}" data-act="run-valid" ${locked ? 'disabled' : ''}>${v ? 'Re-validate' : 'Run validation'}</button>` : ''}</div>
           ${v ? `<div class="tbl-wrap"><table class="tbl" style="min-width:600px"><thead><tr><th>Metric</th><th class="r">Train</th><th class="r">Test</th><th class="r">Random entries (test)</th><th class="r">Test at 2× costs</th></tr></thead><tbody>
             ${mrow('Trades', 'n', x => x.toLocaleString('en-US'))}${mrow('Win rate', 'win', x => x + '%')}${mrow('Avg R', 'avgR', x => sgn(x, 2, 'R'))}${mrow('Profit factor', 'pf', x => x)}
             ${mrow('Avg points / trade', 'pts', x => sgn(x, 2))}${mrow('$ / trade (net)', 'exp', x => money(x))}${mrow('Net total', 'total', x => money(x))}${mrow('Max drawdown', 'dd', x => money(-x))}
@@ -390,7 +390,7 @@ async function vStrategy(id) {
             <div style="flex:2 1 340px;min-width:0"><div class="note" style="margin-bottom:8px">Equity ($, net) · <span class="gain">train</span> then <span class="loss">test</span></div><div class="bars">${equityBars(ts, v && v.split)}</div></div>
             <div style="flex:1 1 220px;min-width:0"><div class="note" style="margin-bottom:8px">R per trade</div><div class="bars" style="gap:3px">${rHist(ts)}</div><div class="note mono" style="display:flex;justify-content:space-between"><span>≤ −1R</span><span>0</span><span>≥ +3R</span></div></div></div>` : ''}
         </section>
-        ${opt ? optHtml(s, opt, locked) : ''}
+        ${srch ? `<div id="srch">${srchHtml(s, srch, locked, dataOk)}</div>` : ''}
         ${grid ? `<section class="panel"><div class="hd"><h2>Where it may trade</h2><span class="dim" style="font-size:13px">Test results by market condition (known before the open). Tick the ones paper trading may use.</span></div>
           <div class="bd tbl-wrap"><div class="cells"><div></div><div class="dim" style="font-size:12px;text-align:center">calm</div><div class="dim" style="font-size:12px;text-align:center">volatile</div>
           ${['Bull', 'Sideways', 'Bear'].map(ph => `<div class="muted" style="display:flex;align-items:center">${ph}</div>${['calm', 'volatile'].map(vo => { const k = ph + '|' + vo, g = grid[k] || {}, on = !!(s.cells || {})[k];
@@ -429,6 +429,49 @@ async function vStrategy(id) {
       </aside>
     </div>`);
   if (job.status === 'running') pollJob('/strategies/' + id, x => x.job, () => vStrategy(id));
+  if (srch && srch.on) pollSearch(id);
+}
+function pollSearch(id) {
+  clearTimeout(S.srchT);
+  S.srchT = setTimeout(async () => {
+    if (!S.cur || S.cur.id !== id || !$('#srch')) return;
+    try { S.srch = await api(`/strategies/${id}/search`); $('#srch').innerHTML = srchHtml(S.cur, S.srch, !!(S.cur.paper || {}).on, true); } catch (e) { /* next time */ }
+    if (S.srch && S.srch.on) pollSearch(id);
+  }, 15000);
+}
+function blockLabel(setup, k, v) {
+  const p = (SETUPS[setup].params || []).find(x => x[0] === k);
+  if (!p) return [k, String(v)];
+  if (p[2] === 'sel') { const o = p[3].find(x => String(x[0]) === String(v)); return [p[1], o ? o[1] : String(v)]; }
+  if (p[2] === 'bool') return [p[1], v ? 'yes' : 'no'];
+  return [p[1], String(v)];
+}
+function srchHtml(s, o, locked, dataOk) {
+  const r2 = (m, k, f) => m && m[k] != null ? f(m[k]) : '—';
+  const sp = o.split || {};
+  const green = x => x.test && x.test.n >= 30 && (x.test.t || 0) >= 1.5;
+  const isCur = x => Object.keys(x.g).every(k => String(x.g[k]) === String(s.params[k]));
+  const status = o.running ? `running · ${esc(o.step || '')}` : o.on ? 'starting the next run…' : o.done ? 'every setting tried' : 'stopped';
+  return `<section class="panel"><div class="hd"><h2>Optimizer</h2>
+      <button class="btn sm ${o.on ? '' : 'primary'}" data-act="${o.on ? 'srch-stop' : 'srch-start'}" ${locked || !dataOk ? 'disabled' : ''}>${o.on ? '■ Stop' : '▶ Start'}</button>
+      <button class="btn sm" data-act="srch-restart" ${locked ? 'disabled' : ''}>Restart</button>
+      <span class="dim" style="font-size:13px">${(o.tried || 0).toLocaleString('en-US')} settings tried${o.avgEval ? ` · ${o.avgEval}s each` : ''} · ${status}</span></div>
+    <div class="bd note" style="border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:4px">
+      ${o.log && o.log.length ? `<div>Runs (about 8 min each): ${o.log.slice().reverse().map(l => l.error ? `<span class="loss">${esc(l.at.slice(11, 16))} error: ${esc(l.error)}</span>` : `${esc(l.at.slice(11, 16))} ${l.tried} tried · best ${l.best != null ? l.best : '—'}`).join(' · ')}</div>` : ''}
+      ${o.error ? `<div class="loss">Last error: ${esc(o.error)}</div>` : ''}
+      <div>Each setting is a full study of this strategy (net of costs, in R of each trade's risk). Chosen on the <b>train</b> days only${sp.cut ? ` (${esc(sp.from)} → ${esc(sp.cut)}, ${sp.trainDays} days)` : ''} by the <b>t of the R per day</b>, ${o.minTrades}+ trades, no month over ${Math.round(o.monthShare * 100)}% of the profit.
+        The <b>test</b> days${sp.cut ? ` (${esc(sp.cut)} → ${esc(sp.to)}, ${sp.testDays} days)` : ''} are never used to choose: a setting good on both is the one to try. Starts from the current rules.</div></div>
+    ${o.top && o.top.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:980px"><thead><tr><th>#</th><th class="r">Score</th><th class="r">Train trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">t</th>
+      <th class="r">Test trades</th><th class="r">Win</th><th class="r">Avg</th><th class="r">Total</th><th class="r">t</th><th class="r">DD</th><th>Settings</th><th></th></tr></thead><tbody>
+      ${o.top.map((x, i) => `<tr style="${green(x) ? 'background:rgba(63,185,120,0.10)' : ''}"><td>${i + 1}</td><td class="r mono">${x.fit.toFixed(2)}</td>
+        <td class="r">${r2(x.train, 'n', v => v.toLocaleString('en-US'))}</td><td class="r">${r2(x.train, 'win', v => v + '%')}</td><td class="r ${cls(x.train.avgR)}">${r2(x.train, 'avgR', v => sgn(v, 2, 'R'))}</td><td class="r mono">${r2(x.train, 't', v => v.toFixed(2))}</td>
+        <td class="r">${r2(x.test, 'n', v => v.toLocaleString('en-US'))}</td><td class="r">${r2(x.test, 'win', v => v + '%')}</td><td class="r ${cls(x.test.avgR)}">${r2(x.test, 'avgR', v => sgn(v, 2, 'R'))}</td>
+        <td class="r ${cls(x.test.totR)}">${r2(x.test, 'totR', v => sgn(v, 2, 'R'))}</td><td class="r mono">${r2(x.test, 't', v => v.toFixed(2))}</td><td class="r loss">${r2(x.test, 'dd', v => sgn(v, 2, 'R'))}</td>
+        <td><details><summary class="dim" style="cursor:pointer;font-size:12px">show</summary><div style="font-size:12px;margin-top:4px;display:grid;grid-template-columns:auto auto;gap:2px 10px">${(x.keys || Object.keys(x.g)).map(k => [k, x.g[k]]).map(([k, v]) => { const [l, t] = blockLabel(s.setup, k, v); return `<span class="dim">${esc(l)}</span><span class="mono" style="${String(s.params[k]) !== String(v) ? 'color:var(--buyT)' : ''}">${esc(t)}</span>`; }).join('')}</div></details></td>
+        <td>${isCur(x) ? '<span class="dim" style="font-size:12px">current</span>' : `<button class="btn sm" data-srchuse="${i}" ${locked ? 'disabled' : ''}>Use</button>`}</td></tr>`).join('')}
+    </tbody></table></div><div class="bd note">Green rows: still positive on the test days (30+ trades, t ≥ 1.5). In the settings, values in blue differ from the current rules. Use one, then run the study and the validation.</div>`
+    : `<div class="empty">${o.on ? 'Searching: the first results appear after the first setting.' : 'Press Start: it keeps trying settings (about 8 minutes per run, one run after another) until you stop it.'}</div>`}
+  </section>`;
 }
 function optHtml(s, o, locked) {
   const keys = Object.keys(o.grid), cur = keys.every(k => true) ? s.params : {};
@@ -641,6 +684,7 @@ document.addEventListener('click', async e => {
     if (ds.filter) { S.filter = ds.filter; return vResearch(); }
     if (ds.setup) { S.newSetup = ds.setup; $('#newbox').innerHTML = newForm(); return; }
     if (ds.trset) { S.trSet = ds.trset; return vStrategy(S.cur.id); }
+    if (ds.srchuse) { const x = S.srch.top[+ds.srchuse]; await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: { ...S.cur.params, ...x.g } } }); toast('Settings applied: run the study and the validation.'); return vStrategy(S.cur.id); }
     if (ds.optuse) { const r = S.opt.rows[+ds.optuse]; await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: { ...S.cur.params, ...r.p } } }); toast('Settings applied: run the study and the validation.'); return vStrategy(S.cur.id); }
     if (ds.cellk) { const on = el.getAttribute('aria-pressed') !== 'true'; await api('/strategies/' + S.cur.id, { method: 'PUT', body: { cells: { [ds.cellk]: on } } }); return vStrategy(S.cur.id); }
     if (ds.csym) { S.chart.sym = ds.csym; S.chart.strat = ''; S.rp = null; return vChart(); }
@@ -667,6 +711,7 @@ document.addEventListener('click', async e => {
       case 'new': S.newSetup = S.newSetup === null ? '' : null; $('#newbox').innerHTML = S.newSetup !== null ? newForm() : ''; break;
       case 'new-close': S.newSetup = null; $('#newbox').innerHTML = ''; break;
       case 'create': { const p = readParams($('#newp')); const s = await api('/strategies', { method: 'POST', body: { setup: S.newSetup, name: $('#new-name').value, params: p } }); S.newSetup = null; S.strats = null; location.hash = '#strategy/' + s.id; break; }
+      case 'srch-start': case 'srch-stop': case 'srch-restart': S.srch = await api(`/strategies/${S.cur.id}/search`, { method: 'POST', body: { action: act.slice(5) } }); $('#srch').innerHTML = srchHtml(S.cur, S.srch, false, true); if (S.srch.on) pollSearch(S.cur.id); break;
       case 'run-study': case 'run-valid': case 'run-opt': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: { 'run-study': 'study', 'run-valid': 'validate', 'run-opt': 'optimize' }[act] } }); if (act === 'run-opt') toast('Optimizing: each setting is a full study, this can take several minutes.'); vStrategy(S.cur.id); break;
       case 'save-rules': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: readParams($('#rules')) } }); toast('Rules saved: run the study again.'); vStrategy(S.cur.id); break;
       case 'save-costs': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { contracts: +$('#pp-c').value, dailyLoss: +$('#pp-dl').value, comm: +$('#pp-comm').value, slip: +$('#pp-slip').value } }); toast('Saved.'); vStrategy(S.cur.id); break;
