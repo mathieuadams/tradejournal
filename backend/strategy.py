@@ -295,7 +295,7 @@ def _grid(ts):
 # ---------------------------------------------------------------- optimization
 
 GRIDS = {
-    "ifvg": {"hours": ["rth", "all"], "stop": ["fvg", "swing"], "trail": ["swing", "r", "ema15"], "trailR": [0.5, 1.0], "beR": [0, 0.5]},
+    "ifvg": {"hours": ["rth", "all"], "stop": ["fvg", "swing"], "trail": ["swing", "r", "ema15"], "trailR": [0.5, 1.0], "beR": [0, 0.5], "partPct": [0, 50]},
     "fpdisp": {"fair": ["open", "vwap"], "bodyMult": [1.0, 1.5, 2.0], "stop": ["bar", "swing"], "lastEntry": ["11:00", "13:00", "15:00"]},
     "pdbreak": {"bias": ["close", "trend", "none"], "brkTf": [5, 15], "tgtAtr": [0.75, 1.0, 1.5]},
     "pdsweep": {"levels": ["pd", "outer"], "tgt": ["vwap", "mid", "other"], "lastEntry": ["10:30", "11:30", "13:00"], "minDepth": [0, 5]},
@@ -314,11 +314,15 @@ GRIDS = {
 OPT_MIN = 30                                           # train trades a setting needs to be ranked
 
 
+GRID_SKIP = {"ifvg": lambda c: c["trail"] != "r" and c["trailR"] != 0.5}   # the R distance only matters for the R trail
+
+
 def _combos(setup):
     import itertools
     g = GRIDS.get(setup) or {}
     keys = list(g)
-    return [dict(zip(keys, vals)) for vals in itertools.product(*[g[k] for k in keys])]
+    skip = GRID_SKIP.get(setup) or (lambda c: False)
+    return [c for c in (dict(zip(keys, vals)) for vals in itertools.product(*[g[k] for k in keys])) if not skip(c)]
 
 
 def _brief(m):
@@ -343,18 +347,21 @@ def optimize(sub, sid, prog=None, deadline=None):
         days = [d for d in futdata.trading_days(s["params"]["tickers"][0])][-int(s["params"].get("days") or 250):]
         cur = {"base": base, "grid": GRIDS[s["setup"]], "split": days[int(len(days) * TRAIN)] if days else None, "rows": [],
                "total": len(combos), "complete": False, "at": iso(now_ny())}
-    split = cur["split"]
+    split, slow = cur["split"], 0.0
     for i in range(len(cur["rows"]), len(combos)):
-        if deadline and _t.time() > deadline:
+        if deadline and _t.time() + 1.5 * slow > deadline:     # not enough time left for one more setting
             store.put_json(key, cur)
             return False
         if prog:
             prog(f"Optimizing: setting {i + 1} of {len(combos)}")
+        t0 = _t.time()
         c = combos[i]
         trial = {**s, "params": _params(s["setup"], {**base, **c})}
         ts = [t for t in run_trades(sub, trial) if t.get("why") != "open"]
         tr, te = [t for t in ts if t["d"] < split], [t for t in ts if t["d"] >= split]
         cur["rows"].append({"p": c, "train": _brief(metrics(tr)), "test": _brief(metrics(te))})
+        store.put_json(key, cur)                               # saved after every setting: a cut-off run loses at most one
+        slow = max(slow, _t.time() - t0)
     cur.update(complete=True, at=iso(now_ny()))
     store.put_json(key, cur)
     return True

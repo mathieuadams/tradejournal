@@ -7,9 +7,23 @@ TICK = 0.25
 RTH0, RTH1 = "09:30", "16:00"
 
 
+_CACHE = {}
+
+
 def sessions(sym, p):
     """{day: (overnight 1-minute candles, regular-hours tf candles, full-session tf candles, session VWAP at each
-    regular-hours candle's close)} for the strategy's sessions."""
+    regular-hours candle's close)} for the strategy's sessions. Cached per process (the optimizer runs the same
+    sessions for every setting); read-only for the callers."""
+    import futdata
+    key = (sym, p.get("_start"), None if p.get("_start") else p["days"], p["tf"], futdata.last_bar_time(sym))
+    if key not in _CACHE:
+        if len(_CACHE) >= 4:
+            _CACHE.pop(next(iter(_CACHE)))
+        _CACHE[key] = _sessions(sym, p)
+    return _CACHE[key]
+
+
+def _sessions(sym, p):
     import futdata
     start = p.get("_start")
     by = futdata.sessions(sym, None if start else p["days"], rth=False, start=start)
