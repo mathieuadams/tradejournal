@@ -101,6 +101,7 @@
       const ov = d.overlay || {};
       this.ovLines = (ov.lines || []).map(L => ({ ...L, ix: L.pts.map(([t, v]) => [this.idxOf(t), v, t]) }));
       this.ovRanges = (ov.ranges || []).map(r => ({ ...r, i0: this.idxOf(r.t0), i1: this.idxOf(r.t1), i2: this.idxOf(r.t2) }));
+      this.ovStrip = ov.strip ? { name: ov.strip.name, m: new Map(ov.strip.pts.map(([t, v]) => [t.slice(0, 16), v])) } : null;
       this.ovNotes = (ov.notes || []).map(x => ({ ...x, i: this.idxOf(x.t), g0: x.gap ? this.idxOf(x.gap[0]) : null }));
       if (!keepView || !this.view) this.fit(); else this.draw();
     }
@@ -163,6 +164,16 @@
         [r.hi, r.lo].forEach(p => { g.beginPath(); g.moveTo(X(r.i0) - bw / 2, Y(p) + 0.5); g.lineTo(X(r.i2), Y(p) + 0.5); g.stroke(); });
         g.setLineDash([]); g.fillStyle = 'rgba(231,195,90,0.85)'; g.textAlign = 'left'; g.fillText(r.label || 'OR', X(r.i0), Y(r.hi) - 7);
       });
+      // the strategy's bias at each candle: a band along the bottom (blue = long, orange = short, grey = none)
+      if (this.ovStrip) {
+        const sh = 6, y0 = mainH - sh - 2;
+        for (let i = a; i < b; i++) {
+          const bv = this.ovStrip.m.get(B[i][0].slice(0, 16)); if (bv == null) continue;
+          g.fillStyle = bv > 0 ? 'rgba(79,163,255,0.85)' : bv < 0 ? 'rgba(242,153,74,0.85)' : 'rgba(120,128,140,0.45)';
+          g.fillRect(X(i) - pw / (v.b - v.a) / 2, y0, pw / (v.b - v.a) + 0.5, sh);
+        }
+        g.fillStyle = 'rgba(170,178,190,0.8)'; g.textAlign = 'left'; g.font = '10px Inter, system-ui, sans-serif'; g.fillText('Bias', pl + 4, y0 - 7); g.font = '11px Inter, system-ui, sans-serif';
+      }
       // the strategy's decisions: each gap closed through (inverted), taken or why not
       (this.ovNotes || []).forEach(x => {
         if (x.i < a || x.i >= b) return;

@@ -295,7 +295,7 @@ def _grid(ts):
 # ---------------------------------------------------------------- optimization
 
 GRIDS = {
-    "ifvg": {"bias": ["h1", "all3"], "asia": ["dir", "hold", "none"], "tgt": ["liq2r", "liq", "r"], "stop": ["fvg", "swing"], "lastEntry": ["11:00", "13:00"]},
+    "ifvg": {"bias": ["h1", "all3"], "hours": ["rth", "all"], "exit": ["target", "trail"], "stop": ["fvg", "swing"], "lastEntry": ["11:00", "14:00"]},
     "fpdisp": {"fair": ["open", "vwap"], "bodyMult": [1.0, 1.5, 2.0], "stop": ["bar", "swing"], "lastEntry": ["11:00", "13:00", "15:00"]},
     "pdbreak": {"bias": ["close", "trend", "none"], "brkTf": [5, 15], "tgtAtr": [0.75, 1.0, 1.5]},
     "pdsweep": {"levels": ["pd", "outer"], "tgt": ["vwap", "mid", "other"], "lastEntry": ["10:30", "11:30", "13:00"], "minDepth": [0, 5]},

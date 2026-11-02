@@ -16,15 +16,20 @@ Long (short = the mirror):
      in the last `liqLook` candles, overnight included).
        liq2r = that liquidity, but at least 2R (2R when it's closer or there is none);  liq = the liquidity;  r = `tgtR` x the risk.
      Skipped when the target is under `minRR` x the risk.
-  6. One position at a time, at most `maxDay` a session, flat at 15:55."""
+  6. One position at a time, at most `maxDay` a session, flat at 15:55.
+  7. Exit (`exit`): target = stop / target above; trail = stop to break-even once `beR` R in profit, `partPct`% off at
+     `partR` R, the rest without a target, trailing (`trail`): swing = under the low of the last `trailN` closed candles;
+     ema15 = out at a close under the 15-minute 20 EMA; none = break-even stop only. Intrabar: the stop is checked first.
+  8. Hours (`hours`): rth = entries 09:35-`lastEntry`; all = the overnight too (from 18:00; gaps from 18:00)."""
 import random
 
 import sessionkit as K
 
 DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "none", "minGap": 4, "fvgMax": 24, "gapFrom": "08:00", "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
-           "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "side": "both", "days": 500}
+           "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "hours": "rth",
+           "exit": "target", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
-           ("gap", "Gap size")]
+           ("gap", "Gap size"), ("ses", "Session")]
 EMAS = (15, 30, 60)
 
 
@@ -37,6 +42,10 @@ def clean(p):
     out["lastEntry"] = le if len(le) == 5 and le[2] == ":" and "09:40" <= le <= "15:30" else "14:00"
     gf = str(p.get("gapFrom") or "08:00")
     out["gapFrom"] = gf if len(gf) == 5 and gf[2] == ":" and ("04:00" <= gf <= "09:30" or gf == "18:00") else "08:00"
+    out["hours"] = p.get("hours") if p.get("hours") in ("rth", "all") else "rth"
+    out["exit"] = p.get("exit") if p.get("exit") in ("target", "trail") else "target"
+    out["trail"] = p.get("trail") if p.get("trail") in ("swing", "ema15", "none") else "swing"
+    K.num(p, out, (("beR", 0, 5, 0.5), ("partR", 0, 10, 1.0), ("partPct", 0, 100, 50), ("trailN", 1, 50, 3)), ("trailN",))
     K.num(p, out, (("minGap", 0, 200, 4), ("fvgMax", 1, 100, 24), ("bufTicks", 0, 40, 0), ("tgtR", 0.5, 10, 2.0), ("pivLen", 1, 10, 3), ("liqLook", 10, 600, 150),
                    ("minRR", 0, 10, 1.0), ("maxDay", 1, 10, 2), ("days", 20, 3000, 500)), ("minGap", "fvgMax", "bufTicks", "pivLen", "liqLook", "maxDay", "days"))
     out["tickers"] = K.tickers_of(p)
@@ -50,8 +59,16 @@ def describe(p):
     side = {"long": "long only", "short": "short only", "both": "both sides"}[p["side"]]
     return (f"{', '.join(p['tickers'])} {p['tf']}-minute, NYSE session: bias from {b}{a}. A fair value gap against the bias (the pullback), then a close "
             f"through it (inversion, within {p['fvgMax']} candles): enter at that close ({side}, before {p['lastEntry']}), stop at "
-            f"{'the far end of the gap' if p['stop'] == 'fvg' else 'the pullback extreme'}, target {tg}" + (f" (at least {p['minRR']:g}R)" if p["minRR"] else "")
-            + f", at most {p['maxDay']} a session, flat at 15:55")
+            f"{'the far end of the gap' if p['stop'] == 'fvg' else 'the pullback extreme'}" + ("" if p["exit"] == "trail" else f", target {tg}" + (f" (skip under {p['minRR']:g}R)" if p["minRR"] else ""))
+            + f", at most {p['maxDay']} a session, flat at 15:55" + _exit_txt(p)).replace("NYSE session", "overnight + NYSE session" if p["hours"] == "all" else "NYSE session")
+
+
+def _exit_txt(p):
+    if p["exit"] != "trail":
+        return ""
+    tr = {"swing": f"the last {p['trailN']} candles' low / high", "ema15": "the 15-minute 20 EMA (a close through it)", "none": "nothing (flat at 15:55)"}[p["trail"]]
+    return (". Managed: " + (f"stop to break-even at {p['beR']:g}R, " if p["beR"] else "") + (f"{p['partPct']:g}% off at {p['partR']:g}R, " if p["partPct"] else "")
+            + f"the rest trails {tr}, no target")
 
 
 def tickers(sub, p):
@@ -129,7 +146,7 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
         if today and K.end_of(t, p["tf"])[11:16] > p["lastEntry"]:
             break
         a, b3 = Fd[k - 2], Fd[k]
-        if (today and t[11:16] >= p["gapFrom"]) or p["gapFrom"] == "18:00":
+        if (today and t[11:16] >= p["gapFrom"]) or p["gapFrom"] == "18:00" or p["hours"] == "all":
             if a[3] - b3[2] >= p["minGap"] * K.TICK:      # bearish gap (candle 1's low over candle 3's high): a long when inverted
                 gaps.append({"d": 1, "top": a[3], "bot": b3[2], "k": k})
             if b3[3] - a[2] >= p["minGap"] * K.TICK:      # bullish gap: a short when inverted
@@ -145,8 +162,10 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
         bias = bias_at(row, c, p) if row else 0
         ad = 0 if not asia else (1 if asia["c"] > asia["o"] else -1 if asia["c"] < asia["o"] else 0)
         am = 0 if not asia else (1 if c > (asia["h"] + asia["l"]) / 2 else -1)
-        if t < rth0 or K.end_of(t, p["tf"])[11:16] < "09:35":
+        if p["hours"] == "rth" and (t < rth0 or K.end_of(t, p["tf"])[11:16] < "09:35"):
             why = "before 09:35"
+        elif p["hours"] == "all" and "16:00" <= t[11:16] < "18:00":
+            why = "market closed"
         elif (p["side"] == "long" and d < 0) or (p["side"] == "short" and d > 0):
             why = "other side"
         elif bias != d:
@@ -165,7 +184,9 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
         tgt = tk = None
         if not why and risk <= 0:
             why = "no risk"
-        if not why:
+        if not why and p["exit"] == "trail":                    # managed: no target, so no target filter
+            tgt, tk = (e + d * p["partR"] * risk if p["partPct"] else e + d * 2 * risk), "trail"
+        elif not why:
             liq = liquidity(Fall, fi[t], d, e, p) if t in fi else None
             two = e + d * 2 * risk
             if p["tgt"] == "liq2r":
@@ -184,12 +205,65 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
         if why:
             k += 1
             continue
-        x, ot, ex, j = K.walk(Fd, k + 1, d, e, stop, tgt)
+        x, ot, ex, j, part = manage(Fd, k + 1, d, e, stop, tgt, risk, p, E, f"{day}T15:55")
         al = sum(1 for em, up, dn in row if (c - em) * d > 0 and (up if d > 0 else dn)) if row else 0
         out.append({"in": K.end_of(t, p["tf"]), "out": ot, "e": e, "x": x, "why": ex, "side": "long" if d > 0 else "short", "stop": stop, "tgt": tgt,
                     "stopDist": risk, "tgtDist": abs(tgt - e), "fvgTop": hit["top"], "fvgBot": hit["bot"], "rt": Fd[hit["k"]][0], "cf": t,
-                    "al": al, "as": ad == d, "tk": tk, "gap": hit["top"] - hit["bot"], "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
+                    "al": al, "as": ad == d, "tk": tk, "gap": hit["top"] - hit["bot"], "ses": t >= rth0, "part": part, "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
         k = j + 1
+    return out
+
+
+def manage(B, j0, d, e, stop, tgt, risk, p, E, flat):
+    """The exit of a position entered at the close before candle j0. exit=target: stop / target; exit=trail: break-even,
+    partial, trailing runner. flat: 'YYYY-MM-DDTHH:MM' (exit at that candle's close). Returns (average exit price, exit
+    time, why, index, partial [time, price] or None). The stop is checked before anything else in a candle."""
+    trail = p["exit"] == "trail"
+    left, got, part, be_done = 1.0, 0.0, None, False
+    st = stop
+    pct = p["partPct"] / 100 if trail else 0
+    for j in range(j0, len(B)):
+        t, o, h, l, c = B[j]
+        if (d > 0 and l <= st) or (d < 0 and h >= st):
+            px = min(o, st) if d > 0 else max(o, st)
+            why = "stop" if st == stop else "break-even" if abs(st - e) < 1e-9 else "trail"
+            return got + left * px, t, why if not part else why + " (after partial)", j, part
+        if not trail:
+            if (d > 0 and h >= tgt) or (d < 0 and l <= tgt):
+                return max(o, tgt) if d > 0 else min(o, tgt), t, "target", j, None
+        else:
+            fav = (h - e) if d > 0 else (e - l)
+            if pct and not part and fav >= p["partR"] * risk:
+                px = e + d * p["partR"] * risk
+                got, left, part = got + pct * px, left - pct, [t, px]
+            if p["beR"] and not be_done and fav >= p["beR"] * risk:
+                st, be_done = (max(st, e) if d > 0 else min(st, e)), True
+            if p["trail"] == "swing" and j - j0 + 1 >= p["trailN"]:
+                w = B[j - p["trailN"] + 1:j + 1]
+                lv = min(b[3] for b in w) if d > 0 else max(b[2] for b in w)
+                if (lv - st) * d > 0 and (be_done or not p["beR"]):
+                    st = lv
+            elif p["trail"] == "ema15" and E.get(t) and (be_done or not p["beR"]) and (c - E[t][0][0]) * d < 0:
+                return got + left * c, t, "trail (EMA)" + (" (after partial)" if part else ""), j, part
+        if t[:16] >= flat:
+            return got + left * c, t, "time", j, part
+    return got + left * B[-1][4], B[-1][0], "close", len(B) - 1, part
+
+
+def baseline(B, x, rnd, p, E, flat, last, lo, n=3):
+    """The same stop distance and exit management from random candles between index lo and the flat time: % gross."""
+    d = 1 if x["side"] == "long" else -1
+    idx = [k for k in range(lo, len(B) - 2) if B[k][0][:16] < last and not ("16:00" <= B[k][0][11:16] < "18:00")]
+    out = []
+    for _ in range(n):
+        if not idx:
+            break
+        k = rnd.choice(idx)
+        e = B[k][4]
+        risk = x["stopDist"]
+        tgt = e + d * x["tgtDist"]
+        px, _, _, _, _ = manage(B, k + 1, d, e, e - d * risk, tgt, risk, p, E, flat)
+        out.append(d * (px / e - 1) * 100)
     return out
 
 
@@ -219,13 +293,15 @@ def all_trades(sub, p, cells=None, prog=None):
             for x in day_trades(d, on, R, F, Fall, fi, E, p):
                 x.update(s=sym, d=d, cell=None)
                 trades.append(x)
-                base.append((d, x["side"], K.baseline(R, x, rnd)))
+                lo = 0 if p["hours"] == "all" else next((i for i, b in enumerate(F) if b[0] >= f"{d}T09:35"), len(F))
+                base.append((d, x["side"], baseline(F, x, rnd, p, E, f"{d}T15:55", f"{d}T{p['lastEntry']}", lo)))
     return trades, base
 
 
 def decorate(x, p):
-    x["tod"] = K.tod(x["in"])
+    x["tod"] = K.tod(x["in"]) if x.get("ses", True) else "overnight"
     x["wd"] = K.weekday(x["d"])
+    x["ses"] = "NYSE" if x.get("ses", True) else "overnight"
     x["al"] = f"{x.get('al', 0)} of 3"
     x["as"] = "with the bias" if x.get("as") else "against / flat"
     g = x.get("gap") or 0
@@ -237,15 +313,18 @@ def overlay(sub, p, sym, start, end):
     rows, Fall, fi, E = _series(sym, {**p, "_start": start})
     cols = {15: "#5FD4C4", 30: "#E7C35A", 60: "#E07AE0"}
     lines = {n: {"name": f"EMA 20 ({n}m)", "color": cols[n], "pts": []} for n in EMAS}
-    rng, notes = [], []
+    rng, notes, strip = [], [], []
     for d, on, R, F, V in rows:
         if d > end:
             continue
         for b in F:
             for n, (em, up, dn) in zip(EMAS, E.get(b[0], [])):
                 lines[n]["pts"].append([b[0], round(em, 2)])
+            if E.get(b[0]):
+                strip.append([b[0], bias_at(E[b[0]], b[4], p)])
         a = [b for b in on if b[0][11:16] >= "18:00" or b[0][11:16] < "02:00"]
         if a:
             rng.append({"day": d, "hi": max(b[2] for b in a), "lo": min(b[3] for b in a), "t0": a[0][0], "t1": a[-1][0], "t2": f"{d}T09:30", "label": "Asia"})
         day_trades(d, on, R, F, Fall, fi, E, p, notes)
-    return {"lines": list(lines.values()), "ranges": rng, "notes": notes}
+    return {"lines": list(lines.values()), "ranges": rng, "notes": notes,
+            "strip": {"name": "EMA bias (" + ("15 / 30 / 60" if p["bias"] == "all3" else "hourly") + "): long / short / none", "pts": strip}}

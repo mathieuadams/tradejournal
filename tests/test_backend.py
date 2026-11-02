@@ -158,7 +158,8 @@ def test_06_other_setups():
                      ("wt", {"tf": "15", "days": 60}), ("pdbreak", {"days": 80, "bias": "none", "minRR": 0}), ("pdbreak", {"days": 60, "bias": "trend", "brkTf": 5, "tgt": "r"}),
                      ("pdsweep", {"days": 60, "minRR": 0}), ("pdsweep", {"days": 60, "levels": "outer", "tgt": "other"}), ("nrbreak", {"days": 80, "cond": "any", "trend": "none", "minRR": 0}),
                      ("nrbreak", {"days": 60, "cond": "either", "orMin": 30, "stop": "mid"}), ("fpdisp", {"days": 60, "minRR": 0}), ("fpdisp", {"days": 60, "fair": "vwap", "stop": "swing", "tf": 1}),
-                     ("ifvg", {"days": 60, "asia": "none", "bias": "h1", "minRR": 0}), ("ifvg", {"days": 60, "tgt": "liq", "stop": "swing"})):
+                     ("ifvg", {"days": 60, "asia": "none", "bias": "h1", "minRR": 0}), ("ifvg", {"days": 60, "tgt": "liq", "stop": "swing"}),
+                     ("ifvg", {"days": 60, "hours": "all", "exit": "trail", "trail": "ema15", "gapFrom": "18:00"})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -433,6 +434,23 @@ def test_20_ifvg_asia_migration():
     assert strategy.get(SUB, s["id"])["params"]["asia"] == "none"                      # the old default switched off once
     call("PUT", f"/strategies/{s['id']}", {"params": {**strategy.get(SUB, s["id"])["params"], "asia": "dir"}})
     assert strategy.get(SUB, s["id"])["params"]["asia"] == "dir"                       # a later choice sticks
+
+
+def test_21_ifvg_managed_exit():
+    import ifvg
+    p = ifvg.clean({"exit": "trail", "beR": 0.5, "partR": 1, "partPct": 50, "trail": "none"})
+    B = [("2026-03-10T10:00", 100, 100.6, 99.8, 100.4), ("2026-03-10T10:05", 100.4, 101.2, 100.3, 101), ("2026-03-10T10:10", 101, 101.1, 99.9, 100)]
+    x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, p, {}, "2026-03-10T15:55")
+    assert abs(x - 100.5) < 1e-9 and part == ["2026-03-10T10:05", 101] and why == "break-even (after partial)" and j == 2, (x, why, part)
+    # swing trail: the stop follows the last 2 candles' low once at break-even; out on the pullback
+    p = ifvg.clean({"exit": "trail", "beR": 0.5, "partPct": 0, "trail": "swing", "trailN": 2})
+    B = [("2026-03-10T10:00", 100, 101, 99.9, 100.8), ("2026-03-10T10:05", 100.8, 103, 100.7, 102.8), ("2026-03-10T10:10", 102.8, 104, 102.5, 103.8),
+         ("2026-03-10T10:15", 103.8, 103.9, 102.0, 102.2), ("2026-03-10T10:20", 102.2, 102.4, 101.5, 101.6)]
+    x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, p, {}, "2026-03-10T15:55")
+    assert x == 102 and why == "trail" and j == 4 and part is None, (x, why)   # the stop trailed up to 102 (low of 10:10-10:15)
+    # fixed target unchanged
+    x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, ifvg.clean({}), {}, "2026-03-10T15:55")
+    assert x == 102 and why == "target"
 
 
 if __name__ == "__main__":
