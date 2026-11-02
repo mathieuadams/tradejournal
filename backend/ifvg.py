@@ -19,7 +19,7 @@ Long (short = the mirror):
   6. One position at a time, at most `maxDay` a session, flat at 15:55.
   7. Exit (`exit`): target = stop / target above; trail = stop to break-even once `beR` R in profit, `partPct`% off at
      `partR` R, the rest without a target, trailing (`trail`): swing = under the low of the last `trailN` closed candles;
-     ema15 = out at a close under the 15-minute 20 EMA; none = break-even stop only. Intrabar: the stop is checked first.
+     r = `trailR` x the risk behind the best price since the entry; ema15 = out at a close under the 15-minute 20 EMA; none = break-even stop only. Intrabar: the stop is checked first.
   8. Hours (`hours`): rth = entries 09:35-`lastEntry`; all = the overnight too (from 18:00; gaps from 18:00)."""
 import random
 
@@ -27,7 +27,7 @@ import sessionkit as K
 
 DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "none", "minGap": 4, "fvgMax": 24, "gapFrom": "08:00", "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
            "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "hours": "all",
-           "exit": "trail", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "side": "both", "days": 500}
+           "exit": "trail", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "trailR": 0.5, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
            ("gap", "Gap size"), ("ses", "Session")]
 EMAS = (15, 30, 60)
@@ -44,8 +44,8 @@ def clean(p):
     out["gapFrom"] = gf if len(gf) == 5 and gf[2] == ":" and ("04:00" <= gf <= "09:30" or gf == "18:00") else "08:00"
     out["hours"] = p.get("hours") if p.get("hours") in ("rth", "all") else "all"
     out["exit"] = p.get("exit") if p.get("exit") in ("target", "trail") else "trail"
-    out["trail"] = p.get("trail") if p.get("trail") in ("swing", "ema15", "none") else "swing"
-    K.num(p, out, (("beR", 0, 5, 0.5), ("partR", 0, 10, 1.0), ("partPct", 0, 100, 50), ("trailN", 1, 50, 3)), ("trailN",))
+    out["trail"] = p.get("trail") if p.get("trail") in ("swing", "r", "ema15", "none") else "swing"
+    K.num(p, out, (("beR", 0, 5, 0.5), ("partR", 0, 10, 1.0), ("partPct", 0, 100, 50), ("trailN", 1, 50, 3), ("trailR", 0.1, 10, 0.5)), ("trailN",))
     K.num(p, out, (("minGap", 0, 200, 4), ("fvgMax", 1, 100, 24), ("bufTicks", 0, 40, 0), ("tgtR", 0.5, 10, 2.0), ("pivLen", 1, 10, 3), ("liqLook", 10, 600, 150),
                    ("minRR", 0, 10, 1.0), ("maxDay", 1, 10, 2), ("days", 20, 3000, 500)), ("minGap", "fvgMax", "bufTicks", "pivLen", "liqLook", "maxDay", "days"))
     out["tickers"] = K.tickers_of(p)
@@ -66,7 +66,7 @@ def describe(p):
 def _exit_txt(p):
     if p["exit"] != "trail":
         return ""
-    tr = {"swing": f"the last {p['trailN']} candles' low / high", "ema15": "the 15-minute 20 EMA (a close through it)", "none": "nothing (flat at 15:55)"}[p["trail"]]
+    tr = {"swing": f"the last {p['trailN']} candles' low / high", "r": f"{p['trailR']:g}R behind the best price", "ema15": "the 15-minute 20 EMA (a close through it)", "none": "nothing (flat at 15:55)"}[p["trail"]]
     return (". Managed: " + (f"stop to break-even at {p['beR']:g}R, " if p["beR"] else "") + (f"{p['partPct']:g}% off at {p['partR']:g}R, " if p["partPct"] else "")
             + f"the rest trails {tr}, no target")
 
@@ -219,7 +219,7 @@ def manage(B, j0, d, e, stop, tgt, risk, p, E, flat):
     partial, trailing runner. flat: 'YYYY-MM-DDTHH:MM' (exit at that candle's close). Returns (average exit price, exit
     time, why, index, partial [time, price] or None). The stop is checked before anything else in a candle."""
     trail = p["exit"] == "trail"
-    left, got, part, be_done = 1.0, 0.0, None, False
+    left, got, part, be_done, best = 1.0, 0.0, None, False, e
     st = stop
     pct = p["partPct"] / 100 if trail else 0
     for j in range(j0, len(B)):
@@ -233,6 +233,8 @@ def manage(B, j0, d, e, stop, tgt, risk, p, E, flat):
                 return max(o, tgt) if d > 0 else min(o, tgt), t, "target", j, None
         else:
             fav = (h - e) if d > 0 else (e - l)
+            if p["trail"] == "r":
+                best = max(best, h) if d > 0 else min(best, l)
             if pct and not part and fav >= p["partR"] * risk:
                 px = e + d * p["partR"] * risk
                 got, left, part = got + pct * px, left - pct, [t, px]
@@ -242,6 +244,11 @@ def manage(B, j0, d, e, stop, tgt, risk, p, E, flat):
                 w = B[j - p["trailN"] + 1:j + 1]
                 lv = min(b[3] for b in w) if d > 0 else max(b[2] for b in w)
                 if (lv - st) * d > 0 and (be_done or not p["beR"]):
+                    st = lv
+            elif p["trail"] == "r" and (be_done or not p["beR"]):
+                best = max(best, h) if d > 0 else min(best, l)
+                lv = best - d * p["trailR"] * risk
+                if (lv - st) * d > 0:
                     st = lv
             elif p["trail"] == "ema15" and E.get(t) and (be_done or not p["beR"]) and (c - E[t][0][0]) * d < 0:
                 return got + left * c, t, "trail (EMA)" + (" (after partial)" if part else ""), j, part

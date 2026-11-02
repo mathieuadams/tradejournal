@@ -451,6 +451,10 @@ def test_21_ifvg_managed_exit():
          ("2026-03-10T10:15", 103.8, 103.9, 102.0, 102.2), ("2026-03-10T10:20", 102.2, 102.4, 101.5, 101.6)]
     x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, p, {}, "2026-03-10T15:55")
     assert x == 102 and why == "trail" and j == 4 and part is None, (x, why)   # the stop trailed up to 102 (low of 10:10-10:15)
+    # R trail: 0.5R behind the best high once at break-even
+    p = ifvg.clean({"exit": "trail", "beR": 0.5, "partPct": 0, "trail": "r", "trailR": 0.5})
+    x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, p, {}, "2026-03-10T15:55")
+    assert x == 102.5 and why == "trail" and j == 2, (x, why, j)           # best 103 (10:05) -> stop 102.5, touched at 10:10
     # fixed target unchanged
     x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, ifvg.clean({"exit": "target"}), {}, "2026-03-10T15:55")
     assert x == 102 and why == "target"
