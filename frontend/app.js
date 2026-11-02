@@ -469,8 +469,8 @@ function srchHtml(s, o, locked, dataOk) {
   const isCur = x => Object.keys(x.g).every(k => String(x.g[k]) === String(s.params[k]));
   const status = o.running ? `running · ${esc(o.step || '')}` : o.on ? 'starting the next run…' : o.done ? 'every setting tried' : 'stopped';
   return `<section class="panel"><div class="hd"><h2>Optimizer</h2>
-      <button class="btn sm ${o.on ? '' : 'primary'}" data-act="${o.on ? 'srch-stop' : 'srch-start'}" ${locked || !dataOk ? 'disabled' : ''}>${o.on ? '■ Stop' : '▶ Start'}</button>
-      <button class="btn sm" data-act="srch-restart" ${locked ? 'disabled' : ''}>Restart</button>
+      <button class="btn sm ${o.on ? '' : 'primary'}" data-act="${o.on ? 'srch-stop' : 'srch-start'}" ${!o.on && !dataOk ? 'disabled' : ''}>${o.on ? '■ Stop' : '▶ Start'}</button>
+      <button class="btn sm" data-act="srch-restart">Restart</button>
       <span class="dim" style="font-size:13px">${(o.tried || 0).toLocaleString('en-US')} settings tried${o.avgEval ? ` · ${o.avgEval}s each` : ''} · ${status}</span></div>
     <div class="bd note" style="border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:4px">
       ${o.log && o.log.length ? `<div>Runs (about 8 min each): ${o.log.slice().reverse().map(l => l.error ? `<span class="loss">${esc(l.at.slice(11, 16))} error: ${esc(l.error)}</span>` : `${esc(l.at.slice(11, 16))} ${l.tried} tried · best ${l.best != null ? l.best : '—'}`).join(' · ')}</div>` : ''}
@@ -731,7 +731,7 @@ document.addEventListener('click', async e => {
       case 'new': S.newSetup = S.newSetup === null ? '' : null; $('#newbox').innerHTML = S.newSetup !== null ? newForm() : ''; break;
       case 'new-close': S.newSetup = null; $('#newbox').innerHTML = ''; break;
       case 'create': { const p = readParams($('#newp')); const s = await api('/strategies', { method: 'POST', body: { setup: S.newSetup, name: $('#new-name').value, params: p } }); S.newSetup = null; S.strats = null; location.hash = '#strategy/' + s.id; break; }
-      case 'srch-start': case 'srch-stop': case 'srch-restart': S.srch = await api(`/strategies/${S.cur.id}/search`, { method: 'POST', body: { action: act.slice(5) } }); $('#srch').innerHTML = srchHtml(S.cur, S.srch, false, true); if (S.srch.on) pollSearch(S.cur.id); break;
+      case 'srch-start': case 'srch-stop': case 'srch-restart': S.srch = await api(`/strategies/${S.cur.id}/search`, { method: 'POST', body: { action: act.slice(5) } }); $('#srch').innerHTML = srchHtml(S.cur, S.srch, !!(S.cur.paper || {}).on, true); toast(act === 'srch-stop' ? 'Stopping: the run in progress ends within a minute.' : act === 'srch-start' ? 'Optimizer started.' : 'Results cleared.'); if (S.srch.on) pollSearch(S.cur.id); break;
       case 'make-control': { const c = await api('/strategies', { method: 'POST', body: { setup: 'biaspull', name: 'No-FVG control of ' + S.cur.name, params: { ...S.cur.params } } }); toast('Control created: run its study.'); location.hash = '#strategy/' + c.id; break; }
       case 'run-study': case 'run-valid': case 'run-opt': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: { 'run-study': 'study', 'run-valid': 'validate', 'run-opt': 'optimize' }[act] } }); if (act === 'run-opt') toast('Optimizing: each setting is a full study, this can take several minutes.'); vStrategy(S.cur.id); break;
       case 'save-rules': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: readParams($('#rules')) } }); toast('Rules saved: run the study again.'); vStrategy(S.cur.id); break;
