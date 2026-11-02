@@ -411,17 +411,17 @@ def test_19_fvg_inversion():
     F = [(f"2026-03-10T08:{i * 5:02d}", 103, 104, 102, 103) for i in range(3)] + [(f"2026-03-10T08:15", 103, 104.5, 102, 103)] + [(f"2026-03-10T08:{20 + i * 5:02d}", 103, 104, 102, 103) for i in range(4)] + R
     fi = {b[0]: i for i, b in enumerate(F)}
     on = [("2026-03-09T18:00", 95, 96, 94, 95, 1), ("2026-03-10T01:55", 96, 97, 95.5, 97, 1)]
-    t = ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0, "maxDay": 1}))[0]
+    t = ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "exit": "target", "hours": "rth", "minGap": 1, "minRR": 0, "maxDay": 1}))[0]
     assert t["side"] == "long" and t["e"] == 102.4 and t["fvgTop"] == 102.0 and t["fvgBot"] == 101.6 and t["stop"] == 101.6, t
     assert abs(t["tgt"] - 104) < 1e-6, t                                 # the nearest untaken swing high (104) = 2R here
-    t = ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0, "maxDay": 1, "stop": "swing"}))[0]
+    t = ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "exit": "target", "hours": "rth", "minGap": 1, "minRR": 0, "maxDay": 1, "stop": "swing"}))[0]
     assert t["stop"] == 100.6 and abs(t["tgt"] - (102.4 + 2 * 1.8)) < 1e-6 and t["tk"] == "2R", t   # liquidity 104 is under 2R (106.0): 2R
     notes = []
-    assert not ifvg.day_trades(d, [("2026-03-09T18:00", 97, 98, 94, 95, 1)], R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 0, "asia": "dir"}), notes)   # Asia closed down
+    assert not ifvg.day_trades(d, [("2026-03-09T18:00", 97, 98, 94, 95, 1)], R, R, F, fi, Eday, ifvg.clean({"tf": 5, "exit": "target", "hours": "rth", "minGap": 1, "minRR": 0, "asia": "dir"}), notes)   # Asia closed down
     L = [x for x in notes if x["d"] > 0]
     assert L[0]["text"] == "Long skipped: Asia closed against" and L[0]["t"] == R[5][0] and notes[0]["text"] == "Short skipped: bias against", notes
     notes = []
-    ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "minGap": 1, "minRR": 3}), notes)
+    ifvg.day_trades(d, on, R, R, F, fi, Eday, ifvg.clean({"tf": 5, "exit": "target", "hours": "rth", "minGap": 1, "minRR": 3}), notes)
     assert [x for x in notes if x["d"] > 0][0]["text"].startswith("Long skipped: target 2.0R"), notes
 
 
@@ -430,8 +430,11 @@ def test_20_ifvg_asia_migration():
     s = strategy.create(SUB, {"setup": "ifvg", "params": {"days": 40, "asia": "dir"}})
     it = _db.get(strategy._pk(SUB), strategy.SK + s["id"])
     it.pop("migAsia", None)
+    it.pop("migIfvg", None)
+    it["params"].update(hours="rth", exit="target")
     _db.put(it)
-    assert strategy.get(SUB, s["id"])["params"]["asia"] == "none"                      # the old default switched off once
+    g = strategy.get(SUB, s["id"])["params"]
+    assert g["asia"] == "none" and g["hours"] == "all" and g["exit"] == "trail"       # switched once to what was asked
     call("PUT", f"/strategies/{s['id']}", {"params": {**strategy.get(SUB, s["id"])["params"], "asia": "dir"}})
     assert strategy.get(SUB, s["id"])["params"]["asia"] == "dir"                       # a later choice sticks
 
@@ -449,7 +452,7 @@ def test_21_ifvg_managed_exit():
     x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, p, {}, "2026-03-10T15:55")
     assert x == 102 and why == "trail" and j == 4 and part is None, (x, why)   # the stop trailed up to 102 (low of 10:10-10:15)
     # fixed target unchanged
-    x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, ifvg.clean({}), {}, "2026-03-10T15:55")
+    x, t, why, j, part = ifvg.manage(B, 0, 1, 100, 99, 102, 1.0, ifvg.clean({"exit": "target"}), {}, "2026-03-10T15:55")
     assert x == 102 and why == "target"
 
 

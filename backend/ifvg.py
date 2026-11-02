@@ -26,8 +26,8 @@ import random
 import sessionkit as K
 
 DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "none", "minGap": 4, "fvgMax": 24, "gapFrom": "08:00", "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
-           "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "hours": "rth",
-           "exit": "target", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "side": "both", "days": 500}
+           "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "hours": "all",
+           "exit": "trail", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
            ("gap", "Gap size"), ("ses", "Session")]
 EMAS = (15, 30, 60)
@@ -42,8 +42,8 @@ def clean(p):
     out["lastEntry"] = le if len(le) == 5 and le[2] == ":" and "09:40" <= le <= "15:30" else "14:00"
     gf = str(p.get("gapFrom") or "08:00")
     out["gapFrom"] = gf if len(gf) == 5 and gf[2] == ":" and ("04:00" <= gf <= "09:30" or gf == "18:00") else "08:00"
-    out["hours"] = p.get("hours") if p.get("hours") in ("rth", "all") else "rth"
-    out["exit"] = p.get("exit") if p.get("exit") in ("target", "trail") else "target"
+    out["hours"] = p.get("hours") if p.get("hours") in ("rth", "all") else "all"
+    out["exit"] = p.get("exit") if p.get("exit") in ("target", "trail") else "trail"
     out["trail"] = p.get("trail") if p.get("trail") in ("swing", "ema15", "none") else "swing"
     K.num(p, out, (("beR", 0, 5, 0.5), ("partR", 0, 10, 1.0), ("partPct", 0, 100, 50), ("trailN", 1, 50, 3)), ("trailN",))
     K.num(p, out, (("minGap", 0, 200, 4), ("fvgMax", 1, 100, 24), ("bufTicks", 0, 40, 0), ("tgtR", 0.5, 10, 2.0), ("pivLen", 1, 10, 3), ("liqLook", 10, 600, 150),

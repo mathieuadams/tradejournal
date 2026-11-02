@@ -70,13 +70,13 @@ def _fresh(s):
         s["params"] = _params(s["setup"], s.get("params") or {})
     except Exception as e:
         print("params refresh failed", s.get("id"), e)
-    if s.get("setup") == "ifvg" and not s.get("migAsia") and not (s.get("paper") or {}).get("on") and "PK" in s:
-        try:                                           # once: the FVG inversion's bias is the EMAs only (the Asian check was on by default)
-            s["params"]["asia"] = "none"
-            s.update(migAsia=True, stage="idea", study=None, valid=None, cells={})
+    if s.get("setup") == "ifvg" and (s.get("migIfvg") or (1 if s.get("migAsia") else 0)) < 2 and not (s.get("paper") or {}).get("on") and "PK" in s:
+        try:                                           # once: the FVG inversion as asked: EMA bias only, overnight + NYSE, managed exit
+            s["params"].update(asia="none", hours="all", exit="trail")
+            s.update(migAsia=True, migIfvg=2, stage="idea", study=None, valid=None, cells={})
             db.put(s)
         except Exception as e:
-            print("asia migration failed", s.get("id"), e)
+            print("ifvg migration failed", s.get("id"), e)
     return s
 
 
@@ -117,7 +117,7 @@ def create(sub, b):
     p = _params(setup, b.get("params"))
     sid = uuid.uuid4().hex[:10]
     s = {"PK": _pk(sub), "SK": SK + sid, "id": sid, "setup": setup, "name": str(b.get("name") or NAMES[setup])[:80],
-         "params": p, **COSTS, "stage": "idea", "cells": {}, "created": iso(now_ny()), "paper": {"on": False}, "migAsia": True}
+         "params": p, **COSTS, "stage": "idea", "cells": {}, "created": iso(now_ny()), "paper": {"on": False}, "migAsia": True, "migIfvg": 2}
     db.put(s)
     return _view(s)
 
