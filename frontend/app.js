@@ -420,11 +420,14 @@ async function vStrategy(id) {
           ${paramForm(s.setup, s.params, locked)}
           ${locked ? '' : `<div style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="btn sm" data-act="save-rules">Save rules</button><span class="note">Saving clears the study and validation.</span></div>`}${s.setup === 'ifvg' ? `<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:6px"><button class="btn sm" data-act="make-control">Make the no-FVG control with these settings</button><span class="note">Same bias, hours and exit, entry on a plain pullback. Run both studies: if the control does as well, the FVG adds nothing.</span></div>` : ''}</div></section>
         ${v ? `<section class="panel"><div class="hd"><h2>Validation gates</h2><div class="grow"></div><span class="${v.pass ? 'gain' : 'loss'}" style="font-weight:600;font-size:13px">${v.gates.filter(g => g.ok).length} / ${v.gates.length} passed</span></div><div class="bd" style="padding-top:4px">
-          ${v.gates.map(g => `<div class="gate"><span style="color:${g.ok ? 'var(--buyT)' : 'var(--sellT)'};font-weight:700">${g.ok ? '✓' : '✕'}</span><span class="g">${esc(g.t)}</span><span class="v">${esc(g.v)}</span></div>`).join('')}</div></section>` : ''}
+          ${v.gates.map(g => `<div class="gate"><span style="color:${g.ok ? 'var(--buyT)' : 'var(--sellT)'};font-weight:700">${g.ok ? '✓' : '✕'}</span><span class="g">${esc(g.t)}</span><span class="v">${esc(g.v)}</span></div>`).join('')}
+          ${(v.info || []).map(g => `<div class="gate" style="opacity:.75"><span class="dim" style="font-weight:700">i</span><span class="g">${esc(g.t)} <span class="dim">(not a gate)</span></span><span class="v ${g.ok ? 'gain' : 'loss'}">${esc(g.v)}</span></div>`).join('')}
+          ${(v.info || []).length ? `<label class="f" style="margin-top:10px">Random-entry gate tests<select id="edge-test" ${locked ? 'disabled' : ''}><option value="timing" ${v.edgeTest !== 'rule' ? 'selected' : ''}>The entry timing (random entries on the same side)</option><option value="rule" ${v.edgeTest === 'rule' ? 'selected' : ''}>The whole rule (random entries on a random side)</option></select></label>
+            <div class="note" style="margin-top:4px">Same side: does the entry beat entering at a random time in the bias direction? Random side: does the rule (bias + entry + exit) beat random trades with the same exit? Changing it re-runs the validation.</div>` : ''}</div></section>` : ''}
         <section class="panel"><div class="hd"><h2>Paper trading</h2></div><div class="bd" style="display:flex;flex-direction:column;gap:12px">
           ${pp.on || pp.n ? `<div class="kv kv3"><div><div class="k">Trades</div><div class="big">${pp.n || 0}</div></div><div><div class="k">Avg R</div><div class="big ${cls(pp.avgR)}">${pp.avgR != null ? sgn(pp.avgR, 2) : '—'}</div></div><div><div class="k">Net</div><div class="big ${cls(pp.net)}">${money(pp.net)}</div></div></div>${zbar(pp.z)}` : ''}
           ${pp.kill ? `<div class="job error">Kill switch: ${esc(pp.kill)}</div>` : ''}
-          <div class="note">Simulated on the stored Databento candles (refreshed every 15 minutes), only in the approved conditions. Kill switch: z below −2 after 10 trades, or a drawdown over 2× the test's.</div>
+          <div class="note">Simulated on the stored Databento candles (refreshed every 5 minutes, overnight included), only in the approved conditions. Kill switch: z below −2 after 10 trades, or a drawdown over 2× the test's.</div>
           <div class="form" style="grid-template-columns:repeat(2,minmax(0,1fr))">
             <label class="f">Contracts<input type="number" id="pp-c" min="1" value="${s.contracts}"></label>
             <label class="f">Daily loss limit ($)<input type="number" id="pp-dl" min="0" step="50" value="${s.dailyLoss}"></label>
@@ -433,7 +436,10 @@ async function vStrategy(id) {
           </div>
           <button class="btn sm" data-act="save-costs">Save</button>
           <label class="f">Account<select disabled><option>Simulated paper account</option><option>[Futures broker — not connected]</option></select></label>
-          ${pp.on ? '<button class="btn" data-act="paper-stop">Stop paper trading</button>' : `<button class="btn primary" data-act="paper" ${v && v.pass ? '' : 'disabled'}>${v && v.pass ? 'Start paper trading' : 'Paper trading needs a passed validation'}</button>`}
+          ${pp.on ? '<button class="btn" data-act="paper-stop">Stop paper trading</button>' : v && v.pass ? '<button class="btn primary" data-act="paper">Start paper trading</button>'
+            : v ? `<button class="btn" data-act="paper-force">Start paper trading anyway</button><div class="note">The validation didn't pass (${v.gates.filter(g => !g.ok).map(g => esc(g.t)).join(', ')}). Paper trading is simulated: it shows how the rule does from now on, with the same kill switch.</div>`
+            : '<button class="btn primary" disabled>Paper trading needs a validation</button>'}
+          ${pp.on && pp.forced ? '<div class="note">Started without a passed validation.</div>' : ''}
           <button class="btn" disabled>Promote to live · needs a futures broker</button>
         </div></section>
       </aside>
@@ -681,6 +687,10 @@ function rpPlay(on) {
 }
 
 /* ---------- events ---------- */
+document.addEventListener('change', async e => {
+  if (e.target.id !== 'edge-test' || !S.cur) return;
+  try { await api('/strategies/' + S.cur.id, { method: 'PUT', body: { edgeTest: e.target.value } }); await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: 'validate' } }); vStrategy(S.cur.id); } catch (err) { toast(err.message || 'Failed'); }
+});
 document.addEventListener('click', async e => {
   const el = e.target.closest('button, a[data-act]');
   if (!el || el.disabled) return;
@@ -726,7 +736,7 @@ document.addEventListener('click', async e => {
       case 'run-study': case 'run-valid': case 'run-opt': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: { 'run-study': 'study', 'run-valid': 'validate', 'run-opt': 'optimize' }[act] } }); if (act === 'run-opt') toast('Optimizing: each setting is a full study, this can take several minutes.'); vStrategy(S.cur.id); break;
       case 'save-rules': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: readParams($('#rules')) } }); toast('Rules saved: run the study again.'); vStrategy(S.cur.id); break;
       case 'save-costs': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { contracts: +$('#pp-c').value, dailyLoss: +$('#pp-dl').value, comm: +$('#pp-comm').value, slip: +$('#pp-slip').value } }); toast('Saved.'); vStrategy(S.cur.id); break;
-      case 'paper': case 'paper-stop': case 'retire': case 'unretire': await api(`/strategies/${S.cur.id}/action`, { method: 'POST', body: { action: act === 'paper-stop' ? 'stop' : act } }); S.strats = null; vStrategy(S.cur.id); break;
+      case 'paper': case 'paper-force': case 'paper-stop': case 'retire': case 'unretire': await api(`/strategies/${S.cur.id}/action`, { method: 'POST', body: { action: act === 'paper-stop' ? 'stop' : act === 'paper-force' ? 'paper_force' : act } }); S.strats = null; vStrategy(S.cur.id); break;
       case 'delete': if (!confirm('Delete this strategy and its trades?')) return; await api('/strategies/' + S.cur.id, { method: 'DELETE' }); S.strats = null; location.hash = '#research'; break;
       case 'open-chart': { e.preventDefault(); S.chart.strat = S.cur.id; S.chart.sym = S.cur.params.tickers[0]; const tf = S.cur.params.tf; S.chart.tf = tf === '1D' ? 60 : [1, 5, 15, 60].includes(+tf) ? +tf : 5; S.rp = null; location.hash = '#chart'; break; }
       case 'rp-start': { const day = $('#rp-day').value; if (!day) return toast('Pick a day.'); if (S.chart.tf > 5) S.chart.tf = 1; S.rp = { day, k: null, playing: false, speed: 2 }; vChart(); break; }

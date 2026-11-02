@@ -134,6 +134,8 @@ def update(sub, sid, b):
         s.update(stage="idea", study=None, valid=None, cells={})
     if "contracts" in b:
         s["contracts"] = int(_num(b["contracts"], 1, 50, "Contracts"))
+    if b.get("edgeTest") in ("timing", "rule"):
+        s["edgeTest"] = b["edgeTest"]
     if "comm" in b:
         s["comm"] = _num(b["comm"], 0, 50, "Commission")
     if "slip" in b:
@@ -217,6 +219,9 @@ def metrics(ts, cm=1.0, base=False):
         out["avgR"] = round(sum(rs) / len(rs), 3) if rs else None
         out["sdR"] = round(statistics.pstdev(rs), 3) if len(rs) > 1 else None
         out["edge"] = round(sum(t["pts"] for t in ts) / len(ts) - sum(bps) / len(bps), 2) if bps else None
+        b2 = [t["bp2"] for t in ts if t.get("bp2") is not None]
+        if b2:
+            out["edge2"] = round(sum(t["pts"] for t in ts) / len(ts) - sum(b2) / len(b2), 2)
     return out
 
 
@@ -257,6 +262,8 @@ def run_trades(sub, s, start=None, days=None, prog=None):
     out = []
     for x, b in zip(trades, base):
         t = _normal(s, x, b[2] if isinstance(b, (list, tuple)) and len(b) > 2 else [], cellmap)
+        if isinstance(b, (list, tuple)) and len(b) > 3 and b[3]:   # random entries on a random side (the whole rule's baseline)
+            t["bp2"] = round(sum(v / 100 * x["e"] for v in b[3]) / len(b[3]), 3)
         if hasattr(mod, "decorate"):
             try:
                 y = dict(x)
@@ -392,9 +399,13 @@ def validate(sub, sid):
         months[t["d"][:7]] += t["net"]
     tot = sum(months.values())
     share = max(months.values()) / tot if tot > 0 and months else None
+    rule = s.get("edgeTest") == "rule" and me.get("edge2") is not None
+    timing = {"k": "edge", "t": "Beats random entries, same side (the entry timing, test)", "v": f"{me.get('edge', 0):+.2f} pts" if me.get("edge") is not None else "—",
+              "ok": bool(me.get("edge") is not None and me["edge"] > 0)}
+    whole = {"k": "edge2", "t": "Beats random entries, random side (the whole rule, test)", "v": f"{me['edge2']:+.2f} pts", "ok": me["edge2"] > 0} \
+        if me.get("edge2") is not None else None
     gates = [
-        {"k": "edge", "t": "Beats random entries (test)", "v": f"{me.get('edge', 0):+.2f} pts" if me.get("edge") is not None else "—",
-         "ok": bool(me.get("edge") is not None and me["edge"] > 0)},
+        whole if rule else timing,
         {"k": "pf", "t": f"Profit factor ≥ {PF_MIN:g} (test)", "v": f"{me['pf']:.2f}" if me.get("pf") else "—", "ok": bool(me.get("pf") and me["pf"] >= PF_MIN)},
         {"k": "n", "t": f"At least {MIN_TRADES} trades", "v": f"{len(ts):,}", "ok": len(ts) >= MIN_TRADES},
         {"k": "cost", "t": "Still profitable at 2× costs (test)", "v": f"${m2.get('exp', 0):+,.0f} / trade", "ok": bool(m2.get("exp", 0) > 0)},
@@ -405,7 +416,8 @@ def validate(sub, sid):
     if not s.get("cells"):                             # first validation: approve the conditions that made money on the test
         s["cells"] = {c: bool(g["n"] >= 10 and (g.get("avgR") or 0) > 0) for c, g in grid.items()}
     ok = all(g["ok"] for g in gates)
-    s["valid"] = {"at": iso(now_ny()), "train": mt, "test": me, "base": mb, "cost2": m2, "gates": gates, "pass": ok, "grid": grid,
+    info = [{**(timing if rule else whole), "info": True}] if whole else []        # the other random test: shown, not a gate
+    s["valid"] = {"info": info, "edgeTest": "rule" if rule else "timing", "at": iso(now_ny()), "train": mt, "test": me, "base": mb, "cost2": m2, "gates": gates, "pass": ok, "grid": grid,
                   "split": test[0]["d"] if test else None}
     if s.get("stage") not in ("paper",):
         s["stage"] = "validated" if ok else "study"
@@ -415,12 +427,15 @@ def validate(sub, sid):
 
 def action(sub, sid, act):
     s = get(sub, sid)
-    if act == "paper":
-        if not (s.get("valid") or {}).get("pass"):
+    if act in ("paper", "paper_force"):
+        if not s.get("valid"):
+            raise BadRequest("Run the validation first.")
+        if act == "paper" and not s["valid"].get("pass"):
             raise BadRequest("Paper trading needs a passed validation.")
+        s["paper"] = {"forced": act == "paper_force"}
         if not any(s.get("cells", {}).values()):
             raise BadRequest("Approve at least one market condition first.")
-        s["paper"] = {"on": True, "since": now_ny().strftime("%Y-%m-%d"), "n": 0, "net": 0}
+        s["paper"] = {**s["paper"], "on": True, "since": now_ny().strftime("%Y-%m-%d"), "n": 0, "net": 0}
         store.delete(f"strat/{sub}/{sid}/paper")
         s["stage"] = "paper"
     elif act == "stop":
@@ -436,7 +451,7 @@ def action(sub, sid, act):
     else:
         raise BadRequest("Unknown action.")
     db.put(s)
-    if act == "paper":
+    if act in ("paper", "paper_force"):
         try:
             paper_one(sub, s)
         except Exception as e:
@@ -461,7 +476,7 @@ def paper_one(sub, s):
         if s.get("dailyLoss") and day_net[t["d"]] <= -s["dailyLoss"]:
             continue                                   # the day's loss limit was hit
         intraday = s["params"].get("tf") != "1D"
-        if t["why"] in ("open", "close") and t["out"][:16] >= (last.get(t["s"]) or "")[:16] and (not intraday or now[:10] == t["d"] and now[11:16] < "16:00"):
+        if t["why"] in ("open", "close") and t["out"][:16] >= (last.get(t["s"]) or "")[:16] and (not intraday or now < f"{t['d']}T16:00"):
             t["status"] = "open"
         else:
             t["status"] = "closed"

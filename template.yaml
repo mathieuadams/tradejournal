@@ -259,9 +259,9 @@ Resources:
         Refresh:            # latest candles every 15 minutes in the session, the day's footprint after the close, then paper
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: cron(5/15 9-16 ? * MON-FRI *)
+            ScheduleExpression: cron(2/5 * ? * * *)
             ScheduleExpressionTimezone: America/New_York
-            Input: '{"job": "scheduled"}'
+            Input: '{"job": "scheduled", "live": true}'
         AfterClose:
           Type: ScheduleV2
           Properties:

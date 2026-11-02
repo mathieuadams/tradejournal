@@ -53,7 +53,7 @@ def _deadline(ctx):
 
 def handler(event, ctx=None):
     if event.get("job") == "scheduled":
-        return scheduled(ctx)
+        return scheduled(ctx, live=bool(event.get("live")))
     sub, name, job, p = event["sub"], event.get("name") or "data", event["job"], event.get("params") or {}
     prog = lambda m: set_status(sub, name, status="running", msg=m)
     dl = _deadline(ctx)
@@ -141,7 +141,18 @@ def refresh(sub, footprint_today=True, ctx=None):
     return "ok"
 
 
-def scheduled(ctx=None):
+def market_open(t=None):
+    """CME Globex for NQ / ES: Sunday 18:00 to Friday 17:00 ET, closed 17:00-18:00 each day."""
+    t = t or now_ny()
+    wd, hm = t.weekday(), t.strftime("%H:%M")
+    if wd == 5 or (wd == 6 and hm < "18:00") or (wd == 4 and hm >= "17:00"):
+        return False
+    return not ("17:00" <= hm < "18:00")
+
+
+def scheduled(ctx=None, live=False):
+    if live and not market_open():
+        return {"skipped": "market closed"}
     out = {}
     for sub in db.owners():
         try:

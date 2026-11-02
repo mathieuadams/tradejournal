@@ -257,15 +257,17 @@ def manage(B, j0, d, e, stop, tgt, risk, p, E, flat):
     return got + left * B[-1][4], B[-1][0], "close", len(B) - 1, part
 
 
-def baseline(B, x, rnd, p, E, flat, last, lo, n=3):
-    """The same stop distance and exit management from random candles between index lo and the flat time: % gross."""
-    d = 1 if x["side"] == "long" else -1
+def baseline(B, x, rnd, p, E, flat, last, lo, n=3, any_side=False):
+    """The same stop distance and exit management from random candles between index lo and the flat time: % gross.
+    any_side: a random side for each (the whole rule's baseline), else the trade's side (the entry timing's)."""
+    d0 = 1 if x["side"] == "long" else -1
     idx = [k for k in range(lo, len(B) - 2) if B[k][0][:16] < last and not ("16:00" <= B[k][0][11:16] < "18:00")]
     out = []
     for _ in range(n):
         if not idx:
             break
         k = rnd.choice(idx)
+        d = rnd.choice((1, -1)) if any_side else d0
         e = B[k][4]
         risk = x["stopDist"]
         tgt = e + d * x["tgtDist"]
@@ -291,7 +293,7 @@ def _series(sym, p, start=None):
 
 def all_trades(sub, p, cells=None, prog=None):
     trades, base = [], []
-    rnd = random.Random(59)
+    rnd, rnd2 = random.Random(59), random.Random(67)
     for sym in p["tickers"]:
         if prog:
             prog(f"{sym}: {p['tf']}-minute candles + the 15 / 30 / 60-minute EMAs")
@@ -301,7 +303,8 @@ def all_trades(sub, p, cells=None, prog=None):
                 x.update(s=sym, d=d, cell=None)
                 trades.append(x)
                 lo = 0 if p["hours"] == "all" else next((i for i, b in enumerate(F) if b[0] >= f"{d}T09:35"), len(F))
-                base.append((d, x["side"], baseline(F, x, rnd, p, E, f"{d}T15:55", f"{d}T{p['lastEntry']}", lo)))
+                base.append((d, x["side"], baseline(F, x, rnd, p, E, f"{d}T15:55", f"{d}T{p['lastEntry']}", lo),
+                             baseline(F, x, rnd2, p, E, f"{d}T15:55", f"{d}T{p['lastEntry']}", lo, any_side=True)))
     return trades, base
 
 

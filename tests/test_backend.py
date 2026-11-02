@@ -502,6 +502,40 @@ def test_23_bias_pullback_control():
     assert biaspull.clean({"exit": "nope"})["exit"] == "trail" and biaspull.clean({})["setup"] == "biaspull"
 
 
+def test_24_edge_test_choice():
+    s = strategy.create(SUB, {"setup": "biaspull", "params": {"days": 120, "tickers": ["NQ"], "minRisk": 0}})
+    v = strategy.study(SUB, s["id"])
+    assert v["study"]["n"] > 0
+    v = strategy.validate(SUB, s["id"])["valid"]
+    assert v["edgeTest"] == "timing" and v["gates"][0]["k"] == "edge" and v["info"][0]["k"] == "edge2" and "edge2" in v["test"]
+    call("PUT", f"/strategies/{s['id']}", {"edgeTest": "rule"})
+    v = strategy.validate(SUB, s["id"])["valid"]
+    assert v["edgeTest"] == "rule" and v["gates"][0]["k"] == "edge2" and v["info"][0]["k"] == "edge"
+    o = strategy.create(SUB, {"setup": "onsweep", "params": {"days": 60}})          # no random-side baseline: the timing gate, no info
+    strategy.study(SUB, o["id"])
+    call("PUT", f"/strategies/{o['id']}", {"edgeTest": "rule"})
+    if strategy.get(SUB, o["id"])["study"]["n"]:
+        v = strategy.validate(SUB, o["id"])["valid"]
+        assert v["gates"][0]["k"] == "edge" and v["info"] == []
+
+
+def test_25_paper_anyway_and_hours():
+    import datetime as dt
+    s = strategy.create(SUB, {"setup": "biaspull", "params": {"days": 120, "tickers": ["NQ"], "minRisk": 0}})
+    strategy.study(SUB, s["id"])
+    v = strategy.validate(SUB, s["id"])
+    call("PUT", f"/strategies/{s['id']}", {"cells": {k: True for k in v["valid"]["grid"]}})
+    st, r = call("POST", f"/strategies/{s['id']}/action", {"action": "paper_force"})
+    assert st == 200 and r["paper"]["on"] and r["paper"]["forced"], r
+    call("POST", f"/strategies/{s['id']}/action", {"action": "stop"})
+    if not v["valid"]["pass"]:
+        assert call("POST", f"/strategies/{s['id']}/action", {"action": "paper"})[0] == 400
+    ny = dt.timezone(dt.timedelta(hours=-5))
+    mo = lambda y, m, d, h, mi: jobs.market_open(dt.datetime(y, m, d, h, mi, tzinfo=ny))
+    assert mo(2026, 11, 2, 20, 0) and mo(2026, 11, 3, 3, 0) and not mo(2026, 11, 2, 17, 30) and not mo(2026, 11, 7, 12, 0)
+    assert not mo(2026, 11, 8, 17, 0) and mo(2026, 11, 8, 18, 5) and not mo(2026, 11, 6, 17, 5)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

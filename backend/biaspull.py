@@ -90,7 +90,7 @@ def day_trades(day, on, F, E, p):
 def all_trades(sub, p, cells=None, prog=None):
     p = {**p, "gapFrom": "08:00", "fvgMax": 24, "minGap": 0, "stop": "swing", "tgt": "r", "minRR": 0, "pivLen": 3, "liqLook": 150}
     trades, base = [], []
-    rnd = random.Random(61)
+    rnd, rnd2 = random.Random(61), random.Random(71)
     for sym in p["tickers"]:
         if prog:
             prog(f"{sym}: {p['tf']}-minute candles + the 15 / 30 / 60-minute EMAs")
@@ -100,7 +100,8 @@ def all_trades(sub, p, cells=None, prog=None):
                 x.update(s=sym, d=d, cell=None)
                 trades.append(x)
                 lo = 0 if p["hours"] == "all" else next((i for i, b in enumerate(F) if b[0] >= f"{d}T09:35"), len(F))
-                base.append((d, x["side"], ifvg.baseline(F, x, rnd, p, E, f"{d}T15:55", f"{d}T{p['lastEntry']}", lo)))
+                base.append((d, x["side"], ifvg.baseline(F, x, rnd, p, E, f"{d}T15:55", f"{d}T{p['lastEntry']}", lo),
+                             ifvg.baseline(F, x, rnd2, p, E, f"{d}T15:55", f"{d}T{p['lastEntry']}", lo, any_side=True)))
     return trades, base
 
 
