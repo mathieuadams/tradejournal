@@ -333,5 +333,5 @@ def overlay(sub, p, sym, start, end):
         if a:
             rng.append({"day": d, "hi": max(b[2] for b in a), "lo": min(b[3] for b in a), "t0": a[0][0], "t1": a[-1][0], "t2": f"{d}T09:30", "label": "Asia"})
         day_trades(d, on, R, F, Fall, fi, E, p, notes)
-    return {"lines": list(lines.values()), "ranges": rng, "notes": notes,
+    return {"lines": list(lines.values()), "ranges": rng, "notes": [x for x in notes if x["ok"]],         # entries only, no skip reasons
             "strip": {"name": "EMA bias (" + ("15 / 30 / 60" if p["bias"] == "all3" else "hourly") + "): long / short / none", "pts": strip}}
