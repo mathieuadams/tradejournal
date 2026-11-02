@@ -96,6 +96,15 @@ const SETUPS = {
       ['partR', 'Managed: partial at (R)', 'num', 0.25], ['partPct', 'Managed: partial size (%, 0 = none)', 'num', 5],
       ['trail', 'Managed: trail the rest', 'sel', [['swing', 'Under the last N candles\' low / high'], ['r', 'R behind the best price'], ['ema15', 'Close through the 15-min 20 EMA'], ['none', 'No trail (break-even only)']]],
       ['trailN', 'Managed: trail N candles', 'num', 1], ['trailR', 'Managed: trail R behind', 'num', 0.1], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  biaspull: { name: 'EMA bias pullback (no FVG control)', blurb: 'The FVG inversion without the FVG: same EMA bias, hours and exit; enter on the first candle back with the bias after a 2+ candle pullback. If it does as well, the FVG adds nothing.',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min']]], ['bias', 'Bias', 'sel', [['all3', '15 / 30 / 60-min 20 EMAs all agree'], ['h1', 'Hourly 20 EMA only']]],
+      ['asia', 'Asian session (18:00–02:00) check', 'sel', [['none', 'None'], ['dir', 'It closed in the bias direction'], ['hold', 'Price on the bias side of its middle']]],
+      ['pbMin', 'Pullback: candles against the bias at least', 'num', 1], ['minRisk', 'Skip if the stop is under (ticks)', 'num', 1], ['bufTicks', 'Stop buffer (ticks)', 'num', 1],
+      ['hours', 'Hours', 'sel', [['all', 'Overnight + NYSE (from 18:00)'], ['rth', 'NYSE session only (09:35–last entry)']]], ['lastEntry', 'Last entry (ET)', 'text'], ['maxDay', 'Max trades per session', 'num', 1],
+      ['exit', 'Exit', 'sel', [['trail', 'Managed: break-even, partial, trailing'], ['target', 'Stop / fixed R target']]], ['tgtR', 'Fixed R target', 'num', 0.5], ['beR', 'Managed: break-even at (R, 0 = off)', 'num', 0.25],
+      ['partR', 'Managed: partial at (R)', 'num', 0.25], ['partPct', 'Managed: partial size (%, 0 = none)', 'num', 5],
+      ['trail', 'Managed: trail the rest', 'sel', [['swing', 'Under the last N candles\' low / high'], ['r', 'R behind the best price'], ['ema15', 'Close through the 15-min 20 EMA'], ['none', 'No trail (break-even only)']]],
+      ['trailN', 'Managed: trail N candles', 'num', 1], ['trailR', 'Managed: trail R behind', 'num', 0.1], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
   wt: { name: 'WaveTrend dots', blurb: 'WaveTrend [Krypt]: in at the open after a buy dot, out at the open after a sell dot (and the mirror for shorts).',
     params: [['tf', 'Candles', 'sel', [['1D', 'Daily'], ['60', '1 hour'], ['15', '15 min'], ['5', '5 min']]], ['side', 'Side', 'sel', SIDE], ['stopAtr', 'Stop (× average range, 0 = none)', 'num', 0.25],
       ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['days', 'Candles / sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
@@ -332,6 +341,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   nrbreak: { tf: 5, cond: 'nr7', trend: 'sma', orMin: 15, stop: 'opp', tgtAtr: 1, minRR: 0.5, bufTicks: 2, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   fpdisp: { tf: 5, fair: 'open', minAwayPct: 0.1, bodyMult: 1, stop: 'bar', swingN: 5, bufTicks: 2, minRR: 1, firstEntry: '09:35', lastEntry: '13:00', maxDay: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   ifvg: { tf: 5, bias: 'all3', asia: 'none', minGap: 4, fvgMax: 24, gapFrom: '08:00', stop: 'fvg', bufTicks: 0, tgt: 'liq2r', tgtR: 2, pivLen: 3, liqLook: 150, minRR: 1, lastEntry: '14:00', maxDay: 2, hours: 'all', exit: 'trail', beR: 0.5, partR: 1, partPct: 50, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  biaspull: { tf: 5, bias: 'all3', asia: 'none', pbMin: 2, minRisk: 8, bufTicks: 0, hours: 'all', lastEntry: '14:00', maxDay: 2, exit: 'trail', tgtR: 2, beR: 0.5, partR: 1, partPct: 50, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 // what's been tried for a setup: a badge on its card in New strategy
 function tested(key) {
@@ -408,7 +418,7 @@ async function vStrategy(id) {
       <aside class="col-side">
         <section class="panel"><div class="hd"><h2>Rules</h2>${locked ? '<span class="dim" style="font-size:12px">locked while paper trading</span>' : ''}</div><div class="bd" id="rules">
           ${paramForm(s.setup, s.params, locked)}
-          ${locked ? '' : `<div style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="btn sm" data-act="save-rules">Save rules</button><span class="note">Saving clears the study and validation.</span></div>`}</div></section>
+          ${locked ? '' : `<div style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="btn sm" data-act="save-rules">Save rules</button><span class="note">Saving clears the study and validation.</span></div>`}${s.setup === 'ifvg' ? `<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:6px"><button class="btn sm" data-act="make-control">Make the no-FVG control with these settings</button><span class="note">Same bias, hours and exit, entry on a plain pullback. Run both studies: if the control does as well, the FVG adds nothing.</span></div>` : ''}</div></section>
         ${v ? `<section class="panel"><div class="hd"><h2>Validation gates</h2><div class="grow"></div><span class="${v.pass ? 'gain' : 'loss'}" style="font-weight:600;font-size:13px">${v.gates.filter(g => g.ok).length} / ${v.gates.length} passed</span></div><div class="bd" style="padding-top:4px">
           ${v.gates.map(g => `<div class="gate"><span style="color:${g.ok ? 'var(--buyT)' : 'var(--sellT)'};font-weight:700">${g.ok ? '✓' : '✕'}</span><span class="g">${esc(g.t)}</span><span class="v">${esc(g.v)}</span></div>`).join('')}</div></section>` : ''}
         <section class="panel"><div class="hd"><h2>Paper trading</h2></div><div class="bd" style="display:flex;flex-direction:column;gap:12px">
@@ -712,6 +722,7 @@ document.addEventListener('click', async e => {
       case 'new-close': S.newSetup = null; $('#newbox').innerHTML = ''; break;
       case 'create': { const p = readParams($('#newp')); const s = await api('/strategies', { method: 'POST', body: { setup: S.newSetup, name: $('#new-name').value, params: p } }); S.newSetup = null; S.strats = null; location.hash = '#strategy/' + s.id; break; }
       case 'srch-start': case 'srch-stop': case 'srch-restart': S.srch = await api(`/strategies/${S.cur.id}/search`, { method: 'POST', body: { action: act.slice(5) } }); $('#srch').innerHTML = srchHtml(S.cur, S.srch, false, true); if (S.srch.on) pollSearch(S.cur.id); break;
+      case 'make-control': { const c = await api('/strategies', { method: 'POST', body: { setup: 'biaspull', name: 'No-FVG control of ' + S.cur.name, params: { ...S.cur.params } } }); toast('Control created: run its study.'); location.hash = '#strategy/' + c.id; break; }
       case 'run-study': case 'run-valid': case 'run-opt': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: { 'run-study': 'study', 'run-valid': 'validate', 'run-opt': 'optimize' }[act] } }); if (act === 'run-opt') toast('Optimizing: each setting is a full study, this can take several minutes.'); vStrategy(S.cur.id); break;
       case 'save-rules': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: readParams($('#rules')) } }); toast('Rules saved: run the study again.'); vStrategy(S.cur.id); break;
       case 'save-costs': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { contracts: +$('#pp-c').value, dailyLoss: +$('#pp-dl').value, comm: +$('#pp-comm').value, slip: +$('#pp-slip').value } }); toast('Saved.'); vStrategy(S.cur.id); break;

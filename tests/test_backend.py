@@ -159,7 +159,8 @@ def test_06_other_setups():
                      ("pdsweep", {"days": 60, "minRR": 0}), ("pdsweep", {"days": 60, "levels": "outer", "tgt": "other"}), ("nrbreak", {"days": 80, "cond": "any", "trend": "none", "minRR": 0}),
                      ("nrbreak", {"days": 60, "cond": "either", "orMin": 30, "stop": "mid"}), ("fpdisp", {"days": 60, "minRR": 0}), ("fpdisp", {"days": 60, "fair": "vwap", "stop": "swing", "tf": 1}),
                      ("ifvg", {"days": 60, "asia": "none", "bias": "h1", "minRR": 0}), ("ifvg", {"days": 60, "tgt": "liq", "stop": "swing"}),
-                     ("ifvg", {"days": 60, "hours": "all", "exit": "trail", "trail": "ema15", "gapFrom": "18:00"})):
+                     ("ifvg", {"days": 60, "hours": "all", "exit": "trail", "trail": "ema15", "gapFrom": "18:00"}),
+                     ("biaspull", {"days": 60}), ("biaspull", {"days": 60, "hours": "rth", "exit": "target", "bias": "h1", "asia": "dir"})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -482,6 +483,23 @@ def test_22_search():
     s2 = strategy.create(SUB, {"setup": "onsweep", "params": {"days": 40, "tickers": ["NQ"]}})
     call("POST", f"/strategies/{s2['id']}/search", {"action": "start"})
     assert search.run(SUB, s2["id"], budget_s=120) is False and search.public(SUB, s2["id"])["done"]   # a 36-setting grid: all tried
+
+
+def test_23_bias_pullback_control():
+    import biaspull
+    import ifvg
+    d = "2026-03-10"
+    rows = [(100, 101, 99.5, 100.8), (100.8, 101.5, 100.5, 101.4), (101.4, 101.5, 100.6, 100.7), (100.7, 100.8, 100.0, 100.2), (100.2, 101.2, 100.1, 101.1)]
+    rows += [(101.1, 103, 101, 102.9)] * 40
+    F = _rth(d, rows)
+    up = [(f"2026-03-09T{18 + i // 12:02d}:{i % 12 * 5:02d}", 0, 0, 0, 90 + i * 0.05) for i in range(60)]
+    row = ifvg.ema_track([(t, c, c, c, c) for t, o, h, l, c in up])[up[-1][0]]
+    E = {b[0]: row for b in F}
+    p = biaspull.clean({"tf": 5, "hours": "rth", "minRisk": 0, "exit": "target", "tgtR": 2, "maxDay": 1})
+    p["_dummy"] = 1
+    t = biaspull.day_trades(d, [], F, E, {**p, "gapFrom": "08:00", "minGap": 0, "fvgMax": 24, "stop": "swing", "tgt": "r", "minRR": 0, "pivLen": 3, "liqLook": 150})[0]
+    assert t["side"] == "long" and t["e"] == 101.1 and t["stop"] == 100.0 and t["pb"] == 2 and t["cf"] == F[4][0], t
+    assert biaspull.clean({"exit": "nope"})["exit"] == "trail" and biaspull.clean({})["setup"] == "biaspull"
 
 
 if __name__ == "__main__":

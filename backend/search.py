@@ -38,6 +38,9 @@ SPACES = {
         "trail": ["swing", "r", "ema15", "none"], "trailN": [2, 3, 5, 8], "trailR": [0.25, 0.5, 1.0, 1.5, 2.0],
     },
 }
+SPACES["biaspull"] = {**{k: v for k, v in SPACES["ifvg"].items() if k in ("tf", "bias", "asia", "bufTicks", "hours", "lastEntry", "maxDay", "side", "exit",
+                                                                        "tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")},
+                      "pbMin": [1, 2, 3, 4], "minRisk": [0, 4, 8, 16, 32]}
 # a setting that only matters when another one has a value: (key, needs) -> dropped from the key otherwise
 NEEDS = {
     "ifvg": {"tgt": lambda g: g["exit"] == "target", "tgtR": lambda g: g["exit"] == "target" and g["tgt"] == "r",
@@ -46,6 +49,8 @@ NEEDS = {
              "trail": lambda g: g["exit"] == "trail", "trailN": lambda g: g["exit"] == "trail" and g["trail"] == "swing",
              "trailR": lambda g: g["exit"] == "trail" and g["trail"] == "r", "gapFrom": lambda g: g["hours"] == "rth"},
 }
+NEEDS["biaspull"] = {k: f for k, f in NEEDS["ifvg"].items() if k in ("tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")}
+NEEDS["biaspull"]["tgtR"] = lambda g: g["exit"] == "target"
 
 
 def space(setup):
