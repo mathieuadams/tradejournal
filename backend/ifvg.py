@@ -29,7 +29,7 @@ DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "none", "minGap":
            "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "hours": "all",
            "exit": "trail", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "trailR": 0.5,
            "trigSize": "body", "trigMin": 0.0, "trigMax": 0.0, "bodyPct": 0, "avgN": 20,
-           "trigN": 0, "trigPrevMult": 1.0, "trigEngulf": False, "side": "both", "days": 500}
+           "trigN": 0, "trigPrevMult": 1.0, "trigPrevMax": 0.0, "trigEngulf": False, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
            ("gap", "Gap size"), ("ses", "Session"), ("tb", "Trigger candle body (× the average range)"), ("tr", "Trigger candle range (× the average range)"),
            ("bp", "Trigger candle body (% of its range)"), ("tp", "Trigger vs the largest of the 3 candles before"),
@@ -51,7 +51,7 @@ def clean(p):
     out["trail"] = p.get("trail") if p.get("trail") in ("swing", "r", "ema15", "none") else "swing"
     out["trigSize"] = p.get("trigSize") if p.get("trigSize") in ("body", "range") else "body"
     K.num(p, out, (("trigMin", 0, 10, 0.0), ("trigMax", 0, 20, 0.0), ("bodyPct", 0, 100, 0), ("avgN", 3, 200, 20), ("trigN", 0, 20, 0),
-                   ("trigPrevMult", 0.1, 10, 1.0)), ("bodyPct", "avgN", "trigN"))
+                   ("trigPrevMult", 0, 10, 1.0), ("trigPrevMax", 0, 50, 0.0)), ("bodyPct", "avgN", "trigN"))
     out["trigEngulf"] = bool(p.get("trigEngulf")) and str(p.get("trigEngulf")).lower() not in ("false", "0")
     K.num(p, out, (("beR", 0, 5, 0.5), ("partR", 0, 10, 1.0), ("partPct", 0, 100, 50), ("trailN", 1, 50, 3), ("trailR", 0.1, 10, 0.5)), ("trailN",))
     K.num(p, out, (("minGap", 0, 200, 4), ("fvgMax", 1, 100, 24), ("bufTicks", 0, 40, 0), ("tgtR", 0.5, 10, 2.0), ("pivLen", 1, 10, 3), ("liqLook", 10, 600, 150),
@@ -80,7 +80,9 @@ def _trig_txt(p):
         parts.append(f"at most {p['trigMax']:g}×")
     txt = f". Trigger candle {m} {' and '.join(parts)} the average candle range (last {p.get('avgN', 20)})" if parts else ""
     if p.get("trigN"):
-        txt += (", " if txt else ". Trigger candle ") + f"{p.get('trigPrevMult', 1):g}×+ the largest of the previous {p['trigN']} ({m})" \
+        rel = [f"at least {p.get('trigPrevMult', 1):g}×"] if p.get("trigPrevMult") else []
+        rel += [f"at most {p['trigPrevMax']:g}×"] if p.get("trigPrevMax") else []
+        txt += (", " if txt else ". Trigger candle ") + f"{' and '.join(rel) or 'compared with'} the largest of the previous {p['trigN']} ({m})" \
             + (" and closing past them" if p.get("trigEngulf") else "")
     if p.get("bodyPct"):
         txt += (", " if txt else ". Trigger candle ") + f"body at least {p['bodyPct']}% of its range"
@@ -216,6 +218,8 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
             why = f"trigger body {body / rng * 100:.0f}% of its range"
         elif not why and prevN and (body if p["trigSize"] == "body" else rng) < p["trigPrevMult"] * bigN:
             why = f"trigger not {p['trigPrevMult']:g}× the previous {p['trigN']} candles"
+        elif not why and prevN and p["trigPrevMax"] and (body if p["trigSize"] == "body" else rng) > p["trigPrevMax"] * bigN:
+            why = f"trigger over {p['trigPrevMax']:g}× the previous {p['trigN']} candles"
         elif not why and prevN and p["trigEngulf"] and not ((c > max(b[2] for b in prevN)) if d > 0 else (c < min(b[3] for b in prevN))):
             why = f"trigger doesn't close past the previous {p['trigN']} candles"
         e = c

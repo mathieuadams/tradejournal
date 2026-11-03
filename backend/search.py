@@ -37,7 +37,7 @@ SPACES = {
         "pivLen": [2, 3, 5], "beR": [0, 0.5, 1.0], "partR": [0.5, 1.0, 1.5, 2.0], "partPct": [0, 25, 50, 75],
         "trail": ["swing", "r", "ema15", "none"], "trailN": [2, 3, 5, 8], "trailR": [0.25, 0.5, 1.0, 1.5, 2.0],
         "trigSize": ["body", "range"], "trigMin": [0, 0.5, 0.75, 1.0, 1.5], "trigMax": [0, 1.5, 2.5, 4.0], "bodyPct": [0, 40, 60, 80], "avgN": [10, 20, 50],
-        "trigN": [0, 1, 2, 3, 5], "trigPrevMult": [1.0, 1.25, 1.5, 2.0], "trigEngulf": [False, True],
+        "trigN": [0, 1, 2, 3, 5], "trigPrevMult": [0, 1.0, 1.25, 1.5, 2.0], "trigPrevMax": [0, 2.0, 3.0, 5.0], "trigEngulf": [False, True],
     },
 }
 SPACES["biaspull"] = {**{k: v for k, v in SPACES["ifvg"].items() if k in ("tf", "bias", "asia", "bufTicks", "hours", "lastEntry", "maxDay", "side", "exit",
@@ -51,7 +51,7 @@ NEEDS = {
              "trail": lambda g: g["exit"] == "trail", "trailN": lambda g: g["exit"] == "trail" and g["trail"] == "swing",
              "trailR": lambda g: g["exit"] == "trail" and g["trail"] == "r", "gapFrom": lambda g: g["hours"] == "rth",
              "trigSize": lambda g: bool(g["trigMin"] or g["trigMax"] or g["trigN"]), "avgN": lambda g: bool(g["trigMin"] or g["trigMax"]),
-             "trigPrevMult": lambda g: bool(g["trigN"]), "trigEngulf": lambda g: bool(g["trigN"])},
+             "trigPrevMult": lambda g: bool(g["trigN"]), "trigPrevMax": lambda g: bool(g["trigN"]), "trigEngulf": lambda g: bool(g["trigN"])},
 }
 NEEDS["biaspull"] = {k: f for k, f in NEEDS["ifvg"].items() if k in ("tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")}
 NEEDS["biaspull"]["tgtR"] = lambda g: g["exit"] == "target"

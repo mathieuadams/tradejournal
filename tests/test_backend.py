@@ -443,6 +443,7 @@ def test_19b_ifvg_trigger_candle():
     assert not run(trigMin=2) and not run(trigSize="range", trigMax=1.2) and not run(bodyPct=90) and run(bodyPct=80)
     # vs the previous candles: bodies 0.6, 1.2 (red, 0.7 / 0.3 / 0.7 before it) -> trigger body 1.6
     assert run(trigN=3, trigPrevMult=1.0) and not run(trigN=3, trigPrevMult=2.5)
+    assert not run(trigN=3, trigPrevMax=2.0) and run(trigN=3, trigPrevMax=2.5)    # 1.6 vs 0.7: 2.29x
     assert run(trigN=3, trigEngulf=True) == []                     # 102.4 doesn't close past the 103.5 high 3 candles back
     assert run(trigN=2, trigEngulf=True)                           # past 102.3 and 101.6
     x = dict(t, d=d)
