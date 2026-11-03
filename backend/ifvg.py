@@ -27,9 +27,11 @@ import sessionkit as K
 
 DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "none", "minGap": 4, "fvgMax": 24, "gapFrom": "08:00", "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
            "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "hours": "all",
-           "exit": "trail", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "trailR": 0.5, "side": "both", "days": 500}
+           "exit": "trail", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "trailR": 0.5,
+           "trigSize": "body", "trigMin": 0.0, "trigMax": 0.0, "bodyPct": 0, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
-           ("gap", "Gap size"), ("ses", "Session")]
+           ("gap", "Gap size"), ("ses", "Session"), ("tb", "Trigger candle body (× the average range)"), ("tr", "Trigger candle range (× the average range)"),
+           ("bp", "Trigger candle body (% of its range)")]
 EMAS = (15, 30, 60)
 
 
@@ -45,6 +47,8 @@ def clean(p):
     out["hours"] = p.get("hours") if p.get("hours") in ("rth", "all") else "all"
     out["exit"] = p.get("exit") if p.get("exit") in ("target", "trail") else "trail"
     out["trail"] = p.get("trail") if p.get("trail") in ("swing", "r", "ema15", "none") else "swing"
+    out["trigSize"] = p.get("trigSize") if p.get("trigSize") in ("body", "range") else "body"
+    K.num(p, out, (("trigMin", 0, 10, 0.0), ("trigMax", 0, 20, 0.0), ("bodyPct", 0, 100, 0)), ("bodyPct",))
     K.num(p, out, (("beR", 0, 5, 0.5), ("partR", 0, 10, 1.0), ("partPct", 0, 100, 50), ("trailN", 1, 50, 3), ("trailR", 0.1, 10, 0.5)), ("trailN",))
     K.num(p, out, (("minGap", 0, 200, 4), ("fvgMax", 1, 100, 24), ("bufTicks", 0, 40, 0), ("tgtR", 0.5, 10, 2.0), ("pivLen", 1, 10, 3), ("liqLook", 10, 600, 150),
                    ("minRR", 0, 10, 1.0), ("maxDay", 1, 10, 2), ("days", 20, 3000, 500)), ("minGap", "fvgMax", "bufTicks", "pivLen", "liqLook", "maxDay", "days"))
@@ -60,7 +64,20 @@ def describe(p):
     return (f"{', '.join(p['tickers'])} {p['tf']}-minute, NYSE session: bias from {b}{a}. A fair value gap against the bias (the pullback), then a close "
             f"through it (inversion, within {p['fvgMax']} candles): enter at that close ({side}, before {p['lastEntry']}), stop at "
             f"{'the far end of the gap' if p['stop'] == 'fvg' else 'the pullback extreme'}" + ("" if p["exit"] == "trail" else f", target {tg}" + (f" (skip under {p['minRR']:g}R)" if p["minRR"] else ""))
-            + f", at most {p['maxDay']} a session, flat at 15:55" + _exit_txt(p)).replace("NYSE session", "overnight + NYSE session" if p["hours"] == "all" else "NYSE session")
+            + f", at most {p['maxDay']} a session, flat at 15:55" + _trig_txt(p) + _exit_txt(p)).replace("NYSE session", "overnight + NYSE session" if p["hours"] == "all" else "NYSE session")
+
+
+def _trig_txt(p):
+    parts = []
+    m = "body" if p.get("trigSize", "body") == "body" else "range (wicks included)"
+    if p.get("trigMin"):
+        parts.append(f"at least {p['trigMin']:g}×")
+    if p.get("trigMax"):
+        parts.append(f"at most {p['trigMax']:g}×")
+    txt = f". Trigger candle {m} {' and '.join(parts)} the average candle range (last 20)" if parts else ""
+    if p.get("bodyPct"):
+        txt += (", " if txt else ". Trigger candle ") + f"body at least {p['bodyPct']}% of its range"
+    return txt
 
 
 def _exit_txt(p):
@@ -174,6 +191,16 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
             why = "Asia closed against"
         elif p["asia"] == "hold" and am != d:
             why = "Asia middle against"
+        w = Fd[max(0, k - 20):k]
+        avg = sum(b[2] - b[3] for b in w) / len(w) if w else 0
+        body, rng = abs(c - o), h - l
+        size = (body if p["trigSize"] == "body" else rng) / avg if avg > 0 else 0
+        if not why and p["trigMin"] and size < p["trigMin"]:
+            why = f"trigger candle {size:.1f}× < {p['trigMin']:g}×"
+        elif not why and p["trigMax"] and size > p["trigMax"]:
+            why = f"trigger candle {size:.1f}× > {p['trigMax']:g}×"
+        elif not why and p["bodyPct"] and rng > 0 and body / rng * 100 < p["bodyPct"]:
+            why = f"trigger body {body / rng * 100:.0f}% of its range"
         e = c
         if p["stop"] == "fvg":
             stop = hit["bot"] - buf if d > 0 else hit["top"] + buf
@@ -209,7 +236,8 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
         al = sum(1 for em, up, dn in row if (c - em) * d > 0 and (up if d > 0 else dn)) if row else 0
         out.append({"in": K.end_of(t, p["tf"]), "out": ot, "e": e, "x": x, "why": ex, "side": "long" if d > 0 else "short", "stop": stop, "tgt": tgt,
                     "stopDist": risk, "tgtDist": abs(tgt - e), "fvgTop": hit["top"], "fvgBot": hit["bot"], "rt": Fd[hit["k"]][0], "cf": t,
-                    "al": al, "as": ad == d, "tk": tk, "gap": hit["top"] - hit["bot"], "ses": t >= rth0, "part": part, "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
+                    "al": al, "as": ad == d, "tk": tk, "gap": hit["top"] - hit["bot"], "ses": t >= rth0, "part": part, "tb": body / avg if avg > 0 else None, "tr": rng / avg if avg > 0 else None,
+                    "bp": body / rng * 100 if rng > 0 else None, "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
         k = j + 1
     return out
 
@@ -316,6 +344,11 @@ def decorate(x, p):
     x["as"] = "with the bias" if x.get("as") else "against / flat"
     g = x.get("gap") or 0
     x["gap"] = "under 5 pts" if g < 5 else "5-15 pts" if g < 15 else "15+ pts"
+    for k in ("tb", "tr"):
+        v = x.get(k)
+        x[k] = "—" if v is None else "under 0.5×" if v < 0.5 else "0.5-1×" if v < 1 else "1-1.5×" if v < 1.5 else "1.5-2.5×" if v < 2.5 else "2.5×+"
+    v = x.get("bp")
+    x["bp"] = "—" if v is None else "under 40%" if v < 40 else "40-60%" if v < 60 else "60-80%" if v < 80 else "80%+ (small wicks)"
 
 
 def overlay(sub, p, sym, start, end):

@@ -91,6 +91,9 @@ const SETUPS = {
       ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ['tgt', 'Target', 'sel', [['liq2r', 'Previous liquidity, at least 2R'], ['liq', 'Previous liquidity'], ['r', 'Fixed R']]], ['tgtR', 'Fixed R target', 'num', 0.5],
       ['pivLen', 'Liquidity: swing length', 'num', 1], ['liqLook', 'Liquidity: look back (candles)', 'num', 10], ['minRR', 'Skip if the target is under (R)', 'num', 0.25],
       ['lastEntry', 'Last entry (ET)', 'text'], ['maxDay', 'Max trades per session', 'num', 1],
+      ['trigSize', 'Trigger candle: measure', 'sel', [['body', 'Body only'], ['range', 'Whole candle (wicks included)']]],
+      ['trigMin', 'Trigger candle at least (× avg range of the last 20, 0 = off)', 'num', 0.25], ['trigMax', 'Trigger candle at most (× avg range, 0 = off)', 'num', 0.25],
+      ['bodyPct', 'Trigger body at least (% of its range, 0 = off)', 'num', 5],
       ['hours', 'Hours', 'sel', [['rth', 'NYSE session only (09:35–last entry)'], ['all', 'Overnight + NYSE (from 18:00)']]],
       ['exit', 'Exit', 'sel', [['target', 'Stop / target'], ['trail', 'Managed: break-even, partial, trailing']]], ['beR', 'Managed: break-even at (R, 0 = off)', 'num', 0.25],
       ['partR', 'Managed: partial at (R)', 'num', 0.25], ['partPct', 'Managed: partial size (%, 0 = none)', 'num', 5],
@@ -340,7 +343,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   pdsweep: { tf: 5, levels: 'pd', fresh: true, lastEntry: '11:30', maxAbove: 3, minDepth: 0, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   nrbreak: { tf: 5, cond: 'nr7', trend: 'sma', orMin: 15, stop: 'opp', tgtAtr: 1, minRR: 0.5, bufTicks: 2, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   fpdisp: { tf: 5, fair: 'open', minAwayPct: 0.1, bodyMult: 1, stop: 'bar', swingN: 5, bufTicks: 2, minRR: 1, firstEntry: '09:35', lastEntry: '13:00', maxDay: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
-  ifvg: { tf: 5, bias: 'all3', asia: 'none', minGap: 4, fvgMax: 24, gapFrom: '08:00', stop: 'fvg', bufTicks: 0, tgt: 'liq2r', tgtR: 2, pivLen: 3, liqLook: 150, minRR: 1, lastEntry: '14:00', maxDay: 2, hours: 'all', exit: 'trail', beR: 0.5, partR: 1, partPct: 50, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  ifvg: { tf: 5, bias: 'all3', asia: 'none', minGap: 4, fvgMax: 24, gapFrom: '08:00', stop: 'fvg', bufTicks: 0, tgt: 'liq2r', tgtR: 2, pivLen: 3, liqLook: 150, minRR: 1, lastEntry: '14:00', maxDay: 2, hours: 'all', exit: 'trail', beR: 0.5, partR: 1, partPct: 50, trail: 'swing', trailN: 3, trailR: 0.5, trigSize: 'body', trigMin: 0, trigMax: 0, bodyPct: 0, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   biaspull: { tf: 5, bias: 'all3', asia: 'none', pbMin: 2, minRisk: 8, bufTicks: 0, hours: 'all', lastEntry: '14:00', maxDay: 2, exit: 'trail', tgtR: 2, beR: 0.5, partR: 1, partPct: 50, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 // what's been tried for a setup: a badge on its card in New strategy

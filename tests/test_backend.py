@@ -426,6 +426,26 @@ def test_19_fvg_inversion():
     assert [x for x in notes if x["d"] > 0][0]["text"].startswith("Long skipped: target 2.0R"), notes
 
 
+def test_19b_ifvg_trigger_candle():
+    import ifvg
+    d = "2026-03-10"
+    rows = [(100, 101, 99.8, 100.9), (100.9, 103, 100.8, 102.8), (102.8, 103.5, 102.0, 102.2), (102.2, 102.3, 101.4, 101.5), (101.5, 101.6, 100.6, 100.8),
+            (100.8, 102.5, 100.7, 102.4)] + [(102.4, 105, 102.3, 104.8)] * 60
+    R = _rth(d, rows)
+    up = [(f"2026-03-09T{18 + i // 12:02d}:{i % 12 * 5:02d}", 0, 0, 0, 90 + i * 0.05) for i in range(60)]
+    row = ifvg.ema_track([(t, c, c, c, c) for t, o, h, l, c in up])[up[-1][0]]
+    E = {b[0]: row for b in R}
+    fi = {b[0]: i for i, b in enumerate(R)}
+    base = {"tf": 5, "exit": "target", "hours": "rth", "minGap": 1, "minRR": 0, "maxDay": 1}
+    run = lambda **kw: ifvg.day_trades(d, [], R, R, R, fi, E, ifvg.clean({**base, **kw}))
+    t = run(trigMin=1)[0]                                          # body 1.6 vs the average range 1.36: 1.18x
+    assert t["e"] == 102.4 and abs(t["tb"] - 1.6 / 1.36) < 1e-6 and abs(t["bp"] - 1.6 / 1.8 * 100) < 1e-6, t
+    assert not run(trigMin=2) and not run(trigSize="range", trigMax=1.2) and not run(bodyPct=90) and run(bodyPct=80)
+    x = dict(t, d=d)
+    ifvg.decorate(x, ifvg.clean({}))
+    assert x["tb"] == "1-1.5×" and x["bp"] == "80%+ (small wicks)"
+
+
 def test_20_ifvg_asia_migration():
     import db as _db
     s = strategy.create(SUB, {"setup": "ifvg", "params": {"days": 40, "asia": "dir"}})
