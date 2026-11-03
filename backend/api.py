@@ -103,7 +103,7 @@ def _weekdays(d0, d1):
 
 def _estimate(sub, kind, syms, d0, d1, window="rth"):
     key = databento.key(sub)
-    avail = databento.dataset_range(key)["end"]         # Databento refuses an end past the data it has (today)
+    avail = databento.dataset_range(key, {"candles": "ohlcv-1m", "book": "mbp-10"}.get(kind, "trades"))["end"]   # Databento refuses an end past its data
     if kind == "candles":
         s, e = futdata.utc_iso(d0), futdata.utc_iso((date.fromisoformat(d1) + timedelta(days=1)).isoformat())
         schema = "ohlcv-1m"

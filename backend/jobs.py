@@ -125,8 +125,14 @@ def refresh(sub, footprint_today=True, ctx=None):
     so the pages can show when the candles were last updated and any error."""
     try:
         out = _refresh(sub, footprint_today, ctx)
+        rng = {}
+        try:
+            rng = databento.dataset_range(databento.key(sub), "ohlcv-1m")
+            databento.note_range(sub, rng)
+        except Exception as e:
+            print("range check failed", e)
         set_status(sub, "refresh", status="done" if out == "ok" else "skipped", msg=out,
-                   last={s: futdata.last_bar_time(s) for s in futdata.SYMS}, avail=(databento.status(sub).get("range") or {}).get("end"))
+                   last={s: futdata.last_bar_time(s) for s in futdata.SYMS}, avail=rng.get("end"), schemas=rng.get("schemas"))
         return out
     except Exception as e:
         set_status(sub, "refresh", status="error", msg=str(e)[:300], last={s: futdata.last_bar_time(s) for s in futdata.SYMS})

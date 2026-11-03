@@ -117,11 +117,19 @@ def delete_key(sub):
 
 def test(sub):
     k = key(sub)
-    rng = dataset_range(k)
+    rng = dataset_range(k, "ohlcv-1m")
     it = db.get(db.upk(sub), SK)
     it.update(range=rng, testedAt=iso(now_ny()))
     db.put(it)
     return status(sub)
+
+
+def note_range(sub, rng):
+    """The latest availability, seen by the automatic update (shown on the Data page)."""
+    it = db.get(db.upk(sub), SK)
+    if it:
+        it.update(range=rng, testedAt=iso(now_ny()))
+        db.put(it)
 
 
 # ---------------------------------------------------------------- metadata
@@ -131,15 +139,18 @@ def list_datasets(key):
     return r if isinstance(r, list) else []
 
 
-def dataset_range(key):
-    """{"start", "end"} (UTC ISO) of the data available now for GLBX.MDP3."""
+def dataset_range(key, schema=None):
+    """{"start", "end", "schemas"} (UTC ISO) of the data available now for GLBX.MDP3. schema: the end of that schema
+    (e.g. ohlcv-1m), else the dataset's end. Each schema has its own end: one that lags (trades, mbp-10) must not hold
+    back the others."""
     r = _json(key, "metadata.get_dataset_range", {"dataset": DATASET}) or {}
     end = str(r.get("end") or r.get("end_date") or "")[:19]
     sch = r.get("schema") if isinstance(r.get("schema"), dict) else {}
-    ends = [str(v.get("end"))[:19] for k, v in sch.items() if k in ("ohlcv-1m", "trades") and isinstance(v, dict) and v.get("end")]
-    if ends:                                           # the earliest end of the schemas the app uses
-        end = min(ends + ([end] if end else []))
-    return {"start": str(r.get("start") or r.get("start_date") or "")[:19], "end": end.replace(" ", "T")}
+    ends = {k: str(v.get("end"))[:19].replace(" ", "T") for k, v in sch.items() if isinstance(v, dict) and v.get("end")}
+    if schema and ends.get(schema):
+        end = ends[schema]
+    return {"start": str(r.get("start") or r.get("start_date") or "")[:19], "end": end.replace(" ", "T"),
+            "schemas": {k: v for k, v in ends.items() if k in ("ohlcv-1m", "trades", "mbp-10")}}
 
 
 def _avail_from(err):

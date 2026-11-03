@@ -127,7 +127,7 @@ def download_candles(sub, sym, start, end, prog=None, deadline=None):
     date to continue from (out of time)."""
     sym = check_sym(sym)
     key = databento.key(sub)
-    avail = databento.dataset_range(key)["end"]
+    avail = databento.dataset_range(key, "ohlcv-1m")["end"]
     d = date.fromisoformat(start)
     stop = date.fromisoformat(end) + timedelta(days=1)
     while d < stop:
@@ -170,7 +170,7 @@ def download_footprint(sub, sym, day, force=False):
     if date.fromisoformat(day).weekday() >= 5:
         return False
     key = databento.key(sub)
-    avail = databento.dataset_range(key)["end"]
+    avail = databento.dataset_range(key, "trades")["end"]
     s_utc, e_utc = utc_iso(day, RTH0), utc_iso(day, RTH1)
     if avail and s_utc >= avail:
         return False
@@ -220,7 +220,7 @@ def download_book(sub, sym, day, window="rth", force=False):
         return False
     w0, w1 = WINDOWS.get(window, WINDOWS["rth"])
     key = databento.key(sub)
-    avail = databento.dataset_range(key)["end"]
+    avail = databento.dataset_range(key, "mbp-10")["end"]
     s_utc, e_utc = utc_iso(day, w0), utc_iso(day, w1)
     if avail and s_utc >= avail:
         return False
