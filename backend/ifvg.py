@@ -28,10 +28,12 @@ import sessionkit as K
 DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "none", "minGap": 4, "fvgMax": 24, "gapFrom": "08:00", "stop": "fvg", "bufTicks": 0, "tgt": "liq2r", "tgtR": 2.0,
            "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "hours": "all",
            "exit": "trail", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "trailR": 0.5,
-           "trigSize": "body", "trigMin": 0.0, "trigMax": 0.0, "bodyPct": 0, "side": "both", "days": 500}
+           "trigSize": "body", "trigMin": 0.0, "trigMax": 0.0, "bodyPct": 0, "avgN": 20,
+           "trigN": 0, "trigPrevMult": 1.0, "trigEngulf": False, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
            ("gap", "Gap size"), ("ses", "Session"), ("tb", "Trigger candle body (× the average range)"), ("tr", "Trigger candle range (× the average range)"),
-           ("bp", "Trigger candle body (% of its range)")]
+           ("bp", "Trigger candle body (% of its range)"), ("tp", "Trigger vs the largest of the 3 candles before"),
+           ("te", "Trigger closes past the 3 candles before")]
 EMAS = (15, 30, 60)
 
 
@@ -48,7 +50,9 @@ def clean(p):
     out["exit"] = p.get("exit") if p.get("exit") in ("target", "trail") else "trail"
     out["trail"] = p.get("trail") if p.get("trail") in ("swing", "r", "ema15", "none") else "swing"
     out["trigSize"] = p.get("trigSize") if p.get("trigSize") in ("body", "range") else "body"
-    K.num(p, out, (("trigMin", 0, 10, 0.0), ("trigMax", 0, 20, 0.0), ("bodyPct", 0, 100, 0)), ("bodyPct",))
+    K.num(p, out, (("trigMin", 0, 10, 0.0), ("trigMax", 0, 20, 0.0), ("bodyPct", 0, 100, 0), ("avgN", 3, 200, 20), ("trigN", 0, 20, 0),
+                   ("trigPrevMult", 0.1, 10, 1.0)), ("bodyPct", "avgN", "trigN"))
+    out["trigEngulf"] = bool(p.get("trigEngulf")) and str(p.get("trigEngulf")).lower() not in ("false", "0")
     K.num(p, out, (("beR", 0, 5, 0.5), ("partR", 0, 10, 1.0), ("partPct", 0, 100, 50), ("trailN", 1, 50, 3), ("trailR", 0.1, 10, 0.5)), ("trailN",))
     K.num(p, out, (("minGap", 0, 200, 4), ("fvgMax", 1, 100, 24), ("bufTicks", 0, 40, 0), ("tgtR", 0.5, 10, 2.0), ("pivLen", 1, 10, 3), ("liqLook", 10, 600, 150),
                    ("minRR", 0, 10, 1.0), ("maxDay", 1, 10, 2), ("days", 20, 3000, 500)), ("minGap", "fvgMax", "bufTicks", "pivLen", "liqLook", "maxDay", "days"))
@@ -74,7 +78,10 @@ def _trig_txt(p):
         parts.append(f"at least {p['trigMin']:g}×")
     if p.get("trigMax"):
         parts.append(f"at most {p['trigMax']:g}×")
-    txt = f". Trigger candle {m} {' and '.join(parts)} the average candle range (last 20)" if parts else ""
+    txt = f". Trigger candle {m} {' and '.join(parts)} the average candle range (last {p.get('avgN', 20)})" if parts else ""
+    if p.get("trigN"):
+        txt += (", " if txt else ". Trigger candle ") + f"{p.get('trigPrevMult', 1):g}×+ the largest of the previous {p['trigN']} ({m})" \
+            + (" and closing past them" if p.get("trigEngulf") else "")
     if p.get("bodyPct"):
         txt += (", " if txt else ". Trigger candle ") + f"body at least {p['bodyPct']}% of its range"
     return txt
@@ -191,16 +198,26 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
             why = "Asia closed against"
         elif p["asia"] == "hold" and am != d:
             why = "Asia middle against"
-        w = Fd[max(0, k - 20):k]
+        w = Fd[max(0, k - p["avgN"]):k]
         avg = sum(b[2] - b[3] for b in w) / len(w) if w else 0
         body, rng = abs(c - o), h - l
+        meas = (lambda b: abs(b[4] - b[1])) if p["trigSize"] == "body" else (lambda b: b[2] - b[3])
         size = (body if p["trigSize"] == "body" else rng) / avg if avg > 0 else 0
+        prev3 = Fd[max(0, k - 3):k]
+        big3 = max((meas(b) for b in prev3), default=0)
+        eng3 = bool(prev3) and ((c > max(b[2] for b in prev3)) if d > 0 else (c < min(b[3] for b in prev3)))
+        prevN = Fd[max(0, k - p["trigN"]):k] if p["trigN"] else []
+        bigN = max((meas(b) for b in prevN), default=0)
         if not why and p["trigMin"] and size < p["trigMin"]:
             why = f"trigger candle {size:.1f}× < {p['trigMin']:g}×"
         elif not why and p["trigMax"] and size > p["trigMax"]:
             why = f"trigger candle {size:.1f}× > {p['trigMax']:g}×"
         elif not why and p["bodyPct"] and rng > 0 and body / rng * 100 < p["bodyPct"]:
             why = f"trigger body {body / rng * 100:.0f}% of its range"
+        elif not why and prevN and (body if p["trigSize"] == "body" else rng) < p["trigPrevMult"] * bigN:
+            why = f"trigger not {p['trigPrevMult']:g}× the previous {p['trigN']} candles"
+        elif not why and prevN and p["trigEngulf"] and not ((c > max(b[2] for b in prevN)) if d > 0 else (c < min(b[3] for b in prevN))):
+            why = f"trigger doesn't close past the previous {p['trigN']} candles"
         e = c
         if p["stop"] == "fvg":
             stop = hit["bot"] - buf if d > 0 else hit["top"] + buf
@@ -237,7 +254,7 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
         out.append({"in": K.end_of(t, p["tf"]), "out": ot, "e": e, "x": x, "why": ex, "side": "long" if d > 0 else "short", "stop": stop, "tgt": tgt,
                     "stopDist": risk, "tgtDist": abs(tgt - e), "fvgTop": hit["top"], "fvgBot": hit["bot"], "rt": Fd[hit["k"]][0], "cf": t,
                     "al": al, "as": ad == d, "tk": tk, "gap": hit["top"] - hit["bot"], "ses": t >= rth0, "part": part, "tb": body / avg if avg > 0 else None, "tr": rng / avg if avg > 0 else None,
-                    "bp": body / rng * 100 if rng > 0 else None, "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
+                    "bp": body / rng * 100 if rng > 0 else None, "tp": (body if p["trigSize"] == "body" else rng) / big3 if big3 > 0 else None, "te": eng3, "pct": d * (x / e - 1) * 100, "r": d * (x - e) / risk})
         k = j + 1
     return out
 
@@ -349,6 +366,9 @@ def decorate(x, p):
         x[k] = "—" if v is None else "under 0.5×" if v < 0.5 else "0.5-1×" if v < 1 else "1-1.5×" if v < 1.5 else "1.5-2.5×" if v < 2.5 else "2.5×+"
     v = x.get("bp")
     x["bp"] = "—" if v is None else "under 40%" if v < 40 else "40-60%" if v < 60 else "60-80%" if v < 80 else "80%+ (small wicks)"
+    v = x.get("tp")
+    x["tp"] = "—" if v is None else "smaller (under 1×)" if v < 1 else "1-1.5×" if v < 1.5 else "1.5-2.5×" if v < 2.5 else "2.5×+"
+    x["te"] = "yes" if x.get("te") else "no"
 
 
 def overlay(sub, p, sym, start, end):

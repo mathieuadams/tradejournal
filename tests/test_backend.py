@@ -441,6 +441,10 @@ def test_19b_ifvg_trigger_candle():
     t = run(trigMin=1)[0]                                          # body 1.6 vs the average range 1.36: 1.18x
     assert t["e"] == 102.4 and abs(t["tb"] - 1.6 / 1.36) < 1e-6 and abs(t["bp"] - 1.6 / 1.8 * 100) < 1e-6, t
     assert not run(trigMin=2) and not run(trigSize="range", trigMax=1.2) and not run(bodyPct=90) and run(bodyPct=80)
+    # vs the previous candles: bodies 0.6, 1.2 (red, 0.7 / 0.3 / 0.7 before it) -> trigger body 1.6
+    assert run(trigN=3, trigPrevMult=1.0) and not run(trigN=3, trigPrevMult=2.5)
+    assert run(trigN=3, trigEngulf=True) == []                     # 102.4 doesn't close past the 103.5 high 3 candles back
+    assert run(trigN=2, trigEngulf=True)                           # past 102.3 and 101.6
     x = dict(t, d=d)
     ifvg.decorate(x, ifvg.clean({}))
     assert x["tb"] == "1-1.5×" and x["bp"] == "80%+ (small wicks)"
