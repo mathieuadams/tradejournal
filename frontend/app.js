@@ -166,7 +166,7 @@ async function vRunning() {
       </div>
     </div>
     <div class="row">
-      <section class="panel col-main" style="display:block"><div class="hd"><h2>Strategies</h2><span class="dim" style="font-size:13px">Paper trading runs on the Databento candles, refreshed every 15 minutes.</span></div>
+      <section class="panel col-main" style="display:block"><div class="hd"><h2>Strategies</h2><span class="dim" style="font-size:13px">Paper trading runs on the Databento candles, refreshed every 5 minutes, overnight included.</span></div>
         ${rows.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:820px"><thead><tr><th>Strategy</th><th>Mode</th><th>Position</th><th class="r">Today</th><th class="r">Trades</th><th class="r">Net since start</th><th>Paper vs test</th><th>Status</th></tr></thead><tbody>
           ${rows.map(s => `<tr><td><a class="name" href="#strategy/${s.id}">${esc(s.name)}</a><div class="sub">${esc(s.meta)}</div></td>
             <td><span class="stage st-paper">${s.mode}</span></td>
@@ -384,7 +384,7 @@ async function vStrategy(id) {
   const mrow = (name, k, f) => `<tr><td>${name}</td>${['train', 'test', 'base', 'cost2'].map(w => `<td class="r">${v[w] && v[w][k] != null ? f(v[w][k]) : '—'}</td>`).join('')}</tr>`;
   const grid = v && v.grid;
   view(`<div class="crumb"><a href="#research">Research</a> › ${s.params.tickers.join(', ')} · ${esc(s.setupName)}</div>
-    ${head(esc(s.name), esc(s.describe), `<a class="btn" href="#chart" data-act="open-chart">Open on chart</a>${s.stage === 'retired' ? '<button class="btn" data-act="unretire">Bring back</button>' : '<button class="btn" data-act="retire">Retire</button>'}<button class="btn danger" data-act="delete">Delete</button>`)}
+    ${head(esc(s.name), esc(s.describe), `<a class="btn" href="#chart" data-act="open-chart">Open on chart</a><button class="btn" data-act="duplicate" title="A copy with the same rules: change it without touching this one">Duplicate</button>${s.stage === 'retired' ? '<button class="btn" data-act="unretire">Bring back</button>' : '<button class="btn" data-act="retire">Retire</button>'}<button class="btn danger" data-act="delete">Delete</button>`)}
     <ol class="steps" aria-label="Validation protocol">${steps.map(([n, sb, stt], i) => `<li class="${i === cur ? 'cur' : ''}"><span class="n"><span class="dot ${stt === 'done' ? 'done' : stt === 'run' ? 'run' : ''}">${stt === 'fail' ? '!' : i + 1}</span>${stt === 'done' ? 'Done' : stt === 'run' ? 'Running' : stt === 'fail' ? 'Failed' : i === cur ? 'Next' : 'Locked'}</span><span class="nm">${n}</span><span class="sb">${esc(sb)}</span></li>`).join('')}</ol>
     <div id="job" style="margin-bottom:12px">${jobHtml(job)}</div>
     <div class="row">
@@ -732,6 +732,7 @@ document.addEventListener('click', async e => {
       case 'new-close': S.newSetup = null; $('#newbox').innerHTML = ''; break;
       case 'create': { const p = readParams($('#newp')); const s = await api('/strategies', { method: 'POST', body: { setup: S.newSetup, name: $('#new-name').value, params: p } }); S.newSetup = null; S.strats = null; location.hash = '#strategy/' + s.id; break; }
       case 'srch-start': case 'srch-stop': case 'srch-restart': S.srch = await api(`/strategies/${S.cur.id}/search`, { method: 'POST', body: { action: act.slice(5) } }); $('#srch').innerHTML = srchHtml(S.cur, S.srch, !!(S.cur.paper || {}).on, true); toast(act === 'srch-stop' ? 'Stopping: the run in progress ends within a minute.' : act === 'srch-start' ? 'Optimizer started.' : 'Results cleared.'); if (S.srch.on) pollSearch(S.cur.id); break;
+      case 'duplicate': { const c = await api('/strategies', { method: 'POST', body: { setup: S.cur.setup, name: S.cur.name + ' (copy)', params: { ...S.cur.params } } }); toast('Copy created: change its rules, then run the study.'); location.hash = '#strategy/' + c.id; break; }
       case 'make-control': { const c = await api('/strategies', { method: 'POST', body: { setup: 'biaspull', name: 'No-FVG control of ' + S.cur.name, params: { ...S.cur.params } } }); toast('Control created: run its study.'); location.hash = '#strategy/' + c.id; break; }
       case 'run-study': case 'run-valid': case 'run-opt': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: { 'run-study': 'study', 'run-valid': 'validate', 'run-opt': 'optimize' }[act] } }); if (act === 'run-opt') toast('Optimizing: each setting is a full study, this can take several minutes.'); vStrategy(S.cur.id); break;
       case 'save-rules': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: readParams($('#rules')) } }); toast('Rules saved: run the study again.'); vStrategy(S.cur.id); break;
