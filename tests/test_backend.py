@@ -205,9 +205,9 @@ def test_09_orb_ema_rules():
     assert not orbema.setups(B, E, {**p, "minRR": 1})        # target 1.5 points vs 3 points of risk: skipped
     y = orbema.setups(B, E, {**p, "entryAt": "close"})[0]   # in at the confirmation candle's close (its last minute)
     assert y["in"] == f"{d}T10:04" and y["e"] == 96.5 and y["cf"] == t(6) and y["why"] == "target" and y["rlo"] == 99 and y["rhi"] == 101
-    ovr = orbema.overlay("u1", orbema.clean({"tickers": ["NQ"], "days": 60, "emaOn": "rth"}), "NQ", futdata.trading_days("NQ")[-3], futdata.trading_days("NQ")[-1])
+    ovr = orbema.overlay("u1", orbema.clean({"tickers": ["NQ"], "days": 60, "emaOn": "rth"}), "NQ", futdata.daily("NQ")[-3][0], futdata.daily("NQ")[-1][0])
     assert all("09:30" <= x[0][11:16] < "16:00" for x in ovr["lines"][0]["pts"])
-    ov = orbema.overlay("u1", orbema.clean({"tickers": ["NQ"], "days": 60}), "NQ", futdata.trading_days("NQ")[-3], futdata.trading_days("NQ")[-1])
+    ov = orbema.overlay("u1", orbema.clean({"tickers": ["NQ"], "days": 60}), "NQ", futdata.daily("NQ")[-3][0], futdata.daily("NQ")[-1][0])
     assert len(ov["ranges"]) == 3 and ov["ranges"][0]["t1"][11:16] == "09:44" and any(x[0][11:16] < "09:30" for x in ov["lines"][0]["pts"])
 
 
@@ -559,6 +559,21 @@ def test_25_paper_anyway_and_hours():
     mo = lambda y, m, d, h, mi: jobs.market_open(dt.datetime(y, m, d, h, mi, tzinfo=ny))
     assert mo(2026, 11, 2, 20, 0) and mo(2026, 11, 3, 3, 0) and not mo(2026, 11, 2, 17, 30) and not mo(2026, 11, 7, 12, 0)
     assert not mo(2026, 11, 8, 17, 0) and mo(2026, 11, 8, 18, 5) and not mo(2026, 11, 6, 17, 5)
+
+
+def test_26_session_in_progress_and_refresh_status():
+    import futdata
+    days = futdata.trading_days("NQ")
+    last = futdata.last_bar_time("NQ")
+    assert days[-1] == futdata.session_of(last) or days[-1] >= futdata.session_of(last)
+    jobs.refresh(SUB)
+    st = jobs.status(SUB, "refresh")
+    assert st["status"] in ("done", "skipped") and "NQ" in st["last"]
+    st, r = call("GET", "/running")
+    assert st == 200 and "refresh" in r and "lastBar" in r
+    s = strategy.create(SUB, {"setup": "ifvg", "params": {"days": 30}})
+    st, v = call("PUT", f"/strategies/{s['id']}", {"name": "FVG copy A"})
+    assert st == 200 and v["name"] == "FVG copy A"
 
 
 if __name__ == "__main__":

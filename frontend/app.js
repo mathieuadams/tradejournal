@@ -163,7 +163,10 @@ async function vRunning() {
   const rk = r.risk, used = rk.limit ? Math.min(100, Math.max(0, -rk.net / rk.limit * 100)) : 0;
   const rows = r.strategies;
   const fl = S.filterRun || 'All';
+  const rf = r.refresh || {}, lb = r.lastBar || {};
+  const rfLine = `<div class="${rf.status === 'error' ? 'job error' : 'note'}" style="margin-bottom:12px">Candles to ${Object.entries(lb).map(([s, t]) => `${s} ${t ? esc(t.replace('T', ' ')) : '—'}`).join(' · ')} ET${rf.at ? ` · last automatic update ${esc(rf.at.replace('T', ' ').slice(0, 16))} ET: ${rf.status === 'error' ? 'error: ' + esc(rf.msg || '') : esc(rf.msg || rf.status || '')}` : ' · no automatic update recorded yet'}${rf.avail ? ` · Databento has data to ${esc(rf.avail.replace('T', ' ').slice(0, 16))} UTC` : ''}</div>`;
   view(`${head('Running', 'Strategies in paper trading. Everything else stays in Research.', `<button class="btn" data-act="refresh">Update data now</button>`)}
+    ${rfLine}
     <div class="grid-auto" style="margin-bottom:16px">${r.markets.map(tile).join('')}
       <div class="panel tile"><div style="display:flex;align-items:baseline"><b>Risk today</b><div style="flex:1"></div><span class="dim" style="font-size:12px">${esc(r.today)}</span></div>
         <div><div style="display:flex;font-size:13px;margin-bottom:6px"><span>Daily loss limits</span><div style="flex:1"></div><span class="mono">${money(Math.min(0, rk.net), false).replace('$0', '$0')} / ${money(rk.limit, false)}</span></div><div class="meter"><i class="${used > 75 ? 'warn' : ''}" style="width:${used}%"></i></div></div>
@@ -208,11 +211,12 @@ async function vData() {
             <div class="kv" style="margin-bottom:14px"><div><div class="k">API key</div><div class="v">db-••••${esc(db.last4)}</div></div><div><div class="k">Dataset</div><div class="v">${esc(db.dataset)}</div></div>
               <div><div class="k">Data available to</div><div class="v">${db.range && db.range.end ? esc(db.range.end.replace('T', ' ')) + ' UTC' : '—'}</div></div><div><div class="k">Checked</div><div class="v">${esc((db.testedAt || db.savedAt || '').replace('T', ' ').slice(0, 16))}</div></div></div>
             <div class="form" style="align-items:end">
-              <label class="check"><input type="checkbox" id="db-auto" ${db.auto ? 'checked' : ''}> Update candles every 15 min (market hours)</label>
+              <label class="check"><input type="checkbox" id="db-auto" ${db.auto ? 'checked' : ''}> Update candles every 5 min (whenever the market is open)</label>
               <label class="check"><input type="checkbox" id="db-autofp" ${db.autoFp ? 'checked' : ''}> Download each day's trades after the close</label>
               <label class="f">Ask me before a download over<input type="number" id="db-cap" min="0" step="0.5" value="${db.maxCost}"></label>
               <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-act="db-save">Save</button><button class="btn" data-act="db-test">Test</button><button class="btn danger" data-act="db-del">Disconnect</button></div>
             </div>
+            ${d.refresh && d.refresh.at ? `<div class="${d.refresh.status === 'error' ? 'job error' : 'note'}" style="margin-top:12px">Last automatic update ${esc(d.refresh.at.replace('T', ' ').slice(0, 16))} ET: ${esc(d.refresh.status === 'error' ? 'error: ' + (d.refresh.msg || '') : (d.refresh.msg || d.refresh.status || ''))}${d.refresh.last ? ' · candles to ' + Object.entries(d.refresh.last).map(([s, t]) => `${s} ${t ? esc(t.replace('T', ' ')) : '—'}`).join(' · ') + ' ET' : ''}</div>` : '<div class="note" style="margin-top:12px">No automatic update recorded yet.</div>'}
             <div class="sep"></div><div class="note">Replace the key: <input type="password" id="db-key" placeholder="db-…" autocomplete="off" style="width:280px"> <button class="btn sm" data-act="db-connect">Save key</button></div>` : `
             <p class="muted" style="margin-top:0">Paste your Databento API key. It is checked against Databento, then stored encrypted (AWS KMS); the browser never sees it again.</p>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="password" id="db-key" placeholder="db-…" autocomplete="off" style="flex:1 1 320px;max-width:460px">
@@ -422,6 +426,7 @@ async function vStrategy(id) {
       </div>
       <aside class="col-side">
         <section class="panel"><div class="hd"><h2>Rules</h2>${locked ? '<span class="dim" style="font-size:12px">locked while paper trading</span>' : ''}</div><div class="bd" id="rules">
+          <div style="display:flex;gap:8px;align-items:end;margin-bottom:12px"><label class="f" style="flex:1">Name<input type="text" id="s-name" value="${esc(s.name)}" maxlength="80"></label><button class="btn sm" data-act="rename">Rename</button></div>
           ${paramForm(s.setup, s.params, locked)}
           ${locked ? '' : `<div style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="btn sm" data-act="save-rules">Save rules</button><span class="note">Saving clears the study and validation.</span></div>`}${s.setup === 'ifvg' ? `<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:6px"><button class="btn sm" data-act="make-control">Make the no-FVG control with these settings</button><span class="note">Same bias, hours and exit, entry on a plain pullback. Run both studies: if the control does as well, the FVG adds nothing.</span></div>` : ''}</div></section>
         ${v ? `<section class="panel"><div class="hd"><h2>Validation gates</h2><div class="grow"></div><span class="${v.pass ? 'gain' : 'loss'}" style="font-weight:600;font-size:13px">${v.gates.filter(g => g.ok).length} / ${v.gates.length} passed</span></div><div class="bd" style="padding-top:4px">
@@ -543,7 +548,7 @@ async function vChart() {
     </div>
     <div class="row">
       <section class="panel col-main" style="display:block;padding-top:12px">
-        <div class="legend"><span>Strategy on the chart</span><select id="c-strat" style="min-height:30px;padding:3px 8px"><option value="">None</option>${S.strats.filter(s => s.params.tickers.includes(c.sym)).map(s => `<option value="${s.id}" ${c.strat === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+        <div class="legend"><span>Strategy on the chart</span><select id="c-strat" style="min-height:30px;padding:3px 8px"><option value="">None</option>${S.strats.filter(s => s.params.tickers.includes(c.sym) && s.stage !== 'retired').map(s => `<option value="${s.id}" ${c.strat === s.id ? 'selected' : ''}>${esc(s.name)} · ${STAGES[s.stage] || s.stage}</option>`).join('')}</select>
           <span style="display:inline-flex;align-items:center;gap:4px"><button class="chip" data-ctog="ema" aria-pressed="${!!c.ema}">EMA</button><input type="number" id="c-emalen" min="2" max="400" value="${c.emaLen}" aria-label="EMA length" style="width:62px;min-height:28px;padding:2px 6px"></span>${[['fvg', 'FVG'], ['sd', 'Supply / demand'], ['prof', 'Volume profile'], ['cvd', 'Delta'], ['wt', 'WaveTrend'], ['rth', 'Regular hours only']].map(([k, l]) => `<button class="chip" data-ctog="${k}" aria-pressed="${!!c[k]}">${l}</button>`).join('')}
           <div style="flex:1"></div>${c.strat ? '<span><span class="sw" style="border-top:2px solid #E7C35A"></span>Strategy lines · B breakout · R retest · C confirmation</span>' : ''}${c.ema ? `<span><span class="sw" style="border-top:2px solid #5FD4C4"></span>EMA ${c.emaLen}</span>` : ''}<span><span class="sw" style="border-top:2px solid var(--vwap)"></span>VWAP</span><span><span class="sw" style="border-top:1px dashed #93A0B2"></span>PDH / PDL / PDC · ONH / ONL</span></div>
         ${S.rp && S.rp.hm ? `<div class="dual ${S.rpLayout === 'stack' ? 'stack' : ''}"><div class="chartbox"><canvas id="cv" style="height:600px"></canvas></div>
@@ -737,6 +742,7 @@ document.addEventListener('click', async e => {
       case 'new-close': S.newSetup = null; $('#newbox').innerHTML = ''; break;
       case 'create': { const p = readParams($('#newp')); const s = await api('/strategies', { method: 'POST', body: { setup: S.newSetup, name: $('#new-name').value, params: p } }); S.newSetup = null; S.strats = null; location.hash = '#strategy/' + s.id; break; }
       case 'srch-start': case 'srch-stop': case 'srch-restart': S.srch = await api(`/strategies/${S.cur.id}/search`, { method: 'POST', body: { action: act.slice(5) } }); $('#srch').innerHTML = srchHtml(S.cur, S.srch, !!(S.cur.paper || {}).on, true); toast(act === 'srch-stop' ? 'Stopping: the run in progress ends within a minute.' : act === 'srch-start' ? 'Optimizer started.' : 'Results cleared.'); if (S.srch.on) pollSearch(S.cur.id); break;
+      case 'rename': { const nm = ($('#s-name').value || '').trim(); if (!nm) { toast('Give it a name.'); break; } await api('/strategies/' + S.cur.id, { method: 'PUT', body: { name: nm } }); S.strats = null; toast('Renamed.'); vStrategy(S.cur.id); break; }
       case 'duplicate': { const c = await api('/strategies', { method: 'POST', body: { setup: S.cur.setup, name: S.cur.name + ' (copy)', params: { ...S.cur.params } } }); toast('Copy created: change its rules, then run the study.'); location.hash = '#strategy/' + c.id; break; }
       case 'make-control': { const c = await api('/strategies', { method: 'POST', body: { setup: 'biaspull', name: 'No-FVG control of ' + S.cur.name, params: { ...S.cur.params } } }); toast('Control created: run its study.'); location.hash = '#strategy/' + c.id; break; }
       case 'run-study': case 'run-valid': case 'run-opt': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: { 'run-study': 'study', 'run-valid': 'validate', 'run-opt': 'optimize' }[act] } }); if (act === 'run-opt') toast('Optimizing: each setting is a full study, this can take several minutes.'); vStrategy(S.cur.id); break;

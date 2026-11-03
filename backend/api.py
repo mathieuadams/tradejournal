@@ -130,7 +130,7 @@ def _estimate(sub, kind, syms, d0, d1, window="rth"):
 
 @route("GET", "/data")
 def data_view(sub, claims, body, q):
-    return {"coverage": futdata.coverage(), "job": jobs.status(sub, "data"), "databento": databento.status(sub)}
+    return {"coverage": futdata.coverage(), "job": jobs.status(sub, "data"), "databento": databento.status(sub), "refresh": jobs.status(sub, "refresh")}
 
 
 @route("POST", "/data/estimate")
@@ -213,7 +213,10 @@ def heatmap(sub, claims, body, q):
 
 @route("GET", "/running")
 def running(sub, claims, body, q):
-    return strategy.running(sub)
+    out = strategy.running(sub)
+    out["refresh"] = jobs.status(sub, "refresh")
+    out["lastBar"] = {s: futdata.last_bar_time(s) for s in futdata.SYMS}
+    return out
 
 
 @route("GET", "/strategies")

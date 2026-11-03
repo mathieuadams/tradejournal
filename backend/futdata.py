@@ -322,7 +322,14 @@ def daily(sym):
 
 
 def trading_days(sym):
-    return [d[0] for d in daily(sym)]
+    """The stored sessions, plus the session in progress before its 09:30 open (the overnight: 18:00 the evening before)."""
+    days = [d[0] for d in daily(sym)]
+    last = last_bar_time(sym)
+    if last:
+        s = session_of(last)
+        if not days or s > days[-1]:
+            days.append(s)
+    return days
 
 
 def sessions(sym, n=None, end=None, rth=True, start=None):
@@ -428,7 +435,7 @@ def _levels(sym, days):
     out = {}
     for day, xs in days.items():
         lv = {}
-        k = order.index(day) if day in D else -1
+        k = order.index(day) if day in D else (len(order) if order and day > order[-1] else -1)   # the session in progress: after the last
         if k > 0:
             p = D[order[k - 1]]
             lv.update(pdh=p[2], pdl=p[3], pdc=p[4])

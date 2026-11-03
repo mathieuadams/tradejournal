@@ -121,8 +121,19 @@ def handler(event, ctx=None):
 
 
 def refresh(sub, footprint_today=True, ctx=None):
-    """The latest candles of NQ and ES (from the last stored day), the day's footprint after the close, then the
-    paper strategies."""
+    """The latest candles, the footprint after the close, then the paper strategies; the outcome is recorded (JOB#refresh)
+    so the pages can show when the candles were last updated and any error."""
+    try:
+        out = _refresh(sub, footprint_today, ctx)
+        set_status(sub, "refresh", status="done" if out == "ok" else "skipped", msg=out,
+                   last={s: futdata.last_bar_time(s) for s in futdata.SYMS}, avail=(databento.status(sub).get("range") or {}).get("end"))
+        return out
+    except Exception as e:
+        set_status(sub, "refresh", status="error", msg=str(e)[:300], last={s: futdata.last_bar_time(s) for s in futdata.SYMS})
+        raise
+
+
+def _refresh(sub, footprint_today=True, ctx=None):
     st = databento.status(sub)
     if not st["connected"]:
         return "not connected"
