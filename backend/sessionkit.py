@@ -44,8 +44,21 @@ def _sessions(sym, p):
             m = int(b[0][11:13]) * 60 + int(b[0][14:16]) + p["tf"] - 1
             V.append(vw.get(f"{b[0][:11]}{m // 60:02d}:{m % 60:02d}") or vw.get(b[0]) or b[4])
         F = [tuple(b[:5]) for b in futdata.agg(bars, p["tf"])]
+        VF = []
+        for b in F:                                     # the session VWAP at each full-session candle's last minute
+            m = int(b[0][11:13]) * 60 + int(b[0][14:16]) + p["tf"] - 1
+            VF.append(vw.get(f"{b[0][:11]}{m // 60 % 24:02d}:{m % 60:02d}") or vw.get(b[0]) or b[4])
+        _VF[(sym, p["tf"], d)] = VF
         out[d] = (on, R, F, V)
     return out
+
+
+_VF = {}
+
+
+def full_vwap(sym, tf, day):
+    """The session VWAP (from 18:00) at each full-session candle of the day (after sessions() has run for it)."""
+    return _VF.get((sym, tf, day)) or []
 
 
 def end_of(t, tf):

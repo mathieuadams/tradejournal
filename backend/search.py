@@ -37,7 +37,7 @@ SPACES = {
         "pivLen": [2, 3, 5], "beR": [0, 0.5, 1.0], "partR": [0.5, 1.0, 1.5, 2.0], "partPct": [0, 25, 50, 75],
         "trail": ["swing", "r", "ema15", "none"], "trailN": [2, 3, 5, 8], "trailR": [0.25, 0.5, 1.0, 1.5, 2.0],
         "trigSize": ["body", "range"], "trigMin": [0, 0.5, 0.75, 1.0, 1.5], "trigMax": [0, 1.5, 2.5, 4.0], "bodyPct": [0, 40, 60, 80], "avgN": [10, 20, 50],
-        "trigN": [0, 1, 2, 3, 5], "trigPrevMult": [0, 1.0, 1.25, 1.5, 2.0], "trigPrevMax": [0, 2.0, 3.0, 5.0], "trigEngulf": [False, True],
+        "trigN": [0, 1, 2, 3, 5], "trigPrevMult": [0, 1.0, 1.25, 1.5, 2.0], "trigPrevMax": [0, 2.0, 3.0, 5.0], "trigEngulf": [False, True], "volMin": [0, 10, 20, 33], "volMax": [100, 90, 80, 67],
     },
 }
 SPACES["biaspull"] = {**{k: v for k, v in SPACES["ifvg"].items() if k in ("tf", "bias", "asia", "bufTicks", "hours", "lastEntry", "maxDay", "side", "exit",

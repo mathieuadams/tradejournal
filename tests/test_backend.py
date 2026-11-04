@@ -160,7 +160,11 @@ def test_06_other_setups():
                      ("nrbreak", {"days": 60, "cond": "either", "orMin": 30, "stop": "mid"}), ("fpdisp", {"days": 60, "minRR": 0}), ("fpdisp", {"days": 60, "fair": "vwap", "stop": "swing", "tf": 1}),
                      ("ifvg", {"days": 60, "asia": "none", "bias": "h1", "minRR": 0}), ("ifvg", {"days": 60, "tgt": "liq", "stop": "swing"}),
                      ("ifvg", {"days": 60, "hours": "all", "exit": "trail", "trail": "ema15", "gapFrom": "18:00"}),
-                     ("biaspull", {"days": 60}), ("biaspull", {"days": 60, "hours": "rth", "exit": "target", "bias": "h1", "asia": "dir"})):
+                     ("biaspull", {"days": 60}), ("biaspull", {"days": 60, "hours": "rth", "exit": "target", "bias": "h1", "asia": "dir"}),
+                     ("ondrift", {"days": 60}), ("ondrift", {"days": 60, "bias": "none", "stopMult": 0, "exit": "trail"}), ("ldnbrk", {"days": 60}),
+                     ("ldnbrk", {"days": 60, "exit": "trail", "tgtMult": 0, "tf": 15}), ("smt", {"days": 60}), ("smt", {"days": 60, "tradeSym": "ES", "tgt": "r", "hours": "rth"}),
+                     ("flatrev", {"days": 60}), ("postclose", {"days": 60, "mode": "fade"}), ("sungap", {"days": 120}), ("sungap", {"days": 60, "which": "all", "mode": "follow"}),
+                     ("ifvg", {"days": 60, "volMin": 20, "volMax": 80})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -574,6 +578,25 @@ def test_26_session_in_progress_and_refresh_status():
     s = strategy.create(SUB, {"setup": "ifvg", "params": {"days": 30}})
     st, v = call("PUT", f"/strategies/{s['id']}", {"name": "FVG copy A"})
     assert st == 200 and v["name"] == "FVG copy A"
+
+
+def test_27_overnight_engines():
+    import ldnbrk
+    import nightkit as N
+    import sungap
+    ev, d = "2026-03-09", "2026-03-10"
+    mk = lambda day, hm: f"{day}T{hm}"
+    F = [(mk(ev, f"{18 + i // 12:02d}:{i % 12 * 5:02d}"), 100, 101, 99, 100) for i in range(72)]          # 18:00-23:55: range 99-101
+    F += [(mk(d, f"{i // 12:02d}:{i % 12 * 5:02d}"), 100, 100.8, 99.5, 100.2) for i in range(24)]          # 00:00-01:55 inside
+    F += [(mk(d, "02:00"), 100.2, 101.6, 100.1, 101.5)] + [(mk(d, f"02:{5 + i * 5:02d}"), 101.5, 103.5, 101.4, 103.4) for i in range(10)]
+    p = ldnbrk.clean({"bias": "none", "stop": "mid", "tgtMult": 1, "bufTicks": 0})
+    (x, win), = ldnbrk.engine("NQ", d, [], [], F, [], {}, None, p)
+    assert x["side"] == "long" and x["e"] == 101.5 and x["stop"] == 100 and x["tgt"] == 103 and x["why"] == "target" and x["rhi"] == 101, x
+    prev = [(mk(ev, f"16:{i * 5:02d}"), 100, 100.5, 99.5, 100) for i in range(12)]
+    G = [(mk(ev, "18:00"), 100.1, 100.2, 99.95, 100.15)] + [(mk(ev, f"18:{5 + i * 5:02d}"), 100.1, 100.2, 99.9, 100) for i in range(20)]
+    (y, _), = sungap.engine("NQ", "2026-03-09", [], [], G, [], {}, prev, sungap.clean({"smallPct": 0.25, "bigPct": 0.5}))    # a Monday session: +0.1% gap
+    assert y["side"] == "short" and y["e"] == 100.15 and y["tgt"] == 100 and y["why"] == "target", y
+    assert N.stamp(F, "18:00") == f"{ev}T18:00" and N.stamp(F, "02:00") == f"{d}T02:00"
 
 
 if __name__ == "__main__":

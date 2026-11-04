@@ -29,11 +29,11 @@ DEFAULT = {"tickers": ["NQ"], "tf": 5, "bias": "all3", "asia": "none", "minGap":
            "pivLen": 3, "liqLook": 150, "minRR": 1.0, "lastEntry": "14:00", "maxDay": 2, "hours": "all",
            "exit": "trail", "beR": 0.5, "partR": 1.0, "partPct": 50, "trail": "swing", "trailN": 3, "trailR": 0.5,
            "trigSize": "body", "trigMin": 0.0, "trigMax": 0.0, "bodyPct": 0, "avgN": 20,
-           "trigN": 0, "trigPrevMult": 1.0, "trigPrevMax": 0.0, "trigEngulf": False, "side": "both", "days": 500}
+           "trigN": 0, "trigPrevMult": 1.0, "trigPrevMax": 0.0, "trigEngulf": False, "volMin": 0, "volMax": 100, "side": "both", "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("al", "EMAs agreeing"), ("as", "Asian session"), ("tk", "Target"),
            ("gap", "Gap size"), ("ses", "Session"), ("tb", "Trigger candle body (× the average range)"), ("tr", "Trigger candle range (× the average range)"),
            ("bp", "Trigger candle body (% of its range)"), ("tp", "Trigger vs the largest of the 3 candles before"),
-           ("te", "Trigger closes past the 3 candles before")]
+           ("te", "Trigger closes past the 3 candles before"), ("vr", "Volatility (percentile of the daily range)")]
 EMAS = (15, 30, 60)
 
 
@@ -52,6 +52,7 @@ def clean(p):
     out["trigSize"] = p.get("trigSize") if p.get("trigSize") in ("body", "range") else "body"
     K.num(p, out, (("trigMin", 0, 10, 0.0), ("trigMax", 0, 20, 0.0), ("bodyPct", 0, 100, 0), ("avgN", 3, 200, 20), ("trigN", 0, 20, 0),
                    ("trigPrevMult", 0, 10, 1.0), ("trigPrevMax", 0, 50, 0.0)), ("bodyPct", "avgN", "trigN"))
+    K.num(p, out, (("volMin", 0, 100, 0), ("volMax", 0, 100, 100)), ("volMin", "volMax"))
     out["trigEngulf"] = bool(p.get("trigEngulf")) and str(p.get("trigEngulf")).lower() not in ("false", "0")
     K.num(p, out, (("beR", 0, 5, 0.5), ("partR", 0, 10, 1.0), ("partPct", 0, 100, 50), ("trailN", 1, 50, 3), ("trailR", 0.1, 10, 0.5)), ("trailN",))
     K.num(p, out, (("minGap", 0, 200, 4), ("fvgMax", 1, 100, 24), ("bufTicks", 0, 40, 0), ("tgtR", 0.5, 10, 2.0), ("pivLen", 1, 10, 3), ("liqLook", 10, 600, 150),
@@ -72,6 +73,12 @@ def describe(p):
 
 
 def _trig_txt(p):
+    vol = f". Only when the daily range is between its {p.get('volMin', 0)}th and {p.get('volMax', 100)}th percentile (last 250 days)" \
+        if p.get("volMin", 0) > 0 or p.get("volMax", 100) < 100 else ""
+    return vol + _trig_txt2(p)
+
+
+def _trig_txt2(p):
     parts = []
     m = "body" if p.get("trigSize", "body") == "body" else "range (wicks included)"
     if p.get("trigMin"):
@@ -163,6 +170,9 @@ def day_trades(day, on, R, Fd, Fall, fi, E, p, notes=None):
     regular hours. notes: a list that gets every inversion and why it was / wasn't taken (for the chart)."""
     if len(Fd) < 5:
         return []
+    vr = p.get("_vr")
+    if vr is not None and (vr < p.get("volMin", 0) or vr > p.get("volMax", 100)):
+        return []                                        # outside the volatility range: no trades this session
     asia = asia_of(on)
     out, gaps, buf, k = [], [], p["bufTicks"] * K.TICK, 2
     rth0 = f"{day}T09:30"
@@ -347,9 +357,12 @@ def all_trades(sub, p, cells=None, prog=None):
         if prog:
             prog(f"{sym}: {p['tf']}-minute candles + the 15 / 30 / 60-minute EMAs")
         rows, Fall, fi, E = _series(sym, p)
+        import nightkit
+        VR = nightkit.vol_rank(sym)
         for d, on, R, F, V in rows:
-            for x in day_trades(d, on, R, F, Fall, fi, E, p):
-                x.update(s=sym, d=d, cell=None)
+            vr = VR.get(d, VR.get("next"))
+            for x in day_trades(d, on, R, F, Fall, fi, E, {**p, "_vr": vr}):
+                x.update(s=sym, d=d, cell=None, vr=vr)
                 trades.append(x)
                 lo = 0 if p["hours"] == "all" else next((i for i, b in enumerate(F) if b[0] >= f"{d}T09:35"), len(F))
                 base.append((d, x["side"], baseline(F, x, rnd, p, E, f"{d}T15:55", f"{d}T{p['lastEntry']}", lo),
@@ -373,6 +386,8 @@ def decorate(x, p):
     v = x.get("tp")
     x["tp"] = "—" if v is None else "smaller (under 1×)" if v < 1 else "1-1.5×" if v < 1.5 else "1.5-2.5×" if v < 2.5 else "2.5×+"
     x["te"] = "yes" if x.get("te") else "no"
+    v = x.get("vr")
+    x["vr"] = "—" if v is None else "low (under 33)" if v < 33 else "middle (33-66)" if v < 67 else "high (67+)"
 
 
 def overlay(sub, p, sym, start, end):

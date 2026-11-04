@@ -26,6 +26,12 @@ async function api(path, { method = 'GET', body } = {}) {
 
 const S = { me: null, page: '', timers: [], chart: { sym: 'NQ', tf: 5, days: 3, strat: '', wt: true, cvd: true, prof: true, rth: false, ema: true, emaLen: 20, fvg: false, sd: false }, rp: null, filter: 'All', newSetup: null, trSet: 'study' };
 const SIDE = [['long', 'Long'], ['short', 'Short'], ['both', 'Both']];
+const BIASP = ['bias', 'EMA bias', 'sel', [['all3', '15 / 30 / 60-min 20 EMAs all agree'], ['h1', 'Hourly 20 EMA only'], ['none', 'None']]];
+const MANAGEP = [['exit', 'Exit', 'sel', [['target', 'Stop / target'], ['trail', 'Managed: break-even, partial, trailing']]], ['tgtR', 'Target (R, 0 = none)', 'num', 0.5],
+  ['beR', 'Managed: break-even at (R, 0 = off)', 'num', 0.25], ['partR', 'Managed: partial at (R)', 'num', 0.25], ['partPct', 'Managed: partial size (%, 0 = none)', 'num', 5],
+  ['trail', 'Managed: trail the rest', 'sel', [['swing', 'Under the last N candles\' low / high'], ['r', 'R behind the best price'], ['ema15', 'Close through the 15-min 20 EMA'], ['none', 'No trail (break-even only)']]],
+  ['trailN', 'Managed: trail N candles', 'num', 1], ['trailR', 'Managed: trail R behind', 'num', 0.1]];
+const TAILP = [['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']];
 const SETUPS = {
   orb: { name: 'Opening range break + FVG retest', blurb: 'A close outside the opening range that leaves a fair value gap, a retest of the gap, an engulfing candle: enter, target in R.',
     params: [['rangeMin', 'Opening range (minutes)', 'sel', [[1, '1'], [5, '5'], [10, '10'], [15, '15'], [30, '30'], [60, '60']]], ['tgtR', 'Target (R)', 'num', 0.5], ['fvgWin', 'Gap within (candles)', 'num', 1],
@@ -94,6 +100,7 @@ const SETUPS = {
       ['trigSize', 'Trigger candle: measure', 'sel', [['body', 'Body only'], ['range', 'Whole candle (wicks included)']]],
       ['trigMin', 'Trigger candle at least (× the average range, 0 = off)', 'num', 0.25], ['trigMax', 'Trigger candle at most (× avg range, 0 = off)', 'num', 0.25],
       ['bodyPct', 'Trigger body at least (% of its range, 0 = off)', 'num', 5],
+      ['volMin', 'Only when the daily range percentile is at least (0-100)', 'num', 5], ['volMax', 'and at most (0-100)', 'num', 5],
       ['avgN', 'Average range over the last N candles', 'num', 1], ['trigN', 'Compare with the previous N candles (0 = off)', 'num', 1],
       ['trigPrevMult', 'Trigger at least (× the largest of those N)', 'num', 0.25], ['trigPrevMax', 'Trigger at most (× the largest of those N, 0 = off)', 'num', 0.25], ['trigEngulf', 'Trigger closes past those N candles\' high / low', 'bool'],
       ['hours', 'Hours', 'sel', [['rth', 'NYSE session only (09:35–last entry)'], ['all', 'Overnight + NYSE (from 18:00)']]],
@@ -110,6 +117,31 @@ const SETUPS = {
       ['partR', 'Managed: partial at (R)', 'num', 0.25], ['partPct', 'Managed: partial size (%, 0 = none)', 'num', 5],
       ['trail', 'Managed: trail the rest', 'sel', [['swing', 'Under the last N candles\' low / high'], ['r', 'R behind the best price'], ['ema15', 'Close through the 15-min 20 EMA'], ['none', 'No trail (break-even only)']]],
       ['trailN', 'Managed: trail N candles', 'num', 1], ['trailR', 'Managed: trail R behind', 'num', 0.1], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  ondrift: { name: 'Overnight drift (hold with the bias)', blurb: 'The overnight control: at 18:00 enter in the direction of the 15 / 30 / 60-min EMAs, hold until 09:30. If plain holding does as well as the overnight strategies, their entries add nothing.',
+    params: [['entryAt', 'Enter at (ET)', 'sel', ['18:00', '19:00', '20:00', '22:00', '00:00', '02:00', '03:00'].map(x => [x, x])], ['exitAt', 'Out at (ET)', 'sel', ['00:00', '02:00', '04:00', '06:00', '08:30', '09:30', '11:00', '15:55'].map(x => [x, x])],
+      BIASP, ['stopMult', 'Stop (× the average 5-min range, 0 = none)', 'num', 0.5], ...MANAGEP, ...TAILP] },
+  ldnbrk: { name: 'London breakout of the Asian range', blurb: 'Asian range 18:00–02:00; the first 5-minute close outside it after 02:00 (London opens ~03:00), in the EMA bias direction. Stop in the range, target a multiple of it or the managed exit.',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [15, '15 min']]], ['asiaEnd', 'Asian range until (ET)', 'sel', ['00:00', '01:00', '02:00', '03:00'].map(x => [x, x])], ['lastEntry', 'Last entry (ET)', 'text'],
+      ['flatAt', 'Flat at (ET)', 'sel', ['06:00', '08:00', '09:30', '11:00', '15:55'].map(x => [x, x])], ['stop', 'Stop', 'sel', [['mid', 'Middle of the range'], ['opp', 'Other side of the range'], ['bar', 'Breakout candle']]],
+      ['tgtMult', 'Target (× the range past the edge, 0 = none)', 'num', 0.25], ['minRangePct', 'Range at least (% of price, 0 = off)', 'num', 0.05], ['maxRangePct', 'Range at most (%, 0 = off)', 'num', 0.05],
+      BIASP, ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ...MANAGEP.filter(x => x[0] !== 'tgtR'), ...TAILP] },
+  smt: { name: 'ES / NQ divergence (SMT)', blurb: 'One index takes its recent high (or low) and the other doesn\'t: fade it on the first candle back, stop past the extreme, target the VWAP. Uses both NQ and ES data.',
+    params: [['tradeSym', 'Trade', 'sel', [['NQ', 'NQ'], ['ES', 'ES']]], ['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min'], [15, '15 min']]], ['look', 'High / low of the last N candles', 'num', 1],
+      ['wait', 'Entry within (candles)', 'num', 1], ['hours', 'Hours', 'sel', [['all', 'Overnight + NYSE'], ['rth', 'NYSE session only']]], ['lastEntry', 'Last entry (ET)', 'text'], ['maxDay', 'Max trades per session', 'num', 1],
+      ['tgt', 'Target', 'sel', [['vwap', 'The session VWAP'], ['r', 'Fixed R']]], ['minRR', 'VWAP target: skip if under (R)', 'num', 0.25], BIASP, ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ...MANAGEP,
+      ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10]] },
+  flatrev: { name: 'Flat-bias mean reversion to VWAP', blurb: 'When the EMAs have no bias (the grey band), fade a stretched move: a close 2× the average range from the VWAP, then a candle back toward it. Target the VWAP.',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min'], [15, '15 min']]], ['distMult', 'Away from the VWAP at least (× the average range)', 'num', 0.25],
+      ['bias', 'Flat means', 'sel', [['all3', 'The 15 / 30 / 60-min EMAs disagree'], ['h1', 'The hourly EMA has no clear bias']]], ['hours', 'Hours', 'sel', [['all', 'Overnight + NYSE'], ['rth', 'NYSE session only']]],
+      ['lastEntry', 'Last entry (ET)', 'text'], ['maxDay', 'Max trades per session', 'num', 1], ['minRR', 'Skip if the VWAP is under (R)', 'num', 0.25], ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ...MANAGEP.filter(x => x[0] !== 'tgtR'), ...TAILP] },
+  postclose: { name: 'Post-close continuation (16:00-17:00)', blurb: 'The move from 15:00 into the 16:00 close carries on (or reverses) until the 17:00 halt: enter at the close, out at 16:55.',
+    params: [['fromAt', 'Move measured from (ET)', 'sel', [['14:00', '14:00'], ['15:00', '15:00'], ['15:30', '15:30']]], ['minMovePct', 'Move at least (%)', 'num', 0.05],
+      ['mode', 'Then', 'sel', [['follow', 'Follow it'], ['fade', 'Fade it']]], ['exitAt', 'Out at (ET)', 'sel', [['16:15', '16:15'], ['16:30', '16:30'], ['16:55', '16:55']]],
+      ['stopMult', 'Stop (× the average 5-min range)', 'num', 0.5], BIASP, ...MANAGEP, ...TAILP] },
+  sungap: { name: 'Sunday / reopen gap', blurb: 'The Sunday 18:00 open vs Friday\'s close: fade small gaps back to the close, follow big ones. Or every 18:00 reopen after the daily halt.',
+    params: [['which', 'Gaps', 'sel', [['monday', 'Sunday open vs Friday\'s close'], ['all', 'Every 18:00 reopen']]], ['mode', 'Trade', 'sel', [['both', 'Fade small, follow big'], ['fade', 'Fade small only'], ['follow', 'Follow big only']]],
+      ['smallPct', 'Small gap: under (%)', 'num', 0.05], ['bigPct', 'Big gap: at least (%)', 'num', 0.05], ['exitAt', 'Out at (ET)', 'sel', ['20:00', '22:00', '00:00', '02:00', '06:00', '09:30'].map(x => [x, x])],
+      ['stopMult', 'Stop (× the average 5-min range)', 'num', 0.5], BIASP, ...MANAGEP, ...TAILP] },
   wt: { name: 'WaveTrend dots', blurb: 'WaveTrend [Krypt]: in at the open after a buy dot, out at the open after a sell dot (and the mirror for shorts).',
     params: [['tf', 'Candles', 'sel', [['1D', 'Daily'], ['60', '1 hour'], ['15', '15 min'], ['5', '5 min']]], ['side', 'Side', 'sel', SIDE], ['stopAtr', 'Stop (× average range, 0 = none)', 'num', 0.25],
       ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['days', 'Candles / sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
@@ -349,8 +381,14 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   pdsweep: { tf: 5, levels: 'pd', fresh: true, lastEntry: '11:30', maxAbove: 3, minDepth: 0, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   nrbreak: { tf: 5, cond: 'nr7', trend: 'sma', orMin: 15, stop: 'opp', tgtAtr: 1, minRR: 0.5, bufTicks: 2, lastEntry: '12:00', side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   fpdisp: { tf: 5, fair: 'open', minAwayPct: 0.1, bodyMult: 1, stop: 'bar', swingN: 5, bufTicks: 2, minRR: 1, firstEntry: '09:35', lastEntry: '13:00', maxDay: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
-  ifvg: { tf: 5, bias: 'all3', asia: 'none', minGap: 4, fvgMax: 24, gapFrom: '08:00', stop: 'fvg', bufTicks: 0, tgt: 'liq2r', tgtR: 2, pivLen: 3, liqLook: 150, minRR: 1, lastEntry: '14:00', maxDay: 2, hours: 'all', exit: 'trail', beR: 0.5, partR: 1, partPct: 50, trail: 'swing', trailN: 3, trailR: 0.5, trigSize: 'body', trigMin: 0, trigMax: 0, bodyPct: 0, avgN: 20, trigN: 0, trigPrevMult: 1, trigPrevMax: 0, trigEngulf: false, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  ifvg: { tf: 5, bias: 'all3', asia: 'none', minGap: 4, fvgMax: 24, gapFrom: '08:00', stop: 'fvg', bufTicks: 0, tgt: 'liq2r', tgtR: 2, pivLen: 3, liqLook: 150, minRR: 1, lastEntry: '14:00', maxDay: 2, hours: 'all', exit: 'trail', beR: 0.5, partR: 1, partPct: 50, trail: 'swing', trailN: 3, trailR: 0.5, trigSize: 'body', trigMin: 0, trigMax: 0, bodyPct: 0, avgN: 20, trigN: 0, trigPrevMult: 1, trigPrevMax: 0, trigEngulf: false, volMin: 0, volMax: 100, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   biaspull: { tf: 5, bias: 'all3', asia: 'none', pbMin: 2, minRisk: 8, bufTicks: 0, hours: 'all', lastEntry: '14:00', maxDay: 2, exit: 'trail', tgtR: 2, beR: 0.5, partR: 1, partPct: 50, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  ondrift: { entryAt: '18:00', exitAt: '09:30', bias: 'all3', stopMult: 8, exit: 'target', tgtR: 0, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  ldnbrk: { tf: 5, asiaEnd: '02:00', lastEntry: '06:00', flatAt: '09:30', stop: 'mid', tgtMult: 1, minRangePct: 0, maxRangePct: 0, bias: 'all3', bufTicks: 2, exit: 'target', beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  smt: { tradeSym: 'NQ', tf: 5, look: 12, wait: 3, hours: 'all', lastEntry: '15:00', maxDay: 3, tgt: 'vwap', minRR: 1, bias: 'none', bufTicks: 2, exit: 'target', tgtR: 2, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ'] },
+  flatrev: { tf: 5, distMult: 2, bias: 'all3', hours: 'all', lastEntry: '15:00', maxDay: 3, minRR: 1, bufTicks: 2, exit: 'target', beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  postclose: { fromAt: '15:00', minMovePct: 0.3, mode: 'follow', exitAt: '16:55', stopMult: 3, bias: 'none', exit: 'target', tgtR: 0, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  sungap: { which: 'monday', mode: 'both', smallPct: 0.25, bigPct: 0.5, exitAt: '02:00', stopMult: 4, bias: 'none', exit: 'target', tgtR: 2, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 // what's been tried for a setup: a badge on its card in New strategy
 function tested(key) {
