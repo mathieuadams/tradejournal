@@ -27,6 +27,7 @@ import smt
 import sungap
 import fpdisp
 import ifvg
+import insidebar
 import nrbreak
 import onsweep
 import pdbreak
@@ -37,8 +38,8 @@ import store
 import wtswing
 from util import BadRequest, NotFound, iso, now_ny
 
-SETUPS = {"orb": orb, "orbema": orbema, "range50": range50, "silver": silver, "tvpoc": tvpoc, "vwapret": vwapret, "wt": wtswing, "onsweep": onsweep, "ibbreak": ibbreak, "odpull": odpull, "pdbreak": pdbreak, "pdsweep": pdsweep, "nrbreak": nrbreak, "fpdisp": fpdisp, "ifvg": ifvg, "biaspull": biaspull, "ondrift": ondrift, "ldnbrk": ldnbrk, "smt": smt, "flatrev": flatrev, "postclose": postclose, "sungap": sungap}
-NAMES = {"orb": "Opening range break + FVG retest", "orbema": "Opening range break + 20 EMA retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "tvpoc": "Trend volume profile + rolling POC", "vwapret": "VWAP retest (overnight included)", "onsweep": "Overnight high / low sweep and reclaim", "ibbreak": "Initial balance breakout", "odpull": "Opening drive, first pullback", "wt": "WaveTrend dots", "pdbreak": "Prior-day high / low break and retest", "pdsweep": "Prior-day high / low sweep and reclaim", "nrbreak": "Narrow-range day breakout", "fpdisp": "Fair price displacement", "ifvg": "FVG inversion with the EMA bias", "biaspull": "EMA bias pullback (no FVG control)", "ondrift": "Overnight drift (hold with the bias)", "ldnbrk": "London breakout of the Asian range", "smt": "ES / NQ divergence (SMT)", "flatrev": "Flat-bias mean reversion to VWAP", "postclose": "Post-close continuation (16:00-17:00)", "sungap": "Sunday / reopen gap"}
+SETUPS = {"orb": orb, "orbema": orbema, "range50": range50, "silver": silver, "tvpoc": tvpoc, "vwapret": vwapret, "wt": wtswing, "onsweep": onsweep, "ibbreak": ibbreak, "odpull": odpull, "pdbreak": pdbreak, "pdsweep": pdsweep, "nrbreak": nrbreak, "fpdisp": fpdisp, "ifvg": ifvg, "biaspull": biaspull, "ondrift": ondrift, "ldnbrk": ldnbrk, "smt": smt, "flatrev": flatrev, "postclose": postclose, "sungap": sungap, "insidebar": insidebar}
+NAMES = {"orb": "Opening range break + FVG retest", "orbema": "Opening range break + 20 EMA retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "tvpoc": "Trend volume profile + rolling POC", "vwapret": "VWAP retest (overnight included)", "onsweep": "Overnight high / low sweep and reclaim", "ibbreak": "Initial balance breakout", "odpull": "Opening drive, first pullback", "wt": "WaveTrend dots", "pdbreak": "Prior-day high / low break and retest", "pdsweep": "Prior-day high / low sweep and reclaim", "nrbreak": "Narrow-range day breakout", "fpdisp": "Fair price displacement", "ifvg": "FVG inversion with the EMA bias", "biaspull": "EMA bias pullback (no FVG control)", "ondrift": "Overnight drift (hold with the bias)", "ldnbrk": "London breakout of the Asian range", "smt": "ES / NQ divergence (SMT)", "flatrev": "Flat-bias mean reversion to VWAP", "postclose": "Post-close continuation (16:00-17:00)", "sungap": "Sunday / reopen gap", "insidebar": "Inside bar breakout"}
 SK = "STRAT#"
 COSTS = {"contracts": 1, "comm": 2.25, "slip": 1.0, "dailyLoss": 500.0}
 MIN_TRADES, PF_MIN, MONTH_MAX, TRAIN = 100, 1.3, 0.4, 0.6
@@ -318,6 +319,7 @@ GRIDS = {
     "flatrev": {"distMult": [1.5, 2.0, 3.0, 4.0], "hours": ["rth", "all"], "bias": ["all3", "h1"], "minRR": [0, 1.0]},
     "postclose": {"fromAt": ["14:00", "15:00", "15:30"], "exitAt": ["16:15", "16:30", "16:55"], "minMovePct": [0.1, 0.3, 0.6], "mode": ["follow", "fade"]},
     "sungap": {"which": ["monday", "all"], "smallPct": [0.1, 0.25, 0.5], "bigPct": [0.25, 0.5, 1.0], "exitAt": ["20:00", "02:00", "09:30"], "mode": ["both", "fade", "follow"]},
+    "insidebar": {"tf": [1, 5, 15], "entry": ["break", "close"], "tgtR": [1.0, 1.5, 2.0, 3.0], "hours": ["rth", "all"], "bias": ["none", "all3"], "minMother": [0, 1.0, 1.5]},
     "fpdisp": {"fair": ["open", "vwap"], "bodyMult": [1.0, 1.5, 2.0], "stop": ["bar", "swing"], "lastEntry": ["11:00", "13:00", "15:00"]},
     "pdbreak": {"bias": ["close", "trend", "none"], "brkTf": [5, 15], "tgtAtr": [0.75, 1.0, 1.5]},
     "pdsweep": {"levels": ["pd", "outer"], "tgt": ["vwap", "mid", "other"], "lastEntry": ["10:30", "11:30", "13:00"], "minDepth": [0, 5]},

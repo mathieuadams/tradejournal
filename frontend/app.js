@@ -142,6 +142,11 @@ const SETUPS = {
     params: [['which', 'Gaps', 'sel', [['monday', 'Sunday open vs Friday\'s close'], ['all', 'Every 18:00 reopen']]], ['mode', 'Trade', 'sel', [['both', 'Fade small, follow big'], ['fade', 'Fade small only'], ['follow', 'Follow big only']]],
       ['smallPct', 'Small gap: under (%)', 'num', 0.05], ['bigPct', 'Big gap: at least (%)', 'num', 0.05], ['exitAt', 'Out at (ET)', 'sel', ['20:00', '22:00', '00:00', '02:00', '06:00', '09:30'].map(x => [x, x])],
       ['stopMult', 'Stop (× the average 5-min range)', 'num', 0.5], BIASP, ...MANAGEP, ...TAILP] },
+  insidebar: { name: 'Inside bar breakout', blurb: 'A candle entirely inside the one before (wicks included); enter on the break of its high (long) or low (short), stop past its other side, target 2R. 1, 5 or 15-minute candles.',
+    params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min'], [15, '15 min']]], ['entry', 'Entry', 'sel', [['break', 'Stop order 1 tick past the inside candle'], ['close', 'First close past it']]],
+      ['wait', 'Break within (candles)', 'num', 1], ['minMother', 'Mother candle at least (× the average range, 0 = off)', 'num', 0.25], ['maxInside', 'Inside candle at most (% of the mother)', 'num', 5],
+      ['hours', 'Hours', 'sel', [['rth', 'NYSE session only'], ['all', 'Overnight + NYSE']]], ['lastEntry', 'Last entry (ET)', 'text'], ['maxDay', 'Max trades per session', 'num', 1],
+      BIASP, ['bufTicks', 'Extra stop buffer (ticks)', 'num', 1], ...MANAGEP, ...TAILP] },
   wt: { name: 'WaveTrend dots', blurb: 'WaveTrend [Krypt]: in at the open after a buy dot, out at the open after a sell dot (and the mirror for shorts).',
     params: [['tf', 'Candles', 'sel', [['1D', 'Daily'], ['60', '1 hour'], ['15', '15 min'], ['5', '5 min']]], ['side', 'Side', 'sel', SIDE], ['stopAtr', 'Stop (× average range, 0 = none)', 'num', 0.25],
       ['flatEod', 'Intraday: flat at 15:55', 'bool'], ['days', 'Candles / sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
@@ -389,6 +394,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   flatrev: { tf: 5, distMult: 2, bias: 'all3', hours: 'all', lastEntry: '15:00', maxDay: 3, minRR: 1, bufTicks: 2, exit: 'target', beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   postclose: { fromAt: '15:00', minMovePct: 0.3, mode: 'follow', exitAt: '16:55', stopMult: 3, bias: 'none', exit: 'target', tgtR: 0, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   sungap: { which: 'monday', mode: 'both', smallPct: 0.25, bigPct: 0.5, exitAt: '02:00', stopMult: 4, bias: 'none', exit: 'target', tgtR: 2, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
+  insidebar: { tf: 5, entry: 'break', wait: 1, minMother: 0, maxInside: 100, hours: 'rth', lastEntry: '15:00', maxDay: 5, bias: 'none', bufTicks: 0, exit: 'target', tgtR: 2, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
 // what's been tried for a setup: a badge on its card in New strategy
 function tested(key) {

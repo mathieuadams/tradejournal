@@ -164,7 +164,8 @@ def test_06_other_setups():
                      ("ondrift", {"days": 60}), ("ondrift", {"days": 60, "bias": "none", "stopMult": 0, "exit": "trail"}), ("ldnbrk", {"days": 60}),
                      ("ldnbrk", {"days": 60, "exit": "trail", "tgtMult": 0, "tf": 15}), ("smt", {"days": 60}), ("smt", {"days": 60, "tradeSym": "ES", "tgt": "r", "hours": "rth"}),
                      ("flatrev", {"days": 60}), ("postclose", {"days": 60, "mode": "fade"}), ("sungap", {"days": 120}), ("sungap", {"days": 60, "which": "all", "mode": "follow"}),
-                     ("ifvg", {"days": 60, "volMin": 20, "volMax": 80})):
+                     ("ifvg", {"days": 60, "volMin": 20, "volMax": 80}), ("insidebar", {"days": 60}), ("insidebar", {"days": 30, "tf": 1, "hours": "all"}),
+                     ("insidebar", {"days": 60, "tf": 15, "entry": "close", "exit": "trail"})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -597,6 +598,20 @@ def test_27_overnight_engines():
     (y, _), = sungap.engine("NQ", "2026-03-09", [], [], G, [], {}, prev, sungap.clean({"smallPct": 0.25, "bigPct": 0.5}))    # a Monday session: +0.1% gap
     assert y["side"] == "short" and y["e"] == 100.15 and y["tgt"] == 100 and y["why"] == "target", y
     assert N.stamp(F, "18:00") == f"{ev}T18:00" and N.stamp(F, "02:00") == f"{d}T02:00"
+
+
+def test_28_inside_bar():
+    import insidebar
+    d = "2026-03-10"
+    rows = [(100, 100, 100, 100)] * 22 + [(100, 104, 98, 103), (102.5, 103, 100, 101), (101, 103.5, 100.8, 103.3)] + [(103.3, 111, 103.2, 110.5)] * 5
+    F = _rth(d, rows)
+    p = insidebar.clean({"tf": 5})
+    (x, _), = insidebar.engine("NQ", d, [], F, F, [], {}, None, p)[:1]
+    assert x["side"] == "long" and x["e"] == 103.25 and x["stop"] == 99.75 and abs(x["tgt"] - (103.25 + 2 * 3.5)) < 1e-9 and x["why"] == "target", x
+    F2 = _rth(d, [(100, 100, 100, 100)] * 22 + [(100, 104, 98, 103), (102.5, 104.5, 100, 101)] + [(101, 102, 100.5, 101)] * 5)
+    assert insidebar.engine("NQ", d, [], F2, F2, [], {}, None, p) == []          # the high pokes over the mother: not an inside bar
+    F3 = _rth(d, [(100, 100, 100, 100)] * 22 + [(100, 104, 98, 103), (102.5, 103, 100, 101), (101, 103.5, 99.5, 101)] + [(101, 102, 100.5, 101)] * 5)
+    assert insidebar.engine("NQ", d, [], F3, F3, [], {}, None, p) == []          # both sides broken in one candle: skipped
 
 
 if __name__ == "__main__":
