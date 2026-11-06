@@ -43,7 +43,9 @@ def _sessions(sym, p):
         for b in R:
             m = int(b[0][11:13]) * 60 + int(b[0][14:16]) + p["tf"] - 1
             V.append(vw.get(f"{b[0][:11]}{m // 60:02d}:{m % 60:02d}") or vw.get(b[0]) or b[4])
-        F = [tuple(b[:5]) for b in futdata.agg(bars, p["tf"])]
+        FA = futdata.agg(bars, p["tf"])
+        F = [tuple(b[:5]) for b in FA]
+        _VOL[(sym, p["tf"], d)] = [b[5] for b in FA]
         VF = []
         for b in F:                                     # the session VWAP at each full-session candle's last minute
             m = int(b[0][11:13]) * 60 + int(b[0][14:16]) + p["tf"] - 1
@@ -54,6 +56,12 @@ def _sessions(sym, p):
 
 
 _VF = {}
+_VOL = {}
+
+
+def full_volume(sym, tf, day):
+    """The volume of each full-session candle of the day (after sessions() has run for it)."""
+    return _VOL.get((sym, tf, day)) or []
 
 
 def full_vwap(sym, tf, day):

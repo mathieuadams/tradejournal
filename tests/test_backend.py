@@ -165,7 +165,9 @@ def test_06_other_setups():
                      ("ldnbrk", {"days": 60, "exit": "trail", "tgtMult": 0, "tf": 15}), ("smt", {"days": 60}), ("smt", {"days": 60, "tradeSym": "ES", "tgt": "r", "hours": "rth"}),
                      ("flatrev", {"days": 60}), ("postclose", {"days": 60, "mode": "fade"}), ("sungap", {"days": 120}), ("sungap", {"days": 60, "which": "all", "mode": "follow"}),
                      ("ifvg", {"days": 60, "volMin": 20, "volMax": 80}), ("insidebar", {"days": 60}), ("insidebar", {"days": 30, "tf": 1, "hours": "all"}),
-                     ("insidebar", {"days": 60, "tf": 15, "entry": "close", "exit": "trail"})):
+                     ("insidebar", {"days": 60, "tf": 15, "entry": "close", "exit": "trail"}), ("imom", {"days": 60}), ("onrev", {"days": 60, "minPct": 0.1}),
+                     ("gapfill", {"days": 60}), ("tom", {"days": 120}), ("vwapband", {"days": 60}), ("rsi2", {"days": 60}), ("squeeze", {"days": 60}),
+                     ("volclimax", {"days": 60, "volMult": 1.5}), ("pwsweep", {"days": 60, "fresh": False}), ("trendday", {"days": 60, "rangeMult": 0.3})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -612,6 +614,24 @@ def test_28_inside_bar():
     assert insidebar.engine("NQ", d, [], F2, F2, [], {}, None, p) == []          # the high pokes over the mother: not an inside bar
     F3 = _rth(d, [(100, 100, 100, 100)] * 22 + [(100, 104, 98, 103), (102.5, 103, 100, 101), (101, 103.5, 99.5, 101)] + [(101, 102, 100.5, 101)] * 5)
     assert insidebar.engine("NQ", d, [], F3, F3, [], {}, None, p) == []          # both sides broken in one candle: skipped
+
+
+def test_29_more_ideas():
+    import imom
+    import onrev
+    import tom
+    d, ev = "2026-03-10", "2026-03-09"
+    prev = [(f"{ev}T15:{i * 5:02d}", 100, 100.5, 99.5, 100) for i in range(12)] + [(f"{ev}T16:{i * 5:02d}", 100, 100.2, 99.8, 100) for i in range(12)]
+    F = [(f"{d}T09:{25 + i * 5:02d}", 101, 101.2, 100.8, 101) for i in range(1)] + _rth(d, [(101, 101.5, 100.5, 101.2)] * 6 + [(101.2, 101.4, 101, 101.3)] * 66 + [(101.3, 102, 101.2, 102)] * 6)
+    (x, _), = imom.engine("NQ", d, [], [], F, [], {}, prev, imom.clean({}))
+    assert x["side"] == "long" and x["e"] == 101.3 and x["x"] == 102 and x["why"] == "time", x          # 10:00 above yesterday's 100 close: long 15:30-16:00
+    (y, _), = onrev.engine("NQ", d, [], [], F, [], {}, prev, onrev.clean({"minPct": 0.5, "exitAt": "15:55"}))
+    assert y["side"] == "short" and y["e"] == 101 and y["tgt"] == 100 and y["stop"] == 102, y            # +1% gap faded to the close, stop 1x the gap
+    D = [("2026-01-%02d" % i, 100, 101, 99, 100 + i * 0.1, 1) for i in range(5, 31)] + [("2026-01-30", 100, 101, 99, 102, 1), ("2026-02-02", 102, 104, 101, 103, 1),
+                                                                                       ("2026-02-03", 103, 105, 102, 104, 1), ("2026-02-04", 104, 106, 103, 105, 1)]
+    D = sorted({x[0]: x for x in D}.values())
+    ts = tom.run(D, tom.clean({"exitDay": 3}), set(x[0] for x in D))
+    assert ts and ts[-1]["in"] == "2026-01-30T16:00" and ts[-1]["out"] == "2026-02-04T16:00" and ts[-1]["e"] == 102 and ts[-1]["x"] == 105, ts
 
 
 if __name__ == "__main__":

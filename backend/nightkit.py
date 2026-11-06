@@ -167,3 +167,38 @@ def vol_rank(sym):
         out["next"] = round(sum(1 for v in hist if v <= atr[-1]) / len(hist) * 100) if hist else None
     _VR[sym] = (last, out)
     return out
+
+
+_ATR = {}
+
+
+def atr_map(sym, n=14):
+    """{day: the average regular-hours daily range of the n days before it} (+ "next": for the session in progress)."""
+    import futdata
+    last = futdata.last_bar_time(sym)
+    if _ATR.get((sym, n), (None,))[0] == last:
+        return _ATR[(sym, n)][1]
+    D = futdata.daily(sym)
+    trs, out = [], {}
+    for i, x in enumerate(D):
+        if len(trs) >= n:
+            out[x[0]] = sum(trs[-n:]) / n
+        pc = D[i - 1][4] if i else x[4]
+        trs.append(max(x[2], pc) - min(x[3], pc))
+    if len(trs) >= n:
+        out["next"] = sum(trs[-n:]) / n
+    _ATR[(sym, n)] = (last, out)
+    return out
+
+
+def idx_at(F, ts):
+    """The index of the candle starting at ts (YYYY-MM-DDTHH:MM), else None."""
+    return next((i for i, b in enumerate(F) if b[0][:16] == ts), None)
+
+
+def prev_close(prev):
+    """The previous session's 16:00 close (its 15:55 5-minute candle / last regular-hours candle)."""
+    if not prev:
+        return None
+    r = [b for b in prev if "09:30" <= b[0][11:16] < "16:00" and b[0][:10] == prev[-1][0][:10]]
+    return r[-1][4] if r else None
