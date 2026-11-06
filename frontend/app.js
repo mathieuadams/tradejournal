@@ -213,12 +213,212 @@ function route() {
   const h = (location.hash || '#running').slice(1), [page, arg] = h.split('/');
   S.page = page;
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.r === (page === 'strategy' ? 'research' : page)));
-  const v = { running: vRunning, chart: vChart, research: vResearch, strategy: () => vStrategy(arg), data: vData }[page] || vRunning;
+  const v = { running: vRunning, chart: vChart, research: vResearch, strategy: () => vStrategy(arg), data: vData, levels: vLevels }[page] || vRunning;
   v().catch(e => { $('#view').innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; });
 }
 const view = html => { $('#view').innerHTML = html; };
 const head = (title, sub, right = '') => `<div class="page-head"><div><h1>${title}</h1>${sub ? `<div class="dim" style="margin-top:4px">${sub}</div>` : ''}</div><div class="grow"></div>${right}</div>`;
 const cellName = c => c ? c.replace('|', ' · ') : '—';
+
+
+/* ---------- Levels: walls (density) and cycles (AMW) ---------- */
+S.lv = { tab: 'walls', match: 'none', minLen: 3, tol: '', sdLen: 10, macroLen: 50, sym: 'NQ', day: '', lookback: 250, ref: 'open', weekday: false, scale: 'none', peak: 50, inner: 75, true: 90, over: 97.5, tf: '60', length: 20, kind: 'ema', days: 50, show: 300 };
+async function vLevels() {
+  const L = S.lv;
+  const f = (id, lab, inner) => `<label class="f">${lab}${inner}</label>`;
+  const sel = (id, v, opts) => `<select id="${id}">${opts.map(([k, l]) => `<option value="${k}" ${String(v) === String(k) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const ctrl = L.tab === 'conf' ? '' : L.tab === 'walls' ? `
+      ${f('', 'Day', `<input type="date" id="lv-day" value="${esc(L.day)}">`)}
+      ${f('', 'Sessions to load', sel('lv-lookback', L.lookback, [[100, '100'], [200, '200'], [250, '250'], [500, '500']]))}
+      ${f('', 'Moves measured from', sel('lv-ref', L.ref, [['open', 'The 09:30 open'], ['close', 'Yesterday\'s 16:00 close']]))}
+      ${f('', 'Scaling', sel('lv-scale', L.scale, [['none', 'Raw %'], ['vol', 'Adjusted to today\'s volatility']]))}
+      ${f('', 'Matching', sel('lv-match', L.match || 'none', [['none', 'All sessions'], ['weekday', 'Same weekday'], ['hl', 'HL matching (yesterday\'s pattern)']]))}
+      ${f('', 'Peak / inner / true / overflow (percentiles)', `<span style="display:flex;gap:4px">${['peak', 'inner', 'true', 'over'].map(k => `<input type="number" id="lv-${k}" value="${L[k]}" step="0.5" min="1" max="99.9" style="width:64px">`).join('')}</span>`)}`
+    : `
+      ${f('', 'Candles', sel('lv-tf', L.tf, [['5', '5 min'], ['15', '15 min'], ['60', '1 hour'], ['1D', 'Daily']]))}
+      ${f('', 'Sessions to load', `<input type="number" id="lv-days" value="${L.days}" min="5" max="2000" style="width:90px">`)}
+      ${f('', 'Vector', `<span style="display:flex;gap:4px">${sel('lv-kind', L.kind, [['ema', 'EMA'], ['sma', 'SMA']])}<input type="number" id="lv-length" value="${L.length}" min="2" max="400" style="width:70px"></span>`)}
+      ${f('', 'Candles shown', `<input type="number" id="lv-show" value="${L.show}" min="20" max="3000" style="width:90px">`)}
+      ${f('', 'Ignore cycles under (candles)', `<input type="number" id="lv-minlen" value="${L.minLen}" min="1" max="50" style="width:70px">`)}
+      ${f('', 'Volatility over (candles)', `<input type="number" id="lv-sdlen" value="${L.sdLen}" min="3" max="100" style="width:70px">`)}
+      ${f('', 'Macro trend EMA', `<input type="number" id="lv-macro" value="${L.macroLen}" min="5" max="400" style="width:70px">`)}`;
+  const ctrl2 = L.tab === 'conf' ? `${f('', 'Stacked within (points, empty = 15 NQ / 2 ES)', `<input type="number" id="lv-tol" value="${esc(String(L.tol))}" step="0.25" min="0.25" style="width:110px">`)}` : '';
+  view(`${head('Levels', 'Where price usually ranges, reverts and extends — measured from the stored history.')}
+    <div class="seg" style="margin-bottom:12px"><button data-lvtab="walls" aria-pressed="${L.tab === 'walls'}">Walls &amp; Peak Zone</button><button data-lvtab="cycles" aria-pressed="${L.tab === 'cycles'}">Cycles, AMW &amp; volatility</button><button data-lvtab="conf" aria-pressed="${L.tab === 'conf'}">Confluence</button></div>
+    <section class="panel"><div class="bd" style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">
+      <div class="seg">${['NQ', 'ES'].map(s => `<button data-lvsym="${s}" aria-pressed="${L.sym === s}">${s}</button>`).join('')}</div>${ctrl}${ctrl2}
+      <button class="btn primary" data-act="lv-go">Show</button></div></section>
+    <div id="lv-out" style="margin-top:12px"><div class="empty">Loading…</div></div>`);
+  return lvLoad();
+}
+function lvRead() {
+  const L = S.lv, v = id => { const e = $('#' + id); return e ? e.value : null; };
+  if (L.tab === 'walls') { L.day = v('lv-day') || ''; L.lookback = +v('lv-lookback'); L.ref = v('lv-ref'); L.scale = v('lv-scale'); L.match = v('lv-match'); ['peak', 'inner', 'true', 'over'].forEach(k => L[k] = +v('lv-' + k)); }
+  else if (L.tab === 'cycles') { L.tf = v('lv-tf'); L.days = +v('lv-days'); L.kind = v('lv-kind'); L.length = +v('lv-length'); L.show = +v('lv-show'); L.sdLen = +v('lv-sdlen'); L.macroLen = +v('lv-macro'); L.minLen = +v('lv-minlen'); }
+  else { L.tol = v('lv-tol') || ''; }
+}
+async function lvLoad() {
+  const L = S.lv, out = $('#lv-out');
+  try {
+    if (L.tab === 'walls') {
+      const q = new URLSearchParams({ sym: L.sym, lookback: L.lookback, ref: L.ref, scale: L.scale, match: L.match || 'none', peak: L.peak, inner: L.inner, true: L.true, over: L.over, ...(L.day ? { day: L.day } : {}) });
+      const w = await api('/walls?' + q);
+      if (!L.day) { L.day = w.day; const e = $('#lv-day'); if (e) e.value = w.day; }
+      out.innerHTML = wallsHtml(w); drawWalls($('#lv-canvas'), w); drawFan($('#lv-fan'), w); drawOdds($('#lv-odds'), w);
+    } else if (L.tab === 'conf') {
+      const c = await api('/confluence?' + new URLSearchParams({ sym: L.sym, ...(L.tol ? { tol: L.tol } : {}) }));
+      out.innerHTML = confHtml(c); drawConf($('#lv-canvas'), c);
+    } else {
+      const c = await api('/cycles?' + new URLSearchParams({ sym: L.sym, tf: L.tf, days: L.days, kind: L.kind, length: L.length, show: L.show, sdLen: L.sdLen, macroLen: L.macroLen, minLen: L.minLen }));
+      out.innerHTML = cyclesHtml(c); drawCycles($('#lv-canvas'), c);
+    }
+  } catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; }
+}
+const WCOL = { peak: '#4CC38A', inner: 'rgba(220,226,235,0.55)', true: '#E8EDF3', over: '#F2994A' };
+function wallsHtml(w) {
+  const st = w.stats, by = k => w.levels.filter(x => x.k === k);
+  return `<section class="panel"><div class="hd"><h2>${esc(w.sym)} · ${esc(w.day)}</h2><span class="dim" style="font-size:13px">Reference ${fmt(w.ref)} (${esc(w.refKind)}) · ${w.sample} sessions (${esc(w.from)} → ${esc(w.to)})${w.atrPct ? ` · daily average range ${w.atrPct.toFixed(2)}%` : ''}</span></div>
+    <div class="bd"><canvas id="lv-canvas" style="width:100%;height:520px;display:block"></canvas>
+    <div class="note" style="margin-top:6px">Grey = where the 5-minute closes of past sessions were, by time of day (darker = more often). Curves = how far the running high / low had reached by that time. Lines = the levels for the whole day. Blue = this day's own path.</div></div></section>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-top:12px">
+      <section class="panel"><div class="hd"><h2>Volatility</h2><span class="dim" style="font-size:13px">from the reference: the moves up and down, and the share of sessions that got that far</span></div><div class="bd"><canvas id="lv-fan" style="width:100%;height:420px;display:block"></canvas></div></section>
+      <section class="panel"><div class="hd"><h2>Odds</h2><span class="dim" style="font-size:13px">the share of sessions whose high (green) / low (red) reached each level</span></div><div class="bd"><canvas id="lv-odds" style="width:100%;height:420px;display:block"></canvas></div></section>
+    </div>
+    <div class="grid2" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-top:12px">
+    <section class="panel"><div class="hd"><h2>Levels</h2></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Up</th><th class="r">% </th><th class="r">Beyond</th><th class="r">Down</th><th class="r">%</th><th class="r">Beyond</th></tr></thead><tbody>
+      ${['over', 'true', 'inner', 'peak'].map(k => { const [u, d] = [by(k).find(x => x.side === 'up'), by(k).find(x => x.side === 'down')]; return `<tr><td><span style="color:${WCOL[k]};font-weight:600">${esc(u.label)}</span></td><td class="r mono">${fmt(u.price)}</td><td class="r">+${u.pct.toFixed(2)}%</td><td class="r dim">${u.beyond}/${u.of}</td><td class="r mono">${fmt(d.price)}</td><td class="r">−${d.pct.toFixed(2)}%</td><td class="r dim">${d.beyond}/${d.of}</td></tr>`; }).join('')}
+    </tbody></table></div><div class="bd note">"Beyond" = how many of the sessions went past that level (e.g. 3/250 = an outlier day).</div></section>
+    <section class="panel"><div class="hd"><h2>How the sessions behaved</h2></div><div class="bd" style="display:flex;flex-direction:column;gap:6px">
+      <div><b>${st.medianTagged}%</b> touched at least one Peak (the median move up or down)</div>
+      <div><b>${st.bothPeaks}%</b> touched both Peaks</div>
+      <div><b>${st.anyWall}%</b> reached a True wall · <b>${st.bothWalls}%</b> reached both</div>
+      <div><b>${st.overflow}%</b> went past an Overflow wall (outlier days)</div>
+      <table class="tbl" style="margin-top:8px"><tbody>${(st.lines || []).map(([t, k, n]) => `<tr><td>${esc(t)}</td><td class="r mono">${k} of ${n}</td><td class="r"><b>${(k / n * 100).toFixed(0)}%</b></td></tr>`).join('')}</tbody></table>
+      ${w.actual ? `<div style="margin-top:6px" class="dim">This day: high ${fmt(w.actual.h)} (${sgn((w.actual.h - w.ref) / w.ref * 100, 2, '%')}), low ${fmt(w.actual.l)} (${sgn((w.actual.l - w.ref) / w.ref * 100, 2, '%')}), close ${fmt(w.actual.c)}</div>` : '<div class="dim" style="margin-top:6px">This day has no regular-hours candles yet: the levels use yesterday\'s close as the reference.</div>'}
+    </div></section></div>`;
+}
+function canvasCtx(cv, h) {
+  const r = window.devicePixelRatio || 1, W = cv.clientWidth, H = h || cv.clientHeight;
+  cv.width = W * r; cv.height = H * r; const g = cv.getContext('2d'); g.scale(r, r); g.font = '11px Inter, system-ui, sans-serif';
+  return [g, W, H];
+}
+function drawWalls(cv, w) {
+  if (!cv) return;
+  const [g, W, H] = canvasCtx(cv, 520), pl = 56, pr = 190, pt = 14, pb = 26, pw = W - pl - pr, ph = H - pt - pb;
+  const n = w.times.length, span = w.span, X = i => pl + (i + 0.5) / n * pw, Y = v => pt + (span - v) / (2 * span) * ph;
+  g.fillStyle = '#0d1117'; g.fillRect(0, 0, W, H);
+  const mx = Math.max(1, ...w.grid.flat()), bh = ph / w.bins;
+  w.grid.forEach((col, i) => col.forEach((c, b) => { if (!c) return; g.fillStyle = `rgba(200,208,220,${Math.min(0.85, 0.08 + c / mx * 0.9)})`; g.fillRect(pl + i / n * pw, pt + (w.bins - 1 - b) * bh, pw / n + 0.5, bh + 0.5); }));
+  g.strokeStyle = 'rgba(255,255,255,0.25)'; g.beginPath(); g.moveTo(pl, Y(0)); g.lineTo(pl + pw, Y(0)); g.stroke();
+  Object.entries(w.cone).forEach(([k, c]) => [['up', 1], ['down', -1]].forEach(([s, sg]) => {
+    g.strokeStyle = WCOL[k]; g.lineWidth = 1.5; g.beginPath(); let on = false;
+    c[s].forEach((v, i) => { if (v == null) return; const y = Y(sg * v); on ? g.lineTo(X(i), y) : g.moveTo(X(i), y); on = true; }); g.stroke(); g.lineWidth = 1;
+  }));
+  w.levels.forEach(x => { const v = x.side === 'up' ? x.pct : -x.pct, y = Math.round(Y(v)) + 0.5; g.strokeStyle = WCOL[x.k]; g.setLineDash(x.k === 'peak' ? [] : [5, 4]); g.beginPath(); g.moveTo(pl, y); g.lineTo(pl + pw, y); g.stroke(); g.setLineDash([]);
+    g.fillStyle = WCOL[x.k]; g.textAlign = 'left'; g.fillText(`${x.label} ${fmt(x.price)} (${x.beyond}/${x.of})`, pl + pw + 6, y + 4); });
+  if (w.path && w.path.length) { g.strokeStyle = '#4FA3FF'; g.lineWidth = 2; g.beginPath(); w.path.forEach(([i, v], j) => j ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v))); g.stroke(); g.lineWidth = 1; }
+  g.fillStyle = 'rgba(170,178,190,0.9)'; g.textAlign = 'right';
+  for (let v = -Math.floor(span * 2) / 2; v <= span; v += 0.5) { if (Math.abs(v) > span) continue; g.fillText(`${v > 0 ? '+' : ''}${v.toFixed(1)}%`, pl - 6, Y(v) + 4); }
+  g.textAlign = 'center'; w.times.forEach((t, i) => { if (t.endsWith(':00') || t === '09:30') g.fillText(t, X(i), H - 8); });
+}
+function drawFan(cv, w) {
+  if (!cv || !w.fan) return;
+  const [g, W, H] = canvasCtx(cv, 420), pl = 70, pr = 170, pt = 16, pb = 16, top = Math.max(w.fan.up[0].pct, w.fan.down[0].pct) * 1.08;
+  const Y = v => pt + (top - v) / (2 * top) * (H - pt - pb), x0 = pl, x1 = W - pr;
+  g.fillStyle = '#0d1117'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = 'rgba(255,255,255,0.3)'; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(x0, Y(0)); g.lineTo(x1, Y(0)); g.stroke(); g.setLineDash([]);
+  g.fillStyle = 'rgba(220,226,235,0.9)'; g.textAlign = 'right'; g.fillText('ref ' + fmt(w.ref), x0 - 6, Y(0) + 4);
+  [['up', 1, '#3FB978'], ['down', -1, '#F25F5C']].forEach(([s, sg, col]) => w.fan[s].forEach(f => {
+    const y = Y(sg * f.pct); g.strokeStyle = col; g.beginPath(); g.moveTo(x0, Y(0)); g.lineTo(x1 - 120, y); g.lineTo(x1, y); g.stroke();
+    g.fillStyle = col; g.textAlign = 'left'; g.fillText(`${f.label} ${sg > 0 ? '+' : '−'}${f.pct.toFixed(2)}%  ${fmt(f.price)}  (${f.odds}% got there)`, x1 + 6 - 120 > 0 ? x1 - 118 : x1 + 6, y - 4);
+  }));
+  const wl = w.fan.up[1], ws = w.fan.down[1];
+  g.fillStyle = 'rgba(255,255,255,0.05)'; g.fillRect(x0, Y(wl.pct), x1 - x0, Y(-ws.pct) - Y(wl.pct));
+  g.fillStyle = 'rgba(220,226,235,0.7)'; g.textAlign = 'left'; g.fillText('between the walls: ~75% of each side', x1 + 6, Y(0) + 4);
+}
+function drawOdds(cv, w) {
+  if (!cv || !w.odds) return;
+  const [g, W, H] = canvasCtx(cv, 420), pl = 70, pr = 60, pt = 16, pb = 26, o = w.odds, top = o.pct[o.pct.length - 1] || 1;
+  const Y = v => pt + (top - v) / (2 * top) * (H - pt - pb), X = q => pl + q / 100 * (W - pl - pr);
+  g.fillStyle = '#0d1117'; g.fillRect(0, 0, W, H);
+  [0, 25, 50, 75, 100].forEach(q => { g.strokeStyle = 'rgba(255,255,255,0.08)'; g.beginPath(); g.moveTo(X(q), pt); g.lineTo(X(q), H - pb); g.stroke(); g.fillStyle = 'rgba(170,178,190,0.9)'; g.textAlign = 'center'; g.fillText(q + '%', X(q), H - 8); });
+  [['up', 1, '#3FB978'], ['down', -1, '#F25F5C']].forEach(([s, sg, col]) => { g.strokeStyle = col; g.lineWidth = 2; g.beginPath(); o[s].forEach((q, k) => { const x = X(q), y = Y(sg * o.pct[k]); k ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); g.lineWidth = 1; });
+  g.textAlign = 'right'; g.fillStyle = 'rgba(170,178,190,0.9)';
+  for (let k = 0; k <= 4; k++) { const v = top * k / 4; g.fillText(`${fmt(w.ref * (1 + v / 100))}`, pl - 6, Y(v) + 4); if (k) g.fillText(`${fmt(w.ref * (1 - v / 100))}`, pl - 6, Y(-v) + 4); }
+  const yM = Y(0); g.strokeStyle = 'rgba(255,255,255,0.3)'; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(pl, yM); g.lineTo(W - pr, yM); g.stroke(); g.setLineDash([]);
+  [50, 25].forEach(q => { g.strokeStyle = 'rgba(231,195,90,0.5)'; g.beginPath(); g.moveTo(X(q), pt); g.lineTo(X(q), H - pb); g.stroke(); });
+}
+function cyclesHtml(c) {
+  const cur = c.current, cy = c.cycles, row = (k, lab) => cy[k] ? `<tr><td>${lab}</td><td class="r">${cy[k].n}</td><td class="r">${cy[k].avgPct.toFixed(2)}%</td><td class="r">${cy[k].avgBars.toFixed(1)}</td><td class="r">${cy[k].longest}</td><td class="r">${cy[k].avgToPeak.toFixed(1)}</td></tr>` : '';
+  return `<section class="panel"><div class="hd"><h2>${esc(c.sym)} · ${c.params.tf === '1D' ? 'daily' : c.params.tf + '-minute'} · vector ${c.params.kind.toUpperCase()} ${c.params.length}</h2>
+      ${cur ? `<span class="dim" style="font-size:13px">Current ${cur.side > 0 ? 'up' : 'down'} cycle: ${cur.barsIn} candles, from the base ${fmt(cur.base)} (${esc(cur.baseT.replace('T', ' '))}), extended ${cur.extPct.toFixed(2)}% · AMW peak ${fmt(cur.amw.peak)} (${cur.amw.pct.toFixed(2)}%, ~${cur.amw.bars} candles)</span>` : ''}</div>
+    <div class="bd"><canvas id="lv-canvas" style="width:100%;height:760px;display:block"></canvas>
+    <div class="note" style="margin-top:6px">Bottom panel = volatility (the standard deviation of the last ${c.params.sdLen} closes vs its usual level; under 0.1 = squeeze, 0.1-0.5 = compressed, 0.5-0.8+ = expanding, 1.6+ = aggressive), green / red = price direction over those candles, k / m = volatility turning up with an up / down move, top bar = macro trend (above / below the ${c.params.macroLen}-candle EMA). It's measured from past candles: an approximation of the Fractal's tool, not its forward-looking version. Purple = the vector. H n / L n = a finished cycle's extreme and its length in candles (effort). Blue arc = the Average Mean Wave from the current base: the average extension of past cycles, after their average time to the peak. Bands = from the base, how many past cycles reached each level (80% = most did, 5% = outliers).</div></div></section>
+    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Cycle statistics</h2></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Cycles</th><th class="r">Count</th><th class="r">Average extension</th><th class="r">Average length (candles)</th><th class="r">Longest</th><th class="r">Candles to the peak</th></tr></thead><tbody>${row('up', 'Up (above the vector)')}${row('down', 'Down (below the vector)')}</tbody></table></div></section>`;
+}
+function drawCycles(cv, c) {
+  if (!cv) return;
+  const [g, W, H] = canvasCtx(cv, 760), pl = 10, pr = 150, pt = 14, pb = 26 + 200, pw = W - pl - pr, ph = H - pt - pb;
+  const C = c.candles, cur = c.current, n = C.length;
+  const fut = cur ? Math.max(5, Math.ceil(cur.amw.fromIdx + 2 * cur.amw.bars - (n - 1)) + 3) : 5, N = n + fut;
+  let lo = Math.min(...C.map(b => b[3])), hi = Math.max(...C.map(b => b[2]));
+  if (cur) { cur.bands.forEach(b => { lo = Math.min(lo, b.price); hi = Math.max(hi, b.price); }); lo = Math.min(lo, cur.amw.peak, cur.base); hi = Math.max(hi, cur.amw.peak, cur.base); }
+  const pad = (hi - lo) * 0.04; lo -= pad; hi += pad;
+  const X = i => pl + (i + 0.5) / N * pw, Y = p => pt + (hi - p) / (hi - lo) * ph, bw = Math.max(1, pw / N * 0.7);
+  g.fillStyle = '#0d1117'; g.fillRect(0, 0, W, H);
+  if (cur) cur.bands.forEach(b => { const y = Y(b.price), col = cur.side > 0 ? '63,185,120' : '242,95,92'; g.fillStyle = `rgba(${col},${0.10 + (100 - b.p) / 400})`; g.fillRect(pl, y - 4, pw, 8);
+    g.fillStyle = `rgb(${col})`; g.textAlign = 'left'; g.fillText(`${b.p}% @ ${fmt(b.price)}`, pl + pw + 6, y + 4); });
+  C.forEach((b, i) => { const [t, o, h, l, cl] = b, up = cl >= o; g.strokeStyle = g.fillStyle = up ? '#4FA3FF' : '#F2994A'; g.beginPath(); g.moveTo(X(i), Y(h)); g.lineTo(X(i), Y(l)); g.stroke();
+    g.fillRect(X(i) - bw / 2, Y(Math.max(o, cl)), bw, Math.max(1, Math.abs(Y(o) - Y(cl)))); });
+  g.strokeStyle = '#B07AE0'; g.lineWidth = 1.5; g.beginPath(); c.vector.forEach((v, i) => i ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v))); g.stroke(); g.lineWidth = 1;
+  const idx = new Map(C.map((b, i) => [b[0], i]));
+  c.marks.forEach(m => { const i = idx.get(m.t); if (i == null) return; g.fillStyle = 'rgba(230,235,240,0.85)'; g.textAlign = 'center'; g.fillText(m.text, X(i), m.side > 0 ? Y(m.p) - 8 : Y(m.p) + 16); });
+  if (cur) {
+    const a = cur.amw, i0 = a.fromIdx, T = Math.max(1, a.bars);
+    g.strokeStyle = 'rgba(255,255,255,0.4)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(X(i0), Y(cur.base)); g.lineTo(pl + pw, Y(cur.base)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = 'rgba(255,255,255,0.7)'; g.textAlign = 'left'; g.fillText(`Base ${fmt(cur.base)}`, pl + pw + 6, Y(cur.base) + 4);
+    g.strokeStyle = '#3D8BFF'; g.lineWidth = 2.5; g.beginPath();
+    for (let s = 0; s <= 2 * T; s += Math.max(0.25, T / 40)) { const u = (s - T) / T, p = cur.base + (a.peak - cur.base) * (1 - u * u); s ? g.lineTo(X(i0 + s), Y(p)) : g.moveTo(X(i0 + s), Y(p)); }
+    g.stroke(); g.lineWidth = 1; g.fillStyle = '#3D8BFF'; g.textAlign = 'left'; g.fillText(`AMW ${fmt(a.peak)}`, pl + pw + 6, Y(a.peak) + 4);
+    g.strokeStyle = 'rgba(255,255,255,0.2)'; g.beginPath(); g.moveTo(X(n - 0.5), pt); g.lineTo(X(n - 0.5), pt + ph); g.stroke();
+  }
+  // volatility panel
+  const sd = c.sd || [], y0 = pt + ph + 18, sh = 170, smax = Math.max(2.8, ...sd.map(x => x[0] || 0)), SY = v => y0 + 12 + (1 - v / smax) * (sh - 24);
+  g.fillStyle = '#10151c'; g.fillRect(pl, y0, pw, sh);
+  sd.forEach((x, i) => { g.fillStyle = x[2] > 0 ? '#2E9E5B' : '#C2413B'; g.fillRect(X(i) - pw / N / 2, y0, pw / N + 0.5, 6); });
+  [[0.1, 'Squeeze 0.1', '#E7C35A'], [0.5, '0.5', 'rgba(255,255,255,0.35)'], [0.8, 'Expanding 0.8', 'rgba(255,255,255,0.35)'], [1.6, 'Aggressive 1.6', 'rgba(255,255,255,0.35)'], [2.6, '2.6', 'rgba(255,255,255,0.25)']].forEach(([v, lab, col]) => {
+    const y = Math.round(SY(v)) + 0.5; g.strokeStyle = col; g.beginPath(); g.moveTo(pl, y); g.lineTo(pl + pw, y); g.stroke(); g.fillStyle = col; g.textAlign = 'left'; g.fillText(lab, pl + pw + 6, y + 4); });
+  for (let i = 1; i < sd.length; i++) { if (sd[i][0] == null || sd[i - 1][0] == null) continue; g.strokeStyle = sd[i][1] > 0 ? '#3FB978' : sd[i][1] < 0 ? '#F25F5C' : '#9AA4B2'; g.lineWidth = 2; g.beginPath(); g.moveTo(X(i - 1), SY(sd[i - 1][0])); g.lineTo(X(i), SY(sd[i][0])); g.stroke(); g.lineWidth = 1; }
+  g.font = '11px Inter, system-ui, sans-serif'; g.textAlign = 'center';
+  sd.forEach((x, i) => { if (x[3]) { g.fillStyle = x[3] === 'k' ? '#3FB978' : '#F25F5C'; g.fillText(x[3], X(i), y0 + sh - 4); } });
+  g.fillStyle = 'rgba(170,178,190,0.9)'; g.textAlign = 'center';
+  const step = Math.max(1, Math.floor(n / 8)); for (let i = 0; i < n; i += step) g.fillText(C[i][0].slice(5, 16).replace('T', ' '), X(i), H - 8);
+}
+const SRC_COL = { Walls: '#E8EDF3', Session: '#E7C35A', Daily: '#E07AE0', Hourly: '#B07AE0', '15-min': '#5FD4C4', '1-min': '#4FA3FF', Imprints: '#9AA4B2' };
+function confHtml(c) {
+  const top = c.clusters.filter(x => x.score >= 2).sort((a, b) => b.score - a.score || Math.abs(a.dist) - Math.abs(b.dist));
+  return `<section class="panel"><div class="hd"><h2>${esc(c.sym)} · now ${fmt(c.price)}</h2><span class="dim" style="font-size:13px">${esc((c.t || '').replace('T', ' '))} ET · session ${esc(c.day)} · stacked = within ${c.tol} points · ${c.levels.length} levels from ${Object.keys(SRC_COL).length} sources</span></div>
+    <div class="bd" style="display:grid;grid-template-columns:minmax(0,360px) minmax(0,1fr);gap:16px">
+      <canvas id="lv-canvas" style="width:100%;height:640px;display:block"></canvas>
+      <div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Zone</th><th class="r">Sources</th><th class="r">From price</th><th>Levels in it</th></tr></thead><tbody>
+        ${top.length ? top.map(z => `<tr style="${z.score >= 3 ? 'background:rgba(63,185,120,0.10)' : ''}"><td class="mono">${fmt(z.lo)}${z.hi > z.lo ? '–' + fmt(z.hi) : ''}</td><td class="r"><b>${z.score}</b>${z.score >= 3 ? ' · A+' : ''}</td><td class="r ${z.dist > 0 ? 'gain' : 'loss'}">${sgn(z.dist)}</td>
+          <td style="font-size:12px">${z.levels.map(x => `<span style="color:${SRC_COL[x.src] || '#ccc'}">${esc(x.label)}</span> <span class="dim">${fmt(x.price)}</span>`).join(' · ')}</td></tr>`).join('') : '<tr><td colspan="4" class="dim">No levels stacked within the tolerance.</td></tr>'}
+      </tbody></table></div>
+      <div class="note" style="margin-top:8px">Sources: the Walls tool (Peak / walls for today), the session levels (yesterday's high / low / close, overnight high / low), the vector + AMW peak + 80 / 50 / 20% bands on the daily (200 sessions), hourly (50), 15-minute (10) and 1-minute (3), and imprints (the last hourly cycle extremes). A zone with 3+ different sources = A+ confluence. Not included: Open States and the OMM / Moosebot levels (their method and options data aren't available).</div></div>
+    </div></section>`;
+}
+function drawConf(cv, c) {
+  if (!cv) return;
+  const [g, W, H] = canvasCtx(cv, 640), pt = 12, pb = 12, ph = H - pt - pb;
+  const ps = c.levels.map(x => x.price).concat([c.price]);
+  let lo = Math.min(...ps), hi = Math.max(...ps); const pad = (hi - lo) * 0.03 || 1; lo -= pad; hi += pad;
+  const Y = p => pt + (hi - p) / (hi - lo) * ph;
+  g.fillStyle = '#0d1117'; g.fillRect(0, 0, W, H);
+  c.clusters.filter(z => z.score >= 2).forEach(z => { g.fillStyle = z.score >= 3 ? 'rgba(63,185,120,0.22)' : 'rgba(231,195,90,0.12)'; const y1 = Y(z.hi) - 4, y2 = Y(z.lo) + 4; g.fillRect(0, y1, W, y2 - y1); });
+  c.levels.forEach(x => { const y = Math.round(Y(x.price)) + 0.5; g.strokeStyle = SRC_COL[x.src] || '#ccc'; g.beginPath(); g.moveTo(70, y); g.lineTo(W - 4, y); g.stroke(); });
+  c.clusters.forEach(z => { g.fillStyle = 'rgba(200,208,220,0.9)'; g.textAlign = 'left'; g.fillText(fmt(z.mid), 4, Y(z.mid) + 4); });
+  if (c.price) { const y = Math.round(Y(c.price)) + 0.5; g.strokeStyle = '#4FA3FF'; g.lineWidth = 2; g.beginPath(); g.moveTo(60, y); g.lineTo(W, y); g.stroke(); g.lineWidth = 1; g.fillStyle = '#4FA3FF'; g.textAlign = 'right'; g.fillText('now ' + fmt(c.price), W - 4, y - 5); }
+}
 
 /* ---------- Running ---------- */
 async function vRunning() {
@@ -639,7 +839,7 @@ async function vChart() {
     <div class="row">
       <section class="panel col-main" style="display:block;padding-top:12px">
         <div class="legend"><span>Strategy on the chart</span><select id="c-strat" style="min-height:30px;padding:3px 8px"><option value="">None</option>${S.strats.filter(s => s.params.tickers.includes(c.sym) && s.stage !== 'retired').map(s => `<option value="${s.id}" ${c.strat === s.id ? 'selected' : ''}>${esc(s.name)} · ${STAGES[s.stage] || s.stage}</option>`).join('')}</select>
-          <span style="display:inline-flex;align-items:center;gap:4px"><button class="chip" data-ctog="ema" aria-pressed="${!!c.ema}">EMA</button><input type="number" id="c-emalen" min="2" max="400" value="${c.emaLen}" aria-label="EMA length" style="width:62px;min-height:28px;padding:2px 6px"></span>${[['fvg', 'FVG'], ['sd', 'Supply / demand'], ['prof', 'Volume profile'], ['cvd', 'Delta'], ['wt', 'WaveTrend'], ['rth', 'Regular hours only']].map(([k, l]) => `<button class="chip" data-ctog="${k}" aria-pressed="${!!c[k]}">${l}</button>`).join('')}
+          <span style="display:inline-flex;align-items:center;gap:4px"><button class="chip" data-ctog="ema" aria-pressed="${!!c.ema}">EMA</button><input type="number" id="c-emalen" min="2" max="400" value="${c.emaLen}" aria-label="EMA length" style="width:62px;min-height:28px;padding:2px 6px"></span>${[['fvg', 'FVG'], ['sd', 'Supply / demand'], ['prof', 'Volume profile'], ['cvd', 'Delta'], ['wt', 'WaveTrend'], ['walls', 'Walls'], ['rth', 'Regular hours only']].map(([k, l]) => `<button class="chip" data-ctog="${k}" aria-pressed="${!!c[k]}">${l}</button>`).join('')}
           <div style="flex:1"></div>${c.strat ? '<span><span class="sw" style="border-top:2px solid #E7C35A"></span>Strategy lines · B breakout · R retest · C confirmation</span>' : ''}${c.ema ? `<span><span class="sw" style="border-top:2px solid #5FD4C4"></span>EMA ${c.emaLen}</span>` : ''}<span><span class="sw" style="border-top:2px solid var(--vwap)"></span>VWAP</span><span><span class="sw" style="border-top:1px dashed #93A0B2"></span>PDH / PDL / PDC · ONH / ONL</span></div>
         ${S.rp && S.rp.hm ? `<div class="dual ${S.rpLayout === 'stack' ? 'stack' : ''}"><div class="chartbox"><canvas id="cv" style="height:600px"></canvas></div>
           <div class="heatbox"><div class="legend" style="padding:0 0 8px"><b style="color:var(--text)">Order book</b><span>${S.rp.hm.step} s columns · book carried beyond the 10 levels until traded through</span><div style="flex:1"></div>
@@ -675,7 +875,7 @@ function replayBar() {
 }
 async function loadChart() {
   const c = S.chart, r = S.rp;
-  const q = r ? `sym=${c.sym}&tf=${c.tf <= 5 ? c.tf : 1}&days=1&end=${r.day}${c.strat ? '&strat=' + c.strat : ''}` : `sym=${c.sym}&tf=${c.tf}&days=${c.days}${c.rth ? '&rth=1' : ''}${c.strat ? '&strat=' + c.strat : ''}`;
+  const q = r ? `sym=${c.sym}&tf=${c.tf <= 5 ? c.tf : 1}&days=1&end=${r.day}${c.strat ? '&strat=' + c.strat : ''}` : `sym=${c.sym}&tf=${c.tf}&days=${c.days}${c.rth ? '&rth=1' : ''}${c.walls ? '&walls=1' : ''}${c.strat ? '&strat=' + c.strat : ''}`;
   let d;
   try { d = await api('/chart?' + q); } catch (e) { toast(e.message); return; }
   S.cd = d;
@@ -704,7 +904,7 @@ function fpDelta() {
 function drawChart(keep) {
   const c = S.chart, d = S.cd, r = S.rp;
   if (!S.ch || !d) return;
-  S.ch.set({ bars: d.bars, vwap: d.vwap, levels: d.levels, marks: d.marks || [], overlay: d.overlay, showEMA: c.ema, emaLen: c.emaLen, showFVG: c.fvg, showSD: c.sd, sdZones: d.zones, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
+  S.ch.set({ bars: d.bars, vwap: d.vwap, levels: d.levels, walls: c.walls ? d.walls : null, marks: d.marks || [], overlay: d.overlay, showEMA: c.ema, emaLen: c.emaLen, showFVG: c.fvg, showSD: c.sd, sdZones: d.zones, tf: d.tf, showWT: c.wt, showCVD: c.cvd, showProfile: c.prof, replay: r ? r.k : null, fpDelta: fpDelta() }, keep);
   const n = r ? r.k + 1 : d.bars.length, B = d.bars, last = B[n - 1], day = last[6];
   const sess = B.slice(0, n).filter(b => b[6] === day), lv = d.levels[day] || {};
   const pc = lv.pdc, chg = pc ? last[4] - pc : null;
@@ -810,7 +1010,9 @@ document.addEventListener('click', async e => {
     if (ds.csym) { S.chart.sym = ds.csym; S.chart.strat = ''; S.rp = null; return vChart(); }
     if (ds.ctf) { S.chart.tf = +ds.ctf; if (S.rp) { S.rp.k = null; S.rp.delta = null; } return vChart(); }
     if (ds.cdays) { S.chart.days = +ds.cdays; return vChart(); }
-    if (ds.ctog) { S.chart[ds.ctog] = !S.chart[ds.ctog]; el.setAttribute('aria-pressed', S.chart[ds.ctog]); if (ds.ctog === 'rth') return loadChart(); return drawChart(true); }
+    if (ds.lvtab) { S.lv.tab = ds.lvtab; return vLevels(); }
+    if (ds.lvsym) { lvRead(); S.lv.sym = ds.lvsym; return vLevels(); }
+    if (ds.ctog) { S.chart[ds.ctog] = !S.chart[ds.ctog]; el.setAttribute('aria-pressed', S.chart[ds.ctog]); if (ds.ctog === 'rth' || ds.ctog === 'walls') return loadChart(); return drawChart(true); }
     if (ds.rpspeed) { S.rp.speed = +ds.rpspeed; return rpPlay(S.rp.playing); }
     if (ds.rpview) { S.rpView = ds.rpview; return vChart(); }
     if (ds.hmspan) { S.hmSpan = +ds.hmspan; document.querySelectorAll('[data-hmspan]').forEach(b => b.setAttribute('aria-pressed', b === el)); return drawChart(true); }
@@ -834,6 +1036,7 @@ document.addEventListener('click', async e => {
       case 'srch-start': case 'srch-stop': case 'srch-restart': S.srch = await api(`/strategies/${S.cur.id}/search`, { method: 'POST', body: { action: act.slice(5) } }); $('#srch').innerHTML = srchHtml(S.cur, S.srch, !!(S.cur.paper || {}).on, true); toast(act === 'srch-stop' ? 'Stopping: the run in progress ends within a minute.' : act === 'srch-start' ? 'Optimizer started.' : 'Results cleared.'); if (S.srch.on) pollSearch(S.cur.id); break;
       case 'rename': { const nm = ($('#s-name').value || '').trim(); if (!nm) { toast('Give it a name.'); break; } await api('/strategies/' + S.cur.id, { method: 'PUT', body: { name: nm } }); S.strats = null; toast('Renamed.'); vStrategy(S.cur.id); break; }
       case 'duplicate': { const c = await api('/strategies', { method: 'POST', body: { setup: S.cur.setup, name: S.cur.name + ' (copy)', params: { ...S.cur.params } } }); toast('Copy created: change its rules, then run the study.'); location.hash = '#strategy/' + c.id; break; }
+      case 'lv-go': lvRead(); await lvLoad(); break;
       case 'make-control': { const c = await api('/strategies', { method: 'POST', body: { setup: 'biaspull', name: 'No-FVG control of ' + S.cur.name, params: { ...S.cur.params } } }); toast('Control created: run its study.'); location.hash = '#strategy/' + c.id; break; }
       case 'run-study': case 'run-valid': case 'run-opt': await api(`/strategies/${S.cur.id}/run`, { method: 'POST', body: { step: { 'run-study': 'study', 'run-valid': 'validate', 'run-opt': 'optimize' }[act] } }); if (act === 'run-opt') toast('Optimizing: each setting is a full study, this can take several minutes.'); vStrategy(S.cur.id); break;
       case 'save-rules': await api('/strategies/' + S.cur.id, { method: 'PUT', body: { params: readParams($('#rules')) } }); toast('Rules saved: run the study again.'); vStrategy(S.cur.id); break;

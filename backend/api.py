@@ -181,6 +181,9 @@ def chart(sub, claims, body, q):
         raise BadRequest("tf and days must be numbers.")
     end = _day(q["end"], "end") if q.get("end") else None
     out = futdata.chart(sym, tf, days, end, rth_only=q.get("rth") == "1")
+    if q.get("walls") == "1" and out["days"]:
+        import walls
+        out["walls"] = walls.chart_levels(sym, out["days"], q)
     if q.get("strat") and out["days"]:
         try:
             out["marks"] = strategy.marks(sub, q["strat"], sym, out["days"][0], out["days"][-1])
@@ -188,6 +191,36 @@ def chart(sub, claims, body, q):
             out["stratTf"] = strategy.get(sub, q["strat"])["params"].get("tf")
         except NotFound:
             out["marks"] = []
+    return out
+
+
+@route("GET", "/walls")
+def walls_view(sub, claims, body, q):
+    import walls
+    sym = futdata.check_sym(q.get("sym") or "NQ")
+    day = _day(q["day"], "day") if q.get("day") else futdata.session_of(futdata.last_bar_time(sym) or now_ny().strftime("%Y-%m-%dT%H:%M"))
+    out = walls.density(sym, day, q)
+    if not out:
+        raise NotFound("Not enough stored sessions before that day (at least 35 regular-hours sessions).")
+    out["sym"] = sym
+    return out
+
+
+@route("GET", "/cycles")
+def cycles_view(sub, claims, body, q):
+    import cycles
+    out = cycles.build(futdata.check_sym(q.get("sym") or "NQ"), q)
+    if not out:
+        raise NotFound("Not enough candles: download more history on the Data page.")
+    return out
+
+
+@route("GET", "/confluence")
+def confluence_view(sub, claims, body, q):
+    import confluence
+    out = confluence.build(futdata.check_sym(q.get("sym") or "NQ"), q)
+    if not out:
+        raise NotFound("No candles stored yet.")
     return out
 
 

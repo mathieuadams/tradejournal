@@ -634,6 +634,26 @@ def test_29_more_ideas():
     assert ts and ts[-1]["in"] == "2026-01-30T16:00" and ts[-1]["out"] == "2026-02-04T16:00" and ts[-1]["e"] == 102 and ts[-1]["x"] == 105, ts
 
 
+def test_30_levels_tools():
+    import confluence
+    import cycles
+    import futdata
+    import walls
+    day = futdata.daily("NQ")[-1][0]
+    w = walls.density("NQ", day, {"lookback": "60"})
+    ups = {x["k"]: x["pct"] for x in w["levels"] if x["side"] == "up"}
+    assert ups["peak"] < ups["inner"] < ups["true"] < ups["over"] and w["sample"] == 60 and len(w["grid"]) == 78 and w["path"]
+    assert w["fan"]["up"][0]["label"] == "Max" and w["odds"]["up"][0] == 100.0 and w["stats"]["lines"]
+    assert walls.levels("NQ", day, {"lookback": "60", "match": "weekday"})["sample"] <= 60
+    c = cycles.build("NQ", {"tf": "60", "days": "40"})
+    assert c["vector"] and c["sd"] and len(c["sd"]) == len(c["candles"]) and all(m["text"][0] in "HL" for m in c["marks"])
+    cf = confluence.build("NQ", {"tol": "20"})
+    assert cf["levels"] and all(z["lo"] <= z["hi"] for z in cf["clusters"]) and all(z["score"] == len(set(x["src"] for x in z["levels"])) for z in cf["clusters"])
+    for path, q in (("/walls", {"sym": "NQ", "day": day}), ("/cycles", {"sym": "ES", "tf": "15"}), ("/confluence", {"sym": "NQ"}), ("/chart", {"sym": "NQ", "walls": "1"})):
+        st, r = call("GET", path, None, q)
+        assert st == 200, (path, r)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

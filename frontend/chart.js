@@ -156,6 +156,15 @@
           g.fillStyle = c; g.textAlign = 'left'; g.fillText(lab, X(i0) + 3, y - 7);
         });
       });
+      // walls & peak zone (history-based), per session
+      if (d.walls) Object.entries(sessRange).forEach(([s, [i0, i1]]) => {
+        ((d.walls || {})[s] || []).forEach(x => {
+          if (x.price < lo || x.price > hi) return;
+          const col = { peak: 'rgba(76,195,138,0.9)', inner: 'rgba(220,226,235,0.45)', true: 'rgba(232,237,243,0.85)', over: 'rgba(242,153,74,0.9)' }[x.k];
+          const y = Math.round(Y(x.price)) + 0.5; g.strokeStyle = col; g.setLineDash(x.k === 'peak' ? [2, 2] : [6, 4]); g.beginPath(); g.moveTo(X(i0), y); g.lineTo(X(i1), y); g.stroke(); g.setLineDash([]);
+          g.fillStyle = col; g.textAlign = 'right'; g.fillText({ peak: 'Peak', inner: 'Inner', true: 'Wall', over: 'Overflow' }[x.k], X(i1) - 3, y - 4);
+        });
+      });
       // the strategy's own lines: opening ranges (box, then dashed to the last entry time) and its EMA
       (this.ovRanges || []).forEach(r => {
         if (r.i2 < a || r.i0 >= b) return;
