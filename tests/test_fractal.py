@@ -54,12 +54,18 @@ def test_against_tradewellx():
     assert not bad, bad
 
 
+def test_levels_never_share_a_wave():
+    up = [0.001 * k for k in range(1, 15)]                          # 14 waves, like the QQQ example
+    lv = fractal.levels(up, fractal.BULL_P)
+    assert lv == sorted(set(lv)) and lv[-1] == max(up), lv          # strictly outward; 5% on the largest move
+
+
 def test_clusters_and_odds():
     waves = [{"side": "H", "move": m, "count": c} for m, c in ((0.01, 1), (0.02, 2), (0.03, 2), (0.04, 5))] + \
             [{"side": "L", "move": m, "count": c} for m, c in ((0.01, 1), (0.05, 3))]
     cl = fractal.clusters(waves, 100.0)
     bull, bear = {x["p"]: x["price"] for x in cl["bull"]}, {x["p"]: x["price"] for x in cl["bear"]}
-    assert abs(bull[0.50] - 103.0) < 1e-9 and abs(bear[0.50] - 99.0) < 1e-9 and abs(bull[0.05] - 104.0) < 1e-9
+    assert abs(bull[0.50] - 103.0) < 1e-9 and abs(bear[0.50] - 95.0) < 1e-9 and abs(bull[0.05] - 104.0) < 1e-9
     o = {r["count"]: r for r in fractal.odds(waves, "H")}
     assert o[2]["n"] == 2 and abs(o[2]["atLeast"] - 0.75) < 1e-9 and abs(o[5]["atLeast"] - 0.25) < 1e-9
 
@@ -71,6 +77,9 @@ def _check_view(r, wave):
     assert all(bear[p] <= r["pivot"] <= bull[p] for p in (0.80, 0.50, 0.20, 0.10))
     assert r["oddsH"][0]["atLeast"] == 1.0 and r["oddsL"][0]["atLeast"] == 1.0
     assert r["params"]["wave"] == wave
+    st = r["steps"]
+    assert st and all(a["i1"] < b["i0"] for a, b in zip(st, st[1:])) and st[-1]["i1"] == len(r["bars"]) - 1
+    assert all(x["bull"][0]["price"] >= x["pivot"] >= x["bear"][0]["price"] for x in st)
 
 
 def test_alpaca_qqq():
@@ -82,6 +91,12 @@ def test_alpaca_qqq():
     assert st == 200, r
     assert len({b[0][:10] for b in r["bars"]}) == 10 and all("09:30" <= b[0][11:16] < "16:00" for b in r["bars"])
     _check_view(r, 10)
+    st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "7", "days": "50", "agg": "60"})
+    assert st == 200, r
+    hrs = sorted({b[0][11:16] for b in r["bars"]})
+    assert hrs == ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"], hrs
+    assert len({b[0][:10] for b in r["bars"]}) == 50 and len(r["bars"]) == 350, len(r["bars"])
+    _check_view(r, 7)
     st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "500"})
     assert st == 400
 
@@ -100,6 +115,7 @@ def test_databento_nq():
 
 if __name__ == "__main__":
     test_against_tradewellx()
+    test_levels_never_share_a_wave()
     test_clusters_and_odds()
     test_alpaca_qqq()
     test_databento_nq()

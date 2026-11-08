@@ -471,7 +471,7 @@ function zbar(z) {
 }
 
 /* ---------- Fractal: the TradeWellX Wave [N] rebuild (backend/fractal.py) ---------- */
-S.fx = { sym: 'QQQ', wave: 10, days: 10, agg: 15, rth: false };
+S.fx = { sym: 'QQQ', wave: 10, days: 10, agg: 15, rth: false, lv: 'steps' };
 async function vFractal() {
   const f = S.fx, alp = await api('/alpaca');
   const ctl = `<div class="form" style="align-items:end">
@@ -507,7 +507,8 @@ async function fxLoad() {
         <div><div class="k">Direction</div><div class="v ${last.direction > 0 ? 'win' : last.direction < 0 ? 'loss' : ''}">${last.direction > 0 ? '+1 long' : last.direction < 0 ? '−1 short' : '0'}</div></div>
         <div><div class="k">Current wave (counted, like TradeWellX)</div><div class="v">${cur ? `${cur.side}${cur.count} · ${cur.bars} bars` : '—'}</div></div>
         <div><div class="k">Waves</div><div class="v">${r.oddsH.reduce((a, o) => a + o.n, 0)} H · ${r.oddsL.reduce((a, o) => a + o.n, 0)} L</div></div>
-      </div><div style="margin-top:14px">${fxChart(r)}</div></div></section>
+      </div><div style="margin-top:14px;display:flex;gap:8px;align-items:center"><span class="dim" style="font-size:12px">Cluster levels</span><div class="seg">${[['steps', 'Step with the pivot'], ['current', 'Current only']].map(([k, l]) => `<button data-fxlv="${k}" aria-pressed="${S.fx.lv === k}">${l}</button>`).join('')}</div></div>
+      <div id="fx-chart" style="margin-top:8px">${fxChart(r)}</div></div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">pivot × (1 ± the move that p of past waves reached)</span></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">From pivot</th></tr></thead><tbody>
@@ -532,17 +533,26 @@ function fxChart(r) {
   const X = i => (i + 0.5) * (W - padR) / n, Y = p => 10 + (hi - p) / (hi - lo || 1) * (H - 20), bw = Math.max(1, (W - padR) / n * 0.6);
   const step = k => { let d = ''; r.series.forEach((s, i) => { const v = s[k]; if (v == null) return; d += (d ? `L${X(i) - (W - padR) / n / 2},${Y(v)}` : `M${X(i) - (W - padR) / n / 2},${Y(v)}`) + `L${X(i) + (W - padR) / n / 2},${Y(v)}`; }); return d; };
   const candles = r.bars.map((b, i) => { const up = b[4] >= b[1], c = up ? 'var(--buyT)' : 'var(--sellT)'; return `<line x1="${X(i)}" x2="${X(i)}" y1="${Y(b[2])}" y2="${Y(b[3])}" stroke="${c}"/><rect x="${X(i) - bw / 2}" y="${Y(Math.max(b[1], b[4]))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b[1]) - Y(b[4])))}" fill="${c}"/>`; }).join('');
-  const bands = [...r.clusters.bull.map(x => [x, '#2E7D4F']), ...r.clusters.bear.map(x => [x, '#B4443C'])].filter(([x]) => x.price >= lo && x.price <= hi)
-    .sort((a, b) => Y(a[0].price) - Y(b[0].price));
+  const G = '#2E7D4F', R = '#B4443C', cw = (W - padR) / n;
+  const tag = x => `${Math.round(x.p * 100)}% ${sgn(x.move * 100, 2, '%')} ${fmt(x.price)}`;
+  const lastSeg = (r.steps || [])[r.steps.length - 1];
+  const right = S.fx.lv === 'steps' && lastSeg ? [...lastSeg.bull.map(x => [x, G]), ...lastSeg.bear.map(x => [x, R])] : [...r.clusters.bull.map(x => [x, G]), ...r.clusters.bear.map(x => [x, R])];
+  const vis = right.filter(([x]) => x.price >= lo && x.price <= hi).sort((a, b) => Y(a[0].price) - Y(b[0].price));
   let ly = -99;
-  const bandSvg = bands.map(([x, c]) => { const y = Y(x.price), t = Math.max(y + 4, ly + 12); ly = t;
-    return `<line x1="0" x2="${W - padR}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="6" opacity=".35"/><text x="${W - padR + 4}" y="${t}" font-size="11" fill="${c}">${Math.round(x.p * 100)}%@${fmt(x.price)}</text>`; }).join('');
+  const labelSvg = vis.map(([x, c]) => { const y = Y(x.price), t = Math.max(y + 4, ly + 12); ly = t; return `<text x="${W - padR + 4}" y="${t}" font-size="10.5" fill="${c}">${tag(x)}</text>`; }).join('');
+  let bandSvg;
+  if (S.fx.lv === 'steps') {
+    bandSvg = (r.steps || []).map(sg => [...sg.bull.map(x => [x, G]), ...sg.bear.map(x => [x, R])].filter(([x]) => x.price >= lo && x.price <= hi)
+      .map(([x, c]) => `<line x1="${sg.i0 * cw}" x2="${(sg.i1 + 1) * cw}" y1="${Y(x.price)}" y2="${Y(x.price)}" stroke="${c}" stroke-width="${x.p >= 0.5 ? 2.5 : 1.5}" opacity=".75"><title>${tag(x)} · pivot ${fmt(sg.pivot)} · from ${sg.nH} H / ${sg.nL} L waves</title></line>`).join('')).join('');
+  } else {
+    bandSvg = vis.map(([x, c]) => `<line x1="0" x2="${W - padR}" y1="${Y(x.price)}" y2="${Y(x.price)}" stroke="${c}" stroke-width="6" opacity=".35"/>`).join('');
+  }
   const labels = r.series.map((s, i) => s.peakToTrough ? (s.peakToTrough > 0 ? `<text x="${X(i)}" y="${Y(r.bars[i][2]) - 6}" font-size="10" text-anchor="middle" fill="var(--text)">${s.peakToTrough}H</text>` : `<text x="${X(i)}" y="${Y(r.bars[i][3]) + 13}" font-size="10" text-anchor="middle" fill="var(--text)">${-s.peakToTrough}L</text>`) : '').join('');
   const days = r.bars.map((b, i) => i && b[0].slice(0, 10) !== r.bars[i - 1][0].slice(0, 10) ? `<line x1="${X(i) - (W - padR) / n / 2}" x2="${X(i) - (W - padR) / n / 2}" y1="0" y2="${H}" stroke="#E5C100" opacity=".35"/>` : '').join('');
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${bandSvg}${candles}
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${bandSvg}${labelSvg}${candles}
     <path d="${step('pivot')}" fill="none" stroke="#E8E8E8" stroke-width="1.5"/><path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}
     <text x="4" y="${Y(r.pivot) - 4}" font-size="11" fill="#E8E8E8">Pivot ${fmt(r.pivot)}</text></svg>
-    <div class="note">Purple: MA (the vector). White: pivot. Bands: percent-probable clusters. Yellow lines: new day.</div>`;
+    <div class="note">Purple: MA (the vector). White: pivot. Green / red: percent-probable levels (${S.fx.lv === 'steps' ? 'recalculated at each pivot change from the waves finished before it; hover a line for its detail' : 'current pivot, from all the waves loaded'}). Yellow lines: new day.</div>`;
 }
 
 /* ---------- Data (Databento) ---------- */
@@ -1096,6 +1106,7 @@ document.addEventListener('click', async e => {
     if (ds.csym) { S.chart.sym = ds.csym; S.chart.strat = ''; S.rp = null; return vChart(); }
     if (ds.ctf) { S.chart.tf = +ds.ctf; if (S.rp) { S.rp.k = null; S.rp.delta = null; } return vChart(); }
     if (ds.cdays) { S.chart.days = +ds.cdays; return vChart(); }
+    if (ds.fxlv) { S.fx.lv = ds.fxlv; document.querySelectorAll('[data-fxlv]').forEach(b => b.setAttribute('aria-pressed', b === el)); $('#fx-chart').innerHTML = fxChart(S.fxR); return; }
     if (ds.lvtab) { S.lv.tab = ds.lvtab; return vLevels(); }
     if (ds.lvsym) { lvRead(); S.lv.sym = ds.lvsym; return vLevels(); }
     if (ds.ctog) { S.chart[ds.ctog] = !S.chart[ds.ctog]; el.setAttribute('aria-pressed', S.chart[ds.ctog]); if (ds.ctog === 'rth' || ds.ctog === 'walls') return loadChart(); return drawChart(true); }
@@ -1110,7 +1121,7 @@ document.addEventListener('click', async e => {
         r.bars.forEach((b, i) => { const x = r.series[i]; rows.push([b[0], b[1], b[2], b[3], b[4], b[5], x.ma, x.pivot, x.slowMa, x.direction, x.peakToTrough ?? '', x.barsElapsed ?? '', x.pivot ? (b[4] / x.pivot).toFixed(6) : '']); });
         const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }));
         a.download = `${r.params.sym}_wave${r.params.wave}_${r.params.agg}m_${r.params.days}d.csv`; a.click(); URL.revokeObjectURL(a.href); break; }
-      case 'fx-load': S.fx = { sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
+      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }
       case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;
       case 'alp-test': el.disabled = true; await api('/alpaca/test', { method: 'POST' }); toast('Alpaca answered.'); vData(); break;

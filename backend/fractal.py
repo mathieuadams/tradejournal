@@ -104,21 +104,37 @@ def compute(bars, wave=10, win=0):
             "pivot": pivot[-1] if n else None, "close": c[-1] if n else None}
 
 
-def survival(values, p):
-    """The move that a fraction p of `values` reached or beat: the nearest wave's own move, no interpolation
-    (rank (1 - p) x (n - 1), rounded). Matches TradeWellX's red levels to within ~0.05% on QQQ 10/26-11/06/2026."""
+def _rank(n, p):
+    return min(n - 1, max(0, round((1 - p) * (n - 1))))
+
+
+def levels(values, ps):
+    """For each p (inner to outer: 80, 50, 20, 10, 5 / 2 %), the move that a fraction p of `values` reached or beat:
+    the nearest wave's own move, no interpolation (rank (1 - p) x (n - 1), rounded). Two levels never share a wave:
+    an outer level that lands on the same wave as the one inside it takes the next wave out.
+    Matches TradeWellX on QQQ 10/26-11/06/2026 (Wave 10, 15 min) to within ~0.05%."""
     v = sorted(values)
-    if not v:
-        return None
-    return v[min(len(v) - 1, max(0, round((1 - p) * (len(v) - 1))))]
+    out, last = [], -1
+    for p in ps:
+        i = _rank(len(v), p)
+        if i <= last:
+            i = min(len(v) - 1, last + 1)
+        out.append(v[i])
+        last = i
+    return out
+
+
+def survival(values, p):
+    v = sorted(values)
+    return v[_rank(len(v), p)] if v else None
 
 
 def clusters(waves, pivot):
     """Green (bull) and red (bear) percent-probable levels around the pivot."""
     up = [w["move"] for w in waves if w["side"] == "H"]
     dn = [w["move"] for w in waves if w["side"] == "L"]
-    bull = [{"p": p, "move": survival(up, p), "price": pivot * (1 + survival(up, p))} for p in BULL_P] if up else []
-    bear = [{"p": p, "move": -survival(dn, p), "price": pivot * (1 - survival(dn, p))} for p in BEAR_P] if dn else []
+    bull = [{"p": p, "move": m, "price": pivot * (1 + m)} for p, m in zip(BULL_P, levels(up, BULL_P))] if up else []
+    bear = [{"p": p, "move": -m, "price": pivot * (1 - m)} for p, m in zip(BEAR_P, levels(dn, BEAR_P))] if dn else []
     return {"bull": bull, "bear": bear}
 
 
@@ -133,8 +149,26 @@ def odds(waves, side):
     return out
 
 
+def steps(r, min_waves=4):
+    """The cluster levels as they stood during each pivot: for every run of bars with the same pivot, the levels from
+    the waves finished before it started (what was knowable then). i0 / i1: first / last bar of the run in `series`."""
+    S, out, i = r["series"], [], 0
+    done = [w for w in r["waves"] if not w.get("open")]
+    while i < len(S):
+        p, j = S[i]["pivot"], i
+        while j + 1 < len(S) and S[j + 1]["pivot"] == p:
+            j += 1
+        prior = [w for w in done if w["end"] < S[i]["t"]]
+        nh, nl = sum(w["side"] == "H" for w in prior), sum(w["side"] == "L" for w in prior)
+        if p and nh >= min_waves and nl >= min_waves:
+            out.append({"i0": i, "i1": j, "pivot": p, "nH": nh, "nL": nl, **clusters(prior, p)})
+        i = j + 1
+    return out
+
+
 def analyze(bars, wave=10, win=0):
     r = compute(bars, wave, win)
     r["clusters"] = clusters(r["waves"], r["pivot"]) if r["pivot"] else {"bull": [], "bear": []}
     r["oddsH"], r["oddsL"] = odds(r["waves"], "H"), odds(r["waves"], "L")
+    r["steps"] = steps(r)
     return r

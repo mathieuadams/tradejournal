@@ -128,7 +128,7 @@ def bars(sub, sym, days=10, tf=15, rth=True):
     start = ny_to_utc(datetime.combine((utc_to_ny(end) - timedelta(days=days * 2 + 7)).date(), datetime.min.time()))
     out, token = [], None
     for _ in range(50):
-        r = _get(c, f"stocks/{sym}/bars", {"timeframe": f"{tf}Min", "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        r = _get(c, f"stocks/{sym}/bars", {"timeframe": f"{tf if tf < 60 else 30}Min", "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                            "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 10000, "adjustment": "raw",
                                            "feed": feed, "sort": "asc", "page_token": token})
         for b in r.get("bars") or []:
@@ -141,4 +141,8 @@ def bars(sub, sym, days=10, tf=15, rth=True):
         if not token:
             break
     keep = sorted({b[0][:10] for b in out})[-days:]
-    return [b for b in out if b[0][:10] in keep]
+    out = [b for b in out if b[0][:10] in keep]
+    if tf == 60:                                      # Alpaca's hours start on the clock hour; TradeWellX's at 09:30
+        import futdata
+        out = futdata.agg(out, 60)
+    return out
