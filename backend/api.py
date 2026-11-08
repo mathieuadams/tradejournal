@@ -120,9 +120,9 @@ def fractal_view(sub, claims, body, q):
     import fractal
     wave = _int(q.get("wave"), "Wave", 2, 100, 10)
     days = _int(q.get("days"), "Days to load", 1, 60, 10)
-    # Stats days: the history the levels and wave odds are drawn from. TradeWellX uses waves from before the window it
-    # shows (its levels at 10/30 come from moves no wave on screen had made), so this is separate from Days to load.
-    stats = _int(q.get("stats"), "Stats days", 1, 120, max(days, 30))
+    # Stats days: the history the levels and wave odds are drawn from. TradeWellX uses the waves of the window it shows
+    # (its ClusterWave marks), so this defaults to Days to load; a longer history can be set to compare.
+    stats = _int(q.get("stats"), "Stats days", 1, 120, days)     # TradeWellX: the waves of the window itself
     stats = max(stats, days)
     agg = _int(q.get("agg"), "Aggregation", 1, 60, 15)
     sym = (q.get("sym") or "QQQ").strip().upper()

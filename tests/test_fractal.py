@@ -54,10 +54,18 @@ def test_against_tradewellx():
     assert not bad, bad
 
 
-def test_levels_never_share_a_wave():
-    up = [0.001 * k for k in range(1, 15)]                          # 14 waves, like the QQQ example
+def test_levels_match_tradewellx_clusternode():
+    # TradeWellX ClusterWave marks (QQQ Wave 10, 15 min, 10 days, 11/06/2026, pivot 658.06): the 14 L waves' extremes
+    # at today's pivot, and what ClusterNode(-p) returned for each level
+    piv = 658.06
+    marks = [647.32, 657.48, 657.48, 657.62, 655.74, 656.32, 657.04, 651.82, 656.46, 651.09, 654.72, 613.21, 642.82, 630.05]
+    want = {0.80: 657.48, 0.50: 655.74, 0.20: 647.32, 0.10: 630.05, 0.02: 613.21}
+    got = fractal.levels([1 - m / piv for m in marks], fractal.BEAR_P)
+    for p, m in zip(fractal.BEAR_P, got):
+        assert abs(piv * (1 - m) - want[p]) < 0.006, (p, piv * (1 - m), want[p])
+    up = [0.001 * k for k in range(1, 15)]                          # 14 H waves: 10% and 5% land on the same mark
     lv = fractal.levels(up, fractal.BULL_P)
-    assert lv == sorted(set(lv)) and lv[-1] == max(up), lv          # strictly outward; 5% on the largest move
+    assert lv[3] == lv[4] == up[-2] and lv == sorted(lv)
 
 
 def test_macro_trend_and_stdev():
@@ -108,7 +116,7 @@ def test_clusters_and_odds():
             [{"side": "L", "move": m, "count": c} for m, c in ((0.01, 1), (0.05, 3))]
     cl = fractal.clusters(waves, 100.0)
     bull, bear = {x["p"]: x["price"] for x in cl["bull"]}, {x["p"]: x["price"] for x in cl["bear"]}
-    assert abs(bull[0.50] - 103.0) < 1e-9 and abs(bear[0.50] - 95.0) < 1e-9 and abs(bull[0.05] - 104.0) < 1e-9
+    assert abs(bull[0.50] - 102.0) < 1e-9 and abs(bear[0.50] - 99.0) < 1e-9 and abs(bull[0.05] - 104.0) < 1e-9
     o = {r["count"]: r for r in fractal.odds(waves, "H")}
     assert o[2]["n"] == 2 and abs(o[2]["atLeast"] - 0.75) < 1e-9 and abs(o[5]["atLeast"] - 0.25) < 1e-9
 
@@ -165,7 +173,7 @@ def test_databento_nq():
 
 if __name__ == "__main__":
     test_against_tradewellx()
-    test_levels_never_share_a_wave()
+    test_levels_match_tradewellx_clusternode()
     test_macro_trend_and_stdev()
     test_frozen_side()
     test_bases_in_a_drop()

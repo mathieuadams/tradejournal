@@ -141,24 +141,16 @@ def compute(bars, wave=10, win=0):
 
 
 def _rank(n, p):
-    # halves round up (like the chart's Math.round), not Python's round-half-to-even
-    return min(n - 1, max(0, int((1 - p) * (n - 1) + 0.5 + 1e-9)))
+    """TradeWellX ClusterNode: the waves' marks sorted from the largest move down, take mark round(p x n) (halves up).
+    Index into the moves sorted smallest first. Two levels can land on the same mark (TradeWellX shows that too)."""
+    return min(n - 1, max(0, n - 1 - int(p * n + 0.5 + 1e-9)))
 
 
 def levels(values, ps):
-    """For each p (inner to outer: 80, 50, 20, 10, 5 / 2 %), the move that a fraction p of `values` reached or beat:
-    the nearest wave's own move, no interpolation (rank (1 - p) x (n - 1), rounded). Two levels never share a wave:
-    an outer level that lands on the same wave as the one inside it takes the next wave out.
-    Matches TradeWellX on QQQ 10/26-11/06/2026 (Wave 10, 15 min) to within ~0.05%."""
+    """For each p, the move of the wave TradeWellX's ClusterNode(p) picks. Verified against ClusterNode() output on QQQ
+    Wave 10 / 15 min / 10 days at 11/06/2026 (all 5 red levels to the cent, from the 14 L wave marks)."""
     v = sorted(values)
-    out, last = [], -1
-    for p in ps:
-        i = _rank(len(v), p)
-        if i <= last:
-            i = min(len(v) - 1, last + 1)
-        out.append(v[i])
-        last = i
-    return out
+    return [v[_rank(len(v), p)] for p in ps] if v else []
 
 
 def survival(values, p):
@@ -207,11 +199,11 @@ def steps(r, min_waves=4):
 
 
 def _fresh(r, k, idx):
-    """Levels as computed at bar k: waves finished before k, green from min(pivot, MA), red from max."""
+    """Levels at bar k: the %s from every wave (TradeWellX ClusterWave marks), green from min(pivot, MA), red from max."""
     sk = r["series"][k]
     if not sk["pivot"]:
         return None
-    done = [w for w in r["waves"] if not w.get("open") and idx.get(w["end"], -1) < k]   # not on screen = earlier
+    done = r["waves"]           # TradeWellX: every wave of the stats history incl. the open one, the same %s all replay
     up = [w["move"] for w in done if w["side"] == "H"]
     dn = [w["move"] for w in done if w["side"] == "L"]
     piv, ma = sk["pivot"], sk["ma"] if sk["ma"] is not None else sk["pivot"]

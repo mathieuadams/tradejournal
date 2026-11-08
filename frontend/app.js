@@ -471,7 +471,7 @@ function zbar(z) {
 }
 
 /* ---------- Fractal: the TradeWellX Wave [N] rebuild (backend/fractal.py) ---------- */
-S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 30, agg: 15, rth: false, lv: 'steps', fixed: true, basis: 'pivot' };
+S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 10, agg: 15, rth: false, lv: 'steps', fixed: true, basis: 'pivot' };
 async function vFractal() {
   const f = S.fx, alp = await api('/alpaca');
   const ctl = `<div class="form" style="align-items:end">
@@ -568,9 +568,9 @@ document.addEventListener('change', e => { if (e.target.id === 'fx-next') { S.fx
    Green from min(pivot, MA), red from max(pivot, MA). */
 const FX_BULL = [0.80, 0.50, 0.20, 0.10, 0.05], FX_BEAR = [0.80, 0.50, 0.20, 0.10, 0.02];
 function fxRank(vals, ps) {
-  const v = [...vals].sort((a, b) => a - b), out = []; let last = -1;
-  ps.forEach(p => { let i = Math.min(v.length - 1, Math.max(0, Math.round((1 - p) * (v.length - 1)))); if (i <= last) i = Math.min(v.length - 1, last + 1); out.push(v[i]); last = i; });
-  return out;
+  // TradeWellX ClusterNode: marks sorted from the largest move down, take mark round(p x n) (backend/fractal.py _rank)
+  const v = [...vals].sort((a, b) => a - b), n = v.length;
+  return ps.map(p => v[Math.min(n - 1, Math.max(0, n - 1 - Math.round(p * n)))]);
 }
 function fxFresh(r, k) {
   /* Levels as computed at bar k. Moves: "fixed" (TradeWellX: the %s are worked out once from every finished wave and
@@ -580,7 +580,8 @@ function fxFresh(r, k) {
   if (!piv) return null;
   const last = r.bars.length - 1, cut = S.fx.fixed !== false ? last : k, pt = S.fx.basis === 'peak';
   const up = [], dn = [];
-  r.waves.forEach(w => { const b = I[w.end]; if ((b == null || b < cut) && !w.open) { const m = pt ? w.ptMove : w.move; if (m != null) (w.side === 'H' ? up : dn).push(m); } });
+  const fixed = S.fx.fixed !== false;
+  r.waves.forEach(w => { const b = I[w.end]; if ((b == null || b < cut || (fixed && w.open)) && (fixed || !w.open)) { const m = pt ? w.ptMove : w.move; if (m != null) (w.side === 'H' ? up : dn).push(m); } });
   const ma = s.ma ?? piv, lo = Math.min(piv, ma), hi = Math.max(piv, ma);
   return { pivot: piv, ma, nH: up.length, nL: dn.length, bullBase: lo, bearBase: hi,
     bull: up.length >= 2 ? fxRank(up, FX_BULL).map((m, i) => ({ p: FX_BULL[i], move: m, price: lo * (1 + m) })) : [],
@@ -1278,7 +1279,7 @@ document.addEventListener('click', async e => {
         r.bars.forEach((b, i) => { const x = r.series[i]; rows.push([b[0], b[1], b[2], b[3], b[4], b[5], x.ma, x.pivot, x.slowMa, x.direction, x.peakToTrough ?? '', x.barsElapsed ?? '', x.pivot ? (b[4] / x.pivot).toFixed(6) : '']); });
         const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }));
         a.download = `${r.params.sym}_wave${r.params.wave}_${r.params.agg}m_${r.params.days}d.csv`; a.click(); URL.revokeObjectURL(a.href); break; }
-      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, stats: +$('#fx-stats').value || 30, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
+      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, stats: +$('#fx-stats').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }
       case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;
       case 'alp-test': el.disabled = true; await api('/alpaca/test', { method: 'POST' }); toast('Alpaca answered.'); vData(); break;
