@@ -20,11 +20,12 @@ BULL_P = (0.80, 0.50, 0.20, 0.10, 0.05)
 BEAR_P = (0.80, 0.50, 0.20, 0.10, 0.02)
 
 
-def midline(close, n):
-    """(highest close + lowest close) / 2 over the last n closes; None until n closes exist."""
+def midline(close, n, partial=False):
+    """(highest close + lowest close) / 2 over the last n closes; None until n closes exist, or (partial) over the
+    closes available so far, which is what a chart with no history before its window does (TradeWellX)."""
     out = [None] * len(close)
-    for i in range(n - 1, len(close)):
-        w = close[i - n + 1:i + 1]
+    for i in range(0 if partial else n - 1, len(close)):
+        w = close[max(0, i - n + 1):i + 1]
         out[i] = (max(w) + min(w)) / 2
     return out
 
@@ -54,14 +55,14 @@ def _sign(x, eps=1e-9):
     return 1 if x > eps else -1 if x < -eps else 0
 
 
-def compute(bars, wave=10, win=0):
+def compute(bars, wave=10, win=0, cold=False):
     """Per-bar series and the list of waves. Bars before `start` only warm up the MA and the pivot (TradeWellX loads
     history before the window, so its first wave starts on the window's first bar)."""
     t = [b[0] for b in bars]
     h = [float(b[2]) for b in bars]
     lo = [float(b[3]) for b in bars]
     c = [float(b[4]) for b in bars]
-    ma, slow = midline(c, wave), midline(c, 2 * wave)
+    ma, slow = midline(c, wave, cold), midline(c, 2 * wave, cold)
     n = len(bars)
     pivot, direction = [None] * n, [0] * n
     piv = None
@@ -81,6 +82,8 @@ def compute(bars, wave=10, win=0):
                 slope = s
             if piv is None:
                 piv = ma[i - 1]
+        if piv is None and ma[i] is not None and (i == 0 or ma[i - 1] is None):
+            piv = ma[i]                                # first bar with an MA (a cold start): it is the pivot so far
         if ma[i] is not None:
             if swing_lo is not None and ma[i] < swing_lo:
                 d = -1
@@ -232,11 +235,11 @@ def levels_at(r, k):
     return now
 
 
-def analyze(bars, wave=10, win=0, show=None):
+def analyze(bars, wave=10, win=0, show=None, cold=False):
     """win: first bar of the statistics history (waves start counting there); show: first bar displayed (>= win).
     The series is returned from `show`; the waves (and so the levels and odds) go back to `win`."""
     show = win if show is None else max(show, win)
-    r = compute(bars, wave, win)
+    r = compute(bars, wave, win, cold)
     r["series"] = r["series"][show - win:]
     r["close_at"] = [float(b[4]) for b in bars[show:]]
     r["clusters"] = levels_at(r, len(r["series"]) - 1) if r["pivot"] and r["series"] else {"bull": [], "bear": []}

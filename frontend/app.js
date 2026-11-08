@@ -471,7 +471,7 @@ function zbar(z) {
 }
 
 /* ---------- Fractal: the TradeWellX Wave [N] rebuild (backend/fractal.py) ---------- */
-S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 10, agg: 15, rth: false, lv: 'steps', fixed: true, basis: 'pivot' };
+S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 10, agg: 15, rth: false, lv: 'steps', fixed: true, basis: 'pivot', cold: false };
 async function vFractal() {
   const f = S.fx, alp = await api('/alpaca');
   const ctl = `<div class="form" style="align-items:end">
@@ -481,6 +481,7 @@ async function vFractal() {
       <label class="f" title="History the levels and wave odds are drawn from (TradeWellX uses waves from before the window it shows)">Stats days<input type="number" id="fx-stats" min="1" max="120" value="${f.stats}" style="width:70px"></label>
       <label class="f">Aggregation (min)<select id="fx-agg">${[1, 5, 15, 30, 60].map(n => `<option ${n === f.agg ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <label class="check"><input type="checkbox" id="fx-rth" ${f.rth ? 'checked' : ''}> NQ / ES: regular hours only</label>
+      <label class="check" title="TradeWellX loads no bars before the window: its MA and first pivot start from the window's own bars, which changes the first waves and the cluster marks"><input type="checkbox" id="fx-cold" ${f.cold ? 'checked' : ''}> Start cold, like TradeWellX</label>
       <button class="btn primary" data-act="fx-load">Calculate</button></div>
     <p class="note">QQQ and other stocks come from Alpaca (regular hours${alp.connected ? ', feed ' + esc(alp.feed.toUpperCase()) : ': <a href="#data">connect Alpaca</a>'}). NQ and ES come from the stored Databento candles, all hours like TradeWellX's NQ=F.</p>`;
   view(`${head('Fractal', 'Wave pivots, H/L counts, percent-probable clusters and wave odds, calculated the TradeWellX way.')}
@@ -490,7 +491,7 @@ async function vFractal() {
 async function fxLoad() {
   const f = S.fx, out = $('#fx-out');
   let r;
-  try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&stats=${f.stats}&agg=${f.agg}&rth=${f.rth ? 1 : 0}`); }
+  try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&stats=${f.stats}&agg=${f.agg}&rth=${f.rth ? 1 : 0}&cold=${f.cold ? 1 : 0}`); }
   catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; return; }
   S.fxR = r;
   const last = r.series[r.series.length - 1], pct = (a, b) => b ? sgn((a / b - 1) * 100, 2, '%') : '—';
@@ -1279,7 +1280,7 @@ document.addEventListener('click', async e => {
         r.bars.forEach((b, i) => { const x = r.series[i]; rows.push([b[0], b[1], b[2], b[3], b[4], b[5], x.ma, x.pivot, x.slowMa, x.direction, x.peakToTrough ?? '', x.barsElapsed ?? '', x.pivot ? (b[4] / x.pivot).toFixed(6) : '']); });
         const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }));
         a.download = `${r.params.sym}_wave${r.params.wave}_${r.params.agg}m_${r.params.days}d.csv`; a.click(); URL.revokeObjectURL(a.href); break; }
-      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, stats: +$('#fx-stats').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
+      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, stats: +$('#fx-stats').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked, cold: $('#fx-cold').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }
       case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;
       case 'alp-test': el.disabled = true; await api('/alpaca/test', { method: 'POST' }); toast('Alpaca answered.'); vData(); break;

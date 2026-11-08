@@ -138,13 +138,20 @@ def fractal_view(sub, claims, body, q):
     if not dates:
         raise BadRequest(f"No {sym} bars came back.")
     win_s, win = first(dates[-min(stats, len(dates))]), first(dates[-min(days, len(dates))])
-    if win_s < 2 * wave:
-        win_s = min(2 * wave, win)                     # not enough history: start the stats where the MA exists
-    if win < 2 * wave:
-        raise BadRequest(f"Not enough history before the window for Wave {wave}: lower the wave or the days.")
-    r = fractal.analyze(bars, wave, win_s, show=win)
+    cold = q.get("cold") in ("1", "true")
+    if cold:
+        # TradeWellX: no history before the window; the MA starts from the window's own bars, so its first pivot (and
+        # first wave) differ from a warmed-up chart, and those moves go into its cluster marks
+        bars = bars[min(win_s, win):]
+        win_s, win = 0, win - min(win_s, win)
+    else:
+        if win_s < 2 * wave:
+            win_s = min(2 * wave, win)                 # not enough history: start the stats where the MA exists
+        if win < 2 * wave:
+            raise BadRequest(f"Not enough history before the window for Wave {wave}: lower the wave or the days.")
+    r = fractal.analyze(bars, wave, win_s, show=win, cold=cold)
     r["bars"] = bars[win:]
-    r["params"] = {"sym": sym, "wave": wave, "days": days, "stats": stats, "statsFrom": bars[win_s][0], "agg": agg, "source": source, "rth": rth_only or source == "alpaca",
+    r["params"] = {"sym": sym, "wave": wave, "days": days, "stats": stats, "statsFrom": bars[win_s][0], "cold": cold, "agg": agg, "source": source, "rth": rth_only or source == "alpaca",
                    "feed": alpaca.status(sub)["feed"] if source == "alpaca" else "GLBX.MDP3"}
     return r
 

@@ -68,6 +68,11 @@ def test_levels_match_tradewellx_clusternode():
     assert lv[3] == lv[4] == up[-2] and lv == sorted(lv)
 
 
+def test_cold_midline():
+    m = fractal.midline([1, 5, 3], 10, partial=True)
+    assert m == [1, 3, 3] and fractal.midline([1, 5, 3], 10) == [None, None, None]
+
+
 def test_macro_trend_and_stdev():
     # MacroTrend vs TradeWellX: L from 10/27 15:30 through 10/28, S from 10/29 09:30 (fixture starts 10/26 12:30)
     s = {x["t"]: x for x in fractal.compute(qqq_closes.bars(), 10)["series"]}
@@ -155,6 +160,9 @@ def test_alpaca_qqq():
     assert hrs == ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"], hrs
     assert len({b[0][:10] for b in r["bars"]}) == 50 and len(r["bars"]) == 350, len(r["bars"])
     _check_view(r, 7)
+    st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "10", "agg": "15", "cold": "1"})
+    assert st == 200 and r["params"]["cold"], r
+    assert r["series"][0]["ma"] is not None and r["waves"][0]["start"] == r["bars"][0][0]   # MA from bar 1, first wave on bar 1
     st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "500"})
     assert st == 400
 
@@ -174,6 +182,7 @@ def test_databento_nq():
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_match_tradewellx_clusternode()
+    test_cold_midline()
     test_macro_trend_and_stdev()
     test_frozen_side()
     test_bases_in_a_drop()
