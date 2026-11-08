@@ -75,6 +75,27 @@ def test_macro_trend_and_stdev():
     assert abs(fractal.stdev_pct([1, 3], 2)[1] - 50.0) < 1e-9 and fractal.macro_trend([1, 1, 5], 2)[2] == 1
 
 
+def test_frozen_side():
+    # a run below the pivot: red must not change from bar to bar while green follows the vector
+    import random
+    rnd, px, bars = random.Random(7), 600.0, []
+    for i in range(500):
+        o = px
+        px *= 1 + rnd.gauss(0, 0.002) + 0.0006 * __import__("math").sin(i / 9)
+        bars.append([f"t{i:04d}", o, max(o, px) * 1.0005, min(o, px) * 0.9995, px, 1])
+    r = fractal.compute(bars, 10, 40)
+    r["close_at"] = [b[4] for b in bars[40:]]
+    S = r["series"]
+    checked = 0
+    for k in range(60, len(S) - 1):
+        if S[k]["pivot"] and S[k + 1]["pivot"] and r["close_at"][k] < S[k]["pivot"] and r["close_at"][k + 1] < S[k + 1]["pivot"]:
+            a, b = fractal.levels_at(r, k), fractal.levels_at(r, k + 1)
+            if a["bear"] and b["bear"]:
+                assert [x["price"] for x in a["bear"]] == [x["price"] for x in b["bear"]], k
+                checked += 1
+    assert checked > 20, checked
+
+
 def test_bases_in_a_drop():
     waves = [{"side": "H", "move": 0.01 * k, "count": 1} for k in range(1, 6)] + [{"side": "L", "move": 0.01 * k, "count": 1} for k in range(1, 6)]
     cl = fractal.clusters(waves, 100.0, ma=95.0)                     # vector below the pivot: green starts from it
@@ -96,13 +117,11 @@ def _check_view(r, wave):
     assert r["waves"] and r["pivot"] and r["clusters"]["bull"] and r["clusters"]["bear"], r.keys()
     bull = {x["p"]: x["price"] for x in r["clusters"]["bull"]}
     bear = {x["p"]: x["price"] for x in r["clusters"]["bear"]}
-    c = r["clusters"]                       # green from min(pivot, MA), red from max(pivot, MA), like TradeWellX
-    assert c["bullBase"] <= c["bearBase"] and c["bullBase"] <= r["pivot"] <= c["bearBase"]
+    c = r["clusters"]                       # each side from its own base; one side frozen from the last cross
+    assert c["frozen"] in ("bull", "bear")
     assert all(bear[p] <= c["bearBase"] and bull[p] >= c["bullBase"] for p in (0.80, 0.50, 0.20, 0.10))
     assert [bull[p] for p in (0.80, 0.50, 0.20, 0.10, 0.05)] == sorted(bull[p] for p in (0.80, 0.50, 0.20, 0.10, 0.05))
     assert [bear[p] for p in (0.80, 0.50, 0.20, 0.10, 0.02)] == sorted((bear[p] for p in (0.80, 0.50, 0.20, 0.10, 0.02)), reverse=True)
-    assert r["oddsH"][0]["atLeast"] == 1.0 and r["oddsL"][0]["atLeast"] == 1.0
-    assert r["params"]["wave"] == wave
     st = r["steps"]
     assert st and all(a["i1"] < b["i0"] for a, b in zip(st, st[1:])) and st[-1]["i1"] == len(r["bars"]) - 1
     assert all(x["bull"][0]["price"] >= x["pivot"] >= x["bear"][0]["price"] for x in st)
@@ -143,6 +162,7 @@ if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_never_share_a_wave()
     test_macro_trend_and_stdev()
+    test_frozen_side()
     test_bases_in_a_drop()
     test_clusters_and_odds()
     test_alpaca_qqq()

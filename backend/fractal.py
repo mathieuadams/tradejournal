@@ -201,10 +201,45 @@ def steps(r, min_waves=4):
     return out
 
 
+def _fresh(r, k, idx):
+    """Levels as computed at bar k: waves finished before k, green from min(pivot, MA), red from max."""
+    sk = r["series"][k]
+    if not sk["pivot"]:
+        return None
+    done = [w for w in r["waves"] if not w.get("open") and idx.get(w["end"], k) < k]
+    up = [w["move"] for w in done if w["side"] == "H"]
+    dn = [w["move"] for w in done if w["side"] == "L"]
+    piv, ma = sk["pivot"], sk["ma"] if sk["ma"] is not None else sk["pivot"]
+    lo, hi = min(piv, ma), max(piv, ma)
+    return {"bull": [{"p": p, "move": m, "price": lo * (1 + m)} for p, m in zip(BULL_P, levels(up, BULL_P))] if len(up) >= 2 else [],
+            "bear": [{"p": p, "move": -m, "price": hi * (1 - m)} for p, m in zip(BEAR_P, levels(dn, BEAR_P))] if len(dn) >= 2 else [],
+            "bullBase": lo, "bearBase": hi}
+
+
+def levels_at(r, k):
+    """The levels in force at bar k, the way TradeWellX's replay shows them: below the pivot, green updates every bar
+    (from the vector) and red stays frozen at what it was on the bar before price crossed down; above, the reverse.
+    The wave still running is not counted."""
+    idx = {x["t"]: i for i, x in enumerate(r["series"])}
+    now = _fresh(r, k, idx)
+    if not now:
+        return {"bull": [], "bear": []}
+    cur = next((w for w in r["waves"] if idx.get(w["start"], 10 ** 9) <= k <= idx.get(w["end"], -1)), None)
+    a = idx[cur["start"]] if cur else k
+    before = _fresh(r, a - 1, idx) if a > 0 else None
+    above = r["close_at"][k] > r["series"][k]["pivot"]
+    if before:
+        side = "bull" if above else "bear"
+        now[side], now[side + "Base"] = before[side], before[side + "Base"]
+    now["frozen"] = "bull" if above else "bear"
+    return now
+
+
 def analyze(bars, wave=10, win=0):
     r = compute(bars, wave, win)
-    ma = r["series"][-1]["ma"] if r["series"] else None
-    r["clusters"] = clusters(r["waves"], r["pivot"], ma) if r["pivot"] else {"bull": [], "bear": []}
+    r["close_at"] = [float(b[4]) for b in bars[win:]]
+    r["clusters"] = levels_at(r, len(r["series"]) - 1) if r["pivot"] and r["series"] else {"bull": [], "bear": []}
+    del r["close_at"]
     r["oddsH"], r["oddsL"] = odds(r["waves"], "H"), odds(r["waves"], "L")
     r["steps"] = steps(r)
     return r
