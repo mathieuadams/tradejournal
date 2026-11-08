@@ -132,7 +132,7 @@ def fractal_view(sub, claims, body, q):
     if sym in futdata.SYMS:                            # NQ / ES: the stored Databento 1-minute candles, all hours by default
         bars, source = _fut_bars(sym, stats + warm, agg, rth_only), "databento"
     else:                                              # stocks / ETFs: Alpaca, regular hours
-        bars, source = alpaca.bars(sub, sym, stats + warm, agg), "alpaca"
+        bars, source = alpaca.bars(sub, sym, stats + warm, agg, close_bar=q.get("close16") not in ("0", "false")), "alpaca"
     dates = sorted({b[0][:10] for b in bars})
     first = lambda d: next((i for i, b in enumerate(bars) if b[0][:10] >= d), 0)
     if not dates:

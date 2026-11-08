@@ -116,7 +116,7 @@ def check_sym(sym):
     return s
 
 
-def bars(sub, sym, days=10, tf=15, rth=True):
+def bars(sub, sym, days=10, tf=15, rth=True, close_bar=True):
     """The last `days` sessions of `tf`-minute bars, ET times: [["YYYY-MM-DD HH:MM", o, h, l, c, v], ...]."""
     sym = check_sym(sym)
     if tf not in TFS:
@@ -145,4 +145,22 @@ def bars(sub, sym, days=10, tf=15, rth=True):
     if tf == 60:                                      # Alpaca's hours start on the clock hour; TradeWellX's at 09:30
         import futdata
         out = futdata.agg(out, 60)
+    if rth and close_bar and out:
+        out = _with_close_bar(c, sym, feed, out, end)
+    return out
+
+
+def _with_close_bar(c, sym, feed, out, end):
+    """TradeWellX ends its window with one extra 16:00 bar: the last session's closing print (QQQ 10 days at 15 min =
+    261 bars = 10 x 26 + 1). Built from Alpaca's daily bar close (the official close), once the session is over."""
+    last = out[-1][0][:10]
+    if utc_to_ny(end).strftime("%Y-%m-%d %H:%M") < last + " 16:00":
+        return out                                    # the session is still open: no closing print yet
+    start = ny_to_utc(datetime.strptime(last, "%Y-%m-%d"))
+    r = _get(c, f"stocks/{sym}/bars", {"timeframe": "1Day", "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                       "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 5, "adjustment": "raw", "feed": feed})
+    for b in r.get("bars") or []:
+        if utc_to_ny(datetime.strptime(b["t"][:19], "%Y-%m-%dT%H:%M:%S")).strftime("%Y-%m-%d") == last:
+            px = b["c"]
+            return out + [[last + " 16:00", px, px, px, px, 0]]
     return out

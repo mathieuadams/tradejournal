@@ -68,6 +68,27 @@ def test_levels_match_tradewellx_clusternode():
     assert lv[3] == lv[4] == up[-2] and lv == sorted(lv)
 
 
+def test_daily_pivots_match_tradewellx_warehouse():
+    # TradeWellX DataWarehouse table Daily_QQQ (Wave 1, 300 days to 11/06/2026): the vector on every day, and the pivot on
+    # every pivot change where the rows involved were stored at the 4:00 PM close (stale intraday rows are skipped)
+    import csv
+    from datetime import datetime
+    rows = list(csv.DictReader(open(os.path.join(HERE, "fixtures", "tradewellx_daily_qqq.csv"))))
+    dt = lambda r: datetime.strptime(r["LastTradeDateTime"], "%m/%d/%Y %I:%M:%S %p")
+    rows.sort(key=dt)
+    final = [r["LastTradeDateTime"].endswith("4:00:00 PM") for r in rows]
+    bars = [[dt(r).strftime("%Y-%m-%d"), float(r["OpenPrice"]), float(r["HighPrice"]), float(r["LowPrice"]), float(r["ClosePrice"]), 0] for r in rows]
+    S = fractal.compute(bars, wave=1)["series"]
+    assert all(abs(S[i]["ma"] - float(rows[i]["Vector"])) < 0.006 for i in range(len(rows)))
+    checked = 0
+    for i in range(3, len(rows)):
+        if rows[i]["PivotValue"] == rows[i - 1]["PivotValue"] or not (final[i] and final[i - 1] and final[i - 2]):
+            continue
+        assert abs(S[i]["pivot"] - float(rows[i]["PivotValue"])) < 0.006, (bars[i][0], rows[i]["PivotValue"], S[i]["pivot"])
+        checked += 1
+    assert checked >= 50, checked
+
+
 def test_cold_midline():
     m = fractal.midline([1, 5, 3], 10, partial=True)
     assert m == [1, 3, 3] and fractal.midline([1, 5, 3], 10) == [None, None, None]
@@ -147,7 +168,10 @@ def test_alpaca_qqq():
     assert st == 200 and r["connected"] and r["last4"] == "90AB" and r["feed"] == "sip", r
     st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "10", "agg": "15"})
     assert st == 200, r
-    assert len({b[0][:10] for b in r["bars"]}) == 10 and all("09:30" <= b[0][11:16] < "16:00" for b in r["bars"])
+    assert len({b[0][:10] for b in r["bars"]}) == 10 and all("09:30" <= b[0][11:16] < "16:00" for b in r["bars"][:-1])
+    assert r["bars"][-1][0].endswith("16:00") and len(r["bars"]) == 261, len(r["bars"])   # + the closing print, like TradeWellX
+    st, r2 = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "10", "agg": "15", "close16": "0"})
+    assert st == 200 and len(r2["bars"]) == 260 and not r2["bars"][-1][0].endswith("16:00")
     _check_view(r, 10)
     st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "5", "stats": "40", "agg": "15"})
     assert st == 200, r
@@ -157,8 +181,8 @@ def test_alpaca_qqq():
     st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "7", "days": "50", "agg": "60"})
     assert st == 200, r
     hrs = sorted({b[0][11:16] for b in r["bars"]})
-    assert hrs == ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30"], hrs
-    assert len({b[0][:10] for b in r["bars"]}) == 50 and len(r["bars"]) == 350, len(r["bars"])
+    assert hrs == ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:00"], hrs
+    assert len({b[0][:10] for b in r["bars"]}) == 50 and len(r["bars"]) == 351, len(r["bars"])   # 50 x 7 + the 16:00 bar
     _check_view(r, 7)
     st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "10", "agg": "15", "cold": "1"})
     assert st == 200 and r["params"]["cold"], r
@@ -182,6 +206,7 @@ def test_databento_nq():
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_match_tradewellx_clusternode()
+    test_daily_pivots_match_tradewellx_warehouse()
     test_cold_midline()
     test_macro_trend_and_stdev()
     test_frozen_side()
