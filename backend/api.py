@@ -4,6 +4,7 @@ The user id always comes from the verified token (sub claim), never from the req
 import re
 from datetime import date, timedelta
 
+import alpaca
 import databento
 import db
 import futdata
@@ -80,6 +81,73 @@ def db_test(sub, claims, body, q):
     return databento.test(sub)
 
 
+# ---------------------------------------------------------------- Alpaca + fractal waves
+
+@route("GET", "/alpaca")
+def alp_status(sub, claims, body, q):
+    return alpaca.status(sub)
+
+
+@route("PUT", "/alpaca")
+def alp_save(sub, claims, body, q):
+    if body.get("keyId") or body.get("secret"):
+        return alpaca.save_key(sub, body.get("keyId"), body.get("secret"), body.get("feed") or "sip")
+    return alpaca.settings(sub, body)
+
+
+@route("DELETE", "/alpaca")
+def alp_delete(sub, claims, body, q):
+    return alpaca.delete_key(sub)
+
+
+@route("POST", "/alpaca/test")
+def alp_test(sub, claims, body, q):
+    return alpaca.test(sub)
+
+
+def _int(v, name, lo, hi, default):
+    try:
+        n = int(v if v not in (None, "") else default)
+    except (TypeError, ValueError):
+        raise BadRequest(f"{name} must be a whole number.")
+    if not lo <= n <= hi:
+        raise BadRequest(f"{name} must be between {lo} and {hi}.")
+    return n
+
+
+@route("GET", "/fractal")
+def fractal_view(sub, claims, body, q):
+    import fractal
+    wave = _int(q.get("wave"), "Wave", 2, 100, 10)
+    days = _int(q.get("days"), "Days to load", 1, 60, 10)
+    agg = _int(q.get("agg"), "Aggregation", 1, 60, 15)
+    sym = (q.get("sym") or "QQQ").strip().upper()
+    rth_only = q.get("rth") in ("1", "true")
+    if sym in futdata.SYMS:                            # NQ / ES: the stored Databento 1-minute candles, all hours by default
+        bars, source = _fut_bars(sym, days, agg, rth_only), "databento"
+    else:                                              # stocks / ETFs: Alpaca, regular hours
+        bars, source = alpaca.bars(sub, sym, days, agg), "alpaca"
+    if len(bars) < 2 * wave + 2:
+        raise BadRequest(f"Only {len(bars)} bars came back: not enough for Wave {wave}.")
+    r = fractal.analyze(bars, wave)
+    r["bars"] = bars
+    r["params"] = {"sym": sym, "wave": wave, "days": days, "agg": agg, "source": source, "rth": rth_only or source == "alpaca",
+                   "feed": alpaca.status(sub)["feed"] if source == "alpaca" else "GLBX.MDP3"}
+    return r
+
+
+def _fut_bars(sym, days, agg, rth_only):
+    """The last `days` calendar dates that have candles (like TradeWellX's NQ=F "days to load"), agg-minute bars."""
+    end = now_ny().date()
+    one = futdata.bars_between(sym, (end - timedelta(days=days * 2 + 7)).isoformat(), end.isoformat())
+    if rth_only:
+        one = [b for b in one if futdata.RTH0 <= b[0][11:16] < futdata.RTH1]
+    keep = set(sorted({b[0][:10] for b in one})[-days:])
+    if not keep:
+        raise BadRequest(f"No {sym} candles stored yet: download them on the Data page.")
+    return [[b[0][:16].replace("T", " ")] + b[1:6] for b in futdata.agg([b for b in one if b[0][:10] in keep], agg)]
+
+
 # ---------------------------------------------------------------- data
 
 def _range(body):
@@ -130,7 +198,7 @@ def _estimate(sub, kind, syms, d0, d1, window="rth"):
 
 @route("GET", "/data")
 def data_view(sub, claims, body, q):
-    return {"coverage": futdata.coverage(), "job": jobs.status(sub, "data"), "databento": databento.status(sub), "refresh": jobs.status(sub, "refresh")}
+    return {"coverage": futdata.coverage(), "job": jobs.status(sub, "data"), "databento": databento.status(sub), "alpaca": alpaca.status(sub), "refresh": jobs.status(sub, "refresh")}
 
 
 @route("POST", "/data/estimate")

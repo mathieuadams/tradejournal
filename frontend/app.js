@@ -213,7 +213,7 @@ function route() {
   const h = (location.hash || '#running').slice(1), [page, arg] = h.split('/');
   S.page = page;
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.r === (page === 'strategy' ? 'research' : page)));
-  const v = { running: vRunning, chart: vChart, research: vResearch, strategy: () => vStrategy(arg), data: vData, levels: vLevels }[page] || vRunning;
+  const v = { running: vRunning, chart: vChart, research: vResearch, strategy: () => vStrategy(arg), data: vData, levels: vLevels, fractal: vFractal }[page] || vRunning;
   v().catch(e => { $('#view').innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; });
 }
 const view = html => { $('#view').innerHTML = html; };
@@ -470,6 +470,80 @@ function zbar(z) {
   return `<div style="display:flex;align-items:center;gap:8px"><div style="position:relative;width:90px;height:6px;background:#1F2632;border-radius:3px"><div style="position:absolute;left:50%;top:-3px;width:1px;height:12px;background:#4B5566"></div><div style="position:absolute;left:calc(${left}% - 5px);top:-2px;width:10px;height:10px;border-radius:5px;background:${z < -2 ? 'var(--sellT)' : 'var(--buyT)'}"></div></div><span class="mono dim" style="font-size:12px">z ${sgn(z, 1)}</span></div>`;
 }
 
+/* ---------- Fractal: the TradeWellX Wave [N] rebuild (backend/fractal.py) ---------- */
+S.fx = { sym: 'QQQ', wave: 10, days: 10, agg: 15, rth: false };
+async function vFractal() {
+  const f = S.fx, alp = await api('/alpaca');
+  const ctl = `<div class="form" style="align-items:end">
+      <label class="f">Symbol<input type="text" id="fx-sym" value="${esc(f.sym)}" style="width:90px;text-transform:uppercase"></label>
+      <label class="f">Wave<input type="number" id="fx-wave" min="2" max="100" value="${f.wave}" style="width:70px"></label>
+      <label class="f">Days to load<input type="number" id="fx-days" min="1" max="60" value="${f.days}" style="width:70px"></label>
+      <label class="f">Aggregation (min)<select id="fx-agg">${[1, 5, 15, 30, 60].map(n => `<option ${n === f.agg ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label class="check"><input type="checkbox" id="fx-rth" ${f.rth ? 'checked' : ''}> NQ / ES: regular hours only</label>
+      <button class="btn primary" data-act="fx-load">Calculate</button></div>
+    <p class="note">QQQ and other stocks come from Alpaca (regular hours${alp.connected ? ', feed ' + esc(alp.feed.toUpperCase()) : ': <a href="#data">connect Alpaca</a>'}). NQ and ES come from the stored Databento candles, all hours like TradeWellX's NQ=F.</p>`;
+  view(`${head('Fractal', 'Wave pivots, H/L counts, percent-probable clusters and wave odds, calculated the TradeWellX way.')}
+    <section class="panel"><div class="bd">${ctl}</div></section><div id="fx-out"><div class="panel"><div class="empty muted">Loading…</div></div></div>`);
+  return fxLoad();
+}
+async function fxLoad() {
+  const f = S.fx, out = $('#fx-out');
+  let r;
+  try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&agg=${f.agg}&rth=${f.rth ? 1 : 0}`); }
+  catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; return; }
+  const last = r.series[r.series.length - 1], pct = (a, b) => b ? sgn((a / b - 1) * 100, 2, '%') : '—';
+  const lvl = (x, cls) => `<tr><td><span class="pill ${cls}">${Math.round(x.p * 100)}%</span></td><td class="r mono"><b>${fmt(x.price)}</b></td><td class="r mono">${sgn(x.move * 100, 2, '%')}</td></tr>`;
+  const odds = (rows, side) => `<table class="tbl"><thead><tr><th>${side}</th><th class="r">Waves</th><th class="r">% of waves</th><th class="r">Odds (at least)</th></tr></thead><tbody>${rows.map(o => `<tr><td class="mono">${side}${o.count}</td><td class="r mono">${o.n}</td><td class="r mono">${(o.pct * 100).toFixed(0)}%</td><td class="r"><b>${(o.atLeast * 100).toFixed(0)}%</b></td></tr>`).join('')}</tbody></table>`;
+  const cur = r.current;
+  out.innerHTML = `
+    <section class="panel"><div class="hd"><h2>${esc(r.params.sym)} · Wave [${r.params.wave}] · ${r.params.agg} min · ${r.bars.length} bars · ${r.params.days} days</h2><div class="grow"></div><span class="dim" style="font-size:12px">${esc(r.bars[0][0])} → ${esc(r.bars[r.bars.length - 1][0])} ET · ${esc(r.params.source)}</span></div>
+      <div class="bd"><div class="kv">
+        <div><div class="k">Close</div><div class="v">${fmt(r.close)}</div></div>
+        <div><div class="k">Pivot</div><div class="v"><b>${fmt(r.pivot)}</b></div></div>
+        <div><div class="k">InProgress pivot (MA)</div><div class="v">${fmt(last.ma)}</div></div>
+        <div><div class="k">Pivot close %</div><div class="v">${pct(r.close, r.pivot)}</div></div>
+        <div><div class="k">SlowMA</div><div class="v">${fmt(last.slowMa)}</div></div>
+        <div><div class="k">Direction</div><div class="v ${last.direction > 0 ? 'win' : last.direction < 0 ? 'loss' : ''}">${last.direction > 0 ? '+1 long' : last.direction < 0 ? '−1 short' : '0'}</div></div>
+        <div><div class="k">Current wave</div><div class="v">${cur ? `${cur.side}${cur.count} · ${cur.bars} bars` : '—'}</div></div>
+        <div><div class="k">Completed waves</div><div class="v">${r.oddsH.reduce((a, o) => a + o.n, 0)} H · ${r.oddsL.reduce((a, o) => a + o.n, 0)} L</div></div>
+      </div><div style="margin-top:14px">${fxChart(r)}</div></div></section>
+    <div class="row"><div class="col-main">
+      <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">pivot × (1 ± the move that p of past waves reached)</span></div>
+        <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">From pivot</th></tr></thead><tbody>
+          ${[...r.clusters.bull].reverse().map(x => lvl(x, 'ok')).join('')}
+          <tr><td><b>Pivot</b></td><td class="r mono"><b>${fmt(r.pivot)}</b></td><td class="r mono">0.00%</td></tr>
+          ${r.clusters.bear.map(x => lvl(x, 'warn')).join('')}</tbody></table></div></section>
+      <section class="panel"><div class="hd"><h2>Waves</h2><span class="dim" style="font-size:12px">count = bars from the wave start to its extreme</span></div>
+        <div class="tbl-wrap" style="max-height:360px;overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Start</th><th>Extreme at</th><th class="r">Bars</th><th class="r">Pivot</th><th class="r">Extreme</th><th class="r">Move</th></tr></thead><tbody>
+          ${[...r.waves].reverse().map(w => `<tr><td class="mono ${w.side === 'H' ? 'win' : 'loss'}">${w.side}${w.count}</td><td class="mono">${esc(w.start.slice(5))}</td><td class="mono">${esc(w.extreme.slice(5))}</td><td class="r mono">${w.bars}</td><td class="r mono">${fmt(w.pivot)}</td><td class="r mono">${fmt(w.price)}</td><td class="r mono">${sgn((w.side === 'H' ? 1 : -1) * w.move * 100, 2, '%')}</td></tr>`).join('')}</tbody></table></div></section>
+    </div><div class="col-side">
+      <section class="panel"><div class="hd"><h2>Option Analyzer: H waves</h2></div><div class="tbl-wrap">${odds(r.oddsH, 'H')}</div></section>
+      <section class="panel"><div class="hd"><h2>Option Analyzer: L waves</h2></div><div class="tbl-wrap">${odds(r.oddsL, 'L')}</div></section>
+    </div></div>`;
+}
+function fxChart(r) {
+  const W = 1100, H = 380, padR = 120, n = r.bars.length;
+  const lv = [...r.clusters.bull, ...r.clusters.bear].map(x => x.price);
+  const ys = r.bars.flatMap(b => [b[2], b[3]]).concat(lv.filter(p => p > 0));
+  let lo = Math.min(...r.bars.map(b => b[3])), hi = Math.max(...r.bars.map(b => b[2]));
+  lv.forEach(p => { if (p > lo - (hi - lo) * 0.6 && p < hi + (hi - lo) * 0.6) { lo = Math.min(lo, p); hi = Math.max(hi, p); } });
+  void ys;
+  const X = i => (i + 0.5) * (W - padR) / n, Y = p => 10 + (hi - p) / (hi - lo || 1) * (H - 20), bw = Math.max(1, (W - padR) / n * 0.6);
+  const step = k => { let d = ''; r.series.forEach((s, i) => { const v = s[k]; if (v == null) return; d += (d ? `L${X(i) - (W - padR) / n / 2},${Y(v)}` : `M${X(i) - (W - padR) / n / 2},${Y(v)}`) + `L${X(i) + (W - padR) / n / 2},${Y(v)}`; }); return d; };
+  const candles = r.bars.map((b, i) => { const up = b[4] >= b[1], c = up ? 'var(--buyT)' : 'var(--sellT)'; return `<line x1="${X(i)}" x2="${X(i)}" y1="${Y(b[2])}" y2="${Y(b[3])}" stroke="${c}"/><rect x="${X(i) - bw / 2}" y="${Y(Math.max(b[1], b[4]))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b[1]) - Y(b[4])))}" fill="${c}"/>`; }).join('');
+  const bands = [...r.clusters.bull.map(x => [x, '#2E7D4F']), ...r.clusters.bear.map(x => [x, '#B4443C'])].filter(([x]) => x.price >= lo && x.price <= hi)
+    .sort((a, b) => Y(a[0].price) - Y(b[0].price));
+  let ly = -99;
+  const bandSvg = bands.map(([x, c]) => { const y = Y(x.price), t = Math.max(y + 4, ly + 12); ly = t;
+    return `<line x1="0" x2="${W - padR}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="6" opacity=".35"/><text x="${W - padR + 4}" y="${t}" font-size="11" fill="${c}">${Math.round(x.p * 100)}%@${fmt(x.price)}</text>`; }).join('');
+  const labels = r.series.map((s, i) => s.peakToTrough ? (s.peakToTrough > 0 ? `<text x="${X(i)}" y="${Y(r.bars[i][2]) - 6}" font-size="10" text-anchor="middle" fill="var(--text)">${s.peakToTrough}H</text>` : `<text x="${X(i)}" y="${Y(r.bars[i][3]) + 13}" font-size="10" text-anchor="middle" fill="var(--text)">${-s.peakToTrough}L</text>`) : '').join('');
+  const days = r.bars.map((b, i) => i && b[0].slice(0, 10) !== r.bars[i - 1][0].slice(0, 10) ? `<line x1="${X(i) - (W - padR) / n / 2}" x2="${X(i) - (W - padR) / n / 2}" y1="0" y2="${H}" stroke="#E5C100" opacity=".35"/>` : '').join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${bandSvg}${candles}
+    <path d="${step('pivot')}" fill="none" stroke="#E8E8E8" stroke-width="1.5"/><path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}
+    <text x="4" y="${Y(r.pivot) - 4}" font-size="11" fill="#E8E8E8">Pivot ${fmt(r.pivot)}</text></svg>
+    <div class="note">Purple: MA (the vector). White: pivot. Bands: percent-probable clusters. Yellow lines: new day.</div>`;
+}
+
 /* ---------- Data (Databento) ---------- */
 async function vData() {
   const d = await api('/data');
@@ -495,6 +569,17 @@ async function vData() {
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="password" id="db-key" placeholder="db-…" autocomplete="off" style="flex:1 1 320px;max-width:460px">
               <button class="btn primary" data-act="db-connect">Connect</button></div>
             <p class="note">Keys: <a href="https://databento.com/portal/keys" target="_blank" rel="noopener">databento.com/portal/keys</a>. The key needs access to the CME Globex dataset (GLBX.MDP3). Downloads are billed by Databento; every download shows its cost first.</p>`}
+          </div></section>
+
+        <section class="panel"><div class="hd"><h2>Alpaca</h2><span class="dim" style="font-size:13px">Stock / ETF bars (QQQ) for the Fractal page</span><div class="grow"></div>${d.alpaca && d.alpaca.connected ? '<span class="pill ok">Connected</span>' : '<span class="pill warn">Not connected</span>'}</div>
+          <div class="bd">${d.alpaca && d.alpaca.connected ? `
+            <div class="kv" style="margin-bottom:14px"><div><div class="k">Key ID</div><div class="v">••••${esc(d.alpaca.last4)}</div></div><div><div class="k">Feed</div><div class="v">${esc(d.alpaca.feed.toUpperCase())}</div></div><div><div class="k">Checked</div><div class="v">${esc((d.alpaca.testedAt || '').replace('T', ' ').slice(0, 16))}</div></div><div></div></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label class="f">Feed<select id="alp-feed2"><option value="sip" ${d.alpaca.feed === 'sip' ? 'selected' : ''}>SIP (all exchanges, 15 min delay on the free plan)</option><option value="iex" ${d.alpaca.feed === 'iex' ? 'selected' : ''}>IEX (real time, one exchange)</option></select></label>
+              <button class="btn" data-act="alp-save">Save</button><button class="btn" data-act="alp-test">Test</button><button class="btn danger" data-act="alp-del">Disconnect</button></div>` : `
+            <p class="muted" style="margin-top:0">Paste your Alpaca API key ID and secret. They are checked against Alpaca, then stored encrypted (AWS KMS); the browser never sees them again.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="password" id="alp-id" placeholder="Key ID (PK…)" autocomplete="off" style="flex:1 1 200px;max-width:260px"><input type="password" id="alp-secret" placeholder="Secret key" autocomplete="off" style="flex:1 1 260px;max-width:360px">
+              <select id="alp-feed"><option value="sip">SIP</option><option value="iex">IEX</option></select><button class="btn primary" data-act="alp-connect">Connect</button></div>
+            <p class="note">Keys: Alpaca dashboard → API keys (paper or live keys both work for market data). SIP matches TradeWellX's prices; on the free plan it stops 15 minutes before now.</p>`}
           </div></section>
 
         <section class="panel"><div class="hd"><h2>Download 1-minute candles</h2><span class="dim" style="font-size:13px">Charts, studies, validation and paper trading</span></div>
@@ -1020,6 +1105,11 @@ document.addEventListener('click', async e => {
     if (ds.rplayout) { S.rpLayout = ds.rplayout; return vChart(); }
     switch (act) {
       case 'refresh': await api('/data/refresh', { method: 'POST', body: {} }); toast('Updating the candles…'); if (S.page === 'data') vData(); break;
+      case 'fx-load': S.fx = { sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
+      case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }
+      case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;
+      case 'alp-test': el.disabled = true; await api('/alpaca/test', { method: 'POST' }); toast('Alpaca answered.'); vData(); break;
+      case 'alp-del': if (!confirm('Disconnect Alpaca?')) return; await api('/alpaca', { method: 'DELETE' }); vData(); break;
       case 'db-connect': { const k = $('#db-key').value.trim(); if (!k) return toast('Paste the key first.'); el.disabled = true; el.textContent = 'Checking…'; await api('/databento', { method: 'PUT', body: { key: k } }); toast('Databento connected.'); vData(); break; }
       case 'db-save': await api('/databento', { method: 'PUT', body: { auto: $('#db-auto').checked, autoFp: $('#db-autofp').checked, maxCost: +$('#db-cap').value } }); toast('Saved.'); vData(); break;
       case 'db-test': el.disabled = true; await api('/databento/test', { method: 'POST' }); toast('Databento answered.'); vData(); break;

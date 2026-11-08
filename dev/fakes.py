@@ -186,6 +186,35 @@ def fake_open(key, method, path, params, timeout=60):
     raise BadRequest(f"unknown path {path}")
 
 
+# ---------------------------------------------------------------- fake Alpaca
+
+ALP_PX = {"QQQ": 660.0, "SPY": 680.0}
+
+
+def fake_alpaca_get(creds, path, params, timeout=60):
+    """Synthetic stock bars (UTC, every minute of the day at the asked timeframe); any key ID starting with PK works."""
+    from util import BadRequest
+    if not str(creds[0]).startswith("PK"):
+        raise BadRequest("Alpaca refused the request (401): forbidden.")
+    sym = path.split("/")[1]
+    tf = params.get("timeframe", "15Min")
+    step = 1440 if tf == "1Day" else int(tf.replace("Min", ""))
+    t0 = datetime.strptime(params["start"], "%Y-%m-%dT%H:%M:%SZ")
+    t1 = datetime.strptime(params["end"], "%Y-%m-%dT%H:%M:%SZ")
+    t0 = t0.replace(second=0, minute=t0.minute - t0.minute % step if step < 60 else 0)
+    rnd = random.Random(sym)
+    px, out, t = ALP_PX.get(sym, 100.0), [], t0
+    while t < t1:
+        if t.weekday() < 5:
+            o = px
+            px = max(1.0, px * (1 + rnd.gauss(0, 0.0015) + 0.0004 * math.sin(t.timestamp() / 9000)))
+            hi, lo = max(o, px) * (1 + abs(rnd.gauss(0, 0.0005))), min(o, px) * (1 - abs(rnd.gauss(0, 0.0005)))
+            out.append({"t": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "o": round(o, 2), "h": round(hi, 2), "l": round(lo, 2),
+                        "c": round(px, 2), "v": rnd.randint(1000, 90000)})
+        t += timedelta(minutes=step)
+    return {"bars": out[: int(params.get("limit") or 10000)], "symbol": sym, "next_page_token": None}
+
+
 def install(fake_databento=False, data_dir=None, persist=True):
     global PERSIST
     PERSIST = persist
@@ -196,6 +225,9 @@ def install(fake_databento=False, data_dir=None, persist=True):
     import store
     databento._kms = lambda: FakeKMS()
     store.LOCAL = data_dir or os.path.join(os.path.dirname(__file__), ".localdata")
+    import alpaca
+    alpaca._kms = lambda: FakeKMS()
     if fake_databento:
         databento._open = fake_open
+        alpaca._get = fake_alpaca_get
     _ = urllib.parse

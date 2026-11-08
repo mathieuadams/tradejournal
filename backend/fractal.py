@@ -1,0 +1,140 @@
+"""Fractal wave engine: a rebuild of the TradeWellX "Wave [N]" chart from OHLC bars.
+
+Rules worked out from the TradeWellX Data tab (QQQ, Wave 10, 15-minute bars, 10/26-10/30/2026):
+  MA        = (highest close + lowest close) / 2 over the last `wave` bars (the purple vector)
+  SlowMA    = the same over 2 x `wave` bars
+  Pivot     = the MA value at its last turn (top or bottom); updates on the bar the MA reverses
+  Direction = +1 / -1, flips only when the MA breaks above its last swing high / below its last swing low
+  Wave      = a run of bars whose close stays on one side of the pivot; a close across the pivot starts the next
+  Label     = H<n> / L<n>: n = bars from the wave's first bar to its highest high (H) or lowest low (L)
+  Move      = how far the wave got from the pivot: highest high / pivot - 1 (H), 1 - lowest low / pivot (L)
+  Clusters  = pivot x (1 +/- the move that p of the waves reached or beat), p = 80/50/20/10/5 (bull), 80/50/20/10/2 (bear)
+
+Bars: list of [t, o, h, l, c] or [t, o, h, l, c, v]. Plain Python, no third-party packages."""
+
+BULL_P = (0.80, 0.50, 0.20, 0.10, 0.05)
+BEAR_P = (0.80, 0.50, 0.20, 0.10, 0.02)
+
+
+def midline(close, n):
+    """(highest close + lowest close) / 2 over the last n closes; None until n closes exist."""
+    out = [None] * len(close)
+    for i in range(n - 1, len(close)):
+        w = close[i - n + 1:i + 1]
+        out[i] = (max(w) + min(w)) / 2
+    return out
+
+
+def _sign(x, eps=1e-9):
+    return 1 if x > eps else -1 if x < -eps else 0
+
+
+def compute(bars, wave=10):
+    """Per-bar series and the list of waves."""
+    t = [b[0] for b in bars]
+    h = [float(b[2]) for b in bars]
+    lo = [float(b[3]) for b in bars]
+    c = [float(b[4]) for b in bars]
+    ma, slow = midline(c, wave), midline(c, 2 * wave)
+    n = len(bars)
+    pivot, direction = [None] * n, [0] * n
+    piv = None
+    slope = 0                       # last non-flat MA direction
+    swing_hi = swing_lo = None
+    d = 0
+    for i in range(n):
+        if ma[i] is not None and i and ma[i - 1] is not None:
+            s = _sign(ma[i] - ma[i - 1])
+            if s and slope and s != slope:            # the MA reversed: its previous value is the new pivot
+                piv = ma[i - 1]
+                if slope > 0:
+                    swing_hi = piv
+                else:
+                    swing_lo = piv
+            if s:
+                slope = s
+            if piv is None:
+                piv = ma[i - 1]
+        if ma[i] is not None:
+            if swing_lo is not None and ma[i] < swing_lo:
+                d = -1
+            elif swing_hi is not None and ma[i] > swing_hi:
+                d = 1
+        pivot[i], direction[i] = piv, d
+
+    # waves: a close across the pivot starts the next one
+    waves, side, start = [], 0, None
+    since = [None] * n
+    label = [None] * n
+
+    def close_wave(end):
+        if side == 0 or start is None:
+            return
+        idx = range(start, end + 1)
+        if side > 0:
+            k = max(idx, key=lambda j: h[j])
+            move = h[k] / pivot[k] - 1
+        else:
+            k = min(idx, key=lambda j: lo[j])
+            move = 1 - lo[k] / pivot[k]
+        cnt = k - start + 1
+        label[k] = cnt * side
+        waves.append({"side": "H" if side > 0 else "L", "start": t[start], "end": t[end], "bars": end - start + 1,
+                      "extreme": t[k], "count": cnt, "price": h[k] if side > 0 else lo[k], "pivot": pivot[k],
+                      "move": move})
+
+    for i in range(n):
+        if pivot[i] is None:
+            continue
+        s = 1 if c[i] > pivot[i] else -1
+        if s != side:
+            close_wave(i - 1)
+            side, start = s, i
+        since[i] = i - start
+    open_wave = None
+    if side and start is not None:
+        close_wave(n - 1)
+        open_wave = waves.pop()                       # the wave still running is not used for statistics
+
+    series = [{"t": t[i], "ma": ma[i], "slowMa": slow[i], "pivot": pivot[i], "direction": direction[i],
+               "barsElapsed": since[i], "peakToTrough": label[i]} for i in range(n)]
+    return {"series": series, "waves": waves, "current": open_wave,
+            "pivot": pivot[-1] if n else None, "close": c[-1] if n else None}
+
+
+def survival(values, p):
+    """The value that a fraction p of `values` reached or beat (linear interpolation)."""
+    v = sorted(values)
+    if not v:
+        return None
+    q = (1 - p) * (len(v) - 1)
+    i = int(q)
+    f = q - i
+    return v[i] if i + 1 >= len(v) else v[i] + (v[i + 1] - v[i]) * f
+
+
+def clusters(waves, pivot):
+    """Green (bull) and red (bear) percent-probable levels around the pivot."""
+    up = [w["move"] for w in waves if w["side"] == "H"]
+    dn = [w["move"] for w in waves if w["side"] == "L"]
+    bull = [{"p": p, "move": survival(up, p), "price": pivot * (1 + survival(up, p))} for p in BULL_P] if up else []
+    bear = [{"p": p, "move": -survival(dn, p), "price": pivot * (1 - survival(dn, p))} for p in BEAR_P] if dn else []
+    return {"bull": bull, "bear": bear}
+
+
+def odds(waves, side):
+    """Option Analyzer table: for each label count, how many waves, % of waves, and odds of reaching at least it."""
+    cnt = sorted(w["count"] for w in waves if w["side"] == side)
+    tot = len(cnt)
+    out = []
+    for k in sorted(set(cnt)):
+        out.append({"count": k, "n": cnt.count(k), "pct": cnt.count(k) / tot,
+                    "atLeast": sum(1 for x in cnt if x >= k) / tot})
+    return out
+
+
+def analyze(bars, wave=10):
+    r = compute(bars, wave)
+    r["clusters"] = clusters(r["waves"], r["pivot"]) if r["pivot"] else {"bull": [], "bear": []}
+    r["oddsH"], r["oddsL"] = odds(r["waves"], "H"), odds(r["waves"], "L")
+    return r
