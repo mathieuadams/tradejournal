@@ -59,7 +59,7 @@ def test_clusters_and_odds():
             [{"side": "L", "move": m, "count": c} for m, c in ((0.01, 1), (0.05, 3))]
     cl = fractal.clusters(waves, 100.0)
     bull, bear = {x["p"]: x["price"] for x in cl["bull"]}, {x["p"]: x["price"] for x in cl["bear"]}
-    assert abs(bull[0.50] - 102.5) < 1e-9 and abs(bear[0.50] - 97.0) < 1e-9
+    assert abs(bull[0.50] - 103.0) < 1e-9 and abs(bear[0.50] - 99.0) < 1e-9 and abs(bull[0.05] - 104.0) < 1e-9
     o = {r["count"]: r for r in fractal.odds(waves, "H")}
     assert o[2]["n"] == 2 and abs(o[2]["atLeast"] - 0.75) < 1e-9 and abs(o[5]["atLeast"] - 0.25) < 1e-9
 

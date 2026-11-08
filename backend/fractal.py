@@ -8,7 +8,7 @@ Rules worked out from the TradeWellX Data tab (QQQ, Wave 10, 15-minute bars, 10/
   Wave      = a run of bars whose close stays on one side of the pivot; a close across the pivot starts the next
   Label     = H<n> / L<n>: n = bars from the wave's first bar to its highest high (H) or lowest low (L)
   Move      = how far the wave got from the pivot: highest high / pivot - 1 (H), 1 - lowest low / pivot (L)
-  Clusters  = pivot x (1 +/- the move that p of the waves reached or beat), p = 80/50/20/10/5 (bull), 80/50/20/10/2 (bear)
+  Clusters  = pivot x (1 +/- the move of the wave nearest to rank p: the move p of the waves reached or beat), p = 80/50/20/10/5 (bull), 80/50/20/10/2 (bear)
 
 Bars: list of [t, o, h, l, c] or [t, o, h, l, c, v]. Plain Python, no third-party packages."""
 
@@ -105,14 +105,12 @@ def compute(bars, wave=10, win=0):
 
 
 def survival(values, p):
-    """The value that a fraction p of `values` reached or beat (linear interpolation)."""
+    """The move that a fraction p of `values` reached or beat: the nearest wave's own move, no interpolation
+    (rank (1 - p) x (n - 1), rounded). Matches TradeWellX's red levels to within ~0.05% on QQQ 10/26-11/06/2026."""
     v = sorted(values)
     if not v:
         return None
-    q = (1 - p) * (len(v) - 1)
-    i = int(q)
-    f = q - i
-    return v[i] if i + 1 >= len(v) else v[i] + (v[i + 1] - v[i]) * f
+    return v[min(len(v) - 1, max(0, round((1 - p) * (len(v) - 1))))]
 
 
 def clusters(waves, pivot):
