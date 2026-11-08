@@ -8,6 +8,10 @@ Rules worked out from the TradeWellX Data tab (QQQ, Wave 10, 15-minute bars, 10/
   Wave      = a run of bars whose close stays on one side of the pivot; a close across the pivot starts the next
   Label     = H<n> / L<n>: n = bars from the wave's first bar to its highest high (H) or lowest low (L)
   Move      = how far the wave got from the pivot: highest high / pivot - 1 (H), 1 - lowest low / pivot (L)
+  MacroTrend= +1 (L) / -1 (S): the close above / below the average of the 50 closes before it; counted L001, L002...
+              like TradeWellX's MacroTrend column (starts on the 51st bar: 10/27 15:30 for a 10/26 09:30 start)
+  StdDev    = standard deviation of the last `wave` closes, % of their average (TradeWellX "StdDev" panel:
+              < 0.1 squeeze, 0.5 default, > 0.8 expanding)
   Clusters  = pivot x (1 +/- the move of the wave nearest to rank p: the move p of the waves reached or beat), p = 80/50/20/10/5 (bull), 80/50/20/10/2 (bear)
 
 Bars: list of [t, o, h, l, c] or [t, o, h, l, c, v]. Plain Python, no third-party packages."""
@@ -22,6 +26,27 @@ def midline(close, n):
     for i in range(n - 1, len(close)):
         w = close[i - n + 1:i + 1]
         out[i] = (max(w) + min(w)) / 2
+    return out
+
+
+def macro_trend(close, n=50):
+    """+1 / -1: the close above / below the average of the n closes before it; None until n closes exist."""
+    out, run = [None] * len(close), 0.0
+    for i, c in enumerate(close):
+        if i >= n:
+            out[i] = 1 if c >= run / n else -1
+            run -= close[i - n]
+        run += c
+    return out
+
+
+def stdev_pct(close, n):
+    """Population standard deviation of the last n closes, in % of their average; None until n closes exist."""
+    out = [None] * len(close)
+    for i in range(n - 1, len(close)):
+        w = close[i - n + 1:i + 1]
+        m = sum(w) / n
+        out[i] = (sum((x - m) ** 2 for x in w) / n) ** 0.5 / m * 100
     return out
 
 
@@ -98,8 +123,15 @@ def compute(bars, wave=10, win=0):
         open_wave = waves[-1]                         # the wave still running: counted in the statistics, like TradeWellX
         open_wave["open"] = True
 
+    macro, mcount, sd = macro_trend(c), [None] * n, stdev_pct(c, wave)
+    run = 0
+    for i in range(n):
+        if macro[i] is not None:
+            run = run + 1 if i and macro[i - 1] == macro[i] else 1
+            mcount[i] = ("L" if macro[i] > 0 else "S") + f"{run:03d}"
     series = [{"t": t[i], "ma": ma[i], "slowMa": slow[i], "pivot": pivot[i], "direction": direction[i],
-               "barsElapsed": since[i], "peakToTrough": label[i]} for i in range(n)][win:]
+               "barsElapsed": since[i], "peakToTrough": label[i], "macro": macro[i], "macroTrend": mcount[i],
+               "stdev": sd[i]} for i in range(n)][win:]
     return {"series": series, "waves": waves, "current": open_wave,
             "pivot": pivot[-1] if n else None, "close": c[-1] if n else None}
 

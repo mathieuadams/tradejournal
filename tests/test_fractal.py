@@ -60,6 +60,21 @@ def test_levels_never_share_a_wave():
     assert lv == sorted(set(lv)) and lv[-1] == max(up), lv          # strictly outward; 5% on the largest move
 
 
+def test_macro_trend_and_stdev():
+    # MacroTrend vs TradeWellX: L from 10/27 15:30 through 10/28, S from 10/29 09:30 (fixture starts 10/26 12:30)
+    s = {x["t"]: x for x in fractal.compute(qqq_closes.bars(), 10)["series"]}
+    for t, x in s.items():
+        if x["macro"] is None:
+            continue
+        if "2026-10-27 15:30" <= t <= "2026-10-28 15:45":
+            assert x["macro"] == 1, t
+        if t >= "2026-10-29 09:30":
+            assert x["macro"] == -1 and x["macroTrend"].startswith("S"), t
+    assert s["2026-10-29 09:45"]["macroTrend"] == "S002"
+    assert s["2026-10-28 13:00"]["stdev"] < 0.1 < s["2026-10-29 10:00"]["stdev"] < s["2026-10-30 10:45"]["stdev"]
+    assert abs(fractal.stdev_pct([1, 3], 2)[1] - 50.0) < 1e-9 and fractal.macro_trend([1, 1, 5], 2)[2] == 1
+
+
 def test_bases_in_a_drop():
     waves = [{"side": "H", "move": 0.01 * k, "count": 1} for k in range(1, 6)] + [{"side": "L", "move": 0.01 * k, "count": 1} for k in range(1, 6)]
     cl = fractal.clusters(waves, 100.0, ma=95.0)                     # vector below the pivot: green starts from it
@@ -127,6 +142,7 @@ def test_databento_nq():
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_never_share_a_wave()
+    test_macro_trend_and_stdev()
     test_bases_in_a_drop()
     test_clusters_and_odds()
     test_alpaca_qqq()

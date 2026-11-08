@@ -123,7 +123,8 @@ def fractal_view(sub, claims, body, q):
     agg = _int(q.get("agg"), "Aggregation", 1, 60, 15)
     sym = (q.get("sym") or "QQQ").strip().upper()
     rth_only = q.get("rth") in ("1", "true")
-    warm = 2 + (2 * wave * agg) // 390                 # extra sessions before the window: the MA and pivot exist on its first bar
+    # extra sessions before the window, so the MA, pivot and MacroTrend (50 bars) all exist on its first bar
+    warm = 2 + (max(2 * wave, 51) * agg) // 390
     if sym in futdata.SYMS:                            # NQ / ES: the stored Databento 1-minute candles, all hours by default
         bars, source = _fut_bars(sym, days + warm, agg, rth_only), "databento"
     else:                                              # stocks / ETFs: Alpaca, regular hours
