@@ -60,6 +60,13 @@ def test_levels_never_share_a_wave():
     assert lv == sorted(set(lv)) and lv[-1] == max(up), lv          # strictly outward; 5% on the largest move
 
 
+def test_bases_in_a_drop():
+    waves = [{"side": "H", "move": 0.01 * k, "count": 1} for k in range(1, 6)] + [{"side": "L", "move": 0.01 * k, "count": 1} for k in range(1, 6)]
+    cl = fractal.clusters(waves, 100.0, ma=95.0)                     # vector below the pivot: green starts from it
+    assert cl["bullBase"] == 95.0 and cl["bearBase"] == 100.0
+    assert abs(cl["bull"][0]["price"] - 95.0 * (1 + cl["bull"][0]["move"])) < 1e-9 and cl["bull"][0]["price"] < 100.0
+
+
 def test_clusters_and_odds():
     waves = [{"side": "H", "move": m, "count": c} for m, c in ((0.01, 1), (0.02, 2), (0.03, 2), (0.04, 5))] + \
             [{"side": "L", "move": m, "count": c} for m, c in ((0.01, 1), (0.05, 3))]
@@ -74,7 +81,11 @@ def _check_view(r, wave):
     assert r["waves"] and r["pivot"] and r["clusters"]["bull"] and r["clusters"]["bear"], r.keys()
     bull = {x["p"]: x["price"] for x in r["clusters"]["bull"]}
     bear = {x["p"]: x["price"] for x in r["clusters"]["bear"]}
-    assert all(bear[p] <= r["pivot"] <= bull[p] for p in (0.80, 0.50, 0.20, 0.10))
+    c = r["clusters"]                       # green from min(pivot, MA), red from max(pivot, MA), like TradeWellX
+    assert c["bullBase"] <= c["bearBase"] and c["bullBase"] <= r["pivot"] <= c["bearBase"]
+    assert all(bear[p] <= c["bearBase"] and bull[p] >= c["bullBase"] for p in (0.80, 0.50, 0.20, 0.10))
+    assert [bull[p] for p in (0.80, 0.50, 0.20, 0.10, 0.05)] == sorted(bull[p] for p in (0.80, 0.50, 0.20, 0.10, 0.05))
+    assert [bear[p] for p in (0.80, 0.50, 0.20, 0.10, 0.02)] == sorted((bear[p] for p in (0.80, 0.50, 0.20, 0.10, 0.02)), reverse=True)
     assert r["oddsH"][0]["atLeast"] == 1.0 and r["oddsL"][0]["atLeast"] == 1.0
     assert r["params"]["wave"] == wave
     st = r["steps"]
@@ -116,6 +127,7 @@ def test_databento_nq():
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_never_share_a_wave()
+    test_bases_in_a_drop()
     test_clusters_and_odds()
     test_alpaca_qqq()
     test_databento_nq()
