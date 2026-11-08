@@ -120,22 +120,31 @@ def fractal_view(sub, claims, body, q):
     import fractal
     wave = _int(q.get("wave"), "Wave", 2, 100, 10)
     days = _int(q.get("days"), "Days to load", 1, 60, 10)
+    # Stats days: the history the levels and wave odds are drawn from. TradeWellX uses waves from before the window it
+    # shows (its levels at 10/30 come from moves no wave on screen had made), so this is separate from Days to load.
+    stats = _int(q.get("stats"), "Stats days", 1, 120, max(days, 30))
+    stats = max(stats, days)
     agg = _int(q.get("agg"), "Aggregation", 1, 60, 15)
     sym = (q.get("sym") or "QQQ").strip().upper()
     rth_only = q.get("rth") in ("1", "true")
-    # extra sessions before the window, so the MA, pivot and MacroTrend (50 bars) all exist on its first bar
+    # extra sessions before the stats history, so the MA, pivot and MacroTrend (50 bars) all exist on its first bar
     warm = 2 + (max(2 * wave, 51) * agg) // 390
     if sym in futdata.SYMS:                            # NQ / ES: the stored Databento 1-minute candles, all hours by default
-        bars, source = _fut_bars(sym, days + warm, agg, rth_only), "databento"
+        bars, source = _fut_bars(sym, stats + warm, agg, rth_only), "databento"
     else:                                              # stocks / ETFs: Alpaca, regular hours
-        bars, source = alpaca.bars(sub, sym, days + warm, agg), "alpaca"
-    keep = sorted({b[0][:10] for b in bars})[-days:]
-    win = next((i for i, b in enumerate(bars) if b[0][:10] >= keep[0]), 0) if keep else 0
+        bars, source = alpaca.bars(sub, sym, stats + warm, agg), "alpaca"
+    dates = sorted({b[0][:10] for b in bars})
+    first = lambda d: next((i for i, b in enumerate(bars) if b[0][:10] >= d), 0)
+    if not dates:
+        raise BadRequest(f"No {sym} bars came back.")
+    win_s, win = first(dates[-min(stats, len(dates))]), first(dates[-min(days, len(dates))])
+    if win_s < 2 * wave:
+        win_s = min(2 * wave, win)                     # not enough history: start the stats where the MA exists
     if win < 2 * wave:
         raise BadRequest(f"Not enough history before the window for Wave {wave}: lower the wave or the days.")
-    r = fractal.analyze(bars, wave, win)
+    r = fractal.analyze(bars, wave, win_s, show=win)
     r["bars"] = bars[win:]
-    r["params"] = {"sym": sym, "wave": wave, "days": days, "agg": agg, "source": source, "rth": rth_only or source == "alpaca",
+    r["params"] = {"sym": sym, "wave": wave, "days": days, "stats": stats, "statsFrom": bars[win_s][0], "agg": agg, "source": source, "rth": rth_only or source == "alpaca",
                    "feed": alpaca.status(sub)["feed"] if source == "alpaca" else "GLBX.MDP3"}
     return r
 

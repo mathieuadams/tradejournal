@@ -471,13 +471,14 @@ function zbar(z) {
 }
 
 /* ---------- Fractal: the TradeWellX Wave [N] rebuild (backend/fractal.py) ---------- */
-S.fx = { sym: 'QQQ', wave: 10, days: 10, agg: 15, rth: false, lv: 'steps' };
+S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 30, agg: 15, rth: false, lv: 'steps' };
 async function vFractal() {
   const f = S.fx, alp = await api('/alpaca');
   const ctl = `<div class="form" style="align-items:end">
       <label class="f">Symbol<input type="text" id="fx-sym" value="${esc(f.sym)}" style="width:90px;text-transform:uppercase"></label>
       <label class="f">Wave<input type="number" id="fx-wave" min="2" max="100" value="${f.wave}" style="width:70px"></label>
       <label class="f">Days to load<input type="number" id="fx-days" min="1" max="60" value="${f.days}" style="width:70px"></label>
+      <label class="f" title="History the levels and wave odds are drawn from (TradeWellX uses waves from before the window it shows)">Stats days<input type="number" id="fx-stats" min="1" max="120" value="${f.stats}" style="width:70px"></label>
       <label class="f">Aggregation (min)<select id="fx-agg">${[1, 5, 15, 30, 60].map(n => `<option ${n === f.agg ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <label class="check"><input type="checkbox" id="fx-rth" ${f.rth ? 'checked' : ''}> NQ / ES: regular hours only</label>
       <button class="btn primary" data-act="fx-load">Calculate</button></div>
@@ -489,7 +490,7 @@ async function vFractal() {
 async function fxLoad() {
   const f = S.fx, out = $('#fx-out');
   let r;
-  try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&agg=${f.agg}&rth=${f.rth ? 1 : 0}`); }
+  try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&stats=${f.stats}&agg=${f.agg}&rth=${f.rth ? 1 : 0}`); }
   catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; return; }
   S.fxR = r;
   const last = r.series[r.series.length - 1], pct = (a, b) => b ? sgn((a / b - 1) * 100, 2, '%') : '—';
@@ -497,7 +498,7 @@ async function fxLoad() {
   const odds = (rows, side) => `<table class="tbl"><thead><tr><th>${side}</th><th class="r">Waves</th><th class="r">% of waves</th><th class="r">Odds (at least)</th></tr></thead><tbody>${rows.map(o => `<tr><td class="mono">${side}${o.count}</td><td class="r mono">${o.n}</td><td class="r mono">${(o.pct * 100).toFixed(0)}%</td><td class="r"><b>${(o.atLeast * 100).toFixed(0)}%</b></td></tr>`).join('')}</tbody></table>`;
   const cur = r.current;
   out.innerHTML = `
-    <section class="panel"><div class="hd"><h2>${esc(r.params.sym)} · Wave [${r.params.wave}] · ${r.params.agg} min · ${r.bars.length} bars · ${r.params.days} days</h2><div class="grow"></div><span class="dim" style="font-size:12px">${esc(r.bars[0][0])} → ${esc(r.bars[r.bars.length - 1][0])} ET · ${esc(r.params.source)}</span><button class="btn sm" data-act="fx-csv" style="margin-left:10px">Download CSV</button></div>
+    <section class="panel"><div class="hd"><h2>${esc(r.params.sym)} · Wave [${r.params.wave}] · ${r.params.agg} min · ${r.bars.length} bars · ${r.params.days} days</h2><div class="grow"></div><span class="dim" style="font-size:12px">${esc(r.bars[0][0])} → ${esc(r.bars[r.bars.length - 1][0])} ET · levels from ${r.waves.length} waves since ${esc(String(r.params.statsFrom).slice(0, 10))} · ${esc(r.params.source)}</span><button class="btn sm" data-act="fx-csv" style="margin-left:10px">Download CSV</button></div>
       <div class="bd"><div class="kv">
         <div><div class="k">Close</div><div class="v">${fmt(r.close)}</div></div>
         <div><div class="k">Pivot</div><div class="v"><b>${fmt(r.pivot)}</b></div></div>
@@ -576,7 +577,7 @@ function fxFresh(r, k) {
   const I = r._idx, s = r.series[k], piv = s && s.pivot;
   if (!piv) return null;
   const up = [], dn = [];
-  r.waves.forEach(w => { const b = I[w.end]; if (b != null && b < k && !w.open) (w.side === 'H' ? up : dn).push(w.move); });
+  r.waves.forEach(w => { const b = I[w.end]; if ((b == null || b < k) && !w.open) (w.side === 'H' ? up : dn).push(w.move); });   // not on screen = before the window
   const ma = s.ma ?? piv, lo = Math.min(piv, ma), hi = Math.max(piv, ma);
   return { pivot: piv, ma, nH: up.length, nL: dn.length, bullBase: lo, bearBase: hi,
     bull: up.length >= 2 ? fxRank(up, FX_BULL).map((m, i) => ({ p: FX_BULL[i], move: m, price: lo * (1 + m) })) : [],
@@ -589,8 +590,8 @@ function fxLevelsAt(r, k) {
   if (!r._idx) { r._idx = {}; r.bars.forEach((b, i) => { r._idx[b[0]] = i; }); }
   const now = fxFresh(r, k);
   if (!now) return null;
-  const I = r._idx, cur = r.waves.find(w => I[w.start] <= k && k <= I[w.end]);
-  const a = cur ? I[cur.start] : k, before = a > 0 ? fxFresh(r, a - 1) : null;
+  const I = r._idx, cur = r.waves.find(w => (I[w.start] ?? -1) <= k && k <= (I[w.end] ?? -1));
+  const a = cur ? (I[cur.start] ?? 0) : k, before = a > 0 ? fxFresh(r, a - 1) : null;
   const above = r.bars[k][4] > now.pivot;
   const out = { ...now, frozen: above ? 'bull' : 'bear', since: r.bars[a][0] };
   if (before) {
@@ -1268,7 +1269,7 @@ document.addEventListener('click', async e => {
         r.bars.forEach((b, i) => { const x = r.series[i]; rows.push([b[0], b[1], b[2], b[3], b[4], b[5], x.ma, x.pivot, x.slowMa, x.direction, x.peakToTrough ?? '', x.barsElapsed ?? '', x.pivot ? (b[4] / x.pivot).toFixed(6) : '']); });
         const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }));
         a.download = `${r.params.sym}_wave${r.params.wave}_${r.params.agg}m_${r.params.days}d.csv`; a.click(); URL.revokeObjectURL(a.href); break; }
-      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
+      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, stats: +$('#fx-stats').value || 30, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }
       case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;
       case 'alp-test': el.disabled = true; await api('/alpaca/test', { method: 'POST' }); toast('Alpaca answered.'); vData(); break;

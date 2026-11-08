@@ -136,6 +136,11 @@ def test_alpaca_qqq():
     assert st == 200, r
     assert len({b[0][:10] for b in r["bars"]}) == 10 and all("09:30" <= b[0][11:16] < "16:00" for b in r["bars"])
     _check_view(r, 10)
+    st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "5", "stats": "40", "agg": "15"})
+    assert st == 200, r
+    assert len({b[0][:10] for b in r["bars"]}) == 5 and len(r["series"]) == len(r["bars"])
+    assert r["params"]["statsFrom"] < r["bars"][0][0] and r["waves"][0]["start"] < r["bars"][0][0]   # waves from before the window
+    _check_view(r, 10)
     st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "7", "days": "50", "agg": "60"})
     assert st == 200, r
     hrs = sorted({b[0][11:16] for b in r["bars"]})

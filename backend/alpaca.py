@@ -121,7 +121,7 @@ def bars(sub, sym, days=10, tf=15, rth=True):
     sym = check_sym(sym)
     if tf not in TFS:
         raise BadRequest(f"Aggregation must be one of {', '.join(map(str, TFS))} minutes.")
-    days = max(1, min(60, int(days)))
+    days = max(1, min(130, int(days)))
     c = creds(sub)
     feed = status(sub)["feed"]
     end = datetime.utcnow() - timedelta(minutes=16 if feed == "sip" else 0)

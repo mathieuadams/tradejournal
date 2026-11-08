@@ -137,7 +137,8 @@ def compute(bars, wave=10, win=0):
 
 
 def _rank(n, p):
-    return min(n - 1, max(0, round((1 - p) * (n - 1))))
+    # halves round up (like the chart's Math.round), not Python's round-half-to-even
+    return min(n - 1, max(0, int((1 - p) * (n - 1) + 0.5 + 1e-9)))
 
 
 def levels(values, ps):
@@ -206,7 +207,7 @@ def _fresh(r, k, idx):
     sk = r["series"][k]
     if not sk["pivot"]:
         return None
-    done = [w for w in r["waves"] if not w.get("open") and idx.get(w["end"], k) < k]
+    done = [w for w in r["waves"] if not w.get("open") and idx.get(w["end"], -1) < k]   # not on screen = earlier
     up = [w["move"] for w in done if w["side"] == "H"]
     dn = [w["move"] for w in done if w["side"] == "L"]
     piv, ma = sk["pivot"], sk["ma"] if sk["ma"] is not None else sk["pivot"]
@@ -224,8 +225,8 @@ def levels_at(r, k):
     now = _fresh(r, k, idx)
     if not now:
         return {"bull": [], "bear": []}
-    cur = next((w for w in r["waves"] if idx.get(w["start"], 10 ** 9) <= k <= idx.get(w["end"], -1)), None)
-    a = idx[cur["start"]] if cur else k
+    cur = next((w for w in r["waves"] if idx.get(w["start"], -1) <= k <= idx.get(w["end"], -1)), None)
+    a = idx.get(cur["start"], 0) if cur else k
     before = _fresh(r, a - 1, idx) if a > 0 else None
     above = r["close_at"][k] > r["series"][k]["pivot"]
     if before:
@@ -235,9 +236,13 @@ def levels_at(r, k):
     return now
 
 
-def analyze(bars, wave=10, win=0):
+def analyze(bars, wave=10, win=0, show=None):
+    """win: first bar of the statistics history (waves start counting there); show: first bar displayed (>= win).
+    The series is returned from `show`; the waves (and so the levels and odds) go back to `win`."""
+    show = win if show is None else max(show, win)
     r = compute(bars, wave, win)
-    r["close_at"] = [float(b[4]) for b in bars[win:]]
+    r["series"] = r["series"][show - win:]
+    r["close_at"] = [float(b[4]) for b in bars[show:]]
     r["clusters"] = levels_at(r, len(r["series"]) - 1) if r["pivot"] and r["series"] else {"bull": [], "bear": []}
     del r["close_at"]
     r["oddsH"], r["oddsL"] = odds(r["waves"], "H"), odds(r["waves"], "L")
