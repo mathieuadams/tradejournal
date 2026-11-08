@@ -509,14 +509,15 @@ async function fxLoad() {
         <div><div class="k">Waves</div><div class="v">${r.oddsH.reduce((a, o) => a + o.n, 0)} H · ${r.oddsL.reduce((a, o) => a + o.n, 0)} L</div></div>
       </div>
       <div style="margin-top:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="fx-next" ${S.fx.next !== false ? 'checked' : ''}> Show what came next (faded)</label><label class="check"><input type="checkbox" id="fx-imp" ${S.fx.imp !== false ? 'checked' : ''}> Open / closed wave lines</label><label class="check"><input type="checkbox" id="fx-lin" ${S.fx.linear ? 'checked' : ''}> Linear graph (real prices, one scale)</label></div>
-      <div id="fx-chart" style="margin-top:8px">${fxChart(r, r.bars.length - 1)}</div>
-      <div id="fx-lower">${fxLower(r, r.bars.length - 1)}</div>
-      <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px">
+      <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;position:sticky;top:0;z-index:5;background:var(--panel, #11161d);padding:6px 0">
         <span class="dim mono" id="fx-at" style="font-size:12px">${esc(r.bars[r.bars.length - 1][0])}</span>
         <button class="btn sm" data-act="fx-step" data-d="-1">◀</button>
         <input type="range" id="fx-k" min="${Math.min(r.bars.length - 1, 2 * r.params.wave)}" max="${r.bars.length - 1}" value="${r.bars.length - 1}" style="width:min(520px,60vw)">
         <button class="btn sm" data-act="fx-step" data-d="1">▶</button>
-        <button class="btn sm" data-act="fx-step" data-d="9999">Latest</button></div></div></section>
+        <button class="btn sm" data-act="fx-step" data-d="9999">Latest</button></div>
+      <div id="fx-chart" style="margin-top:8px">${fxChart(r, r.bars.length - 1)}</div>
+      <div id="fx-lower">${fxLower(r, r.bars.length - 1)}</div>
+</div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">pivot × (1 ± the move that p of past waves reached)</span></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">Move</th></tr></thead><tbody>
@@ -698,8 +699,7 @@ function fxChart(r, k) {
     <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>
     ${box(6, 6, [`Above pivot: average ${avg(hb)} bars per wave (${hb.length} waves)`, `Longest above: ${hb.length ? Math.max(...hb) : 0} bars`])}
     ${box(6, H - 54, [`Below pivot: average ${avg(lb)} bars per wave (${lb.length} waves)`, `Longest below: ${lb.length ? Math.max(...lb) : 0} bars`, `Scale: +${(up * 100).toFixed(2)}% / −${(dn * 100).toFixed(2)}% around the pivot${fr ? ' (fractal: each bar vs its own pivot)' : ' (linear)'}`])}
-    ${seg ? '' : `<text x="${(W - padR) / 2}" y="40" font-size="12" text-anchor="middle" fill="#cfd6df">Levels start once 2 H and 2 L waves have finished</text>`}</svg>
-    <div class="note">White: pivot, the centre line. Fractal Graph (like TradeWellX): each bar is drawn as a % of the pivot in force at that bar, and the open lines show each wave's move applied to the slider bar's pivot; the halves above and below are scaled separately. Linear graph: real prices. Purple: MA (the vector). Bands: percent-probable levels in force at the slider bar (finished waves; below the pivot green updates every bar and red stays frozen from the cross, above the pivot the reverse; green from the lower of pivot / vector, red from the higher, like TradeWellX; each level sits at its move from the centre line: green above, red below; the price is that move from its base; hover a level for the detail). Dashed lines: each wave's high / low, faded once price came back to it (closed), red while still open with bars since in [ ]. Hover a line for its detail. Blue line: slider bar. ▲ / ▼: close crossed the vector on the far side of the pivot (long / short, target the pivot).</div>`;
+    ${seg ? '' : `<text x="${(W - padR) / 2}" y="40" font-size="12" text-anchor="middle" fill="#cfd6df">Levels start once 2 H and 2 L waves have finished</text>`}</svg>`;
 }
 
 /* ---------- Data (Databento) ---------- */
