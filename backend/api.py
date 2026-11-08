@@ -123,14 +123,17 @@ def fractal_view(sub, claims, body, q):
     agg = _int(q.get("agg"), "Aggregation", 1, 60, 15)
     sym = (q.get("sym") or "QQQ").strip().upper()
     rth_only = q.get("rth") in ("1", "true")
+    warm = 2 + (2 * wave * agg) // 390                 # extra sessions before the window: the MA and pivot exist on its first bar
     if sym in futdata.SYMS:                            # NQ / ES: the stored Databento 1-minute candles, all hours by default
-        bars, source = _fut_bars(sym, days, agg, rth_only), "databento"
+        bars, source = _fut_bars(sym, days + warm, agg, rth_only), "databento"
     else:                                              # stocks / ETFs: Alpaca, regular hours
-        bars, source = alpaca.bars(sub, sym, days, agg), "alpaca"
-    if len(bars) < 2 * wave + 2:
-        raise BadRequest(f"Only {len(bars)} bars came back: not enough for Wave {wave}.")
-    r = fractal.analyze(bars, wave)
-    r["bars"] = bars
+        bars, source = alpaca.bars(sub, sym, days + warm, agg), "alpaca"
+    keep = sorted({b[0][:10] for b in bars})[-days:]
+    win = next((i for i, b in enumerate(bars) if b[0][:10] >= keep[0]), 0) if keep else 0
+    if win < 2 * wave:
+        raise BadRequest(f"Not enough history before the window for Wave {wave}: lower the wave or the days.")
+    r = fractal.analyze(bars, wave, win)
+    r["bars"] = bars[win:]
     r["params"] = {"sym": sym, "wave": wave, "days": days, "agg": agg, "source": source, "rth": rth_only or source == "alpaca",
                    "feed": alpaca.status(sub)["feed"] if source == "alpaca" else "GLBX.MDP3"}
     return r

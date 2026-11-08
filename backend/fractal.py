@@ -29,8 +29,9 @@ def _sign(x, eps=1e-9):
     return 1 if x > eps else -1 if x < -eps else 0
 
 
-def compute(bars, wave=10):
-    """Per-bar series and the list of waves."""
+def compute(bars, wave=10, win=0):
+    """Per-bar series and the list of waves. Bars before `start` only warm up the MA and the pivot (TradeWellX loads
+    history before the window, so its first wave starts on the window's first bar)."""
     t = [b[0] for b in bars]
     h = [float(b[2]) for b in bars]
     lo = [float(b[3]) for b in bars]
@@ -83,7 +84,7 @@ def compute(bars, wave=10):
                       "extreme": t[k], "count": cnt, "price": h[k] if side > 0 else lo[k], "pivot": pivot[k],
                       "move": move})
 
-    for i in range(n):
+    for i in range(win, n):
         if pivot[i] is None:
             continue
         s = 1 if c[i] > pivot[i] else -1
@@ -94,10 +95,11 @@ def compute(bars, wave=10):
     open_wave = None
     if side and start is not None:
         close_wave(n - 1)
-        open_wave = waves.pop()                       # the wave still running is not used for statistics
+        open_wave = waves[-1]                         # the wave still running: counted in the statistics, like TradeWellX
+        open_wave["open"] = True
 
     series = [{"t": t[i], "ma": ma[i], "slowMa": slow[i], "pivot": pivot[i], "direction": direction[i],
-               "barsElapsed": since[i], "peakToTrough": label[i]} for i in range(n)]
+               "barsElapsed": since[i], "peakToTrough": label[i]} for i in range(n)][win:]
     return {"series": series, "waves": waves, "current": open_wave,
             "pivot": pivot[-1] if n else None, "close": c[-1] if n else None}
 
@@ -133,8 +135,8 @@ def odds(waves, side):
     return out
 
 
-def analyze(bars, wave=10):
-    r = compute(bars, wave)
+def analyze(bars, wave=10, win=0):
+    r = compute(bars, wave, win)
     r["clusters"] = clusters(r["waves"], r["pivot"]) if r["pivot"] else {"bull": [], "bear": []}
     r["oddsH"], r["oddsL"] = odds(r["waves"], "H"), odds(r["waves"], "L")
     return r

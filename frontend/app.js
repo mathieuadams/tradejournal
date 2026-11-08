@@ -491,12 +491,13 @@ async function fxLoad() {
   let r;
   try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&agg=${f.agg}&rth=${f.rth ? 1 : 0}`); }
   catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; return; }
+  S.fxR = r;
   const last = r.series[r.series.length - 1], pct = (a, b) => b ? sgn((a / b - 1) * 100, 2, '%') : '—';
   const lvl = (x, cls) => `<tr><td><span class="pill ${cls}">${Math.round(x.p * 100)}%</span></td><td class="r mono"><b>${fmt(x.price)}</b></td><td class="r mono">${sgn(x.move * 100, 2, '%')}</td></tr>`;
   const odds = (rows, side) => `<table class="tbl"><thead><tr><th>${side}</th><th class="r">Waves</th><th class="r">% of waves</th><th class="r">Odds (at least)</th></tr></thead><tbody>${rows.map(o => `<tr><td class="mono">${side}${o.count}</td><td class="r mono">${o.n}</td><td class="r mono">${(o.pct * 100).toFixed(0)}%</td><td class="r"><b>${(o.atLeast * 100).toFixed(0)}%</b></td></tr>`).join('')}</tbody></table>`;
   const cur = r.current;
   out.innerHTML = `
-    <section class="panel"><div class="hd"><h2>${esc(r.params.sym)} · Wave [${r.params.wave}] · ${r.params.agg} min · ${r.bars.length} bars · ${r.params.days} days</h2><div class="grow"></div><span class="dim" style="font-size:12px">${esc(r.bars[0][0])} → ${esc(r.bars[r.bars.length - 1][0])} ET · ${esc(r.params.source)}</span></div>
+    <section class="panel"><div class="hd"><h2>${esc(r.params.sym)} · Wave [${r.params.wave}] · ${r.params.agg} min · ${r.bars.length} bars · ${r.params.days} days</h2><div class="grow"></div><span class="dim" style="font-size:12px">${esc(r.bars[0][0])} → ${esc(r.bars[r.bars.length - 1][0])} ET · ${esc(r.params.source)}</span><button class="btn sm" data-act="fx-csv" style="margin-left:10px">Download CSV</button></div>
       <div class="bd"><div class="kv">
         <div><div class="k">Close</div><div class="v">${fmt(r.close)}</div></div>
         <div><div class="k">Pivot</div><div class="v"><b>${fmt(r.pivot)}</b></div></div>
@@ -504,8 +505,8 @@ async function fxLoad() {
         <div><div class="k">Pivot close %</div><div class="v">${pct(r.close, r.pivot)}</div></div>
         <div><div class="k">SlowMA</div><div class="v">${fmt(last.slowMa)}</div></div>
         <div><div class="k">Direction</div><div class="v ${last.direction > 0 ? 'win' : last.direction < 0 ? 'loss' : ''}">${last.direction > 0 ? '+1 long' : last.direction < 0 ? '−1 short' : '0'}</div></div>
-        <div><div class="k">Current wave</div><div class="v">${cur ? `${cur.side}${cur.count} · ${cur.bars} bars` : '—'}</div></div>
-        <div><div class="k">Completed waves</div><div class="v">${r.oddsH.reduce((a, o) => a + o.n, 0)} H · ${r.oddsL.reduce((a, o) => a + o.n, 0)} L</div></div>
+        <div><div class="k">Current wave (counted, like TradeWellX)</div><div class="v">${cur ? `${cur.side}${cur.count} · ${cur.bars} bars` : '—'}</div></div>
+        <div><div class="k">Waves</div><div class="v">${r.oddsH.reduce((a, o) => a + o.n, 0)} H · ${r.oddsL.reduce((a, o) => a + o.n, 0)} L</div></div>
       </div><div style="margin-top:14px">${fxChart(r)}</div></div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">pivot × (1 ± the move that p of past waves reached)</span></div>
@@ -1105,6 +1106,10 @@ document.addEventListener('click', async e => {
     if (ds.rplayout) { S.rpLayout = ds.rplayout; return vChart(); }
     switch (act) {
       case 'refresh': await api('/data/refresh', { method: 'POST', body: {} }); toast('Updating the candles…'); if (S.page === 'data') vData(); break;
+      case 'fx-csv': { const r = S.fxR; if (!r) return; const rows = [['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'MA', 'Pivot', 'SlowMA', 'Direction', 'PeakToTrough', 'BarsElapsed', 'PivotClose']];
+        r.bars.forEach((b, i) => { const x = r.series[i]; rows.push([b[0], b[1], b[2], b[3], b[4], b[5], x.ma, x.pivot, x.slowMa, x.direction, x.peakToTrough ?? '', x.barsElapsed ?? '', x.pivot ? (b[4] / x.pivot).toFixed(6) : '']); });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }));
+        a.download = `${r.params.sym}_wave${r.params.wave}_${r.params.agg}m_${r.params.days}d.csv`; a.click(); URL.revokeObjectURL(a.href); break; }
       case 'fx-load': S.fx = { sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }
       case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;
