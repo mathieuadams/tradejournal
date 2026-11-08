@@ -105,7 +105,11 @@ def compute(bars, wave=10, win=0):
             move = 1 - lo[k] / pivot[k]
         cnt = k - start + 1
         label[k] = cnt * side
-        waves.append({"side": "H" if side > 0 else "L", "start": t[start], "end": t[end], "bars": end - start + 1,
+        prev = waves[-1] if waves else None        # peak-to-trough: from the previous wave's extreme (other side)
+        pt = None
+        if prev and prev["side"] != ("H" if side > 0 else "L"):
+            pt = (h[k] / prev["price"] - 1) if side > 0 else (1 - lo[k] / prev["price"])
+        waves.append({"ptMove": pt, "side": "H" if side > 0 else "L", "start": t[start], "end": t[end], "bars": end - start + 1,
                       "extreme": t[k], "count": cnt, "price": h[k] if side > 0 else lo[k], "pivot": pivot[k],
                       "move": move})
 

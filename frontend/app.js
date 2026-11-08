@@ -471,7 +471,7 @@ function zbar(z) {
 }
 
 /* ---------- Fractal: the TradeWellX Wave [N] rebuild (backend/fractal.py) ---------- */
-S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 30, agg: 15, rth: false, lv: 'steps' };
+S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 30, agg: 15, rth: false, lv: 'steps', fixed: true, basis: 'pivot' };
 async function vFractal() {
   const f = S.fx, alp = await api('/alpaca');
   const ctl = `<div class="form" style="align-items:end">
@@ -509,7 +509,9 @@ async function fxLoad() {
         <div><div class="k">Current wave (counted, like TradeWellX)</div><div class="v">${cur ? `${cur.side}${cur.count} · ${cur.bars} bars` : '—'}</div></div>
         <div><div class="k">Waves</div><div class="v">${r.oddsH.reduce((a, o) => a + o.n, 0)} H · ${r.oddsL.reduce((a, o) => a + o.n, 0)} L</div></div>
       </div>
-      <div style="margin-top:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="fx-next" ${S.fx.next !== false ? 'checked' : ''}> Show what came next (faded)</label><label class="check"><input type="checkbox" id="fx-imp" ${S.fx.imp !== false ? 'checked' : ''}> Open / closed wave lines</label><label class="check"><input type="checkbox" id="fx-lin" ${S.fx.linear ? 'checked' : ''}> Linear graph (real prices, one scale)</label></div>
+      <div style="margin-top:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="fx-next" ${S.fx.next !== false ? 'checked' : ''}> Show what came next (faded)</label><label class="check"><input type="checkbox" id="fx-imp" ${S.fx.imp !== false ? 'checked' : ''}> Open / closed wave lines</label><label class="check"><input type="checkbox" id="fx-lin" ${S.fx.linear ? 'checked' : ''}> Linear graph (real prices, one scale)</label>
+        <label class="check" title="TradeWellX keeps the same %s through the replay; untick to recompute them from the waves finished by each bar"><input type="checkbox" id="fx-fixed" ${S.fx.fixed !== false ? 'checked' : ''}> Same %s through the replay</label>
+        <label class="f" style="flex-direction:row;align-items:center;gap:6px">Wave move<select id="fx-basis"><option value="pivot" ${S.fx.basis !== 'peak' ? 'selected' : ''}>from its pivot</option><option value="peak" ${S.fx.basis === 'peak' ? 'selected' : ''}>peak to trough</option></select></label></div>
       <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;position:sticky;top:0;z-index:5;background:var(--panel, #11161d);padding:6px 0">
         <span class="dim mono" id="fx-at" style="font-size:12px">${esc(r.bars[r.bars.length - 1][0])}</span>
         <button class="btn sm" data-act="fx-step" data-d="-1">◀</button>
@@ -520,18 +522,16 @@ async function fxLoad() {
       <div id="fx-lower">${fxLower(r, r.bars.length - 1)}</div>
 </div></section>
     <div class="row"><div class="col-main">
-      <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">pivot × (1 ± the move that p of past waves reached)</span></div>
-        <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">Move</th></tr></thead><tbody>
-          ${[...r.clusters.bull].reverse().map(x => lvl(x, 'ok')).join('')}
-          <tr><td><b>Pivot</b></td><td class="r mono"><b>${fmt(r.pivot)}</b></td><td class="r mono">0.00%</td></tr>
-          ${r.clusters.bear.map(x => lvl(x, 'warn')).join('')}</tbody></table></div></section>
+      <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">at the last bar · green from the lower of pivot / vector, red from the higher</span></div>
+        <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">Move</th></tr></thead><tbody id="fx-cl"></tbody></table></div></section>
       <section class="panel"><div class="hd"><h2>Waves</h2><span class="dim" style="font-size:12px">count = bars from the wave start to its extreme</span></div>
-        <div class="tbl-wrap" style="max-height:360px;overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Start</th><th>Extreme at</th><th class="r">Bars</th><th class="r">Pivot</th><th class="r">Extreme</th><th class="r">Move</th></tr></thead><tbody>
-          ${[...r.waves].reverse().map(w => `<tr><td class="mono ${w.side === 'H' ? 'win' : 'loss'}">${w.side}${w.count}</td><td class="mono">${esc(w.start.slice(5))}</td><td class="mono">${esc(w.extreme.slice(5))}</td><td class="r mono">${w.bars}</td><td class="r mono">${fmt(w.pivot)}</td><td class="r mono">${fmt(w.price)}</td><td class="r mono">${sgn((w.side === 'H' ? 1 : -1) * w.move * 100, 2, '%')}</td></tr>`).join('')}</tbody></table></div></section>
+        <div class="tbl-wrap" style="max-height:360px;overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Start</th><th>Extreme at</th><th class="r">Bars</th><th class="r">Pivot</th><th class="r">Extreme</th><th class="r">Move</th><th class="r">Peak to trough</th></tr></thead><tbody>
+          ${[...r.waves].reverse().map(w => `<tr><td class="mono ${w.side === 'H' ? 'win' : 'loss'}">${w.side}${w.count}</td><td class="mono">${esc(w.start.slice(5))}</td><td class="mono">${esc(w.extreme.slice(5))}</td><td class="r mono">${w.bars}</td><td class="r mono">${fmt(w.pivot)}</td><td class="r mono">${fmt(w.price)}</td><td class="r mono">${sgn((w.side === 'H' ? 1 : -1) * w.move * 100, 2, '%')}</td><td class="r mono">${w.ptMove == null ? '—' : sgn((w.side === 'H' ? 1 : -1) * w.ptMove * 100, 2, '%')}</td></tr>`).join('')}</tbody></table></div></section>
     </div><div class="col-side">
       <section class="panel"><div class="hd"><h2>Option Analyzer: H waves</h2></div><div class="tbl-wrap">${odds(r.oddsH, 'H')}</div></section>
       <section class="panel"><div class="hd"><h2>Option Analyzer: L waves</h2></div><div class="tbl-wrap">${odds(r.oddsL, 'L')}</div></section>
     </div></div>`;
+  fxTable();
 }
 /* MacroTrend strip + StdDev panel under the chart (same x axis as fxChart). */
 function fxLower(r, k) {
@@ -562,7 +562,7 @@ function fxAt() {
   const k = +sl.value; $('#fx-chart').innerHTML = fxChart(r, k); $('#fx-lower').innerHTML = fxLower(r, k); $('#fx-at').textContent = r.bars[k][0];
 }
 document.addEventListener('input', e => { if (e.target.id === 'fx-k') fxAt(); });
-document.addEventListener('change', e => { if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } if (e.target.id === 'fx-lin') { S.fx.linear = e.target.checked; fxAt(); } });
+document.addEventListener('change', e => { if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } if (e.target.id === 'fx-lin') { S.fx.linear = e.target.checked; fxAt(); } if (e.target.id === 'fx-fixed') { S.fx.fixed = e.target.checked; fxAt(); fxTable(); } if (e.target.id === 'fx-basis') { S.fx.basis = e.target.value; fxAt(); fxTable(); } });
 /* Levels in force at bar k (TradeWellX): every wave finished before k plus the wave still running at k (its move so
    far); the move that p of them reached, nearest wave, no two levels on one wave (backend/fractal.py levels()).
    Green from min(pivot, MA), red from max(pivot, MA). */
@@ -573,11 +573,14 @@ function fxRank(vals, ps) {
   return out;
 }
 function fxFresh(r, k) {
-  /* Levels as they would be computed at bar k: the waves FINISHED before k, green from min(pivot, MA), red from max. */
+  /* Levels as computed at bar k. Moves: "fixed" (TradeWellX: the %s are worked out once from every finished wave and
+     stay the same through the replay) or "rolling" (only waves finished before k). Basis: from the wave's pivot, or
+     peak-to-trough (from the previous wave's extreme). Green from min(pivot, MA), red from max(pivot, MA). */
   const I = r._idx, s = r.series[k], piv = s && s.pivot;
   if (!piv) return null;
+  const last = r.bars.length - 1, cut = S.fx.fixed !== false ? last : k, pt = S.fx.basis === 'peak';
   const up = [], dn = [];
-  r.waves.forEach(w => { const b = I[w.end]; if ((b == null || b < k) && !w.open) (w.side === 'H' ? up : dn).push(w.move); });   // not on screen = before the window
+  r.waves.forEach(w => { const b = I[w.end]; if ((b == null || b < cut) && !w.open) { const m = pt ? w.ptMove : w.move; if (m != null) (w.side === 'H' ? up : dn).push(m); } });
   const ma = s.ma ?? piv, lo = Math.min(piv, ma), hi = Math.max(piv, ma);
   return { pivot: piv, ma, nH: up.length, nL: dn.length, bullBase: lo, bearBase: hi,
     bull: up.length >= 2 ? fxRank(up, FX_BULL).map((m, i) => ({ p: FX_BULL[i], move: m, price: lo * (1 + m) })) : [],
@@ -600,6 +603,12 @@ function fxLevelsAt(r, k) {
   }
   if (!out.bull.length && !out.bear.length) return null;
   return out;
+}
+function fxTable() {
+  const r = S.fxR, el = $('#fx-cl'); if (!r || !el) return;
+  const L = fxLevelsAt(r, r.bars.length - 1) || { bull: [], bear: [], pivot: r.pivot };
+  const row = (x, cls) => `<tr><td><span class="pill ${cls}">${Math.round(x.p * 100)}%</span></td><td class="r mono"><b>${fmt(x.price)}</b></td><td class="r mono">${sgn(x.move * 100, 2, '%')}</td></tr>`;
+  el.innerHTML = [...L.bull].reverse().map(x => row(x, 'ok')).join('') + `<tr><td><b>Pivot</b></td><td class="r mono"><b>${fmt(r.pivot)}</b></td><td class="r mono">0.00%</td></tr>` + L.bear.map(x => row(x, 'warn')).join('');
 }
 function fxChart(r, k) {
   /* TradeWellX layout: the pivot in force at bar k sits at the vertical centre; the levels are the ones in force then
