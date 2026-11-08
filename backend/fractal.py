@@ -129,13 +129,16 @@ def survival(values, p):
     return v[_rank(len(v), p)] if v else None
 
 
-def clusters(waves, pivot):
-    """Green (bull) and red (bear) percent-probable levels around the pivot."""
+def clusters(waves, pivot, ma=None):
+    """Green (bull) and red (bear) percent-probable levels. Like TradeWellX, green is measured from the lower of the
+    pivot and the purple vector (MA), red from the higher: in a drop the targets up start from the vector, not the pivot."""
+    ma = pivot if ma is None else ma
+    lo_base, hi_base = min(pivot, ma), max(pivot, ma)
     up = [w["move"] for w in waves if w["side"] == "H"]
     dn = [w["move"] for w in waves if w["side"] == "L"]
-    bull = [{"p": p, "move": m, "price": pivot * (1 + m)} for p, m in zip(BULL_P, levels(up, BULL_P))] if up else []
-    bear = [{"p": p, "move": -m, "price": pivot * (1 - m)} for p, m in zip(BEAR_P, levels(dn, BEAR_P))] if dn else []
-    return {"bull": bull, "bear": bear}
+    bull = [{"p": p, "move": m, "price": lo_base * (1 + m)} for p, m in zip(BULL_P, levels(up, BULL_P))] if up else []
+    bear = [{"p": p, "move": -m, "price": hi_base * (1 - m)} for p, m in zip(BEAR_P, levels(dn, BEAR_P))] if dn else []
+    return {"bull": bull, "bear": bear, "bullBase": lo_base, "bearBase": hi_base}
 
 
 def odds(waves, side):
@@ -168,7 +171,8 @@ def steps(r, min_waves=4):
 
 def analyze(bars, wave=10, win=0):
     r = compute(bars, wave, win)
-    r["clusters"] = clusters(r["waves"], r["pivot"]) if r["pivot"] else {"bull": [], "bear": []}
+    ma = r["series"][-1]["ma"] if r["series"] else None
+    r["clusters"] = clusters(r["waves"], r["pivot"], ma) if r["pivot"] else {"bull": [], "bear": []}
     r["oddsH"], r["oddsL"] = odds(r["waves"], "H"), odds(r["waves"], "L")
     r["steps"] = steps(r)
     return r

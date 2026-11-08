@@ -508,7 +508,7 @@ async function fxLoad() {
         <div><div class="k">Current wave (counted, like TradeWellX)</div><div class="v">${cur ? `${cur.side}${cur.count} · ${cur.bars} bars` : '—'}</div></div>
         <div><div class="k">Waves</div><div class="v">${r.oddsH.reduce((a, o) => a + o.n, 0)} H · ${r.oddsL.reduce((a, o) => a + o.n, 0)} L</div></div>
       </div>
-      <div style="margin-top:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="fx-next" ${S.fx.next !== false ? 'checked' : ''}> Show what came next (faded)</label><label class="check"><input type="checkbox" id="fx-imp" ${S.fx.imp !== false ? 'checked' : ''}> Open / closed wave lines</label></div>
+      <div style="margin-top:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="fx-next" ${S.fx.next !== false ? 'checked' : ''}> Show what came next (faded)</label><label class="check"><input type="checkbox" id="fx-imp" ${S.fx.imp !== false ? 'checked' : ''}> Open / closed wave lines</label><label class="check"><input type="checkbox" id="fx-lin" ${S.fx.linear ? 'checked' : ''}> Linear graph (one scale above and below the pivot)</label></div>
       <div id="fx-chart" style="margin-top:8px">${fxChart(r, r.bars.length - 1)}</div>
       <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px">
         <span class="dim mono" id="fx-at" style="font-size:12px">${esc(r.bars[r.bars.length - 1][0])}</span>
@@ -518,7 +518,7 @@ async function fxLoad() {
         <button class="btn sm" data-act="fx-step" data-d="9999">Latest</button></div></div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">pivot × (1 ± the move that p of past waves reached)</span></div>
-        <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">From pivot</th></tr></thead><tbody>
+        <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">Move</th></tr></thead><tbody>
           ${[...r.clusters.bull].reverse().map(x => lvl(x, 'ok')).join('')}
           <tr><td><b>Pivot</b></td><td class="r mono"><b>${fmt(r.pivot)}</b></td><td class="r mono">0.00%</td></tr>
           ${r.clusters.bear.map(x => lvl(x, 'warn')).join('')}</tbody></table></div></section>
@@ -535,21 +535,56 @@ function fxAt() {
   const k = +sl.value; $('#fx-chart').innerHTML = fxChart(r, k); $('#fx-at').textContent = r.bars[k][0];
 }
 document.addEventListener('input', e => { if (e.target.id === 'fx-k') fxAt(); });
-document.addEventListener('change', e => { if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } });
+document.addEventListener('change', e => { if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } if (e.target.id === 'fx-lin') { S.fx.linear = e.target.checked; fxAt(); } });
+/* Levels in force at bar k (TradeWellX): every wave finished before k plus the wave still running at k (its move so
+   far); the move that p of them reached, nearest wave, no two levels on one wave (backend/fractal.py levels()).
+   Green from min(pivot, MA), red from max(pivot, MA). */
+const FX_BULL = [0.80, 0.50, 0.20, 0.10, 0.05], FX_BEAR = [0.80, 0.50, 0.20, 0.10, 0.02];
+function fxRank(vals, ps) {
+  const v = [...vals].sort((a, b) => a - b), out = []; let last = -1;
+  ps.forEach(p => { let i = Math.min(v.length - 1, Math.max(0, Math.round((1 - p) * (v.length - 1)))); if (i <= last) i = Math.min(v.length - 1, last + 1); out.push(v[i]); last = i; });
+  return out;
+}
+function fxLevelsAt(r, k) {
+  if (!r._idx) { r._idx = {}; r.bars.forEach((b, i) => { r._idx[b[0]] = i; }); }
+  const I = r._idx, s = r.series[k], piv = s.pivot;
+  if (!piv) return null;
+  const up = [], dn = [];
+  r.waves.forEach(w => {
+    const a = I[w.start], b = I[w.end];
+    if (a == null || a > k) return;
+    let move = w.move;
+    if (b >= k) {                                       // running at k: its extreme so far
+      let e = w.side === 'H' ? -Infinity : Infinity, ei = a;
+      for (let i = a; i <= k; i++) { if (w.side === 'H' ? r.bars[i][2] > e : r.bars[i][3] < e) { e = w.side === 'H' ? r.bars[i][2] : r.bars[i][3]; ei = i; } }
+      const pv = r.series[ei].pivot; move = w.side === 'H' ? e / pv - 1 : 1 - e / pv;
+    }
+    (w.side === 'H' ? up : dn).push(move);
+  });
+  if (up.length < 4 || dn.length < 4) return null;
+  const ma = s.ma ?? piv, lo = Math.min(piv, ma), hi = Math.max(piv, ma);
+  return { pivot: piv, ma, nH: up.length, nL: dn.length,
+    bull: fxRank(up, FX_BULL).map((m, i) => ({ p: FX_BULL[i], move: m, price: lo * (1 + m) })),
+    bear: fxRank(dn, FX_BEAR).map((m, i) => ({ p: FX_BEAR[i], move: -m, price: hi * (1 - m) })) };
+}
 function fxChart(r, k) {
   /* TradeWellX layout: the pivot in force at bar k sits at the vertical centre; the levels are the ones in force then
      (recalculated at each pivot change from the waves finished before it). Bars after k are faded (or hidden). */
   const W = 1100, H = 440, padR = 170, n = r.bars.length, cw = (W - padR) / n, X = i => (i + 0.5) * cw;
   const sx = r.series[k], piv = sx.pivot, nextOn = S.fx.next !== false, impOn = S.fx.imp !== false;
-  const seg = (r.steps || []).find(g => g.i0 <= k && k <= g.i1);
   const G = '#2E7D4F', R = '#B4443C';
-  const lv = seg ? [...seg.bull.map(x => [x, G]), ...seg.bear.map(x => [x, R])] : [];
+  const lvK = fxLevelsAt(r, k), seg = lvK;
+  const lv = lvK ? [...lvK.bull.map(x => [x, G]), ...lvK.bear.map(x => [x, R])] : [];
   const shown = nextOn ? n - 1 : k;
-  let half = 0;
-  for (let i = 0; i <= shown; i++) half = Math.max(half, Math.abs(r.bars[i][2] - piv), Math.abs(r.bars[i][3] - piv));
-  lv.forEach(([x]) => { if (x.p >= 0.2) half = Math.max(half, Math.abs(x.price - piv)); });
-  half = (half || piv * 0.01) * 1.08;
-  const Y = p => H / 2 - (p - piv) / half * (H / 2 - 8), inView = p => Math.abs(p - piv) <= half;
+  // Fractal Graph (TradeWellX default): the halves above and below the pivot are scaled separately, so the highest high
+  // reaches the top and the lowest low the bottom. Linear Graph: one scale for both halves.
+  let up = 0, dn = 0;
+  for (let i = 0; i <= shown; i++) { up = Math.max(up, r.bars[i][2] - piv); dn = Math.max(dn, piv - r.bars[i][3]); }
+  lv.forEach(([x]) => { if (x.p >= 0.5) { up = Math.max(up, x.price - piv); dn = Math.max(dn, piv - x.price); } });
+  up = (up || piv * 0.005) * 1.06; dn = (dn || piv * 0.005) * 1.06;
+  if (S.fx.linear) up = dn = Math.max(up, dn);
+  const hh = H / 2 - 8;
+  const Y = p => p >= piv ? H / 2 - (p - piv) / up * hh : H / 2 + (piv - p) / dn * hh, inView = p => p <= piv + up && p >= piv - dn;
   const bw = Math.max(1, cw * 0.6);
   const candles = r.bars.map((b, i) => { if (i > shown) return ''; const up = b[4] >= b[1], c = up ? 'var(--buyT)' : 'var(--sellT)', o = i > k ? ' opacity=".22"' : '';
     return `<g${o}><line x1="${X(i)}" x2="${X(i)}" y1="${Y(b[2])}" y2="${Y(b[3])}" stroke="${c}"/><rect x="${X(i) - bw / 2}" y="${Y(Math.max(b[1], b[4]))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b[1]) - Y(b[4])))}" fill="${c}"/></g>`; }).join('');
@@ -592,14 +627,18 @@ function fxChart(r, k) {
   const avg = a => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : 0;
   const hb = ws.filter(w => w.side === 'H').map(w => w.bars), lb = ws.filter(w => w.side === 'L').map(w => w.bars);
   const box = (x, y, lines) => `<rect x="${x}" y="${y}" width="250" height="${14 * lines.length + 6}" fill="#0d1117" opacity=".85" rx="3"/>` + lines.map((t, i) => `<text x="${x + 6}" y="${y + 15 + i * 14}" font-size="10.5" fill="#cfd6df">${t}</text>`).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${bands}${imp}${candles}
+  const nice = m => [0.25, 0.5, 1, 2, 3, 5, 10, 15, 20].find(v => v >= m / 3) || 25;
+  const ticks = [];
+  [[1, up], [-1, dn]].forEach(([sgnv, ext]) => { const st = nice(ext / piv * 100); for (let q = st; q <= ext / piv * 100; q += st) ticks.push(sgnv * q); });
+  const axis = ticks.map(q => { const y = Y(piv * (1 + q / 100)); return `<line x1="${W - padR - 34}" x2="${W - padR}" y1="${y}" y2="${y}" stroke="#8b949e" opacity=".5"/><text x="${W - padR - 36}" y="${y + 3}" font-size="10" text-anchor="end" fill="#8b949e">${q > 0 ? '+' : ''}${+q.toFixed(2)}% ${fmt(piv * (1 + q / 100))}</text>`; }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${axis}${bands}${imp}${candles}
     <line x1="0" x2="${W - padR}" y1="${H / 2}" y2="${H / 2}" stroke="#E8E8E8" stroke-width="1.6"/>
     <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}
     <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>
     ${box(6, 6, [`Above pivot: average ${avg(hb)} bars per wave (${hb.length} waves)`, `Longest above: ${hb.length ? Math.max(...hb) : 0} bars`])}
-    ${box(6, H - 54, [`Below pivot: average ${avg(lb)} bars per wave (${lb.length} waves)`, `Longest below: ${lb.length ? Math.max(...lb) : 0} bars`, `Scale: ±${(half / piv * 100).toFixed(2)}% around the pivot`])}
+    ${box(6, H - 54, [`Below pivot: average ${avg(lb)} bars per wave (${lb.length} waves)`, `Longest below: ${lb.length ? Math.max(...lb) : 0} bars`, `Scale: +${(up / piv * 100).toFixed(2)}% / −${(dn / piv * 100).toFixed(2)}% around the pivot${S.fx.linear ? ' (linear)' : ' (fractal)'}`])}
     ${seg ? '' : `<text x="${(W - padR) / 2}" y="40" font-size="12" text-anchor="middle" fill="#cfd6df">Levels start once 4 H and 4 L waves have finished</text>`}</svg>
-    <div class="note">White: pivot (always centred). Purple: MA (the vector). Bands: percent-probable levels in force at the slider bar. Dashed lines: each wave's high / low, faded once price came back to it (closed), red while still open with bars since in [ ]. Hover a line for its detail. Blue line: slider bar.</div>`;
+    <div class="note">White: pivot (always centred; Fractal Graph scales the half above and the half below it separately, like TradeWellX). Purple: MA (the vector). Bands: percent-probable levels in force at the slider bar (finished waves plus the one running; green from the lower of pivot / vector, red from the higher, like TradeWellX). Dashed lines: each wave's high / low, faded once price came back to it (closed), red while still open with bars since in [ ]. Hover a line for its detail. Blue line: slider bar.</div>`;
 }
 
 /* ---------- Data (Databento) ---------- */
