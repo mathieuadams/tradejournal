@@ -507,8 +507,15 @@ async function fxLoad() {
         <div><div class="k">Direction</div><div class="v ${last.direction > 0 ? 'win' : last.direction < 0 ? 'loss' : ''}">${last.direction > 0 ? '+1 long' : last.direction < 0 ? '−1 short' : '0'}</div></div>
         <div><div class="k">Current wave (counted, like TradeWellX)</div><div class="v">${cur ? `${cur.side}${cur.count} · ${cur.bars} bars` : '—'}</div></div>
         <div><div class="k">Waves</div><div class="v">${r.oddsH.reduce((a, o) => a + o.n, 0)} H · ${r.oddsL.reduce((a, o) => a + o.n, 0)} L</div></div>
-      </div><div style="margin-top:14px;display:flex;gap:8px;align-items:center"><span class="dim" style="font-size:12px">Cluster levels</span><div class="seg">${[['steps', 'Step with the pivot'], ['current', 'Current only']].map(([k, l]) => `<button data-fxlv="${k}" aria-pressed="${S.fx.lv === k}">${l}</button>`).join('')}</div></div>
-      <div id="fx-chart" style="margin-top:8px">${fxChart(r)}</div></div></section>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="fx-next" ${S.fx.next !== false ? 'checked' : ''}> Show what came next (faded)</label><label class="check"><input type="checkbox" id="fx-imp" ${S.fx.imp !== false ? 'checked' : ''}> Open / closed wave lines</label></div>
+      <div id="fx-chart" style="margin-top:8px">${fxChart(r, r.bars.length - 1)}</div>
+      <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px">
+        <span class="dim mono" id="fx-at" style="font-size:12px">${esc(r.bars[r.bars.length - 1][0])}</span>
+        <button class="btn sm" data-act="fx-step" data-d="-1">◀</button>
+        <input type="range" id="fx-k" min="${Math.min(r.bars.length - 1, 2 * r.params.wave)}" max="${r.bars.length - 1}" value="${r.bars.length - 1}" style="width:min(520px,60vw)">
+        <button class="btn sm" data-act="fx-step" data-d="1">▶</button>
+        <button class="btn sm" data-act="fx-step" data-d="9999">Latest</button></div></div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">pivot × (1 ± the move that p of past waves reached)</span></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">From pivot</th></tr></thead><tbody>
@@ -523,36 +530,76 @@ async function fxLoad() {
       <section class="panel"><div class="hd"><h2>Option Analyzer: L waves</h2></div><div class="tbl-wrap">${odds(r.oddsL, 'L')}</div></section>
     </div></div>`;
 }
-function fxChart(r) {
-  const W = 1100, H = 380, padR = 120, n = r.bars.length;
-  const lv = [...r.clusters.bull, ...r.clusters.bear].map(x => x.price);
-  const ys = r.bars.flatMap(b => [b[2], b[3]]).concat(lv.filter(p => p > 0));
-  let lo = Math.min(...r.bars.map(b => b[3])), hi = Math.max(...r.bars.map(b => b[2]));
-  lv.forEach(p => { if (p > lo - (hi - lo) * 0.6 && p < hi + (hi - lo) * 0.6) { lo = Math.min(lo, p); hi = Math.max(hi, p); } });
-  void ys;
-  const X = i => (i + 0.5) * (W - padR) / n, Y = p => 10 + (hi - p) / (hi - lo || 1) * (H - 20), bw = Math.max(1, (W - padR) / n * 0.6);
-  const step = k => { let d = ''; r.series.forEach((s, i) => { const v = s[k]; if (v == null) return; d += (d ? `L${X(i) - (W - padR) / n / 2},${Y(v)}` : `M${X(i) - (W - padR) / n / 2},${Y(v)}`) + `L${X(i) + (W - padR) / n / 2},${Y(v)}`; }); return d; };
-  const candles = r.bars.map((b, i) => { const up = b[4] >= b[1], c = up ? 'var(--buyT)' : 'var(--sellT)'; return `<line x1="${X(i)}" x2="${X(i)}" y1="${Y(b[2])}" y2="${Y(b[3])}" stroke="${c}"/><rect x="${X(i) - bw / 2}" y="${Y(Math.max(b[1], b[4]))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b[1]) - Y(b[4])))}" fill="${c}"/>`; }).join('');
-  const G = '#2E7D4F', R = '#B4443C', cw = (W - padR) / n;
-  const tag = x => `${Math.round(x.p * 100)}% ${sgn(x.move * 100, 2, '%')} ${fmt(x.price)}`;
-  const lastSeg = (r.steps || [])[r.steps.length - 1];
-  const right = S.fx.lv === 'steps' && lastSeg ? [...lastSeg.bull.map(x => [x, G]), ...lastSeg.bear.map(x => [x, R])] : [...r.clusters.bull.map(x => [x, G]), ...r.clusters.bear.map(x => [x, R])];
-  const vis = right.filter(([x]) => x.price >= lo && x.price <= hi).sort((a, b) => Y(a[0].price) - Y(b[0].price));
-  let ly = -99;
-  const labelSvg = vis.map(([x, c]) => { const y = Y(x.price), t = Math.max(y + 4, ly + 12); ly = t; return `<text x="${W - padR + 4}" y="${t}" font-size="10.5" fill="${c}">${tag(x)}</text>`; }).join('');
-  let bandSvg;
-  if (S.fx.lv === 'steps') {
-    bandSvg = (r.steps || []).map(sg => [...sg.bull.map(x => [x, G]), ...sg.bear.map(x => [x, R])].filter(([x]) => x.price >= lo && x.price <= hi)
-      .map(([x, c]) => `<line x1="${sg.i0 * cw}" x2="${(sg.i1 + 1) * cw}" y1="${Y(x.price)}" y2="${Y(x.price)}" stroke="${c}" stroke-width="${x.p >= 0.5 ? 2.5 : 1.5}" opacity=".75"><title>${tag(x)} · pivot ${fmt(sg.pivot)} · from ${sg.nH} H / ${sg.nL} L waves</title></line>`).join('')).join('');
-  } else {
-    bandSvg = vis.map(([x, c]) => `<line x1="0" x2="${W - padR}" y1="${Y(x.price)}" y2="${Y(x.price)}" stroke="${c}" stroke-width="6" opacity=".35"/>`).join('');
-  }
-  const labels = r.series.map((s, i) => s.peakToTrough ? (s.peakToTrough > 0 ? `<text x="${X(i)}" y="${Y(r.bars[i][2]) - 6}" font-size="10" text-anchor="middle" fill="var(--text)">${s.peakToTrough}H</text>` : `<text x="${X(i)}" y="${Y(r.bars[i][3]) + 13}" font-size="10" text-anchor="middle" fill="var(--text)">${-s.peakToTrough}L</text>`) : '').join('');
-  const days = r.bars.map((b, i) => i && b[0].slice(0, 10) !== r.bars[i - 1][0].slice(0, 10) ? `<line x1="${X(i) - (W - padR) / n / 2}" x2="${X(i) - (W - padR) / n / 2}" y1="0" y2="${H}" stroke="#E5C100" opacity=".35"/>` : '').join('');
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${bandSvg}${labelSvg}${candles}
-    <path d="${step('pivot')}" fill="none" stroke="#E8E8E8" stroke-width="1.5"/><path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}
-    <text x="4" y="${Y(r.pivot) - 4}" font-size="11" fill="#E8E8E8">Pivot ${fmt(r.pivot)}</text></svg>
-    <div class="note">Purple: MA (the vector). White: pivot. Green / red: percent-probable levels (${S.fx.lv === 'steps' ? 'recalculated at each pivot change from the waves finished before it; hover a line for its detail' : 'current pivot, from all the waves loaded'}). Yellow lines: new day.</div>`;
+function fxAt() {
+  const sl = $('#fx-k'), r = S.fxR; if (!sl || !r) return;
+  const k = +sl.value; $('#fx-chart').innerHTML = fxChart(r, k); $('#fx-at').textContent = r.bars[k][0];
+}
+document.addEventListener('input', e => { if (e.target.id === 'fx-k') fxAt(); });
+document.addEventListener('change', e => { if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } });
+function fxChart(r, k) {
+  /* TradeWellX layout: the pivot in force at bar k sits at the vertical centre; the levels are the ones in force then
+     (recalculated at each pivot change from the waves finished before it). Bars after k are faded (or hidden). */
+  const W = 1100, H = 440, padR = 170, n = r.bars.length, cw = (W - padR) / n, X = i => (i + 0.5) * cw;
+  const sx = r.series[k], piv = sx.pivot, nextOn = S.fx.next !== false, impOn = S.fx.imp !== false;
+  const seg = (r.steps || []).find(g => g.i0 <= k && k <= g.i1);
+  const G = '#2E7D4F', R = '#B4443C';
+  const lv = seg ? [...seg.bull.map(x => [x, G]), ...seg.bear.map(x => [x, R])] : [];
+  const shown = nextOn ? n - 1 : k;
+  let half = 0;
+  for (let i = 0; i <= shown; i++) half = Math.max(half, Math.abs(r.bars[i][2] - piv), Math.abs(r.bars[i][3] - piv));
+  lv.forEach(([x]) => { if (x.p >= 0.2) half = Math.max(half, Math.abs(x.price - piv)); });
+  half = (half || piv * 0.01) * 1.08;
+  const Y = p => H / 2 - (p - piv) / half * (H / 2 - 8), inView = p => Math.abs(p - piv) <= half;
+  const bw = Math.max(1, cw * 0.6);
+  const candles = r.bars.map((b, i) => { if (i > shown) return ''; const up = b[4] >= b[1], c = up ? 'var(--buyT)' : 'var(--sellT)', o = i > k ? ' opacity=".22"' : '';
+    return `<g${o}><line x1="${X(i)}" x2="${X(i)}" y1="${Y(b[2])}" y2="${Y(b[3])}" stroke="${c}"/><rect x="${X(i) - bw / 2}" y="${Y(Math.max(b[1], b[4]))}" width="${bw}" height="${Math.max(1, Math.abs(Y(b[1]) - Y(b[4])))}" fill="${c}"/></g>`; }).join('');
+  const step = key => { let d = ''; for (let i = 0; i <= k; i++) { const v = r.series[i][key]; if (v == null) continue; d += `${d ? 'L' : 'M'}${i * cw},${Y(v)}L${(i + 1) * cw},${Y(v)}`; } return d; };
+  const grp = {};                                       // levels on the same wave share one line: "10% / 5% +1.76% @651.52"
+  lv.filter(([x]) => inView(x.price)).forEach(([x, c]) => { const key = c + x.price.toFixed(2); (grp[key] = grp[key] || { x, c, ps: [] }).ps.push(Math.round(x.p * 100) + '%'); });
+  const now = r.bars[k][4], pc = (now / piv - 1) * 100;
+  const vis = [...Object.values(grp), { x: { price: piv }, pivot: true }].sort((a, b) => Y(a.x.price) - Y(b.x.price));
+  // stack the right-hand labels around their lines without overlap (13 px apart), keeping the pivot label on its line
+  const pos = vis.map(v => Y(v.x.price) + 4), pi = vis.findIndex(v => v.pivot);
+  for (let i = pi - 1; i >= 0; i--) pos[i] = Math.min(pos[i], pos[i + 1] - 13);
+  for (let i = pi + 1; i < pos.length; i++) pos[i] = Math.max(pos[i], pos[i - 1] + 13);
+  const bands = vis.map((v, i) => { const t = pos[i];
+    if (v.pivot) return `<rect x="${W - padR + 2}" y="${t - 11}" width="${padR - 4}" height="14" fill="#E8E8E8" rx="2"/><text x="${W - padR + 6}" y="${t}" font-size="10.5" fill="#111">Pivot ${fmt(piv)} · close ${sgn(pc, 2, '%')}</text>`;
+    const { x, c, ps } = v, y = Y(x.price);
+    return `<line x1="0" x2="${W - padR}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="7" opacity=".35"/><rect x="${W - padR + 2}" y="${t - 10}" width="${padR - 4}" height="13" fill="${c}" rx="2"/><text x="${W - padR + 6}" y="${t}" font-size="10.5" fill="#fff">${ps.join(' / ')} ${sgn(x.move * 100, 2, '%')} @${fmt(x.price)}</text>`; }).join('');
+  // open / closed wave lines: each wave extreme up to k, drawn until price came back to it (closed) or up to k (open)
+  const idx = {}; r.bars.forEach((b, i) => { idx[b[0]] = i; });
+  let imp = '';
+  const openTags = [];
+  const ws = r.waves.filter(w => idx[w.extreme] != null && idx[w.extreme] < k && idx[w.end] < k);
+  if (impOn) ws.forEach(w => {
+    const i0 = idx[w.extreme], hiSide = w.side === 'H';
+    let j = i0 + 1; while (j <= k && !(hiSide ? r.bars[j][2] >= w.price : r.bars[j][3] <= w.price)) j++;
+    const open = j > k, x2 = X(Math.min(j, k)), y = Y(w.price);
+    if (!inView(w.price)) return;
+    const col = open ? '#FF3B30' : (hiSide ? '#C8781E' : '#7a2a26');
+    imp += `<line x1="${X(i0)}" x2="${x2}" y1="${y}" y2="${y}" stroke="${col}" stroke-width="${open ? 3 : 2}" stroke-dasharray="3 2" opacity="${open ? .95 : .6}"><title>${w.side}${w.count} extreme ${fmt(w.price)} · ${open ? 'open' : `closed after ${j - i0} bars`}</title></line>`
+      ;
+    if (open) openTags.push([y, `${fmt(w.price)} open [${k - i0}]`]);
+  });
+  openTags.sort((a, b) => a[0] - b[0]);
+  let oy = -99;
+  openTags.forEach(([y, t]) => { const ty = Math.max(y - 3, oy + 12); oy = ty; imp += `<text x="${X(k) - 4}" y="${ty}" font-size="10" text-anchor="end" fill="#FF6B60">${t}</text>`; });
+  const labels = r.series.map((x, i) => i > k || !x.peakToTrough ? '' : x.peakToTrough > 0
+    ? `<text x="${X(i)}" y="${Y(r.bars[i][2]) - 6}" font-size="10" text-anchor="middle" fill="var(--text)">${x.peakToTrough}H</text>`
+    : `<text x="${X(i)}" y="${Y(r.bars[i][3]) + 13}" font-size="10" text-anchor="middle" fill="var(--text)">${-x.peakToTrough}L</text>`).join('');
+  const days = r.bars.map((b, i) => i && b[0].slice(0, 10) !== r.bars[i - 1][0].slice(0, 10) ? `<line x1="${i * cw}" x2="${i * cw}" y1="0" y2="${H}" stroke="#E5C100" opacity=".35"/>` : '').join('');
+  // above / below pivot statistics from the waves finished by k (TradeWellX boxes)
+  const avg = a => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : 0;
+  const hb = ws.filter(w => w.side === 'H').map(w => w.bars), lb = ws.filter(w => w.side === 'L').map(w => w.bars);
+  const box = (x, y, lines) => `<rect x="${x}" y="${y}" width="250" height="${14 * lines.length + 6}" fill="#0d1117" opacity=".85" rx="3"/>` + lines.map((t, i) => `<text x="${x + 6}" y="${y + 15 + i * 14}" font-size="10.5" fill="#cfd6df">${t}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${bands}${imp}${candles}
+    <line x1="0" x2="${W - padR}" y1="${H / 2}" y2="${H / 2}" stroke="#E8E8E8" stroke-width="1.6"/>
+    <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}
+    <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>
+    ${box(6, 6, [`Above pivot: average ${avg(hb)} bars per wave (${hb.length} waves)`, `Longest above: ${hb.length ? Math.max(...hb) : 0} bars`])}
+    ${box(6, H - 54, [`Below pivot: average ${avg(lb)} bars per wave (${lb.length} waves)`, `Longest below: ${lb.length ? Math.max(...lb) : 0} bars`, `Scale: ±${(half / piv * 100).toFixed(2)}% around the pivot`])}
+    ${seg ? '' : `<text x="${(W - padR) / 2}" y="40" font-size="12" text-anchor="middle" fill="#cfd6df">Levels start once 4 H and 4 L waves have finished</text>`}</svg>
+    <div class="note">White: pivot (always centred). Purple: MA (the vector). Bands: percent-probable levels in force at the slider bar. Dashed lines: each wave's high / low, faded once price came back to it (closed), red while still open with bars since in [ ]. Hover a line for its detail. Blue line: slider bar.</div>`;
 }
 
 /* ---------- Data (Databento) ---------- */
@@ -1106,7 +1153,6 @@ document.addEventListener('click', async e => {
     if (ds.csym) { S.chart.sym = ds.csym; S.chart.strat = ''; S.rp = null; return vChart(); }
     if (ds.ctf) { S.chart.tf = +ds.ctf; if (S.rp) { S.rp.k = null; S.rp.delta = null; } return vChart(); }
     if (ds.cdays) { S.chart.days = +ds.cdays; return vChart(); }
-    if (ds.fxlv) { S.fx.lv = ds.fxlv; document.querySelectorAll('[data-fxlv]').forEach(b => b.setAttribute('aria-pressed', b === el)); $('#fx-chart').innerHTML = fxChart(S.fxR); return; }
     if (ds.lvtab) { S.lv.tab = ds.lvtab; return vLevels(); }
     if (ds.lvsym) { lvRead(); S.lv.sym = ds.lvsym; return vLevels(); }
     if (ds.ctog) { S.chart[ds.ctog] = !S.chart[ds.ctog]; el.setAttribute('aria-pressed', S.chart[ds.ctog]); if (ds.ctog === 'rth' || ds.ctog === 'walls') return loadChart(); return drawChart(true); }
@@ -1117,6 +1163,7 @@ document.addEventListener('click', async e => {
     if (ds.rplayout) { S.rpLayout = ds.rplayout; return vChart(); }
     switch (act) {
       case 'refresh': await api('/data/refresh', { method: 'POST', body: {} }); toast('Updating the candles…'); if (S.page === 'data') vData(); break;
+      case 'fx-step': { const sl = $('#fx-k'); sl.value = Math.max(+sl.min, Math.min(+sl.max, +sl.value + +el.dataset.d)); fxAt(); break; }
       case 'fx-csv': { const r = S.fxR; if (!r) return; const rows = [['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'MA', 'Pivot', 'SlowMA', 'Direction', 'PeakToTrough', 'BarsElapsed', 'PivotClose']];
         r.bars.forEach((b, i) => { const x = r.series[i]; rows.push([b[0], b[1], b[2], b[3], b[4], b[5], x.ma, x.pivot, x.slowMa, x.direction, x.peakToTrough ?? '', x.barsElapsed ?? '', x.pivot ? (b[4] / x.pivot).toFixed(6) : '']); });
         const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }));
