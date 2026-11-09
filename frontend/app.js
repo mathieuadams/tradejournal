@@ -500,13 +500,47 @@ async function vFractal() {
       <label class="check" title="TradeWellX ends the window with one 16:00 bar: the last session's closing print (10 days at 15 min = 261 bars)"><input type="checkbox" id="fx-c16" ${f.close16 !== false ? 'checked' : ''}> Stocks: add the 16:00 closing bar</label>
       <label class="f">Macro Trend<select id="fx-macro">${[['ema30', 'Close vs EMA 30'], ['ema40', 'Close vs EMA 40'], ['sma50', 'Close vs 50-bar average']].map(([v, t]) => `<option value="${v}" ${f.macro === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <button class="btn primary" data-act="fx-load">Calculate</button>
+      <label class="f" style="flex-direction:row;align-items:center;gap:6px" title="Every 5 minutes while the market is open and this tab is visible: candles, levels, gamma / OI, Option Analyzer and MM data (the slider stays where it is)"><input type="checkbox" id="fx-auto" ${S.fx.auto !== false ? 'checked' : ''}>Auto-refresh 5 min <span class="dim mono" id="fx-upd" style="font-size:11px"></span></label>
       <label class="f" title="Draw a strategy's study trades on this chart (the trades on the chart's symbol)">Show trades of<select id="fx-strat"><option value="">— none —</option></select></label></div>
     <p class="note">QQQ and other stocks come from Alpaca (regular hours${alp.connected ? ', feed ' + esc(alp.feed.toUpperCase()) : ': <a href="#data">connect Alpaca</a>'}). NQ and ES come from the stored Databento candles, all hours like TradeWellX's NQ=F.</p>`;
   view(`${head('Fractal', 'Wave pivots, H/L counts, percent-probable clusters and wave odds, calculated the TradeWellX way.')}
     <section class="panel"><div class="bd">${ctl}</div></section><div id="fx-out"><div class="panel"><div class="empty muted">Loading…</div></div></div>`);
+  S.fxLast = Date.now();
+  S.timers.push(setInterval(fxTick, 30000));            // cleared when leaving the page (route -> clearTimers)
   S.fxStrats = null;                                    // the strategy list is fresh on each visit
   fxStratList().then(() => { if (S.fx.strat) fxStratLoad(); });
   return fxLoad();
+}
+/* Auto-refresh: every 5 minutes while the chart's market is open (stocks 09:30-16:05 ET on weekdays; NQ / ES Sunday
+   18:00 to Friday 17:00 ET, except 17:00-18:00) and the tab is visible. The slider stays on the same bar (or on the
+   latest bar if it was there); the panels keep their settings. */
+function fxMarketOpen(sym) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map(x => [x.type, x.value]));
+  const wd = p.weekday, hm = `${p.hour}:${p.minute}`;
+  if (['NQ', 'ES'].includes(sym)) return !(wd === 'Sat' || (wd === 'Sun' && hm < '18:00') || (wd === 'Fri' && hm >= '17:00') || (hm >= '17:00' && hm < '18:00'));
+  return !['Sat', 'Sun'].includes(wd) && hm >= '09:30' && hm <= '16:05';
+}
+function fxTick() {
+  if (S.page !== 'fractal' || S.fx.auto === false || document.hidden || !S.fxR || S.fxBusy) return;
+  if (Date.now() - (S.fxLast || 0) < 5 * 60e3 - 5e3 || !fxMarketOpen(S.fx.sym)) return;
+  fxRefresh();
+}
+async function fxRefresh() {
+  const f = S.fx, sl = $('#fx-k'), old = S.fxR; if (!sl || !old) return;
+  S.fxBusy = true; S.fxLast = Date.now();
+  try {
+    const atEnd = +sl.value >= old.bars.length - 1, t0 = old.bars[+sl.value][0];
+    const r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&stats=${f.stats}&agg=${f.agg}&rth=${f.rth ? 1 : 0}&cold=${f.cold ? 1 : 0}&close16=${f.close16 !== false ? 1 : 0}&macro=${f.macro || 'ema30'}`);
+    if (S.page !== 'fractal' || S.fxR !== old) return;  // the page changed meanwhile
+    S.fxR = r;
+    sl.max = r.bars.length - 1; sl.min = Math.min(r.bars.length - 1, 2 * r.params.wave);
+    const i = r.bars.findIndex(b => b[0] === t0);
+    sl.value = atEnd || i < 0 ? r.bars.length - 1 : i;
+    fxAt(); if (typeof fxTable === 'function') fxTable();
+    await Promise.allSettled([gxLoad(), oaLoad(($('#oa-exp') || {}).value || undefined), mmLoad()]);
+    const u = $('#fx-upd'); if (u) u.textContent = '· updated ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  } catch (e) { const u = $('#fx-upd'); if (u) u.textContent = '· refresh failed: ' + e.message; }
+  finally { S.fxBusy = false; }
 }
 /* A strategy's study trades on the Fractal chart: entry (triangle) and exit (dot), joined, with the result. */
 async function fxStratList() {
@@ -541,7 +575,7 @@ async function fxLoad() {
   let r;
   try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&stats=${f.stats}&agg=${f.agg}&rth=${f.rth ? 1 : 0}&cold=${f.cold ? 1 : 0}&close16=${f.close16 !== false ? 1 : 0}&macro=${f.macro || 'ema30'}`); }
   catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; return; }
-  S.fxR = r;
+  S.fxR = r; S.fxLast = Date.now();
   const last = r.series[r.series.length - 1], pct = (a, b) => b ? sgn((a / b - 1) * 100, 2, '%') : '—';
   const lvl = (x, cls) => `<tr><td><span class="pill ${cls}">${Math.round(x.p * 100)}%</span></td><td class="r mono"><b>${fmt(x.price)}</b></td><td class="r mono">${sgn(x.move * 100, 2, '%')}</td></tr>`;
   const odds = (rows, side) => `<table class="tbl"><thead><tr><th>${side}</th><th class="r">Waves</th><th class="r">% of waves</th><th class="r">Odds (at least)</th></tr></thead><tbody>${rows.map(o => `<tr><td class="mono">${side}${o.count}</td><td class="r mono">${o.n}</td><td class="r mono">${(o.pct * 100).toFixed(0)}%</td><td class="r"><b>${(o.atLeast * 100).toFixed(0)}%</b></td></tr>`).join('')}</tbody></table>`;
@@ -649,7 +683,7 @@ function fxAt() {
   const k = +sl.value; $('#fx-chart').innerHTML = fxChart(r, k); $('#fx-lower').innerHTML = fxLower(r, k); $('#fx-at').textContent = r.bars[k][0];
 }
 document.addEventListener('input', e => { if (e.target.id === 'fx-k') fxAt(); });
-document.addEventListener('change', e => { if (e.target.id === 'fx-strat') { S.fx.strat = e.target.value; fxStratLoad(); } });
+document.addEventListener('change', e => { if (e.target.id === 'fx-strat') { S.fx.strat = e.target.value; fxStratLoad(); } if (e.target.id === 'fx-auto') { S.fx.auto = e.target.checked; if (e.target.checked) fxTick(); } });
 document.addEventListener('change', e => { if (['vp-spag', 'vp-bg', 'vp-x'].includes(e.target.id)) { S.vp[e.target.id.slice(3)] = e.target.checked; if (S.vpR) $('#vp-out').innerHTML = vpShow(S.vpR); } if (e.target.id === 'vp-view') { S.vp.view = e.target.value; if (S.vpR) $('#vp-out').innerHTML = vpShow(S.vpR); } if (e.target.id === 'vp-fwd' || e.target.id === 'vp-match') { S.vp.fwd = +$('#vp-fwd').value; S.vp.match = $('#vp-match').value; vpLoad(); } if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } if (e.target.id === 'fx-lin') { S.fx.linear = e.target.checked; fxAt(); } if (e.target.id === 'fx-fixed') { S.fx.fixed = e.target.checked; fxAt(); fxTable(); } if (e.target.id === 'fx-basis') { S.fx.basis = e.target.value; fxAt(); fxTable(); } });
 /* Levels in force at bar k (TradeWellX): every wave finished before k plus the wave still running at k (its move so
    far); the move that p of them reached, nearest wave, no two levels on one wave (backend/fractal.py levels()).
