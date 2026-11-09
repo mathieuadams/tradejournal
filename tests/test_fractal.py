@@ -304,6 +304,13 @@ def test_volproj():
     assert r["date"] == "2026-10-29" and r["unfold"]["complete"] and r["unfold"]["days"] == ["2026-10-30", "2026-11-02"]
     w = volproj.project(bars[-200:], 1, 1, match="weekday")
     assert w["matches"] >= 30
+    # a rare state with no earlier exact match widens to the same side (7L -> 7L or longer, then any L)
+    r = volproj.project(bars[-200:], 1, 1)
+    st0 = volproj.fractal.compute(bars[-200:], 1)
+    assert r["matchedBy"] == "state"
+    for asof in [b[0] for b in bars[-60:]]:
+        q = volproj.project(bars[-200:], 1, 2, asof=asof)
+        assert q["matches"] > 0 and q["matchedBy"] in ("state", "side, count >= %s" % q["state"][:-1], "side")
     st, a = call("GET", "/volproj", q={"sym": "QQQ", "fwd": "2"})
     assert st == 200 and a["fwd"] == 2 and a["bull"]["levels"]["maxAvg"] > a["price"] > a["bear"]["levels"]["maxAvg"], a
 

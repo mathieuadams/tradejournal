@@ -876,7 +876,7 @@ function vpView(d) {
   const hit = uf && uf.complete ? ` · actual: high ${fmt(uf.high * f)}, low ${fmt(uf.low * f)}` : uf ? ' · unfolding…' : '';
   return `<div class="kv" style="margin-bottom:10px">
       <div><div class="k">${esc(u)} · Wave [${d.wave}] Daily · Aggregations ${S.vp.days}</div><div class="v mono">${fmt(P)} · ${esc(d.date)} ${wd(d.date)} · state <b>${esc(d.state)}</b>${d.date !== d.to ? ' (replay)' : ''}</div></div>
-      <div><div class="k">Forward looking density: ${d.fwd} aggregation${d.fwd > 1 ? 's' : ''} · ${d.match === 'weekday' ? 'weekday' : 'HL'} matching</div><div class="v">${d.matches} matching days</div></div>
+      <div><div class="k">Forward looking density: ${d.fwd} aggregation${d.fwd > 1 ? 's' : ''} · ${d.match === 'weekday' ? 'weekday' : 'HL'} matching</div><div class="v">${d.matches} matching days${d.matchedBy && d.matchedBy !== 'state' && d.matchedBy !== 'weekday' ? ` <span class="warn" title="No earlier day in state ${esc(d.state)}: widened">(widened: ${esc(d.matchedBy)})</span>` : ''}</div></div>
       <div><div class="k">50% (median) long / short</div><div class="v mono"><span class="win">${fmt(B.levels.median * f)}</span> / <span class="loss">${fmt(R.levels.median * f)}</span></div></div>
       <div><div class="k">25% (wall) · 1% (outlier) long / short</div><div class="v mono"><span class="win">${fmt(B.levels.maxAvg * f)}</span> / <span class="loss">${fmt(R.levels.maxAvg * f)}</span> · ${fmt(B.levels.max * f)} / ${fmt(R.levels.max * f)}</div></div></div>
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${dens}${lvl}${dayLines}${spag}${strikes}${arrows}${hl}${candles}

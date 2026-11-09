@@ -47,10 +47,18 @@ def project(bars, wave=1, fwd=1, match="hl", asof=None):
         raise ValueError("Not enough bars for a wave state.")
     wd = lambda i: __import__("datetime").date.fromisoformat(bars[i][0][:10]).weekday()
     ups, dns, used, paths = [], [], [], []
+    # HL matching: the exact state (e.g. 3L); a rare state with no earlier match widens to the same side with an equal or
+    # longer count (7L -> 7L, 8L, ...), then to any day on that side
+    rules = [("weekday", lambda i: wd(i) == wd(idx))] if match == "weekday" else [
+        ("state", lambda i: st(i) == now),
+        ("side, count >= %d" % now[1], lambda i: st(i) is not None and st(i)[0] == now[0] and st(i)[1] >= now[1]),
+        ("side", lambda i: st(i) is not None and st(i)[0] == now[0])]
+    ok = lambda i: i + fwd <= idx                      # only matches whose next fwd days are known at `idx`
+    rule, same = next(((name, fn) for name, fn in rules if any(fn(i) for i in range(idx) if ok(i))), rules[-1])
     for i in range(idx):
-        if i + fwd > idx:                              # only matches whose next fwd days are known at `idx`
+        if not ok(i):
             break
-        if (match == "weekday" and wd(i) == wd(idx)) or (match != "weekday" and st(i) == now):
+        if same(i):
             base = bars[i][4]
             hi = max(b[2] for b in bars[i + 1:i + 1 + fwd])
             lo = min(b[3] for b in bars[i + 1:i + 1 + fwd])
@@ -82,7 +90,7 @@ def project(bars, wave=1, fwd=1, match="hl", asof=None):
     if after:
         unfold = {"days": [b[0][:10] for b in after], "high": max(b[2] for b in after), "low": min(b[3] for b in after),
                   "close": after[-1][4], "complete": len(after) == fwd}
-    return {"date": bars[idx][0][:10], "price": px, "state": f"{now[1]}{now[0]}", "wave": wave, "fwd": fwd, "match": match,
+    return {"date": bars[idx][0][:10], "price": px, "state": f"{now[1]}{now[0]}", "wave": wave, "fwd": fwd, "match": match, "matchedBy": rule,
             "from": bars[0][0][:10], "to": bars[-1][0][:10], "index": idx, "matches": k, "matchDays": used[-60:],
             "bull": {**bull, "levels": {key: lvl(bull[key]) for key in ("max", "maxAvg", "avg", "minAvg", "median")},
                      "outlierOdds": cnt(ups, lambda m: m >= bull["max"]) / k},
