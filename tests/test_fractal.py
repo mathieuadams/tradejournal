@@ -257,6 +257,16 @@ def test_landscape():
     assert round((max(0, 665.94 - 651) - 9.93) / 9.93 * 100, 1) == 50.5
 
 
+def test_mm_history():
+    import uwhales
+    st, a = call("POST", "/mmhistory/snapshot", {"sym": "QQQ"})
+    assert st == 200 and {"price", "pml", "ceiling", "floor", "pa", "pb", "ca", "cb"} <= set(a), a
+    st, b = call("POST", "/mmhistory/snapshot", {"sym": "NQ"})          # NQ records QQQ; same minute replaces the row
+    st, h = call("GET", "/mmhistory", q={"sym": "QQQ", "days": "3"})
+    assert st == 200 and h["days"] and len(h["days"][-1]["rows"]) == 1, h
+    assert uwhales.stock_session(__import__("datetime").datetime(2026, 11, 6, 10, 0)) and not uwhales.stock_session(__import__("datetime").datetime(2026, 11, 7, 10, 0))
+
+
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_match_tradewellx_clusternode()
@@ -271,4 +281,5 @@ if __name__ == "__main__":
     test_databento_nq()
     test_uw_gamma()
     test_landscape()
+    test_mm_history()
     print("fractal: all tests passed")

@@ -532,7 +532,12 @@ async function fxLoad() {
         <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:16px 0 8px"><h3 style="margin:0 12px 0 0">Market Maker Landscape</h3>
           <label class="f">Expiry<select id="oa-exp"><option value="">nearest</option></select></label>
           <button class="btn sm" data-act="oa-load">Calculate MMM</button><span class="dim" id="oa-note" style="font-size:12px"></span></div>
-        <div id="oa-out"><div class="empty muted">Loading…</div></div></div></section>
+        <div id="oa-out"><div class="empty muted">Loading…</div></div>
+        <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:18px 0 8px"><h3 style="margin:0 12px 0 0">Intraday MM data</h3>
+          <label class="f">Days<select id="mm-days">${[1, 2, 3, 5].map(n => `<option ${n === 3 ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+          <button class="btn sm" data-act="mm-load">Refresh</button><button class="btn sm" data-act="mm-snap">Snapshot now</button>
+          <span class="dim" style="font-size:12px">recorded every 5 minutes, 09:30–16:00 ET, for QQQ and SPY</span></div>
+        <div id="mm-out"><div class="empty muted">Loading…</div></div></div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">at the last bar · green from the lower of pivot / vector, red from the higher</span></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">Move</th></tr></thead><tbody id="fx-cl"></tbody></table></div></section>
@@ -546,6 +551,7 @@ async function fxLoad() {
   fxTable();
   gxLoad();
   oaLoad();
+  mmLoad();
 }
 /* MacroTrend strip + StdDev panel under the chart (same x axis as fxChart). */
 function fxLower(r, k) {
@@ -744,6 +750,43 @@ function oaView(d) {
       <div class="tbl-wrap" style="max-height:560px;overflow:auto"><table class="tbl"><thead><tr><th>Target${f ? ' / ' + esc(f.sym) : ''}</th><th class="r">Move</th><th class="r">Holders P&L</th><th>Best contract</th><th class="r">BTO (ask)</th><th class="r">STC at target</th><th class="r">% gain</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div>${chart}</div></div>
     <div class="note">Holders P&L = what all ${esc(d.expiry)} option holders make or lose at expiry at that price (open interest × 100 × (value at expiry − premium at the NBBO mid)); market makers hold the other side. PML = their best price; Ceiling / Floor = where the holders break even. Best contract = the call (above) or put (below) with the highest % gain if bought at the ask now and the price is at the target at expiry. Unusual Whales option contracts, ${esc(String(d.price))} at load.</div>`;
+}
+async function mmLoad() {
+  const out = $('#mm-out'); if (!out) return;
+  const st = await api('/uw').catch(() => ({}));
+  if (!st.connected) { out.innerHTML = '<div class="empty muted">Connect Unusual Whales on the <a href="#data">Data</a> page to record the market maker data.</div>'; return; }
+  let d;
+  try { d = await api(`/mmhistory?sym=${encodeURIComponent(S.fx.sym || 'QQQ')}&days=${($('#mm-days') || {}).value || 3}`); }
+  catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; return; }
+  out.innerHTML = mmView(d);
+}
+function mmView(d) {
+  const pts = []; d.days.forEach(day => day.rows.forEach(r => pts.push({ ...r, day: day.date, key: day.date + ' ' + r.t })));
+  if (pts.length < 2) return `<div class="empty muted">${pts.length ? 'One snapshot so far' : 'No snapshots yet'}: they are recorded every 5 minutes during the session (or click Snapshot now).</div>`;
+  const W = 1100, H1 = 300, H2 = 200, L = 56, R = 16, n = pts.length, X = i => L + i * (W - L - R) / (n - 1);
+  const prices = pts.flatMap(p => [p.ceiling, p.floor, p.price, p.pml]).filter(v => v != null), lo = Math.min(...prices), hi = Math.max(...prices), pad = (hi - lo) * 0.06 || 1;
+  const Y1 = v => 10 + (hi + pad - v) / (hi - lo + 2 * pad) * (H1 - 30);
+  const vmax = Math.max(1, ...pts.flatMap(p => [p.pa, p.pb, p.ca, p.cb])), Y2 = v => 10 + (1 - v / vmax) * (H2 - 30);
+  const ln = (key, Y, c, dash, w = 1.8) => { let dd = ''; pts.forEach((p, i) => { if (p[key] == null) return; dd += `${dd ? 'L' : 'M'}${X(i)},${Y(p[key])}`; }); return `<path d="${dd}" fill="none" stroke="${c}" stroke-width="${w}" ${dash ? 'stroke-dasharray="5 4"' : ''}/>`; };
+  const days = pts.map((p, i) => i && p.day !== pts[i - 1].day ? `<line x1="${X(i)}" x2="${X(i)}" y1="0" y2="${H1 + H2}" stroke="#E5C100" opacity=".3"/>` : '').join('');
+  const ticks = pts.map((p, i) => i === 0 || p.day !== pts[i - 1].day || (p.t.endsWith(':00') && +p.t.slice(0, 2) % 2 === 0) ? `<text x="${X(i)}" y="${H1 - 6}" font-size="10" text-anchor="middle" fill="#8b949e">${i === 0 || p.day !== pts[i - 1].day ? p.day.slice(5) + ' ' : ''}${p.t}</text>` : '').join('');
+  const yt = [0, 0.25, 0.5, 0.75, 1].map(f => { const v = lo - pad + f * (hi - lo + 2 * pad); return `<text x="${L - 6}" y="${Y1(v) + 3}" font-size="10" text-anchor="end" fill="#8b949e">${fmt(v)}</text><line x1="${L}" x2="${W - R}" y1="${Y1(v)}" y2="${Y1(v)}" stroke="#30363d" opacity=".5"/>`; }).join('');
+  const vt = [0, 0.5, 1].map(f => `<text x="${L - 6}" y="${H1 + Y2(f * vmax) + 3}" font-size="10" text-anchor="end" fill="#8b949e">${Math.round(f * vmax / 1000)}k</text>`).join('');
+  const last = pts[pts.length - 1], f = d.fut;
+  const lg = (c, t, dash) => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><svg width="22" height="8"><line x1="0" x2="22" y1="4" y2="4" stroke="${c}" stroke-width="2" ${dash ? 'stroke-dasharray="4 3"' : ''}/></svg>${t}</span>`;
+  const putDiv = last.pa > last.pb, callDiv = last.ca > last.cb;
+  return `<div class="kv" style="margin-bottom:10px">
+      <div><div class="k">Latest (${esc(last.day)} ${esc(last.t)}) · expiry ${esc(last.expiry || '')}</div><div class="v mono">C ${fmt(last.ceiling)} · F ${fmt(last.floor)} · GL ${fmt(last.price)} · PML ${fmt(last.pml)}${f ? ` <span class="dim">(${esc(f.sym)} ×${f.ratio.toFixed(2)})</span>` : ''}</div></div>
+      <div><div class="k">Puts at/above vs below the price</div><div class="v ${putDiv ? 'loss' : ''}">${last.pa.toLocaleString()} vs ${last.pb.toLocaleString()} ${putDiv ? '· bearish divergence' : ''}</div></div>
+      <div><div class="k">Calls at/above vs below the price</div><div class="v ${callDiv ? 'win' : ''}">${last.ca.toLocaleString()} vs ${last.cb.toLocaleString()} ${callDiv ? '· bullish' : ''}</div></div>
+      <div><div class="k">Price vs PML</div><div class="v">${sgn((last.price / last.pml - 1) * 100, 2, '%')}</div></div></div>
+    <div style="font-size:12px;margin-bottom:6px">${lg('#e6edf3', 'Ceiling')}${lg('#e6edf3', 'Floor', true)}${lg('#2E9E5B', 'GreenLine (price)')}${lg('#f85149', 'PML')}${lg('#a8f0a0', 'Puts at/above price')}${lg('#8b1d1d', 'Puts below')}${lg('#1f7a35', 'Calls at/above')}${lg('#f4a6a6', 'Calls below')}</div>
+    <svg viewBox="0 0 ${W} ${H1 + H2}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${yt}${ticks}
+      ${ln('ceiling', Y1, '#e6edf3')}${ln('floor', Y1, '#e6edf3', true)}${ln('price', Y1, '#2E9E5B')}${ln('pml', Y1, '#f85149')}
+      <g transform="translate(0,${H1})"><line x1="${L}" x2="${W - R}" y1="${Y2(0)}" y2="${Y2(0)}" stroke="#30363d"/>
+        ${ln('pa', Y2, '#a8f0a0')}${ln('pb', Y2, '#8b1d1d')}${ln('ca', Y2, '#1f7a35')}${ln('cb', Y2, '#f4a6a6')}</g>${vt}
+      <text x="${L + 4}" y="${H1 + 14}" font-size="11" fill="#cfd6df">Option volume vs the price (day total so far)</text></svg>
+    <div class="note">Puts at/above the price (light green) above puts below (dark red) = bearish divergence; calls at/above (green) above calls below (pink) = buying pressure above. Volumes are the expiry's day totals at each snapshot, split at the price.</div>`;
 }
 function fxTable() {
   const r = S.fxR, el = $('#fx-cl'); if (!r || !el) return;
@@ -1459,6 +1502,8 @@ document.addEventListener('click', async e => {
       case 'uw-connect': { const t = $('#uw-token').value.trim(); if (!t) return toast('Paste the API token.'); el.disabled = true; el.textContent = 'Checking…'; await api('/uw', { method: 'PUT', body: { token: t } }); toast('Unusual Whales connected.'); vData(); break; }
       case 'uw-test': el.disabled = true; await api('/uw/test', { method: 'POST' }); toast('Unusual Whales answered.'); vData(); break;
       case 'uw-del': if (!confirm('Disconnect Unusual Whales?')) return; await api('/uw', { method: 'DELETE' }); vData(); break;
+      case 'mm-load': await mmLoad(); break;
+      case 'mm-snap': el.disabled = true; try { await api('/mmhistory/snapshot', { method: 'POST', body: { sym: S.fx.sym || 'QQQ' } }); toast('Snapshot recorded.'); } finally { el.disabled = false; } await mmLoad(); break;
       case 'oa-load': await oaLoad($('#oa-exp').value); break;
       case 'gx-load': S.gx = { ...S.gx, source: $('#gx-src').value }; await gxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }

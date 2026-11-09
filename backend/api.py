@@ -204,6 +204,26 @@ def landscape_view(sub, claims, body, q):
     return r
 
 
+@route("GET", "/mmhistory")
+def mm_history(sub, claims, body, q):
+    base = {"NQ": "QQQ", "ES": "SPY"}.get((q.get("sym") or "QQQ").upper(), q.get("sym") or "QQQ")
+    days = _int(q.get("days"), "Days", 1, 20, 3)
+    r = {"sym": uwhales.check_sym(base), "days": uwhales.history(sub, base, days)}
+    fut = FUT_FOR.get(r["sym"])
+    if fut:
+        px, t = _fut_last(fut)
+        last = next((d["rows"][-1]["price"] for d in reversed(r["days"]) if d["rows"]), None)
+        if px and last:
+            r["fut"] = {"sym": fut, "price": px, "time": t, "ratio": px / last}
+    return r
+
+
+@route("POST", "/mmhistory/snapshot")
+def mm_snapshot(sub, claims, body, q):
+    base = {"NQ": "QQQ", "ES": "SPY"}.get((body.get("sym") or "QQQ").upper(), body.get("sym") or "QQQ")
+    return uwhales.snapshot(sub, base)
+
+
 FUT_FOR = {"QQQ": "NQ", "SPY": "ES"}
 
 

@@ -264,3 +264,50 @@ def landscape(sub, sym, expiry=None, step=0.001, span=0.03):
                         "price": {"aboveCalls": above("C", price), "abovePuts": above("P", price),
                                   "belowCalls": below("C", price), "belowPuts": below("P", price)}},
             "curve": [z for z in curve if abs(z["price"] / price - 1) <= 0.06], "targets": targets}
+
+
+# ---------------------------------------------------------------- intraday market maker data (TradeWellX "MM Data")
+
+SNAP_SYMS = ("QQQ", "SPY")
+
+
+def stock_session(t=None):
+    """US stock regular session, plus 5 minutes for the close (weekdays 09:30-16:05 ET)."""
+    t = t or now_ny()
+    return t.weekday() < 5 and "09:30" <= t.strftime("%H:%M") <= "16:05"
+
+
+def snapshot(sub, sym):
+    """Record the landscape now: price (TradeWellX's GreenLine), PML, Ceiling, Floor and the day's volume of puts / calls
+    at or above vs below the price. One row per minute in MM#<sym>#<date>."""
+    d = landscape(sub, sym)
+    t = now_ny()
+    v = d["volumes"]["price"]
+    row = {"t": t.strftime("%H:%M"), "price": d["price"], "pml": d["pml"], "ceiling": d["ceiling"], "floor": d["floor"],
+           "agg": d["aggregate"], "pmlValue": d["pmlValue"], "expiry": d["expiry"],
+           "pa": v["abovePuts"], "pb": v["belowPuts"], "ca": v["aboveCalls"], "cb": v["belowCalls"]}
+    sk = f"MM#{d['sym']}#{t.strftime('%Y-%m-%d')}"
+    it = db.get(db.upk(sub), sk) or {"PK": db.upk(sub), "SK": sk, "rows": []}
+    rows = [r for r in it.get("rows") or [] if r.get("t") != row["t"]] + [row]
+    it["rows"] = sorted(rows, key=lambda r: r["t"])[-400:]
+    db.put(it)
+    return row
+
+
+def history(sub, sym, days=3):
+    """The recorded snapshots of the last `days` dates that have any, oldest first: [{"date", "rows"}]."""
+    sym = check_sym(sym)
+    items = db.q_prefix(db.upk(sub), f"MM#{sym}#", desc=True, limit=days)
+    return sorted(({"date": it["SK"].rsplit("#", 1)[1], "rows": it.get("rows") or []} for it in items), key=lambda x: x["date"])
+
+
+def scheduled_snapshots(sub):
+    if not status(sub)["connected"] or not stock_session():
+        return None
+    out = {}
+    for s in SNAP_SYMS:
+        try:
+            out[s] = snapshot(sub, s)["t"]
+        except Exception as e:
+            out[s] = "error: " + str(e)[:120]
+    return out

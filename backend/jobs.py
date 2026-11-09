@@ -177,4 +177,10 @@ def scheduled(ctx=None, live=False):
         except Exception as e:
             print("refresh failed", sub, e)
             out[sub] = str(e)[:200]
+        if live:                                       # market maker snapshots (Unusual Whales) during the stock session
+            try:
+                import uwhales
+                uwhales.scheduled_snapshots(sub)
+            except Exception as e:
+                print("mm snapshot failed", sub, e)
     return out
