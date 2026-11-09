@@ -72,13 +72,20 @@ def space(setup):
     return SPACES.get(setup) or strategy.GRIDS.get(setup) or {}
 
 
+def _full(setup, g):
+    """g with every key of the search space (settings saved by an older space lack the new keys: their first value)."""
+    return {**{k: v[0] for k, v in space(setup).items()}, **g}
+
+
 def key(setup, g):
     """Same key for settings that trade the same (a value that doesn't apply doesn't count)."""
+    g = _full(setup, g)
     nd = NEEDS.get(setup) or {}
     return json.dumps({k: v for k, v in g.items() if k not in nd or nd[k](g)}, sort_keys=True, default=str)
 
 
 def _used(setup, g):
+    g = _full(setup, g)
     nd = NEEDS.get(setup) or {}
     return [k for k in g if k not in nd or nd[k](g)]
 
@@ -89,7 +96,7 @@ def rand_g(setup, rng):
 
 def mutate(setup, g, rng):
     sp = space(setup)
-    x = dict(g)
+    x = _full(setup, g)
     for k in rng.sample(list(sp), min(len(sp), rng.choice([1, 1, 2, 3]))):
         vs = sp[k]
         if isinstance(vs[0], (int, float)) and not isinstance(vs[0], bool) and x.get(k) in vs and rng.random() < 0.7:

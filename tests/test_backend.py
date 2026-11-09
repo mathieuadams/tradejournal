@@ -212,6 +212,8 @@ def test_06c_fractal_on_stocks():
     assert st.get("split", {}).get("cut") and st["evals"] >= 1 and not st.get("error"), st.get("split")
     assert len(search.space("fractal")) > 15 and search.key("fractal", {**search.from_params("fractal", s["params"]), "fadeP": 0.2}) == \
         search.key("fractal", search.from_params("fractal", s["params"]))      # a fade setting doesn't change a cross
+    old = {"entry": "cross", "tf": 15, "wave": 10, "macro": "with", "tgt": "level"}                  # saved by the old grid
+    assert search.key("fractal", old) and search.mutate("fractal", old, __import__("random").Random(1))
     b = strategy.create(SUB, {"setup": "squeeze", "params": {"tickers": ["QQQ"]}})
     assert b["params"]["tickers"] == ["NQ"]                        # the futures-only setups stay on NQ / ES
     try:

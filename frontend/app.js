@@ -511,6 +511,21 @@ async function vFractal() {
   fxStratList().then(() => { if (S.fx.strat) fxStratLoad(); });
   return fxLoad();
 }
+/* Fold any Fractal page panel: an arrow before its title hides everything but the header (kept in this browser). */
+function fxFold(p, fold) {
+  p.dataset.folded = fold ? '1' : '0';
+  [...p.children].forEach(c => { if (!c.classList.contains('hd')) c.style.display = fold ? 'none' : ''; });
+  const b = p.querySelector(':scope > .hd [data-act=fold]'); if (b) b.textContent = fold ? '▸' : '▾';
+}
+function fxFolds() {
+  document.querySelectorAll('#view .panel > .hd').forEach(hd => {
+    const h2 = hd.querySelector('h2'); if (!h2 || hd.querySelector('[data-act=fold]')) return;
+    const k = h2.textContent.trim().slice(0, 40);
+    h2.insertAdjacentHTML('afterbegin', `<button class="btn sm" data-act="fold" data-k="${esc(k)}" title="Fold / unfold" style="padding:0 7px;margin-right:6px">▾</button>`);
+    let f = false; try { f = localStorage.getItem('fold:' + k) === '1'; } catch (e) { /* private mode */ }
+    if (f) fxFold(hd.parentElement, true);
+  });
+}
 /* Auto-refresh: every 5 minutes while the chart's market is open (stocks 09:30-16:05 ET on weekdays; NQ / ES Sunday
    18:00 to Friday 17:00 ET, except 17:00-18:00) and the tab is visible. The slider stays on the same bar (or on the
    latest bar if it was there); the panels keep their settings. */
@@ -601,7 +616,8 @@ async function fxLoad() {
         <input type="range" id="fx-k" min="${Math.min(r.bars.length - 1, 2 * r.params.wave)}" max="${r.bars.length - 1}" value="${r.bars.length - 1}" style="width:min(520px,60vw)">
         <button class="btn sm" data-act="fx-step" data-d="1">▶</button>
         <button class="btn sm" data-act="fx-step" data-d="9999">Latest</button></div>
-      <div id="fx-chart" style="margin-top:8px">${fxChart(r, r.bars.length - 1)}</div>
+      <div id="fx-tog" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${fxTogBar()}</div>
+      <div id="fx-chart" style="margin-top:6px">${fxChart(r, r.bars.length - 1)}</div>
       <div id="fx-lower">${fxLower(r, r.bars.length - 1)}</div>
 </div></section>
     <div id="gx-out" hidden></div>
@@ -647,35 +663,45 @@ async function fxLoad() {
   oaLoad();
   mmLoad();
   vpLoad();
+  fxFolds();
 }
 /* MacroTrend strip + StdDev panel under the chart (same x axis as fxChart). */
+/* Show / hide parts of the chart (kept in this browser): arrows on the buttons above the chart. */
+const FX_LAYERS = [['macro', 'Macro Trend'], ['sd', 'StdDev'], ['gex', 'GEX / OI column'], ['glines', 'Gamma lines'], ['lbl', 'Wave labels (1H, 2L…)']];
+S.fxShow = (() => { try { return JSON.parse(localStorage.getItem('fxShow')) || {}; } catch (e) { return {}; } })();
+const fxOn = key => S.fxShow[key] !== false;
+function fxTogBar() {
+  return FX_LAYERS.map(([k, t]) => `<button class="btn sm" data-act="fx-tog" data-k="${k}" title="${fxOn(k) ? 'Hide' : 'Show'} ${t}" style="${fxOn(k) ? '' : 'opacity:.55'}">${fxOn(k) ? '▾' : '▸'} ${t}</button>`).join('');
+}
 const FX_SPACE = 20;                                     // empty candle slots after the last bar (room to read the right edge)
 function fxLayout(r) {
   /* The price chart and the indicators below share this: same width, same right margin, same candle x. */
-  const gxg = fxGammaFor(r), GX = gxg ? 190 : 0, W = 1100 + GX, padR = 170 + GX, slots = r.bars.length + FX_SPACE, cw = (W - padR) / slots;
+  const gxg = fxGammaFor(r), GX = gxg && fxOn('gex') ? 190 : 0, W = 1100 + GX, padR = 170 + GX, slots = r.bars.length + FX_SPACE, cw = (W - padR) / slots;
   return { gxg, GX, W, padR, cw, X: i => (i + 0.5) * cw, plotR: r.bars.length * cw };
 }
 function fxLower(r, k) {
   const L0 = fxLayout(r), W = L0.W, padR = L0.padR, n = r.bars.length, cw = L0.cw, X = L0.X, shown = S.fx.next !== false ? n - 1 : k;
-  const SH = 14, PH = 130, top = SH + 6, H = top + PH + 16;
-  const strip = r.series.map((x, i) => i > shown || x.macro == null ? '' : `<rect x="${i * cw}" y="0" width="${cw + 0.5}" height="${SH}" fill="${x.macro > 0 ? '#2E9E5B' : '#D0453B'}" opacity="${i > k ? .3 : 1}"><title>${esc(r.bars[i][0])} MacroTrend ${x.macroTrend}</title></rect>`).join('');
+  const mOn = fxOn('macro'), sOn = fxOn('sd');
+  if (!mOn && !sOn) return '';
+  const SH = mOn ? 14 : 0, PH = sOn ? 130 : 0, top = SH + (sOn ? 6 : 0), H = top + PH + (sOn ? 16 : 0);
+  const strip = !mOn ? '' : r.series.map((x, i) => i > shown || x.macro == null ? '' : `<rect x="${i * cw}" y="0" width="${cw + 0.5}" height="${SH}" fill="${x.macro > 0 ? '#2E9E5B' : '#D0453B'}" opacity="${i > k ? .3 : 1}"><title>${esc(r.bars[i][0])} MacroTrend ${x.macroTrend}</title></rect>`).join('');
   const sd = r.series.map(x => x.stdev), vmax = Math.max(1, ...sd.slice(0, shown + 1).filter(v => v != null)) * 1.08;
   const lg = v => Math.log10(v + 0.05), y0 = lg(0), y1 = lg(vmax);             // log scale, like TradeWellX's 0.1 … 2.6 axis
   const Y = v => top + PH - (lg(v) - y0) / (y1 - y0) * PH;
-  const refs = [[0.1, 'StdDev squeeze'], [0.5, 'Default'], [0.8, 'Expanding'], [1.7, ''], [2.6, '']].filter(([v]) => v <= vmax)
+  const refs = !sOn ? '' : [[0.1, 'StdDev squeeze'], [0.5, 'Default'], [0.8, 'Expanding'], [1.7, ''], [2.6, '']].filter(([v]) => v <= vmax)
     .map(([v, t]) => `<line x1="0" x2="${W - padR}" y1="${Y(v)}" y2="${Y(v)}" stroke="${v === 0.1 ? '#3b82f6' : '#8b949e'}" opacity="${v === 0.1 ? .9 : .35}"/><text x="${W - padR + 4}" y="${Y(v) + 3}" font-size="10" fill="#8b949e">${v}${t ? ' ' + t : ''}</text>`).join('');
   let segs = '';
-  for (let i = 1; i <= shown; i++) {
+  for (let i = 1; sOn && i <= shown; i++) {
     if (sd[i] == null || sd[i - 1] == null) continue;
     segs += `<line x1="${X(i - 1)}" x2="${X(i)}" y1="${Y(sd[i - 1])}" y2="${Y(sd[i])}" stroke="${sd[i] >= sd[i - 1] ? '#2E9E5B' : '#D0453B'}" stroke-width="2" opacity="${i > k ? .3 : 1}"/>`;
   }
-  const dots = sd.map((v, i) => i <= shown && v != null && v < 0.1 ? `<circle cx="${X(i)}" cy="${H - 6}" r="2.2" fill="#e6edf3" opacity="${i > k ? .3 : .9}"><title>${esc(r.bars[i][0])} squeeze: ${v.toFixed(3)}</title></circle>` : '').join('');
+  const dots = !sOn ? '' : sd.map((v, i) => i <= shown && v != null && v < 0.1 ? `<circle cx="${X(i)}" cy="${H - 6}" r="2.2" fill="#e6edf3" opacity="${i > k ? .3 : .9}"><title>${esc(r.bars[i][0])} squeeze: ${v.toFixed(3)}</title></circle>` : '').join('');
   const days = r.bars.map((b, i) => i && b[0].slice(0, 10) !== r.bars[i - 1][0].slice(0, 10) ? `<line x1="${i * cw}" x2="${i * cw}" y1="0" y2="${H}" stroke="#E5C100" opacity=".25"/>` : '').join('');
   const cur = r.series[k];
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px;margin-top:6px">${days}${strip}
-    <text x="${W - padR + 4}" y="${SH - 3}" font-size="10.5" fill="#cfd6df">Macro Trend ${cur.macroTrend || '—'}</text>${refs}${segs}${dots}
+    ${mOn ? `<text x="${W - padR + 4}" y="${SH - 3}" font-size="10.5" fill="#cfd6df">Macro Trend ${cur.macroTrend || '—'}</text>` : ''}${refs}${segs}${dots}
     <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>
-    <text x="6" y="${top + 12}" font-size="10.5" fill="#cfd6df">StdDev ${cur.stdev != null ? cur.stdev.toFixed(2) : '—'}% ${cur.stdev == null ? '' : cur.stdev < 0.1 ? '· squeeze' : cur.stdev >= 0.8 ? '· expanding' : ''}</text></svg>
+    ${!sOn ? '' : `<text x="6" y="${top + 12}" font-size="10.5" fill="#cfd6df">StdDev ${cur.stdev != null ? cur.stdev.toFixed(2) : '—'}% ${cur.stdev == null ? '' : cur.stdev < 0.1 ? '· squeeze' : cur.stdev >= 0.8 ? '· expanding' : ''}</text>`}</svg>
     <div class="note">Macro Trend: green when the close is above its ${({ ema30: 'EMA 30', ema40: 'EMA 40', sma50: '50-bar average' })[r.params.macro] || 'EMA 30'}, red below (TradeWellX's MacroTrend L001 / S001 count in the hover). StdDev: standard deviation of the last ${r.params.wave} closes in % of price, green while rising, red while falling; dots = squeeze (under 0.1).</div>`;
 }
 function fxAt() {
@@ -1156,7 +1182,7 @@ function fxChart(r, k) {
   const axis = ticks.map(q => { const y = Y(piv * (1 + q / 100)); return `<line x1="${W - padR - 34}" x2="${W - padR}" y1="${y}" y2="${y}" stroke="#8b949e" opacity=".5"/><text x="${W - padR - 36}" y="${y + 3}" font-size="10" text-anchor="end" fill="#8b949e">${q > 0 ? '+' : ''}${+q.toFixed(2)}% ${fmt(piv * (1 + q / 100))}</text>`; }).join('');
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${axis}${bands}${imp}${candles}
     <line x1="0" x2="${W - padR}" y1="${H / 2}" y2="${H / 2}" stroke="#E8E8E8" stroke-width="1.6"/>
-    <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}${sig}${fxGammaLines(r, k, Y, inView, W, padR)}${fxGammaLadder(r, k, gxg, Y, inView, W, padR, GX)}
+    <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${fxOn('lbl') ? labels : ''}${sig}${fxOn('glines') ? fxGammaLines(r, k, Y, inView, W, padR) : ''}${GX ? fxGammaLadder(r, k, gxg, Y, inView, W, padR, GX) : ''}
     ${lvK && Math.abs(lvK.ma - piv) > 1e-9 && inView(lvK.ma) ? `<line x1="${X(k)}" x2="${W - padR}" y1="${Y(lvK.ma)}" y2="${Y(lvK.ma)}" stroke="#B24BD6" stroke-width="1.5" stroke-dasharray="5 3"/><text x="${W - padR - 4}" y="${Y(lvK.ma) - 4}" font-size="10" text-anchor="end" fill="#D58BEF">vector ${fmt(lvK.ma)} (${lvK.ma < piv ? 'green' : 'red'} level prices start here)</text>` : ''}
     <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>${fxTrades(r, k, X, YR, rv, shown)}
     ${box(6, 6, [`Above pivot: average ${avg(hb)} bars per wave (${hb.length} waves)`, `Longest above: ${hb.length ? Math.max(...hb) : 0} bars`])}
@@ -1749,6 +1775,10 @@ document.addEventListener('click', async e => {
       case 'mm-backfill': { const n = +($('#mm-days').value || 3); el.disabled = true;
         try { await api('/mmhistory/backfill', { method: 'POST', body: { sym: S.fx.sym || 'QQQ', days: n } }); mmPoll(); } finally { el.disabled = false; } break; }
       case 'mm-snap': el.disabled = true; try { await api('/mmhistory/snapshot', { method: 'POST', body: { sym: S.fx.sym || 'QQQ' } }); toast('Snapshot recorded.'); } finally { el.disabled = false; } await mmLoad(); break;
+      case 'fx-tog': { const kk = el.dataset.k; S.fxShow[kk] = !fxOn(kk); try { localStorage.setItem('fxShow', JSON.stringify(S.fxShow)); } catch (e) { /* private mode */ }
+        $('#fx-tog').innerHTML = fxTogBar(); fxAt(); break; }
+      case 'fold': { const p = el.closest('.panel'), key = 'fold:' + el.dataset.k, open = p.dataset.folded === '1';
+        fxFold(p, !open); try { localStorage.setItem(key, open ? '0' : '1'); } catch (e) { /* private mode */ } break; }
       case 'vp-load': S.vp = { ...S.vp, fwd: +$('#vp-fwd').value || 1, match: $('#vp-match').value, wave: +$('#vp-wave').value || 1, days: +$('#vp-days').value || 200 }; $('#vp-out').innerHTML = '<div class="empty muted">Calculating…</div>'; await vpLoad(); break;
       case 'vp-step': { const r = S.vpR; if (!r) break; const dd = +el.dataset.d, i = dd === 9999 ? r.dates.length - 1 : Math.max(2, Math.min(r.dates.length - 1, r.index + dd)); S.vp.asof = i === r.dates.length - 1 ? '' : r.dates[i]; await vpLoad(); break; }
       case 'oa-load': await oaLoad($('#oa-exp').value); break;
