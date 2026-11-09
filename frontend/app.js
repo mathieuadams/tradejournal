@@ -1147,7 +1147,9 @@ function fxChart(r, k) {
     const col = open ? '#FF3B30' : (hiSide ? '#C8781E' : '#7a2a26');
     imp += `<line x1="${X(i0)}" x2="${x2}" y1="${y}" y2="${y}" stroke="${col}" stroke-width="${open ? 3 : 2}" stroke-dasharray="3 2" opacity="${open ? .95 : .6}"><title>${w.side}${w.count} extreme ${fmt(w.price)} (${sgn((q0 - 1) * 100, 2, '%')} from its pivot ${fmt(w.pivot)}) · ${open ? 'open' : `closed after ${j - i0} bars`}</title></line>`
       ;
-    if (open) openTags.push([y, `${fmt(px)} open [${k - i0}]`]);
+    // the wave's real extreme first; in the fractal graph the line sits at its move from its own pivot, so the price at
+    // today's pivot is shown too when it differs (TradeWellX labels that one)
+    if (open) openTags.push([y, `${fmt(w.price)} ${hiSide ? 'high' : 'low'}${Math.abs(px - w.price) > 0.005 ? ` (≡ ${fmt(px)} at this pivot)` : ''} open [${k - i0}]`]);
   });
   openTags.sort((a, b) => a[0] - b[0]);
   let oy = -99;
