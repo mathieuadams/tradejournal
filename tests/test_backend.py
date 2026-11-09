@@ -195,6 +195,26 @@ def test_06b_fractal_mm():
     assert p["entry"] == "vector" and p["tgt"] == "wall" and p["mm"] == "calls" and "gamma wall" in fxstrat.describe(p)
 
 
+def test_06c_fractal_on_stocks():
+    import alpaca
+    import stockdata
+    alpaca.save_key(SUB, "PK1234567890AB", "s" * 40)
+    s = strategy.create(SUB, {"setup": "fractal", "params": {"days": 80, "tickers": ["QQQ", "NQ"], "hours": "all", "macro": "none"}})
+    assert s["params"]["tickers"] == ["QQQ"] and s["params"]["hours"] == "rth"
+    v = strategy.study(SUB, s["id"])
+    ts = strategy.trades(SUB, s["id"], "study")
+    assert v["study"]["n"] > 0 and all(t["s"] == "QQQ" and "09:30" <= t["in"][11:16] <= "16:00" for t in ts), v["study"]
+    assert all(t["cost"] == 2.0 for t in ts)                       # 100 shares, 1 cent slippage a side, no commission
+    assert stockdata.coverage("QQQ")["days"] >= 80
+    b = strategy.create(SUB, {"setup": "squeeze", "params": {"tickers": ["QQQ"]}})
+    assert b["params"]["tickers"] == ["NQ"]                        # the futures-only setups stay on NQ / ES
+    try:
+        strategy.action(SUB, s["id"], "paper_force")
+        raise AssertionError("paper on stocks")
+    except Exception as e:
+        assert "QQQ" in str(e) or "validation" in str(e).lower()
+
+
 def test_07_job_continuation():
     calls = []
     real = jobs._deadline

@@ -19,7 +19,10 @@ from util import BadRequest, now_ny, ny_to_utc, utc_to_ny
 
 SYMS = ("NQ", "ES")
 SPEC = {"NQ": {"name": "E-mini Nasdaq-100", "tick": 0.25, "pv": 20.0, "big": 20},
-        "ES": {"name": "E-mini S&P 500", "tick": 0.25, "pv": 50.0, "big": 50}}
+        "ES": {"name": "E-mini S&P 500", "tick": 0.25, "pv": 50.0, "big": 50},
+        # stocks for the strategies (stockdata.py): 1 unit = 100 shares, no commission
+        "QQQ": {"name": "Invesco QQQ (100 shares)", "tick": 0.01, "pv": 100.0, "big": 5000, "comm": 0.0},
+        "SPY": {"name": "SPDR S&P 500 ETF (100 shares)", "tick": 0.01, "pv": 100.0, "big": 5000, "comm": 0.0}}
 PK = "FUTDATA"
 RTH0, RTH1 = "09:30", "16:00"
 
@@ -391,11 +394,11 @@ def _sma(xs, n):
     return out
 
 
-def cells(sym):
+def cells(sym, D=None):
     """{day: "Bull|calm"}: the market condition of each session, known before its open (from the closes before it).
     Phase: close vs its 50-day average and that average's 10-day slope (Bull / Bear, else Sideways).
     Volatility: 14-day average range as % of the close vs its median of the year before (calm / volatile)."""
-    D = daily(sym)
+    D = daily(sym) if D is None else D
     if not D:
         return {}
     cl = [x[4] for x in D]

@@ -35,6 +35,7 @@ import vwapband
 import rsi2
 import squeeze
 import fxstrat
+import stockdata
 import volclimax
 import pwsweep
 import trendday
@@ -52,6 +53,7 @@ from util import BadRequest, NotFound, iso, now_ny
 SETUPS = {"orb": orb, "orbema": orbema, "range50": range50, "silver": silver, "tvpoc": tvpoc, "vwapret": vwapret, "wt": wtswing, "onsweep": onsweep, "ibbreak": ibbreak, "odpull": odpull, "pdbreak": pdbreak, "pdsweep": pdsweep, "nrbreak": nrbreak, "fpdisp": fpdisp, "ifvg": ifvg, "biaspull": biaspull, "ondrift": ondrift, "ldnbrk": ldnbrk, "smt": smt, "flatrev": flatrev, "postclose": postclose, "sungap": sungap, "insidebar": insidebar, "imom": imom, "onrev": onrev, "gapfill": gapfill, "tom": tom, "vwapband": vwapband, "rsi2": rsi2, "squeeze": squeeze, "volclimax": volclimax, "pwsweep": pwsweep, "trendday": trendday, "fractal": fxstrat}
 NAMES = {"orb": "Opening range break + FVG retest", "orbema": "Opening range break + 20 EMA retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "tvpoc": "Trend volume profile + rolling POC", "vwapret": "VWAP retest (overnight included)", "onsweep": "Overnight high / low sweep and reclaim", "ibbreak": "Initial balance breakout", "odpull": "Opening drive, first pullback", "wt": "WaveTrend dots", "pdbreak": "Prior-day high / low break and retest", "pdsweep": "Prior-day high / low sweep and reclaim", "nrbreak": "Narrow-range day breakout", "fpdisp": "Fair price displacement", "ifvg": "FVG inversion with the EMA bias", "biaspull": "EMA bias pullback (no FVG control)", "ondrift": "Overnight drift (hold with the bias)", "ldnbrk": "London breakout of the Asian range", "smt": "ES / NQ divergence (SMT)", "flatrev": "Flat-bias mean reversion to VWAP", "postclose": "Post-close continuation (16:00-17:00)", "sungap": "Sunday / reopen gap", "insidebar": "Inside bar breakout", "imom": "Intraday momentum (first → last half hour)", "onrev": "Overnight → day reversal", "gapfill": "Regular-hours gap fill", "tom": "Turn of the month", "vwapband": "VWAP 2σ band fade", "rsi2": "RSI(2) pullback with the trend (hourly)", "squeeze": "Squeeze breakout", "volclimax": "Volume climax reversal", "pwsweep": "Prior-week high / low sweep", "trendday": "Trend-day hold", "fractal": "Fractal (TradeWellX): pivot cross, level fade, wave count"}
 SK = "STRAT#"
+STOCK_SETUPS = ("fractal",)                            # the setups that also run on QQQ / SPY (Alpaca candles)
 COSTS = {"contracts": 1, "comm": 2.25, "slip": 1.0, "dailyLoss": 500.0}
 MIN_TRADES, PF_MIN, MONTH_MAX, TRAIN = 100, 1.3, 0.4, 0.6
 PHASES, VOLS = ("Bull", "Sideways", "Bear"), ("calm", "volatile")
@@ -69,7 +71,12 @@ def _mod(setup):
 
 def _params(setup, params):
     p = _mod(setup).clean(params or {})
-    p["tickers"] = [t for t in p.get("tickers") or [] if t in futdata.SYMS] or ["NQ"]
+    ok = futdata.SYMS + (stockdata.SYMS if setup in STOCK_SETUPS else ())
+    p["tickers"] = [t for t in p.get("tickers") or [] if t in ok] or ["NQ"]
+    if any(stockdata.is_stock(t) for t in p["tickers"]):
+        p["tickers"] = [t for t in p["tickers"] if stockdata.is_stock(t)]     # stocks and futures are not mixed
+        if "hours" in p:
+            p["hours"] = "rth"                         # regular hours only for the stocks
     return p
 
 
@@ -127,7 +134,7 @@ def listing(sub):
 
 def view(sub, sid):
     v = _view(get(sub, sid))
-    v["coverage"] = {t: futdata.coverage()[t] for t in v["params"]["tickers"]}
+    v["coverage"] = {t: _coverage(t) for t in v["params"]["tickers"]}
     return v
 
 
@@ -183,7 +190,8 @@ def delete(sub, sid):
 
 def _cost(s, sym):
     sp = futdata.SPEC[sym]
-    return (2 * s.get("comm", COSTS["comm"]) + 2 * s.get("slip", COSTS["slip"]) * sp["tick"] * sp["pv"]) * s.get("contracts", 1)
+    comm = sp["comm"] if "comm" in sp else s.get("comm", COSTS["comm"])
+    return (2 * comm + 2 * s.get("slip", COSTS["slip"]) * sp["tick"] * sp["pv"]) * s.get("contracts", 1)
 
 
 def _normal(s, x, bl, cellmap):
@@ -258,12 +266,25 @@ def _factor_table(ts, keys):
 
 # ---------------------------------------------------------------- protocol
 
+def _coverage(t):
+    return stockdata.coverage(t) if stockdata.is_stock(t) else futdata.coverage()[t]
+
+
+def _cells(t):
+    return stockdata.cells(t) if stockdata.is_stock(t) else futdata.cells(t)
+
+
+def _days(t):
+    return stockdata.trading_days(t) if stockdata.is_stock(t) else futdata.trading_days(t)
+
+
 def data_check(sub, sid):
     s = get(sub, sid)
-    cov = futdata.coverage()
     out = []
     for t in s["params"]["tickers"]:
-        c = cov[t]
+        if stockdata.is_stock(t):                      # QQQ / SPY: fetched from Alpaca and stored on first use
+            stockdata.ensure(sub, t, int(s["params"].get("days") or 500))
+        c = _coverage(t)
         out.append({"s": t, "days": c["days"], "from": c["from"], "to": c["to"], "ok": c["days"] >= 60})
     return out
 
@@ -275,7 +296,7 @@ def run_trades(sub, s, start=None, days=None, prog=None):
         p["_start"] = start
     if days:
         p["days"] = days
-    cellmap = {t: futdata.cells(t) for t in p["tickers"]}
+    cellmap = {t: _cells(t) for t in p["tickers"]}
     trades, base = mod.all_trades(sub, p, None, prog)
     out = []
     for x, b in zip(trades, base):
@@ -390,7 +411,7 @@ def optimize(sub, sid, prog=None, deadline=None):
     cur = store.get_json(key, {}) or {}
     base = {k: v for k, v in s["params"].items()}
     if cur.get("base") != base or cur.get("grid") != GRIDS[s["setup"]]:
-        days = [d for d in futdata.trading_days(s["params"]["tickers"][0])][-int(s["params"].get("days") or 250):]
+        days = [d for d in _days(s["params"]["tickers"][0])][-int(s["params"].get("days") or 250):]
         cur = {"base": base, "grid": GRIDS[s["setup"]], "split": days[int(len(days) * TRAIN)] if days else None, "rows": [],
                "total": len(combos), "complete": False, "at": iso(now_ny())}
     split, slow = cur["split"], 0.0
@@ -469,6 +490,8 @@ def action(sub, sid, act):
         if act == "paper" and not s["valid"].get("pass"):
             raise BadRequest("Paper trading needs a passed validation.")
         s["paper"] = {"forced": act == "paper_force"}
+        if any(stockdata.is_stock(t) for t in s["params"]["tickers"]):
+            raise BadRequest("Paper trading runs on the NQ / ES candles; QQQ / SPY strategies are for testing only.")
         if not any(s.get("cells", {}).values()):
             raise BadRequest("Approve at least one market condition first.")
         s["paper"] = {**s["paper"], "on": True, "since": now_ny().strftime("%Y-%m-%d"), "n": 0, "net": 0}

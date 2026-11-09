@@ -212,7 +212,9 @@ def fake_alpaca_get(creds, path, params, timeout=60):
             out.append({"t": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "o": round(o, 2), "h": round(hi, 2), "l": round(lo, 2),
                         "c": round(px, 2), "v": rnd.randint(1000, 90000)})
         t += timedelta(minutes=step)
-    return {"bars": out[: int(params.get("limit") or 10000)], "symbol": sym, "next_page_token": None}
+    lim, at = int(params.get("limit") or 10000), int(params.get("page_token") or 0)      # paged like Alpaca
+    nxt = str(at + lim) if at + lim < len(out) else None
+    return {"bars": out[at:at + lim], "symbol": sym, "next_page_token": nxt}
 
 
 # ---------------------------------------------------------------- fake Unusual Whales

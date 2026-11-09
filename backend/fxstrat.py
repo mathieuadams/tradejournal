@@ -29,6 +29,9 @@ odds, the Macro Trend, the StdDev squeeze and the daily wave state, as entries f
 import bisect
 import fractal
 import nightkit as N
+import stockdata
+
+TICK = {"QQQ": 0.01, "SPY": 0.01}
 
 DEFAULT = {"tickers": ["NQ"], "tf": 15, "wave": 10, "stats": 10, "hours": "all", "entry": "cross", "stopP": 0.5, "tgtP": 0.5, "fadeP": 0.1,
            "oddsMax": 0.2, "tgt": "level", "mm": "none", "oaMin": 0, "oaBars": 3, "macro": "with", "sqz": "any", "daily": "none", "lastEntry": "15:00", "maxDay": 2,
@@ -103,7 +106,7 @@ _SIG = {}
 def _daily_state(sym):
     """{day: +1 / -1}: the Wave 1 daily state at that session's close (H = close over its pivot)."""
     import futdata
-    D = futdata.daily(sym)
+    D = stockdata.daily(sym) if stockdata.is_stock(sym) else futdata.daily(sym)
     if len(D) < 5:
         return {}
     r = fractal.compute([[x[0], x[1], x[2], x[3], x[4]] for x in D], 1)
@@ -114,7 +117,7 @@ def signals(sym, p, S, days, sday_, pday=None):
     """{candle time: signal} over the continuous candles S (all sessions of the run, oldest first); sday[i] = S[i]'s session."""
     import futdata
     key = (sym, p["tf"], p["hours"], p["wave"], p["stats"], p["entry"], p["stopP"], p["tgtP"], p["fadeP"], p["oddsMax"], p["tgt"],
-           p["macro"], p["sqz"], p["daily"], p["oaMin"], p["oaBars"], len(S), S[-1][0] if S else None, futdata.last_bar_time(sym))
+           p["macro"], p["sqz"], p["daily"], p["oaMin"], p["oaBars"], len(S), S[-1][0] if S else None, None if stockdata.is_stock(sym) else futdata.last_bar_time(sym))
     if key in _SIG:
         return _SIG[key]
     if len(_SIG) > 40:
@@ -195,7 +198,7 @@ def signals(sym, p, S, days, sday_, pday=None):
                 hit = odds <= p["oddsMax"] and turn
             if hit:
                 d = -s
-                buf = p["bufTicks"] * N.K.TICK
+                buf = p["bufTicks"] * TICK.get(sym, N.K.TICK)
                 stop = ext + buf if d < 0 else ext - buf
                 if (c - stop) * d > 0 and (piv - c) * d > 0:
                     sig = (d, stop, piv)
@@ -252,7 +255,12 @@ def all_trades(sub, p, cells=None, prog=None):
     for sym in p["tickers"]:
         if prog:
             prog(f"{sym}: {p['tf']}-minute candles + the fractal")
-        rows, Fall, fi, E = ifvg._series(sym, {**p, "days": p["days"] + p["stats"] + 5} if not p.get("_start") else p)
+        q = {**p, "days": p["days"] + p["stats"] + 5} if not p.get("_start") else p
+        if stockdata.is_stock(sym):                     # QQQ / SPY: Alpaca 5-minute candles, regular hours
+            rows, Fall, fi, E = stockdata.series(sym, q)
+            p = {**p, "hours": "rth"}
+        else:
+            rows, Fall, fi, E = ifvg._series(sym, q)
         sig = engine_for(sym, p, rows)
         mm = mm_data(sub, sym)                          # also for the factor table (MM option volume at each entry)
         keep = set(d for d, *_ in rows[-p["days"]:]) if not p.get("_start") else set(d for d, *_ in rows if d >= p["_start"])
@@ -308,7 +316,7 @@ _MM = {}
 def mm_data(sub, sym):
     """{day: [rows]} of the recorded / rebuilt MM data for the futures' ETF (NQ <- QQQ, ES <- SPY)."""
     import db
-    base = {"NQ": "QQQ", "ES": "SPY"}.get(sym, sym)
+    base = {"NQ": "QQQ", "ES": "SPY"}.get(sym, sym)            # QQQ / SPY: their own data
     try:
         items = db.q_prefix(db.upk(sub), f"MM#{base}#")
     except Exception as e:

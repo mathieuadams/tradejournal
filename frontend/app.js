@@ -1231,7 +1231,7 @@ function paramForm(setup, p, locked) {
     const v = p[k], dis = locked ? 'disabled' : '';
     if (type === 'sel') return `<label class="f">${lab}<select data-p="${k}" ${dis}>${opt.map(([ov, ol]) => `<option value="${ov}" ${String(ov) === String(v) ? 'selected' : ''}>${ol}</option>`).join('')}</select></label>`;
     if (type === 'bool') return `<label class="check" style="align-self:end;min-height:36px"><input type="checkbox" data-p="${k}" ${v ? 'checked' : ''} ${dis}> ${lab}</label>`;
-    if (type === 'tick') return `<div class="f" style="font-size:13px;color:var(--muted)">${lab}<div class="seg">${['NQ', 'ES'].map(s => `<button type="button" data-ptick="${s}" aria-pressed="${(v || ['NQ']).includes(s)}" ${dis}>${s}</button>`).join('')}</div></div>`;
+    if (type === 'tick') return `<div class="f" style="font-size:13px;color:var(--muted)">${setup === 'fractal' ? 'Contracts / stocks (NQ, ES or QQQ, SPY: not mixed)' : lab}<div class="seg">${(setup === 'fractal' ? ['NQ', 'ES', 'QQQ', 'SPY'] : ['NQ', 'ES']).map(s => `<button type="button" data-ptick="${s}" aria-pressed="${(v || ['NQ']).includes(s)}" ${dis}>${s}</button>`).join('')}</div></div>`;
     return `<label class="f">${lab}<input type="${type === 'num' ? 'number' : 'text'}" ${type === 'num' ? `step="${opt}"` : ''} data-p="${k}" value="${esc(v ?? '')}" ${dis}></label>`;
   }).join('')}</div>`;
 }
