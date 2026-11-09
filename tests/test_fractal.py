@@ -89,6 +89,22 @@ def test_daily_pivots_match_tradewellx_warehouse():
     assert checked >= 50, checked
 
 
+def test_daily_macro_matches_tradewellx():
+    # warehouse SIGNALS_General at 11/08/2026: Daily Wave 1 and Wave 7 both Macro S018
+    import csv
+    from datetime import datetime
+    rows = list(csv.DictReader(open(os.path.join(HERE, "fixtures", "tradewellx_daily_qqq.csv"))))
+    rows.sort(key=lambda r: datetime.strptime(r["LastTradeDateTime"], "%m/%d/%Y %I:%M:%S %p"))
+    closes = [float(r["ClosePrice"]) for r in rows]
+    for i in range(1, len(rows)):          # stale rows: the true close is the pivot set from it the next day
+        if rows[i]["PivotValue"] != rows[i - 1]["PivotValue"] and not rows[i - 1]["LastTradeDateTime"].endswith("4:00:00 PM") \
+                and abs(float(rows[i]["PivotValue"]) - closes[i - 1]) < 1.5:
+            closes[i - 1] = float(rows[i]["PivotValue"])
+    bars = [[str(i), c, c, c, c, 0] for i, c in enumerate(closes)]
+    for wave in (1, 7):
+        assert fractal.compute(bars, wave)["series"][-1]["macroTrend"] == "S018"
+
+
 def test_cold_midline():
     m = fractal.midline([1, 5, 3], 10, partial=True)
     assert m == [1, 3, 3] and fractal.midline([1, 5, 3], 10) == [None, None, None]
@@ -106,7 +122,8 @@ def test_macro_trend_and_stdev():
             assert x["macro"] == -1 and x["macroTrend"].startswith("S"), t
     assert s["2026-10-29 09:45"]["macroTrend"] == "S002"
     assert s["2026-10-28 13:00"]["stdev"] < 0.1 < s["2026-10-29 10:00"]["stdev"] < s["2026-10-30 10:45"]["stdev"]
-    assert abs(fractal.stdev_pct([1, 3], 2)[1] - 50.0) < 1e-9 and fractal.macro_trend([1, 1, 5], 2)[2] == 1
+    assert abs(fractal.stdev_pct([1, 3], 2)[1] - 50.0) < 1e-9 and fractal.macro_trend([1, 1, 5], 2, "sma")[2] == 1
+    assert fractal.macro_trend([10, 9, 8], 30) == [1, -1, -1]
 
 
 def test_frozen_side():
@@ -203,10 +220,33 @@ def test_databento_nq():
     _check_view(r, 10)
 
 
+def test_uw_gamma():
+    import uwhales
+    st, r = call("PUT", "/uw", {"token": "bad_token_" + "x" * 20})
+    assert st == 400, r
+    st, r = call("PUT", "/uw", {"token": "uw_" + "k" * 30})
+    assert st == 200 and r["connected"] and r["last4"] == "kkkk", r
+    st, r = call("GET", "/gamma", q={"syms": "QQQ,SPY", "source": "oi"})
+    assert st == 200, r
+    for g in r["items"]:
+        c, u, px = g["computed"], g["uw"], g["price"]
+        assert c["call_wall"] > px > c["put_wall"] and g["strikes"]
+        assert c["call_wall"] == u["call_wall"] and c["put_wall"] == u["put_wall"] and c["gamma_magnet"] == u["gamma_magnet"]
+        assert abs(c["gamma_flip"] - u["gamma_flip"]) < 0.01
+        if g["sym"] == "QQQ":                     # NQ candles are stored (test_databento_nq): levels in NQ points
+            f = g["fut"]
+            assert f["sym"] == "NQ" and abs(f["computed"]["call_wall"] - c["call_wall"] * f["ratio"]) <= 0.125
+    # the wall rules on a hand-made profile
+    rows = [{"strike": k, "net": n} for k, n in ((95, 5), (98, -2), (99, 1), (101, 3), (103, 9), (104, -1))]
+    w = uwhales.walls(rows, 100)
+    assert w["call_wall"] == 103 and w["put_wall"] == 95 and w["gamma_magnet"] == 103 and w["gamma_flip"] == 98.67
+
+
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_match_tradewellx_clusternode()
     test_daily_pivots_match_tradewellx_warehouse()
+    test_daily_macro_matches_tradewellx()
     test_cold_midline()
     test_macro_trend_and_stdev()
     test_frozen_side()
@@ -214,4 +254,5 @@ if __name__ == "__main__":
     test_clusters_and_odds()
     test_alpaca_qqq()
     test_databento_nq()
+    test_uw_gamma()
     print("fractal: all tests passed")

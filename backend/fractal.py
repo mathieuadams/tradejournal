@@ -8,8 +8,8 @@ Rules worked out from the TradeWellX Data tab (QQQ, Wave 10, 15-minute bars, 10/
   Wave      = a run of bars whose close stays on one side of the pivot; a close across the pivot starts the next
   Label     = H<n> / L<n>: n = bars from the wave's first bar to its highest high (H) or lowest low (L)
   Move      = how far the wave got from the pivot: highest high / pivot - 1 (H), 1 - lowest low / pivot (L)
-  MacroTrend= +1 (L) / -1 (S): the close above / below the average of the 50 closes before it; counted L001, L002...
-              like TradeWellX's MacroTrend column (starts on the 51st bar: 10/27 15:30 for a 10/26 09:30 start)
+  MacroTrend= +1 (L) / -1 (S): the close above / below its EMA 30; counted L001, L002... like TradeWellX's
+              MacroTrend column (fits its daily S018 and its 15-min column; EMA 40 / SMA 50 selectable)
   StdDev    = standard deviation of the last `wave` closes, % of their average (TradeWellX "StdDev" panel:
               < 0.1 squeeze, 0.5 default, > 0.8 expanding)
   Clusters  = pivot x (1 +/- the move of the wave nearest to rank p: the move p of the waves reached or beat), p = 80/50/20/10/5 (bull), 80/50/20/10/2 (bear)
@@ -30,9 +30,21 @@ def midline(close, n, partial=False):
     return out
 
 
-def macro_trend(close, n=50):
-    """+1 / -1: the close above / below the average of the n closes before it; None until n closes exist."""
-    out, run = [None] * len(close), 0.0
+MACROS = {"ema30": ("ema", 30), "ema40": ("ema", 40), "sma50": ("sma", 50)}
+
+
+def macro_trend(close, n=30, kind="ema"):
+    """+1 (L) / -1 (S): the close above / below its average. Default: EMA 30 (seeded with the first close), which fits
+    TradeWellX's daily MacroTrend (S018 at 11/06/2026 on Daily Wave 1 and Wave 7) and its 15-min MacroTrend column
+    (10/27-10/30). "sma": the average of the n closes before the bar (None until n closes exist)."""
+    out = [None] * len(close)
+    if kind == "ema":
+        a, e = 2 / (n + 1), None
+        for i, c in enumerate(close):
+            e = c if e is None else a * c + (1 - a) * e
+            out[i] = 1 if c >= e else -1
+        return out
+    run = 0.0
     for i, c in enumerate(close):
         if i >= n:
             out[i] = 1 if c >= run / n else -1
@@ -55,7 +67,7 @@ def _sign(x, eps=1e-9):
     return 1 if x > eps else -1 if x < -eps else 0
 
 
-def compute(bars, wave=10, win=0, cold=False):
+def compute(bars, wave=10, win=0, cold=False, macro="ema30"):
     """Per-bar series and the list of waves. Bars before `start` only warm up the MA and the pivot (TradeWellX loads
     history before the window, so its first wave starts on the window's first bar)."""
     t = [b[0] for b in bars]
@@ -130,7 +142,8 @@ def compute(bars, wave=10, win=0, cold=False):
         open_wave = waves[-1]                         # the wave still running: counted in the statistics, like TradeWellX
         open_wave["open"] = True
 
-    macro, mcount, sd = macro_trend(c), [None] * n, stdev_pct(c, wave)
+    mk, mn = MACROS.get(macro, MACROS["ema30"])
+    macro, mcount, sd = macro_trend(c, mn, mk), [None] * n, stdev_pct(c, wave)
     run = 0
     for i in range(n):
         if macro[i] is not None:
@@ -235,11 +248,11 @@ def levels_at(r, k):
     return now
 
 
-def analyze(bars, wave=10, win=0, show=None, cold=False):
+def analyze(bars, wave=10, win=0, show=None, cold=False, macro="ema30"):
     """win: first bar of the statistics history (waves start counting there); show: first bar displayed (>= win).
     The series is returned from `show`; the waves (and so the levels and odds) go back to `win`."""
     show = win if show is None else max(show, win)
-    r = compute(bars, wave, win, cold)
+    r = compute(bars, wave, win, cold, macro)
     r["series"] = r["series"][show - win:]
     r["close_at"] = [float(b[4]) for b in bars[show:]]
     r["clusters"] = levels_at(r, len(r["series"]) - 1) if r["pivot"] and r["series"] else {"bull": [], "bear": []}

@@ -215,6 +215,47 @@ def fake_alpaca_get(creds, path, params, timeout=60):
     return {"bars": out[: int(params.get("limit") or 10000)], "symbol": sym, "next_page_token": None}
 
 
+# ---------------------------------------------------------------- fake Unusual Whales
+
+UW_PX = {"QQQ": 656.10, "SPY": 682.40}
+
+
+def _uw_profile(sym):
+    px = UW_PX.get(sym, 100.0)
+    rnd = random.Random("uw" + sym)
+    rows = []
+    for k in range(int(px * 0.85), int(px * 1.15) + 1):
+        d = (k - px) / px
+        call = 4e9 * math.exp(-((d - 0.02) / 0.015) ** 2) * (1 + 0.3 * rnd.random())
+        put = -2.5e9 * math.exp(-((d + 0.03) / 0.02) ** 2) * (1 + 0.3 * rnd.random()) + 1.2e9 * math.exp(-((d + 0.015) / 0.006) ** 2)
+        rows.append({"strike": str(k), "price": str(px), "time": "2026-11-06T20:59:00Z",
+                     "call_gamma_oi": f"{call:.2f}", "put_gamma_oi": f"{put:.2f}",
+                     "call_gamma_vol": f"{call * 0.6:.2f}", "put_gamma_vol": f"{put * 0.6:.2f}"})
+    return px, rows
+
+
+def fake_uw_get(token, path, params=None, timeout=60):
+    """Unusual Whales stand-in: any token starting with "uw_" works."""
+    from util import BadRequest
+    import uwhales
+    if not str(token).startswith("uw_"):
+        raise BadRequest("Unusual Whales refused the token (401).")
+    params = params or {}
+    sym = path.split("/")[1]
+    px, rows = _uw_profile(sym)
+    if path.endswith("/gex-levels"):
+        src = params.get("source") or "vol"
+        prof = sorted(({"strike": float(r["strike"]), "net": float(r[f"call_gamma_{src}"]) + float(r[f"put_gamma_{src}"])} for r in rows), key=lambda r: r["strike"])
+        w = uwhales.walls(prof, px)
+        return {"data": {"call_wall": str(w["call_wall"]), "put_wall": str(w["put_wall"]), "gamma_magnet": str(w["gamma_magnet"]),
+                         "gamma_flip": str(w["gamma_flip"]), "nearby_flips": [str(x) for x in w["nearby_flips"]],
+                         "source": src, "date": "2026-11-06T00:00:00.000Z", "time": "2026-11-06T20:59:00Z"}}
+    lo, hi = float(params.get("min_strike") or 0), float(params.get("max_strike") or 1e9)
+    sel = [r for r in rows if lo <= float(r["strike"]) <= hi]
+    lim, page = int(params.get("limit") or 500), int(params.get("page") or 0)
+    return {"data": sel[page * lim:(page + 1) * lim]}
+
+
 def install(fake_databento=False, data_dir=None, persist=True):
     global PERSIST
     PERSIST = persist
@@ -226,8 +267,11 @@ def install(fake_databento=False, data_dir=None, persist=True):
     databento._kms = lambda: FakeKMS()
     store.LOCAL = data_dir or os.path.join(os.path.dirname(__file__), ".localdata")
     import alpaca
+    import uwhales
     alpaca._kms = lambda: FakeKMS()
+    uwhales._kms = lambda: FakeKMS()
     if fake_databento:
         databento._open = fake_open
         alpaca._get = fake_alpaca_get
+        uwhales._get = fake_uw_get
     _ = urllib.parse

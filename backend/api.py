@@ -5,6 +5,7 @@ import re
 from datetime import date, timedelta
 
 import alpaca
+import uwhales
 import databento
 import db
 import futdata
@@ -149,9 +150,10 @@ def fractal_view(sub, claims, body, q):
             win_s = min(2 * wave, win)                 # not enough history: start the stats where the MA exists
         if win < 2 * wave:
             raise BadRequest(f"Not enough history before the window for Wave {wave}: lower the wave or the days.")
-    r = fractal.analyze(bars, wave, win_s, show=win, cold=cold)
+    macro = q.get("macro") if q.get("macro") in fractal.MACROS else "ema30"
+    r = fractal.analyze(bars, wave, win_s, show=win, cold=cold, macro=macro)
     r["bars"] = bars[win:]
-    r["params"] = {"sym": sym, "wave": wave, "days": days, "stats": stats, "statsFrom": bars[win_s][0], "cold": cold, "agg": agg, "source": source, "rth": rth_only or source == "alpaca",
+    r["params"] = {"sym": sym, "wave": wave, "days": days, "stats": stats, "statsFrom": bars[win_s][0], "cold": cold, "macro": macro, "agg": agg, "source": source, "rth": rth_only or source == "alpaca",
                    "feed": alpaca.status(sub)["feed"] if source == "alpaca" else "GLBX.MDP3"}
     return r
 
@@ -166,6 +168,58 @@ def _fut_bars(sym, days, agg, rth_only):
     if not keep:
         raise BadRequest(f"No {sym} candles stored yet: download them on the Data page.")
     return [[b[0][:16].replace("T", " ")] + b[1:6] for b in futdata.agg([b for b in one if b[0][:10] in keep], agg)]
+
+
+# ---------------------------------------------------------------- Unusual Whales: gamma, call / put walls
+
+@route("GET", "/uw")
+def uw_status(sub, claims, body, q):
+    return uwhales.status(sub)
+
+
+@route("PUT", "/uw")
+def uw_save(sub, claims, body, q):
+    return uwhales.save_key(sub, body.get("token"))
+
+
+@route("DELETE", "/uw")
+def uw_delete(sub, claims, body, q):
+    return uwhales.delete_key(sub)
+
+
+@route("POST", "/uw/test")
+def uw_test(sub, claims, body, q):
+    return uwhales.test(sub)
+
+
+FUT_FOR = {"QQQ": "NQ", "SPY": "ES"}
+
+
+def _fut_last(fut):
+    """The futures' latest stored 1-minute close and its time (None when no candles are stored)."""
+    end = now_ny().date()
+    one = futdata.bars_between(fut, (end - timedelta(days=7)).isoformat(), end.isoformat())
+    return (one[-1][4], one[-1][0][:16].replace("T", " ")) if one else (None, None)
+
+
+@route("GET", "/gamma")
+def gamma_view(sub, claims, body, q):
+    syms = [uwhales.check_sym(x) for x in (q.get("syms") or "QQQ,SPY").split(",") if x.strip()][:4]
+    source = q.get("source") if q.get("source") in uwhales.SOURCES else "oi"
+    out = []
+    for sym in syms:
+        g = uwhales.gamma(sub, sym, source, q.get("date") or None)
+        fut = FUT_FOR.get(sym)
+        if fut:
+            px, t = _fut_last(fut)
+            if px:   # the same levels in futures points: level x (futures / ETF), at the latest prices
+                ratio = px / g["price"]
+                conv = lambda v: None if v is None else round(v * ratio * 4) / 4
+                g["fut"] = {"sym": fut, "price": px, "time": t, "ratio": ratio,
+                            "uw": {k: conv(g["uw"].get(k)) for k in ("call_wall", "put_wall", "gamma_magnet", "gamma_flip")},
+                            "computed": {k: conv(g["computed"].get(k)) for k in ("call_wall", "put_wall", "gamma_magnet", "gamma_flip")}}
+        out.append(g)
+    return {"source": source, "items": out}
 
 
 # ---------------------------------------------------------------- data
@@ -218,7 +272,7 @@ def _estimate(sub, kind, syms, d0, d1, window="rth"):
 
 @route("GET", "/data")
 def data_view(sub, claims, body, q):
-    return {"coverage": futdata.coverage(), "job": jobs.status(sub, "data"), "databento": databento.status(sub), "alpaca": alpaca.status(sub), "refresh": jobs.status(sub, "refresh")}
+    return {"coverage": futdata.coverage(), "job": jobs.status(sub, "data"), "databento": databento.status(sub), "alpaca": alpaca.status(sub), "uw": uwhales.status(sub), "refresh": jobs.status(sub, "refresh")}
 
 
 @route("POST", "/data/estimate")

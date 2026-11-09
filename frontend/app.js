@@ -471,7 +471,7 @@ function zbar(z) {
 }
 
 /* ---------- Fractal: the TradeWellX Wave [N] rebuild (backend/fractal.py) ---------- */
-S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 10, agg: 15, rth: false, lv: 'steps', fixed: true, basis: 'pivot', cold: false, close16: true };
+S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 10, agg: 15, rth: false, lv: 'steps', fixed: true, basis: 'pivot', cold: false, close16: true, macro: 'ema30' };
 async function vFractal() {
   const f = S.fx, alp = await api('/alpaca');
   const ctl = `<div class="form" style="align-items:end">
@@ -483,6 +483,7 @@ async function vFractal() {
       <label class="check"><input type="checkbox" id="fx-rth" ${f.rth ? 'checked' : ''}> NQ / ES: regular hours only</label>
       <label class="check" title="TradeWellX loads no bars before the window: its MA and first pivot start from the window's own bars, which changes the first waves and the cluster marks"><input type="checkbox" id="fx-cold" ${f.cold ? 'checked' : ''}> Start cold, like TradeWellX</label>
       <label class="check" title="TradeWellX ends the window with one 16:00 bar: the last session's closing print (10 days at 15 min = 261 bars)"><input type="checkbox" id="fx-c16" ${f.close16 !== false ? 'checked' : ''}> Stocks: add the 16:00 closing bar</label>
+      <label class="f">Macro Trend<select id="fx-macro">${[['ema30', 'Close vs EMA 30'], ['ema40', 'Close vs EMA 40'], ['sma50', 'Close vs 50-bar average']].map(([v, t]) => `<option value="${v}" ${f.macro === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <button class="btn primary" data-act="fx-load">Calculate</button></div>
     <p class="note">QQQ and other stocks come from Alpaca (regular hours${alp.connected ? ', feed ' + esc(alp.feed.toUpperCase()) : ': <a href="#data">connect Alpaca</a>'}). NQ and ES come from the stored Databento candles, all hours like TradeWellX's NQ=F.</p>`;
   view(`${head('Fractal', 'Wave pivots, H/L counts, percent-probable clusters and wave odds, calculated the TradeWellX way.')}
@@ -492,7 +493,7 @@ async function vFractal() {
 async function fxLoad() {
   const f = S.fx, out = $('#fx-out');
   let r;
-  try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&stats=${f.stats}&agg=${f.agg}&rth=${f.rth ? 1 : 0}&cold=${f.cold ? 1 : 0}&close16=${f.close16 !== false ? 1 : 0}`); }
+  try { r = await api(`/fractal?sym=${encodeURIComponent(f.sym)}&wave=${f.wave}&days=${f.days}&stats=${f.stats}&agg=${f.agg}&rth=${f.rth ? 1 : 0}&cold=${f.cold ? 1 : 0}&close16=${f.close16 !== false ? 1 : 0}&macro=${f.macro || 'ema30'}`); }
   catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; return; }
   S.fxR = r;
   const last = r.series[r.series.length - 1], pct = (a, b) => b ? sgn((a / b - 1) * 100, 2, '%') : '—';
@@ -523,6 +524,9 @@ async function fxLoad() {
       <div id="fx-chart" style="margin-top:8px">${fxChart(r, r.bars.length - 1)}</div>
       <div id="fx-lower">${fxLower(r, r.bars.length - 1)}</div>
 </div></section>
+    <section class="panel"><div class="hd"><h2>Gamma (Unusual Whales)</h2><span class="dim" style="font-size:12px">call wall, put wall, gamma magnet, gamma flip · QQQ / SPY and the same levels in NQ / ES points</span><div class="grow"></div>
+      <label class="f" style="flex-direction:row;align-items:center;gap:6px">Basis<select id="gx-src"><option value="oi" ${(S.gx || {}).source !== 'vol' ? 'selected' : ''}>Open interest</option><option value="vol" ${(S.gx || {}).source === 'vol' ? 'selected' : ''}>Volume</option></select></label>
+      <button class="btn sm" data-act="gx-load" style="margin-left:8px">Load gamma</button></div><div class="bd" id="gx-out"><div class="empty muted">Loading…</div></div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">at the last bar · green from the lower of pivot / vector, red from the higher</span></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">Move</th></tr></thead><tbody id="fx-cl"></tbody></table></div></section>
@@ -534,6 +538,7 @@ async function fxLoad() {
       <section class="panel"><div class="hd"><h2>Option Analyzer: L waves</h2></div><div class="tbl-wrap">${odds(r.oddsL, 'L')}</div></section>
     </div></div>`;
   fxTable();
+  gxLoad();
 }
 /* MacroTrend strip + StdDev panel under the chart (same x axis as fxChart). */
 function fxLower(r, k) {
@@ -557,7 +562,7 @@ function fxLower(r, k) {
     <text x="${W - padR + 4}" y="${SH - 3}" font-size="10.5" fill="#cfd6df">Macro Trend ${cur.macroTrend || '—'}</text>${refs}${segs}${dots}
     <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>
     <text x="6" y="${top + 12}" font-size="10.5" fill="#cfd6df">StdDev ${cur.stdev != null ? cur.stdev.toFixed(2) : '—'}% ${cur.stdev == null ? '' : cur.stdev < 0.1 ? '· squeeze' : cur.stdev >= 0.8 ? '· expanding' : ''}</text></svg>
-    <div class="note">Macro Trend: green when the close is above the average of the 50 closes before it, red below (TradeWellX's MacroTrend L001 / S001 count in the hover). StdDev: standard deviation of the last ${r.params.wave} closes in % of price, green while rising, red while falling; dots = squeeze (under 0.1).</div>`;
+    <div class="note">Macro Trend: green when the close is above its ${({ ema30: 'EMA 30', ema40: 'EMA 40', sma50: '50-bar average' })[r.params.macro] || 'EMA 30'}, red below (TradeWellX's MacroTrend L001 / S001 count in the hover). StdDev: standard deviation of the last ${r.params.wave} closes in % of price, green while rising, red while falling; dots = squeeze (under 0.1).</div>`;
 }
 function fxAt() {
   const sl = $('#fx-k'), r = S.fxR; if (!sl || !r) return;
@@ -607,11 +612,61 @@ function fxLevelsAt(r, k) {
   if (!out.bull.length && !out.bear.length) return null;
   return out;
 }
+/* ---------- Gamma (Unusual Whales): levels table, NQ / ES conversion, GEX by strike ---------- */
+S.gx = { source: 'oi', data: null };
+async function gxLoad() {
+  const out = $('#gx-out'); if (!out) return;
+  const st = await api('/uw').catch(() => ({}));
+  if (!st.connected) { out.innerHTML = '<div class="empty muted">Connect Unusual Whales on the <a href="#data">Data</a> page to show the gamma levels.</div>'; S.gx.data = null; return; }
+  out.innerHTML = '<div class="empty muted">Loading gamma…</div>';
+  try { S.gx.data = await api(`/gamma?syms=QQQ,SPY&source=${S.gx.source || 'oi'}`); }
+  catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; S.gx.data = null; return; }
+  out.innerHTML = gxView(S.gx.data);
+  if (S.fxR) fxAt();
+}
+function gxView(d) {
+  const L = [['call_wall', 'Call wall', 'resistance'], ['gamma_magnet', 'Gamma magnet', 'pin'], ['gamma_flip', 'Gamma flip', 'zero gamma'], ['put_wall', 'Put wall', 'support']];
+  const v = x => x == null ? '—' : fmt(x), diff = (a, b) => a == null || b == null ? '' : Math.abs(a - b) < 1e-9 ? ' <span class="dim">=</span>' : ` <span class="warn" title="Unusual Whales' level vs the one computed here from its per-strike gamma">≠</span>`;
+  const tbl = d.items.map(g => `<div style="flex:1 1 420px;min-width:340px">
+      <h3 style="margin:0 0 6px">${esc(g.sym)} <span class="dim mono" style="font-size:12px">${fmt(g.price)} · ${esc(String(g.time || '').replace('T', ' ').slice(0, 16))} UTC</span></h3>
+      <table class="tbl"><thead><tr><th>Level</th><th class="r">Unusual Whales</th><th class="r">Computed</th>${g.fut ? `<th class="r">${esc(g.fut.sym)}</th>` : ''}</tr></thead><tbody>
+      ${L.map(([k, t, h]) => `<tr><td>${t} <span class="dim" style="font-size:11px">${h}</span></td><td class="r mono">${v(g.uw[k])}</td><td class="r mono">${v(g.computed[k])}${diff(g.uw[k], g.computed[k])}</td>${g.fut ? `<td class="r mono">${v(g.fut.uw[k])}</td>` : ''}</tr>`).join('')}
+      </tbody></table>
+      ${g.fut ? `<div class="note">${esc(g.fut.sym)} = level × ${g.fut.ratio.toFixed(4)} (${esc(g.fut.sym)} ${fmt(g.fut.price)} at ${esc(g.fut.time)} ET ÷ ${esc(g.sym)} ${fmt(g.price)}), rounded to 0.25.</div>` : `<div class="note">${g.sym === 'SPY' ? 'ES' : 'NQ'} levels show once its candles are downloaded on the Data page.</div>`}
+      ${gxBars(g)}</div>`).join('');
+  return `<div style="display:flex;gap:18px;flex-wrap:wrap">${tbl}</div>
+    <div class="note">Basis: ${d.source === 'vol' ? 'volume (directionalized)' : 'open interest'}. Computed = the same rules applied here to Unusual Whales' per-strike gamma (call wall: strike above the price with the largest positive net gamma; put wall: below; magnet: largest net gamma by size; flip: nearest zero crossing), so it can be compared with a Schwab option chain later.</div>`;
+}
+function gxBars(g) {
+  const rows = g.strikes.filter(r => Math.abs(r.strike / g.price - 1) <= 0.05);
+  if (!rows.length) return '';
+  const W = 520, H = Math.max(160, rows.length * 4.2), mx = Math.max(...rows.map(r => Math.abs(r.net))) || 1, k0 = rows[0].strike, k1 = rows[rows.length - 1].strike;
+  const Y = k => 6 + (k1 - k) / ((k1 - k0) || 1) * (H - 12), X0 = W / 2, sc = (W / 2 - 50) / mx, bh = Math.max(1, (H - 12) / rows.length - 0.6);
+  const bars = rows.map(r => `<rect x="${r.net >= 0 ? X0 : X0 + r.net * sc}" y="${Y(r.strike) - bh / 2}" width="${Math.max(0.5, Math.abs(r.net) * sc)}" height="${bh}" fill="${r.net >= 0 ? '#2E9E5B' : '#D0453B'}"><title>${r.strike}: net ${(r.net / 1e6).toFixed(1)}M (calls ${(r.call / 1e6).toFixed(1)}M, puts ${(r.put / 1e6).toFixed(1)}M) per 1% move</title></rect>`).join('');
+  const ms = [[g.price, 'price', '#e6edf3'], [g.uw.call_wall, 'call wall', '#3fb950'], [g.uw.put_wall, 'put wall', '#f85149'], [g.uw.gamma_flip, 'flip', '#d29922'], [g.uw.gamma_magnet, 'magnet', '#B24BD6']]
+    .filter(([k]) => k != null && k >= k0 && k <= k1).sort((a, b) => Y(a[0]) - Y(b[0]));
+  let ly = -99;
+  const marks = ms.map(([k, t, c]) => { const ty = Math.max(Y(k) - 3, ly + 11); ly = ty;
+    return `<line x1="0" x2="${W}" y1="${Y(k)}" y2="${Y(k)}" stroke="${c}" stroke-dasharray="4 3"/><text x="${W - 4}" y="${ty}" font-size="10" text-anchor="end" fill="${c}">${t} ${fmt(k)}</text>`; }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto;background:#151A22;border-radius:6px;margin-top:8px">
+    <line x1="${X0}" x2="${X0}" y1="0" y2="${H}" stroke="#8b949e" opacity=".4"/>${bars}
+    ${marks}</svg>
+    <div class="note">Net gamma by strike ($ per 1% move), ±5% of the price: green = positive (dealers dampen moves), red = negative (dealers amplify them).</div>`;
+}
 function fxTable() {
   const r = S.fxR, el = $('#fx-cl'); if (!r || !el) return;
   const L = fxLevelsAt(r, r.bars.length - 1) || { bull: [], bear: [], pivot: r.pivot };
   const row = (x, cls) => `<tr><td><span class="pill ${cls}">${Math.round(x.p * 100)}%</span></td><td class="r mono"><b>${fmt(x.price)}</b></td><td class="r mono">${sgn(x.move * 100, 2, '%')}</td></tr>`;
   el.innerHTML = [...L.bull].reverse().map(x => row(x, 'ok')).join('') + `<tr><td><b>Pivot</b></td><td class="r mono"><b>${fmt(r.pivot)}</b></td><td class="r mono">0.00%</td></tr>` + L.bear.map(x => row(x, 'warn')).join('');
+}
+function fxGammaLines(r, k, Y, inView, W, padR) {
+  // today's walls apply to the latest bar only
+  const d = S.gx && S.gx.data; if (!d || k !== r.bars.length - 1) return '';
+  const sym = r.params.sym, g = d.items.find(x => x.sym === sym || (x.fut && x.fut.sym === sym)); if (!g) return '';
+  const lv = g.sym === sym ? g.uw : g.fut.uw;
+  return [['call_wall', 'Call wall', '#3fb950'], ['put_wall', 'Put wall', '#f85149'], ['gamma_flip', 'Gamma flip', '#d29922'], ['gamma_magnet', 'Magnet', '#e3b8f5']]
+    .filter(([key]) => lv[key] != null && inView(lv[key]))
+    .map(([key, t, c]) => `<line x1="0" x2="${W - padR}" y1="${Y(lv[key])}" y2="${Y(lv[key])}" stroke="${c}" stroke-width="1.6" stroke-dasharray="10 4" opacity=".9"/><text x="8" y="${Y(lv[key]) - 4}" font-size="11" font-weight="600" fill="${c}">${t} ${fmt(lv[key])}</text>`).join('');
 }
 function fxChart(r, k) {
   /* TradeWellX layout: the pivot in force at bar k sits at the vertical centre; the levels are the ones in force then
@@ -707,7 +762,7 @@ function fxChart(r, k) {
   const axis = ticks.map(q => { const y = Y(piv * (1 + q / 100)); return `<line x1="${W - padR - 34}" x2="${W - padR}" y1="${y}" y2="${y}" stroke="#8b949e" opacity=".5"/><text x="${W - padR - 36}" y="${y + 3}" font-size="10" text-anchor="end" fill="#8b949e">${q > 0 ? '+' : ''}${+q.toFixed(2)}% ${fmt(piv * (1 + q / 100))}</text>`; }).join('');
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${axis}${bands}${imp}${candles}
     <line x1="0" x2="${W - padR}" y1="${H / 2}" y2="${H / 2}" stroke="#E8E8E8" stroke-width="1.6"/>
-    <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}${sig}
+    <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}${sig}${fxGammaLines(r, k, Y, inView, W, padR)}
     ${lvK && Math.abs(lvK.ma - piv) > 1e-9 && inView(lvK.ma) ? `<line x1="${X(k)}" x2="${W - padR}" y1="${Y(lvK.ma)}" y2="${Y(lvK.ma)}" stroke="#B24BD6" stroke-width="1.5" stroke-dasharray="5 3"/><text x="${W - padR - 4}" y="${Y(lvK.ma) - 4}" font-size="10" text-anchor="end" fill="#D58BEF">vector ${fmt(lvK.ma)} (${lvK.ma < piv ? 'green' : 'red'} level prices start here)</text>` : ''}
     <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>
     ${box(6, 6, [`Above pivot: average ${avg(hb)} bars per wave (${hb.length} waves)`, `Longest above: ${hb.length ? Math.max(...hb) : 0} bars`])}
@@ -740,6 +795,15 @@ async function vData() {
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="password" id="db-key" placeholder="db-…" autocomplete="off" style="flex:1 1 320px;max-width:460px">
               <button class="btn primary" data-act="db-connect">Connect</button></div>
             <p class="note">Keys: <a href="https://databento.com/portal/keys" target="_blank" rel="noopener">databento.com/portal/keys</a>. The key needs access to the CME Globex dataset (GLBX.MDP3). Downloads are billed by Databento; every download shows its cost first.</p>`}
+          </div></section>
+
+        <section class="panel"><div class="hd"><h2>Unusual Whales</h2><span class="dim" style="font-size:13px">Gamma (GEX), call / put walls for the Fractal page</span><div class="grow"></div>${d.uw && d.uw.connected ? '<span class="pill ok">Connected</span>' : '<span class="pill warn">Not connected</span>'}</div>
+          <div class="bd">${d.uw && d.uw.connected ? `
+            <div class="kv" style="margin-bottom:14px"><div><div class="k">Token</div><div class="v">••••${esc(d.uw.last4)}</div></div><div><div class="k">Checked</div><div class="v">${esc((d.uw.testedAt || '').replace('T', ' ').slice(0, 16))}</div></div><div></div><div></div></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-act="uw-test">Test</button><button class="btn danger" data-act="uw-del">Disconnect</button></div>` : `
+            <p class="muted" style="margin-top:0">Paste your Unusual Whales API token (unusualwhales.com/dashboard/api). It is checked against Unusual Whales, then stored encrypted (AWS KMS).</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="password" id="uw-token" placeholder="API token" autocomplete="off" style="flex:1 1 300px;max-width:420px"><button class="btn primary" data-act="uw-connect">Connect</button></div>
+            <p class="note">API access is usually a separate plan from the website membership.</p>`}
           </div></section>
 
         <section class="panel"><div class="hd"><h2>Alpaca</h2><span class="dim" style="font-size:13px">Stock / ETF bars (QQQ) for the Fractal page</span><div class="grow"></div>${d.alpaca && d.alpaca.connected ? '<span class="pill ok">Connected</span>' : '<span class="pill warn">Not connected</span>'}</div>
@@ -1281,7 +1345,11 @@ document.addEventListener('click', async e => {
         r.bars.forEach((b, i) => { const x = r.series[i]; rows.push([b[0], b[1], b[2], b[3], b[4], b[5], x.ma, x.pivot, x.slowMa, x.direction, x.peakToTrough ?? '', x.barsElapsed ?? '', x.pivot ? (b[4] / x.pivot).toFixed(6) : '']); });
         const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }));
         a.download = `${r.params.sym}_wave${r.params.wave}_${r.params.agg}m_${r.params.days}d.csv`; a.click(); URL.revokeObjectURL(a.href); break; }
-      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, stats: +$('#fx-stats').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked, cold: $('#fx-cold').checked, close16: $('#fx-c16').checked }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
+      case 'fx-load': S.fx = { ...S.fx, sym: ($('#fx-sym').value || 'QQQ').trim().toUpperCase(), wave: +$('#fx-wave').value || 10, days: +$('#fx-days').value || 10, stats: +$('#fx-stats').value || 10, agg: +$('#fx-agg').value || 15, rth: $('#fx-rth').checked, cold: $('#fx-cold').checked, close16: $('#fx-c16').checked, macro: $('#fx-macro').value }; $('#fx-out').innerHTML = '<div class="panel"><div class="empty muted">Calculating…</div></div>'; await fxLoad(); break;
+      case 'uw-connect': { const t = $('#uw-token').value.trim(); if (!t) return toast('Paste the API token.'); el.disabled = true; el.textContent = 'Checking…'; await api('/uw', { method: 'PUT', body: { token: t } }); toast('Unusual Whales connected.'); vData(); break; }
+      case 'uw-test': el.disabled = true; await api('/uw/test', { method: 'POST' }); toast('Unusual Whales answered.'); vData(); break;
+      case 'uw-del': if (!confirm('Disconnect Unusual Whales?')) return; await api('/uw', { method: 'DELETE' }); vData(); break;
+      case 'gx-load': S.gx = { ...S.gx, source: $('#gx-src').value }; await gxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }
       case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;
       case 'alp-test': el.disabled = true; await api('/alpaca/test', { method: 'POST' }); toast('Alpaca answered.'); vData(); break;
