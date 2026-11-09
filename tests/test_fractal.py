@@ -267,6 +267,22 @@ def test_mm_history():
     assert uwhales.stock_session(__import__("datetime").datetime(2026, 11, 6, 10, 0)) and not uwhales.stock_session(__import__("datetime").datetime(2026, 11, 7, 10, 0))
 
 
+def test_mm_backfill():
+    import jobs
+    import uwhales
+    n = uwhales.backfill_day(SUB, "QQQ", "2026-11-06")
+    assert n > 60, n                                  # 78 five-minute snapshots in a session
+    h = uwhales.history(SUB, "QQQ", 5)
+    day = next(d for d in h if d["date"] == "2026-11-06")
+    r0, r1 = day["rows"][0], day["rows"][-1]
+    assert r0["t"] == "09:35" and r1["t"] == "16:00" and r1["floor"] < r1["pml"] < r1["ceiling"]
+    assert r1["pa"] + r1["pb"] + r1["ca"] + r1["cb"] > r0["pa"] + r0["pb"] + r0["ca"] + r0["cb"]   # volume adds up
+    jobs.INVOKE = lambda payload: jobs.handler(payload)            # the job, inline
+    st, j = call("POST", "/mmhistory/backfill", {"sym": "QQQ", "days": 2, "only": True})
+    st, j = call("GET", "/mmhistory/status")
+    assert j["status"] == "done", j
+
+
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_match_tradewellx_clusternode()
@@ -282,4 +298,5 @@ if __name__ == "__main__":
     test_uw_gamma()
     test_landscape()
     test_mm_history()
+    test_mm_backfill()
     print("fractal: all tests passed")

@@ -94,6 +94,23 @@ def handler(event, ctx=None):
                 futdata.download_book(sub, s_, d, p.get("window") or "rth", force=bool(p.get("force")))
                 done.append(f"{s_}{d}")
             set_status(sub, name, status="done", msg=f"Order book of {len(p['days'])} day(s) downloaded.")
+        elif job == "mmbackfill":                       # rebuild past days of the market maker data (Unusual Whales)
+            import uwhales
+            todo = [(s_, d) for s_ in p["syms"] for d in p["days"]]
+            done = list(p.get("done") or [])
+            for s_, d in todo:
+                if f"{s_}{d}" in done:
+                    continue
+                if time.time() > dl - 300:
+                    _invoke({**event, "params": {**p, "done": done}})
+                    return {"continued": True}
+                prog(f"MM backfill {s_} {d} ({len(done) + 1}/{len(todo)})")
+                try:
+                    uwhales.backfill_day(sub, s_, d, prog)
+                except Exception as e:                 # a holiday or a day without data: note it, go on
+                    print("mm backfill", s_, d, e)
+                done.append(f"{s_}{d}")
+            set_status(sub, name, status="done", msg=f"MM data rebuilt for {len(p['days'])} day(s).")
         elif job == "study":
             strategy.study(sub, p["id"], prog)
             set_status(sub, name, status="done", msg="Study finished.")

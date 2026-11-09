@@ -218,6 +218,25 @@ def mm_history(sub, claims, body, q):
     return r
 
 
+@route("POST", "/mmhistory/backfill")
+def mm_backfill(sub, claims, body, q):
+    base = {"NQ": "QQQ", "ES": "SPY"}.get((body.get("sym") or "QQQ").upper(), body.get("sym") or "QQQ")
+    n = _int(body.get("days"), "Days", 1, 20, 3)
+    syms = [uwhales.check_sym(base)] if body.get("only") else list(uwhales.SNAP_SYMS)
+    uwhales.token(sub)                                 # connected?
+    today, days, d = now_ny().date(), [], now_ny().date()
+    while len(days) < n:                               # the last n weekdays before today
+        d -= timedelta(days=1)
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+    return jobs.start(sub, "mm", "mmbackfill", {"syms": syms, "days": sorted(days)})
+
+
+@route("GET", "/mmhistory/status")
+def mm_status(sub, claims, body, q):
+    return jobs.status(sub, "mm")
+
+
 @route("POST", "/mmhistory/snapshot")
 def mm_snapshot(sub, claims, body, q):
     base = {"NQ": "QQQ", "ES": "SPY"}.get((body.get("sym") or "QQQ").upper(), body.get("sym") or "QQQ")

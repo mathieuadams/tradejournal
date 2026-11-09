@@ -298,7 +298,8 @@ def history(sub, sym, days=3):
     """The recorded snapshots of the last `days` dates that have any, oldest first: [{"date", "rows"}]."""
     sym = check_sym(sym)
     items = db.q_prefix(db.upk(sub), f"MM#{sym}#", desc=True, limit=days)
-    return sorted(({"date": it["SK"].rsplit("#", 1)[1], "rows": it.get("rows") or []} for it in items), key=lambda x: x["date"])
+    return sorted(({"date": it["SK"].rsplit("#", 1)[1], "rows": it.get("rows") or [], "backfilled": bool(it.get("backfilled"))}
+                   for it in items), key=lambda x: x["date"])
 
 
 def scheduled_snapshots(sub):
@@ -311,3 +312,115 @@ def scheduled_snapshots(sub):
         except Exception as e:
             out[s] = "error: " + str(e)[:120]
     return out
+
+
+# ---------------------------------------------------------------- backfill: rebuild past days of MM data
+
+def _get_retry(tok, path, params=None, tries=6):
+    import time
+    for k in range(tries):
+        try:
+            return _get(tok, path, params)
+        except Unavailable as e:
+            if "rate limit" not in str(e) or k == tries - 1:
+                raise
+            time.sleep(2 + 3 * k)
+
+
+def mm_levels(cons, price, span=0.15, n=600):
+    """PML / Ceiling / Floor / aggregate from contracts [{"type", "strike", "oi", "prem"}] (same model as landscape)."""
+    cons = [c for c in cons if c["prem"] is not None and c["oi"] > 0]
+    if not cons:
+        return None
+    val = lambda c, p: max(0.0, p - c["strike"]) if c["type"] == "C" else max(0.0, c["strike"] - p)
+    holders = lambda p: sum(c["oi"] * 100 * (val(c, p) - c["prem"]) for c in cons)
+    ks = sorted({c["strike"] for c in cons})
+    lo, hi = min(ks[0], price * (1 - span)), max(ks[-1], price * (1 + span))
+    grid = sorted({round(lo + (hi - lo) * i / n, 2) for i in range(n + 1)} | set(ks))
+    curve = [(g, holders(g)) for g in grid]
+    i = min(range(len(curve)), key=lambda j: curve[j][1])
+
+    def cross(seq):
+        for (pa, a), (pb, b) in zip(seq, seq[1:]):
+            if (a < 0) != (b < 0):
+                return pa + (pb - pa) * (-a) / (b - a)
+        return None
+    return {"pml": curve[i][0], "pmlValue": curve[i][1], "ceiling": cross(curve[i:]), "floor": cross(curve[:i + 1][::-1]),
+            "agg": holders(price)}
+
+
+def backfill_day(sub, sym, day, prog=None, step=5):
+    """Rebuild `day`'s MM data every `step` minutes, as the live snapshots record it: the nearest expiry's contracts
+    (option-chains for that date, with open interest), each contract's minute prices and volume (option-contract
+    intraday) and the stock's bars (Alpaca). A contract's premium at a time = its last trade so far (its first trade of
+    the day before it has traded). Stored in MM#<sym>#<day> with backfilled=True."""
+    import alpaca
+    sym = check_sym(sym)
+    tok = token(sub)
+    chain, page = [], 0
+    while page < 40:
+        r = _get_retry(tok, f"stock/{sym}/option-chains", {"date": day, "greeks": "true", "limit": 500, "page": page})
+        data = r.get("data") if isinstance(r, dict) else r
+        data = data or []
+        chain += [x for x in data if isinstance(x, dict)]
+        if len(data) < 500:
+            break
+        page += 1
+    exps = sorted({str(x.get("expires"))[:10] for x in chain if str(x.get("expires"))[:10] >= day and (x.get("open_interest") or 0) > 0})
+    if not exps:
+        raise Unavailable(f"No {sym} contracts with open interest on {day}.")
+    ex = exps[0]
+    cons = []
+    for x in chain:
+        if str(x.get("expires"))[:10] != ex or not (x.get("open_interest") or 0) > 0:
+            continue
+        o = _occ(x.get("option_symbol"))
+        if o:
+            cons.append({"sym": x["option_symbol"], "type": o[1], "strike": o[2], "oi": int(x["open_interest"])})
+    bars = alpaca.day_bars(sub, sym, day, step)
+    if not bars:
+        raise Unavailable(f"No {sym} bars from Alpaca for {day}.")
+    ticks = {}
+    from util import utc_to_ny
+    from datetime import datetime
+    for j, c in enumerate(cons):
+        if prog and j % 25 == 0:
+            prog(f"MM backfill {sym} {day}: contract {j + 1}/{len(cons)}")
+        r = _get_retry(tok, f"option-contract/{c['sym']}/intraday", {"date": day})
+        tl = []
+        for m in r.get("data") or []:
+            t = utc_to_ny(datetime.strptime(str(m["start_time"])[:19], "%Y-%m-%dT%H:%M:%S")).strftime("%H:%M")
+            vol = sum(int(m.get(k) or 0) for k in ("volume_bid_side", "volume_ask_side", "volume_mid_side", "volume_no_side"))
+            tl.append((t, _num(m.get("close")), vol))
+        tl.sort()
+        ticks[c["sym"]] = tl
+    rows = []
+    for hm, px in bars:
+        h, mi = int(hm[:2]), int(hm[3:]) + step
+        end = f"{h + mi // 60:02d}:{mi % 60:02d}"                  # the snapshot is at the end of the bar
+        snap = []
+        pa = pb = ca = cb = 0
+        for c in cons:
+            tl = ticks.get(c["sym"]) or []
+            done = [x for x in tl if x[0] < end]
+            prem = done[-1][1] if done else (tl[0][1] if tl else None)
+            vol = sum(x[2] for x in done)
+            snap.append({**c, "prem": prem})
+            if c["type"] == "P":
+                if c["strike"] >= px:
+                    pa += vol
+                else:
+                    pb += vol
+            else:
+                if c["strike"] >= px:
+                    ca += vol
+                else:
+                    cb += vol
+        lv = mm_levels(snap, px)
+        if not lv:
+            continue
+        rows.append({"t": end, "price": px, "pml": lv["pml"], "ceiling": lv["ceiling"], "floor": lv["floor"], "agg": lv["agg"],
+                     "pmlValue": lv["pmlValue"], "expiry": ex, "pa": pa, "pb": pb, "ca": ca, "cb": cb})
+    sk = f"MM#{sym}#{day}"
+    db.put({"PK": db.upk(sub), "SK": sk, "rows": rows, "backfilled": True, "contracts": len(cons), "expiry": ex})
+    return len(rows)

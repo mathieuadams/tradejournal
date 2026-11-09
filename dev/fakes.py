@@ -250,9 +250,36 @@ def fake_uw_get(token, path, params=None, timeout=60):
     params = params or {}
     sym = path.split("/")[1]
     px, rows = _uw_profile(sym)
+    if path.startswith("option-contract/") and path.endswith("/intraday"):
+        osym = path.split("/")[1]
+        typ, k = osym[-9], int(osym[-8:]) / 1000
+        day = params.get("date")
+        rnd2 = random.Random(osym + str(day))
+        out = []
+        base_px = UW_PX.get(osym[:3], 100.0)
+        for mm in range(0, 390, 3):
+            t = datetime.strptime(day, "%Y-%m-%d").replace(hour=14, minute=30) + timedelta(minutes=mm)   # 09:30 ET
+            under = base_px * (1 + 0.004 * math.sin(mm / 60))
+            intr = max(0.0, under - k) if typ == "C" else max(0.0, k - under)
+            c = round(intr + 2.0 * math.exp(-((k - under) / (base_px * 0.012)) ** 2) * (1 - mm / 500) + 0.02, 2)
+            out.append({"start_time": t.strftime("%Y-%m-%dT%H:%M:%S.000Z"), "close": str(c), "volume_bid_side": rnd2.randint(0, 40),
+                        "volume_ask_side": rnd2.randint(0, 40), "volume_mid_side": 0, "volume_no_side": 0})
+        return {"data": out}
+    if path.endswith("/option-chains"):
+        day = params.get("date")
+        d0 = datetime.strptime(day, "%Y-%m-%d").date()
+        exps = [d0 + timedelta(days=i) for i in (0, 1, 2, 7) if (d0 + timedelta(days=i)).weekday() < 5]
+        rows = []
+        for ex in exps[:2]:
+            for k in range(int(px * 0.96), int(px * 1.04) + 1):
+                for typ in "CP":
+                    oi = int(15000 * math.exp(-((k - px * (1.01 if typ == "C" else 0.985)) / (px * 0.01)) ** 2)) + 30
+                    rows.append({"option_symbol": f"{sym}{ex.strftime('%y%m%d')}{typ}{k * 1000:08d}", "strike": k, "expires": ex.isoformat(),
+                                 "option_type": "call" if typ == "C" else "put", "open_interest": oi})
+        lim, page = int(params.get("limit") or 500), int(params.get("page") or 0)
+        return {"data": rows[page * lim:(page + 1) * lim]}
     if path.endswith("/expiry-breakdown"):
-        from datetime import date, timedelta
-        d0 = date.today()
+        d0 = datetime.now().date()
         days = [d0 + timedelta(days=i) for i in range(0, 20) if (d0 + timedelta(days=i)).weekday() < 5][:6]
         return {"data": [{"expires": d.isoformat() + "T00:00:00.000Z", "open_interest": 100000 - i * 9000, "volume": 50000, "chains": 400} for i, d in enumerate(days)]}
     if path.endswith("/option-contracts"):

@@ -164,3 +164,20 @@ def _with_close_bar(c, sym, feed, out, end):
             px = b["c"]
             return out + [[last + " 16:00", px, px, px, px, 0]]
     return out
+
+
+def day_bars(sub, sym, day, tf=5):
+    """One regular session's `tf`-minute bars for `day` (YYYY-MM-DD): [("HH:MM" bar start ET, close), ...]."""
+    sym = check_sym(sym)
+    c, feed = creds(sub), status(sub)["feed"]
+    d = datetime.strptime(day, "%Y-%m-%d")
+    start, end = ny_to_utc(d.replace(hour=9, minute=30)), ny_to_utc(d.replace(hour=16, minute=0))
+    r = _get(c, f"stocks/{sym}/bars", {"timeframe": f"{tf}Min", "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                       "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 1000, "adjustment": "raw",
+                                       "feed": feed, "sort": "asc"})
+    out = []
+    for b in r.get("bars") or []:
+        hm = utc_to_ny(datetime.strptime(b["t"][:19], "%Y-%m-%dT%H:%M:%S")).strftime("%H:%M")
+        if "09:30" <= hm < "16:00":
+            out.append((hm, float(b["c"])))
+    return out
