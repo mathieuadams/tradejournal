@@ -278,11 +278,15 @@ def _days(t):
     return stockdata.trading_days(t) if stockdata.is_stock(t) else futdata.trading_days(t)
 
 
-def data_check(sub, sid):
+def data_check(sub, sid, fetch=True):
+    """fetch=False (the API, 30 s limit): QQQ / SPY count as ready; the job downloads them (data_check with fetch)."""
     s = get(sub, sid)
     out = []
     for t in s["params"]["tickers"]:
         if stockdata.is_stock(t):                      # QQQ / SPY: fetched from Alpaca and stored on first use
+            if not fetch:
+                out.append({"s": t, "days": None, "from": None, "to": None, "ok": True})
+                continue
             stockdata.ensure(sub, t, int(s["params"].get("days") or 500))
         c = _coverage(t)
         out.append({"s": t, "days": c["days"], "from": c["from"], "to": c["to"], "ok": c["days"] >= 60})

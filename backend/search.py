@@ -101,7 +101,7 @@ def from_params(setup, P):
 
 # ---------------------------------------------------------------- scoring
 def r_net(t):
-    pv = futdata.SPEC[t["s"]]["pv"]
+    pv = futdata.SPEC[t["s"]]["pv"]                   # NQ $20, ES $50, QQQ / SPY 100 shares
     risk = t.get("risk")
     return t["net"] / (risk * pv * t.get("c", 1)) if risk else None
 
@@ -226,8 +226,11 @@ def run(sub, sid, budget_s=RUN_S, seed=None):
         st.update(top=[], seen={}, evals=0)               # other contracts / sessions: the scores don't compare
     st.update(running=iso(now_ny()), runStarted=iso(now_ny()), step="loading the candles", base=base, baseDays=base.get("days"), error=None)
     store.put_json(_key(sub, sid), st)
-    days = futdata.trading_days(base["tickers"][0])[-int(base.get("days") or 250):]
-    cut = days[int(len(days) * strategy.TRAIN)] if days else None
+    strategy.data_check(sub, sid)                        # QQQ / SPY: download / top up the candles first
+    days = strategy._days(base["tickers"][0])[-int(base.get("days") or 250):]
+    if not days:
+        raise ValueError("No candles for " + ", ".join(base["tickers"]) + ": run the study first (it downloads them).")
+    cut = days[int(len(days) * strategy.TRAIN)]
     st["split"] = {"from": days[0] if days else None, "cut": cut, "to": days[-1] if days else None,
                    "trainDays": sum(1 for d in days if d < cut), "testDays": sum(1 for d in days if d >= cut)}
     seen, top = st["seen"], _dedup(st["top"])

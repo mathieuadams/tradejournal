@@ -206,6 +206,10 @@ def test_06c_fractal_on_stocks():
     assert v["study"]["n"] > 0 and all(t["s"] == "QQQ" and "09:30" <= t["in"][11:16] <= "16:00" for t in ts), v["study"]
     assert all(t["cost"] == 2.0 for t in ts)                       # 100 shares, 1 cent slippage a side, no commission
     assert stockdata.coverage("QQQ")["days"] >= 80
+    import search                                                  # the optimizer on stocks (its day split used the futures)
+    search.run(SUB, s["id"], budget_s=30)
+    st = search.state(SUB, s["id"])
+    assert st.get("split", {}).get("cut") and st["evals"] >= 1 and not st.get("error"), st.get("split")
     b = strategy.create(SUB, {"setup": "squeeze", "params": {"tickers": ["QQQ"]}})
     assert b["params"]["tickers"] == ["NQ"]                        # the futures-only setups stay on NQ / ES
     try:

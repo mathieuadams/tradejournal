@@ -499,11 +499,42 @@ async function vFractal() {
       <label class="check" title="TradeWellX loads no bars before the window: its MA and first pivot start from the window's own bars, which changes the first waves and the cluster marks"><input type="checkbox" id="fx-cold" ${f.cold ? 'checked' : ''}> Start cold, like TradeWellX</label>
       <label class="check" title="TradeWellX ends the window with one 16:00 bar: the last session's closing print (10 days at 15 min = 261 bars)"><input type="checkbox" id="fx-c16" ${f.close16 !== false ? 'checked' : ''}> Stocks: add the 16:00 closing bar</label>
       <label class="f">Macro Trend<select id="fx-macro">${[['ema30', 'Close vs EMA 30'], ['ema40', 'Close vs EMA 40'], ['sma50', 'Close vs 50-bar average']].map(([v, t]) => `<option value="${v}" ${f.macro === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-      <button class="btn primary" data-act="fx-load">Calculate</button></div>
+      <button class="btn primary" data-act="fx-load">Calculate</button>
+      <label class="f" title="Draw a strategy's study trades on this chart (the trades on the chart's symbol)">Show trades of<select id="fx-strat"><option value="">— none —</option></select></label></div>
     <p class="note">QQQ and other stocks come from Alpaca (regular hours${alp.connected ? ', feed ' + esc(alp.feed.toUpperCase()) : ': <a href="#data">connect Alpaca</a>'}). NQ and ES come from the stored Databento candles, all hours like TradeWellX's NQ=F.</p>`;
   view(`${head('Fractal', 'Wave pivots, H/L counts, percent-probable clusters and wave odds, calculated the TradeWellX way.')}
     <section class="panel"><div class="bd">${ctl}</div></section><div id="fx-out"><div class="panel"><div class="empty muted">Loading…</div></div></div>`);
+  S.fxStrats = null;                                    // the strategy list is fresh on each visit
+  fxStratList().then(() => { if (S.fx.strat) fxStratLoad(); });
   return fxLoad();
+}
+/* A strategy's study trades on the Fractal chart: entry (triangle) and exit (dot), joined, with the result. */
+async function fxStratList() {
+  const sel = $('#fx-strat'); if (!sel) return;
+  try {
+    const d = S.fxStrats || (S.fxStrats = (await api('/strategies')).strategies || []);
+    sel.innerHTML = '<option value="">— none —</option>' + d.map(x => `<option value="${esc(x.id)}" ${x.id === S.fx.strat ? 'selected' : ''}>${esc(x.name)} (${esc((x.params.tickers || []).join(', '))})</option>`).join('');
+  } catch (e) { /* the list is optional */ }
+}
+async function fxStratLoad() {
+  S.fxTr = null;
+  if (S.fx.strat) { try { S.fxTr = (await api(`/strategies/${S.fx.strat}/trades?set=study`)).trades || []; } catch (e) { S.fxTr = []; toast(e.message); } }
+  fxAt();
+}
+function fxTrades(r, k, X, YR, rv, shown) {
+  const ts = S.fxTr; if (!ts || !ts.length) return '';
+  const sym = r.params.sym, starts = r.bars.map(b => b[0].replace('T', ' ')), first = starts[0], last = starts[starts.length - 1];
+  const at = t => { t = t.replace('T', ' ').slice(0, 16); if (t < first || t.slice(0, 10) > last.slice(0, 10)) return -1;
+    let lo = 0, hi = starts.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] <= t) lo = m; else hi = m - 1; } return starts[lo].slice(0, 10) === t.slice(0, 10) ? lo : -1; };
+  return ts.filter(t => t.s === sym).map(t => {
+    const i = at(t.in), j = at(t.out || t.in); if (i < 0 || i > shown) return '';
+    const L = t.side === 'long', ye = YR(rv(i, t.e)), win = (t.net || 0) > 0, col = win ? '#58a6ff' : '#f0883e';
+    const tip = `<title>${esc(t.in)} ${t.side} ${fmt(t.e)} → ${esc(t.out || 'open')} ${t.x != null ? fmt(t.x) : ''} · ${esc(t.why || '')} · ${t.r != null ? sgn(t.r, 2, 'R') : ''} · ${t.net != null ? (t.net >= 0 ? '+' : '−') + '$' + Math.abs(Math.round(t.net)).toLocaleString() : ''}${t.stop != null ? ` · stop ${fmt(t.stop)}` : ''}${t.tgt != null ? ` · target ${fmt(t.tgt)}` : ''}</title>`;
+    const ent = `<g>${tip}<rect x="${X(i) - 7}" y="${ye - 7}" width="14" height="14" rx="3" fill="${L ? '#1f883d' : '#cf222e'}" stroke="#fff" stroke-width="1.2"/><text x="${X(i)}" y="${ye + 4}" font-size="10" font-weight="700" text-anchor="middle" fill="#fff">${L ? 'L' : 'S'}</text></g>`;
+    if (j < 0 || j > shown || t.x == null) return ent;
+    const yx = YR(rv(j, t.x));
+    return `<g class="fx-tr">${tip}<line x1="${X(i)}" y1="${ye}" x2="${X(j)}" y2="${yx}" stroke="${col}" stroke-width="2.2"/>${ent}<circle cx="${X(j)}" cy="${yx}" r="5.5" fill="${col}" stroke="#fff" stroke-width="1.2"/><text x="${X(j)}" y="${yx - 9}" font-size="9.5" text-anchor="middle" fill="${col}">${t.r != null ? sgn(t.r, 1, 'R') : ''}</text></g>`;
+  }).join('');
 }
 async function fxLoad() {
   const f = S.fx, out = $('#fx-out');
@@ -612,6 +643,7 @@ function fxAt() {
   const k = +sl.value; $('#fx-chart').innerHTML = fxChart(r, k); $('#fx-lower').innerHTML = fxLower(r, k); $('#fx-at').textContent = r.bars[k][0];
 }
 document.addEventListener('input', e => { if (e.target.id === 'fx-k') fxAt(); });
+document.addEventListener('change', e => { if (e.target.id === 'fx-strat') { S.fx.strat = e.target.value; fxStratLoad(); } });
 document.addEventListener('change', e => { if (['vp-spag', 'vp-bg', 'vp-x'].includes(e.target.id)) { S.vp[e.target.id.slice(3)] = e.target.checked; if (S.vpR) $('#vp-out').innerHTML = vpShow(S.vpR); } if (e.target.id === 'vp-view') { S.vp.view = e.target.value; if (S.vpR) $('#vp-out').innerHTML = vpShow(S.vpR); } if (e.target.id === 'vp-fwd' || e.target.id === 'vp-match') { S.vp.fwd = +$('#vp-fwd').value; S.vp.match = $('#vp-match').value; vpLoad(); } if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } if (e.target.id === 'fx-lin') { S.fx.linear = e.target.checked; fxAt(); } if (e.target.id === 'fx-fixed') { S.fx.fixed = e.target.checked; fxAt(); fxTable(); } if (e.target.id === 'fx-basis') { S.fx.basis = e.target.value; fxAt(); fxTable(); } });
 /* Levels in force at bar k (TradeWellX): every wave finished before k plus the wave still running at k (its move so
    far); the move that p of them reached, nearest wave, no two levels on one wave (backend/fractal.py levels()).
@@ -1077,7 +1109,7 @@ function fxChart(r, k) {
     <line x1="0" x2="${W - padR}" y1="${H / 2}" y2="${H / 2}" stroke="#E8E8E8" stroke-width="1.6"/>
     <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}${sig}${fxGammaLines(r, k, Y, inView, W, padR)}${fxGammaLadder(r, k, gxg, Y, inView, W, padR, GX)}
     ${lvK && Math.abs(lvK.ma - piv) > 1e-9 && inView(lvK.ma) ? `<line x1="${X(k)}" x2="${W - padR}" y1="${Y(lvK.ma)}" y2="${Y(lvK.ma)}" stroke="#B24BD6" stroke-width="1.5" stroke-dasharray="5 3"/><text x="${W - padR - 4}" y="${Y(lvK.ma) - 4}" font-size="10" text-anchor="end" fill="#D58BEF">vector ${fmt(lvK.ma)} (${lvK.ma < piv ? 'green' : 'red'} level prices start here)</text>` : ''}
-    <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>
+    <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>${fxTrades(r, k, X, YR, rv, shown)}
     ${box(6, 6, [`Above pivot: average ${avg(hb)} bars per wave (${hb.length} waves)`, `Longest above: ${hb.length ? Math.max(...hb) : 0} bars`])}
     ${box(6, H - 54, [`Below pivot: average ${avg(lb)} bars per wave (${lb.length} waves)`, `Longest below: ${lb.length ? Math.max(...lb) : 0} bars`, `Scale: +${(up * 100).toFixed(2)}% / −${(dn * 100).toFixed(2)}% around the pivot${fr ? ' (fractal: each bar vs its own pivot)' : ' (linear)'}`])}
     ${seg ? '' : `<text x="${(W - padR) / 2}" y="40" font-size="12" text-anchor="middle" fill="#cfd6df">Levels start once 2 H and 2 L waves have finished</text>`}</svg>`;

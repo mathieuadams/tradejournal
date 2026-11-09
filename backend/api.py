@@ -501,7 +501,7 @@ def strategy_run(sub, claims, body, q, sid):
     if step not in ("study", "validate", "optimize"):
         raise BadRequest("step must be study, validate or optimize.")
     strategy.get(sub, sid)
-    if step == "study" and not all(x["ok"] for x in strategy.data_check(sub, sid)):
+    if step == "study" and not all(x["ok"] for x in strategy.data_check(sub, sid, fetch=False)):
         raise BadRequest("Not enough data: download at least 60 days of candles on the Data page.")
     return jobs.start(sub, "strat#" + sid, step, {"id": sid})
 
