@@ -222,6 +222,13 @@ UW_PX = {"QQQ": 656.10, "SPY": 682.40}
 
 def _uw_profile(sym):
     px = UW_PX.get(sym, 100.0)
+    try:                                   # follow the fake Alpaca price, so the dev chart and the gamma agree
+        import alpaca
+        from datetime import datetime, timedelta
+        b = fake_alpaca_get(("PKx", "s"), f"stocks/{sym}/bars", {"timeframe": "15Min", "start": (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ"), "end": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")})["bars"]
+        px = round(b[-1]["c"], 2) if b else px
+    except Exception:
+        pass
     rnd = random.Random("uw" + sym)
     rows = []
     for k in range(int(px * 0.85), int(px * 1.15) + 1):

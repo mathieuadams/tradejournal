@@ -502,7 +502,7 @@ async function fxLoad() {
   const cur = r.current;
   out.innerHTML = `
     <section class="panel"><div class="hd"><h2>${esc(r.params.sym)} · Wave [${r.params.wave}] · ${r.params.agg} min · ${r.bars.length} bars · ${r.params.days} days</h2><div class="grow"></div><span class="dim" style="font-size:12px">${esc(r.bars[0][0])} → ${esc(r.bars[r.bars.length - 1][0])} ET · levels from ${r.waves.length} waves since ${esc(String(r.params.statsFrom).slice(0, 10))} · ${esc(r.params.source)}</span><button class="btn sm" data-act="fx-csv" style="margin-left:10px">Download CSV</button></div>
-      <div class="bd"><div class="kv">
+      <div class="bd"><div id="gx-top" style="margin-bottom:12px"></div><div class="kv">
         <div><div class="k">Close</div><div class="v">${fmt(r.close)}</div></div>
         <div><div class="k">Pivot</div><div class="v"><b>${fmt(r.pivot)}</b></div></div>
         <div><div class="k">InProgress pivot (MA)</div><div class="v">${fmt(last.ma)}</div></div>
@@ -524,7 +524,7 @@ async function fxLoad() {
       <div id="fx-chart" style="margin-top:8px">${fxChart(r, r.bars.length - 1)}</div>
       <div id="fx-lower">${fxLower(r, r.bars.length - 1)}</div>
 </div></section>
-    <section class="panel"><div class="hd"><h2>Gamma (Unusual Whales)</h2><span class="dim" style="font-size:12px">call wall, put wall, gamma magnet, gamma flip · QQQ / SPY and the same levels in NQ / ES points</span><div class="grow"></div>
+    <section class="panel"><div class="hd"><h2>Gamma (Unusual Whales)</h2><span class="dim" style="font-size:12px">call wall, put wall, gamma magnet, gamma flip for the chart's symbol (NQ from QQQ, ES from SPY)</span><div class="grow"></div>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px">Basis<select id="gx-src"><option value="oi" ${(S.gx || {}).source !== 'vol' ? 'selected' : ''}>Open interest</option><option value="vol" ${(S.gx || {}).source === 'vol' ? 'selected' : ''}>Volume</option></select></label>
       <button class="btn sm" data-act="gx-load" style="margin-left:8px">Load gamma</button></div><div class="bd" id="gx-out"><div class="empty muted">Loading…</div></div></section>
     <div class="row"><div class="col-main">
@@ -614,20 +614,34 @@ function fxLevelsAt(r, k) {
 }
 /* ---------- Gamma (Unusual Whales): levels table, NQ / ES conversion, GEX by strike ---------- */
 S.gx = { source: 'oi', data: null };
+const GX_BASE = { NQ: 'QQQ', ES: 'SPY' };
 async function gxLoad() {
-  const out = $('#gx-out'); if (!out) return;
+  const out = $('#gx-out'), top = $('#gx-top'); if (!out) return;
   const st = await api('/uw').catch(() => ({}));
-  if (!st.connected) { out.innerHTML = '<div class="empty muted">Connect Unusual Whales on the <a href="#data">Data</a> page to show the gamma levels.</div>'; S.gx.data = null; return; }
+  if (!st.connected) { out.innerHTML = '<div class="empty muted">Connect Unusual Whales on the <a href="#data">Data</a> page to show the gamma levels.</div>'; if (top) top.innerHTML = ''; S.gx.data = null; return; }
+  const sym = (S.fx.sym || 'QQQ').toUpperCase(), base = GX_BASE[sym] || sym;
   out.innerHTML = '<div class="empty muted">Loading gamma…</div>';
-  try { S.gx.data = await api(`/gamma?syms=QQQ,SPY&source=${S.gx.source || 'oi'}`); }
-  catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; S.gx.data = null; return; }
+  try { S.gx.data = await api(`/gamma?syms=${encodeURIComponent(base)}&source=${S.gx.source || 'oi'}`); }
+  catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; if (top) top.innerHTML = `<span class="dim">Gamma: ${esc(e.message)}</span>`; S.gx.data = null; return; }
   out.innerHTML = gxView(S.gx.data);
   if (S.fxR) fxAt();
+  gxTop();
+}
+function gxTop() {
+  const top = $('#gx-top'), gg = fxGammaFor(S.fxR); if (!top) return;
+  if (!gg) { top.innerHTML = S.gx.data ? `<span class="dim">Gamma: no ${esc(S.fxR ? S.fxR.params.sym : '')} conversion yet (download its candles on the Data page).</span>` : ''; return; }
+  const px = S.fxR.bars[S.fxR.bars.length - 1][4], d = v => v == null ? '' : ` <span class="dim">${sgn((v / px - 1) * 100, 2, '%')}</span>`;
+  const chip = (t, v, c) => `<div style="padding:6px 10px;border-radius:6px;background:#0d1117;border-left:3px solid ${c}"><div class="dim" style="font-size:11px">${t}</div><div class="mono" style="font-size:14px">${v == null ? '—' : fmt(v)}${d(v)}</div></div>`;
+  const pos = gg.net >= 0;
+  top.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:stretch">
+    ${chip('Call wall', gg.lv.call_wall, '#3fb950')}${chip('Put wall', gg.lv.put_wall, '#f85149')}${chip('Gamma magnet', gg.lv.gamma_magnet, '#B24BD6')}${chip('Gamma flip', gg.lv.gamma_flip, '#d29922')}
+    <div style="padding:6px 10px;border-radius:6px;background:#0d1117;border-left:3px solid ${pos ? '#3fb950' : '#f85149'}"><div class="dim" style="font-size:11px">Net GEX ${esc(gg.base)} (±25%)</div><div class="mono" style="font-size:14px">${(gg.net / 1e9).toFixed(2)}B <span class="${pos ? 'win' : 'loss'}">${pos ? 'positive: moves damped' : 'negative: moves amplified'}</span></div></div>
+    <div class="dim" style="font-size:11px;align-self:center">Unusual Whales · ${esc(String(gg.g.time || '').replace('T', ' ').slice(0, 16))} UTC${gg.f !== 1 ? ` · ${esc(gg.base)} × ${gg.f.toFixed(4)} → ${esc(gg.sym)}` : ''}</div></div>`;
 }
 function gxView(d) {
   const L = [['call_wall', 'Call wall', 'resistance'], ['gamma_magnet', 'Gamma magnet', 'pin'], ['gamma_flip', 'Gamma flip', 'zero gamma'], ['put_wall', 'Put wall', 'support']];
   const v = x => x == null ? '—' : fmt(x), diff = (a, b) => a == null || b == null ? '' : Math.abs(a - b) < 1e-9 ? ' <span class="dim">=</span>' : ` <span class="warn" title="Unusual Whales' level vs the one computed here from its per-strike gamma">≠</span>`;
-  const tbl = d.items.map(g => `<div style="flex:1 1 420px;min-width:340px">
+  const tbl = d.items.map(g => `<div style="flex:1 1 520px;min-width:340px">
       <h3 style="margin:0 0 6px">${esc(g.sym)} <span class="dim mono" style="font-size:12px">${fmt(g.price)} · ${esc(String(g.time || '').replace('T', ' ').slice(0, 16))} UTC</span></h3>
       <table class="tbl"><thead><tr><th>Level</th><th class="r">Unusual Whales</th><th class="r">Computed</th>${g.fut ? `<th class="r">${esc(g.fut.sym)}</th>` : ''}</tr></thead><tbody>
       ${L.map(([k, t, h]) => `<tr><td>${t} <span class="dim" style="font-size:11px">${h}</span></td><td class="r mono">${v(g.uw[k])}</td><td class="r mono">${v(g.computed[k])}${diff(g.uw[k], g.computed[k])}</td>${g.fut ? `<td class="r mono">${v(g.fut.uw[k])}</td>` : ''}</tr>`).join('')}
@@ -638,7 +652,7 @@ function gxView(d) {
     <div class="note">Basis: ${d.source === 'vol' ? 'volume (directionalized)' : 'open interest'}. Computed = the same rules applied here to Unusual Whales' per-strike gamma (call wall: strike above the price with the largest positive net gamma; put wall: below; magnet: largest net gamma by size; flip: nearest zero crossing), so it can be compared with a Schwab option chain later.</div>`;
 }
 function gxBars(g) {
-  const rows = g.strikes.filter(r => Math.abs(r.strike / g.price - 1) <= 0.05);
+  const rows = g.strikes.filter(r => Math.abs(r.strike / g.price - 1) <= 0.05 && r.net !== 0);
   if (!rows.length) return '';
   const W = 520, H = Math.max(160, rows.length * 4.2), mx = Math.max(...rows.map(r => Math.abs(r.net))) || 1, k0 = rows[0].strike, k1 = rows[rows.length - 1].strike;
   const Y = k => 6 + (k1 - k) / ((k1 - k0) || 1) * (H - 12), X0 = W / 2, sc = (W / 2 - 50) / mx, bh = Math.max(1, (H - 12) / rows.length - 0.6);
@@ -659,19 +673,37 @@ function fxTable() {
   const row = (x, cls) => `<tr><td><span class="pill ${cls}">${Math.round(x.p * 100)}%</span></td><td class="r mono"><b>${fmt(x.price)}</b></td><td class="r mono">${sgn(x.move * 100, 2, '%')}</td></tr>`;
   el.innerHTML = [...L.bull].reverse().map(x => row(x, 'ok')).join('') + `<tr><td><b>Pivot</b></td><td class="r mono"><b>${fmt(r.pivot)}</b></td><td class="r mono">0.00%</td></tr>` + L.bear.map(x => row(x, 'warn')).join('');
 }
+function fxGammaFor(r) {
+  /* Today's gamma in the chart symbol's units: QQQ / SPY / any stock as is, NQ / ES from QQQ / SPY x (futures / ETF). */
+  const d = S.gx && S.gx.data; if (!d || !r) return null;
+  const sym = r.params.sym, g = d.items.find(x => x.sym === sym || (x.fut && x.fut.sym === sym)); if (!g) return null;
+  const f = g.sym === sym ? 1 : g.fut.ratio, conv = v => v == null ? null : (f === 1 ? v : Math.round(v * f * 4) / 4);
+  return { g, f, sym, base: g.sym, price: g.price * f, lv: g.sym === sym ? g.uw : g.fut.uw,
+    strikes: g.strikes.map(x => ({ ...x, px: x.strike * f })), net: g.netTotal, conv };
+}
+function fxGammaLadder(r, k, gg, Y, inView, W, padR, GX) {
+  if (!gg) return '';
+  const x0 = W - padR + 4, wMax = GX - 10, vis = gg.strikes.filter(s => inView(s.px));
+  if (!vis.length) return '';
+  const mx = Math.max(...vis.map(s => Math.abs(s.net))) || 1, mid = x0 + wMax / 2, live = k === r.bars.length - 1;
+  const ys = vis.map(s => Y(s.px)).sort((a, b) => a - b), gap = ys.length > 1 ? Math.max(1, Math.min(...ys.slice(1).map((y, i) => y - ys[i]).filter(v => v > 0.1)) * 0.75) : 3;
+  const bh = Math.max(1, Math.min(6, gap));
+  return `<g opacity="${live ? 1 : 0.4}"><rect x="${x0 - 2}" y="0" width="${GX - 4}" height="440" fill="#0d1117" opacity=".55"/><line x1="${mid}" x2="${mid}" y1="0" y2="440" stroke="#8b949e" opacity=".35"/>`
+    + vis.map(s => { const w = Math.abs(s.net) / mx * (wMax / 2); return `<rect x="${s.net >= 0 ? mid : mid - w}" y="${Y(s.px) - bh / 2}" width="${Math.max(0.5, w)}" height="${bh}" fill="${s.net >= 0 ? '#2E9E5B' : '#D0453B'}"><title>${gg.base} ${s.strike}${gg.f !== 1 ? ` (≈ ${fmt(s.px)} ${gg.sym})` : ''}: net gamma ${(s.net / 1e6).toFixed(1)}M per 1% (calls ${(s.call / 1e6).toFixed(1)}M, puts ${(s.put / 1e6).toFixed(1)}M)</title></rect>`; }).join('')
+    + `<text x="${mid}" y="12" font-size="10" text-anchor="middle" fill="#8b949e">GEX ${esc(gg.base)}${live ? '' : ' (today)'}</text></g>`;
+}
 function fxGammaLines(r, k, Y, inView, W, padR) {
   // today's walls apply to the latest bar only
-  const d = S.gx && S.gx.data; if (!d || k !== r.bars.length - 1) return '';
-  const sym = r.params.sym, g = d.items.find(x => x.sym === sym || (x.fut && x.fut.sym === sym)); if (!g) return '';
-  const lv = g.sym === sym ? g.uw : g.fut.uw;
+  const gg = fxGammaFor(r); if (!gg || k !== r.bars.length - 1) return '';
+  const lv = gg.lv;
   return [['call_wall', 'Call wall', '#3fb950'], ['put_wall', 'Put wall', '#f85149'], ['gamma_flip', 'Gamma flip', '#d29922'], ['gamma_magnet', 'Magnet', '#e3b8f5']]
     .filter(([key]) => lv[key] != null && inView(lv[key]))
-    .map(([key, t, c]) => `<line x1="0" x2="${W - padR}" y1="${Y(lv[key])}" y2="${Y(lv[key])}" stroke="${c}" stroke-width="1.6" stroke-dasharray="10 4" opacity=".9"/><text x="8" y="${Y(lv[key]) - 4}" font-size="11" font-weight="600" fill="${c}">${t} ${fmt(lv[key])}</text>`).join('');
+    .map(([key, t, c]) => `<line x1="0" x2="${W - padR}" y1="${Y(lv[key])}" y2="${Y(lv[key])}" stroke="${c}" stroke-width="1.6" stroke-dasharray="10 4" opacity=".9"/><text x="${W - padR - 6}" y="${Y(lv[key]) - 4}" font-size="11" font-weight="600" text-anchor="end" fill="${c}">${t} ${fmt(lv[key])}</text>`).join('');
 }
 function fxChart(r, k) {
   /* TradeWellX layout: the pivot in force at bar k sits at the vertical centre; the levels are the ones in force then
      (recalculated at each pivot change from the waves finished before it). Bars after k are faded (or hidden). */
-  const W = 1100, H = 440, padR = 170, n = r.bars.length, cw = (W - padR) / n, X = i => (i + 0.5) * cw;
+  const gxg = fxGammaFor(r), GX = gxg ? 120 : 0, W = 1100 + GX, H = 440, padR = 170 + GX, n = r.bars.length, cw = (W - padR) / n, X = i => (i + 0.5) * cw;
   const sx = r.series[k], piv = sx.pivot, nextOn = S.fx.next !== false, impOn = S.fx.imp !== false;
   const G = '#2E7D4F', R = '#B4443C';
   const lvK = fxLevelsAt(r, k), seg = lvK;
@@ -708,11 +740,11 @@ function fxChart(r, k) {
   for (let i = pi - 1; i >= 0; i--) pos[i] = Math.min(pos[i], pos[i + 1] - 13);
   for (let i = pi + 1; i < pos.length; i++) pos[i] = Math.max(pos[i], pos[i - 1] + 13);
   const bands = vis.map((v, i) => { const t = pos[i];
-    if (v.pivot) return `<rect x="${W - padR + 2}" y="${t - 11}" width="${padR - 4}" height="14" fill="#E8E8E8" rx="2"/><text x="${W - padR + 6}" y="${t}" font-size="10.5" fill="#111">Pivot ${fmt(piv)} · close ${sgn(pc, 2, '%')}</text>`;
+    if (v.pivot) return `<rect x="${W - padR + GX + 2}" y="${t - 11}" width="${padR - GX - 4}" height="14" fill="#E8E8E8" rx="2"/><text x="${W - padR + GX + 6}" y="${t}" font-size="10.5" fill="#111">Pivot ${fmt(piv)} · close ${sgn(pc, 2, '%')}</text>`;
     const { x, c, ps } = v, y = LY(x);
     const green = c === G, base = green ? lvK.bullBase : lvK.bearBase, baseName = Math.abs(base - piv) < 1e-9 ? 'the pivot' : `the vector ${fmt(base)}`;
     const tip = `<title>${ps.join(' / ')} of past ${green ? 'H' : 'L'} waves reached ${sgn(x.move * 100, 2, '%')} from their pivot; drawn at ${sgn(x.move * 100, 2, '%')} from the centre line; price = ${baseName} ${x.move >= 0 ? '+' : '−'} ${Math.abs(x.move * 100).toFixed(2)}% = ${fmt(x.price)} (${sgn((x.price / piv - 1) * 100, 2, '%')} from the pivot ${fmt(piv)})</title>`;
-    return `<g>${tip}<line x1="0" x2="${W - padR}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="7" opacity=".35"/><rect x="${W - padR + 2}" y="${t - 10}" width="${padR - 4}" height="13" fill="${c}" rx="2"/><text x="${W - padR + 6}" y="${t}" font-size="10.5" fill="#fff">${ps.join(' / ')} @${fmt(x.price)} ${sgn(x.move * 100, 2, '%')}</text></g>`; }).join('');
+    return `<g>${tip}<line x1="0" x2="${W - padR}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="7" opacity=".35"/><rect x="${W - padR + GX + 2}" y="${t - 10}" width="${padR - GX - 4}" height="13" fill="${c}" rx="2"/><text x="${W - padR + GX + 6}" y="${t}" font-size="10.5" fill="#fff">${ps.join(' / ')} @${fmt(x.price)} ${sgn(x.move * 100, 2, '%')}</text></g>`; }).join('');
   // open / closed wave lines: each wave extreme up to k, drawn until price came back to it (closed) or up to k (open)
   const idx = {}; r.bars.forEach((b, i) => { idx[b[0]] = i; });
   let imp = '';
@@ -762,7 +794,7 @@ function fxChart(r, k) {
   const axis = ticks.map(q => { const y = Y(piv * (1 + q / 100)); return `<line x1="${W - padR - 34}" x2="${W - padR}" y1="${y}" y2="${y}" stroke="#8b949e" opacity=".5"/><text x="${W - padR - 36}" y="${y + 3}" font-size="10" text-anchor="end" fill="#8b949e">${q > 0 ? '+' : ''}${+q.toFixed(2)}% ${fmt(piv * (1 + q / 100))}</text>`; }).join('');
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${days}${axis}${bands}${imp}${candles}
     <line x1="0" x2="${W - padR}" y1="${H / 2}" y2="${H / 2}" stroke="#E8E8E8" stroke-width="1.6"/>
-    <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}${sig}${fxGammaLines(r, k, Y, inView, W, padR)}
+    <path d="${step('ma')}" fill="none" stroke="#B24BD6" stroke-width="2"/>${labels}${sig}${fxGammaLines(r, k, Y, inView, W, padR)}${fxGammaLadder(r, k, gxg, Y, inView, W, padR, GX)}
     ${lvK && Math.abs(lvK.ma - piv) > 1e-9 && inView(lvK.ma) ? `<line x1="${X(k)}" x2="${W - padR}" y1="${Y(lvK.ma)}" y2="${Y(lvK.ma)}" stroke="#B24BD6" stroke-width="1.5" stroke-dasharray="5 3"/><text x="${W - padR - 4}" y="${Y(lvK.ma) - 4}" font-size="10" text-anchor="end" fill="#D58BEF">vector ${fmt(lvK.ma)} (${lvK.ma < piv ? 'green' : 'red'} level prices start here)</text>` : ''}
     <line x1="${X(k)}" x2="${X(k)}" y1="0" y2="${H}" stroke="#8ab4ff" stroke-dasharray="4 3" opacity=".7"/>
     ${box(6, 6, [`Above pivot: average ${avg(hb)} bars per wave (${hb.length} waves)`, `Longest above: ${hb.length ? Math.max(...hb) : 0} bars`])}

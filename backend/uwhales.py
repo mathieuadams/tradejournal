@@ -131,7 +131,7 @@ def walls(rows, price):
     return out
 
 
-def gamma(sub, sym, source="oi", date=None, band=0.08):
+def gamma(sub, sym, source="oi", date=None, band=0.25):
     """Today's (or `date`'s) gamma for `sym`: Unusual Whales' own levels, the per-strike profile within +/- band of the
     price, and the same levels worked out here from that profile."""
     sym, source = check_sym(sym), source if source in SOURCES else "oi"
@@ -162,4 +162,4 @@ def gamma(sub, sym, source="oi", date=None, band=0.08):
     uw["nearby_flips"] = [v for v in (_num(f) for f in lv.get("nearby_flips") or []) if v is not None]
     t = ((rows or [{}])[0]).get("time") or lv.get("time")
     return {"sym": sym, "source": source, "price": price, "time": t, "date": lv.get("date"),
-            "uw": uw, "computed": walls(prof, price), "strikes": prof}
+            "uw": uw, "computed": walls(prof, price), "strikes": prof, "netTotal": sum(r["net"] for r in prof)}
