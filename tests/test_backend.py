@@ -210,6 +210,8 @@ def test_06c_fractal_on_stocks():
     search.run(SUB, s["id"], budget_s=30)
     st = search.state(SUB, s["id"])
     assert st.get("split", {}).get("cut") and st["evals"] >= 1 and not st.get("error"), st.get("split")
+    assert len(search.space("fractal")) > 15 and search.key("fractal", {**search.from_params("fractal", s["params"]), "fadeP": 0.2}) == \
+        search.key("fractal", search.from_params("fractal", s["params"]))      # a fade setting doesn't change a cross
     b = strategy.create(SUB, {"setup": "squeeze", "params": {"tickers": ["QQQ"]}})
     assert b["params"]["tickers"] == ["NQ"]                        # the futures-only setups stay on NQ / ES
     try:

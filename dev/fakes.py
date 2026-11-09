@@ -298,6 +298,10 @@ def fake_uw_get(token, path, params=None, timeout=60):
                             "nbbo_bid": f"{max(0.01, mid - 0.03):.2f}", "nbbo_ask": f"{mid + 0.03:.2f}", "last_price": f"{mid:.2f}"})
         lim, page = int(params.get("limit") or 500), int(params.get("page") or 0)
         return {"data": out[page * lim:(page + 1) * lim]}
+    if path.endswith("/oi-per-strike"):
+        px0 = px
+        return {"data": [{"strike": r["strike"], "call_oi": str(int(30000 * math.exp(-((float(r["strike"]) - px0 * 1.02) / (px0 * 0.02)) ** 2)) + 100),
+                          "put_oi": str(int(40000 * math.exp(-((float(r["strike"]) - px0 * 0.97) / (px0 * 0.025)) ** 2)) + 100)} for r in rows]}
     if path.endswith("/gex-levels"):
         src = params.get("source") or "vol"
         prof = sorted(({"strike": float(r["strike"]), "net": float(r[f"call_gamma_{src}"]) + float(r[f"put_gamma_{src}"])} for r in rows), key=lambda r: r["strike"])

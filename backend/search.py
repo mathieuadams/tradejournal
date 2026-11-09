@@ -43,6 +43,13 @@ SPACES = {
 SPACES["biaspull"] = {**{k: v for k, v in SPACES["ifvg"].items() if k in ("tf", "bias", "asia", "bufTicks", "hours", "lastEntry", "maxDay", "side", "exit",
                                                                         "tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")},
                       "pbMin": [1, 2, 3, 4], "minRisk": [0, 4, 8, 16, 32]}
+SPACES["fractal"] = {
+    "entry": ["cross", "vector", "fade", "count"], "tf": [5, 15, 30, 60], "wave": [5, 7, 10, 14, 20], "stats": [5, 10, 20, 40],
+    "stopP": [0.8, 0.5, 0.2, 0.1], "tgtP": [0.8, 0.5, 0.2, 0.1, 0.05], "fadeP": [0.2, 0.1, 0.05], "oddsMax": [0.05, 0.1, 0.2, 0.3],
+    "tgt": ["level", "prev", "day", "pivot", "wall", "r"], "tgtR": [1.0, 1.5, 2.0, 3.0], "macro": ["with", "none", "against"],
+    "sqz": ["any", "after", "no"], "daily": ["none", "with"], "mm": ["none", "calls", "puts"], "oaMin": [0, 0.3, 0.5, 0.7], "oaBars": [2, 3, 5, 8],
+    "lastEntry": ["11:00", "13:00", "15:00", "15:30"], "maxDay": [1, 2, 3, 5], "bufTicks": [0, 2, 4, 8], "side": ["both", "long", "short"],
+}
 # a setting that only matters when another one has a value: (key, needs) -> dropped from the key otherwise
 NEEDS = {
     "ifvg": {"tgt": lambda g: g["exit"] == "target", "tgtR": lambda g: g["exit"] == "target" and g["tgt"] == "r",
@@ -53,6 +60,10 @@ NEEDS = {
              "trigSize": lambda g: bool(g["trigMin"] or g["trigMax"] or g["trigN"]), "avgN": lambda g: bool(g["trigMin"] or g["trigMax"]),
              "trigPrevMult": lambda g: bool(g["trigN"]), "trigPrevMax": lambda g: bool(g["trigN"]), "trigEngulf": lambda g: bool(g["trigN"])},
 }
+NEEDS["fractal"] = {"stopP": lambda g: g["entry"] in ("cross", "vector"), "tgtP": lambda g: g["entry"] in ("cross", "vector") and g["tgt"] == "level",
+                    "fadeP": lambda g: g["entry"] == "fade", "oddsMax": lambda g: g["entry"] == "count", "tgtR": lambda g: g["tgt"] == "r",
+                    "oaMin": lambda g: g["entry"] in ("cross", "vector"), "oaBars": lambda g: g["entry"] in ("cross", "vector") and g["oaMin"] > 0,
+                    "bufTicks": lambda g: g["entry"] in ("fade", "count")}
 NEEDS["biaspull"] = {k: f for k, f in NEEDS["ifvg"].items() if k in ("tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")}
 NEEDS["biaspull"]["tgtR"] = lambda g: g["exit"] == "target"
 
@@ -182,7 +193,7 @@ def control(sub, sid, action):
     if not space(s["setup"]):
         raise BadRequest("No search space for this strategy.")
     if action == "start":
-        if not all(x["ok"] for x in strategy.data_check(sub, sid)):
+        if not all(x["ok"] for x in strategy.data_check(sub, sid, fetch=False)):
             raise BadRequest("Not enough data: download at least 60 days of candles (Data page).")
         _set_ctl(sub, sid, on=True)
         st = state(sub, sid)
@@ -224,7 +235,7 @@ def run(sub, sid, budget_s=RUN_S, seed=None):
         st = {"evals": 0, "top": [], "seen": {}, "log": [], "runs": 0}
     if st.get("base") and st["base"].get("tickers") != base.get("tickers") or st.get("baseDays") not in (None, base.get("days")):
         st.update(top=[], seen={}, evals=0)               # other contracts / sessions: the scores don't compare
-    st.update(running=iso(now_ny()), runStarted=iso(now_ny()), step="loading the candles", base=base, baseDays=base.get("days"), error=None)
+    st.update(running=iso(now_ny()), runStarted=iso(now_ny()), step="loading the candles", base=base, baseDays=base.get("days"), error=None, done=False)
     store.put_json(_key(sub, sid), st)
     strategy.data_check(sub, sid)                        # QQQ / SPY: download / top up the candles first
     days = strategy._days(base["tickers"][0])[-int(base.get("days") or 250):]
@@ -248,9 +259,10 @@ def run(sub, sid, budget_s=RUN_S, seed=None):
         k = key(setup, g)
         if k in seen:
             misses += 1
-            if misses > 400:                             # (nearly) every setting tried
+            if misses > 400:                             # (nearly) every setting tried: switch off (no next run)
                 st["done"] = True
                 stop = True
+                _set_ctl(sub, sid, on=False)
                 break
             continue
         misses = 0

@@ -158,6 +158,16 @@ def gamma(sub, sym, source="oi", date=None, band=0.25):
         if k is not None:
             prof.append({"strike": k, "call": c, "put": p, "net": c + p})
     prof.sort(key=lambda r: r["strike"])
+    try:                                                # open interest per strike (all expiries), on the same rows
+        oi = {}
+        for x in (_get(tok, f"stock/{sym}/oi-per-strike", {"date": date}).get("data") or []):
+            k = _num(x.get("strike"))
+            if k is not None:
+                oi[k] = (int(_num(x.get("call_oi")) or 0), int(_num(x.get("put_oi")) or 0))
+        for r in prof:
+            r["callOi"], r["putOi"] = oi.get(r["strike"], (0, 0))
+    except Exception as e:
+        print("oi-per-strike failed", e)
     uw = {k: _num(lv.get(k)) for k in ("call_wall", "put_wall", "gamma_magnet", "gamma_flip")}
     uw["nearby_flips"] = [v for v in (_num(f) for f in lv.get("nearby_flips") or []) if v is not None]
     t = ((rows or [{}])[0]).get("time") or lv.get("time")

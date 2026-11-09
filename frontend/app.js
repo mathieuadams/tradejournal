@@ -615,8 +615,14 @@ async function fxLoad() {
   vpLoad();
 }
 /* MacroTrend strip + StdDev panel under the chart (same x axis as fxChart). */
+const FX_SPACE = 20;                                     // empty candle slots after the last bar (room to read the right edge)
+function fxLayout(r) {
+  /* The price chart and the indicators below share this: same width, same right margin, same candle x. */
+  const gxg = fxGammaFor(r), GX = gxg ? 190 : 0, W = 1100 + GX, padR = 170 + GX, slots = r.bars.length + FX_SPACE, cw = (W - padR) / slots;
+  return { gxg, GX, W, padR, cw, X: i => (i + 0.5) * cw, plotR: r.bars.length * cw };
+}
 function fxLower(r, k) {
-  const W = 1100, padR = 170, n = r.bars.length, cw = (W - padR) / n, X = i => (i + 0.5) * cw, shown = S.fx.next !== false ? n - 1 : k;
+  const L0 = fxLayout(r), W = L0.W, padR = L0.padR, n = r.bars.length, cw = L0.cw, X = L0.X, shown = S.fx.next !== false ? n - 1 : k;
   const SH = 14, PH = 130, top = SH + 6, H = top + PH + 16;
   const strip = r.series.map((x, i) => i > shown || x.macro == null ? '' : `<rect x="${i * cw}" y="0" width="${cw + 0.5}" height="${SH}" fill="${x.macro > 0 ? '#2E9E5B' : '#D0453B'}" opacity="${i > k ? .3 : 1}"><title>${esc(r.bars[i][0])} MacroTrend ${x.macroTrend}</title></rect>`).join('');
   const sd = r.series.map(x => x.stdev), vmax = Math.max(1, ...sd.slice(0, shown + 1).filter(v => v != null)) * 1.08;
@@ -995,15 +1001,24 @@ function fxGammaFor(r) {
     strikes: g.strikes.map(x => ({ ...x, px: x.strike * f })), net: g.netTotal, conv };
 }
 function fxGammaLadder(r, k, gg, Y, inView, W, padR, GX) {
+  /* Left: net gamma by strike (green +, red -, around its axis). Right: open interest by strike (calls green over the
+     strike line, puts red under it), all expiries. Same strike rows, so walls and OI clusters line up. */
   if (!gg) return '';
-  const x0 = W - padR + 4, wMax = GX - 10, vis = gg.strikes.filter(s => inView(s.px));
+  const x0 = W - padR + 4, half = (GX - 14) / 2, vis = gg.strikes.filter(s => inView(s.px));
   if (!vis.length) return '';
-  const mx = Math.max(...vis.map(s => Math.abs(s.net))) || 1, mid = x0 + wMax / 2, live = k === r.bars.length - 1;
+  const hasOi = vis.some(s => s.callOi || s.putOi), wG = hasOi ? half : GX - 10;
+  const mx = Math.max(...vis.map(s => Math.abs(s.net))) || 1, mid = x0 + wG / 2, live = k === r.bars.length - 1;
   const ys = vis.map(s => Y(s.px)).sort((a, b) => a - b), gap = ys.length > 1 ? Math.max(1, Math.min(...ys.slice(1).map((y, i) => y - ys[i]).filter(v => v > 0.1)) * 0.75) : 3;
   const bh = Math.max(1, Math.min(6, gap));
+  const ox = x0 + half + 8, mo = Math.max(1, ...vis.map(s => Math.max(s.callOi || 0, s.putOi || 0)));
+  const oi = !hasOi ? '' : `<line x1="${ox}" x2="${ox}" y1="0" y2="440" stroke="#8b949e" opacity=".35"/>` + vis.map(s => {
+    const y = Y(s.px), wc = (s.callOi || 0) / mo * (half - 4), wp = (s.putOi || 0) / mo * (half - 4), hh = Math.max(0.8, bh / 2);
+    return `<g><title>${gg.base} ${s.strike}: open interest calls ${(s.callOi || 0).toLocaleString('en-US')}, puts ${(s.putOi || 0).toLocaleString('en-US')}</title>`
+      + `<rect x="${ox}" y="${y - hh}" width="${Math.max(0.5, wc)}" height="${hh}" fill="#56d364" opacity=".85"/><rect x="${ox}" y="${y}" width="${Math.max(0.5, wp)}" height="${hh}" fill="#ff7b72" opacity=".85"/></g>`; }).join('');
   return `<g opacity="${live ? 1 : 0.4}"><rect x="${x0 - 2}" y="0" width="${GX - 4}" height="440" fill="#0d1117" opacity=".55"/><line x1="${mid}" x2="${mid}" y1="0" y2="440" stroke="#8b949e" opacity=".35"/>`
-    + vis.map(s => { const w = Math.abs(s.net) / mx * (wMax / 2); return `<rect x="${s.net >= 0 ? mid : mid - w}" y="${Y(s.px) - bh / 2}" width="${Math.max(0.5, w)}" height="${bh}" fill="${s.net >= 0 ? '#2E9E5B' : '#D0453B'}"><title>${gg.base} ${s.strike}${gg.f !== 1 ? ` (≈ ${fmt(s.px)} ${gg.sym})` : ''}: net gamma ${(s.net / 1e6).toFixed(1)}M per 1% (calls ${(s.call / 1e6).toFixed(1)}M, puts ${(s.put / 1e6).toFixed(1)}M)</title></rect>`; }).join('')
-    + `<text x="${mid}" y="12" font-size="10" text-anchor="middle" fill="#8b949e">GEX ${esc(gg.base)}${live ? '' : ' (today)'}</text></g>`;
+    + vis.map(s => { const w = Math.abs(s.net) / mx * (wG / 2); return `<rect x="${s.net >= 0 ? mid : mid - w}" y="${Y(s.px) - bh / 2}" width="${Math.max(0.5, w)}" height="${bh}" fill="${s.net >= 0 ? '#2E9E5B' : '#D0453B'}"><title>${gg.base} ${s.strike}${gg.f !== 1 ? ` (≈ ${fmt(s.px)} ${gg.sym})` : ''}: net gamma ${(s.net / 1e6).toFixed(1)}M per 1% (calls ${(s.call / 1e6).toFixed(1)}M, puts ${(s.put / 1e6).toFixed(1)}M)</title></rect>`; }).join('')
+    + oi + `<text x="${mid}" y="12" font-size="10" text-anchor="middle" fill="#8b949e">GEX ${esc(gg.base)}${live ? '' : ' (today)'}</text>`
+    + (hasOi ? `<text x="${ox + half / 2}" y="12" font-size="10" text-anchor="middle" fill="#8b949e">OI calls / puts</text>` : '') + '</g>';
 }
 function fxGammaLines(r, k, Y, inView, W, padR) {
   // today's walls apply to the latest bar only
@@ -1016,7 +1031,7 @@ function fxGammaLines(r, k, Y, inView, W, padR) {
 function fxChart(r, k) {
   /* TradeWellX layout: the pivot in force at bar k sits at the vertical centre; the levels are the ones in force then
      (recalculated at each pivot change from the waves finished before it). Bars after k are faded (or hidden). */
-  const gxg = fxGammaFor(r), GX = gxg ? 120 : 0, W = 1100 + GX, H = 440, padR = 170 + GX, n = r.bars.length, cw = (W - padR) / n, X = i => (i + 0.5) * cw;
+  const L0 = fxLayout(r), gxg = L0.gxg, GX = L0.GX, W = L0.W, H = 440, padR = L0.padR, n = r.bars.length, cw = L0.cw, X = L0.X;
   const sx = r.series[k], piv = sx.pivot, nextOn = S.fx.next !== false, impOn = S.fx.imp !== false;
   const G = '#2E7D4F', R = '#B4443C';
   const lvK = fxLevelsAt(r, k), seg = lvK;
