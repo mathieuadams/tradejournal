@@ -140,6 +140,8 @@ def bars(sub, sym, days=10, tf=15, rth=True, close_bar=True):
         token = r.get("next_page_token")
         if not token:
             break
+    if feed == "sip":
+        out = _live_top_up(c, sym, out, end, tf if tf < 60 else 30, rth)
     keep = sorted({b[0][:10] for b in out})[-days:]
     out = [b for b in out if b[0][:10] in keep]
     if tf == 60:                                      # Alpaca's hours start on the clock hour; TradeWellX's at 09:30
@@ -148,6 +150,31 @@ def bars(sub, sym, days=10, tf=15, rth=True, close_bar=True):
     if rth and close_bar and out:
         out = _with_close_bar(c, sym, feed, out, end)
     return out
+
+
+def _live_top_up(c, sym, out, end, tf, rth):
+    """SIP (all exchanges) is 15 minutes late on Alpaca's free plan, so the bars stop at now - 16 min. The minutes since
+    then come from the IEX feed (real time, one exchange: same prices, less volume): the SIP bar still forming at `end`
+    and every later bar are replaced by IEX's."""
+    cut = utc_to_ny(end)
+    cut = cut.replace(minute=cut.minute - cut.minute % tf, second=0, microsecond=0)   # start of the bar forming at `end`
+    try:
+        r = _get(c, f"stocks/{sym}/bars", {"timeframe": f"{tf}Min", "start": ny_to_utc(cut).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                           "end": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 1000, "adjustment": "raw", "feed": "iex", "sort": "asc"})
+    except Exception as e:                            # the delayed SIP bars are still fine
+        print("iex top-up failed", e)
+        return out
+    live = []
+    for b in r.get("bars") or []:
+        t = utc_to_ny(datetime.strptime(b["t"][:19], "%Y-%m-%dT%H:%M:%S"))
+        hm = t.strftime("%H:%M")
+        if rth and not ("09:30" <= hm < "16:00"):
+            continue
+        live.append([t.strftime("%Y-%m-%d %H:%M"), b["o"], b["h"], b["l"], b["c"], b.get("v", 0)])
+    if not live:
+        return out
+    first = live[0][0]
+    return [b for b in out if b[0] < first] + live
 
 
 def _with_close_bar(c, sym, feed, out, end):

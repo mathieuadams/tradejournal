@@ -26,6 +26,20 @@ import util  # noqa: E402
 
 SUB = "u1"
 
+# Alpaca's clock for these tests: Saturday 2026-11-07 (the last session is over), so the results don't depend on
+# whether the tests run during market hours (the live IEX top-up has its own test with its own clock)
+import alpaca as _alpaca  # noqa: E402
+from datetime import datetime as _DT  # noqa: E402
+
+
+class _Sat(_DT):
+    @classmethod
+    def utcnow(cls):
+        return _DT(2026, 11, 7, 18, 0)
+
+
+_alpaca.datetime = _Sat
+
 
 def call(method, path, body=None, q=None):
     ev = {"rawPath": path, "queryStringParameters": q or {}, "body": json.dumps(body) if body is not None else None,
@@ -183,12 +197,21 @@ def test_alpaca_qqq():
     assert st == 400, r                                               # refused by (fake) Alpaca
     st, r = call("PUT", "/alpaca", {"keyId": "PK1234567890AB", "secret": "s" * 40})
     assert st == 200 and r["connected"] and r["last4"] == "90AB" and r["feed"] == "sip", r
-    st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "10", "agg": "15"})
+    import alpaca
+    from unittest import mock
+    from datetime import datetime as _dt
+
+    class Sat(_dt):                                                   # a fixed clock: the last session is over
+        @classmethod
+        def utcnow(cls):
+            return _dt(2026, 11, 7, 18, 0)
+    with mock.patch.object(alpaca, "datetime", Sat):
+        st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "10", "agg": "15"})
+        st2, r2 = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "10", "agg": "15", "close16": "0"})
     assert st == 200, r
     assert len({b[0][:10] for b in r["bars"]}) == 10 and all("09:30" <= b[0][11:16] < "16:00" for b in r["bars"][:-1])
     assert r["bars"][-1][0].endswith("16:00") and len(r["bars"]) == 261, len(r["bars"])   # + the closing print, like TradeWellX
-    st, r2 = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "10", "agg": "15", "close16": "0"})
-    assert st == 200 and len(r2["bars"]) == 260 and not r2["bars"][-1][0].endswith("16:00")
+    assert st2 == 200 and len(r2["bars"]) == 260 and not r2["bars"][-1][0].endswith("16:00")
     _check_view(r, 10)
     st, r = call("GET", "/fractal", q={"sym": "QQQ", "wave": "10", "days": "5", "stats": "40", "agg": "15"})
     assert st == 200, r
@@ -315,6 +338,22 @@ def test_volproj():
     assert st == 200 and a["fwd"] == 2 and a["bull"]["levels"]["maxAvg"] > a["price"] > a["bear"]["levels"]["maxAvg"], a
 
 
+def test_live_top_up():
+    # SIP is 15 min late: at 09:40 ET the 09:30 bar comes from IEX
+    import alpaca
+    from unittest import mock
+    from datetime import datetime as _dt
+
+    class D(_dt):
+        @classmethod
+        def utcnow(cls):
+            return _dt(2026, 11, 9, 14, 40)
+    with mock.patch.object(alpaca, "datetime", D), mock.patch.object(alpaca, "status", lambda sub: {"feed": "sip", "connected": True}):
+        b = alpaca.bars(SUB, "QQQ", 3, 15)
+    ts = [x[0] for x in b]
+    assert ts[-1] == "2026-11-09 09:30" and len(ts) == len(set(ts)) and ts == sorted(ts), ts[-3:]
+
+
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_match_tradewellx_clusternode()
@@ -332,4 +371,5 @@ if __name__ == "__main__":
     test_mm_history()
     test_mm_backfill()
     test_volproj()
+    test_live_top_up()
     print("fractal: all tests passed")

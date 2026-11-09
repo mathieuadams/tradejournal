@@ -502,7 +502,7 @@ async function vFractal() {
       <button class="btn primary" data-act="fx-load">Calculate</button>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px" title="Every 5 minutes while the market is open and this tab is visible: candles, levels, gamma / OI, Option Analyzer and MM data (the slider stays where it is)"><input type="checkbox" id="fx-auto" ${S.fx.auto !== false ? 'checked' : ''}>Auto-refresh 5 min <span class="dim mono" id="fx-upd" style="font-size:11px"></span></label>
       <label class="f" title="Draw a strategy's study trades on this chart (the trades on the chart's symbol)">Show trades of<select id="fx-strat"><option value="">— none —</option></select></label></div>
-    <p class="note">QQQ and other stocks come from Alpaca (regular hours${alp.connected ? ', feed ' + esc(alp.feed.toUpperCase()) : ': <a href="#data">connect Alpaca</a>'}). NQ and ES come from the stored Databento candles, all hours like TradeWellX's NQ=F.</p>`;
+    <p class="note">QQQ and other stocks come from Alpaca (regular hours${alp.connected ? ', feed ' + esc(alp.feed.toUpperCase()) + (alp.feed === 'sip' ? ': SIP is 15 minutes late on the free plan, so the last 15 minutes come from IEX, in real time' : '') : ': <a href="#data">connect Alpaca</a>'}). NQ and ES come from the stored Databento candles, all hours like TradeWellX's NQ=F.</p>`;
   view(`${head('Fractal', 'Wave pivots, H/L counts, percent-probable clusters and wave odds, calculated the TradeWellX way.')}
     <section class="panel"><div class="bd">${ctl}</div></section><div id="fx-out"><div class="panel"><div class="empty muted">Loading…</div></div></div>`);
   S.fxLast = Date.now();
