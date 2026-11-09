@@ -286,6 +286,11 @@ def snapshot(sub, sym):
     row = {"t": t.strftime("%H:%M"), "price": d["price"], "pml": d["pml"], "ceiling": d["ceiling"], "floor": d["floor"],
            "agg": d["aggregate"], "pmlValue": d["pmlValue"], "expiry": d["expiry"],
            "pa": v["abovePuts"], "pb": v["belowPuts"], "ca": v["aboveCalls"], "cb": v["belowCalls"]}
+    try:                                                # the gamma walls at that time (Unusual Whales' own levels)
+        g = gamma(sub, sym)
+        row["cw"], row["pw"] = g["uw"].get("call_wall"), g["uw"].get("put_wall")
+    except Exception as e:
+        print("snapshot walls failed", e)
     sk = f"MM#{d['sym']}#{t.strftime('%Y-%m-%d')}"
     it = db.get(db.upk(sub), sk) or {"PK": db.upk(sub), "SK": sk, "rows": []}
     rows = [r for r in it.get("rows") or [] if r.get("t") != row["t"]] + [row]
@@ -349,6 +354,26 @@ def mm_levels(cons, price, span=0.15, n=600):
             "agg": holders(price)}
 
 
+def chain_walls(chain, day):
+    """Gamma by strike from a dated option chain (all expiries, gamma x open interest x 100): {strike: call gamma},
+    {strike: put gamma}. The walls of a past day, when Unusual Whales' own levels for it are not stored."""
+    calls, puts = {}, {}
+    for x in chain:
+        o = _occ(x.get("option_symbol"))
+        g, oi = _num(x.get("gamma")), x.get("open_interest") or 0
+        if not o or not g or not oi or str(x.get("expires"))[:10] < day:
+            continue
+        b = calls if o[1] == "C" else puts
+        b[o[2]] = b.get(o[2], 0.0) + abs(g) * oi * 100
+    return calls, puts
+
+
+def _side_wall(prof, price, side):
+    """Call wall: the strike above the price with the most call gamma; put wall: below, the most put gamma."""
+    ks = [k for k in prof if (k > price if side > 0 else k < price)]
+    return max(ks, key=lambda k: prof[k]) if ks else None
+
+
 def backfill_day(sub, sym, day, prog=None, step=5):
     """Rebuild `day`'s MM data every `step` minutes, as the live snapshots record it: the nearest expiry's contracts
     (option-chains for that date, with open interest), each contract's minute prices and volume (option-contract
@@ -370,6 +395,7 @@ def backfill_day(sub, sym, day, prog=None, step=5):
     if not exps:
         raise Unavailable(f"No {sym} contracts with open interest on {day}.")
     ex = exps[0]
+    cw, pw = chain_walls(chain, day)
     cons = []
     for x in chain:
         if str(x.get("expires"))[:10] != ex or not (x.get("open_interest") or 0) > 0:
@@ -420,7 +446,8 @@ def backfill_day(sub, sym, day, prog=None, step=5):
         if not lv:
             continue
         rows.append({"t": end, "price": px, "pml": lv["pml"], "ceiling": lv["ceiling"], "floor": lv["floor"], "agg": lv["agg"],
-                     "pmlValue": lv["pmlValue"], "expiry": ex, "pa": pa, "pb": pb, "ca": ca, "cb": cb})
+                     "pmlValue": lv["pmlValue"], "expiry": ex, "pa": pa, "pb": pb, "ca": ca, "cb": cb,
+                     "cw": _side_wall(cw, px, 1), "pw": _side_wall(pw, px, -1)})
     sk = f"MM#{sym}#{day}"
     db.put({"PK": db.upk(sub), "SK": sk, "rows": rows, "backfilled": True, "contracts": len(cons), "expiry": ex})
     return len(rows)

@@ -221,7 +221,7 @@ def mm_history(sub, claims, body, q):
 @route("POST", "/mmhistory/backfill")
 def mm_backfill(sub, claims, body, q):
     base = {"NQ": "QQQ", "ES": "SPY"}.get((body.get("sym") or "QQQ").upper(), body.get("sym") or "QQQ")
-    n = _int(body.get("days"), "Days", 1, 20, 3)
+    n = _int(body.get("days"), "Days", 1, 120, 3)
     syms = [uwhales.check_sym(base)] if body.get("only") else list(uwhales.SNAP_SYMS)
     uwhales.token(sub)                                 # connected?
     today, days, d = now_ny().date(), [], now_ny().date()

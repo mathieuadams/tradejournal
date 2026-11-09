@@ -167,7 +167,13 @@ def test_06_other_setups():
                      ("ifvg", {"days": 60, "volMin": 20, "volMax": 80}), ("insidebar", {"days": 60}), ("insidebar", {"days": 30, "tf": 1, "hours": "all"}),
                      ("insidebar", {"days": 60, "tf": 15, "entry": "close", "exit": "trail"}), ("imom", {"days": 60}), ("onrev", {"days": 60, "minPct": 0.1}),
                      ("gapfill", {"days": 60}), ("tom", {"days": 120}), ("vwapband", {"days": 60}), ("rsi2", {"days": 60}), ("squeeze", {"days": 60}),
-                     ("volclimax", {"days": 60, "volMult": 1.5}), ("pwsweep", {"days": 60, "fresh": False}), ("trendday", {"days": 60, "rangeMult": 0.3})):
+                     ("volclimax", {"days": 60, "volMult": 1.5}), ("pwsweep", {"days": 60, "fresh": False}), ("trendday", {"days": 60, "rangeMult": 0.3}),
+                     ("fractal", {"days": 60}), ("fractal", {"days": 60, "entry": "fade", "macro": "none", "tf": 5}),
+                     ("fractal", {"days": 60, "entry": "count", "macro": "none", "oddsMax": 0.3, "hours": "rth", "tgt": "r", "tgtR": 2}),
+                     ("fractal", {"days": 60, "sqz": "no", "daily": "with", "macro": "against", "tf": 60, "wave": 7}),
+                     ("fractal", {"days": 60, "entry": "vector", "macro": "none", "tgt": "prev", "oaMin": 0.3}),
+                     ("fractal", {"days": 60, "entry": "vector", "tgt": "day", "hours": "rth"}),
+                     ("fractal", {"days": 60, "mm": "both", "tgt": "wall"})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -175,6 +181,18 @@ def test_06_other_setups():
             strategy.validate(SUB, s["id"])
         ts = strategy.trades(SUB, s["id"], "study")
         assert all(t["e"] > 1000 for t in ts), setup
+
+
+def test_06b_fractal_mm():
+    import fxstrat
+    mm = {"2026-01-05": [{"t": "09:35", "price": 500, "ca": 10, "cb": 5, "pa": 3, "pb": 8, "cw": 505, "pw": 495},
+                         {"t": "10:00", "price": 501, "ca": 4, "cb": 9, "pa": 9, "pb": 2, "cw": 506, "pw": 496}]}
+    assert fxstrat.mm_at(mm, "2026-01-05", "09:30") is None and fxstrat.mm_at(mm, "2026-01-05", "09:50")["t"] == "09:35"
+    r1, r2 = mm["2026-01-05"]
+    assert fxstrat.mm_ok(r1, 1, "both") and not fxstrat.mm_ok(r1, -1, "calls")
+    assert fxstrat.mm_ok(r2, -1, "both") and fxstrat.mm_ok(r2, -1, "puts") and not fxstrat.mm_ok(None, 1, "calls")
+    p = fxstrat.clean({"entry": "vector", "tgt": "wall", "mm": "calls", "oaMin": 0.4})
+    assert p["entry"] == "vector" and p["tgt"] == "wall" and p["mm"] == "calls" and "gamma wall" in fxstrat.describe(p)
 
 
 def test_07_job_continuation():

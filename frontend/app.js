@@ -168,6 +168,20 @@ const SETUPS = {
   rsi2: { name: 'RSI(2) pullback with the trend (hourly)', blurb: 'Hourly: above the 200-hour EMA and the 2-period RSI under 10: buy; out when it crosses 70 or after 10 hours. Larry Connors\' classic.',
     params: [['trendLen', 'Trend EMA (hours)', 'num', 10], ['lo', 'Enter when the RSI(2) is under', 'num', 1], ['hi', 'Out when it crosses', 'num', 1], ['maxHold', 'Out after (hours)', 'num', 1],
       ['stopMult', 'Stop (× the average hourly range, 0 = none)', 'num', 0.5], ['flatEod', 'Flat at 15:55 each day', 'bool'], ['side', 'Side', 'sel', SIDE], ['days', 'Sessions to test', 'num', 10], ['tickers', 'Contracts', 'tick']] },
+  fractal: { name: 'Fractal (TradeWellX): pivot cross, level fade, wave count', blurb: 'The Fractal page\'s tools as rules on NQ / ES: a close across the pivot (new wave) or the purple vector, a fade of the outlier cluster levels, or a fade of a wave longer than the Option Analyzer odds allow. Targets: cluster level, previous wave high / low, previous session open / high / low, gamma wall or the pivot. Filters: Macro Trend, StdDev squeeze, daily wave, intraday MM option volume, Option Analyzer odds. Levels use only waves finished before the candle (no look-ahead); MM data and walls only exist on the days recorded or rebuilt.',
+    params: [['entry', 'Entry', 'sel', [['cross', 'Pivot cross: go with the new wave'], ['vector', 'Vector cross: close across the purple vector, go with it'], ['fade', 'Level fade: outlier cluster level touched and rejected'], ['count', 'Wave count: wave longer than the odds allow, then a turn']]],
+      ['tf', 'Candles', 'sel', [[15, '15 min'], [5, '5 min'], [30, '30 min'], [60, '60 min']]], ['wave', 'Wave (bars)', 'num', 1], ['stats', 'Levels from the last (sessions)', 'num', 1],
+      ['hours', 'Hours', 'sel', [['all', 'Overnight + NYSE'], ['rth', 'NYSE session only']]],
+      ['stopP', 'Cross: stop at the other side\'s level', 'sel', [[0.5, '50%'], [0.8, '80%'], [0.2, '20%'], [0.1, '10%']]], ['tgtP', 'Cross: target this side\'s level', 'sel', [[0.5, '50%'], [0.8, '80%'], [0.2, '20%'], [0.1, '10%'], [0.05, '5%']]],
+      ['fadeP', 'Fade: level to fade', 'sel', [[0.1, '10%'], [0.2, '20%'], [0.05, '5% (red 2%)']]], ['oddsMax', 'Count: fade when the odds of a wave this long are under', 'num', 0.05],
+      ['tgt', 'Target', 'sel', [['level', 'Cluster level (cross, vector) / the pivot (fade, count)'], ['prev', 'The previous actual wave high (long) / low (short)'],
+        ['day', 'The previous session\'s open / high / low (nearest beyond)'], ['wall', 'Gamma wall: call wall (long) / put wall (short), MM data'], ['pivot', 'The pivot'],
+        ['r', 'R multiple (Target R below, 0 = hold to the stop or 15:55)']]],
+      ['mm', 'Intraday MM option volume', 'sel', [['none', 'Any'], ['calls', 'Calls at/above vs below agree'], ['puts', 'Puts at/above vs below agree (bearish divergence for shorts)'], ['both', 'Calls and puts agree']]],
+      ['oaMin', 'Option Analyzer: cross / vector needs this share of past waves (0 = off)', 'num', 0.05], ['oaBars', '... to have run at least (candles)', 'num', 1],
+      ['macro', 'Macro Trend', 'sel', [['with', 'With it'], ['none', 'Any'], ['against', 'Against it']]], ['sqz', 'StdDev squeeze', 'sel', [['any', 'Any'], ['after', 'Only after a squeeze'], ['no', 'Not while squeezed']]],
+      ['daily', 'Daily wave (Wave 1)', 'sel', [['none', 'Any'], ['with', 'With it (H = longs, L = shorts)']]],
+      ['lastEntry', 'Last entry (ET)', 'text'], ['maxDay', 'Max trades per session', 'num', 1], ['bufTicks', 'Stop buffer (ticks)', 'num', 1], ...MANAGEP, ...TAILP] },
   squeeze: { name: 'Squeeze breakout', blurb: 'Bollinger Bands inside the Keltner Channels for 6+ candles (low volatility), then the first close outside the bands: go with it.',
     params: [['tf', 'Candles', 'sel', [[5, '5 min'], [1, '1 min'], [15, '15 min']]], ['kc', 'Keltner width (× the average range)', 'num', 0.25], ['minBars', 'Squeezed at least (candles)', 'num', 1],
       ['wait', 'Breakout within (candles)', 'num', 1], ['stop', 'Stop', 'sel', [['mid', 'The 20-candle average'], ['opp', 'The other band']]], ['hours', 'Hours', 'sel', [['rth', 'NYSE session only'], ['all', 'Overnight + NYSE']]],
@@ -533,7 +547,7 @@ async function fxLoad() {
           <button class="btn sm" data-act="oa-load">Calculate MMM</button><span class="dim" id="oa-note" style="font-size:12px"></span></div>
         <div id="oa-out"><div class="empty muted">Loading…</div></div>
         <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:18px 0 8px"><h3 style="margin:0 12px 0 0">Intraday MM data</h3>
-          <label class="f">Days<select id="mm-days">${[1, 2, 3, 5].map(n => `<option ${n === 3 ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+          <label class="f">Days<select id="mm-days">${[1, 2, 3, 5, 10, 20, 60, 120].map(n => `<option ${n === 3 ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
           <button class="btn sm" data-act="mm-load">Refresh</button><button class="btn sm" data-act="mm-snap">Snapshot now</button>
           <button class="btn sm" data-act="mm-backfill" title="Rebuild the last N sessions (Days) for QQQ and SPY from Unusual Whales history: a few minutes per day">Rebuild past days</button>
           <span class="dim" id="mm-job" style="font-size:12px">recorded every 5 minutes, 09:30–16:00 ET, for QQQ and SPY</span></div>
@@ -779,7 +793,7 @@ async function mmLoad() {
   const st = await api('/uw').catch(() => ({}));
   if (!st.connected) { out.innerHTML = '<div class="empty muted">Connect Unusual Whales on the <a href="#data">Data</a> page to record the market maker data.</div>'; return; }
   let d;
-  try { d = await api(`/mmhistory?sym=${encodeURIComponent(S.fx.sym || 'QQQ')}&days=${($('#mm-days') || {}).value || 3}`); }
+  try { d = await api(`/mmhistory?sym=${encodeURIComponent(S.fx.sym || 'QQQ')}&days=${Math.min(20, +(($('#mm-days') || {}).value || 3))}`); }
   catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; return; }
   out.innerHTML = mmView(d);
 }
@@ -1256,6 +1270,7 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   tom: { entryDay: -1, exitDay: 3, trend: 'none', stopAtr: 0, side: 'long', days: 500, tickers: ['NQ', 'ES'] },
   vwapband: { tf: 5, k: 2, trendMult: 1, minRR: 1, lastEntry: '15:00', maxDay: 3, bias: 'none', bufTicks: 2, exit: 'target', beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   rsi2: { trendLen: 200, lo: 10, hi: 70, maxHold: 10, stopMult: 0, flatEod: true, side: 'long', days: 515, tickers: ['NQ', 'ES'] },
+  fractal: { entry: 'cross', tf: 15, wave: 10, stats: 10, hours: 'all', stopP: 0.5, tgtP: 0.5, fadeP: 0.1, oddsMax: 0.2, tgt: 'level', mm: 'none', oaMin: 0, oaBars: 3, macro: 'with', sqz: 'any', daily: 'none', lastEntry: '15:00', maxDay: 2, bias: 'none', bufTicks: 2, exit: 'target', tgtR: 0, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   squeeze: { tf: 5, kc: 1.5, minBars: 6, wait: 6, stop: 'mid', hours: 'rth', lastEntry: '15:00', maxDay: 3, bias: 'none', bufTicks: 0, exit: 'target', tgtR: 2, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   volclimax: { tf: 5, volMult: 3, wickPct: 40, tgt: 'vwap', minRR: 1, hours: 'rth', lastEntry: '15:00', maxDay: 2, bias: 'none', bufTicks: 2, exit: 'target', tgtR: 2, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   pwsweep: { tf: 5, lastEntry: '15:00', maxAbove: 3, minDepth: 0, fresh: true, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },

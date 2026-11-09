@@ -275,7 +275,8 @@ def fake_uw_get(token, path, params=None, timeout=60):
                 for typ in "CP":
                     oi = int(15000 * math.exp(-((k - px * (1.01 if typ == "C" else 0.985)) / (px * 0.01)) ** 2)) + 30
                     rows.append({"option_symbol": f"{sym}{ex.strftime('%y%m%d')}{typ}{k * 1000:08d}", "strike": k, "expires": ex.isoformat(),
-                                 "option_type": "call" if typ == "C" else "put", "open_interest": oi})
+                                 "option_type": "call" if typ == "C" else "put", "open_interest": oi,
+                                 "gamma": round(0.05 / (1 + abs(k - px) / 3), 5)})
         lim, page = int(params.get("limit") or 500), int(params.get("page") or 0)
         return {"data": rows[page * lim:(page + 1) * lim]}
     if path.endswith("/expiry-breakdown"):
