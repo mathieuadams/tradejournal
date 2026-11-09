@@ -181,3 +181,23 @@ def day_bars(sub, sym, day, tf=5):
         if "09:30" <= hm < "16:00":
             out.append((hm, float(b["c"])))
     return out
+
+
+def daily(sub, sym, n=260):
+    """The last `n` daily bars: [["YYYY-MM-DD", o, h, l, c, v], ...] (Alpaca 1Day, raw prices)."""
+    sym = check_sym(sym)
+    c, feed = creds(sub), status(sub)["feed"]
+    end = datetime.utcnow() - timedelta(minutes=16 if feed == "sip" else 0)
+    start = end - timedelta(days=int(n * 1.5) + 15)
+    out, token = [], None
+    for _ in range(10):
+        r = _get(c, f"stocks/{sym}/bars", {"timeframe": "1Day", "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                           "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 10000, "adjustment": "raw",
+                                           "feed": feed, "sort": "asc", "page_token": token})
+        for b in r.get("bars") or []:
+            d = utc_to_ny(datetime.strptime(b["t"][:19], "%Y-%m-%dT%H:%M:%S")).strftime("%Y-%m-%d")
+            out.append([d, b["o"], b["h"], b["l"], b["c"], b.get("v", 0)])
+        token = r.get("next_page_token")
+        if not token:
+            break
+    return out[-n:]

@@ -471,6 +471,7 @@ function zbar(z) {
 }
 
 /* ---------- Fractal: the TradeWellX Wave [N] rebuild (backend/fractal.py) ---------- */
+S.vp = { fwd: 1, match: 'hl', wave: 1, days: 200, asof: '', spag: true, bg: true, x: true, view: 'density' };
 S.fx = { sym: 'QQQ', wave: 10, days: 10, stats: 10, agg: 15, rth: false, lv: 'steps', fixed: true, basis: 'pivot', cold: false, close16: true, macro: 'ema30' };
 async function vFractal() {
   const f = S.fx, alp = await api('/alpaca');
@@ -524,9 +525,7 @@ async function fxLoad() {
       <div id="fx-chart" style="margin-top:8px">${fxChart(r, r.bars.length - 1)}</div>
       <div id="fx-lower">${fxLower(r, r.bars.length - 1)}</div>
 </div></section>
-    <section class="panel"><div class="hd"><h2>Gamma (Unusual Whales)</h2><span class="dim" style="font-size:12px">call wall, put wall, gamma magnet, gamma flip for the chart's symbol (NQ from QQQ, ES from SPY)</span><div class="grow"></div>
-      <label class="f" style="flex-direction:row;align-items:center;gap:6px">Basis<select id="gx-src"><option value="oi" ${(S.gx || {}).source !== 'vol' ? 'selected' : ''}>Open interest</option><option value="vol" ${(S.gx || {}).source === 'vol' ? 'selected' : ''}>Volume</option></select></label>
-      <button class="btn sm" data-act="gx-load" style="margin-left:8px">Load gamma</button></div><div class="bd" id="gx-out"><div class="empty muted">Loading…</div></div></section>
+    <div id="gx-out" hidden></div>
     <section class="panel"><div class="hd"><h2>Option Analyzer</h2><span class="dim" style="font-size:12px">odds of an H / L wave reaching each length · market makers' position at expiry</span></div>
       <div class="bd"><div id="oa-odds">${oaOdds(r)}</div>
         <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:16px 0 8px"><h3 style="margin:0 12px 0 0">Market Maker Landscape</h3>
@@ -539,6 +538,21 @@ async function fxLoad() {
           <button class="btn sm" data-act="mm-backfill" title="Rebuild the last N sessions (Days) for QQQ and SPY from Unusual Whales history: a few minutes per day">Rebuild past days</button>
           <span class="dim" id="mm-job" style="font-size:12px">recorded every 5 minutes, 09:30–16:00 ET, for QQQ and SPY</span></div>
         <div id="mm-out"><div class="empty muted">Loading…</div></div></div></section>
+    <section class="panel"><div class="hd"><h2>Spread Monster</h2><span class="dim" style="font-size:12px">forward looking density and odds, from past days in the same daily wave state</span></div>
+      <div class="bd"><div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:10px">
+        <label class="f">Forward days<select id="vp-fwd">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<option ${n === (S.vp || {}).fwd ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        <label class="f">Matching<select id="vp-match"><option value="hl">HL state</option><option value="weekday" ${(S.vp || {}).match === 'weekday' ? 'selected' : ''}>Weekday</option></select></label>
+        <label class="f">Wave<input id="vp-wave" type="number" min="1" max="50" value="${(S.vp || {}).wave || 1}" style="width:64px"></label>
+        <label class="f">Aggregations (days)<input id="vp-days" type="number" min="30" max="1000" value="${(S.vp || {}).days || 200}" style="width:80px"></label>
+        <label class="f">Graph<select id="vp-view"><option value="density">Density</option><option value="odds" ${S.vp.view === 'odds' ? 'selected' : ''}>Odds</option></select></label>
+        <label class="f" style="flex-direction:row;align-items:center;gap:4px"><input type="checkbox" id="vp-spag" ${S.vp.spag !== false ? 'checked' : ''}>Spaghetti</label>
+        <label class="f" style="flex-direction:row;align-items:center;gap:4px"><input type="checkbox" id="vp-bg" ${S.vp.bg !== false ? 'checked' : ''}>Background</label>
+        <label class="f" style="flex-direction:row;align-items:center;gap:4px"><input type="checkbox" id="vp-x" ${S.vp.x !== false ? 'checked' : ''}>Strikes X</label>
+        <button class="btn sm" data-act="vp-load">Project</button>
+        <button class="btn sm" data-act="vp-step" data-d="-1" title="Replay the previous day">◀ Back</button>
+        <button class="btn sm" data-act="vp-step" data-d="1" title="Next day">Forward ▶</button>
+        <button class="btn sm" data-act="vp-step" data-d="9999">Latest</button></div>
+        <div id="vp-out"><div class="empty muted">Loading…</div></div></div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">at the last bar · green from the lower of pivot / vector, red from the higher</span></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">Move</th></tr></thead><tbody id="fx-cl"></tbody></table></div></section>
@@ -553,6 +567,7 @@ async function fxLoad() {
   gxLoad();
   oaLoad();
   mmLoad();
+  vpLoad();
 }
 /* MacroTrend strip + StdDev panel under the chart (same x axis as fxChart). */
 function fxLower(r, k) {
@@ -583,7 +598,7 @@ function fxAt() {
   const k = +sl.value; $('#fx-chart').innerHTML = fxChart(r, k); $('#fx-lower').innerHTML = fxLower(r, k); $('#fx-at').textContent = r.bars[k][0];
 }
 document.addEventListener('input', e => { if (e.target.id === 'fx-k') fxAt(); });
-document.addEventListener('change', e => { if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } if (e.target.id === 'fx-lin') { S.fx.linear = e.target.checked; fxAt(); } if (e.target.id === 'fx-fixed') { S.fx.fixed = e.target.checked; fxAt(); fxTable(); } if (e.target.id === 'fx-basis') { S.fx.basis = e.target.value; fxAt(); fxTable(); } });
+document.addEventListener('change', e => { if (['vp-spag', 'vp-bg', 'vp-x'].includes(e.target.id)) { S.vp[e.target.id.slice(3)] = e.target.checked; if (S.vpR) $('#vp-out').innerHTML = vpShow(S.vpR); } if (e.target.id === 'vp-view') { S.vp.view = e.target.value; if (S.vpR) $('#vp-out').innerHTML = vpShow(S.vpR); } if (e.target.id === 'vp-fwd' || e.target.id === 'vp-match') { S.vp.fwd = +$('#vp-fwd').value; S.vp.match = $('#vp-match').value; vpLoad(); } if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } if (e.target.id === 'fx-lin') { S.fx.linear = e.target.checked; fxAt(); } if (e.target.id === 'fx-fixed') { S.fx.fixed = e.target.checked; fxAt(); fxTable(); } if (e.target.id === 'fx-basis') { S.fx.basis = e.target.value; fxAt(); fxTable(); } });
 /* Levels in force at bar k (TradeWellX): every wave finished before k plus the wave still running at k (its move so
    far); the move that p of them reached, nearest wave, no two levels on one wave (backend/fractal.py levels()).
    Green from min(pivot, MA), red from max(pivot, MA). */
@@ -640,6 +655,7 @@ async function gxLoad() {
   out.innerHTML = gxView(S.gx.data);
   if (S.fxR) fxAt();
   gxTop();
+  if (S.vpR && $('#vp-out')) $('#vp-out').innerHTML = vpShow(S.vpR);
 }
 function gxTop() {
   const top = $('#gx-top'), gg = fxGammaFor(S.fxR); if (!top) return;
@@ -797,6 +813,126 @@ function mmView(d) {
         ${ln('pa', Y2, '#a8f0a0')}${ln('pb', Y2, '#8b1d1d')}${ln('ca', Y2, '#1f7a35')}${ln('cb', Y2, '#f4a6a6')}</g>${vt}
       <text x="${L + 4}" y="${H1 + 14}" font-size="11" fill="#cfd6df">Option volume vs the price (day total so far)</text></svg>
     <div class="note">${d.days.filter(x => x.backfilled).length ? `Rebuilt from history: ${d.days.filter(x => x.backfilled).map(x => esc(x.date)).join(', ')}. ` : ''}Puts at/above the price (light green) above puts below (dark red) = bearish divergence; calls at/above (green) above calls below (pink) = buying pressure above. Volumes are the expiry's day totals at each snapshot, split at the price.</div>`;
+}
+/* Volatility projection (TradeWellX "Forward Looking Volatility"). */
+async function vpLoad() {
+  const out = $('#vp-out'); if (!out) return;
+  const v = S.vp, sym = S.fx.sym || 'QQQ';
+  let d;
+  try { d = await api(`/volproj?sym=${encodeURIComponent(sym)}&wave=${v.wave}&days=${v.days}&fwd=${v.fwd}&match=${v.match}${v.asof ? '&asof=' + v.asof : ''}`); }
+  catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}${v.asof ? ` (${esc(v.asof)}): step Back / Forward to another day.` : ''}</div>`;
+    if (S.vpR && v.asof) S.vpR = { ...S.vpR, index: S.vpR.dates.indexOf(v.asof) }; return; }
+  S.vpR = d; out.innerHTML = vpShow(d);
+}
+function vpShow(d) {
+  // the statistics table sits under both graphs
+  const html = S.vp.view === 'odds' ? vpOdds(d) : vpView(d), i = html.indexOf('<div class="tbl-wrap"');
+  return S.vp.view === 'odds' ? html + vpView(d).slice(vpView(d).indexOf('<div class="tbl-wrap"')) : html;
+}
+function vpView(d) {
+  /* TradeWellX Spread Monster "Forward Looking Density": density background, sinusoidal waves (spaghetti), 1% / 25% / 50% levels. */
+  const f = d.fut ? d.fut.ratio : 1, u = d.fut ? d.fut.sym : d.sym, P = d.price * f, pc = m => P * (1 + m);
+  const B = d.bull, R = d.bear, opt = S.vp, red = d.fwd > 1;
+  const W = 1100, H = 560, T = 16, Bm = 40, xs = W * 0.34, xe = W * 0.72, xR = W - 128;
+  const top = pc(B.max), bot = pc(R.max), pad = (top - bot) * 0.015, Y = v => T + (top + pad - v) / (top - bot + 2 * pad) * (H - T - Bm);
+  const k = d.bars.findIndex(b => b[0] === d.date), after = d.bars.slice(k + 1);
+  // forward trading days: the real ones when replaying, else the next weekdays
+  const days = []; { let t = new Date(d.date + 'T12:00:00Z'); for (let i = 0; i < d.fwd; i++) { if (after[i]) { days.push(after[i][0]); continue; }
+    do { t = new Date(t.getTime() + 864e5); } while ([0, 6].includes(t.getUTCDay())); days.push(t.toISOString().slice(0, 10)); if (after[i - 1]) t = new Date(after[i - 1][0] + 'T12:00:00Z'); } }
+  const wd = s2 => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(s2 + 'T12:00:00Z').getUTCDay()];
+  // x of each day's low / high point (low first, then high, like TradeWellX); one vertical line per point for 1 day, per day otherwise
+  const a0 = xs + (xe - xs) * 0.12, a1 = xs + (xe - xs) * (d.fwd === 1 ? 0.46 : 0.74), slot = (a1 - a0) / d.fwd;
+  const xLo = i => d.fwd === 1 ? a0 + slot * 0.2 : a0 + slot * (i + 0.25), xHi = i => d.fwd === 1 ? a0 + slot * 0.8 : a0 + slot * (i + 0.75), xDay = i => d.fwd === 1 ? xHi(i) : a0 + slot * (i + 0.5);
+  // density: how many matched days' high-low ranges cover each price
+  const NB = 140, bins = new Array(NB).fill(0), bp = i => bot - pad + (i + 0.5) / NB * (top - bot + 2 * pad);
+  d.paths.forEach(p => p.forEach(([h, l]) => { const hi = pc(h), lo = pc(l); for (let i = 0; i < NB; i++) { const v = bp(i); if (v >= lo && v <= hi) bins[i]++; } }));
+  const bmax = Math.max(1, ...bins), bh = (H - T - Bm) / NB * 1.02;
+  const dens = opt.bg === false ? '' : bins.map((c, i) => { const a = Math.pow(c / bmax, 0.8) * (red ? 0.75 : 0.5);
+    return a > 0.01 ? `<rect x="0" y="${Y(bp(i)) - bh / 2}" width="${xR}" height="${bh}" fill="${red ? '#b3261e' : '#dfe6ee'}" opacity="${a.toFixed(3)}"/>` : ''; }).join('');
+  // spaghetti: price -> each day's low, high -> back to price (Catmull-Rom smoothing)
+  const smooth = pts => { let o = `M${pts[0][0]},${pts[0][1]}`; for (let i = 0; i < pts.length - 1; i++) { const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    o += `C${p1[0] + (p2[0] - p0[0]) / 6},${p1[1] + (p2[1] - p0[1]) / 6} ${p2[0] - (p3[0] - p1[0]) / 6},${p2[1] - (p3[1] - p1[1]) / 6} ${p2[0]},${p2[1]}`; } return o; };
+  const spag = opt.spag === false ? '' : d.paths.map((p, j) => `<path d="${smooth([[xs, Y(P)], ...p.flatMap(([h, l], i) => [[xLo(i), Y(pc(l))], [xHi(i), Y(pc(h))]]), [xe, Y(P)]])}" fill="none" stroke="${red ? '#ff8a80' : '#e6edf3'}" stroke-width="1" opacity=".55"><title>${esc(d.matchDays[d.matchDays.length - d.paths.length + j] || '')}: ${p.map(([h, l]) => `H ${sgn(h * 100, 2, '%')} L ${sgn(l * 100, 2, '%')}`).join(' · ')}</title></path>`).join('');
+  const dayLines = days.map((dt, i) => { const xx = d.fwd === 1 ? [xLo(i), xHi(i)] : [xDay(i)];
+    return xx.map(x => `<line x1="${x}" x2="${x}" y1="${T}" y2="${H - Bm}" stroke="#4c6ef5" stroke-width="1.6"/><text x="${x}" y="${H - Bm + 13}" font-size="11" font-weight="700" text-anchor="middle" fill="#cfd6df">${dt.slice(8)}</text><text x="${x}" y="${H - Bm + 26}" font-size="10" text-anchor="middle" fill="#8b949e">${wd(dt)}</text>`).join(''); }).join('');
+  // the actual days (replay): purple candle per day from its low to its high, and the window's high / low
+  const real = after.slice(0, d.fwd), candles = real.map((b, i) => `<rect x="${xDay(i) - 3}" y="${Y(b[2] * f)}" width="6" height="${Math.max(2, Y(b[3] * f) - Y(b[2] * f))}" fill="#B24BD6"><title>${b[0]} H ${fmt(b[2] * f)} L ${fmt(b[3] * f)} C ${fmt(b[4] * f)}</title></rect>`).join('');
+  const uf = d.unfold, hl = uf ? [['high', uf.high * f], ['low', uf.low * f]].map(([t, v]) => `<line x1="40" x2="${xR}" y1="${Y(v)}" y2="${Y(v)}" stroke="#e6edf3" stroke-dasharray="3 3" opacity=".7"/><text x="${xR - 4}" y="${Y(v) - 3}" font-size="10" text-anchor="end" fill="#e6edf3">${t} ${fmt(v)}</text>`).join('') : '';
+  // levels: 1% = the outlier (Max), 25% = MaxAvg (the walls), 50% = the median
+  const lvl = [[B.levels.max, '1%', '#3fb950', '1'], [B.levels.maxAvg, '25%', '#3fb950', '5 4'], [B.levels.median, '50%', '#2E9E5B', ''], [R.levels.median, '50%', '#D0453B', ''], [R.levels.maxAvg, '25%', '#f0883e', '5 4'], [R.levels.max, '1%', '#f0883e', '1']]
+    .map(([v, t, c, dash]) => { const y = Y(v * f), dd = v * f - P;
+      return `<line x1="0" x2="${W}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="${t === '50%' ? 1.4 : 1}" ${dash && dash !== '1' ? `stroke-dasharray="${dash}"` : ''} opacity="${t === '1%' ? 0.7 : 0.9}"/>
+        <text x="${W - 4}" y="${dd >= 0 ? y + 12 : y - 14}" font-size="11" text-anchor="end" fill="#e6edf3"><tspan font-weight="700">${fmt(v * f)}</tspan> ${t}</text>
+        <text x="${W - 4}" y="${dd >= 0 ? y + 25 : y - 2}" font-size="10" text-anchor="end" fill="#8b949e">${dd >= 0 ? '+' : ''}${dd.toFixed(2)}</text>`; }).join('');
+  // option strikes (Unusual Whales, if loaded): calls at the start, puts at the end
+  const g = S.gx && S.gx.data && S.gx.data.items.find(x => x.sym === d.sym);
+  const xm = (x, y, c) => `<text x="${x}" y="${y + 4}" font-size="12" text-anchor="middle" fill="${c}">X</text>`;
+  const strikes = !g || opt.x === false ? '' : ['call', 'put'].map(side => g.strikes.filter(st => Math.abs(st[side]) > 0 && st.strike * f <= top && st.strike * f >= bot)
+    .sort((p1, p2) => Math.abs(p2[side]) - Math.abs(p1[side])).slice(0, 30).map(st => xm(side === 'call' ? xs : xe, Y(st.strike * f), '#B24BD6')).join('')).join('');
+  const xa = xs + (xe - xs) * 0.82;
+  const arrows = `<line x1="${xa}" x2="${xa}" y1="${Y(P)}" y2="${Y(top) + 12}" stroke="#2E9E5B" stroke-width="1.6"/><path d="M${xa - 6},${Y(top) + 14} l6,-14 l6,14 z" fill="#2E9E5B"/>
+    <line x1="${xa}" x2="${xa}" y1="${Y(P)}" y2="${Y(bot) - 12}" stroke="#D0453B" stroke-width="1.6"/><path d="M${xa - 6},${Y(bot) - 14} l6,14 l6,-14 z" fill="#D0453B"/>
+    <text x="${xa - 4}" y="${(Y(P) + Y(top)) / 2}" font-size="11" text-anchor="end" fill="#cfd6df">Outsized Move</text><text x="${xa - 4}" y="${(Y(P) + Y(bot)) / 2}" font-size="11" text-anchor="end" fill="#cfd6df">Downside Risk</text>`;
+  const hit = uf && uf.complete ? ` · actual: high ${fmt(uf.high * f)}, low ${fmt(uf.low * f)}` : uf ? ' · unfolding…' : '';
+  return `<div class="kv" style="margin-bottom:10px">
+      <div><div class="k">${esc(u)} · Wave [${d.wave}] Daily · Aggregations ${S.vp.days}</div><div class="v mono">${fmt(P)} · ${esc(d.date)} ${wd(d.date)} · state <b>${esc(d.state)}</b>${d.date !== d.to ? ' (replay)' : ''}</div></div>
+      <div><div class="k">Forward looking density: ${d.fwd} aggregation${d.fwd > 1 ? 's' : ''} · ${d.match === 'weekday' ? 'weekday' : 'HL'} matching</div><div class="v">${d.matches} matching days</div></div>
+      <div><div class="k">50% (median) long / short</div><div class="v mono"><span class="win">${fmt(B.levels.median * f)}</span> / <span class="loss">${fmt(R.levels.median * f)}</span></div></div>
+      <div><div class="k">25% (wall) · 1% (outlier) long / short</div><div class="v mono"><span class="win">${fmt(B.levels.maxAvg * f)}</span> / <span class="loss">${fmt(R.levels.maxAvg * f)}</span> · ${fmt(B.levels.max * f)} / ${fmt(R.levels.max * f)}</div></div></div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${dens}${lvl}${dayLines}${spag}${strikes}${arrows}${hl}${candles}
+      <circle cx="${xs}" cy="${Y(P)}" r="3" fill="#e6edf3"/><text x="${xs - 8}" y="${Y(P) - 4}" font-size="11" text-anchor="end" fill="#e6edf3">${fmt(P)}</text><text x="${xs - 8}" y="${Y(P) + 10}" font-size="10" text-anchor="end" fill="#8b949e">${esc(d.date)} ${wd(d.date)}</text>
+      <text x="${(xs + xe) / 2}" y="${T - 3}" font-size="11" text-anchor="middle" fill="#cfd6df">Sinusoidal Wave</text>
+      ${g && opt.x !== false ? `<text x="${xs}" y="${H - 4}" font-size="10" text-anchor="middle" fill="#8b949e">calls</text><text x="${xe}" y="${H - 4}" font-size="10" text-anchor="middle" fill="#8b949e">puts</text>` : ''}</svg>
+    <div class="note">The deeper the colour, the more the price action resides. Fractal data set ${esc(d.from)} to ${esc(d.to)}${d.fut ? ` · ${esc(u)} = ${esc(d.sym)} × ${f.toFixed(2)}` : ''}${hit}. Purple bars: the actual days (step Back to replay). X: the largest call / put strikes by gamma (Unusual Whales, today).</div>
+    <div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>Statistic</th><th class="r">Count</th><th class="r">Odds</th></tr></thead><tbody>
+      ${d.counts.map(x => `<tr><td>${esc(x.label)}</td><td class="r mono">${x.n} out of ${x.of}</td><td class="r mono">${(x.pct * 100).toFixed(2)}%</td></tr>`).join('')}</tbody></table></div>`;
+}
+function vpOdds(d) {
+  /* TradeWellX Spread Monster "Forward Looking Odds". Each match's window high (bullish moves) and low (bearish moves), from that day's close.
+     Bull odds of a price = (matches whose high reached it) / (2 x matches); bear the same with lows. Both are 50% at the far end of their list.
+     Green curve = bull odds, red = bear odds, both plotted against price. Normal price range = lowest high to highest low. */
+  const f = d.fut ? d.fut.ratio : 1, P = d.price * f, n = d.paths.length, N2 = 2 * n;
+  const hs = d.paths.map(p => P * (1 + Math.max(...p.map(x => x[0])))).sort((a, b) => b - a);   // highest first
+  const ls = d.paths.map(p => P * (1 + Math.min(...p.map(x => x[1])))).sort((a, b) => a - b);   // lowest first
+  const bull = hs.map((v, i) => ({ v, o: (i + 1) / N2 })), bear = ls.map((v, i) => ({ v, o: (i + 1) / N2 }));
+  const top = hs[0], bot = ls[0], nTop = ls[ls.length - 1], nBot = hs[hs.length - 1];         // normal range: highest low .. lowest high
+  const W = 1100, H = 640, T = 30, Bm = 40, gx0 = 150, gx1 = 560, Y = v => T + (top - v) / (top - bot || 1) * (H - T - Bm), X = o => gx0 + (o - 0.01) / 0.49 * (gx1 - gx0);
+  const curve = (arr, c) => `<path d="${arr.map((p, i) => `${i ? 'L' : 'M'}${X(p.o).toFixed(1)},${Y(p.v).toFixed(1)}`).join('')}" fill="none" stroke="${c}" stroke-width="1.5"/>`;
+  // where the curves cross (TradeWellX's intersection: long-off / short-off area)
+  let inter = null; { const ob = v => { const k = hs.filter(h => h >= v).length; return k / N2; }, os = v => ls.filter(l => l <= v).length / N2;
+    for (let i = 0; i <= 400; i++) { const v = bot + (top - bot) * i / 400; if (ob(v) <= os(v)) { inter = v; break; } } }
+  const yt = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => bot + (top - bot) * i / 10).map(v => `<text x="${gx0 - 70}" y="${Y(v) + 3}" font-size="10" text-anchor="end" fill="#8b949e">${sgn((v / P - 1) * 100, 2, '%')}</text><text x="${gx0 + 50}" y="${Y(v) - 3}" font-size="10" fill="#cfd6df">${fmt(v)}</text><line x1="${gx0}" x2="${gx1 + 40}" y1="${Y(v)}" y2="${Y(v)}" stroke="#30363d" stroke-dasharray="2 3" opacity=".6"/>`).join('');
+  // stacked price / odds lists (positioned at their price, nudged apart)
+  const list = (arr, x, c) => { let last = -99; const out = [];
+    const rows = [...arr].sort((a, b) => b.v - a.v);
+    rows.forEach((p, i) => { if (Y(p.v) < last + 11 && i !== rows.length - 1 && i !== 0) return;   // too close to the row above: skip (the curve still has it)
+      const y = Math.max(Y(p.v), last + 11, 40); last = y;
+      out.push(`<line x1="${x - 8}" x2="${x - 2}" y1="${Y(p.v)}" y2="${y - 3}" stroke="${c}" opacity=".5"/><text x="${x}" y="${y}" font-size="10" fill="#e6edf3">${fmt(p.v)}</text><text x="${x + 110}" y="${y}" font-size="10" text-anchor="end" fill="${c}">${(p.o * 100).toFixed(2)}%</text>`); });
+    return out.join(''); };
+  const bx = 650, sx = 880, uf = d.unfold, real = uf ? [uf.high * f, uf.low * f] : null;
+  const arrows = (x) => `<path d="M${x - 5},${Y(P) - 16} l5,14 l5,-14 z" fill="#D0453B"/><path d="M${x - 5},${Y(P) + 16} l5,-14 l5,14 z" fill="#2E9E5B"/>`;
+  return `<div class="kv" style="margin-bottom:10px">
+      <div><div class="k">Forward looking odds: ${d.fwd} aggregation${d.fwd > 1 ? 's' : ''} · ${d.match === 'weekday' ? 'weekday' : 'HL'} matching</div><div class="v mono">${fmt(P)} · ${esc(d.date)} · state <b>${esc(d.state)}</b>${d.date !== d.to ? ' (replay)' : ''}</div></div>
+      <div><div class="k">Normal price range (50% of the time all or part of price is in it)</div><div class="v mono">${fmt(nBot)} – ${fmt(nTop)}</div></div>
+      <div><div class="k">Intersection (long-off / short-off)</div><div class="v mono">${inter == null ? '—' : fmt(inter)}</div></div>
+      <div><div class="k">Outliers (1%)</div><div class="v mono"><span class="win">${fmt(top)}</span> / <span class="loss">${fmt(bot)}</span></div></div></div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">${yt}
+      <rect x="${gx0}" y="${T}" width="${gx1 + 40 - gx0}" height="${H - T - Bm}" fill="none" stroke="#8b949e"/>
+      <line x1="0" x2="${W}" y1="${Y(P)}" y2="${Y(P)}" stroke="#2E9E5B" stroke-dasharray="3 3"/>
+      <text x="10" y="${Y(P) - 30}" font-size="11" fill="#cfd6df">last price</text><text x="10" y="${Y(P) - 16}" font-size="11" font-weight="700" fill="#e6edf3">${fmt(P)}</text><text x="10" y="${Y(P) + 14}" font-size="10" fill="#8b949e">start ${esc(d.date)}</text>
+      <path d="M${X(0.01)},${Y(top)} L${gx1 - 8},${Y(nTop)} M${X(0.01)},${Y(bot)} L${gx1 - 8},${Y(nBot)}" stroke="#e6edf3" stroke-width="1.2" fill="none"/>
+      <line x1="${gx1 - 8}" x2="${gx1 - 8}" y1="${Y(nTop)}" y2="${Y(nBot)}" stroke="#e6edf3" stroke-width="1.4" marker-start="url(#vpa)" marker-end="url(#vpa)"/>
+      <defs><marker id="vpa" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e6edf3"/></marker></defs>
+      <text x="${gx1 - 30}" y="${(Y(top) + Y(nTop)) / 2}" font-size="11" text-anchor="end" fill="#cfd6df">Outlier</text><text x="${gx1 - 30}" y="${(Y(bot) + Y(nBot)) / 2}" font-size="11" text-anchor="end" fill="#cfd6df">Outlier</text>
+      <text x="${gx1 - 14}" y="${(Y(nTop) + Y(nBot)) / 2}" font-size="11" text-anchor="end" fill="#cfd6df">Normal price range</text>
+      ${curve(bull, '#2E9E5B')}${curve(bear, '#D0453B')}
+      ${inter == null ? '' : `<line x1="${gx0}" x2="${gx1 + 40}" y1="${Y(inter)}" y2="${Y(inter)}" stroke="#E5C100" stroke-dasharray="6 3"/><text x="${gx0 + 4}" y="${Y(inter) - 3}" font-size="10" fill="#E5C100">intersection ${fmt(inter)}</text>`}
+      ${real ? `<rect x="${gx1 + 14}" y="${Y(Math.min(real[0], top))}" width="7" height="${Math.max(2, Y(Math.max(real[1], bot)) - Y(Math.min(real[0], top)))}" fill="#B24BD6"><title>actual: high ${fmt(real[0])}, low ${fmt(real[1])}</title></rect>` : ''}
+      <text x="${gx0}" y="${H - Bm + 14}" font-size="10" fill="#8b949e">1%</text><text x="${gx1}" y="${H - Bm + 14}" font-size="10" text-anchor="end" fill="#8b949e">50%</text><text x="${(gx0 + gx1) / 2}" y="${H - Bm + 28}" font-size="11" text-anchor="middle" fill="#cfd6df">frequency of price →</text>
+      <text x="${bx}" y="14" font-size="11" font-weight="700" fill="#2E9E5B">Bullish moves</text><text x="${bx}" y="26" font-size="10" fill="#8b949e">price · odds</text>
+      <text x="${sx}" y="14" font-size="11" font-weight="700" fill="#D0453B">Bearish moves</text><text x="${sx}" y="26" font-size="10" fill="#8b949e">price · odds</text>
+      ${list(bull, bx, '#7ee787')}${list(bear, sx, '#ff9b95')}${arrows(bx + 130)}${arrows(sx + 130)}</svg>
+    <div class="note">Odds = share of the ${n} matching days whose ${d.fwd}-day high reached the price (bullish) or whose low reached it (bearish), out of ${N2} moves, as TradeWellX counts them. The best setups are in the 1–2% outlier odds. Purple bar: what actually happened (replay).</div>`;
 }
 function fxTable() {
   const r = S.fxR, el = $('#fx-cl'); if (!r || !el) return;
@@ -1516,6 +1652,8 @@ document.addEventListener('click', async e => {
       case 'mm-backfill': { const n = +($('#mm-days').value || 3); el.disabled = true;
         try { await api('/mmhistory/backfill', { method: 'POST', body: { sym: S.fx.sym || 'QQQ', days: n } }); mmPoll(); } finally { el.disabled = false; } break; }
       case 'mm-snap': el.disabled = true; try { await api('/mmhistory/snapshot', { method: 'POST', body: { sym: S.fx.sym || 'QQQ' } }); toast('Snapshot recorded.'); } finally { el.disabled = false; } await mmLoad(); break;
+      case 'vp-load': S.vp = { ...S.vp, fwd: +$('#vp-fwd').value || 1, match: $('#vp-match').value, wave: +$('#vp-wave').value || 1, days: +$('#vp-days').value || 200 }; $('#vp-out').innerHTML = '<div class="empty muted">Calculating…</div>'; await vpLoad(); break;
+      case 'vp-step': { const r = S.vpR; if (!r) break; const dd = +el.dataset.d, i = dd === 9999 ? r.dates.length - 1 : Math.max(2, Math.min(r.dates.length - 1, r.index + dd)); S.vp.asof = i === r.dates.length - 1 ? '' : r.dates[i]; await vpLoad(); break; }
       case 'oa-load': await oaLoad($('#oa-exp').value); break;
       case 'gx-load': S.gx = { ...S.gx, source: $('#gx-src').value }; await gxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }

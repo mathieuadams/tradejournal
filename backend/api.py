@@ -243,6 +243,29 @@ def mm_snapshot(sub, claims, body, q):
     return uwhales.snapshot(sub, base)
 
 
+@route("GET", "/volproj")
+def volproj_view(sub, claims, body, q):
+    import volproj
+    sym = (q.get("sym") or "QQQ").strip().upper()
+    base = {"NQ": "QQQ", "ES": "SPY"}.get(sym, sym)
+    wave = _int(q.get("wave"), "Wave", 1, 50, 1)
+    days = _int(q.get("days"), "Aggregations", 30, 1000, 200)
+    fwd = _int(q.get("fwd"), "Forward looking days", 1, 10, 1)
+    match = "weekday" if q.get("match") == "weekday" else "hl"
+    bars = alpaca.daily(sub, base, days + 2 * wave + 5)
+    try:
+        r = volproj.project(bars[-(days + 2 * wave):] if len(bars) > days else bars, wave, fwd, match, q.get("asof") or None)
+    except ValueError as e:
+        raise BadRequest(str(e))
+    r["sym"] = base
+    fut = FUT_FOR.get(base) if sym != base else None
+    if fut:
+        px, t = _fut_last(fut)
+        if px:
+            r["fut"] = {"sym": fut, "price": px, "time": t, "ratio": px / bars[-1][4]}
+    return r
+
+
 FUT_FOR = {"QQQ": "NQ", "SPY": "ES"}
 
 

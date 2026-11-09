@@ -283,6 +283,31 @@ def test_mm_backfill():
     assert j["status"] == "done", j
 
 
+def test_volproj():
+    import volproj
+    # TradeWellX's daily table: 11/06/2026 is 1H on Wave 1 (11/05 closed below its pivot, 11/06 above)
+    import csv
+    from datetime import datetime
+    rows = list(csv.DictReader(open(os.path.join(HERE, "fixtures", "tradewellx_daily_qqq.csv"))))
+    rows.sort(key=lambda r: datetime.strptime(r["LastTradeDateTime"], "%m/%d/%Y %I:%M:%S %p"))
+    bars = [[datetime.strptime(r["LastTradeDateTime"], "%m/%d/%Y %I:%M:%S %p").strftime("%Y-%m-%d"), float(r["OpenPrice"]),
+             float(r["HighPrice"]), float(r["LowPrice"]), float(r["ClosePrice"]), 0] for r in rows]
+    for fwd in (1, 2, 3):
+        p = volproj.project(bars[-200:], 1, fwd)
+        b, d = p["bull"], p["bear"]
+        assert p["state"] == "1H" and p["matches"] > 20, p["matches"]
+        assert b["max"] >= b["maxAvg"] >= b["avg"] >= b["minAvg"] and d["max"] <= d["maxAvg"] <= d["avg"] <= d["minAvg"]
+        assert abs(b["levels"]["max"] - p["price"] * (1 + b["max"])) < 1e-9
+    p1, p3 = volproj.project(bars[-200:], 1, 1), volproj.project(bars[-200:], 1, 3)
+    assert p3["bull"]["avg"] > p1["bull"]["avg"] and p3["bear"]["avg"] < p1["bear"]["avg"]    # more days, wider range
+    r = volproj.project(bars[-200:], 1, 2, asof="2026-10-29")
+    assert r["date"] == "2026-10-29" and r["unfold"]["complete"] and r["unfold"]["days"] == ["2026-10-30", "2026-11-02"]
+    w = volproj.project(bars[-200:], 1, 1, match="weekday")
+    assert w["matches"] >= 30
+    st, a = call("GET", "/volproj", q={"sym": "QQQ", "fwd": "2"})
+    assert st == 200 and a["fwd"] == 2 and a["bull"]["levels"]["maxAvg"] > a["price"] > a["bear"]["levels"]["maxAvg"], a
+
+
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_match_tradewellx_clusternode()
@@ -299,4 +324,5 @@ if __name__ == "__main__":
     test_landscape()
     test_mm_history()
     test_mm_backfill()
+    test_volproj()
     print("fractal: all tests passed")
