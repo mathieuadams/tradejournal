@@ -250,6 +250,24 @@ def fake_uw_get(token, path, params=None, timeout=60):
     params = params or {}
     sym = path.split("/")[1]
     px, rows = _uw_profile(sym)
+    if path.endswith("/expiry-breakdown"):
+        from datetime import date, timedelta
+        d0 = date.today()
+        days = [d0 + timedelta(days=i) for i in range(0, 20) if (d0 + timedelta(days=i)).weekday() < 5][:6]
+        return {"data": [{"expires": d.isoformat() + "T00:00:00.000Z", "open_interest": 100000 - i * 9000, "volume": 50000, "chains": 400} for i, d in enumerate(days)]}
+    if path.endswith("/option-contracts"):
+        ex = str(params.get("expiry"))[:10]
+        out = []
+        for k in range(int(px * 0.94), int(px * 1.06) + 1):
+            for typ in "CP":
+                intr = max(0.0, px - k) if typ == "C" else max(0.0, k - px)
+                tv = 2.2 * math.exp(-((k - px) / (px * 0.012)) ** 2) + 0.03
+                mid = intr + tv
+                oi = int(20000 * math.exp(-((k - px * (1.01 if typ == "C" else 0.985)) / (px * 0.01)) ** 2)) + 50
+                out.append({"option_symbol": f"{sym}{ex[2:4]}{ex[5:7]}{ex[8:10]}{typ}{k * 1000:08d}", "open_interest": oi, "volume": oi // 3,
+                            "nbbo_bid": f"{max(0.01, mid - 0.03):.2f}", "nbbo_ask": f"{mid + 0.03:.2f}", "last_price": f"{mid:.2f}"})
+        lim, page = int(params.get("limit") or 500), int(params.get("page") or 0)
+        return {"data": out[page * lim:(page + 1) * lim]}
     if path.endswith("/gex-levels"):
         src = params.get("source") or "vol"
         prof = sorted(({"strike": float(r["strike"]), "net": float(r[f"call_gamma_{src}"]) + float(r[f"put_gamma_{src}"])} for r in rows), key=lambda r: r["strike"])

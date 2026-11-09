@@ -242,6 +242,21 @@ def test_uw_gamma():
     assert w["call_wall"] == 103 and w["put_wall"] == 95 and w["gamma_magnet"] == 103 and w["gamma_flip"] == 98.67
 
 
+def test_landscape():
+    import uwhales
+    st, r = call("GET", "/landscape", q={"sym": "QQQ"})
+    assert st == 200, r
+    assert r["floor"] < r["pml"] < r["ceiling"] and r["pmlValue"] < 0 and r["contracts"] > 50
+    assert all(z["holders"] >= r["pmlValue"] - 1e-6 for z in r["curve"])
+    t = {x["move"]: x for x in r["targets"]}
+    assert t[0.0]["best"] is None and t[0.01]["best"]["contract"][9] == "C" and t[-0.01]["best"]["contract"][9] == "P"
+    st, r2 = call("GET", "/landscape", q={"sym": "QQQ", "expiry": r["expiries"][1]["expiry"]})
+    assert st == 200 and r2["expiry"] == r["expiries"][1]["expiry"]
+    # TradeWellX's own row: C651 bought at the 9.93 ask, worth 665.94 - 651 = 14.94 at expiry -> 50.5%
+    assert uwhales._occ("QQQ261109C00651000") == ("2026-11-09", "C", 651.0)
+    assert round((max(0, 665.94 - 651) - 9.93) / 9.93 * 100, 1) == 50.5
+
+
 if __name__ == "__main__":
     test_against_tradewellx()
     test_levels_match_tradewellx_clusternode()
@@ -255,4 +270,5 @@ if __name__ == "__main__":
     test_alpaca_qqq()
     test_databento_nq()
     test_uw_gamma()
+    test_landscape()
     print("fractal: all tests passed")

@@ -192,6 +192,18 @@ def uw_test(sub, claims, body, q):
     return uwhales.test(sub)
 
 
+@route("GET", "/landscape")
+def landscape_view(sub, claims, body, q):
+    base = {"NQ": "QQQ", "ES": "SPY"}.get((q.get("sym") or "QQQ").upper(), q.get("sym") or "QQQ")
+    r = uwhales.landscape(sub, base, q.get("expiry") or None)
+    fut = FUT_FOR.get(r["sym"])
+    if fut:
+        px, t = _fut_last(fut)
+        if px:
+            r["fut"] = {"sym": fut, "price": px, "time": t, "ratio": px / r["price"]}
+    return r
+
+
 FUT_FOR = {"QQQ": "NQ", "SPY": "ES"}
 
 

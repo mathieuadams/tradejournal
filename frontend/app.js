@@ -527,6 +527,12 @@ async function fxLoad() {
     <section class="panel"><div class="hd"><h2>Gamma (Unusual Whales)</h2><span class="dim" style="font-size:12px">call wall, put wall, gamma magnet, gamma flip for the chart's symbol (NQ from QQQ, ES from SPY)</span><div class="grow"></div>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px">Basis<select id="gx-src"><option value="oi" ${(S.gx || {}).source !== 'vol' ? 'selected' : ''}>Open interest</option><option value="vol" ${(S.gx || {}).source === 'vol' ? 'selected' : ''}>Volume</option></select></label>
       <button class="btn sm" data-act="gx-load" style="margin-left:8px">Load gamma</button></div><div class="bd" id="gx-out"><div class="empty muted">Loading…</div></div></section>
+    <section class="panel"><div class="hd"><h2>Option Analyzer</h2><span class="dim" style="font-size:12px">odds of an H / L wave reaching each length · market makers' position at expiry</span></div>
+      <div class="bd"><div id="oa-odds">${oaOdds(r)}</div>
+        <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:16px 0 8px"><h3 style="margin:0 12px 0 0">Market Maker Landscape</h3>
+          <label class="f">Expiry<select id="oa-exp"><option value="">nearest</option></select></label>
+          <button class="btn sm" data-act="oa-load">Calculate MMM</button><span class="dim" id="oa-note" style="font-size:12px"></span></div>
+        <div id="oa-out"><div class="empty muted">Loading…</div></div></div></section>
     <div class="row"><div class="col-main">
       <section class="panel"><div class="hd"><h2>Clusters: percent probable</h2><span class="dim" style="font-size:12px">at the last bar · green from the lower of pivot / vector, red from the higher</span></div>
         <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">Move</th></tr></thead><tbody id="fx-cl"></tbody></table></div></section>
@@ -539,6 +545,7 @@ async function fxLoad() {
     </div></div>`;
   fxTable();
   gxLoad();
+  oaLoad();
 }
 /* MacroTrend strip + StdDev panel under the chart (same x axis as fxChart). */
 function fxLower(r, k) {
@@ -666,6 +673,77 @@ function gxBars(g) {
     <line x1="${X0}" x2="${X0}" y1="0" y2="${H}" stroke="#8b949e" opacity=".4"/>${bars}
     ${marks}</svg>
     <div class="note">Net gamma by strike ($ per 1% move), ±5% of the price: green = positive (dealers dampen moves), red = negative (dealers amplify them).</div>`;
+}
+/* ---------- Option Analyzer: wave odds (top) + Market Maker Landscape (Unusual Whales option contracts) ---------- */
+function oaOdds(r) {
+  const bars = (rows, side, c) => {
+    if (!rows.length) return '<div class="empty muted">No waves.</div>';
+    const W = 360, H = 190, n = rows.length, bw = Math.min(26, (W - 30) / n - 8), mx = Math.max(...rows.map(o => o.pct));
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">` + rows.map((o, i) => {
+      const x = 22 + i * (W - 30) / n + ((W - 30) / n - bw) / 2, h = o.pct / mx * (H - 70), y = H - 40 - h;
+      return `<rect x="${x}" y="${y}" width="${bw}" height="${h}" fill="${c}"><title>${side}${o.count}: ${o.n} waves (${(o.pct * 100).toFixed(0)}%), ${(o.atLeast * 100).toFixed(0)}% reach at least ${o.count} bars</title></rect>
+        <text x="${x + bw / 2}" y="${y - 16}" font-size="10" text-anchor="middle" fill="#cfd6df">${o.n}</text><text x="${x + bw / 2}" y="${y - 5}" font-size="10" text-anchor="middle" fill="#cfd6df">${(o.pct * 100).toFixed(0)}%</text>
+        <text x="${x + bw / 2}" y="${H - 26}" font-size="11" text-anchor="middle" fill="#e6edf3">${o.count}</text><text x="${x + bw / 2}" y="${H - 10}" font-size="10" text-anchor="middle" fill="#8b949e">${(o.atLeast * 100).toFixed(0)}%</text>`;
+    }).join('') + `<text x="4" y="${H - 26}" font-size="11" fill="#e6edf3">${side}</text><text x="4" y="${H - 10}" font-size="9" fill="#8b949e">odds</text></svg>`;
+  };
+  const ws = r.waves.slice(-28), W = 420, H = 190, mU = Math.max(0.001, ...ws.filter(w => w.side === 'H').map(w => w.move)), mD = Math.max(0.001, ...ws.filter(w => w.side === 'L').map(w => w.move));
+  const z = H * mU / (mU + mD) * 0.9 + 10, sc = (H - 30) / (mU + mD), bw = Math.max(3, (W - 40) / Math.max(1, ws.length) - 3);
+  const avg = s2 => { const a = ws.filter(w => w.side === s2).map(w => w.move); return a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0; };
+  const seq = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px"><line x1="34" x2="${W}" y1="${z}" y2="${z}" stroke="#e6edf3" opacity=".6"/>
+    <line x1="34" x2="${W}" y1="${z - avg('H') * sc}" y2="${z - avg('H') * sc}" stroke="#3fb950" stroke-dasharray="3 3" opacity=".6"/><line x1="34" x2="${W}" y1="${z + avg('L') * sc}" y2="${z + avg('L') * sc}" stroke="#f85149" stroke-dasharray="3 3" opacity=".6"/>
+    <text x="2" y="${z - avg('H') * sc + 3}" font-size="9" fill="#3fb950">+${(avg('H') * 100).toFixed(1)}%</text><text x="2" y="${z + avg('L') * sc + 3}" font-size="9" fill="#f85149">−${(avg('L') * 100).toFixed(1)}%</text>`
+    + ws.map((w, i) => { const x = 38 + i * (W - 40) / ws.length, h = w.move * sc, up = w.side === 'H';
+      return `<rect x="${x}" y="${up ? z - h : z}" width="${bw}" height="${Math.max(1, h)}" fill="${up ? '#2E9E5B' : '#D0453B'}"><title>${w.side}${w.count} ${esc(w.start)}: ${up ? '+' : '−'}${(w.move * 100).toFixed(2)}% from its pivot</title></rect><text x="${x + bw / 2}" y="${up ? z - h - 3 : z + h + 10}" font-size="9" text-anchor="middle" fill="#cfd6df">${w.count}</text>`; }).join('') + '</svg>';
+  return `<div style="display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:12px">
+    <div><div class="dim" style="font-size:12px;margin-bottom:4px">H waves: bars to the high · % of waves · odds of reaching at least</div>${bars(r.oddsH, 'H', '#2E9E5B')}</div>
+    <div><div class="dim" style="font-size:12px;margin-bottom:4px">L waves: bars to the low</div>${bars(r.oddsL, 'L', '#D0453B')}</div>
+    <div><div class="dim" style="font-size:12px;margin-bottom:4px">Each wave's move from its pivot (last ${ws.length}) · dashed: averages</div>${seq}</div></div>`;
+}
+async function oaLoad(expiry) {
+  const out = $('#oa-out'); if (!out) return;
+  const st = await api('/uw').catch(() => ({}));
+  if (!st.connected) { out.innerHTML = '<div class="empty muted">Connect Unusual Whales on the <a href="#data">Data</a> page for the market maker landscape.</div>'; return; }
+  out.innerHTML = '<div class="empty muted">Loading the option chain…</div>';
+  let d;
+  try { d = await api(`/landscape?sym=${encodeURIComponent(S.fx.sym || 'QQQ')}${expiry ? '&expiry=' + expiry : ''}`); }
+  catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; return; }
+  S.oa = d;
+  $('#oa-exp').innerHTML = d.expiries.map(e => `<option value="${e.expiry}" ${e.expiry === d.expiry ? 'selected' : ''}>${e.expiry} · OI ${e.oi.toLocaleString()}</option>`).join('');
+  out.innerHTML = oaView(d);
+  const row = out.querySelector('tr.sel'), box = row && row.closest('.tbl-wrap');
+  if (box) box.scrollTop = row.offsetTop - box.clientHeight / 2;
+}
+function oaView(d) {
+  const f = d.fut, fx = v => v == null ? '—' : fmt(v), m = v => (v / 1e6).toFixed(1) + 'M';
+  const fp = v => f && v != null ? ` <span class="dim">(${esc(f.sym)} ${fmt(Math.round(v * f.ratio * 4) / 4)})</span>` : '';
+  const rows = d.targets.map(t => `<tr class="${t.move === 0 ? 'sel' : ''}"><td class="mono">${fmt(t.target)}${f ? `<span class="dim"> / ${fmt(Math.round(t.target * f.ratio * 4) / 4)}</span>` : ''}</td>
+      <td class="r mono">${sgn(t.move * 100, 1, '%')}</td><td class="r mono ${t.holders < 0 ? 'loss' : 'win'}">${m(t.holders)}</td>
+      <td class="mono">${t.best ? esc(t.best.contract.slice(-15)) : '—'}</td><td class="r mono">${t.best ? fmt(t.best.bto) : ''}</td><td class="r mono">${t.best ? fmt(t.best.stc) : ''}</td>
+      <td class="r mono ${t.best && t.best.gain > 0 ? 'win' : 'loss'}">${t.best ? (t.best.gain * 100).toFixed(1) + '%' : ''}</td></tr>`).join('');
+  // the landscape: holders' P&L at expiry by price, price on the vertical axis like TradeWellX
+  const cv = d.curve, W = 430, H = 560, lo = cv[0].price, hi = cv[cv.length - 1].price, mn = Math.min(...cv.map(z => z.holders)), mxv = Math.max(0, ...cv.map(z => z.holders));
+  const Y = p => 8 + (hi - p) / (hi - lo) * (H - 16), X = v => 30 + (v - mn) / ((mxv - mn) || 1) * (W - 140);
+  const path = cv.map((z, i) => `${i ? 'L' : 'M'}${X(z.holders)},${Y(z.price)}`).join('');
+  const line = (p, t, c) => p == null || p < lo || p > hi ? '' : `<line x1="0" x2="${W}" y1="${Y(p)}" y2="${Y(p)}" stroke="${c}" stroke-dasharray="5 3"/><text x="${W - 4}" y="${Y(p) - 4}" font-size="11" text-anchor="end" fill="${c}">${t} ${fmt(p)}${f ? ' · ' + f.sym + ' ' + fmt(Math.round(p * f.ratio * 4) / 4) : ''}</text>`;
+  const chart = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:#151A22;border-radius:6px">
+    <rect x="0" y="0" width="${W}" height="${Y(d.ceiling ?? hi)}" fill="#2E9E5B" opacity=".08"/><rect x="0" y="${Y(d.floor ?? lo)}" width="${W}" height="${H}" fill="#D0453B" opacity=".08"/>
+    <line x1="${X(0)}" x2="${X(0)}" y1="0" y2="${H}" stroke="#8b949e" opacity=".5"/><path d="${path}" fill="none" stroke="#d29922" stroke-width="2"/>
+    ${line(d.ceiling, 'Ceiling', '#3fb950')}${line(d.pml, 'PML', '#f0883e')}${line(d.price, 'Price', '#e6edf3')}${line(d.floor, 'Floor', '#f85149')}
+    <text x="${X(0) + 4}" y="14" font-size="10" fill="#8b949e">holders' P&L at expiry → (0 = wash-out)</text></svg>`;
+  const v = d.volumes;
+  return `<div class="kv" style="margin-bottom:12px">
+      <div><div class="k">${esc(d.sym)} price · expiry</div><div class="v">${fmt(d.price)} · ${esc(d.expiry)}</div></div>
+      <div><div class="k">Peak Money Line (MM best)</div><div class="v">${fx(d.pml)}${fp(d.pml)} · ${m(d.pmlValue)}</div></div>
+      <div><div class="k">Ceiling / Floor (wash-out)</div><div class="v">${fx(d.ceiling)} / ${fx(d.floor)}</div></div>
+      <div><div class="k">Aggregate at the price</div><div class="v ${d.aggregate < 0 ? 'loss' : 'win'}">${m(d.aggregate)}</div></div>
+      <div><div class="k">Contracts · OI calls / puts</div><div class="v">${d.contracts} · ${d.oi.calls.toLocaleString()} / ${d.oi.puts.toLocaleString()}</div></div>
+      <div><div class="k">Volume ≥ PML calls / puts</div><div class="v">${v.pml.aboveCalls.toLocaleString()} / ${v.pml.abovePuts.toLocaleString()}</div></div>
+      <div><div class="k">Volume &lt; PML calls / puts</div><div class="v">${v.pml.belowCalls.toLocaleString()} / ${v.pml.belowPuts.toLocaleString()}</div></div>
+      <div><div class="k">Price vs PML</div><div class="v">${sgn((d.price / d.pml - 1) * 100, 2, '%')}</div></div></div>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:14px;align-items:start">
+      <div class="tbl-wrap" style="max-height:560px;overflow:auto"><table class="tbl"><thead><tr><th>Target${f ? ' / ' + esc(f.sym) : ''}</th><th class="r">Move</th><th class="r">Holders P&L</th><th>Best contract</th><th class="r">BTO (ask)</th><th class="r">STC at target</th><th class="r">% gain</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div>${chart}</div></div>
+    <div class="note">Holders P&L = what all ${esc(d.expiry)} option holders make or lose at expiry at that price (open interest × 100 × (value at expiry − premium at the NBBO mid)); market makers hold the other side. PML = their best price; Ceiling / Floor = where the holders break even. Best contract = the call (above) or put (below) with the highest % gain if bought at the ask now and the price is at the target at expiry. Unusual Whales option contracts, ${esc(String(d.price))} at load.</div>`;
 }
 function fxTable() {
   const r = S.fxR, el = $('#fx-cl'); if (!r || !el) return;
@@ -1381,6 +1459,7 @@ document.addEventListener('click', async e => {
       case 'uw-connect': { const t = $('#uw-token').value.trim(); if (!t) return toast('Paste the API token.'); el.disabled = true; el.textContent = 'Checking…'; await api('/uw', { method: 'PUT', body: { token: t } }); toast('Unusual Whales connected.'); vData(); break; }
       case 'uw-test': el.disabled = true; await api('/uw/test', { method: 'POST' }); toast('Unusual Whales answered.'); vData(); break;
       case 'uw-del': if (!confirm('Disconnect Unusual Whales?')) return; await api('/uw', { method: 'DELETE' }); vData(); break;
+      case 'oa-load': await oaLoad($('#oa-exp').value); break;
       case 'gx-load': S.gx = { ...S.gx, source: $('#gx-src').value }; await gxLoad(); break;
       case 'alp-connect': { const id = $('#alp-id').value.trim(), sec = $('#alp-secret').value.trim(); if (!id || !sec) return toast('Paste the key ID and the secret.'); el.disabled = true; el.textContent = 'Checking…'; await api('/alpaca', { method: 'PUT', body: { keyId: id, secret: sec, feed: $('#alp-feed').value } }); toast('Alpaca connected.'); vData(); break; }
       case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;

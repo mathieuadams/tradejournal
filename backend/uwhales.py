@@ -163,3 +163,104 @@ def gamma(sub, sym, source="oi", date=None, band=0.25):
     t = ((rows or [{}])[0]).get("time") or lv.get("time")
     return {"sym": sym, "source": source, "price": price, "time": t, "date": lv.get("date"),
             "uw": uw, "computed": walls(prof, price), "strikes": prof, "netTotal": sum(r["net"] for r in prof)}
+
+
+# ---------------------------------------------------------------- market maker landscape (TradeWellX "Calculate MMM")
+
+def _occ(sym):
+    """QQQ261109C00651000 -> ("2026-11-09", "C", 651.0)."""
+    import re
+    m = re.match(r"^([A-Z.]+?)(\d{6})([CP])(\d{8})$", sym or "")
+    if not m:
+        return None
+    d = m.group(2)
+    return f"20{d[:2]}-{d[2:4]}-{d[4:6]}", m.group(3), int(m.group(4)) / 1000
+
+
+def expiries(sub, sym):
+    tok = token(sub)
+    r = _get(tok, f"stock/{check_sym(sym)}/expiry-breakdown")
+    today = now_ny().strftime("%Y-%m-%d")
+    out = [{"expiry": str(x.get("expires", ""))[:10], "oi": int(x.get("open_interest") or 0), "volume": int(x.get("volume") or 0)}
+           for x in r.get("data") or []]
+    return sorted([e for e in out if e["expiry"] >= today and e["oi"] > 0], key=lambda e: e["expiry"])
+
+
+def landscape(sub, sym, expiry=None, step=0.001, span=0.03):
+    """What the option holders of one expiry make or lose at expiry for each underlying price, if market makers are on
+    the other side of all the open interest (TradeWellX's Market Maker Landscape):
+        holders(P) = sum over contracts of open interest x 100 x (value at expiry at P - premium paid)
+    premium = the NBBO mid (ask when there is no bid). Its lowest point is the Peak Money Line (PML: the price where the
+    market makers make the most); where it crosses zero below / above that are the Floor / Ceiling (wash-out).
+    Targets: the price +/- 0.1% steps; for each, the call (above) or put (below) with the best % gain if bought at the ask
+    now and sold at its expiry value at the target."""
+    sym = check_sym(sym)
+    tok = token(sub)
+    exps = expiries(sub, sym)
+    if not exps:
+        raise Unavailable(f"Unusual Whales lists no open {sym} expirations.")
+    ex = expiry if expiry and any(e["expiry"] == expiry for e in exps) else exps[0]["expiry"]
+    first = _get(tok, f"stock/{sym}/spot-exposures/strike", {"limit": 1})
+    price = _num(((first.get("data") or [{}])[0]).get("price"))
+    rows, page = [], 0
+    while page < 20:
+        r = _get(tok, f"stock/{sym}/option-contracts", {"expiry": ex, "exclude_zero_oi_chains": "true", "limit": 500, "page": page})
+        data = r.get("data") or []
+        rows += data
+        if len(data) < 500:
+            break
+        page += 1
+    cons = []
+    for x in rows:
+        o = _occ(x.get("option_symbol"))
+        if not o or o[0] != ex:
+            continue
+        bid, ask = _num(x.get("nbbo_bid")) or 0.0, _num(x.get("nbbo_ask")) or 0.0
+        prem = (bid + ask) / 2 if bid > 0 and ask > 0 else (ask or _num(x.get("last_price")) or 0.0)
+        cons.append({"sym": x.get("option_symbol"), "type": o[1], "strike": o[2], "oi": int(x.get("open_interest") or 0),
+                     "vol": int(x.get("volume") or 0), "bid": bid, "ask": ask, "prem": prem})
+    if not cons:
+        raise Unavailable(f"No {sym} contracts with open interest for {ex}.")
+    if not price:
+        raise Unavailable(f"Unusual Whales has no {sym} price right now.")
+    val = lambda c, p: max(0.0, p - c["strike"]) if c["type"] == "C" else max(0.0, c["strike"] - p)
+    holders = lambda p: sum(c["oi"] * 100 * (val(c, p) - c["prem"]) for c in cons)
+    ks = sorted({c["strike"] for c in cons})
+    lo, hi = min(ks[0], price * 0.85), max(ks[-1], price * 1.15)
+    grid = [round(lo + (hi - lo) * i / 600, 2) for i in range(601)] + ks
+    grid = sorted(set(round(g, 2) for g in grid))
+    curve = [{"price": g, "holders": holders(g)} for g in grid]
+    pml = min(curve, key=lambda z: z["holders"])
+    def cross(seq):                          # first zero crossing walking away from the PML
+        for a, b in zip(seq, seq[1:]):
+            if (a["holders"] < 0) != (b["holders"] < 0):
+                return a["price"] + (b["price"] - a["price"]) * (-a["holders"]) / (b["holders"] - a["holders"])
+        return None
+    i = curve.index(pml)
+    ceiling, floor = cross(curve[i:]), cross(curve[:i + 1][::-1])
+    targets = []
+    n = int(round(span / step))
+    for j in range(n, -n - 1, -1):
+        t = round(price * (1 + j * step), 2)
+        side = "C" if j > 0 else "P" if j < 0 else None
+        best = None
+        if side:
+            for c in cons:
+                if c["type"] != side or c["ask"] < 0.05 or c["oi"] < 10:
+                    continue
+                stc = val(c, t)
+                g = (stc - c["ask"]) / c["ask"]
+                if best is None or g > best["gain"]:
+                    best = {"contract": c["sym"], "strike": c["strike"], "bto": c["ask"], "stc": stc, "gain": g}
+        targets.append({"target": t, "move": j * step, "holders": holders(t), "best": best})
+    above = lambda typ, ref: sum(c["vol"] for c in cons if c["type"] == typ and c["strike"] >= ref)
+    below = lambda typ, ref: sum(c["vol"] for c in cons if c["type"] == typ and c["strike"] < ref)
+    return {"sym": sym, "expiry": ex, "expiries": exps[:12], "price": price, "contracts": len(cons),
+            "oi": {"calls": sum(c["oi"] for c in cons if c["type"] == "C"), "puts": sum(c["oi"] for c in cons if c["type"] == "P")},
+            "pml": pml["price"], "pmlValue": pml["holders"], "ceiling": ceiling, "floor": floor,
+            "aggregate": holders(price),
+            "volumes": {"pml": {"aboveCalls": above("C", pml["price"]), "abovePuts": above("P", pml["price"]),
+                                "belowCalls": below("C", pml["price"]), "belowPuts": below("P", pml["price"])},
+                        "price": {"aboveCalls": above("C", price), "abovePuts": above("P", price),
+                                  "belowCalls": below("C", price), "belowPuts": below("P", price)}},
+            "curve": [z for z in curve if abs(z["price"] / price - 1) <= 0.06], "targets": targets}
