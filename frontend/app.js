@@ -1305,9 +1305,10 @@ async function vStrategy(id) {
   S.srch = srch;
   const v = s.valid, st = s.study, pp = s.paper || {}, job = s.job || {};
   const locked = !!pp.on;
-  const dataOk = Object.values(s.coverage).every(c => c.days >= 60);
+  const STK = ['QQQ', 'SPY'], stocks = Object.keys(s.coverage).filter(k => STK.includes(k));
+  const dataOk = Object.entries(s.coverage).every(([k, c]) => c.days >= 60 || STK.includes(k));   // QQQ / SPY download from Alpaca when the study runs
   const steps = [
-    ['Data', dataOk ? Object.values(s.coverage).map(c => `${c.days} sessions`).join(' · ') : 'Need 60+ sessions', dataOk ? 'done' : ''],
+    ['Data', dataOk ? Object.entries(s.coverage).map(([k, c]) => STK.includes(k) && c.days < 60 ? `${k}: downloads from Alpaca when the study runs` : `${k} ${c.days} sessions`).join(' · ') : 'Need 60+ sessions', dataOk ? 'done' : ''],
     ['Study', st ? `${st.n.toLocaleString('en-US')} trades` : 'Not run', st ? 'done' : ''],
     ['Validation', v ? `${v.gates.filter(g => g.ok).length} / ${v.gates.length} gates` : 'Not run', v ? (v.pass ? 'done' : 'fail') : ''],
     ['Paper', pp.on ? `${pp.n || 0} trades` : pp.kill ? 'Stopped' : 'Off', pp.on ? 'run' : ''],
