@@ -176,7 +176,11 @@ def test_06_other_setups():
                      ("fractal", {"days": 60, "mm": "both", "tgt": "wall"}),
                      ("fractal", {"days": 60, "macro": "none", "htf": "60", "htfRule": "side"}),
                      ("fractal", {"days": 60, "macro": "none", "htf": "240", "htfRule": "vector", "tf": 5}),
-                     ("fractal", {"days": 60, "macro": "none", "htf": "D", "htfRule": "dir", "htfWave": 5})):
+                     ("fractal", {"days": 60, "macro": "none", "htf": "D", "htfRule": "dir", "htfWave": 5}),
+                     ("fractal", {"days": 60, "macro": "none", "entry": "smfade", "smDays": 100}),
+                     ("fractal", {"days": 60, "macro": "none", "entry": "smfade", "smLevel": "median", "smTgt": "close", "smMatch": "weekday"}),
+                     ("fractal", {"days": 60, "macro": "none", "entry": "late", "htf": "60", "lateN": 2}),
+                     ("fractal", {"days": 60, "macro": "none", "entry": "cross", "oaExit": 0.3})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup

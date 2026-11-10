@@ -37,11 +37,13 @@ import stockdata
 TICK = {"QQQ": 0.01, "SPY": 0.01}
 
 DEFAULT = {"tickers": ["NQ"], "tf": 15, "wave": 10, "stats": 10, "hours": "all", "entry": "cross", "stopP": 0.5, "tgtP": 0.5, "fadeP": 0.1,
-           "oddsMax": 0.2, "tgt": "level", "mm": "none", "oaMin": 0, "oaBars": 3, "htf": "none", "htfWave": 10, "htfRule": "side", "macro": "with", "sqz": "any", "daily": "none", "lastEntry": "15:00", "maxDay": 2,
+           "oddsMax": 0.2, "tgt": "level", "mm": "none", "oaMin": 0, "oaBars": 3, "htf": "none", "htfWave": 10, "htfRule": "side",
+           "smLevel": "wall", "smTgt": "median", "smMatch": "hl", "smDays": 200, "lateN": 3, "lateStopP": 0.1, "oaExit": 0, "macro": "with", "sqz": "any", "daily": "none", "lastEntry": "15:00", "maxDay": 2,
            "bias": "none", "side": "both", "exit": "target", "tgtR": 0, "bufTicks": 2, "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("ent", "Entry"), ("mac", "Macro Trend"), ("sq", "StdDev at entry"),
            ("dst", "Daily wave"), ("cnt", "Wave count at entry"), ("ts", "Target used"), ("mmv", "MM option volume"), ("htfs", "Higher-timeframe bias")]
 LEVELS = {"bull": fractal.BULL_P, "bear": fractal.BEAR_P}
+ENTRIES = ("cross", "vector", "fade", "count", "smfade", "late")
 
 
 def _pick(v, opts, dflt):
@@ -56,7 +58,11 @@ def clean(p):
     p = {**DEFAULT, **(p or {})}
     out = {"setup": "fractal", "tf": _pick(p.get("tf"), (5, 15, 30, 60), 15),
            "hours": p.get("hours") if p.get("hours") in ("rth", "all") else "all",
-           "entry": p.get("entry") if p.get("entry") in ("cross", "vector", "fade", "count") else "cross",
+           "entry": p.get("entry") if p.get("entry") in ENTRIES else "cross",
+           "smLevel": p.get("smLevel") if p.get("smLevel") in ("wall", "max", "median") else "wall",
+           "smTgt": p.get("smTgt") if p.get("smTgt") in ("median", "close", "pivot") else "median",
+           "smMatch": "weekday" if p.get("smMatch") == "weekday" else "hl",
+           "lateStopP": _pick(p.get("lateStopP"), (0.2, 0.1, 0.05), 0.1),
            "stopP": _pick(p.get("stopP"), (0.8, 0.5, 0.2, 0.1), 0.5), "tgtP": _pick(p.get("tgtP"), (0.8, 0.5, 0.2, 0.1, 0.05), 0.5),
            "fadeP": _pick(p.get("fadeP"), (0.2, 0.1, 0.05), 0.1), "tgt": p.get("tgt") if p.get("tgt") in ("level", "pivot", "prev", "day", "wall", "r") else "level",
            "mm": p.get("mm") if p.get("mm") in ("none", "calls", "puts", "both") else "none",
@@ -66,14 +72,18 @@ def clean(p):
            "sqz": p.get("sqz") if p.get("sqz") in ("any", "after", "no") else "any",
            "daily": p.get("daily") if p.get("daily") in ("with", "none") else "none",
            "lastEntry": N.hhmm(p.get("lastEntry"), "15:00", "09:40", "15:50")}
-    N.K.num(p, out, (("wave", 2, 50, 10), ("stats", 2, 60, 10), ("oddsMax", 0.01, 0.9, 0.2), ("maxDay", 1, 20, 2), ("oaMin", 0, 1, 0), ("oaBars", 1, 50, 3), ("htfWave", 1, 50, 10)),
-            ("wave", "stats", "maxDay", "oaBars", "htfWave"))
+    N.K.num(p, out, (("wave", 2, 50, 10), ("stats", 2, 60, 10), ("oddsMax", 0.01, 0.9, 0.2), ("maxDay", 1, 20, 2), ("oaMin", 0, 1, 0), ("oaBars", 1, 50, 3), ("htfWave", 1, 50, 10), ("smDays", 60, 1000, 200),
+                           ("lateN", 1, 50, 3), ("oaExit", 0, 0.9, 0)),
+            ("wave", "stats", "maxDay", "oaBars", "htfWave", "smDays", "lateN"))
+    if out["entry"] == "late" and out["htf"] == "none":
+        out["htf"] = "D"                                   # the late counter-wave needs a higher-timeframe side
     N.clean_common(p, out, bias="none")
     if p.get("bufTicks") in (None, ""):
         out["bufTicks"] = 2
     return out
 
 
+SM_TXT = {"wall": "wall (MaxAvg, ~25% odds)", "max": "1% outlier (Max)", "median": "50% median"}
 HTF_TXT = {"60": "60-minute", "240": "4-hour", "D": "daily"}
 HTF_RULE = {"side": "longs above its pivot (H), shorts below (L)", "dir": "longs when its direction is up, shorts down",
             "vector": "longs above its purple vector, shorts below", "macro": "longs when its Macro Trend is up, shorts down"}
@@ -86,9 +96,18 @@ def describe(p):
     e = {"cross": "the first close across the pivot (a new wave): go with it",
          "vector": "the first close across the purple vector: go with it",
          "fade": f"a candle reaching the wave's {p['fadeP']:.0%} level and closing back inside: fade it",
-         "count": f"a wave running longer than {p['oddsMax']:.0%} of past waves did, then a candle against it: fade it"}[p["entry"]]
-    if p["entry"] in ("cross", "vector"):
-        e += f", stop at the other side's {p['stopP']:.0%} level, target " + (tg or f"this side's {p['tgtP']:.0%} level")
+         "count": f"a wave running longer than {p['oddsMax']:.0%} of past waves did, then a candle against it: fade it",
+         "smfade": f"a candle reaching the day's Spread Monster {SM_TXT[p['smLevel']]} (daily bars, {p['smDays']} days, {'weekday' if p['smMatch'] == 'weekday' else 'HL'} matching) and closing back inside: fade it, stop over the day's extreme, target "
+                   + {"median": "the 50% median on that side (or the previous close)", "close": "the previous close", "pivot": "the pivot"}[p["smTgt"]],
+         "late": f"a counter-wave against the higher timeframe reaching {p['lateN']} candles, then a candle turning back: go with the higher timeframe, stop at the {p['lateStopP']:.0%} level"}[p["entry"]]
+    if p["entry"] in ("cross", "vector", "late"):
+        if p["entry"] != "late":
+            e += f", stop at the other side's {p['stopP']:.0%} level"
+        e += ", target " + (tg or f"this side's {p['tgtP']:.0%} level")
+        if p["oaExit"]:
+            e += f", out early once fewer than {p['oaExit']:.0%} of past waves ran longer (Option Analyzer)"
+    elif p["entry"] == "smfade":
+        pass
     else:
         e += ", stop over the wave's extreme, target " + (tg or "the pivot")
     f = [x for x in ({"with": "with the Macro Trend", "against": "against the Macro Trend", "none": ""}[p["macro"]],
@@ -126,7 +145,8 @@ def signals(sym, p, S, days, sday_, pday=None):
     """{candle time: signal} over the continuous candles S (all sessions of the run, oldest first); sday[i] = S[i]'s session."""
     import futdata
     key = (sym, p["tf"], p["hours"], p["wave"], p["stats"], p["entry"], p["stopP"], p["tgtP"], p["fadeP"], p["oddsMax"], p["tgt"],
-           p["macro"], p["sqz"], p["daily"], p["oaMin"], p["oaBars"], p["htf"], p["htfWave"], p["htfRule"], len(S), S[-1][0] if S else None, None if stockdata.is_stock(sym) else futdata.last_bar_time(sym))
+           p["macro"], p["sqz"], p["daily"], p["oaMin"], p["oaBars"], p["htf"], p["htfWave"], p["htfRule"], p["smLevel"], p["smTgt"], p["smMatch"], p["smDays"],
+           p["lateN"], p["lateStopP"], p["oaExit"], len(S), S[-1][0] if S else None, None if stockdata.is_stock(sym) else futdata.last_bar_time(sym))
     if key in _SIG:
         return _SIG[key]
     if len(_SIG) > 40:
@@ -138,6 +158,8 @@ def signals(sym, p, S, days, sday_, pday=None):
     ends = [ti[w["end"]] for w in W]                     # bar index where each wave finished (waves are in order)
     nd, sday = sorted(set(days)), sday_
     hst = htf_states(sym, p, S, sday) if p["htf"] != "none" else None
+    sm = sm_levels(sym, p) if p["entry"] == "smfade" else {}
+    cur_day, dhi, dlo, sm_used = None, None, None, set()
     ds = _daily_state(sym) if p["daily"] == "with" else {}
     dk = sorted(ds)
     from collections import deque
@@ -172,21 +194,51 @@ def signals(sym, p, S, days, sday_, pday=None):
             w = win.popleft()
             (up if w["side"] == "H" else dn).remove(w["move"])
             (cH if w["side"] == "H" else cL).remove(w["count"])
+        if sday[i] != cur_day:                          # the session's high / low so far (Spread Monster fade stops)
+            cur_day, dhi, dlo = sday[i], h, lo
+        else:
+            dhi, dlo = max(dhi, h), min(dlo, lo)
         ma0 = si["ma"]
         vnew = False
         if ma0 is not None:
             v = 1 if c > ma0 else -1
             vnew, vside = v != vside and vside != 0, v
-        if len(up) < 4 or len(dn) < 4:
+        sig = None
+        if (len(up) < 4 or len(dn) < 4) and p["entry"] != "smfade":
             continue
         ma = ma0 if ma0 is not None else piv
         lo_b, hi_b = min(piv, ma), max(piv, ma)
-        bull = lambda q: lo_b * (1 + up[fractal._rank(len(up), q)])
-        bear = lambda q: hi_b * (1 - dn[fractal._rank(len(dn), q)])
+        bull = lambda q: lo_b * (1 + up[fractal._rank(len(up), q)]) if up else None
+        bear = lambda q: hi_b * (1 - dn[fractal._rank(len(dn), q)]) if dn else None
         cnt = i - wstart + 1
-        sig = None
         go = (p["entry"] == "cross" and new and i) or (p["entry"] == "vector" and vnew)
-        if go:
+        lv = sm.get(sday[i]) if p["entry"] == "smfade" else None
+        if lv:
+            buf = p["bufTicks"] * TICK.get(sym, N.K.TICK)
+            for side_, L in ((1, lv["bull"][p["smLevel"]]), (-1, lv["bear"][p["smLevel"]])):
+                if (sday[i], side_) in sm_used:
+                    continue
+                hit = (h >= L > c) if side_ > 0 else (lo <= L < c)
+                if not hit:
+                    continue
+                d = -side_                                  # fade the level
+                stop = dhi + buf if d < 0 else dlo - buf
+                med = lv["bull" if side_ > 0 else "bear"]["median"]
+                tgt0 = {"median": med if (med - c) * d > 0 else lv["close"], "close": lv["close"], "pivot": piv}[p["smTgt"]]
+                if (c - stop) * d > 0 and (tgt0 - c) * d > 0:
+                    sig = (d, stop, tgt0)
+                    sm_used.add((sday[i], side_))
+                    break
+        elif p["entry"] == "late" and hst and hst[i] and used_wave != wstart and s == -hst[i]:
+            # a wave against the higher timeframe, `lateN` candles old, then a candle turning back: go with the HTF
+            turn = i and ((c > S[i - 1][4]) if s < 0 else (c < S[i - 1][4]))
+            if cnt >= p["lateN"] and turn:
+                d = hst[i]
+                stop = bear(p["lateStopP"]) if d > 0 else bull(p["lateStopP"])
+                if (c - stop) * d > 0:
+                    sig = (d, stop, piv if (piv - c) * d > 0 else (bull(p["tgtP"]) if d > 0 else bear(p["tgtP"])))
+                    used_wave = wstart
+        elif go:
             d = s if p["entry"] == "cross" else vside
             stop = bear(p["stopP"]) if d > 0 else bull(p["stopP"])
             if p["oaMin"]:                                  # Option Analyzer: enough past waves on this side ran oaBars+ candles
@@ -241,7 +293,17 @@ def signals(sym, p, S, days, sday_, pday=None):
             beyond = [v for v in po if (v - c) * d > 0]
             dayl = (min(beyond) if d > 0 else max(beyond)) if beyond else None
         tg = {"level": sig[2], "pivot": piv if (piv - c) * d > 0 else None, "prev": lastH if d > 0 else lastL, "day": dayl}
-        out[t[i]] = {"d": d, "stop": sig[1], "tgt": sig[2], "tg": tg, "ent": p["entry"], "mac": mac == d, "sq": sd, "dst": dst, "cnt": cnt, "hs": hs}
+        oax = None
+        if p["oaExit"] and p["entry"] in ("cross", "vector", "late"):
+            cs = cH if d > 0 else cL                        # waves on the trade's side
+            if cs:
+                n0 = cnt if (p["entry"] != "late") else 1   # a late entry rides the new wave from its start
+                nstar = n0
+                while nstar < 500 and sum(1 for x in cs if x >= nstar + 1) / len(cs) >= p["oaExit"]:
+                    nstar += 1
+                j = i + max(1, nstar - n0)
+                oax = t[j][:16] if j < len(t) else None
+        out[t[i]] = {"d": d, "stop": sig[1], "tgt": sig[2], "tg": tg, "oax": oax, "ent": p["entry"], "mac": mac == d, "sq": sd, "dst": dst, "cnt": cnt, "hs": hs}
     _SIG[key] = out
     return out
 
@@ -291,6 +353,25 @@ def htf_states(sym, p, S, sday):
     ser = fractal.compute(H, wv)["series"]
     st = [_state(ser[j], H[j][4], rule) for j in range(len(H))]
     return [st[j - 1] if j >= 1 else None for j in pos]      # the higher-timeframe candle before this one (finished)
+
+
+def sm_levels(sym, p):
+    """{day: {"close": previous close, "bull": {max, maxAvg -> "wall", median}, "bear": {...}}}: the Spread Monster
+    1-day projection made after the previous session (its daily bars only)."""
+    import futdata
+    import volproj
+    D = stockdata.daily(sym) if stockdata.is_stock(sym) else futdata.daily(sym)
+    B = [[x[0], x[1], x[2], x[3], x[4]] for x in D]
+    out = {}
+    for k in range(60, len(B)):
+        win = B[max(0, k - p["smDays"]):k]                  # up to the previous session
+        try:
+            r = volproj.project(win, 1, 1, p["smMatch"])
+        except ValueError:
+            continue
+        pick = lambda side: {"max": side["levels"]["max"], "wall": side["levels"]["maxAvg"], "median": side["levels"]["median"]}
+        out[B[k][0]] = {"close": r["price"], "bull": pick(r["bull"]), "bear": pick(r["bear"])}
+    return out
 
 
 def engine_for(sym, p, rows):
@@ -359,7 +440,8 @@ def all_trades(sub, p, cells=None, prog=None):
                     if tgt is None or (tgt - c) * dd <= 0:          # no target beyond the entry: no trade
                         k += 1
                         continue
-                tr, j = N.trade(F, k, dd, c, x["stop"], tgt, risk, p, E, flat, ent=x["ent"], mac=x["mac"], sq=x["sq"], dst=x["dst"], cnt=x["cnt"],
+                fl = min(flat, x["oax"]) if x.get("oax") and x["oax"] > t[:16] else flat
+                tr, j = N.trade(F, k, dd, c, x["stop"], tgt, risk, p, E, fl, ent=x["ent"], mac=x["mac"], sq=x["sq"], dst=x["dst"], cnt=x["cnt"],
                                 ts=src, mmv=mmv, htfs=x.get("hs"))
                 tr.update(s=sym, d=d, cell=None)
                 trades.append(tr)
@@ -412,7 +494,7 @@ def mm_view(row, d):
 
 def decorate(x, p):
     N.decorate_common(x)
-    x["ent"] = {"cross": "pivot cross", "vector": "vector cross", "fade": "level fade", "count": "wave count"}.get(x.get("ent"), x.get("ent"))
+    x["ent"] = {"cross": "pivot cross", "vector": "vector cross", "fade": "level fade", "count": "wave count", "smfade": "Spread Monster fade", "late": "late counter-wave"}.get(x.get("ent"), x.get("ent"))
     x["mac"] = "with the Macro Trend" if x.get("mac") else "against it"
     v = x.get("sq")
     x["sq"] = "—" if v is None else "squeeze (< 0.1)" if v < 0.1 else "0.1-0.5" if v < 0.5 else "0.5+"

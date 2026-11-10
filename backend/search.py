@@ -44,12 +44,14 @@ SPACES["biaspull"] = {**{k: v for k, v in SPACES["ifvg"].items() if k in ("tf", 
                                                                         "tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")},
                       "pbMin": [1, 2, 3, 4], "minRisk": [0, 4, 8, 16, 32]}
 SPACES["fractal"] = {
-    "entry": ["cross", "vector", "fade", "count"], "tf": [5, 15, 30, 60], "wave": [5, 7, 10, 14, 20], "stats": [5, 10, 20, 40],
+    "entry": ["cross", "vector", "fade", "count", "smfade", "late"], "tf": [5, 15, 30, 60], "wave": [5, 7, 10, 14, 20], "stats": [5, 10, 20, 40],
     "stopP": [0.8, 0.5, 0.2, 0.1], "tgtP": [0.8, 0.5, 0.2, 0.1, 0.05], "fadeP": [0.2, 0.1, 0.05], "oddsMax": [0.05, 0.1, 0.2, 0.3],
     "tgt": ["level", "prev", "day", "pivot", "wall", "r"], "tgtR": [1.0, 1.5, 2.0, 3.0], "macro": ["with", "none", "against"],
     "sqz": ["any", "after", "no"], "daily": ["none", "with"], "mm": ["none", "calls", "puts"], "oaMin": [0, 0.3, 0.5, 0.7], "oaBars": [2, 3, 5, 8],
     "lastEntry": ["11:00", "13:00", "15:00", "15:30"], "maxDay": [1, 2, 3, 5], "bufTicks": [0, 2, 4, 8], "side": ["both", "long", "short"],
     "htf": ["none", "60", "240", "D"], "htfWave": [5, 10, 20], "htfRule": ["side", "dir", "vector", "macro"],
+    "smLevel": ["wall", "max", "median"], "smTgt": ["median", "close", "pivot"], "smMatch": ["hl", "weekday"], "smDays": [100, 200, 400],
+    "lateN": [2, 3, 4, 5, 7], "lateStopP": [0.2, 0.1, 0.05], "oaExit": [0, 0.2, 0.3, 0.4, 0.5],
 }
 # a setting that only matters when another one has a value: (key, needs) -> dropped from the key otherwise
 NEEDS = {
@@ -64,8 +66,11 @@ NEEDS = {
 NEEDS["fractal"] = {"stopP": lambda g: g["entry"] in ("cross", "vector"), "tgtP": lambda g: g["entry"] in ("cross", "vector") and g["tgt"] == "level",
                     "fadeP": lambda g: g["entry"] == "fade", "oddsMax": lambda g: g["entry"] == "count", "tgtR": lambda g: g["tgt"] == "r",
                     "oaMin": lambda g: g["entry"] in ("cross", "vector"), "oaBars": lambda g: g["entry"] in ("cross", "vector") and g["oaMin"] > 0,
-                    "bufTicks": lambda g: g["entry"] in ("fade", "count"),
-                    "htfWave": lambda g: g["htf"] != "none", "htfRule": lambda g: g["htf"] != "none"}
+                    "bufTicks": lambda g: g["entry"] in ("fade", "count", "smfade"),
+                    "htfWave": lambda g: g["htf"] != "none" or g["entry"] == "late", "htfRule": lambda g: g["htf"] != "none" or g["entry"] == "late",
+                    "smLevel": lambda g: g["entry"] == "smfade", "smTgt": lambda g: g["entry"] == "smfade", "smMatch": lambda g: g["entry"] == "smfade",
+                    "smDays": lambda g: g["entry"] == "smfade", "lateN": lambda g: g["entry"] == "late", "lateStopP": lambda g: g["entry"] == "late",
+                    "oaExit": lambda g: g["entry"] in ("cross", "vector", "late")}
 NEEDS["biaspull"] = {k: f for k, f in NEEDS["ifvg"].items() if k in ("tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")}
 NEEDS["biaspull"]["tgtR"] = lambda g: g["exit"] == "target"
 
