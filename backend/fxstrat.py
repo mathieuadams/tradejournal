@@ -23,6 +23,9 @@ odds, the Macro Trend, the StdDev squeeze and the daily wave state, as entries f
     long the reverse), both, or none. Days without MM data take no trade when it is on.
   Option Analyzer (`oaMin` > 0): a cross / vector entry needs at least `oaMin` of past same-side waves to have run
     `oaBars`+ candles.
+  Higher timeframe (`htf` 60 / 240 / D, `htfWave`, `htfRule`): the fractal on 60-minute, 4-hour or daily candles,
+    from the last finished higher-timeframe candle (no look-ahead): side (close vs its pivot), dir (its direction),
+    vector (close vs its MA) or macro (its Macro Trend). Trades only on its side.
   Filters: `macro` with / against / none (close vs EMA 30 on the same candles); `sqz` any / after (a squeeze, StdDev
   under 0.1, in the last `wave` candles) / no (not while squeezed); `daily` with / none (the previous session's
   Wave 1 daily state, H = long side, L = short side). One position at a time, at most `maxDay` a session, flat 15:55."""
@@ -34,10 +37,10 @@ import stockdata
 TICK = {"QQQ": 0.01, "SPY": 0.01}
 
 DEFAULT = {"tickers": ["NQ"], "tf": 15, "wave": 10, "stats": 10, "hours": "all", "entry": "cross", "stopP": 0.5, "tgtP": 0.5, "fadeP": 0.1,
-           "oddsMax": 0.2, "tgt": "level", "mm": "none", "oaMin": 0, "oaBars": 3, "macro": "with", "sqz": "any", "daily": "none", "lastEntry": "15:00", "maxDay": 2,
+           "oddsMax": 0.2, "tgt": "level", "mm": "none", "oaMin": 0, "oaBars": 3, "htf": "none", "htfWave": 10, "htfRule": "side", "macro": "with", "sqz": "any", "daily": "none", "lastEntry": "15:00", "maxDay": 2,
            "bias": "none", "side": "both", "exit": "target", "tgtR": 0, "bufTicks": 2, "days": 500}
 FACTORS = [("side", "Side"), ("tod", "Time of the entry"), ("wd", "Weekday"), ("ent", "Entry"), ("mac", "Macro Trend"), ("sq", "StdDev at entry"),
-           ("dst", "Daily wave"), ("cnt", "Wave count at entry"), ("ts", "Target used"), ("mmv", "MM option volume")]
+           ("dst", "Daily wave"), ("cnt", "Wave count at entry"), ("ts", "Target used"), ("mmv", "MM option volume"), ("htfs", "Higher-timeframe bias")]
 LEVELS = {"bull": fractal.BULL_P, "bear": fractal.BEAR_P}
 
 
@@ -57,18 +60,23 @@ def clean(p):
            "stopP": _pick(p.get("stopP"), (0.8, 0.5, 0.2, 0.1), 0.5), "tgtP": _pick(p.get("tgtP"), (0.8, 0.5, 0.2, 0.1, 0.05), 0.5),
            "fadeP": _pick(p.get("fadeP"), (0.2, 0.1, 0.05), 0.1), "tgt": p.get("tgt") if p.get("tgt") in ("level", "pivot", "prev", "day", "wall", "r") else "level",
            "mm": p.get("mm") if p.get("mm") in ("none", "calls", "puts", "both") else "none",
+           "htf": str(p.get("htf")) if str(p.get("htf")) in ("none", "60", "240", "D") else "none",
+           "htfRule": p.get("htfRule") if p.get("htfRule") in ("side", "dir", "vector", "macro") else "side",
            "macro": p.get("macro") if p.get("macro") in ("with", "against", "none") else "with",
            "sqz": p.get("sqz") if p.get("sqz") in ("any", "after", "no") else "any",
            "daily": p.get("daily") if p.get("daily") in ("with", "none") else "none",
            "lastEntry": N.hhmm(p.get("lastEntry"), "15:00", "09:40", "15:50")}
-    N.K.num(p, out, (("wave", 2, 50, 10), ("stats", 2, 60, 10), ("oddsMax", 0.01, 0.9, 0.2), ("maxDay", 1, 20, 2), ("oaMin", 0, 1, 0), ("oaBars", 1, 50, 3)),
-            ("wave", "stats", "maxDay", "oaBars"))
+    N.K.num(p, out, (("wave", 2, 50, 10), ("stats", 2, 60, 10), ("oddsMax", 0.01, 0.9, 0.2), ("maxDay", 1, 20, 2), ("oaMin", 0, 1, 0), ("oaBars", 1, 50, 3), ("htfWave", 1, 50, 10)),
+            ("wave", "stats", "maxDay", "oaBars", "htfWave"))
     N.clean_common(p, out, bias="none")
     if p.get("bufTicks") in (None, ""):
         out["bufTicks"] = 2
     return out
 
 
+HTF_TXT = {"60": "60-minute", "240": "4-hour", "D": "daily"}
+HTF_RULE = {"side": "longs above its pivot (H), shorts below (L)", "dir": "longs when its direction is up, shorts down",
+            "vector": "longs above its purple vector, shorts below", "macro": "longs when its Macro Trend is up, shorts down"}
 TGT_TXT = {"level": None, "pivot": "the pivot", "prev": "the previous wave's extreme", "day": "the previous session's open / high / low",
            "wall": "the gamma wall", "r": None}
 
@@ -88,7 +96,8 @@ def describe(p):
                      "with the daily wave" if p["daily"] == "with" else "",
                      {"calls": "calls at/above vs below the price agree (MM data)", "puts": "puts at/above vs below agree (MM data)",
                       "both": "calls and puts agree (MM data)", "none": ""}[p["mm"]],
-                     f"Option Analyzer: {p['oaMin']:.0%}+ of past waves ran {p['oaBars']}+ candles" if p["oaMin"] and p["entry"] in ("cross", "vector") else "") if x]
+                     f"Option Analyzer: {p['oaMin']:.0%}+ of past waves ran {p['oaBars']}+ candles" if p["oaMin"] and p["entry"] in ("cross", "vector") else "",
+                     (f"with the {HTF_TXT[p['htf']]} fractal (Wave {p['htfWave']}): " + HTF_RULE[p["htfRule"]]) if p["htf"] != "none" else "") if x]
     return (f"{', '.join(p['tickers'])} fractal on {p['tf']}-minute candles ({'overnight + NYSE' if p['hours'] == 'all' else 'NYSE session'}), "
             f"Wave {p['wave']}, levels from the last {p['stats']} sessions' waves: {e}" + (f" ({'; '.join(f)})" if f else "")
             + f", at most {p['maxDay']} a session, flat at 15:55")
@@ -117,7 +126,7 @@ def signals(sym, p, S, days, sday_, pday=None):
     """{candle time: signal} over the continuous candles S (all sessions of the run, oldest first); sday[i] = S[i]'s session."""
     import futdata
     key = (sym, p["tf"], p["hours"], p["wave"], p["stats"], p["entry"], p["stopP"], p["tgtP"], p["fadeP"], p["oddsMax"], p["tgt"],
-           p["macro"], p["sqz"], p["daily"], p["oaMin"], p["oaBars"], len(S), S[-1][0] if S else None, None if stockdata.is_stock(sym) else futdata.last_bar_time(sym))
+           p["macro"], p["sqz"], p["daily"], p["oaMin"], p["oaBars"], p["htf"], p["htfWave"], p["htfRule"], len(S), S[-1][0] if S else None, None if stockdata.is_stock(sym) else futdata.last_bar_time(sym))
     if key in _SIG:
         return _SIG[key]
     if len(_SIG) > 40:
@@ -128,6 +137,7 @@ def signals(sym, p, S, days, sday_, pday=None):
     ti = {x: i for i, x in enumerate(t)}
     ends = [ti[w["end"]] for w in W]                     # bar index where each wave finished (waves are in order)
     nd, sday = sorted(set(days)), sday_
+    hst = htf_states(sym, p, S, sday) if p["htf"] != "none" else None
     ds = _daily_state(sym) if p["daily"] == "with" else {}
     dk = sorted(ds)
     from collections import deque
@@ -221,6 +231,9 @@ def signals(sym, p, S, days, sday_, pday=None):
             dst = ds[dk[j]] if j >= 0 else 0
             if p["daily"] == "with" and dst != d:
                 continue
+        hs = hst[i] if hst else None
+        if hst is not None and hs != d:
+            continue
         # target candidates (the wall is added at the trade, from the MM data); the first one beyond the entry is used
         po = pday.get(sday[i])
         dayl = None
@@ -228,9 +241,56 @@ def signals(sym, p, S, days, sday_, pday=None):
             beyond = [v for v in po if (v - c) * d > 0]
             dayl = (min(beyond) if d > 0 else max(beyond)) if beyond else None
         tg = {"level": sig[2], "pivot": piv if (piv - c) * d > 0 else None, "prev": lastH if d > 0 else lastL, "day": dayl}
-        out[t[i]] = {"d": d, "stop": sig[1], "tgt": sig[2], "tg": tg, "ent": p["entry"], "mac": mac == d, "sq": sd, "dst": dst, "cnt": cnt}
+        out[t[i]] = {"d": d, "stop": sig[1], "tgt": sig[2], "tg": tg, "ent": p["entry"], "mac": mac == d, "sq": sd, "dst": dst, "cnt": cnt, "hs": hs}
     _SIG[key] = out
     return out
+
+
+def _state(r_i, close, rule):
+    if r_i is None or r_i["pivot"] is None:
+        return None
+    if rule == "side":
+        return 1 if close > r_i["pivot"] else -1
+    if rule == "dir":
+        return r_i["direction"] or None
+    if rule == "vector":
+        return None if r_i["ma"] is None else (1 if close > r_i["ma"] else -1)
+    return r_i["macro"] or None
+
+
+def htf_states(sym, p, S, sday):
+    """[+1 / -1 / None] per candle of S: the higher-timeframe fractal state at the last higher-timeframe candle that had
+    finished before it (daily: the previous session's close)."""
+    import futdata
+    rule, wv = p["htfRule"], p["htfWave"]
+    if p["htf"] == "D":
+        D = stockdata.daily(sym) if stockdata.is_stock(sym) else futdata.daily(sym)
+        if len(D) < 3:
+            return [None] * len(S)
+        ser = fractal.compute([[x[0], x[1], x[2], x[3], x[4]] for x in D], wv)["series"]
+        dk = [x[0] for x in D]
+        st = {x[0]: _state(ser[k], x[4], rule) for k, x in enumerate(D)}
+        out = []
+        for d in sday:
+            j = bisect.bisect_left(dk, d) - 1             # the previous session
+            out.append(st[dk[j]] if j >= 0 else None)
+        return out
+    tf = int(p["htf"])
+    anchor = 570 if (p["hours"] == "rth" or stockdata.is_stock(sym)) else 1080     # 09:30 / 18:00 ET
+    bk, H, pos = [], [], []
+    for b, d in zip(S, sday):
+        m = int(b[0][11:13]) * 60 + int(b[0][14:16])
+        k = (d, ((m - anchor) % 1440) // tf)
+        if not H or k != bk[-1]:
+            H.append([b[0], b[1], b[2], b[3], b[4]])
+            bk.append(k)
+        else:
+            x = H[-1]
+            x[2], x[3], x[4] = max(x[2], b[2]), min(x[3], b[3]), b[4]
+        pos.append(len(H) - 1)
+    ser = fractal.compute(H, wv)["series"]
+    st = [_state(ser[j], H[j][4], rule) for j in range(len(H))]
+    return [st[j - 1] if j >= 1 else None for j in pos]      # the higher-timeframe candle before this one (finished)
 
 
 def engine_for(sym, p, rows):
@@ -300,7 +360,7 @@ def all_trades(sub, p, cells=None, prog=None):
                         k += 1
                         continue
                 tr, j = N.trade(F, k, dd, c, x["stop"], tgt, risk, p, E, flat, ent=x["ent"], mac=x["mac"], sq=x["sq"], dst=x["dst"], cnt=x["cnt"],
-                                ts=src, mmv=mmv)
+                                ts=src, mmv=mmv, htfs=x.get("hs"))
                 tr.update(s=sym, d=d, cell=None)
                 trades.append(tr)
                 lo = 0 if p["hours"] == "all" else next((i for i, b in enumerate(F) if b[0] >= rth0), len(F))
@@ -357,6 +417,7 @@ def decorate(x, p):
     v = x.get("sq")
     x["sq"] = "—" if v is None else "squeeze (< 0.1)" if v < 0.1 else "0.1-0.5" if v < 0.5 else "0.5+"
     x["dst"] = {1: "daily H", -1: "daily L"}.get(x.get("dst"), "—")
+    x["htfs"] = {1: "HTF up", -1: "HTF down"}.get(x.get("htfs"), "—")
     c = x.get("cnt") or 0
     x["cnt"] = "1" if c <= 1 else "2-3" if c <= 3 else "4-7" if c <= 7 else "8+"
 

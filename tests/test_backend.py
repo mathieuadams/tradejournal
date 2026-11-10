@@ -173,7 +173,10 @@ def test_06_other_setups():
                      ("fractal", {"days": 60, "sqz": "no", "daily": "with", "macro": "against", "tf": 60, "wave": 7}),
                      ("fractal", {"days": 60, "entry": "vector", "macro": "none", "tgt": "prev", "oaMin": 0.3}),
                      ("fractal", {"days": 60, "entry": "vector", "tgt": "day", "hours": "rth"}),
-                     ("fractal", {"days": 60, "mm": "both", "tgt": "wall"})):
+                     ("fractal", {"days": 60, "mm": "both", "tgt": "wall"}),
+                     ("fractal", {"days": 60, "macro": "none", "htf": "60", "htfRule": "side"}),
+                     ("fractal", {"days": 60, "macro": "none", "htf": "240", "htfRule": "vector", "tf": 5}),
+                     ("fractal", {"days": 60, "macro": "none", "htf": "D", "htfRule": "dir", "htfWave": 5})):
         s = strategy.create(SUB, {"setup": setup, "params": p})
         v = strategy.study(SUB, s["id"])
         assert v["study"]["n"] >= 0, setup
@@ -193,6 +196,23 @@ def test_06b_fractal_mm():
     assert fxstrat.mm_ok(r2, -1, "both") and fxstrat.mm_ok(r2, -1, "puts") and not fxstrat.mm_ok(None, 1, "calls")
     p = fxstrat.clean({"entry": "vector", "tgt": "wall", "mm": "calls", "oaMin": 0.4})
     assert p["entry"] == "vector" and p["tgt"] == "wall" and p["mm"] == "calls" and "gamma wall" in fxstrat.describe(p)
+
+
+def test_06b2_htf_states():
+    import fxstrat
+    # 5-minute candles, 2 sessions, 60-minute bias: a candle only sees the 60-minute candle before its own
+    S, sday = [], []
+    for d in ("2026-01-05", "2026-01-06"):
+        for k in range(78):
+            m = 570 + 5 * k
+            px = 100 + k * 0.1 if d == "2026-01-05" else 108 - k * 0.1
+            S.append((f"{d}T{m // 60:02d}:{m % 60:02d}", px, px + 0.05, px - 0.05, px))
+            sday.append(d)
+    p = fxstrat.clean({"htf": "60", "htfWave": 2, "htfRule": "side", "hours": "rth"})
+    st = fxstrat.htf_states("NQ", p, S, sday)
+    assert len(st) == len(S) and st[0] is None and all(x is None for x in st[:12])     # nothing finished yet
+    assert st[12 * 3] == 1 and st[-1] == -1, (st[36], st[-1])
+    assert st[12] == st[23]                                    # same finished 60-minute candle for a whole hour
 
 
 def test_06c_fractal_on_stocks():

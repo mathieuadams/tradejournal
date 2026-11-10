@@ -49,6 +49,7 @@ SPACES["fractal"] = {
     "tgt": ["level", "prev", "day", "pivot", "wall", "r"], "tgtR": [1.0, 1.5, 2.0, 3.0], "macro": ["with", "none", "against"],
     "sqz": ["any", "after", "no"], "daily": ["none", "with"], "mm": ["none", "calls", "puts"], "oaMin": [0, 0.3, 0.5, 0.7], "oaBars": [2, 3, 5, 8],
     "lastEntry": ["11:00", "13:00", "15:00", "15:30"], "maxDay": [1, 2, 3, 5], "bufTicks": [0, 2, 4, 8], "side": ["both", "long", "short"],
+    "htf": ["none", "60", "240", "D"], "htfWave": [5, 10, 20], "htfRule": ["side", "dir", "vector", "macro"],
 }
 # a setting that only matters when another one has a value: (key, needs) -> dropped from the key otherwise
 NEEDS = {
@@ -63,7 +64,8 @@ NEEDS = {
 NEEDS["fractal"] = {"stopP": lambda g: g["entry"] in ("cross", "vector"), "tgtP": lambda g: g["entry"] in ("cross", "vector") and g["tgt"] == "level",
                     "fadeP": lambda g: g["entry"] == "fade", "oddsMax": lambda g: g["entry"] == "count", "tgtR": lambda g: g["tgt"] == "r",
                     "oaMin": lambda g: g["entry"] in ("cross", "vector"), "oaBars": lambda g: g["entry"] in ("cross", "vector") and g["oaMin"] > 0,
-                    "bufTicks": lambda g: g["entry"] in ("fade", "count")}
+                    "bufTicks": lambda g: g["entry"] in ("fade", "count"),
+                    "htfWave": lambda g: g["htf"] != "none", "htfRule": lambda g: g["htf"] != "none"}
 NEEDS["biaspull"] = {k: f for k, f in NEEDS["ifvg"].items() if k in ("tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")}
 NEEDS["biaspull"]["tgtR"] = lambda g: g["exit"] == "target"
 
