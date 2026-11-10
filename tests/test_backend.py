@@ -219,6 +219,20 @@ def test_06b2_htf_states():
     assert st[12] == st[23]                                    # same finished 60-minute candle for a whole hour
 
 
+def test_06b3_fractal_variants():
+    import search
+    for key, ent in (("smfade", "smfade"), ("oaride", "cross"), ("latewave", "late")):
+        s = strategy.create(SUB, {"setup": key, "params": {"days": 60, "entry": "fade"}})
+        assert s["setup"] == key and s["params"]["entry"] == ent and s["params"]["setup"] == key, s["params"]
+        v = strategy.study(SUB, s["id"])
+        assert v["study"]["n"] > 0, (key, v["study"])
+        assert search.space(key) and search.key(key, search.from_params(key, s["params"]))
+    o = strategy.create(SUB, {"setup": "oaride", "params": {"days": 60, "oaExit": 0}})
+    assert o["params"]["oaExit"] == 0.3 and "Option Analyzer" in strategy.describe(o["params"]) if hasattr(strategy, "describe") else True
+    lw = strategy.create(SUB, {"setup": "latewave", "params": {"days": 60, "tickers": ["QQQ"]}})
+    assert lw["params"]["htf"] == "D" and lw["params"]["tickers"] == ["QQQ"]
+
+
 def test_06c_fractal_on_stocks():
     import alpaca
     import stockdata

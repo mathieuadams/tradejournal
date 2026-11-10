@@ -35,6 +35,7 @@ import vwapband
 import rsi2
 import squeeze
 import fxstrat
+import fxvariants
 import stockdata
 import volclimax
 import pwsweep
@@ -50,10 +51,10 @@ import store
 import wtswing
 from util import BadRequest, NotFound, iso, now_ny
 
-SETUPS = {"orb": orb, "orbema": orbema, "range50": range50, "silver": silver, "tvpoc": tvpoc, "vwapret": vwapret, "wt": wtswing, "onsweep": onsweep, "ibbreak": ibbreak, "odpull": odpull, "pdbreak": pdbreak, "pdsweep": pdsweep, "nrbreak": nrbreak, "fpdisp": fpdisp, "ifvg": ifvg, "biaspull": biaspull, "ondrift": ondrift, "ldnbrk": ldnbrk, "smt": smt, "flatrev": flatrev, "postclose": postclose, "sungap": sungap, "insidebar": insidebar, "imom": imom, "onrev": onrev, "gapfill": gapfill, "tom": tom, "vwapband": vwapband, "rsi2": rsi2, "squeeze": squeeze, "volclimax": volclimax, "pwsweep": pwsweep, "trendday": trendday, "fractal": fxstrat}
-NAMES = {"orb": "Opening range break + FVG retest", "orbema": "Opening range break + 20 EMA retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "tvpoc": "Trend volume profile + rolling POC", "vwapret": "VWAP retest (overnight included)", "onsweep": "Overnight high / low sweep and reclaim", "ibbreak": "Initial balance breakout", "odpull": "Opening drive, first pullback", "wt": "WaveTrend dots", "pdbreak": "Prior-day high / low break and retest", "pdsweep": "Prior-day high / low sweep and reclaim", "nrbreak": "Narrow-range day breakout", "fpdisp": "Fair price displacement", "ifvg": "FVG inversion with the EMA bias", "biaspull": "EMA bias pullback (no FVG control)", "ondrift": "Overnight drift (hold with the bias)", "ldnbrk": "London breakout of the Asian range", "smt": "ES / NQ divergence (SMT)", "flatrev": "Flat-bias mean reversion to VWAP", "postclose": "Post-close continuation (16:00-17:00)", "sungap": "Sunday / reopen gap", "insidebar": "Inside bar breakout", "imom": "Intraday momentum (first → last half hour)", "onrev": "Overnight → day reversal", "gapfill": "Regular-hours gap fill", "tom": "Turn of the month", "vwapband": "VWAP 2σ band fade", "rsi2": "RSI(2) pullback with the trend (hourly)", "squeeze": "Squeeze breakout", "volclimax": "Volume climax reversal", "pwsweep": "Prior-week high / low sweep", "trendday": "Trend-day hold", "fractal": "Fractal (TradeWellX): pivot cross, level fade, wave count"}
+SETUPS = {"orb": orb, "orbema": orbema, "range50": range50, "silver": silver, "tvpoc": tvpoc, "vwapret": vwapret, "wt": wtswing, "onsweep": onsweep, "ibbreak": ibbreak, "odpull": odpull, "pdbreak": pdbreak, "pdsweep": pdsweep, "nrbreak": nrbreak, "fpdisp": fpdisp, "ifvg": ifvg, "biaspull": biaspull, "ondrift": ondrift, "ldnbrk": ldnbrk, "smt": smt, "flatrev": flatrev, "postclose": postclose, "sungap": sungap, "insidebar": insidebar, "imom": imom, "onrev": onrev, "gapfill": gapfill, "tom": tom, "vwapband": vwapband, "rsi2": rsi2, "squeeze": squeeze, "volclimax": volclimax, "pwsweep": pwsweep, "trendday": trendday, "fractal": fxstrat, **fxvariants.MODULES}
+NAMES = {"orb": "Opening range break + FVG retest", "orbema": "Opening range break + 20 EMA retest", "range50": "Range 50% retrace", "silver": "ICT Silver Bullet", "tvpoc": "Trend volume profile + rolling POC", "vwapret": "VWAP retest (overnight included)", "onsweep": "Overnight high / low sweep and reclaim", "ibbreak": "Initial balance breakout", "odpull": "Opening drive, first pullback", "wt": "WaveTrend dots", "pdbreak": "Prior-day high / low break and retest", "pdsweep": "Prior-day high / low sweep and reclaim", "nrbreak": "Narrow-range day breakout", "fpdisp": "Fair price displacement", "ifvg": "FVG inversion with the EMA bias", "biaspull": "EMA bias pullback (no FVG control)", "ondrift": "Overnight drift (hold with the bias)", "ldnbrk": "London breakout of the Asian range", "smt": "ES / NQ divergence (SMT)", "flatrev": "Flat-bias mean reversion to VWAP", "postclose": "Post-close continuation (16:00-17:00)", "sungap": "Sunday / reopen gap", "insidebar": "Inside bar breakout", "imom": "Intraday momentum (first → last half hour)", "onrev": "Overnight → day reversal", "gapfill": "Regular-hours gap fill", "tom": "Turn of the month", "vwapband": "VWAP 2σ band fade", "rsi2": "RSI(2) pullback with the trend (hourly)", "squeeze": "Squeeze breakout", "volclimax": "Volume climax reversal", "pwsweep": "Prior-week high / low sweep", "trendday": "Trend-day hold", "fractal": "Fractal (TradeWellX): pivot cross, level fade, wave count", **fxvariants.NAMES}
 SK = "STRAT#"
-STOCK_SETUPS = ("fractal",)                            # the setups that also run on QQQ / SPY (Alpaca candles)
+STOCK_SETUPS = ("fractal", "smfade", "oaride", "latewave")                            # the setups that also run on QQQ / SPY (Alpaca candles)
 COSTS = {"contracts": 1, "comm": 2.25, "slip": 1.0, "dailyLoss": 500.0}
 MIN_TRADES, PF_MIN, MONTH_MAX, TRAIN = 100, 1.3, 0.4, 0.6
 PHASES, VOLS = ("Bull", "Sideways", "Bear"), ("calm", "volatile")
@@ -379,6 +380,9 @@ GRIDS = {
     "silver": {"pivLen": [3, 5, 10], "rr": [1.0, 1.5, 2.0, 3.0], "expiry": [10, 30]},
     "orb": {"rangeMin": [5, 15, 30], "tgtR": [1.0, 2.0, 3.0], "lastEntry": ["10:30", "11:30", "13:00"]},
     "tvpoc": {"entry": ["flip", "poc"], "atrMult": [0.75, 1.0, 1.5], "maLen": [20, 25, 50]},
+    "smfade": {"smLevel": ["wall", "max", "median"], "smTgt": ["median", "close", "pivot"], "tf": [5, 15], "smMatch": ["hl", "weekday"], "macro": ["none", "with"]},
+    "oaride": {"entry": ["cross", "vector"], "oaExit": [0.2, 0.3, 0.4, 0.5], "tf": [5, 15, 60], "wave": [7, 10], "macro": ["with", "none"]},
+    "latewave": {"htf": ["60", "240", "D"], "lateN": [2, 3, 5], "lateStopP": [0.2, 0.1], "tf": [5, 15], "tgt": ["level", "prev"]},
     "fractal": {"entry": ["cross", "vector", "fade", "count"], "tf": [5, 15, 60], "wave": [7, 10], "macro": ["with", "none"], "tgt": ["level", "prev", "day", "pivot"]},
     "wt": {"tf": ["1D", "60", "15"], "stopAtr": [0, 1.0, 1.5, 2.0], "side": ["long", "both"]},
 }

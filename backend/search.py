@@ -53,6 +53,14 @@ SPACES["fractal"] = {
     "smLevel": ["wall", "max", "median"], "smTgt": ["median", "close", "pivot"], "smMatch": ["hl", "weekday"], "smDays": [100, 200, 400],
     "lateN": [2, 3, 4, 5, 7], "lateStopP": [0.2, 0.1, 0.05], "oaExit": [0, 0.2, 0.3, 0.4, 0.5],
 }
+_F = SPACES["fractal"]
+_COMMON = {k: _F[k] for k in ("tf", "wave", "stats", "macro", "sqz", "daily", "mm", "htf", "htfWave", "htfRule", "lastEntry", "maxDay", "side")}
+SPACES["smfade"] = {**{k: _F[k] for k in ("tf", "macro", "sqz", "mm", "htf", "htfWave", "htfRule", "lastEntry", "maxDay", "side")},
+                    "smLevel": _F["smLevel"], "smTgt": _F["smTgt"], "smMatch": _F["smMatch"], "smDays": _F["smDays"], "bufTicks": _F["bufTicks"]}
+SPACES["oaride"] = {**_COMMON, "entry": ["cross", "vector"], "stopP": _F["stopP"], "oaExit": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                    "tgt": ["r", "level", "prev", "day"], "tgtR": [0.0, 2.0, 3.0], "tgtP": _F["tgtP"], "oaMin": _F["oaMin"], "oaBars": _F["oaBars"]}
+SPACES["latewave"] = {**_COMMON, "htf": ["60", "240", "D"], "lateN": _F["lateN"], "lateStopP": _F["lateStopP"], "oaExit": _F["oaExit"],
+                      "tgt": ["level", "pivot", "prev", "day", "r"], "tgtR": _F["tgtR"], "tgtP": _F["tgtP"]}
 # a setting that only matters when another one has a value: (key, needs) -> dropped from the key otherwise
 NEEDS = {
     "ifvg": {"tgt": lambda g: g["exit"] == "target", "tgtR": lambda g: g["exit"] == "target" and g["tgt"] == "r",
@@ -71,6 +79,10 @@ NEEDS["fractal"] = {"stopP": lambda g: g["entry"] in ("cross", "vector"), "tgtP"
                     "smLevel": lambda g: g["entry"] == "smfade", "smTgt": lambda g: g["entry"] == "smfade", "smMatch": lambda g: g["entry"] == "smfade",
                     "smDays": lambda g: g["entry"] == "smfade", "lateN": lambda g: g["entry"] == "late", "lateStopP": lambda g: g["entry"] == "late",
                     "oaExit": lambda g: g["entry"] in ("cross", "vector", "late")}
+NEEDS["smfade"] = {"htfWave": lambda g: g["htf"] != "none", "htfRule": lambda g: g["htf"] != "none"}
+NEEDS["oaride"] = {"tgtR": lambda g: g["tgt"] == "r", "tgtP": lambda g: g["tgt"] == "level", "oaBars": lambda g: g["oaMin"] > 0,
+                   "htfWave": lambda g: g["htf"] != "none", "htfRule": lambda g: g["htf"] != "none"}
+NEEDS["latewave"] = {"tgtR": lambda g: g["tgt"] == "r", "tgtP": lambda g: g["tgt"] == "level"}
 NEEDS["biaspull"] = {k: f for k, f in NEEDS["ifvg"].items() if k in ("tgtR", "beR", "partR", "partPct", "trail", "trailN", "trailR")}
 NEEDS["biaspull"]["tgtR"] = lambda g: g["exit"] == "target"
 

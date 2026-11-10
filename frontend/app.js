@@ -1348,7 +1348,7 @@ function paramForm(setup, p, locked) {
     const v = p[k], dis = locked ? 'disabled' : '';
     if (type === 'sel') return `<label class="f">${lab}<select data-p="${k}" ${dis}>${opt.map(([ov, ol]) => `<option value="${ov}" ${String(ov) === String(v) ? 'selected' : ''}>${ol}</option>`).join('')}</select></label>`;
     if (type === 'bool') return `<label class="check" style="align-self:end;min-height:36px"><input type="checkbox" data-p="${k}" ${v ? 'checked' : ''} ${dis}> ${lab}</label>`;
-    if (type === 'tick') return `<div class="f" style="font-size:13px;color:var(--muted)">${setup === 'fractal' ? 'Contracts / stocks (NQ, ES or QQQ, SPY: not mixed)' : lab}<div class="seg">${(setup === 'fractal' ? ['NQ', 'ES', 'QQQ', 'SPY'] : ['NQ', 'ES']).map(s => `<button type="button" data-ptick="${s}" aria-pressed="${(v || ['NQ']).includes(s)}" ${dis}>${s}</button>`).join('')}</div></div>`;
+    if (type === 'tick') return `<div class="f" style="font-size:13px;color:var(--muted)">${FX_STOCK.includes(setup) ? 'Contracts / stocks (NQ, ES or QQQ, SPY: not mixed)' : lab}<div class="seg">${(FX_STOCK.includes(setup) ? ['NQ', 'ES', 'QQQ', 'SPY'] : ['NQ', 'ES']).map(s => `<button type="button" data-ptick="${s}" aria-pressed="${(v || ['NQ']).includes(s)}" ${dis}>${s}</button>`).join('')}</div></div>`;
     return `<label class="f">${lab}<input type="${type === 'num' ? 'number' : 'text'}" ${type === 'num' ? `step="${opt}"` : ''} data-p="${k}" value="${esc(v ?? '')}" ${dis}></label>`;
   }).join('')}</div>`;
 }
@@ -1393,6 +1393,21 @@ const DEF = { orb: { rangeMin: 5, tgtR: 3, fvgWin: 5, confWin: 10, lastEntry: '1
   pwsweep: { tf: 5, lastEntry: '15:00', maxAbove: 3, minDepth: 0, fresh: true, tgt: 'vwap', tgtR: 2, minRR: 1, bufTicks: 2, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   trendday: { rangeMult: 0.6, edgePct: 20, stop: 'mid', bias: 'none', bufTicks: 2, exit: 'target', tgtR: 0, beR: 0, partR: 1, partPct: 0, trail: 'swing', trailN: 3, trailR: 0.5, side: 'both', days: 515, tickers: ['NQ', 'ES'] },
   wt: { tf: '1D', side: 'long', stopAtr: 1.5, flatEod: true, days: 500, tickers: ['NQ'] } };
+/* Three strategies on the Fractal engine (backend fxvariants.py): the Fractal form's fields that apply to each. */
+(() => {
+  const F = SETUPS.fractal.params, pick = ks => ks.map(k => F.find(x => x[0] === k)).filter(Boolean), tail = [...MANAGEP, ...TAILP];
+  const common = ['tf', 'wave', 'stats', 'macro', 'sqz', 'daily', 'mm', 'htf', 'htfWave', 'htfRule', 'lastEntry', 'maxDay'];
+  SETUPS.smfade = { name: 'Spread Monster fade (daily levels)', blurb: 'Every session: the Spread Monster 1-day projection from the daily bars up to the previous close. A candle reaching the wall (MaxAvg, ~25% odds), the 1% outlier or the 50% median and closing back inside is faded: stop over the session\'s high / low so far, target the 50% median, the previous close or the pivot. Daily bars only: the whole history can be tested.',
+    params: [...pick(['smLevel', 'smTgt', 'smMatch', 'smDays', 'tf', 'hours', 'macro', 'sqz', 'mm', 'htf', 'htfWave', 'htfRule', 'lastEntry', 'maxDay', 'bufTicks']), ...tail] };
+  SETUPS.oaride = { name: 'Wave ride + Option Analyzer exit', blurb: 'Go with a new wave (the first close across the pivot or the purple vector), stop at the other side\'s cluster level, and get out once the wave has run longer than most past waves on that side did (Option Analyzer odds), unless the target comes first.',
+    params: [['entry', 'Entry', 'sel', [['cross', 'Pivot cross: go with the new wave'], ['vector', 'Vector cross: close across the purple vector']]], ...pick(['oaExit', 'stopP', 'tgt', 'tgtP', 'oaMin', 'oaBars', 'hours', ...common]), ...tail] };
+  SETUPS.latewave = { name: 'Late counter-wave (higher-timeframe bias)', blurb: 'When a wave against the higher-timeframe fractal (60-minute, 4-hour or daily) has run N candles and a candle turns back, go with the higher timeframe: stop at the 10% cluster level, target the pivot (or a cluster level, the previous wave, the previous session, R).',
+    params: [...pick(['htf', 'htfWave', 'htfRule', 'lateN', 'lateStopP', 'tgt', 'tgtP', 'oaExit', 'hours', 'tf', 'wave', 'stats', 'macro', 'sqz', 'mm', 'lastEntry', 'maxDay']), ...tail] };
+})();
+DEF.smfade = { ...DEF.fractal, entry: 'smfade', tf: 5, macro: 'none', smLevel: 'wall', smTgt: 'median', bufTicks: 4 };
+DEF.oaride = { ...DEF.fractal, entry: 'cross', oaExit: 0.3, tgt: 'r', tgtR: 0 };
+DEF.latewave = { ...DEF.fractal, entry: 'late', macro: 'none', htf: 'D', htfRule: 'side', lateN: 3, lateStopP: 0.1 };
+const FX_STOCK = ['fractal', 'smfade', 'oaride', 'latewave'];   // the setups that also run on QQQ / SPY
 // what's been tried for a setup: a badge on its card in New strategy
 function tested(key) {
   const xs = (S.strats || []).filter(s => s.setup === key), done = xs.filter(s => s.study && s.study.m);
