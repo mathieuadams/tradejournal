@@ -338,6 +338,18 @@ def test_volproj():
     assert st == 200 and a["fwd"] == 2 and a["bull"]["levels"]["maxAvg"] > a["price"] > a["bear"]["levels"]["maxAvg"], a
 
 
+def test_pml_moves_with_volume():
+    import uwhales
+    cons = [{"type": "P", "strike": k, "oi": 1000, "prem": 1.0} for k in (95, 98, 100, 102)] + \
+           [{"type": "C", "strike": k, "oi": 1000, "prem": 1.0} for k in (100, 102, 105)]
+    a = uwhales.mm_levels(cons, 100)["pml"]
+    b = uwhales.mm_levels(cons, 100)["pml"]
+    assert a == b                                             # premiums alone never move it
+    flow = [{**c, "vol": 20000 if (c["type"], c["strike"]) == ("P", 102) else 0} for c in cons]
+    c2 = uwhales.mm_levels(flow, 100)["pml"]
+    assert c2 > a, (a, c2)                                    # today's put buying at 102 pulls it up
+
+
 def test_live_top_up():
     # SIP is 15 min late: at 09:40 ET the 09:30 bar comes from IEX
     import alpaca
@@ -371,5 +383,6 @@ if __name__ == "__main__":
     test_mm_history()
     test_mm_backfill()
     test_volproj()
+    test_pml_moves_with_volume()
     test_live_top_up()
     print("fractal: all tests passed")

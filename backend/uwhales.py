@@ -234,7 +234,7 @@ def landscape(sub, sym, expiry=None, step=0.001, span=0.03):
     if not price:
         raise Unavailable(f"Unusual Whales has no {sym} price right now.")
     val = lambda c, p: max(0.0, p - c["strike"]) if c["type"] == "C" else max(0.0, c["strike"] - p)
-    holders = lambda p: sum(c["oi"] * 100 * (val(c, p) - c["prem"]) for c in cons)
+    holders = lambda p: sum(weight(c) * 100 * (val(c, p) - c["prem"]) for c in cons)
     ks = sorted({c["strike"] for c in cons})
     lo, hi = min(ks[0], price * 0.85), max(ks[-1], price * 1.15)
     grid = [round(lo + (hi - lo) * i / 600, 2) for i in range(601)] + ks
@@ -342,13 +342,20 @@ def _get_retry(tok, path, params=None, tries=6):
             time.sleep(2 + 3 * k)
 
 
+def weight(c):
+    """Contracts held = open interest (yesterday's close) + today's traded volume so far. Open interest only changes
+    overnight, so with it alone the PML can't move during the day; the volume makes it follow today's flow (like
+    TradeWellX's "OI / Traded Volume" and MoobeBot's intraday PML)."""
+    return (c.get("oi") or 0) + (c.get("vol") or 0)
+
+
 def mm_levels(cons, price, span=0.15, n=600):
-    """PML / Ceiling / Floor / aggregate from contracts [{"type", "strike", "oi", "prem"}] (same model as landscape)."""
-    cons = [c for c in cons if c["prem"] is not None and c["oi"] > 0]
+    """PML / Ceiling / Floor / aggregate from contracts [{"type", "strike", "oi", "vol", "prem"}] (same model as landscape)."""
+    cons = [c for c in cons if c["prem"] is not None and weight(c) > 0]
     if not cons:
         return None
     val = lambda c, p: max(0.0, p - c["strike"]) if c["type"] == "C" else max(0.0, c["strike"] - p)
-    holders = lambda p: sum(c["oi"] * 100 * (val(c, p) - c["prem"]) for c in cons)
+    holders = lambda p: sum(weight(c) * 100 * (val(c, p) - c["prem"]) for c in cons)
     ks = sorted({c["strike"] for c in cons})
     lo, hi = min(ks[0], price * (1 - span)), max(ks[-1], price * (1 + span))
     grid = sorted({round(lo + (hi - lo) * i / n, 2) for i in range(n + 1)} | set(ks))
@@ -441,7 +448,7 @@ def backfill_day(sub, sym, day, prog=None, step=5):
             done = [x for x in tl if x[0] < end]
             prem = done[-1][1] if done else (tl[0][1] if tl else None)
             vol = sum(x[2] for x in done)
-            snap.append({**c, "prem": prem})
+            snap.append({**c, "prem": prem, "vol": vol})          # the volume traded so far today
             if c["type"] == "P":
                 if c["strike"] >= px:
                     pa += vol

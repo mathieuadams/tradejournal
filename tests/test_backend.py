@@ -168,6 +168,8 @@ def test_06_other_setups():
                      ("insidebar", {"days": 60, "tf": 15, "entry": "close", "exit": "trail"}), ("imom", {"days": 60}), ("onrev", {"days": 60, "minPct": 0.1}),
                      ("gapfill", {"days": 60}), ("tom", {"days": 120}), ("vwapband", {"days": 60}), ("rsi2", {"days": 60}), ("squeeze", {"days": 60}),
                      ("volclimax", {"days": 60, "volMult": 1.5}), ("pwsweep", {"days": 60, "fresh": False}), ("trendday", {"days": 60, "rangeMult": 0.3}),
+                     ("onmid", {"days": 60}), ("onmid", {"days": 60, "stop": "opp", "deadPct": 10, "exitAt": "11:30"}),
+                     ("onmid", {"days": 60, "stop": "part", "stopPart": 0.15, "minRR": 1}),
                      ("fractal", {"days": 60}), ("fractal", {"days": 60, "entry": "fade", "macro": "none", "tf": 5}),
                      ("fractal", {"days": 60, "entry": "count", "macro": "none", "oddsMax": 0.3, "hours": "rth", "tgt": "r", "tgtR": 2}),
                      ("fractal", {"days": 60, "sqz": "no", "daily": "with", "macro": "against", "tf": 60, "wave": 7}),
