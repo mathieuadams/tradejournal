@@ -285,6 +285,16 @@ def test_06b6_opt0dte():
     assert rows and all(0 <= x["avgDelta"] <= 1 and x["avgPrem"] > 0 for x in rows), r["rows"][:2]
     lo, hi = [x for x in rows if x["delta"] <= 0.3], [x for x in rows if x["delta"] >= 0.7]
     assert not lo or not hi or lo[0]["avgPrem"] < hi[0]["avgPrem"]          # lower delta = cheaper (further out of the money)
+    # 5 days out: its own download and pack; the contracts expire 5 weekdays later
+    assert opt0dte.expiry("2026-11-06", 5) == "2026-11-13" and opt0dte.expiry("2026-11-06", 0) == "2026-11-06"
+    assert opt0dte.job(SUB, ts[-4:], lambda m: None, time.time() + 600, lambda e: None, {}, 5)
+    st, r5 = call("GET", f"/strategies/{s['id']}/options", q={"dte": "5"})
+    assert st == 200 and r5["dte"] == 5 and r5["coverage"]["have"] >= 1
+    assert any(x["n"] for x in r5["rows"]), r5["rows"][:2]
+    d0 = opt0dte.pack("QQQ", 5)
+    assert d0 and all(v.get("exp", "") > k[:10] for k, v in d0.items() if v.get("strikes"))
+    st, j = call("POST", f"/strategies/{s['id']}/options", {"dte": 4})
+    assert st == 400
     # Black-Scholes sanity: an at-the-money call is about 0.5, deep in / out near 1 / 0
     T = 390 / opt0dte.YEAR_MIN
     assert 0.45 < opt0dte.delta(500, 500, T, opt0dte.bs(500, 500, T, 0.2, True), True) < 0.55

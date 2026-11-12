@@ -727,7 +727,7 @@ function fxAt() {
   const k = +sl.value; $('#fx-chart').innerHTML = fxChart(r, k); $('#fx-lower').innerHTML = fxLower(r, k); $('#fx-at').textContent = r.bars[k][0];
 }
 document.addEventListener('input', e => { if (e.target.id === 'fx-k') fxAt(); });
-document.addEventListener('change', e => { if (e.target.id === 'fx-strat') { S.fx.strat = e.target.value; fxStratLoad(); } if (e.target.id === 'fx-auto') { S.fx.auto = e.target.checked; if (e.target.checked) fxTick(); } });
+document.addEventListener('change', e => { if (e.target.id === 'opt-dte' && S.cur) { S.opt.dte = +e.target.value || 0; optLoad(S.cur.id); } if (e.target.id === 'fx-strat') { S.fx.strat = e.target.value; fxStratLoad(); } if (e.target.id === 'fx-auto') { S.fx.auto = e.target.checked; if (e.target.checked) fxTick(); } });
 document.addEventListener('change', e => { if (['vp-spag', 'vp-bg', 'vp-x'].includes(e.target.id)) { S.vp[e.target.id.slice(3)] = e.target.checked; if (S.vpR) $('#vp-out').innerHTML = vpShow(S.vpR); } if (e.target.id === 'vp-view') { S.vp.view = e.target.value; if (S.vpR) $('#vp-out').innerHTML = vpShow(S.vpR); } if (e.target.id === 'vp-fwd' || e.target.id === 'vp-match') { S.vp.fwd = +$('#vp-fwd').value; S.vp.match = $('#vp-match').value; vpLoad(); } if (e.target.id === 'fx-next') { S.fx.next = e.target.checked; fxAt(); } if (e.target.id === 'fx-imp') { S.fx.imp = e.target.checked; fxAt(); } if (e.target.id === 'fx-lin') { S.fx.linear = e.target.checked; fxAt(); } if (e.target.id === 'fx-fixed') { S.fx.fixed = e.target.checked; fxAt(); fxTable(); } if (e.target.id === 'fx-basis') { S.fx.basis = e.target.value; fxAt(); fxTable(); } });
 /* Levels in force at bar k (TradeWellX): every wave finished before k plus the wave still running at k (its move so
    far); the move that p of them reached, nearest wave, no two levels on one wave (backend/fractal.py levels()).
@@ -1487,7 +1487,7 @@ async function vStrategy(id) {
         ${st && st.factors && Object.keys(st.factors).length ? `<section class="panel"><div class="hd"><h2>What drives it</h2><span class="dim" style="font-size:13px">All study trades, by factor</span></div><div class="bd" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
           ${Object.entries(st.factors).map(([lab, rows]) => `<div><div class="note" style="margin-bottom:6px">${esc(lab)}</div><table class="tbl"><tbody>${rows.slice(0, 8).map(r => `<tr><td style="padding:5px 8px">${esc(r.v)}</td><td class="r" style="padding:5px 8px">${r.n}</td><td class="r ${cls(r.avgR)}" style="padding:5px 8px">${r.avgR != null ? sgn(r.avgR, 2, 'R') : '—'}</td><td class="r ${cls(r.exp)}" style="padding:5px 8px">${money(r.exp)}</td></tr>`).join('')}</tbody></table></div>`).join('')}
         </div></section>` : ''}
-        ${st && Object.keys(s.coverage).some(k => ['NQ', 'ES', 'QQQ', 'SPY'].includes(k)) ? `<section class="panel"><div class="hd"><h2>0DTE options</h2><span class="dim" style="font-size:13px">these trades on same-day options (QQQ for NQ / QQQ, SPY for ES / SPY): a call for a long, a put for a short, by delta</span></div>
+        ${st && Object.keys(s.coverage).some(k => ['NQ', 'ES', 'QQQ', 'SPY'].includes(k)) ? `<section class="panel"><div class="hd"><h2>Options</h2><span class="dim" style="font-size:13px">these trades on QQQ options (NQ / QQQ) or SPY options (ES / SPY), same-day or a few days out: a call for a long, a put for a short, by delta</span></div>
           <div class="bd" id="opt-out"><div class="empty muted">Loading…</div></div></section>` : ''}
         ${st ? `<section class="panel"><div class="hd"><h2>Trades</h2><div class="seg"><button data-trset="study" aria-pressed="${S.trSet === 'study'}">Study</button><button data-trset="paper" aria-pressed="${S.trSet === 'paper'}">Paper</button></div><div class="grow"></div><span class="dim" style="font-size:12px">last 200</span></div>
           ${ts.length ? `<div class="tbl-wrap" style="max-height:520px;overflow:auto"><table class="tbl" style="min-width:760px"><thead><tr><th>Entry</th><th>Exit</th><th>Side</th><th class="r">Entry px</th><th class="r">Exit px</th><th class="r">Points</th><th class="r">R</th><th class="r">Net</th><th>Why</th><th>Condition</th></tr></thead><tbody>
@@ -1530,18 +1530,19 @@ async function vStrategy(id) {
   if ($('#opt-out')) optLoad(id);
 }
 /* 0DTE options: the study trades on same-day calls / puts, by delta at the entry (backend opt0dte.py). */
-S.opt = { slip: 0.02, comm: 0.65, budget: 1000 };
+S.opt = { slip: 0.02, comm: 0.65, budget: 1000, dte: 0 };
 async function optLoad(id) {
   const out = $('#opt-out'); if (!out) return;
   let d;
-  try { d = await api(`/strategies/${id}/options?slip=${S.opt.slip}&comm=${S.opt.comm}&budget=${S.opt.budget}`); }
+  try { d = await api(`/strategies/${id}/options?slip=${S.opt.slip}&comm=${S.opt.comm}&budget=${S.opt.budget}&dte=${S.opt.dte}`); }
   catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; return; }
   const c = d.coverage, j = d.job || {}, run = j.status === 'running';
   const best = (d.rows || []).filter(r => r.n).sort((a, b) => b.pnlB - a.pnlB)[0];
   out.innerHTML = `<div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:10px">
-      <span class="note" style="margin:0">Option prices for <b>${c.have}</b> of ${c.need} trading days${c.from ? ` (${esc(c.from)} → ${esc(c.to)})` : ''}. ${run ? esc(j.msg || 'Downloading…') : j.status === 'error' ? `<span class="loss">${esc(j.msg || '')}</span>` : ''}</span>
+      <span class="note" style="margin:0">${S.opt.dte ? S.opt.dte + ' days out (expiry ' + S.opt.dte + ' trading days after the trade)' : 'Same-day expiry'}: option prices for <b>${c.have}</b> of ${c.need} trading days${c.from ? ` (${esc(c.from)} → ${esc(c.to)})` : ''}. ${run ? esc(j.msg || 'Downloading…') : j.status === 'error' ? `<span class="loss">${esc(j.msg || '')}</span>` : ''}</span>
       <button class="btn sm ${c.have < c.need ? 'primary' : ''}" data-act="opt-dl" ${run ? 'disabled' : ''}>${c.have < c.need ? 'Download option prices' : 'Up to date'}</button>
       <div class="grow"></div>
+      <label class="f">Expiry<select id="opt-dte">${[[0, 'Same day (0DTE)'], [1, '1 day out'], [2, '2 days out'], [3, '3 days out'], [5, '5 days out'], [7, '7 days out'], [10, '10 days out']].map(([v, t]) => `<option value="${v}" ${v === S.opt.dte ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       <label class="f">Slippage per side ($)<input id="opt-slip" type="number" step="0.01" value="${S.opt.slip}" style="width:80px"></label>
       <label class="f">Commission / contract / side<input id="opt-comm" type="number" step="0.05" value="${S.opt.comm}" style="width:80px"></label>
       <label class="f">Premium per trade ($)<input id="opt-budget" type="number" step="100" value="${S.opt.budget}" style="width:100px"></label>
@@ -1843,8 +1844,8 @@ document.addEventListener('click', async e => {
         $('#fx-tog').innerHTML = fxTogBar(); fxAt(); break; }
       case 'fold': { const p = el.closest('.panel'), key = 'fold:' + el.dataset.k, open = p.dataset.folded === '1';
         fxFold(p, !open); try { localStorage.setItem(key, open ? '0' : '1'); } catch (e) { /* private mode */ } break; }
-      case 'opt-dl': try { await api(`/strategies/${S.cur.id}/options`, { method: 'POST', body: {} }); } catch (e) { toast(e.message); } optLoad(S.cur.id); break;
-      case 'opt-calc': S.opt = { slip: +$('#opt-slip').value || 0, comm: +$('#opt-comm').value || 0, budget: +$('#opt-budget').value || 1000 }; optLoad(S.cur.id); break;
+      case 'opt-dl': try { await api(`/strategies/${S.cur.id}/options`, { method: 'POST', body: { dte: S.opt.dte } }); } catch (e) { toast(e.message); } optLoad(S.cur.id); break;
+      case 'opt-calc': S.opt = { slip: +$('#opt-slip').value || 0, comm: +$('#opt-comm').value || 0, budget: +$('#opt-budget').value || 1000, dte: +$('#opt-dte').value || 0 }; optLoad(S.cur.id); break;
       case 'vp-load': S.vp = { ...S.vp, fwd: +$('#vp-fwd').value || 1, match: $('#vp-match').value, wave: +$('#vp-wave').value || 1, days: +$('#vp-days').value || 200 }; $('#vp-out').innerHTML = '<div class="empty muted">Calculating…</div>'; await vpLoad(); break;
       case 'vp-step': { const r = S.vpR; if (!r) break; const dd = +el.dataset.d, i = dd === 9999 ? r.dates.length - 1 : Math.max(2, Math.min(r.dates.length - 1, r.index + dd)); S.vp.asof = i === r.dates.length - 1 ? '' : r.dates[i]; await vpLoad(); break; }
       case 'oa-load': await oaLoad($('#oa-exp').value); break;

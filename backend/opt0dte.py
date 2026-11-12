@@ -25,36 +25,51 @@ def _key(etf, day, side):
     return f"opt0dte/{etf}/{day}-{side}"
 
 
-def _pack_key(etf):
-    return f"opt0dte/{etf}/pack"
+DTES = (0, 1, 2, 3, 5, 7, 10)                      # trading days to expiry (0 = the same day)
+
+
+def _pack_key(etf, dte=0):
+    return f"opt0dte/{etf}/pack" if not dte else f"opt0dte/{etf}/pack-{dte}"
+
+
+def expiry(day, dte):
+    """`dte` weekdays after `day` (0 = the same day). A holiday on that day: the job tries the next weekday."""
+    from datetime import date, timedelta
+    d = date.fromisoformat(day)
+    n = 0
+    while n < dte:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            n += 1
+    return d.isoformat()
 
 
 _PACK = {}
 
 
-def pack(etf):
-    """{"day-side": data} of every downloaded day (one stored file, rewritten by the download job)."""
+def pack(etf, dte=0):
+    """{"day-side": data} of every downloaded day for that expiry (one stored file, rewritten by the download job)."""
     import time
-    hit = _PACK.get(etf)
+    hit = _PACK.get((etf, dte))
     if hit and time.time() - hit[0] < 60:
         return hit[1]
-    pk = store.get_json(_pack_key(etf), {}) or {}
-    _PACK[etf] = (time.time(), pk)
+    pk = store.get_json(_pack_key(etf, dte), {}) or {}
+    _PACK[(etf, dte)] = (time.time(), pk)
     return pk
 
 
-def _save_pack(etf, pk):
+def _save_pack(etf, pk, dte=0):
     import time
-    store.put_json(_pack_key(etf), pk)
-    _PACK[etf] = (time.time(), pk)
+    store.put_json(_pack_key(etf, dte), pk)
+    _PACK[(etf, dte)] = (time.time(), pk)
 
 
-def _have(etf, day, side):
-    return f"{day}-{side}" in pack(etf)
+def _have(etf, day, side, dte=0):
+    return f"{day}-{side}" in pack(etf, dte)
 
 
-def occ(etf, day, side, strike):
-    return f"{etf}{day[2:4]}{day[5:7]}{day[8:10]}{side}{int(round(strike * 1000)):08d}"
+def occ(etf, exp, side, strike):
+    return f"{etf}{exp[2:4]}{exp[5:7]}{exp[8:10]}{side}{int(round(strike * 1000)):08d}"
 
 
 # ---------------------------------------------------------------- Black-Scholes (no rates, no dividends)
@@ -129,31 +144,44 @@ def etf_price(etf, day, hm):
     return bars[-1][4] if bars else None
 
 
-def fetch_day(sub, etf, day, side, width=0.012):
-    """The minute prices of `day`'s 0DTE contracts on `side`, strikes within `width` of the open (returned; the job
-    stores them in the pack)."""
+def fetch_day(sub, etf, day, side, dte=0):
+    """`day`'s minute prices of the contracts expiring `dte` weekdays later on `side`, strikes around the open: ±1.2% in
+    $1 steps for 0DTE; for later expiries ±1.5% in $1 steps, then $2 steps out to ±(1.5% + 1% per day to expiry, up to
+    5%) (deltas 0.1-0.9 sit further out when there's more time). Returned; the job stores them in the pack."""
     import uwhales
     px = etf_price(etf, day, "09:30")
     if not px:
         return {"none": "no ETF price"}
     tok = uwhales.token(sub)
-    lo, hi = math.floor(px * (1 - width)), math.ceil(px * (1 + width))
-    out = {"open": px, "strikes": {}}
-    for k in range(lo, hi + 1):
-        try:
-            r = uwhales._get_retry(tok, f"option-contract/{occ(etf, day, side, k)}/intraday", {"date": day})
-        except Exception as e:                              # not listed (no such strike / no 0DTE that day)
-            print("opt0dte", etf, day, side, k, e)
-            continue
-        rows = []
-        for m in r.get("data") or []:
-            t = utc_to_ny(datetime.strptime(str(m["start_time"])[:19], "%Y-%m-%dT%H:%M:%S")).strftime("%H:%M")
-            o, c = uwhales._num(m.get("open")), uwhales._num(m.get("close"))
-            if c:
-                rows.append([t, o or c, c])
-        sl = _slots(rows)
-        if sl:
-            out["strikes"][str(k)] = sl
+    if not dte:
+        ks = list(range(math.floor(px * 0.988), math.ceil(px * 1.012) + 1))
+    else:
+        near, far = 0.015, min(0.05, 0.015 + 0.01 * dte)
+        ks = sorted(set(range(math.floor(px * (1 - near)), math.ceil(px * (1 + near)) + 1))
+                    | set(range(2 * math.floor(px * (1 - far) / 2), math.ceil(px * (1 + far)) + 1, 2)))
+    for exp in (expiry(day, dte), expiry(day, dte + 1)) if dte else (day,):   # a holiday on the expiry: the next weekday
+        out = {"open": px, "exp": exp, "strikes": {}}
+        miss = 0
+        for k in ks:
+            try:
+                r = uwhales._get_retry(tok, f"option-contract/{occ(etf, exp, side, k)}/intraday", {"date": day})
+            except Exception as e:                          # not listed (no such strike / no expiry that day)
+                print("opt0dte", etf, day, exp, side, k, e)
+                miss += 1
+                if miss >= 4 and not out["strikes"]:       # 4 misses in a row and nothing yet: no contracts for this expiry
+                    break
+                continue
+            rows = []
+            for m in r.get("data") or []:
+                t = utc_to_ny(datetime.strptime(str(m["start_time"])[:19], "%Y-%m-%dT%H:%M:%S")).strftime("%H:%M")
+                o, c = uwhales._num(m.get("open")), uwhales._num(m.get("close"))
+                if c:
+                    rows.append([t, o or c, c])
+            sl = _slots(rows)
+            if sl:
+                out["strikes"][str(k)] = sl
+        if out["strikes"]:
+            return out
     return out
 
 
@@ -170,20 +198,20 @@ def _slots(rows):
     return {"o": o, "c": c} if any(x is not None for x in c) else None
 
 
-def coverage(trades):
+def coverage(trades, dte=0):
     need = trade_days(trades)
-    have = sum(1 for e, d, s in need if _have(e, d, s))
+    have = sum(1 for e, d, s in need if _have(e, d, s, dte))
     return {"need": len(need), "have": have, "from": need[0][1] if need else None, "to": need[-1][1] if need else None}
 
 
-def job(sub, trades, prog, dl, invoke, event):
+def job(sub, trades, prog, dl, invoke, event, dte=0):
     """Download the missing days (resumes in a new run when the time runs out)."""
     import time
     import stockdata
     need = trade_days(trades)
     for e in sorted({x[0] for x in need}):
         stockdata.ensure(sub, e, 520)
-    packs = {e: dict(pack(e)) for e in {x[0] for x in need}}
+    packs = {e: dict(pack(e, dte)) for e in {x[0] for x in need}}
     todo = [x for x in need if f"{x[1]}-{x[2]}" not in packs[x[0]]]
     dirty = set()
     try:
@@ -191,23 +219,23 @@ def job(sub, trades, prog, dl, invoke, event):
             if time.time() > dl - 120:
                 invoke(event)
                 return False
-            prog(f"0DTE options: {e} {d} {'calls' if s == 'C' else 'puts'} ({len(need) - len(todo) + i + 1}/{len(need)})")
+            prog(f"{dte}DTE options: {e} {d} {'calls' if s == 'C' else 'puts'} ({len(need) - len(todo) + i + 1}/{len(need)})")
             try:
-                old = store.get_json(_key(e, d, s))           # a day stored on its own by build 86 (minute lists)
+                old = store.get_json(_key(e, d, s)) if not dte else None   # a day stored on its own by build 86 (minute lists)
                 if old is not None and isinstance(old.get("strikes"), dict):
                     old["strikes"] = {k: v for k, v in ((k, _slots(v) if isinstance(v, list) else v) for k, v in old["strikes"].items()) if v}
-                packs[e][f"{d}-{s}"] = old if old is not None else fetch_day(sub, e, d, s)
+                packs[e][f"{d}-{s}"] = old if old is not None else fetch_day(sub, e, d, s, dte)
             except Exception as ex:                    # one bad day doesn't stop the download
                 print("opt0dte day failed", e, d, s, ex)
                 packs[e][f"{d}-{s}"] = {"none": str(ex)[:120]}
             dirty.add(e)
             if (i + 1) % 20 == 0:                       # save as it goes (a crash keeps what's done)
                 for x in dirty:
-                    _save_pack(x, packs[x])
+                    _save_pack(x, packs[x], dte)
                 dirty = set()
     finally:
         for x in dirty:
-            _save_pack(x, packs[x])
+            _save_pack(x, packs[x], dte)
     return True
 
 
@@ -217,7 +245,7 @@ def _mins(hm):
     return int(hm[:2]) * 60 + int(hm[3:5])
 
 
-def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5):
+def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5, dte=0):
     import nightkit as N
     rows = {d: [] for d in deltas}
     skipped = 0
@@ -227,7 +255,7 @@ def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5):
         e = ETF.get(t["s"])
         side = "C" if t["side"] == "long" else "P"
         day = t["in"][:10]
-        data = pack(e).get(f"{day}-{side}") if e else None
+        data = pack(e, dte).get(f"{day}-{side}") if e else None
         if not data or not data.get("strikes"):
             skipped += 1
             continue
@@ -248,7 +276,9 @@ def _one(t, e, day, side, data, tf, deltas, slip, comm, budget, N):
     hin = max(t["in"][11:16], "09:30")
     hout = N.K.end_of(t["out"], tf)[11:16] if len(t["out"]) >= 16 else t["out"][11:16]
     S = etf_price(e, day, hin) or data["open"]
-    T = max(1, (16 * 60) - (int(hin[:2]) * 60 + int(hin[3:5]))) / YEAR_MIN
+    from datetime import date
+    days_left = (date.fromisoformat(data.get("exp") or day) - date.fromisoformat(day)).days    # calendar days to expiry
+    T = max(1, (16 * 60) - (int(hin[:2]) * 60 + int(hin[3:5])) + days_left * 1440) / YEAR_MIN
     cands = []
     i_in, i_out = (_mins(hin) - 570) // 5, (_mins(hout) - 570) // 5
     if not (0 <= i_in < 78):
