@@ -501,8 +501,13 @@ def strategy_options(sub, claims, body, q, sid):
     import opt0dte
     ts = strategy.trades(sub, sid, "study")
     f = lambda k, d, lo, hi: min(hi, max(lo, float(q.get(k) or d)))
-    cov = opt0dte.coverage(ts)
-    r = opt0dte.replay(ts, f("slip", 0.02, 0, 1), f("comm", 0.65, 0, 5), f("budget", 1000, 50, 1e6)) if cov["have"] else {"rows": []}
+    try:
+        cov = opt0dte.coverage(ts)
+        r = opt0dte.replay(ts, f("slip", 0.02, 0, 1), f("comm", 0.65, 0, 5), f("budget", 1000, 50, 1e6)) if cov["have"] else {"rows": []}
+    except Exception as e:                              # show what went wrong instead of a bare 500
+        import traceback
+        traceback.print_exc()
+        raise BadRequest(f"Options replay failed: {type(e).__name__}: {e}")
     return {**r, "coverage": cov, "job": jobs.status(sub, f"opt0dte-{sid}")}
 
 

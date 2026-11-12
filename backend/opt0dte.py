@@ -25,6 +25,34 @@ def _key(etf, day, side):
     return f"opt0dte/{etf}/{day}-{side}"
 
 
+def _pack_key(etf):
+    return f"opt0dte/{etf}/pack"
+
+
+_PACK = {}
+
+
+def pack(etf):
+    """{"day-side": data} of every downloaded day (one stored file, rewritten by the download job)."""
+    import time
+    hit = _PACK.get(etf)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    pk = store.get_json(_pack_key(etf), {}) or {}
+    _PACK[etf] = (time.time(), pk)
+    return pk
+
+
+def _save_pack(etf, pk):
+    import time
+    store.put_json(_pack_key(etf), pk)
+    _PACK[etf] = (time.time(), pk)
+
+
+def _have(etf, day, side):
+    return f"{day}-{side}" in pack(etf)
+
+
 def occ(etf, day, side, strike):
     return f"{etf}{day[2:4]}{day[5:7]}{day[8:10]}{side}{int(round(strike * 1000)):08d}"
 
@@ -76,25 +104,38 @@ def trade_days(trades):
     return sorted(out, key=lambda x: (x[1], x[0], x[2]))
 
 
+_ED = {}
+
+
+def _etf_days(etf):
+    import stockdata
+    b = stockdata.bars(etf)
+    hit = _ED.get(etf)
+    if hit and hit[0] == (len(b), b[-1][0] if b else None):
+        return hit[1]
+    by = {}
+    for x in b:
+        by.setdefault(x[0][:10], []).append(x)
+    _ED[etf] = ((len(b), b[-1][0] if b else None), by)
+    return by
+
+
 def etf_price(etf, day, hm):
     """The ETF's price at hh:mm: the open of the 5-minute bar starting then (else the last close before)."""
-    import stockdata
-    bars = [b for b in stockdata.bars(etf) if b[0][:10] == day]
+    bars = _etf_days(etf).get(day) or []
     for b in bars:
         if b[0][11:16] >= hm:
             return b[1] if b[0][11:16] == hm else b[4]
     return bars[-1][4] if bars else None
 
 
-def fetch_day(sub, etf, day, side, width=0.02):
-    """The minute prices of `day`'s 0DTE contracts on `side`, strikes within `width` of the open (stored)."""
+def fetch_day(sub, etf, day, side, width=0.012):
+    """The minute prices of `day`'s 0DTE contracts on `side`, strikes within `width` of the open (returned; the job
+    stores them in the pack)."""
     import uwhales
-    if store.get_json(_key(etf, day, side)) is not None:
-        return False
     px = etf_price(etf, day, "09:30")
     if not px:
-        store.put_json(_key(etf, day, side), {"none": "no ETF price"})
-        return True
+        return {"none": "no ETF price"}
     tok = uwhales.token(sub)
     lo, hi = math.floor(px * (1 - width)), math.ceil(px * (1 + width))
     out = {"open": px, "strikes": {}}
@@ -110,15 +151,28 @@ def fetch_day(sub, etf, day, side, width=0.02):
             o, c = uwhales._num(m.get("open")), uwhales._num(m.get("close"))
             if c:
                 rows.append([t, o or c, c])
-        if rows:
-            out["strikes"][str(k)] = sorted(rows)
-    store.put_json(_key(etf, day, side), out)
-    return True
+        sl = _slots(rows)
+        if sl:
+            out["strikes"][str(k)] = sl
+    return out
+
+
+def _slots(rows):
+    """Minute rows [[hh:mm, open, close]] -> {"o": [first open in each 5-minute slot], "c": [last close in each]} for
+    the 78 slots 09:30-15:55 (None where it didn't trade): small enough to keep 2 years in one file."""
+    o, c = [None] * 78, [None] * 78
+    for t, op, cl in sorted(rows):
+        i = (_mins(t) - 570) // 5
+        if 0 <= i < 78:
+            if o[i] is None:
+                o[i] = round(op, 2)
+            c[i] = round(cl, 2)
+    return {"o": o, "c": c} if any(x is not None for x in c) else None
 
 
 def coverage(trades):
     need = trade_days(trades)
-    have = sum(1 for e, d, s in need if store.get_json(_key(e, d, s)) is not None)
+    have = sum(1 for e, d, s in need if _have(e, d, s))
     return {"need": len(need), "have": have, "from": need[0][1] if need else None, "to": need[-1][1] if need else None}
 
 
@@ -129,13 +183,31 @@ def job(sub, trades, prog, dl, invoke, event):
     need = trade_days(trades)
     for e in sorted({x[0] for x in need}):
         stockdata.ensure(sub, e, 520)
-    todo = [x for x in need if store.get_json(_key(*x)) is None]
-    for i, (e, d, s) in enumerate(todo):
-        if time.time() > dl - 120:
-            invoke(event)
-            return False
-        prog(f"0DTE options: {e} {d} {'calls' if s == 'C' else 'puts'} ({len(need) - len(todo) + i + 1}/{len(need)})")
-        fetch_day(sub, e, d, s)
+    packs = {e: dict(pack(e)) for e in {x[0] for x in need}}
+    todo = [x for x in need if f"{x[1]}-{x[2]}" not in packs[x[0]]]
+    dirty = set()
+    try:
+        for i, (e, d, s) in enumerate(todo):
+            if time.time() > dl - 120:
+                invoke(event)
+                return False
+            prog(f"0DTE options: {e} {d} {'calls' if s == 'C' else 'puts'} ({len(need) - len(todo) + i + 1}/{len(need)})")
+            try:
+                old = store.get_json(_key(e, d, s))           # a day stored on its own by build 86 (minute lists)
+                if old is not None and isinstance(old.get("strikes"), dict):
+                    old["strikes"] = {k: v for k, v in ((k, _slots(v) if isinstance(v, list) else v) for k, v in old["strikes"].items()) if v}
+                packs[e][f"{d}-{s}"] = old if old is not None else fetch_day(sub, e, d, s)
+            except Exception as ex:                    # one bad day doesn't stop the download
+                print("opt0dte day failed", e, d, s, ex)
+                packs[e][f"{d}-{s}"] = {"none": str(ex)[:120]}
+            dirty.add(e)
+            if (i + 1) % 20 == 0:                       # save as it goes (a crash keeps what's done)
+                for x in dirty:
+                    _save_pack(x, packs[x])
+                dirty = set()
+    finally:
+        for x in dirty:
+            _save_pack(x, packs[x])
     return True
 
 
@@ -143,22 +215,6 @@ def job(sub, trades, prog, dl, invoke, event):
 
 def _mins(hm):
     return int(hm[:2]) * 60 + int(hm[3:5])
-
-
-def _at_or_after(rows, hm):
-    for r in rows:
-        if r[0] >= hm:
-            return r
-    return None
-
-
-def _last_before(rows, hm):
-    out = None
-    for r in rows:
-        if r[0] > hm:
-            break
-        out = r
-    return out
 
 
 def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5):
@@ -171,36 +227,56 @@ def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5):
         e = ETF.get(t["s"])
         side = "C" if t["side"] == "long" else "P"
         day = t["in"][:10]
-        data = store.get_json(_key(e, day, side)) if e else None
+        data = pack(e).get(f"{day}-{side}") if e else None
         if not data or not data.get("strikes"):
             skipped += 1
             continue
-        hin = max(t["in"][11:16], "09:30")
-        hout = N.K.end_of(t["out"], tf)[11:16] if len(t["out"]) >= 16 else t["out"][11:16]
-        S = etf_price(e, day, hin) or data["open"]
-        T = max(1, (16 * 60) - (int(hin[:2]) * 60 + int(hin[3:5]))) / YEAR_MIN
-        cands = []
-        for k, mins in data["strikes"].items():
-            a = _at_or_after(mins, hin)
-            b = _last_before(mins, hout)
-            if not a or not b or b[0] < a[0] or _mins(a[0]) > _mins(hin) + 5:     # no trade within 5 minutes of the entry
-                continue
-            ent = a[1]
-            if ent < 0.05:
-                continue
-            cands.append((delta(S, float(k), T, ent, side == "C"), float(k), ent, b[2]))
-        if not cands:
+        try:
+            got = _one(t, e, day, side, data, tf, deltas, slip, comm, budget, N)
+        except Exception as ex:                        # a malformed day: skip it, count it
+            print("opt0dte replay", day, ex)
+            got = None
+        if not got:
             skipped += 1
             continue
-        for dt_ in deltas:
-            dl_, k, ent, ex = min(cands, key=lambda c: abs(c[0] - dt_))
-            if abs(dl_ - dt_) > 0.12:                     # nothing close enough to this delta that day
-                continue
-            buy, sell = ent + slip, max(0.0, ex - slip)
-            per = (sell - buy) * 100 - 2 * comm
-            n = max(1, int(budget // (buy * 100)))
-            rows[dt_].append({"d": day, "side": t["side"], "k": k, "delta": dl_, "in": buy, "out": sell, "pct": (sell - buy) / buy * 100,
-                              "pnl1": per, "pnlB": per * n, "n": n, "under": t.get("r")})
+        for dt_, row in got:
+            rows[dt_].append(row)
+    return _summary(rows, deltas, skipped, slip, comm, budget)
+
+
+def _one(t, e, day, side, data, tf, deltas, slip, comm, budget, N):
+    hin = max(t["in"][11:16], "09:30")
+    hout = N.K.end_of(t["out"], tf)[11:16] if len(t["out"]) >= 16 else t["out"][11:16]
+    S = etf_price(e, day, hin) or data["open"]
+    T = max(1, (16 * 60) - (int(hin[:2]) * 60 + int(hin[3:5]))) / YEAR_MIN
+    cands = []
+    i_in, i_out = (_mins(hin) - 570) // 5, (_mins(hout) - 570) // 5
+    if not (0 <= i_in < 78):
+        return None
+    for k, sl in data["strikes"].items():
+        o, c = sl["o"], sl["c"]
+        # entry: at 09:30 the first trade of that slot; later, the last price of the slot before (known then)
+        ent = o[i_in] if i_in == 0 or c[i_in - 1] is None else c[i_in - 1]
+        ex = next((c[j] for j in range(min(77, max(i_out, i_in)), i_in - 1, -1) if c[j] is not None), None)
+        if ent is None or ex is None or ent < 0.05:
+            continue
+        cands.append((delta(S, float(k), T, ent, side == "C"), float(k), ent, ex))
+    if not cands:
+        return None
+    got = []
+    for dt_ in deltas:
+        dl_, k, ent, ex = min(cands, key=lambda c: abs(c[0] - dt_))
+        if abs(dl_ - dt_) > 0.12:                     # nothing close enough to this delta that day
+            continue
+        buy, sell = ent + slip, max(0.0, ex - slip)
+        per = (sell - buy) * 100 - 2 * comm
+        n = max(1, int(budget // (buy * 100)))
+        got.append((dt_, {"d": day, "side": t["side"], "k": k, "delta": dl_, "in": buy, "out": sell, "pct": (sell - buy) / buy * 100,
+                          "pnl1": per, "pnlB": per * n, "n": n, "under": t.get("r")}))
+    return got
+
+
+def _summary(rows, deltas, skipped, slip, comm, budget):
     res = []
     for dt_ in deltas:
         r = rows[dt_]
