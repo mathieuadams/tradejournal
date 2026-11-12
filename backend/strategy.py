@@ -631,6 +631,7 @@ def running(sub):
     """The home page: the markets, the strategies trading (paper), today's fills and the risk used."""
     mk = [futdata.latest(t) for t in futdata.SYMS]
     rows, fills, today_net, limit, open_n = [], [], 0.0, 0.0, 0
+    alp_legs = []
     days = [m["session"] for m in mk if m.get("session")]
     today = max(days) if days else now_ny().strftime("%Y-%m-%d")
     for s in _all(sub):
@@ -652,10 +653,47 @@ def running(sub):
         rows.append({"id": s["id"], "name": s["name"], "meta": f"{', '.join(s['params']['tickers'])} · {_tf(s)} · {s.get('contracts', 1)} contract{'s' if s.get('contracts', 1) > 1 else ''}",
                      "mode": "Paper", "on": bool(pp.get("on")), "kill": pp.get("kill"), "today": round(net, 2), "tradesToday": len(td),
                      "n": pp.get("n", 0), "net": pp.get("net", 0), "z": pp.get("z"), "avgR": pp.get("avgR"),
-                     "pos": [{"s": t["s"], "side": t["side"], "e": t["e"]} for t in op]})
+                     "pos": [{"s": t["s"], "side": t["side"], "e": t["e"]} for t in op], "alp": _alp_today(sub, s, today, fills, alp_legs)})
     fills.sort(key=lambda f: f["t"])
-    return {"markets": mk, "strategies": rows, "fills": fills, "today": today,
+    return {"markets": mk, "strategies": rows, "fills": fills, "today": today, "alpLegs": alp_legs,
             "risk": {"net": round(today_net, 2), "limit": limit, "open": open_n}, "coverage": futdata.coverage()}
+
+
+def _alp_today(sub, s, today, fills, out):
+    """Alpaca paper options for one strategy: on / off, legs open now, today's P/L; today's legs go to `out` and fills."""
+    cfg = s.get("alpOpt") or {}
+    st = store.get_json(f"strat/{sub}/{s['id']}/alpopt", {}) or {}
+    legs = [l for ls in (st.get("legs") or {}).values() for l in ls]
+    td = [l for l in legs if l.get("trade", "").split("|")[1:2] == [today]]
+    opn = [l for l in legs if (l.get("buy") or {}).get("status") == "filled" and not l.get("sell")]
+    for l in td:
+        b, x = l.get("buy") or {}, l.get("sell") or {}
+        nm = f"{s['name']} · {l['sym']} ({l['target']}Δ)"
+        if b.get("px") is not None:
+            fills.append({"t": _hm(b.get("at")), "side": "BUY", "what": nm, "px": b["px"]})
+        if x.get("px") is not None:
+            fills.append({"t": _hm(x.get("at")), "side": "SELL", "what": f"{nm} · {x.get('why', '')}", "px": x["px"]})
+        out.append({"strategy": s["name"], "id": s["id"], **{k: l.get(k) for k in ("sym", "target", "delta", "pnl", "qty")},
+                    "buy": b.get("px"), "sell": x.get("px"), "status": "open" if l in opn else (x.get("why") or b.get("status") or ""),
+                    "err": b.get("err") or x.get("err")})
+    if not cfg.get("on") and not td and not opn:
+        return None
+    return {"on": bool(cfg.get("on")), "open": len(opn), "today": round(sum(l.get("pnl") or 0 for l in td), 2), "legs": len(td),
+            "err": (s.get("paper") or {}).get("alpErr"), "at": st.get("at")}
+
+
+def _hm(ts):
+    """'HH:MM' New York time from an ISO time (Alpaca fills are UTC 'Z')."""
+    if not ts:
+        return ""
+    if ts.endswith("Z"):
+        try:
+            from datetime import datetime as _d
+            from util import utc_to_ny
+            return utc_to_ny(_d.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")).strftime("%H:%M")
+        except Exception:
+            return ts[11:16]
+    return ts[11:16]
 
 
 def _tf(s):

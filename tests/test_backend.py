@@ -321,6 +321,24 @@ def test_06b7_alpaca_options_paper():
         assert all(l["sell"]["why"] == "15:50 flat" for l in out["legs"][alpopt._key(sh)])
         alpopt.now_ny = lambda: _dt(2026, 11, 12, 15, 40)
         assert call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [2]})[0] == 400
+        import db as _db
+        s2 = strategy.get(SUB, s["id"])
+        s2["paper"] = {"on": True, "since": "2026-11-12", "n": 0, "net": 0}
+        _db.put(s2)
+        old_today = strategy.now_ny
+        strategy.now_ny = lambda: _dt(2026, 11, 12, 15, 40)
+        try:
+            r = strategy.running(SUB)
+        finally:
+            strategy.now_ny = old_today
+        row = next(x for x in r["strategies"] if x["id"] == s["id"])
+        if r["today"] == "2026-11-12":
+            assert row["alp"]["on"] and row["alp"]["legs"] == 6 and len([l for l in r["alpLegs"] if l["id"] == s["id"]]) == 6, row
+            assert any("QQQ" in f["what"] for f in r["fills"])
+        else:
+            assert row["alp"]["on"]
+        s2["paper"] = {"on": False}
+        _db.put(s2)
         st, r = call("POST", f"/strategies/{s['id']}/alpopt", {"on": False})
         assert st == 200 and not r["cfg"]["on"]
     finally:

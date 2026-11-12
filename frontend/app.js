@@ -483,10 +483,15 @@ async function vRunning() {
         ${rows.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:820px"><thead><tr><th>Strategy</th><th>Mode</th><th>Position</th><th class="r">Today</th><th class="r">Trades</th><th class="r">Net since start</th><th>Paper vs test</th><th>Status</th></tr></thead><tbody>
           ${rows.map(s => `<tr><td><a class="name" href="#strategy/${s.id}">${esc(s.name)}</a><div class="sub">${esc(s.meta)}</div></td>
             <td><span class="stage st-paper">${s.mode}</span></td>
-            <td class="mono">${s.pos.length ? s.pos.map(p => `${p.side === 'long' ? 'Long' : 'Short'} ${p.s} @ ${fmt(p.e)}`).join('<br>') : 'Flat'}</td>
+            <td class="mono">${s.pos.length ? s.pos.map(p => `${p.side === 'long' ? 'Long' : 'Short'} ${p.s} @ ${fmt(p.e)}`).join('<br>') : 'Flat'}${s.alp ? `<div class="sub" style="color:${s.alp.err ? 'var(--sellT)' : s.alp.open ? 'var(--buyT)' : 'var(--muted)'}">Alpaca options ${s.alp.on ? 'ON' : 'OFF'} · ${s.alp.open ? s.alp.open + ' open' : 'flat'}${s.alp.legs ? ` · today <span class="${cls(s.alp.today)}">${money(s.alp.today)}</span>` : ''}${s.alp.err ? ' · error' : ''}</div>` : ''}</td>
             <td class="r ${cls(s.today)}">${money(s.today)}</td><td class="r">${s.tradesToday} / ${s.n}</td><td class="r ${cls(s.net)}">${money(s.net)}</td>
             <td>${zbar(s.z)}</td><td style="color:${s.kill ? 'var(--sellT)' : 'var(--muted)'}">${s.kill ? 'Stopped: ' + esc(s.kill) : s.on ? 'Running' : 'Stopped'}</td></tr>`).join('')}
-        </tbody></table></div>` : `<div class="empty">Nothing is paper trading yet. Validate a strategy in <a href="#research">Research</a>, then start paper trading from its page.</div>`}
+        </tbody></table></div>
+        ${rows.some(s => s.alp) ? `<h3 style="margin:16px 0 6px;font-size:15px">Alpaca options (paper account) · today</h3>
+          ${rows.filter(s => s.alp && s.alp.err).map(s => `<div class="job error" style="margin-bottom:6px">${esc(s.name)}: ${esc(s.alp.err)}</div>`).join('')}
+          ${(r.alpLegs || []).length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Strategy</th><th>Contract</th><th class="r">Delta</th><th class="r">Buy</th><th class="r">Sell</th><th>Status</th><th class="r">P/L</th></tr></thead><tbody>
+            ${r.alpLegs.map(l => `<tr><td><a href="#strategy/${l.id}">${esc(l.strategy)}</a></td><td class="mono">${esc(l.sym)}</td><td class="r mono">${l.delta != null ? l.delta.toFixed(2) : '—'} <span class="muted">(${l.target})</span></td><td class="r mono">${l.buy != null ? '$' + l.buy.toFixed(2) : '—'}</td><td class="r mono">${l.sell != null ? '$' + l.sell.toFixed(2) : '—'}</td><td class="${l.status === 'open' ? 'gain' : l.err ? 'loss' : 'muted'}">${esc(l.err || l.status)}</td><td class="r ${cls(l.pnl || 0)}">${l.pnl != null ? money(l.pnl) : '—'}</td></tr>`).join('')}</tbody></table></div>`
+            : `<div class="empty muted">No option orders today. ${rows.filter(s => s.alp && s.alp.on && !s.on).length ? 'Paper trading is stopped on a strategy with Alpaca options on: start it so options can trade.' : 'Waiting for a paper trade to open.'}</div>`}` : ''}` : `<div class="empty">Nothing is paper trading yet. Validate a strategy in <a href="#research">Research</a>, then start paper trading from its page.</div>`}
       </section>
       <aside class="panel col-side" style="display:block"><div class="hd"><h2>Today's fills</h2><div class="grow"></div><a href="#chart" style="font-size:13px">Open chart</a></div>
         ${r.fills.length ? r.fills.map(f => `<div class="fill"><span class="t">${esc(f.t)}</span><span class="s ${f.side === 'BUY' ? 'gain' : 'loss'}">${f.side}</span><span class="w">${esc(f.what)}</span><span class="mono">${fmt(f.px)}</span></div>`).join('') : '<div class="empty">No fills today.</div>'}
@@ -1546,6 +1551,7 @@ async function alpLoad(id) {
       <label class="f">Deltas (comma separated)<input id="alp-d" value="${c.deltas.join(', ')}"></label>
       <label class="f">Contracts per delta<input id="alp-q" type="number" min="1" max="10" value="${c.qty}"></label>
     </div>
+    ${c.on && !pp.on ? '<div class="job error">Alpaca options is ON but paper trading is stopped: nothing will trade. Click Start paper trading above.</div>' : ''}
     ${c.on ? '<button class="btn" data-act="alp-off">Stop Alpaca options (sells open legs)</button>' : `<button class="btn primary" data-act="alp-on">Start Alpaca options</button>${pp.on ? '' : '<div class="note">Runs while paper trading is on.</div>'}`}
     ${d.summary.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Delta</th><th class="r">Legs</th><th class="r">Closed</th><th class="r">Win</th><th class="r">P/L</th></tr></thead><tbody>
       ${d.summary.map(r => `<tr><td>${r.delta.toFixed(2)}</td><td class="r">${r.n}</td><td class="r">${r.done}</td><td class="r">${r.done ? Math.round(100 * r.win / r.done) + '%' : '—'}</td><td class="r ${cls(r.pnl)}"><b>${money(r.pnl)}</b></td></tr>`).join('')}</tbody></table></div>` : ''}
