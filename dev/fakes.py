@@ -260,7 +260,8 @@ def fake_uw_get(token, path, params=None, timeout=60):
         out = []
         base_px = UW_PX.get(osym[:3], 100.0)
         for mm in range(0, 390, 3):
-            t = datetime.strptime(day, "%Y-%m-%d").replace(hour=14, minute=30) + timedelta(minutes=mm)   # 09:30 ET
+            from util import ny_to_utc
+            t = ny_to_utc(datetime.strptime(day, "%Y-%m-%d").replace(hour=9, minute=30)) + timedelta(minutes=mm)   # 09:30 ET (DST-aware)
             under = base_px * (1 + 0.004 * math.sin(mm / 60))
             intr = max(0.0, under - k) if typ == "C" else max(0.0, k - under)
             c = round(intr + 2.0 * math.exp(-((k - under) / (base_px * 0.012)) ** 2) * (1 - mm / 500) + 0.02, 2)

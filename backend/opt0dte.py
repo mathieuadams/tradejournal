@@ -245,7 +245,7 @@ def _mins(hm):
     return int(hm[:2]) * 60 + int(hm[3:5])
 
 
-def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5, dte=0):
+def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5, dte=0, keep=False):
     import nightkit as N
     rows = {d: [] for d in deltas}
     skipped = 0
@@ -269,6 +269,8 @@ def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5, dte
             continue
         for dt_, row in got:
             rows[dt_].append(row)
+    if keep:
+        return rows
     return _summary(rows, deltas, skipped, slip, comm, budget)
 
 
@@ -301,7 +303,7 @@ def _one(t, e, day, side, data, tf, deltas, slip, comm, budget, N):
         buy, sell = ent + slip, max(0.0, ex - slip)
         per = (sell - buy) * 100 - 2 * comm
         n = max(1, int(budget // (buy * 100)))
-        got.append((dt_, {"d": day, "side": t["side"], "k": k, "delta": dl_, "in": buy, "out": sell, "pct": (sell - buy) / buy * 100,
+        got.append((dt_, {"d": day, "side": t["side"], "k": k, "delta": dl_, "in": buy, "out": sell, "raw": (ent, ex), "pct": (sell - buy) / buy * 100,
                           "pnl1": per, "pnlB": per * n, "n": n, "under": t.get("r")}))
     return got
 
@@ -330,3 +332,79 @@ def _summary(rows, deltas, skipped, slip, comm, budget):
 def check(trades):
     if not trade_days(trades):
         raise BadRequest("No same-day regular-hours trades on NQ / ES / QQQ / SPY in this study.")
+
+
+# ---------------------------------------------------------------- futures vs options, at the same risk
+
+def _stats(v):
+    """Per-trade P/L list (same $ risk each) -> n, total, mean, t, median, without the 5 best, max drawdown."""
+    n = len(v)
+    if not n:
+        return {"n": 0}
+    m = sum(v) / n
+    sd = (sum((x - m) ** 2 for x in v) / (n - 1)) ** 0.5 if n > 1 else 0
+    eq = pk = dd = 0.0
+    for x in v:
+        eq += x
+        pk = max(pk, eq)
+        dd = max(dd, pk - eq)
+    return {"n": n, "total": sum(v), "mean": m, "t": m / (sd / n ** 0.5) if sd else 0, "median": sorted(v)[n // 2],
+            "no5": sum(sorted(v)[:-5]) if n > 5 else 0, "dd": dd, "win": sum(1 for x in v if x > 0) / n * 100}
+
+
+def _quarters(days_pnl):
+    q = {}
+    for d, x in days_pnl:
+        k = f"{d[:4]} Q{(int(d[5:7]) - 1) // 3 + 1}"
+        q[k] = q.get(k, 0) + x
+    return q
+
+
+def compare(trades, slip=0.02, comm=0.65, risk=1000.0, train=0.6, tf=5):
+    """One row per version (the futures, then each downloaded expiry at its best train delta), every trade sized to lose
+    `risk` at most: futures at `risk` / the stop's $ risk contracts (fractions allowed), options at `risk` of premium.
+    Each expiry's delta is chosen on the train trades only (the first `train` share, by date), like the validation."""
+    import futdata
+    done = [t for t in trades if t.get("status") != "open" and t.get("out") and t.get("net") is not None]
+    done.sort(key=lambda t: t["in"])
+    if not done:
+        return {"rows": []}
+    cut = done[int(len(done) * train)]["in"][:10]
+    out = []
+    fr, fr2 = [], []                                   # futures: net $ scaled to `risk` on the stop's $ risk
+    for t in done:
+        sp = futdata.SPEC.get(t["s"]) or {"pv": 1}
+        c = t.get("c") or 1
+        rd = (t.get("risk") or 0) * sp["pv"] * c
+        if rd <= 0:
+            continue
+        k = risk / rd
+        fr.append((t["in"][:10], t["net"] * k))
+        fr2.append((t["in"][:10], (t["net"] - (t.get("cost") or 0)) * k))
+    out.append(_row("Futures (" + ", ".join(sorted({t["s"] for t in done})) + ")", None, None, fr, fr2, cut))
+    etfs = {ETF.get(t["s"]) for t in done} - {None}
+    for dte in DTES:                                   # each expiry with downloaded prices, at its best train delta
+        if not any(pack(e, dte) for e in etfs):
+            continue
+        rows = replay(done, slip, comm, risk, DELTAS, tf, dte, keep=True)
+        sized = lambda r, sl, cm: [(x["d"], ((max(0.0, x["raw"][1] - sl) - (x["raw"][0] + sl)) * 100 - 2 * cm) / ((x["raw"][0] + sl) * 100) * risk) for x in r]
+        best, bt = None, None
+        most = max(len([1 for x in rows[dl_] if x["d"] < cut]) for dl_ in DELTAS)
+        for dl_ in DELTAS:
+            tr = [v for d, v in sized(rows[dl_], slip, comm) if d < cut]
+            if tr and len(tr) >= min(20, most) and (bt is None or sum(tr) > bt):
+                best, bt = dl_, sum(tr)
+        if best is None:
+            continue
+        out.append(_row(f"{'Same-day (0DTE)' if not dte else f'{dte} days out'} options", dte, best,
+                        sized(rows[best], slip, comm), sized(rows[best], 2 * slip, 2 * comm), cut))
+    return {"rows": out, "cut": cut, "risk": risk, "slip": slip, "comm": comm}
+
+
+def _row(name, dte, dl_, pnl, pnl2, cut):
+    tr = [x for d, x in pnl if d < cut]
+    te = [x for d, x in pnl if d >= cut]
+    te2 = [x for d, x in pnl2 if d >= cut]
+    q = _quarters(pnl)
+    return {"name": name, "dte": dte, "delta": dl_, "train": _stats(tr), "test": _stats(te), "test2x": sum(te2) if te2 else None,
+            "worstQ": list(min(q.items(), key=lambda kv: kv[1])) if q else None, "posQ": sum(1 for v in q.values() if v > 0), "nQ": len(q)}

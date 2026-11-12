@@ -512,6 +512,19 @@ def strategy_options(sub, claims, body, q, sid):
     return {**r, "dte": dte, "coverage": cov, "job": jobs.status(sub, f"opt0dte-{sid}" + (f"-{dte}" if dte else ""))}
 
 
+@route("GET", "/strategies/(?P<sid>[a-f0-9]{10})/compare")
+def strategy_compare(sub, claims, body, q, sid):
+    """Futures vs each downloaded option expiry: the same trades at the same $ risk, train / test."""
+    import opt0dte
+    f = lambda k, d, lo, hi: min(hi, max(lo, float(q.get(k) or d)))
+    try:
+        return opt0dte.compare(strategy.trades(sub, sid, "study"), f("slip", 0.02, 0, 1), f("comm", 0.65, 0, 5), f("risk", 1000, 50, 1e6))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise BadRequest(f"Compare failed: {type(e).__name__}: {e}")
+
+
 @route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/options")
 def strategy_options_download(sub, claims, body, q, sid):
     import opt0dte

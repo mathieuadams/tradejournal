@@ -293,6 +293,15 @@ def test_06b6_opt0dte():
     assert any(x["n"] for x in r5["rows"]), r5["rows"][:2]
     d0 = opt0dte.pack("QQQ", 5)
     assert d0 and all(v.get("exp", "") > k[:10] for k, v in d0.items() if v.get("strikes"))
+    for dte in (0, 5):                                      # some train-period days too (the delta is picked on them)
+        assert opt0dte.job(SUB, ts[:6], lambda m: None, time.time() + 600, lambda e: None, {}, dte)
+    st, c = call("GET", f"/strategies/{s['id']}/compare", q={"risk": "1000"})
+    assert st == 200 and c["rows"][0]["name"].startswith("Futures") and c["cut"], c
+    names = [x["name"] for x in c["rows"]]
+    assert any("0DTE" in n for n in names) and any("5 days out" in n for n in names), names
+    f0 = c["rows"][0]
+    assert f0["train"]["n"] + f0["test"]["n"] == len([t for t in ts if t.get("net") is not None])
+    assert all(x["test"]["n"] == 0 or x["test2x"] <= x["test"]["total"] + 1e-6 for x in c["rows"])     # 2x costs never helps
     st, j = call("POST", f"/strategies/{s['id']}/options", {"dte": 4})
     assert st == 400
     # Black-Scholes sanity: an at-the-money call is about 0.5, deep in / out near 1 / 0

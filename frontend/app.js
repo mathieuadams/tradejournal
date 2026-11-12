@@ -1552,7 +1552,30 @@ async function optLoad(id) {
         : `<tr class="${best && r.delta === best.delta ? 'sel' : ''}"><td>${r.delta.toFixed(1)}</td><td class="r">${r.n}</td><td class="r mono">${r.avgDelta.toFixed(2)}</td><td class="r mono">$${r.avgPrem.toFixed(2)}</td><td class="r">${r.win.toFixed(0)}%</td><td class="r ${cls(r.avgPct)}">${sgn(r.avgPct, 1, '%')}</td><td class="r ${cls(r.medPct)}">${sgn(r.medPct, 1, '%')}</td><td class="r mono">${sgn(r.best, 0, '%')} / ${sgn(r.worst, 0, '%')}</td><td class="r ${cls(r.pnl1)}">${money(r.pnl1)}</td><td class="r ${cls(r.pnlB)}"><b>${money(r.pnlB)}</b></td><td class="r">${r.pf != null ? r.pf.toFixed(2) : '—'}</td><td class="r loss">${money(-r.dd)}</td></tr>`).join('')}</tbody></table></div>
       <div class="note">Delta at the entry from Black-Scholes with the option's own implied volatility (time left to 16:00). Entry: the option's first minute at the trade's entry (+ slippage); exit: its last price when the underlying trade exits (− slippage). ${d.skipped ? `${d.skipped} trade(s) without option prices.` : ''} The highlighted row made the most at the fixed premium per trade.</div>`
       : `<div class="empty muted">${c.need ? 'Download the option prices to see the results (a few seconds per trading day, from Unusual Whales).' : 'No same-day regular-hours trades in this study.'}</div>`}`;
+  out.insertAdjacentHTML('beforeend', `<div id="cmp-out" style="margin-top:18px"></div>`);
+  cmpLoad(id);
   if (run) setTimeout(() => { if (S.cur && S.cur.id === id && $('#opt-out')) optLoad(id); }, 5000);
+}
+/* Futures vs options at the same $ risk, train / test (backend opt0dte.compare). */
+async function cmpLoad(id) {
+  const out = $('#cmp-out'); if (!out) return;
+  let d;
+  try { d = await api(`/strategies/${id}/compare?slip=${S.opt.slip}&comm=${S.opt.comm}&risk=${S.opt.budget}`); }
+  catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; return; }
+  if (!d.rows || !d.rows.length) { out.innerHTML = ''; return; }
+  const ok = r => r.test.n && r.test.no5 > 0 && r.test2x > 0 && r.test.t > 0;
+  const best = d.rows.filter(ok).sort((a, b) => b.test.t - a.test.t)[0];
+  const m = v => v == null ? '—' : `<span class="${cls(v)}">${money(v)}</span>`;
+  out.innerHTML = `<h3 style="margin:0 0 4px;font-size:15px">Compare: futures vs options, at the same risk</h3>
+    <div class="note" style="margin:0 0 8px">Every trade sized to lose at most $${Number(d.risk).toLocaleString('en-US')}: the futures at that much on the stop (fractions of a contract), the options at that much premium. Each expiry's delta is picked on the <b>train</b> trades only (before ${esc(d.cut)}); the <b>test</b> trades (from ${esc(d.cut)}) were never used to choose. Only the expiries downloaded above appear.</div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Version</th><th class="r">Delta (train pick)</th><th class="r">Train trades</th><th class="r">Train P/L</th><th class="r">Train t</th>
+      <th class="r">Test trades</th><th class="r">Test P/L</th><th class="r">Test t</th><th class="r">Test win</th><th class="r">Test median</th><th class="r">Test without 5 best</th><th class="r">Test at 2× costs</th><th class="r">Test max DD</th><th class="r">Quarters up</th><th class="r">Worst quarter</th></tr></thead><tbody>
+    ${d.rows.map(r => `<tr class="${best && r === best ? 'sel' : ''}"><td>${esc(r.name)}${ok(r) ? '' : ' <span class="muted" title="fails a check: test t, without the 5 best or at 2× costs">·</span>'}</td><td class="r">${r.delta != null ? r.delta.toFixed(1) : '—'}</td>
+      <td class="r">${r.train.n || 0}</td><td class="r">${m(r.train.total)}</td><td class="r mono">${r.train.n ? r.train.t.toFixed(2) : '—'}</td>
+      <td class="r">${r.test.n || 0}</td><td class="r"><b>${m(r.test.total)}</b></td><td class="r mono ${cls(r.test.t || 0)}"><b>${r.test.n ? r.test.t.toFixed(2) : '—'}</b></td><td class="r">${r.test.n ? r.test.win.toFixed(0) + '%' : '—'}</td>
+      <td class="r">${m(r.test.median)}</td><td class="r">${m(r.test.no5)}</td><td class="r">${m(r.test2x)}</td><td class="r loss">${r.test.n ? money(-r.test.dd) : '—'}</td>
+      <td class="r">${r.posQ} / ${r.nQ}</td><td class="r">${r.worstQ ? `${esc(r.worstQ[0])} ${m(r.worstQ[1])}` : '—'}</td></tr>`).join('')}</tbody></table></div>
+    <div class="note">Highlighted: the best test t among the versions still positive without their 5 best test trades and at 2× costs. Test t above about 2 is meaningful; a negative median means most trades lose and a few big ones pay. Costs: options slippage and commission above (doubled for 2×); the futures at the study's costs (doubled for 2×).</div>`;
 }
 function pollSearch(id) {
   clearTimeout(S.srchT);
