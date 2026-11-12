@@ -1,0 +1,276 @@
+/* Earnings page: fundamentals screen (SEC EDGAR), company quarters + release reactions, and the earnings event study.
+   Uses the helpers of app.js ($, api, esc, view, head, toast, S, jobHtml). */
+S.en = { tab: 'screen', sym: '', out: 'r1ab', sort: 'rev3y', dir: -1, f: { cagr: '', ttm: '', qoq: '', accel: '', infl: false, noWeak: false }, rsort: 'date', rdir: -1, rshow: 100 };
+
+const pct = (v, d = 1) => v == null || !Number.isFinite(+v) ? '—' : (v < 0 ? '−' : v > 0 ? '+' : '') + Math.abs(v * 100).toFixed(d) + '%';
+const pp = (v, d = 1) => v == null || !Number.isFinite(+v) ? '—' : (v < 0 ? '−' : v > 0 ? '+' : '') + Math.abs(v * 100).toFixed(d) + ' pp';
+const big = v => { if (v == null) return '—'; const a = Math.abs(v), s = v < 0 ? '−' : ''; return a >= 1e9 ? s + '$' + (a / 1e9).toFixed(2) + 'B' : a >= 1e6 ? s + '$' + (a / 1e6).toFixed(1) + 'M' : s + '$' + Math.round(a).toLocaleString('en-US'); };
+const QCOL = { strong: 'gain', weak: 'loss', ok: '' };
+const tstat = t => t == null ? '—' : `<span class="${Math.abs(t) >= 2 ? (t > 0 ? 'gain' : 'loss') : 'dim'}">${t.toFixed(1)}</span>`;
+
+async function vEarnings() {
+  const E = S.en;
+  const d = await api('/fund');
+  S.enD = d;
+  view(`${head('Earnings', 'Revenue growth, EPS inflection and earnings quality from SEC filings; how releases reprice the stock.')}
+    <div class="seg" style="margin-bottom:12px">${[['screen', 'Screen'], ['company', 'Company'], ['study', 'Event study']].map(([k, l]) => `<button data-entab="${k}" aria-pressed="${E.tab === k}">${l}</button>`).join('')}</div>
+    <div id="en-body"></div><div id="job" style="margin-top:12px">${jobHtml(d.job)}</div>`);
+  if (d.job && d.job.status === 'running') pollJob('/fund', r => r.job, r => { S.enD = r; if (E.tab === 'study' && r.job.job === 'fundstudy') { S.enStudy = null; } enBody(); });
+  return enBody();
+}
+function enBody() {
+  const E = S.en, b = $('#en-body');
+  if (!b) return;
+  if (E.tab === 'screen') b.innerHTML = enScreen();
+  else if (E.tab === 'company') { b.innerHTML = enCompanyShell(); if (E.sym) enCompanyLoad(); }
+  else { b.innerHTML = enStudyShell(); enStudyLoad(); }
+}
+
+/* ---------- Screen ---------- */
+const SCOLS = [['sym', 'Ticker', 0], ['end', 'Last quarter', 0], ['revTTM', 'Revenue TTM', 1], ['rev3y', '3Y CAGR', 1], ['revTTMYoY', 'TTM YoY', 1], ['revYoY', 'Quarter YoY', 1],
+  ['revQoQ', 'QoQ', 1], ['revAccel', 'YoY change', 1], ['trail', 'YoY, 8 quarters', 0], ['epsTTM', 'EPS TTM', 1], ['epsYoY', 'EPS YoY', 1], ['flags', 'Inflection', 0],
+  ['cashConv', 'CFO / NI', 1], ['accruals', 'Accruals', 1], ['quality', 'Quality', 0], ['lastRelease', 'Last release', 0]];
+function enFiltered() {
+  const E = S.en, f = E.f, rows = (S.enD.rows || []).slice();
+  const min = (v, x) => x === '' || x == null || (v != null && v * 100 >= +x);
+  const ok = rows.filter(r => r.missing || r.empty || (min(r.rev3y, f.cagr) && min(r.revTTMYoY, f.ttm) && min(r.revQoQ, f.qoq) && min(r.revAccel, f.accel)
+    && (!f.infl || (r.flags || []).some(x => x.includes('EPS'))) && (!f.noWeak || r.quality !== 'weak')));
+  const k = E.sort;
+  ok.sort((a, b) => { const x = a[k], y = b[k]; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1; return (typeof x === 'string' ? x.localeCompare(y) : x - y) * E.dir; });
+  return ok;
+}
+function trailSpark(xs) {
+  const v = (xs || []).filter(x => x != null); if (v.length < 2) return '';
+  const lo = Math.min(...v, 0), hi = Math.max(...v), W = 80, H = 22, n = xs.length;
+  const pts = xs.map((x, i) => x == null ? null : `${(i / (n - 1) * W).toFixed(1)},${(H - (x - lo) / (hi - lo || 1) * H).toFixed(1)}`).filter(Boolean).join(' ');
+  const z = H - (0 - lo) / (hi - lo || 1) * H;
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block"><line x1="0" x2="${W}" y1="${z}" y2="${z}" stroke="var(--line2)"/><polyline points="${pts}" fill="none" stroke="#4A9EFF" stroke-width="1.5"/></svg>`;
+}
+function enScreen() {
+  const d = S.enD, E = S.en, f = E.f, rows = enFiltered();
+  const cell = (r, k) => {
+    if (k === 'sym') return `<td><a class="name" href="#earnings" data-enco="${esc(r.sym)}">${esc(r.sym)}</a><div class="sub">${esc(r.name || '')}</div></td>`;
+    if (r.missing) return k === 'end' ? `<td class="muted" colspan="${SCOLS.length - 1}">Not loaded yet: <b>Update fundamentals</b>.</td>` : '';
+    if (r.empty) return k === 'end' ? `<td class="muted" colspan="${SCOLS.length - 1}">No quarterly XBRL revenue / EPS found in SEC filings.</td>` : '';
+    const v = r[k];
+    switch (k) {
+      case 'end': return `<td class="mono">${esc(v || '—')}${(r.d || []).length ? ' <span class="dim" title="Derived: ' + esc(r.d.join(', ')) + ' (from year-to-date or full-year figures)">ᵈ</span>' : ''}</td>`;
+      case 'revTTM': return `<td class="r">${big(v)}</td>`;
+      case 'epsTTM': return `<td class="r ${cls(v)}">${v == null ? '—' : (v < 0 ? '−' : '') + '$' + Math.abs(v).toFixed(2)}</td>`;
+      case 'revAccel': return `<td class="r ${cls(v)}">${pp(v)}</td>`;
+      case 'trail': return `<td>${trailSpark(r.yoyTrail)}</td>`;
+      case 'flags': return `<td>${(v || []).map(x => `<span class="pill ${x.includes('EPS') ? 'ok' : ''}" style="margin:0 4px 4px 0;display:inline-block">${esc(x)}</span>`).join('') || '<span class="dim">—</span>'}</td>`;
+      case 'cashConv': return `<td class="r">${v == null ? '—' : v.toFixed(2) + '×'}</td>`;
+      case 'accruals': return `<td class="r ${v > 0.1 ? 'loss' : ''}">${pct(v)}</td>`;
+      case 'quality': return `<td class="${QCOL[v] || 'dim'}">${esc(v || '—')}</td>`;
+      case 'lastRelease': return `<td class="mono dim">${esc(v || '—')}</td>`;
+      default: return `<td class="r ${cls(v)}">${pct(v)}</td>`;
+    }
+  };
+  const inp = (k, lab) => `<label class="f">${lab}<input type="number" step="1" data-enf="${k}" value="${esc(f[k])}" placeholder="any" style="width:110px"></label>`;
+  return `<section class="panel"><div class="hd"><h2>Tickers</h2><span class="dim" style="font-size:13px">US SEC filers; up to 150</span></div>
+      <div class="bd"><textarea id="en-tickers" rows="2" style="width:100%;font-family:var(--mono)" placeholder="NVDA CRWD AXON …">${esc(d.settings.tickers.join(' '))}</textarea>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn" data-en="save-tickers">Save</button><button class="btn primary" data-en="refresh">Update fundamentals</button>
+      <span class="note" style="align-self:center">Quarters come from each company's 10-Q / 10-K XBRL. Q4 and quarterly cash flow are derived (full year − 9 months); marked ᵈ.</span></div></div></section>
+    <section class="panel" style="margin-top:12px"><div class="bd" style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+      ${inp('cagr', 'Revenue 3Y CAGR ≥ %')}${inp('ttm', 'TTM YoY ≥ %')}${inp('qoq', 'QoQ ≥ %')}${inp('accel', 'YoY change ≥ pp')}
+      <label class="check"><input type="checkbox" data-enf="infl" ${f.infl ? 'checked' : ''}> EPS inflection only</label>
+      <label class="check"><input type="checkbox" data-enf="noWeak" ${f.noWeak ? 'checked' : ''}> Hide weak earnings quality</label>
+      <div class="grow"></div><span class="dim">${rows.length} of ${(d.rows || []).length}</span></div></section>
+    <section class="panel" style="margin-top:12px">${(d.rows || []).length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:1400px"><thead><tr>${SCOLS.map(([k, l, num]) =>
+      `<th class="${num ? 'r' : ''}" style="cursor:pointer" data-ensort="${k}">${l}${E.sort === k ? (E.dir < 0 ? ' ↓' : ' ↑') : ''}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r => `<tr>${SCOLS.map(([k]) => cell(r, k)).join('')}</tr>`).join('')}</tbody></table></div>
+      <div class="note" style="padding:10px 16px">Quality: accrual ratio = (net income − operating cash flow) / average assets, TTM. Strong: under 5% and cash conversion ≥ 0.9×. Weak: over 10%, or cash conversion under 0.6× with positive earnings.</div>`
+      : '<div class="empty">Add tickers above, save, then <b>Update fundamentals</b>.</div>'}</section>`;
+}
+
+/* ---------- Company ---------- */
+function enCompanyShell() {
+  const E = S.en;
+  return `<section class="panel"><div class="bd" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+      <label class="f">Ticker<input id="en-sym" value="${esc(E.sym)}" placeholder="NVDA" style="width:120px;text-transform:uppercase"></label>
+      <button class="btn primary" data-en="co-load">Load</button><button class="btn" data-en="co-update" ${E.sym ? '' : 'disabled'}>Update from SEC</button>
+      <span class="note">Releases are the company's 8-K filings with item 2.02 (results of operations), timed by their EDGAR acceptance time.</span></div></section>
+    <div id="en-co" style="margin-top:12px">${E.sym ? '<div class="panel"><div class="empty">Loading…</div></div>' : ''}</div>`;
+}
+async function enCompanyLoad() {
+  const E = S.en, out = $('#en-co');
+  try {
+    const c = await api('/fund/company?sym=' + encodeURIComponent(E.sym));
+    S.enCo = c;
+    out.innerHTML = `<div id="en-proj"><section class="panel"><div class="empty">Projecting the next release…</div></section></div>` + enCompanyHtml(c);
+    enProjLoad();
+  } catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; }
+}
+function enCompanyHtml(c) {
+  const qs = (c.quarters || []).slice(-16).reverse(), rs = c.reactions || [];
+  const dm = (q, k) => (q.d || []).includes(k) ? '<span class="dim">ᵈ</span>' : '';
+  const ok = rs.filter(r => r.r1ab != null);
+  const avgAbs = ok.length ? ok.reduce((a, r) => a + Math.abs(r.r1ab), 0) / ok.length : null;
+  const up = ok.length ? ok.filter(r => r.r1ab > 0).length / ok.length : null;
+  return `<section class="panel"><div class="hd"><h2>${esc(c.name || c.sym)}</h2><span class="dim" style="font-size:13px">${esc(c.sym)} · CIK ${c.cik} · fiscal year ends ${esc((c.fiscalYearEnd || '').replace(/(\d\d)(\d\d)/, '$1/$2'))} · SEC data ${esc((c.at || '').replace('T', ' ').slice(0, 16))}</span></div>
+    <div class="tbl-wrap"><table class="tbl" style="min-width:1300px"><thead><tr><th>Quarter end</th><th class="r">Revenue</th><th class="r">YoY</th><th class="r">QoQ</th><th class="r">YoY change</th><th class="r">TTM</th><th class="r">3Y CAGR</th>
+      <th class="r">EPS</th><th class="r">EPS YoY</th><th class="r">EPS TTM</th><th class="r">NI TTM</th><th class="r">CFO TTM</th><th class="r">CFO / NI</th><th class="r">Accruals</th><th>Quality</th><th>Flags</th></tr></thead><tbody>
+    ${qs.map(q => `<tr><td class="mono">${esc(q.end)}</td><td class="r">${big(q.rev)}${dm(q, 'rev')}</td><td class="r ${cls(q.revYoY)}">${pct(q.revYoY)}</td><td class="r ${cls(q.revQoQ)}">${pct(q.revQoQ)}</td>
+      <td class="r ${cls(q.revAccel)}">${pp(q.revAccel)}</td><td class="r">${big(q.revTTM)}</td><td class="r">${pct(q.rev3y)}</td><td class="r ${cls(q.eps)}">${q.eps == null ? '—' : q.eps.toFixed(2)}${dm(q, 'eps')}</td>
+      <td class="r ${cls(q.epsYoY)}">${pct(q.epsYoY)}</td><td class="r">${q.epsTTM == null ? '—' : q.epsTTM.toFixed(2)}</td><td class="r">${big(q.niTTM)}</td><td class="r">${big(q.cfoTTM)}</td>
+      <td class="r">${q.cashConv == null ? '—' : q.cashConv.toFixed(2) + '×'}</td><td class="r ${q.accruals > 0.1 ? 'loss' : ''}">${pct(q.accruals)}</td><td class="${QCOL[q.quality] || 'dim'}">${esc(q.quality || '—')}</td>
+      <td>${(q.flags || []).map(esc).join('<br>') || '<span class="dim">—</span>'}</td></tr>`).join('')}</tbody></table></div></section>
+  <section class="panel" style="margin-top:12px"><div class="hd"><h2>Earnings releases</h2><span class="dim" style="font-size:13px">${rs.length} since ${esc(rs.length ? rs[rs.length - 1].date : '—')}${c.bench ? ' · vs ' + esc(c.bench) : ''}${avgAbs != null ? ` · average day-0 move ${(avgAbs * 100).toFixed(1)}% · up ${(up * 100).toFixed(0)}% of the time` : ''}</span></div>
+    ${c.reactionsError ? `<div class="note" style="padding:10px 16px">Price reactions need Alpaca (Data page): ${esc(c.reactionsError)}</div>` : ''}
+    <div class="tbl-wrap"><table class="tbl" style="min-width:1200px"><thead><tr><th>Release</th><th>Time ET</th><th>Reaction day</th><th>Quarter</th><th class="r">Rev YoY</th><th class="r">YoY change</th><th class="r">EPS YoY</th>
+      <th class="r">Run-up 20d</th><th class="r">Gap</th><th class="r">Day 0</th><th class="r">Day 0 vs bench</th><th class="r">σ</th><th class="r">5d vs bench</th><th class="r">20d vs bench</th><th class="r">2m vs bench</th><th class="r">Drift d1→d20</th></tr></thead><tbody>
+    ${rs.map(r => `<tr><td class="mono">${esc(r.date)}</td><td class="mono dim">${esc(r.time || '')} ${esc(r.timing)}</td><td class="mono">${esc(r.day0 || '—')}</td><td class="mono dim">${esc(r.qEnd || '—')}</td>
+      <td class="r ${cls(r.revYoY)}">${pct(r.revYoY)}</td><td class="r ${cls(r.revAccel)}">${pp(r.revAccel)}</td><td class="r ${cls(r.epsYoY)}">${pct(r.epsYoY)}</td><td class="r ${cls(r.runup20)}">${pct(r.runup20)}</td>
+      <td class="r ${cls(r.gap)}">${pct(r.gap)}</td><td class="r ${cls(r.r1)}">${pct(r.r1)}</td><td class="r ${cls(r.r1ab)}"><b>${pct(r.r1ab)}</b></td><td class="r">${r.z1 == null ? '—' : r.z1.toFixed(1)}</td>
+      <td class="r ${cls(r.r5ab)}">${pct(r.r5ab)}</td><td class="r ${cls(r.r20ab)}">${pct(r.r20ab)}</td><td class="r ${cls(r.r40ab)}">${pct(r.r40ab)}</td><td class="r ${cls(r.drift20)}">${pct(r.drift20)}</td></tr>`).join('') || `<tr><td colspan="16" class="dim">No 8-K item 2.02 filings found.</td></tr>`}</tbody></table></div></section>`;
+}
+
+/* ---------- Projection: the next release ---------- */
+S.en.pmode = 'ab';
+async function enProjLoad() {
+  const el = $('#en-proj'); if (!el) return;
+  try { S.enProj = await api('/fund/project?sym=' + encodeURIComponent(S.en.sym)); el.innerHTML = enProjHtml(S.enProj); }
+  catch (e) { el.innerHTML = `<section class="panel"><div class="hd"><h2>Next release: projection</h2></div><div class="bd note loss">${esc(e.message)}</div></section>`; }
+}
+function enProjHtml(p) {
+  const m = S.en.pmode, n = p.now || {}, nx = p.next;
+  const SIG = { revYoY: ['Revenue YoY', pct], revAccel: ['YoY change', pp], epsYoY: ['EPS YoY', pct], epsAccel: ['EPS acceleration', pp], accruals: ['Accruals', pct],
+    runup20: ['20-day run-up vs ' + p.bench, pct], offHigh: ['From 52w high', pct], vol20: ['Daily volatility (20d)', v => pct(v, 2)] };
+  const range = d => d.n ? `<span class="mono">${pct(d.p25)} … ${pct(d.p75)}</span><div class="sub">10–90%: ${pct(d.p10)} … ${pct(d.p90)}</div>` : '—';
+  const col = (d, lab) => `<td class="r ${cls(d.median)}">${d.n ? pct(d.median) : '—'}</td><td class="r">${range(d)}</td><td class="r">${d.hit == null ? '—' : (d.hit * 100).toFixed(0) + '%'}</td><td class="r">${d.n || 0}</td>`;
+  return `<section class="panel"><div class="hd"><h2>Next release: projection</h2>
+      <span class="dim" style="font-size:13px">${nx ? `≈ ${esc(nx.date)} (${esc(nx.timing)}, estimated from the last release ${esc(nx.last)} + ${nx.spacing} days)` : 'no past releases'}</span><div class="grow"></div>
+      <div class="seg"><button data-enpm="ab" aria-pressed="${m === 'ab'}">vs ${esc(p.bench)}</button><button data-enpm="raw" aria-pressed="${m === 'raw'}">Raw</button></div></div>
+    <div class="bd"><div class="kv" style="grid-template-columns:repeat(4,minmax(0,1fr))">${Object.entries(SIG).map(([k, [l, f]]) => `<div><div class="k">${l}${p.signals.includes(k) ? '' : ' <span class="dim">(not used)</span>'}</div><div class="v">${n[k] == null ? '—' : f(n[k])}</div></div>`).join('')}</div>
+      <div class="note" style="margin-top:8px">Fundamentals: the latest reported quarter. Price signals: as of the ${esc(n.asOf || '—')} close. Base and day 0 as in the event study.</div></div>
+    <div class="tbl-wrap"><table class="tbl" style="min-width:1100px"><thead><tr><th>Horizon</th><th class="r" colspan="4">Similar releases (nearest ${p.neighbours.length})</th><th class="r" colspan="4">${esc(p.sym)}'s own ${p.ownN} releases</th><th class="r" colspan="4">All ${p.refN} releases</th><th class="r">±1σ from volatility</th></tr>
+      <tr>${'<th></th>' + ['', '', ''].map(() => '<th class="r">Median</th><th class="r">25–75%</th><th class="r">Up</th><th class="r">N</th>').join('') + '<th></th>'}</tr></thead><tbody>
+      ${p.horizons.map(h => `<tr><td><b>${esc(h.label)}</b></td>${col(h.similar[m])}${col(h.own[m])}${col(h.all[m])}<td class="r">${h.volRange == null ? '—' : '±' + (h.volRange * 100).toFixed(1) + '%'}</td></tr>`).join('')}</tbody></table></div>
+    <details class="bd" style="border-top:1px solid var(--row)"><summary class="dim" style="cursor:pointer">The ${p.neighbours.length} most similar past releases (signals used: ${p.signals.map(k => (SIG[k] || [k])[0]).join(', ') || 'none'})</summary>
+      <div class="tbl-wrap" style="margin-top:8px"><table class="tbl"><thead><tr><th>Release</th><th>Ticker</th><th class="r">Distance</th><th class="r">Rev YoY</th><th class="r">YoY change</th><th class="r">EPS YoY</th><th class="r">Run-up</th><th class="r">1d</th><th class="r">5d</th><th class="r">1m</th><th class="r">2m</th></tr></thead><tbody>
+      ${p.neighbours.map(r => `<tr><td class="mono">${esc(r.date)}</td><td>${esc(r.sym)}</td><td class="r">${r.dist.toFixed(2)}</td><td class="r">${pct(r.revYoY)}</td><td class="r">${pp(r.revAccel)}</td><td class="r">${pct(r.epsYoY)}</td><td class="r">${pct(r.runup20)}</td>
+        <td class="r ${cls(r.r1ab)}">${pct(r.r1ab)}</td><td class="r ${cls(r.r5ab)}">${pct(r.r5ab)}</td><td class="r ${cls(r.r20ab)}">${pct(r.r20ab)}</td><td class="r ${cls(r.r40ab)}">${pct(r.r40ab)}</td></tr>`).join('')}</tbody></table></div>
+      <p class="note">Nearest neighbours on standardised signals, drawn from the last event study${p.studyAt ? ' (' + esc(p.studyAt.slice(0, 10)) + ')' : ' (none run yet: own releases only)'} plus this company's own releases. Historical outcomes of similar setups, not a forecast model: with N under ~20 the range matters more than the median. Run the event study on more tickers to widen the reference set.</p></details></section>`;
+}
+
+/* ---------- Event study ---------- */
+function enStudyShell() {
+  const d = S.enD, ev = d.events, st = d.settings;
+  return `<div class="row"><div class="col-main">
+    <section class="panel"><div class="hd"><h2>Your releases</h2><div class="grow"></div>${ev.n ? `<span class="pill ok">${ev.n} releases · ${ev.tickers} tickers</span>` : '<span class="pill">None imported</span>'}</div>
+      <div class="bd"><p class="muted" style="margin-top:0">Import your own release list (e.g. your 142-release study) as CSV. <b>ticker</b> and <b>date</b> are required. Recognised: <span class="mono">timing</span> (bmo / amc), <span class="mono">eps_est</span>, <span class="mono">eps_actual</span>, <span class="mono">rev_est</span>, <span class="mono">rev_actual</span>, <span class="mono">eps_surprise</span> / <span class="mono">rev_surprise</span> (%), <span class="mono">guidance</span> (raise / maintain / lower / none). Every other column becomes a signal of its own (numbers → terciles, text → groups).</p>
+      ${ev.n ? `<div class="note" style="margin-bottom:10px">Columns: ${ev.cols.map(c => `<span class="mono">${esc(c)}</span>`).join(', ') || '—'} · imported ${esc((ev.at || '').replace('T', ' ').slice(0, 16))}</div>` : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="file" id="en-file" accept=".csv,.tsv,.txt,text/csv">
+        <button class="btn primary" data-en="imp-replace">Import (replace)</button><button class="btn" data-en="imp-merge">Import (add)</button>${ev.n ? '<button class="btn danger" data-en="imp-clear">Clear</button>' : ''}</div>
+      <details style="margin-top:10px"><summary class="dim" style="cursor:pointer">Or paste the CSV</summary><textarea id="en-csv" rows="6" style="width:100%;margin-top:8px;font-family:var(--mono)" placeholder="ticker,date,timing,eps_est,eps_actual,rev_surprise,guidance&#10;NVDA,2025-08-27,amc,1.01,1.05,1.2,raise"></textarea></details>
+      </div></section>
+    <section class="panel"><div class="hd"><h2>Run the study</h2></div><div class="bd"><div class="form" style="align-items:end">
+      <label class="check"><input type="checkbox" id="en-sec" ${st.useSec ? 'checked' : ''}> Add the SEC 8-K release dates of the screen's ${st.tickers.length} ticker(s)</label>
+      <label class="f">Years back (SEC dates)<input type="number" id="en-years" min="1" max="10" value="${st.years}"></label>
+      <label class="f">Benchmark<select id="en-bench">${d.benches.map(b => `<option ${b === st.bench ? 'selected' : ''}>${b}</option>`).join('')}</select></label>
+      <button class="btn primary" data-en="run" ${d.alpaca ? '' : 'disabled'}>Run event study</button></div>
+      ${d.alpaca ? '' : '<p class="note loss">Connect Alpaca on the Data page: the reactions are measured on its daily bars (split-adjusted).</p>'}
+      <p class="note">Base = the last close before the market could react (the release day's close after an after-close release, the previous close otherwise). Day 0 = the first session that could react. Returns vs the benchmark are simple differences; σ = day-0 abnormal move ÷ the 20 days' daily volatility before. Drift = day-0 close to day 20 / 60, vs the benchmark. Fundamentals are matched to the quarter that ended 5–120 days before the release (restated figures where the company restated).</p>
+    </div></section></div>
+    <aside class="col-side"><section class="panel"><div class="hd"><h2>Last study</h2></div><div class="bd" id="en-sum">${d.study ? `<div class="kv kv3"><div><div class="k">Releases</div><div class="v">${d.study.n}</div></div><div><div class="k">Tickers</div><div class="v">${d.study.tickers}</div></div><div><div class="k">Benchmark</div><div class="v">${esc(d.study.bench)}</div></div>
+      <div><div class="k">From</div><div class="v">${esc(d.study.from || '—')}</div></div><div><div class="k">To</div><div class="v">${esc(d.study.to || '—')}</div></div><div><div class="k">Run</div><div class="v">${esc((d.study.at || '').slice(5, 16).replace('T', ' '))}</div></div></div>` : '<div class="dim">Not run yet.</div>'}</div></section></aside></div>
+    <div id="en-res" style="margin-top:12px"></div>`;
+}
+async function enStudyLoad() {
+  if (!S.enD.study) return;
+  const out = $('#en-res');
+  out.innerHTML = '<div class="panel"><div class="empty">Loading the results…</div></div>';
+  try { if (!S.enStudy || S.enStudy.at !== S.enD.study.at) S.enStudy = await api('/fund/study'); out.innerHTML = enResults(S.enStudy); }
+  catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; }
+}
+function enBar(v, scale) {
+  if (v == null) return '';
+  const w = Math.min(60, Math.abs(v) / (scale || 1) * 60);
+  return `<span style="display:inline-block;width:60px;height:8px;position:relative;vertical-align:middle;margin-left:6px"><i style="position:absolute;top:0;height:8px;${v >= 0 ? 'left:30px' : 'right:30px'};width:${w / 2}px;background:${v >= 0 ? 'var(--buyT)' : 'var(--sellT)'};border-radius:2px"></i><i style="position:absolute;left:30px;top:-2px;height:12px;width:1px;background:var(--line2)"></i></span>`;
+}
+function enResults(r) {
+  const E = S.en, o = E.out, outs = r.outcomes || [];
+  const isPct = o !== 'z1', f = v => isPct ? pct(v, 2) : (v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(2) + 'σ');
+  const all = r.all[o] || {};
+  const scale = Math.max(1e-9, ...r.groups.flatMap(g => g.groups.map(x => Math.abs((x[o] || {}).mean || 0))));
+  const rng = (g, x) => g.kind === 'num' && x.range ? `<div class="sub">${g.key.match(/YoY|Accel|QoQ|3y|accruals|runup|offHigh|vol20/) ? pct(x.range[0]) + ' … ' + pct(x.range[1]) : x.range[0].toFixed(2) + ' … ' + x.range[1].toFixed(2)}</div>` : '';
+  const grp = g => `<section class="panel"><div class="hd"><h2 style="font-size:14px">${esc(g.label)}</h2></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Group</th><th class="r">N</th><th class="r">Mean</th><th class="r">Median</th><th class="r">Up</th><th class="r">t</th></tr></thead><tbody>
+    ${g.groups.map(x => { const s = x[o] || {}; return `<tr><td>${esc(x.name)}${rng(g, x)}</td><td class="r">${s.n || 0}</td><td class="r ${cls(s.mean)}">${f(s.mean)}${enBar(s.mean, scale)}</td><td class="r ${cls(s.median)}">${f(s.median)}</td><td class="r">${s.hit == null ? '—' : (s.hit * 100).toFixed(0) + '%'}</td><td class="r">${tstat(s.t)}</td></tr>`; }).join('')}</tbody></table></div></section>`;
+  const rhoCell = c => { if (!c || c.rho == null) return '<td class="r dim">—</td>'; const a = Math.min(1, Math.abs(c.rho) / 0.4); return `<td class="r" style="background:${c.rho > 0 ? `rgba(76,195,138,${(a * 0.35).toFixed(2)})` : `rgba(240,100,100,${(a * 0.35).toFixed(2)})`}" title="n = ${c.n}">${c.rho.toFixed(2)}</td>`; };
+  const rows = enRowsSorted(r.rows || []);
+  const RC = [['date', 'Release'], ['sym', 'Ticker'], ['timing', 'Timing'], ['setup', 'Beat / raise'], ['revYoY', 'Rev YoY'], ['revAccel', 'YoY change'], ['epsYoY', 'EPS YoY'], ['epsSurprise', 'EPS surp.'], ['revSurprise', 'Rev surp.'], ['runup20', 'Run-up'],
+    ['gap', 'Gap'], ['r1ab', 'Day 0 vs bench'], ['z1', 'σ'], ['r5ab', '5d'], ['r20ab', '20d'], ['r40ab', '2m'], ['drift20', 'Drift 20'], ['drift60', 'Drift 60']];
+  const rc = (x, k) => { const v = x[k]; if (['date', 'sym', 'timing'].includes(k)) return `<td class="mono">${esc(v || '—')}</td>`; if (k === 'setup') return `<td>${esc(v || '—')}</td>`;
+    if (k === 'epsSurprise' || k === 'revSurprise') return `<td class="r ${cls(v)}">${v == null ? '—' : sgn(v, 1, '%')}</td>`; if (k === 'z1') return `<td class="r">${v == null ? '—' : v.toFixed(1)}</td>`; if (k === 'revAccel') return `<td class="r ${cls(v)}">${pp(v)}</td>`; return `<td class="r ${cls(v)}">${pct(v)}</td>`; };
+  return `<section class="panel"><div class="bd" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+      <div class="seg">${outs.map(([k, l]) => `<button data-enout="${k}" aria-pressed="${k === o}">${l}</button>`).join('')}</div><div class="grow"></div>
+      <span>All releases: <b class="${cls(all.mean)}">${f(all.mean)}</b> mean · ${f(all.median)} median · ${all.hit == null ? '—' : (all.hit * 100).toFixed(0) + '% up'} · t ${tstat(all.t)} · N ${all.n || 0}</span></div>
+      ${(r.skipped || []).length ? `<div class="note" style="padding:0 16px 12px">Skipped: ${r.skipped.map(esc).join(' · ')}</div>` : ''}</section>
+    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Signal → reaction</h2><span class="dim" style="font-size:13px">Spearman rank correlation of each pre-release signal with each outcome (|ρ| ≥ 0.2 shaded strongest)</span></div>
+      <div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th>Signal</th>${outs.map(([, l]) => `<th class="r">${l}</th>`).join('')}</tr></thead><tbody>
+      ${r.corr.map(c => `<tr><td>${esc(c.label)}</td>${outs.map(([k]) => rhoCell(c[k])).join('')}</tr>`).join('')}</tbody></table></div></section>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px;margin-top:12px">${r.groups.map(grp).join('')}</div>
+    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Releases</h2><span class="dim" style="font-size:13px">${rows.length}</span><div class="grow"></div><button class="btn sm" data-en="csv">Export CSV</button></div>
+      <div class="tbl-wrap"><table class="tbl" style="min-width:1400px"><thead><tr>${RC.map(([k, l]) => `<th class="${['date', 'sym', 'timing', 'setup'].includes(k) ? '' : 'r'}" style="cursor:pointer" data-enrsort="${k}">${l}${E.rsort === k ? (E.rdir < 0 ? ' ↓' : ' ↑') : ''}</th>`).join('')}</tr></thead>
+      <tbody>${rows.slice(0, E.rshow).map(x => `<tr>${RC.map(([k]) => rc(x, k)).join('')}</tr>`).join('')}</tbody></table></div>
+      ${rows.length > E.rshow ? `<div class="bd"><button class="btn sm" data-en="more">Show all ${rows.length}</button></div>` : ''}</section>`;
+}
+function enRowsSorted(rows) {
+  const E = S.en, k = E.rsort;
+  return rows.slice().sort((a, b) => { const x = a[k], y = b[k]; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1; return (typeof x === 'string' ? x.localeCompare(y) : x - y) * E.rdir; });
+}
+function enCsv() {
+  const r = S.enStudy; if (!r) return;
+  const xk = [...new Set(r.rows.flatMap(x => Object.keys(x.x || {})))];
+  const keys = ['sym', 'date', 'timing', 'src', 'base', 'day0', 'qEnd', 'revYoY', 'revAccel', 'revQoQ', 'rev3y', 'epsYoY', 'epsAccel', 'accruals', 'cashConv', 'quality', 'inflection', 'revDir',
+    'epsEst', 'epsAct', 'epsSurprise', 'revEst', 'revAct', 'revSurprise', 'guide', 'setup', 'runup20', 'offHigh', 'vol20', 'gap', 'r1', 'r1ab', 'z1', 'r5', 'r5ab', 'r20', 'r20ab', 'r40', 'r40ab', 'r60', 'r60ab', 'drift20', 'drift60'];
+  const q = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  const lines = [keys.concat(xk).join(',')].concat(r.rows.map(x => keys.map(k => q(x[k])).concat(xk.map(k => q((x.x || {})[k]))).join(',')));
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+  a.download = `earnings_event_study_${r.bench}_${(r.at || '').slice(0, 10)}.csv`; a.click(); URL.revokeObjectURL(a.href);
+}
+async function enImport(mode) {
+  const file = $('#en-file').files[0];
+  const text = file ? await file.text() : ($('#en-csv') ? $('#en-csv').value : '');
+  if (!text.trim()) return toast('Choose a CSV file or paste the rows.');
+  const r = await api('/fund/events', { method: 'POST', body: { csv: text, mode } });
+  toast(`${r.n} releases, ${r.tickers} tickers imported.${r.problems.length ? ' ' + r.problems.length + ' row(s) skipped.' : ''}`);
+  if (r.problems.length) alert('Rows not imported:\n' + r.problems.join('\n'));
+  return vEarnings();
+}
+
+document.addEventListener('click', async e => {
+  const el = e.target.closest('[data-entab],[data-en],[data-enco],[data-ensort],[data-enout],[data-enrsort],[data-enpm]');
+  if (!el || el.disabled) return;
+  const E = S.en, ds = el.dataset;
+  try {
+    if (ds.entab) { E.tab = ds.entab; document.querySelectorAll('[data-entab]').forEach(b => b.setAttribute('aria-pressed', b === el)); return enBody(); }
+    if (ds.enco) { e.preventDefault(); E.sym = ds.enco; E.tab = 'company'; return vEarnings(); }
+    if (ds.ensort) { E.dir = E.sort === ds.ensort ? -E.dir : -1; E.sort = ds.ensort; return enBody(); }
+    if (ds.enpm) { S.en.pmode = ds.enpm; $('#en-proj').innerHTML = enProjHtml(S.enProj); return; }
+    if (ds.enout) { E.out = ds.enout; $('#en-res').innerHTML = enResults(S.enStudy); return; }
+    if (ds.enrsort) { E.rdir = E.rsort === ds.enrsort ? -E.rdir : -1; E.rsort = ds.enrsort; $('#en-res').innerHTML = enResults(S.enStudy); return; }
+    switch (ds.en) {
+      case 'save-tickers': await api('/fund/settings', { method: 'PUT', body: { tickers: $('#en-tickers').value } }); toast('Saved.'); return vEarnings();
+      case 'refresh': await api('/fund/settings', { method: 'PUT', body: { tickers: $('#en-tickers').value } }); await api('/fund/refresh', { method: 'POST', body: {} }); toast('Reading the SEC filings…'); return vEarnings();
+      case 'co-load': { const s = $('#en-sym').value.trim().toUpperCase(); if (!s) return toast('Enter a ticker.'); E.sym = s; $('#en-co').innerHTML = '<div class="panel"><div class="empty">Reading the SEC filings…</div></div>'; document.querySelector('[data-en="co-update"]').disabled = false; return enCompanyLoad(); }
+      case 'co-update': el.disabled = true; await api('/fund/refresh', { method: 'POST', body: { sym: E.sym } }); toast('Updating from SEC…'); return vEarnings();
+      case 'imp-replace': return enImport('replace');
+      case 'imp-merge': return enImport('merge');
+      case 'imp-clear': if (!confirm('Remove the imported releases?')) return; await api('/fund/events', { method: 'DELETE' }); return vEarnings();
+      case 'run': el.disabled = true; await api('/fund/study', { method: 'POST', body: { useSec: $('#en-sec').checked, years: +$('#en-years').value || 5, bench: $('#en-bench').value } }); toast('Event study started.'); S.enStudy = null; return vEarnings();
+      case 'more': E.rshow = 1e9; $('#en-res').innerHTML = enResults(S.enStudy); return;
+      case 'csv': return enCsv();
+    }
+  } catch (err) { toast(err.message); el.disabled = false; }
+});
+document.addEventListener('input', e => {
+  const k = e.target.dataset && e.target.dataset.enf;
+  if (!k || S.page !== 'earnings') return;
+  S.en.f[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+  const pos = e.target.selectionStart, id = k;
+  $('#en-body').innerHTML = enScreen();
+  const n = document.querySelector(`[data-enf="${id}"]`); if (n && n.type !== 'checkbox') { n.focus(); try { n.setSelectionRange(pos, pos); } catch (x) { /* number inputs */ } }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'en-sym') { e.preventDefault(); document.querySelector('[data-en="co-load"]').click(); } });

@@ -245,7 +245,7 @@ function route() {
   const h = (location.hash || '#running').slice(1), [page, arg] = h.split('/');
   S.page = page;
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.r === (page === 'strategy' ? 'research' : page)));
-  const v = { running: vRunning, chart: vChart, research: vResearch, strategy: () => vStrategy(arg), data: vData, levels: vLevels, fractal: vFractal }[page] || vRunning;
+  const v = { running: vRunning, chart: vChart, research: vResearch, strategy: () => vStrategy(arg), data: vData, levels: vLevels, fractal: vFractal, earnings: () => vEarnings() }[page] || vRunning;
   v().catch(e => { $('#view').innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; });
 }
 const view = html => { $('#view').innerHTML = html; };

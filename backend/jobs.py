@@ -117,6 +117,34 @@ def handler(event, ctx=None):
             if not opt0dte.job(sub, ts, prog, dl, _invoke, event, int(p.get("dte") or 0), p.get("und") or "etf"):
                 return {"continued": True}
             set_status(sub, name, status="done", msg=f"{int(p.get('dte') or 0)}DTE option prices downloaded.")
+        elif job == "fundrefresh":                      # SEC EDGAR fundamentals of the screen's tickers
+            import fundamentals
+            syms, done, bad = list(p["syms"]), list(p.get("done") or []), list(p.get("bad") or [])
+            for s_ in syms:
+                if s_ in done:
+                    continue
+                if time.time() > dl:
+                    _invoke({**event, "params": {**p, "done": done, "bad": bad}})
+                    return {"continued": True}
+                prog(f"SEC EDGAR {len(done) + 1}/{len(syms)}: {s_}")
+                try:
+                    fundamentals.company(sub, s_, force=True)
+                except Exception as e:                 # an unknown ticker or a foreign filer: note it, go on
+                    print("fund refresh", s_, e)
+                    bad.append(f"{s_}: {str(e)[:120]}")
+                done.append(s_)
+            set_status(sub, name, status="error" if bad and len(bad) == len(syms) else "done",
+                       msg=f"Fundamentals updated for {len(syms) - len(bad)} of {len(syms)} ticker(s)." + (" Skipped: " + "; ".join(bad[:6]) if bad else ""))
+        elif job == "fundstudy":                        # the earnings event study
+            import fundamentals
+            try:
+                r = fundamentals.run_study(sub, p, prog, dl)
+            except TimeoutError:                        # fundamentals and prices are cached as they come: go on in a new run
+                if int(p.get("round") or 0) >= 8:
+                    raise RuntimeError("The study ran out of time eight times: fewer tickers or years.")
+                _invoke({**event, "params": {**p, "round": int(p.get("round") or 0) + 1}})
+                return {"continued": True}
+            set_status(sub, name, status="done", msg=f"Event study: {r['n']} releases, {r['tickers']} tickers vs {r['bench']}.")
         elif job == "study":
             strategy.study(sub, p["id"], prog)
             set_status(sub, name, status="done", msg="Study finished.")

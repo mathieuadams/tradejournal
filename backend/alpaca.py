@@ -228,3 +228,28 @@ def daily(sub, sym, n=260):
         if not token:
             break
     return out[-n:]
+
+
+def daily_range(sub, sym, start, end=None, adjustment="split"):
+    """Daily bars from `start` (YYYY-MM-DD) to `end` (default: now), split-adjusted by default so returns across a split
+    are real: [["YYYY-MM-DD", o, h, l, c, v], ...]. Used by the earnings event study (Earnings page)."""
+    sym = check_sym(sym)
+    c, feed = creds(sub), status(sub)["feed"]
+    t1 = datetime.utcnow() - timedelta(minutes=16 if feed == "sip" else 0)
+    if end:
+        t1 = min(t1, datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1))
+    t0 = datetime.strptime(start, "%Y-%m-%d") + timedelta(hours=5)
+    out, token = [], None
+    for _ in range(20):
+        r = _get(c, f"stocks/{sym}/bars", {"timeframe": "1Day", "start": t0.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                           "end": t1.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 10000, "adjustment": adjustment,
+                                           "feed": feed, "sort": "asc", "page_token": token})
+        for b in r.get("bars") or []:
+            d = utc_to_ny(datetime.strptime(b["t"][:19], "%Y-%m-%dT%H:%M:%S")).strftime("%Y-%m-%d")
+            if out and out[-1][0] == d:
+                continue
+            out.append([d, b["o"], b["h"], b["l"], b["c"], b.get("v", 0)])
+        token = r.get("next_page_token")
+        if not token:
+            break
+    return out

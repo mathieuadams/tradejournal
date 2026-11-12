@@ -358,6 +358,83 @@ class FakeAlpacaBroker:
         raise AssertionError("unexpected " + method + " " + url)
 
 
+# ---------------------------------------------------------------- fake SEC EDGAR (Earnings page)
+
+SEC_COS = {"AAA": (1001, "Alpha Growth Inc.", 400e6, 0.25, 0.80), "BBB": (1002, "Beta Steady Corp.", 2e9, 0.06, 1.50),
+           "CCC": (1003, "Gamma Turnaround Co.", 150e6, 0.15, -0.30)}
+
+
+def _sec_facts(sym):
+    from datetime import date as _dt
+    cik, name, rev0, g, eps0 = SEC_COS[sym]
+    rnd = random.Random(sym)
+    rev, eps, ni, cfo, assets = [], [], [], [], []
+    y0 = _dt.today().year - 6
+    qrev, qeps = rev0 / 4, eps0 / 4
+    for y in range(y0, _dt.today().year):
+        ytd = {"rev": 0, "eps": 0, "ni": 0, "cfo": 0}
+        starts = [_dt(y, 1, 1), _dt(y, 4, 1), _dt(y, 7, 1), _dt(y, 10, 1)]
+        ends = [_dt(y, 3, 31), _dt(y, 6, 30), _dt(y, 9, 30), _dt(y, 12, 31)]
+        for k in range(4):
+            qrev *= 1 + g / 4 + rnd.gauss(0, 0.01) + (0.01 if sym == "AAA" and y >= y0 + 4 else 0)
+            qeps = qeps + abs(eps0) * 0.04 + rnd.gauss(0, 0.01) if sym == "CCC" else qeps * (1 + g / 4 + rnd.gauss(0, 0.02))
+            qni = qeps * 100e6
+            qcfo = qni * (1.1 if sym != "CCC" else 0.5) + rnd.gauss(0, 1e6)
+            ytd = {"rev": ytd["rev"] + qrev, "eps": ytd["eps"] + qeps, "ni": ytd["ni"] + qni, "cfo": ytd["cfo"] + qcfo}
+            filed = (ends[k] + timedelta(days=35)).isoformat()
+            form = "10-K" if k == 3 else "10-Q"
+            s0, e0 = starts[k].isoformat(), ends[k].isoformat()
+            fy0 = starts[0].isoformat()
+            if k < 3:                                  # 10-Q: the quarter and the year to date; 10-K: the year only
+                rev.append({"start": s0, "end": e0, "val": round(qrev), "form": form, "filed": filed})
+                eps.append({"start": s0, "end": e0, "val": round(qeps, 2), "form": form, "filed": filed})
+                ni.append({"start": s0, "end": e0, "val": round(qni), "form": form, "filed": filed})
+            for arr, kk in ((rev, "rev"), (ni, "ni"), (cfo, "cfo")):
+                if k > 0 or kk == "cfo":
+                    arr.append({"start": fy0, "end": e0, "val": round(ytd[kk]), "form": form, "filed": filed})
+            if k == 3:
+                eps.append({"start": fy0, "end": e0, "val": round(ytd["eps"], 2), "form": form, "filed": filed})
+            assets.append({"end": e0, "val": round(qrev * 6), "form": form, "filed": filed})
+    U = lambda rows, u="USD": {"units": {u: rows}}
+    return {"cik": cik, "entityName": name, "facts": {"us-gaap": {
+        "RevenueFromContractWithCustomerExcludingAssessedTax": U(rev), "EarningsPerShareDiluted": U(eps, "USD/shares"),
+        "NetIncomeLoss": U(ni), "NetCashProvidedByUsedInOperatingActivities": U(cfo), "Assets": U(assets)}}}
+
+
+def _sec_subs(sym):
+    from datetime import date as _dt
+    cik, name, *_ = SEC_COS[sym]
+    rec = {k: [] for k in ("accessionNumber", "filingDate", "acceptanceDateTime", "form", "items")}
+    y0 = _dt.today().year - 6
+    n = 0
+    for y in range(y0, _dt.today().year + 1):
+        for m in (1, 4, 7, 10):
+            d = _dt(y, m, 28)
+            while d.weekday() >= 5:
+                d += timedelta(days=1)
+            if d >= _dt.today():
+                continue
+            n += 1
+            t = "16:05:12" if (n + len(sym)) % 2 else "07:01:44"
+            for form, items in (("8-K", "2.02,9.01"), ("4", "")):
+                rec["accessionNumber"].append(f"0000{cik}-{y % 100:02d}-{n:06d}")
+                rec["filingDate"].append(d.isoformat())
+                rec["acceptanceDateTime"].append(f"{d.isoformat()}T{t}.000Z")
+                rec["form"].append(form)
+                rec["items"].append(items)
+    return {"cik": str(cik), "name": name, "fiscalYearEnd": "1231", "filings": {"recent": rec, "files": []}}
+
+
+def fake_sec_http(url, ua, timeout=40):
+    if "company_tickers" in url:
+        return {str(i): {"cik_str": v[0], "ticker": k, "title": v[1]} for i, (k, v) in enumerate(SEC_COS.items())}
+    cik = int(url.rsplit("CIK", 1)[1][:10]) if "CIK" in url else None
+    sym = next((k for k, v in SEC_COS.items() if v[0] == cik), None)
+    if not sym:
+        return None
+    return _sec_facts(sym) if "companyfacts" in url else _sec_subs(sym)
+
+
 def install(fake_databento=False, data_dir=None, persist=True):
     global PERSIST
     PERSIST = persist
@@ -376,4 +453,6 @@ def install(fake_databento=False, data_dir=None, persist=True):
         databento._open = fake_open
         alpaca._get = fake_alpaca_get
         uwhales._get = fake_uw_get
+        import fundamentals
+        fundamentals._http = fake_sec_http
     _ = urllib.parse

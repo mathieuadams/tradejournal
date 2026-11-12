@@ -607,6 +607,90 @@ def strategy_trades(sub, claims, body, q, sid):
     return {"trades": strategy.trades(sub, sid, q.get("set") or "study")}
 
 
+# ---------------------------------------------------------------- Earnings: fundamentals screen + event study
+
+@route("GET", "/fund")
+def fund_view(sub, claims, body, q):
+    import fundamentals as F
+    st = F.settings(sub)
+    rows = []
+    for s in st["tickers"]:
+        c = F.cached(s)
+        rows.append(F.screen_row(c) if c else {"sym": s, "missing": True})
+    ev = F.events(sub)
+    sd = F.study(sub)
+    return {"settings": st, "rows": rows, "job": jobs.status(sub, "fund"), "alpaca": alpaca.status(sub)["connected"],
+            "events": {"n": len(ev["events"]), "tickers": len({e["sym"] for e in ev["events"]}), "cols": ev.get("cols") or [], "at": ev.get("at"),
+                       "sample": ev["events"][:5]},
+            "study": {k: sd.get(k) for k in ("at", "n", "tickers", "from", "to", "bench")} if sd else None, "benches": F.BENCHES}
+
+
+@route("PUT", "/fund/settings")
+def fund_settings(sub, claims, body, q):
+    import fundamentals as F
+    return F.save_settings(sub, body)
+
+
+@route("POST", "/fund/refresh")
+def fund_refresh(sub, claims, body, q):
+    import fundamentals as F
+    syms = F.settings(sub)["tickers"]
+    if body.get("sym"):
+        syms = [F.check_sym(body["sym"])]
+    if not syms:
+        raise BadRequest("Add tickers to the screen first.")
+    return jobs.start(sub, "fund", "fundrefresh", {"syms": syms})
+
+
+@route("GET", "/fund/company")
+def fund_company(sub, claims, body, q):
+    import fundamentals as F
+    return F.company_view(sub, q.get("sym") or "", q.get("bench") if q.get("bench") in F.BENCHES else None)
+
+
+@route("GET", "/fund/project")
+def fund_project(sub, claims, body, q):
+    import fundamentals as F
+    if not alpaca.status(sub)["connected"]:
+        raise BadRequest("The projection uses Alpaca daily bars: connect Alpaca on the Data page.")
+    return F.project(sub, q.get("sym") or "")
+
+
+@route("POST", "/fund/events")
+def fund_import(sub, claims, body, q):
+    import fundamentals as F
+    text = body.get("csv") or ""
+    if len(text) > 4_000_000:
+        raise BadRequest("The CSV is too large (4 MB at most).")
+    return F.import_events(sub, text, "merge" if body.get("mode") == "merge" else "replace")
+
+
+@route("DELETE", "/fund/events")
+def fund_clear(sub, claims, body, q):
+    import fundamentals as F
+    return F.clear_events(sub)
+
+
+@route("POST", "/fund/study")
+def fund_study_run(sub, claims, body, q):
+    import fundamentals as F
+    st = F.settings(sub)
+    if not alpaca.status(sub)["connected"]:
+        raise BadRequest("The event study measures price reactions with Alpaca daily bars: connect Alpaca on the Data page.")
+    if not F.events(sub)["events"] and not (st["useSec"] and st["tickers"]):
+        raise BadRequest("No releases to study: import your CSV, or add tickers and use their SEC 8-K dates.")
+    opts = {k: body[k] for k in ("bench", "years", "useSec") if k in body}
+    if opts:
+        F.save_settings(sub, opts)
+    return jobs.start(sub, "fund", "fundstudy", opts)
+
+
+@route("GET", "/fund/study")
+def fund_study(sub, claims, body, q):
+    import fundamentals as F
+    return F.study(sub) or {}
+
+
 # ---------------------------------------------------------------- dispatch
 
 def handler(event, context):
