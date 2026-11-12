@@ -360,7 +360,7 @@ GRIDS = {
     "insidebar": {"tf": [1, 5, 15], "entry": ["break", "close"], "tgtR": [1.0, 1.5, 2.0, 3.0], "hours": ["rth", "all"], "bias": ["none", "all3"], "minMother": [0, 1.0, 1.5]},
     "imom": {"from": ["close", "open"], "entryAt": ["14:00", "15:00", "15:30", "15:45"], "minMovePct": [0, 0.25, 0.5], "mode": ["follow", "fade"], "stopMult": [0, 4.0]},
     "onrev": {"minPct": [0.4, 0.6, 1.0], "fill": [0.5, 1.0], "stopGap": [0.5, 1.0, 2.0], "exitAt": ["10:30", "11:30", "15:55"]},
-    "onmid": {"stop": ["mid", "opp", "part"], "stopPart": [0.15, 0.25, 0.5], "deadPct": [0, 10, 20], "exitAt": ["10:30", "11:30", "13:00", "15:55"], "minRR": [0, 0.5, 1]},
+    "onmid": {"hold": ["close", "off"], "holdStop": ["be", "level", "orig"], "stop": ["mid", "opp", "part"], "stopPart": [0.15, 0.25, 0.5], "deadPct": [0, 10, 20], "exitAt": ["10:30", "11:30", "13:00", "15:55"], "minRR": [0, 0.5, 1]},
     "gapfill": {"minPct": [0.05, 0.1, 0.2], "maxPct": [0.3, 0.5, 0.8], "stopGap": [1.0, 1.5, 3.0], "exitAt": ["10:30", "13:00", "15:55"]},
     "tom": {"entryDay": [-3, -2, -1], "exitDay": [1, 2, 3, 4, 5], "trend": ["none", "sma50", "sma200"], "stopAtr": [0, 2.0]},
     "vwapband": {"k": [1.5, 2.0, 2.5, 3.0], "trendMult": [0, 0.7, 1.0], "minRR": [0, 1.0], "tf": [1, 5]},

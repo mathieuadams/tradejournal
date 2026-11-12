@@ -170,6 +170,7 @@ def test_06_other_setups():
                      ("volclimax", {"days": 60, "volMult": 1.5}), ("pwsweep", {"days": 60, "fresh": False}), ("trendday", {"days": 60, "rangeMult": 0.3}),
                      ("onmid", {"days": 60}), ("onmid", {"days": 60, "stop": "opp", "deadPct": 10, "exitAt": "11:30"}),
                      ("onmid", {"days": 60, "stop": "part", "stopPart": 0.15, "minRR": 1}),
+                     ("onmid", {"days": 60, "hold": "off"}), ("onmid", {"days": 60, "holdStop": "level", "exitAt": "11:30"}),
                      ("fractal", {"days": 60}), ("fractal", {"days": 60, "entry": "fade", "macro": "none", "tf": 5}),
                      ("fractal", {"days": 60, "entry": "count", "macro": "none", "oddsMax": 0.3, "hours": "rth", "tgt": "r", "tgtR": 2}),
                      ("fractal", {"days": 60, "sqz": "no", "daily": "with", "macro": "against", "tf": 60, "wave": 7}),
@@ -233,6 +234,26 @@ def test_06b3_fractal_variants():
     assert o["params"]["oaExit"] == 0.3 and "Option Analyzer" in strategy.describe(o["params"]) if hasattr(strategy, "describe") else True
     lw = strategy.create(SUB, {"setup": "latewave", "params": {"days": 60, "tickers": ["QQQ"]}})
     assert lw["params"]["htf"] == "D" and lw["params"]["tickers"] == ["QQQ"]
+
+
+def test_06b4_onmid_hold():
+    import onmid
+    p = onmid.clean({"hold": "close", "holdStop": "be"})
+    day = "2026-01-05"
+    c = lambda hm, o, h, l, cl: (f"{day}T{hm}", o, h, l, cl)
+    # long from 100, target 105, stop 98: 09:35 closes above 105 -> held; 10:00 dips to 101 (above break-even); out 15:55 at 110
+    F = [c("09:25", 99, 100, 99, 100), c("09:30", 100, 103, 99.5, 102), c("09:35", 102, 106, 101, 105.5), c("10:00", 105, 106, 101, 104),
+         c("15:50", 108, 110, 107, 109), c("15:55", 109, 110.5, 109, 110)]
+    x = onmid.hold_trade(F, 0, 1, 100, 98, 105, 2, p, day)
+    assert x["held"] and x["x"] == 110 and x["why"].startswith("time"), x
+    # a touch without a close beyond takes profit at the target
+    F2 = F[:2] + [c("09:35", 102, 106, 101, 104.5)] + F[3:]
+    y = onmid.hold_trade(F2, 0, 1, 100, 98, 105, 2, p, day)
+    assert not y["held"] and y["x"] == 105 and y["why"] == "target", y
+    # held, then back to the entry: break-even
+    F3 = F[:3] + [c("10:00", 105, 105, 99, 99.5)] + F[4:]
+    z = onmid.hold_trade(F3, 0, 1, 100, 98, 105, 2, p, day)
+    assert z["held"] and z["x"] == 100 and "break-even" in z["why"], z
 
 
 def test_06c_fractal_on_stocks():
