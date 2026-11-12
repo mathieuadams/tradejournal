@@ -257,12 +257,28 @@ def test_06b4_onmid_hold():
     assert z["held"] and z["x"] == 100 and "break-even" in z["why"], z
 
 
+def test_06b4b_onmid_overlay():
+    import futdata
+    s = strategy.create(SUB, {"setup": "onhold", "params": {"days": 60}})
+    days = futdata.trading_days("NQ")[-3:]
+    ov = strategy.overlay(SUB, s["id"], "NQ", days[0], days[-1])
+    rs = [r for r in ov["ranges"] if r["label"].startswith("Overnight")]
+    mids = [L for L in ov["lines"] if L["name"].startswith("Overnight mid")]
+    assert rs and mids and not any(r["label"] == "Asia" for r in ov["ranges"])
+    lv = futdata._levels("NQ", {days[-1]: futdata.sessions("NQ", None, rth=False, start=days[-1])[days[-1]]})
+    r = next(x for x in rs if x["day"] == days[-1])
+    L = next(x for x in mids if x["name"].endswith(days[-1][5:]))
+    assert abs(L["pts"][0][1] - (r["hi"] + r["lo"]) / 2) < 0.01 and L["dash"]
+    if lv and lv.get(days[-1], {}).get("onh"):
+        assert lv[days[-1]]["onh"] == r["hi"] and lv[days[-1]]["onl"] == r["lo"]       # the chart's ONH / ONL
+
+
 def test_06b5_onhold():
     s = strategy.create(SUB, {"setup": "onhold", "params": {"days": 60, "hold": "close", "exitAt": "12:30"}})
     assert s["params"]["hold"] == "never" and s["params"]["exitAt"] == "12:30"
     strategy.study(SUB, s["id"])
     ts = strategy.trades(SUB, s["id"], "study")
-    assert ts and all(t["why"] in ("stop", "time") for t in ts), {t["why"] for t in ts}       # never a target exit
+    assert ts and all(t["why"] in ("stop", "time", "close") for t in ts), {t["why"] for t in ts}   # never a target exit ("close": the data ends)
     assert all(t["out"][11:16] <= "12:35" for t in ts)
 
 

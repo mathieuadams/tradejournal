@@ -193,10 +193,14 @@
         g.font = '10px Inter, system-ui, sans-serif'; g.textAlign = 'center'; g.fillText(x.text, X(x.i), y); g.font = '11px Inter, system-ui, sans-serif';
       });
       (this.ovLines || []).forEach(L => {
-        g.strokeStyle = L.color || '#E7C35A'; g.lineWidth = 1.5; g.beginPath(); let on = false, prevDay = null;
+        g.strokeStyle = L.color || '#E7C35A'; g.lineWidth = 1.5; g.setLineDash(L.dash ? [6, 4] : []); g.beginPath(); let on = false, prevDay = null;
         L.ix.forEach(([i, v, t]) => { if (i < a - 1 || i > b || i >= n) { on = false; return; } if (t.slice(0, 10) !== prevDay) on = false; prevDay = t.slice(0, 10);
           on ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v)); on = true; });
-        g.stroke(); g.lineWidth = 1;
+        g.stroke(); g.lineWidth = 1; g.setLineDash([]);
+        if (L.dash && L.ix.length) {                       // a level line: its value at the right end
+          const [i, v] = L.ix[L.ix.length - 1];
+          if (i >= a && i <= b) { g.fillStyle = L.color || '#E7C35A'; g.textAlign = 'right'; g.font = '10px Inter, system-ui, sans-serif'; g.fillText(`${(L.name || '').replace(/ \d\d-\d\d$/, '')} ${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, X(i), Y(v) - 4); g.font = '11px Inter, system-ui, sans-serif'; }
+        }
       });
       // supply / demand zones and fair value gaps: from where they formed until broken / filled (or the right edge)
       this.zones.forEach(z => {

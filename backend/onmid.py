@@ -73,15 +73,15 @@ def engine(sym, d, on, R, F, VF, E, prev, p):
         return []
     if p["hold"] == "never":                             # no target: the stop or the out-at time
         x, j = N.trade(F, k, dd, o, stop, None, risk, {**p, "tgtR": 0} if p["exit"] == "target" else p, E, f"{d}T{p['exitAt']}",
-                       pos=pos, onr=rng / o * 100, sweepLvl=tgt, held=None, onx=tgt)
+                       pos=pos, onr=rng / o * 100, sweepLvl=tgt, held=None, onx=tgt, onh=hi, onl=lo, mid=mid)
         x["held"] = (max(b[2] for b in F[k + 1:]) >= tgt if dd > 0 else min(b[3] for b in F[k + 1:]) <= tgt) if len(F) > k + 1 else False
         return [(x, (k, f"{d}T09:30", f"{d}T{p['exitAt']}"))]
     if p["hold"] == "off" or p["exit"] != "target":
         x, j = N.trade(F, k, dd, o, stop, tgt if p["exit"] == "target" else None, risk, p, E, f"{d}T{p['exitAt']}",
-                       pos=pos, onr=rng / o * 100, sweepLvl=tgt, held=False)
+                       pos=pos, onr=rng / o * 100, sweepLvl=tgt, held=False, onh=hi, onl=lo, mid=mid)
         return [(x, (k, f"{d}T09:30", f"{d}T{p['exitAt']}"))]
     x = hold_trade(F, k, dd, o, stop, tgt, risk, p, d)
-    x.update(pos=pos, onr=rng / o * 100, sweepLvl=tgt)
+    x.update(pos=pos, onr=rng / o * 100, sweepLvl=tgt, onh=hi, onl=lo, mid=mid)
     return [(x, (k, f"{d}T09:30", f"{d}T15:55"))]
 
 
@@ -134,4 +134,18 @@ def decorate(x, p):
 
 
 def overlay(sub, p, sym, start, end):
-    return N.overlay(sub, p, sym, start, end)
+    """The EMAs / bias band, plus each session's overnight range (18:00-09:30) and its midpoint, the level that decides
+    the side (drawn through the regular session)."""
+    ov = N.overlay(sub, p, sym, start, end)
+    rows, Fall, fi, E = N.ifvg._series(sym, {**N.ifvg.clean({"tf": 5, "tickers": [sym]}), "_start": start})
+    ov["ranges"] = [r for r in ov.get("ranges", []) if r.get("label") != "Asia"]
+    for d, on, R, F, V in rows:
+        if d > end or not on:
+            continue
+        hi, lo = max(b[2] for b in on), min(b[3] for b in on)
+        mid = (hi + lo) / 2
+        ov["ranges"].append({"day": d, "hi": hi, "lo": lo, "t0": on[0][0], "t1": on[-1][0], "t2": f"{d}T09:30",
+                             "label": f"Overnight {hi:,.2f} / {lo:,.2f}"})
+        ov["lines"].append({"name": f"Overnight mid {d[5:]}", "color": "#FFB86B", "dash": True,
+                            "pts": [[f"{d}T00:00", round(mid, 2)], [f"{d}T15:55", round(mid, 2)]]})   # (lines break at midnight)
+    return ov
