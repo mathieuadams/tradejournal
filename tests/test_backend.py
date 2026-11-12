@@ -266,6 +266,32 @@ def test_06b5_onhold():
     assert all(t["out"][11:16] <= "12:35" for t in ts)
 
 
+def test_06b6_opt0dte():
+    import time
+    import alpaca
+    import opt0dte
+    import uwhales
+    alpaca.save_key(SUB, "PK1234567890AB", "s" * 40)
+    uwhales.save_key(SUB, "uw_" + "k" * 30)
+    s = strategy.create(SUB, {"setup": "onhold", "params": {"days": 60}})
+    strategy.study(SUB, s["id"])
+    ts = strategy.trades(SUB, s["id"], "study")
+    need = opt0dte.trade_days(ts)
+    assert need and all(e == "QQQ" and side in "CP" for e, d, side in need)
+    assert opt0dte.job(SUB, ts[-8:], lambda m: None, time.time() + 600, lambda e: None, {})
+    st, r = call("GET", f"/strategies/{s['id']}/options")
+    assert st == 200 and r["coverage"]["have"] >= 1, r.get("coverage")
+    rows = [x for x in r["rows"] if x["n"]]
+    assert rows and all(0 <= x["avgDelta"] <= 1 and x["avgPrem"] > 0 for x in rows), r["rows"][:2]
+    lo, hi = [x for x in rows if x["delta"] <= 0.3], [x for x in rows if x["delta"] >= 0.7]
+    assert not lo or not hi or lo[0]["avgPrem"] < hi[0]["avgPrem"]          # lower delta = cheaper (further out of the money)
+    # Black-Scholes sanity: an at-the-money call is about 0.5, deep in / out near 1 / 0
+    T = 390 / opt0dte.YEAR_MIN
+    assert 0.45 < opt0dte.delta(500, 500, T, opt0dte.bs(500, 500, T, 0.2, True), True) < 0.55
+    assert opt0dte.delta(500, 490, T, opt0dte.bs(500, 490, T, 0.2, True), True) > 0.9
+    assert opt0dte.delta(500, 510, T, opt0dte.bs(500, 510, T, 0.2, False), False) > 0.9
+
+
 def test_06c_fractal_on_stocks():
     import alpaca
     import stockdata

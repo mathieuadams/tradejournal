@@ -1487,6 +1487,8 @@ async function vStrategy(id) {
         ${st && st.factors && Object.keys(st.factors).length ? `<section class="panel"><div class="hd"><h2>What drives it</h2><span class="dim" style="font-size:13px">All study trades, by factor</span></div><div class="bd" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
           ${Object.entries(st.factors).map(([lab, rows]) => `<div><div class="note" style="margin-bottom:6px">${esc(lab)}</div><table class="tbl"><tbody>${rows.slice(0, 8).map(r => `<tr><td style="padding:5px 8px">${esc(r.v)}</td><td class="r" style="padding:5px 8px">${r.n}</td><td class="r ${cls(r.avgR)}" style="padding:5px 8px">${r.avgR != null ? sgn(r.avgR, 2, 'R') : '—'}</td><td class="r ${cls(r.exp)}" style="padding:5px 8px">${money(r.exp)}</td></tr>`).join('')}</tbody></table></div>`).join('')}
         </div></section>` : ''}
+        ${st && Object.keys(s.coverage).some(k => ['NQ', 'ES', 'QQQ', 'SPY'].includes(k)) ? `<section class="panel"><div class="hd"><h2>0DTE options</h2><span class="dim" style="font-size:13px">these trades on same-day options (QQQ for NQ / QQQ, SPY for ES / SPY): a call for a long, a put for a short, by delta</span></div>
+          <div class="bd" id="opt-out"><div class="empty muted">Loading…</div></div></section>` : ''}
         ${st ? `<section class="panel"><div class="hd"><h2>Trades</h2><div class="seg"><button data-trset="study" aria-pressed="${S.trSet === 'study'}">Study</button><button data-trset="paper" aria-pressed="${S.trSet === 'paper'}">Paper</button></div><div class="grow"></div><span class="dim" style="font-size:12px">last 200</span></div>
           ${ts.length ? `<div class="tbl-wrap" style="max-height:520px;overflow:auto"><table class="tbl" style="min-width:760px"><thead><tr><th>Entry</th><th>Exit</th><th>Side</th><th class="r">Entry px</th><th class="r">Exit px</th><th class="r">Points</th><th class="r">R</th><th class="r">Net</th><th>Why</th><th>Condition</th></tr></thead><tbody>
             ${ts.slice(-200).reverse().map(t => `<tr><td class="mono">${esc(t.s)} ${esc(t.in.replace('T', ' ').slice(0, 16))}</td><td class="mono">${esc((t.out || '').slice(5, 16).replace('T', ' '))}</td><td>${t.side}</td><td class="r">${fmt(t.e)}</td><td class="r">${fmt(t.x)}</td>
@@ -1525,6 +1527,31 @@ async function vStrategy(id) {
     </div>`);
   if (job.status === 'running') pollJob('/strategies/' + id, x => x.job, () => vStrategy(id));
   if (srch && srch.on) pollSearch(id);
+  if ($('#opt-out')) optLoad(id);
+}
+/* 0DTE options: the study trades on same-day calls / puts, by delta at the entry (backend opt0dte.py). */
+S.opt = { slip: 0.02, comm: 0.65, budget: 1000 };
+async function optLoad(id) {
+  const out = $('#opt-out'); if (!out) return;
+  let d;
+  try { d = await api(`/strategies/${id}/options?slip=${S.opt.slip}&comm=${S.opt.comm}&budget=${S.opt.budget}`); }
+  catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; return; }
+  const c = d.coverage, j = d.job || {}, run = j.status === 'running';
+  const best = (d.rows || []).filter(r => r.n).sort((a, b) => b.pnlB - a.pnlB)[0];
+  out.innerHTML = `<div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:10px">
+      <span class="note" style="margin:0">Option prices for <b>${c.have}</b> of ${c.need} trading days${c.from ? ` (${esc(c.from)} → ${esc(c.to)})` : ''}. ${run ? esc(j.msg || 'Downloading…') : j.status === 'error' ? `<span class="loss">${esc(j.msg || '')}</span>` : ''}</span>
+      <button class="btn sm ${c.have < c.need ? 'primary' : ''}" data-act="opt-dl" ${run ? 'disabled' : ''}>${c.have < c.need ? 'Download option prices' : 'Up to date'}</button>
+      <div class="grow"></div>
+      <label class="f">Slippage per side ($)<input id="opt-slip" type="number" step="0.01" value="${S.opt.slip}" style="width:80px"></label>
+      <label class="f">Commission / contract / side<input id="opt-comm" type="number" step="0.05" value="${S.opt.comm}" style="width:80px"></label>
+      <label class="f">Premium per trade ($)<input id="opt-budget" type="number" step="100" value="${S.opt.budget}" style="width:100px"></label>
+      <button class="btn sm" data-act="opt-calc">Recalculate</button></div>
+    ${(d.rows || []).some(r => r.n) ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Target delta</th><th class="r">Trades</th><th class="r">Avg delta</th><th class="r">Avg premium</th><th class="r">Win</th><th class="r">Avg % / trade</th><th class="r">Median %</th><th class="r">Best / worst %</th><th class="r">P/L 1 contract</th><th class="r">P/L at $${Number(S.opt.budget).toLocaleString('en-US')} / trade</th><th class="r">Profit factor</th><th class="r">Max DD</th></tr></thead><tbody>
+      ${d.rows.map(r => !r.n ? `<tr><td>${r.delta.toFixed(1)}</td><td class="r muted" colspan="11">no contract near this delta</td></tr>`
+        : `<tr class="${best && r.delta === best.delta ? 'sel' : ''}"><td>${r.delta.toFixed(1)}</td><td class="r">${r.n}</td><td class="r mono">${r.avgDelta.toFixed(2)}</td><td class="r mono">$${r.avgPrem.toFixed(2)}</td><td class="r">${r.win.toFixed(0)}%</td><td class="r ${cls(r.avgPct)}">${sgn(r.avgPct, 1, '%')}</td><td class="r ${cls(r.medPct)}">${sgn(r.medPct, 1, '%')}</td><td class="r mono">${sgn(r.best, 0, '%')} / ${sgn(r.worst, 0, '%')}</td><td class="r ${cls(r.pnl1)}">${money(r.pnl1)}</td><td class="r ${cls(r.pnlB)}"><b>${money(r.pnlB)}</b></td><td class="r">${r.pf != null ? r.pf.toFixed(2) : '—'}</td><td class="r loss">${money(-r.dd)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="note">Delta at the entry from Black-Scholes with the option's own implied volatility (time left to 16:00). Entry: the option's first minute at the trade's entry (+ slippage); exit: its last price when the underlying trade exits (− slippage). ${d.skipped ? `${d.skipped} trade(s) without option prices.` : ''} The highlighted row made the most at the fixed premium per trade.</div>`
+      : `<div class="empty muted">${c.need ? 'Download the option prices to see the results (a few seconds per trading day, from Unusual Whales).' : 'No same-day regular-hours trades in this study.'}</div>`}`;
+  if (run) setTimeout(() => { if (S.cur && S.cur.id === id && $('#opt-out')) optLoad(id); }, 5000);
 }
 function pollSearch(id) {
   clearTimeout(S.srchT);
@@ -1816,6 +1843,8 @@ document.addEventListener('click', async e => {
         $('#fx-tog').innerHTML = fxTogBar(); fxAt(); break; }
       case 'fold': { const p = el.closest('.panel'), key = 'fold:' + el.dataset.k, open = p.dataset.folded === '1';
         fxFold(p, !open); try { localStorage.setItem(key, open ? '0' : '1'); } catch (e) { /* private mode */ } break; }
+      case 'opt-dl': try { await api(`/strategies/${S.cur.id}/options`, { method: 'POST', body: {} }); } catch (e) { toast(e.message); } optLoad(S.cur.id); break;
+      case 'opt-calc': S.opt = { slip: +$('#opt-slip').value || 0, comm: +$('#opt-comm').value || 0, budget: +$('#opt-budget').value || 1000 }; optLoad(S.cur.id); break;
       case 'vp-load': S.vp = { ...S.vp, fwd: +$('#vp-fwd').value || 1, match: $('#vp-match').value, wave: +$('#vp-wave').value || 1, days: +$('#vp-days').value || 200 }; $('#vp-out').innerHTML = '<div class="empty muted">Calculating…</div>'; await vpLoad(); break;
       case 'vp-step': { const r = S.vpR; if (!r) break; const dd = +el.dataset.d, i = dd === 9999 ? r.dates.length - 1 : Math.max(2, Math.min(r.dates.length - 1, r.index + dd)); S.vp.asof = i === r.dates.length - 1 ? '' : r.dates[i]; await vpLoad(); break; }
       case 'oa-load': await oaLoad($('#oa-exp').value); break;

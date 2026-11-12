@@ -495,6 +495,28 @@ def strategy_del(sub, claims, body, q, sid):
     return strategy.delete(sub, sid)
 
 
+@route("GET", "/strategies/(?P<sid>[a-f0-9]{10})/options")
+def strategy_options(sub, claims, body, q, sid):
+    """The study trades replayed on 0DTE options (QQQ / SPY) by delta, on the days downloaded so far."""
+    import opt0dte
+    ts = strategy.trades(sub, sid, "study")
+    f = lambda k, d, lo, hi: min(hi, max(lo, float(q.get(k) or d)))
+    cov = opt0dte.coverage(ts)
+    r = opt0dte.replay(ts, f("slip", 0.02, 0, 1), f("comm", 0.65, 0, 5), f("budget", 1000, 50, 1e6)) if cov["have"] else {"rows": []}
+    return {**r, "coverage": cov, "job": jobs.status(sub, f"opt0dte-{sid}")}
+
+
+@route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/options")
+def strategy_options_download(sub, claims, body, q, sid):
+    import opt0dte
+    import uwhales
+    ts = strategy.trades(sub, sid, "study")
+    opt0dte.check(ts)
+    if not uwhales.status(sub).get("connected"):
+        raise BadRequest("Connect Unusual Whales on the Data page: the option prices come from it.")
+    return {"job": jobs.start(sub, f"opt0dte-{sid}", "opt0dte", {"id": sid})}
+
+
 @route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/run")
 def strategy_run(sub, claims, body, q, sid):
     step = body.get("step")

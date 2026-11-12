@@ -111,6 +111,12 @@ def handler(event, ctx=None):
                     print("mm backfill", s_, d, e)
                 done.append(f"{s_}{d}")
             set_status(sub, name, status="done", msg=f"MM data rebuilt for {len(p['days'])} day(s).")
+        elif job == "opt0dte":                          # a strategy's trades on 0DTE options: download the option minutes
+            import opt0dte
+            ts = strategy.trades(sub, p["id"], "study")
+            if not opt0dte.job(sub, ts, prog, dl, _invoke, event):
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="0DTE option prices downloaded.")
         elif job == "study":
             strategy.study(sub, p["id"], prog)
             set_status(sub, name, status="done", msg="Study finished.")
