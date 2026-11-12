@@ -527,6 +527,32 @@ def strategy_compare(sub, claims, body, q, sid):
         raise BadRequest(f"Compare failed: {type(e).__name__}: {e}")
 
 
+@route("GET", "/strategies/(?P<sid>[a-f0-9]{10})/alpopt")
+def strategy_alpopt(sub, claims, body, q, sid):
+    """Same-day options on the Alpaca paper account following this strategy's paper trades."""
+    import alpopt
+    return alpopt.view(sub, strategy.get(sub, sid))
+
+
+@route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/alpopt")
+def strategy_alpopt_set(sub, claims, body, q, sid):
+    import alpopt
+    import db
+    s = strategy.get(sub, sid)
+    cfg = alpopt.clean(body)
+    if cfg["on"]:
+        if any(t not in alpopt.UND for t in s["params"]["tickers"]):
+            raise BadRequest("Alpaca options follow NQ (→ QQQ) or ES (→ SPY) strategies.")
+        a = alpopt.account(sub)                      # the key must work on paper-api.alpaca.markets
+        if a.get("level") is not None and int(a["level"] or 0) < 2:
+            raise BadRequest(f"The Alpaca paper account's options level is {a['level']}: buying calls / puts needs level 2.")
+    elif (s.get("alpOpt") or {}).get("on"):
+        alpopt.close_all(sub, s)
+    s["alpOpt"] = cfg
+    db.put(s)
+    return alpopt.view(sub, s)
+
+
 @route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/options")
 def strategy_options_download(sub, claims, body, q, sid):
     import opt0dte

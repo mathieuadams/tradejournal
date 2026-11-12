@@ -512,6 +512,12 @@ def action(sub, sid, act):
         s["stage"] = "paper"
     elif act == "stop":
         s["paper"] = {**(s.get("paper") or {}), "on": False}
+        if (s.get("alpOpt") or {}).get("on"):
+            try:
+                import alpopt
+                alpopt.close_all(sub, s)
+            except Exception as e:
+                print("alpaca close failed", e)
         s["stage"] = "validated" if (s.get("valid") or {}).get("pass") else "study"
     elif act == "retire":
         s["paper"] = {**(s.get("paper") or {}), "on": False}
@@ -555,6 +561,14 @@ def paper_one(sub, s):
             day_net[t["d"]] += t["net"]
         kept.append(t)
     store.put_json(f"strat/{sub}/{s['id']}/paper", {"trades": kept})
+    if (s.get("alpOpt") or {}).get("on"):
+        try:
+            import alpopt
+            alpopt.tick(sub, s, kept)
+            pp.pop("alpErr", None)
+        except Exception as e:
+            print("alpaca options failed", s.get("id"), e)
+            pp["alpErr"] = str(e)[:200]
     closed = [t for t in kept if t["status"] == "closed"]
     m = metrics(closed)
     te = (s.get("valid") or {}).get("test") or {}

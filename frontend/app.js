@@ -1523,11 +1523,43 @@ async function vStrategy(id) {
           ${pp.on && pp.forced ? '<div class="note">Started without a passed validation.</div>' : ''}
           <button class="btn" disabled>Promote to live · needs a futures broker</button>
         </div></section>
+        ${(s.params.tickers || []).every(t => t === 'NQ' || t === 'ES') ? `<section class="panel"><div class="hd"><h2>Alpaca options (paper account)</h2></div><div class="bd" id="alp-out"><div class="empty muted">Loading…</div></div></section>` : ''}
       </aside>
     </div>`);
   if (job.status === 'running') pollJob('/strategies/' + id, x => x.job, () => vStrategy(id));
   if (srch && srch.on) pollSearch(id);
   if ($('#opt-out')) optLoad(id);
+  if ($('#alp-out')) alpLoad(id);
+}
+/* Same-day options on the Alpaca paper account, following the paper trades (backend alpopt.py). */
+async function alpLoad(id) {
+  const out = $('#alp-out'); if (!out) return;
+  let d;
+  try { d = await api(`/strategies/${id}/alpopt`); } catch (e) { out.innerHTML = `<div class="empty loss">${esc(e.message)}</div>`; return; }
+  const c = d.cfg, a = d.account || {}, pp = (S.cur && S.cur.paper) || {};
+  const px = o => o && o.px != null ? '$' + o.px.toFixed(2) : o ? `<span class="muted">${esc(o.status || '')}</span>` : '—';
+  out.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px">
+    <div class="note" style="margin:0">When a paper trade opens, buys ${c.qty} same-day ${(S.cur.params.tickers || []).map(t => t === 'NQ' ? 'QQQ' : 'SPY').join(' / ')} contract(s) at each delta (call for a long, put for a short) on your Alpaca <b>paper</b> account; sells them when the trade closes, or at 15:50. Checked every 5 minutes with the candles, so fills can be a few minutes after the signal. No new legs after 15:30.</div>
+    ${a.error ? `<div class="job error">Alpaca paper account: ${esc(a.error)}</div>` : `<div class="note" style="margin:0">Paper account ${esc(a.number || '')} · ${esc(a.status || '')} · options level ${a.level ?? '—'} · options buying power ${a.buyingPower ? money(+a.buyingPower) : '—'}</div>`}
+    ${pp.alpErr ? `<div class="job error">Last run: ${esc(pp.alpErr)}</div>` : ''}
+    <div class="form" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+      <label class="f">Deltas (comma separated)<input id="alp-d" value="${c.deltas.join(', ')}"></label>
+      <label class="f">Contracts per delta<input id="alp-q" type="number" min="1" max="10" value="${c.qty}"></label>
+    </div>
+    ${c.on ? '<button class="btn" data-act="alp-off">Stop Alpaca options (sells open legs)</button>' : `<button class="btn primary" data-act="alp-on">Start Alpaca options</button>${pp.on ? '' : '<div class="note">Runs while paper trading is on.</div>'}`}
+    ${d.summary.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Delta</th><th class="r">Legs</th><th class="r">Closed</th><th class="r">Win</th><th class="r">P/L</th></tr></thead><tbody>
+      ${d.summary.map(r => `<tr><td>${r.delta.toFixed(2)}</td><td class="r">${r.n}</td><td class="r">${r.done}</td><td class="r">${r.done ? Math.round(100 * r.win / r.done) + '%' : '—'}</td><td class="r ${cls(r.pnl)}"><b>${money(r.pnl)}</b></td></tr>`).join('')}</tbody></table></div>` : ''}
+    ${d.legs.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Trade</th><th>Contract</th><th class="r">Delta</th><th class="r">Buy</th><th class="r">Sell</th><th>Exit</th><th class="r">P/L</th></tr></thead><tbody>
+      ${d.legs.map(l => `<tr><td class="mono">${esc(l.trade.split('|').slice(1).join(' '))}</td><td class="mono">${esc(l.sym)}</td><td class="r mono">${l.delta.toFixed(2)} <span class="muted">(${l.target})</span></td><td class="r mono">${px(l.buy)}</td><td class="r mono">${px(l.sell)}</td><td>${esc((l.sell || {}).why || (l.buy || {}).err || '')}</td><td class="r ${cls(l.pnl || 0)}">${l.pnl != null ? money(l.pnl) : '—'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty muted">No option orders yet.</div>'}
+    ${d.log.length ? `<details><summary class="note">Log</summary><pre class="mono" style="font-size:11px;white-space:pre-wrap">${esc(d.log.join('\n'))}</pre></details>` : ''}
+  </div>`;
+  clearTimeout(S.alpT);
+  S.alpT = setTimeout(() => { if (S.cur && S.cur.id === id && $('#alp-out')) alpLoad(id); }, 60000);
+}
+async function alpSet(on) {
+  const deltas = $('#alp-d').value.split(',').map(x => +x.trim()).filter(x => x);
+  try { await api(`/strategies/${S.cur.id}/alpopt`, { method: 'POST', body: { on, deltas, qty: +$('#alp-q').value || 1 } }); } catch (e) { toast(e.message); }
+  alpLoad(S.cur.id);
 }
 /* 0DTE options: the study trades on same-day calls / puts, by delta at the entry (backend opt0dte.py). */
 S.opt = { slip: 0.02, comm: 0.65, budget: 1000, dte: 0, und: 'etf' };
@@ -1869,6 +1901,8 @@ document.addEventListener('click', async e => {
       case 'fold': { const p = el.closest('.panel'), key = 'fold:' + el.dataset.k, open = p.dataset.folded === '1';
         fxFold(p, !open); try { localStorage.setItem(key, open ? '0' : '1'); } catch (e) { /* private mode */ } break; }
       case 'opt-dl': try { await api(`/strategies/${S.cur.id}/options`, { method: 'POST', body: { dte: S.opt.dte, und: S.opt.und } }); } catch (e) { toast(e.message); } optLoad(S.cur.id); break;
+      case 'alp-on': alpSet(true); break;
+      case 'alp-off': alpSet(false); break;
       case 'opt-calc': S.opt = { slip: +$('#opt-slip').value || 0, comm: +$('#opt-comm').value || 0, budget: +$('#opt-budget').value || 1000, dte: +$('#opt-dte').value || 0, und: $('#opt-und').value }; optLoad(S.cur.id); break;
       case 'vp-load': S.vp = { ...S.vp, fwd: +$('#vp-fwd').value || 1, match: $('#vp-match').value, wave: +$('#vp-wave').value || 1, days: +$('#vp-days').value || 200 }; $('#vp-out').innerHTML = '<div class="empty muted">Calculating…</div>'; await vpLoad(); break;
       case 'vp-step': { const r = S.vpR; if (!r) break; const dd = +el.dataset.d, i = dd === 9999 ? r.dates.length - 1 : Math.max(2, Math.min(r.dates.length - 1, r.index + dd)); S.vp.asof = i === r.dates.length - 1 ? '' : r.dates[i]; await vpLoad(); break; }

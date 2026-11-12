@@ -282,6 +282,51 @@ def test_06b5_onhold():
     assert all(t["out"][11:16] <= "12:35" for t in ts)
 
 
+def test_06b7_alpaca_options_paper():
+    from datetime import datetime as _dt
+    import alpaca
+    import alpopt
+    import fakes
+    alpaca.save_key(SUB, "PK1234567890AB", "s" * 40)
+    br = fakes.FakeAlpacaBroker(600.0)
+    old_req, old_now = alpopt._req, alpopt.now_ny
+    alpopt._req = br
+    try:
+        s = strategy.create(SUB, {"setup": "onhold", "params": {"days": 60}})
+        st, r = call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [0.3, 0.5, 0.7], "qty": 1})
+        assert st == 200 and r["cfg"]["on"] and r["account"]["level"] == 3, r
+        s = strategy.get(SUB, s["id"])
+        t = {"s": "NQ", "d": "2026-11-12", "in": "09:34", "out": "09:40", "side": "long", "why": "open", "status": "open"}
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 9, 40)
+        out = alpopt.tick(SUB, s, [t])
+        legs = out["legs"][alpopt._key(t)]
+        assert len(legs) == 3 and all(l["right"] == "C" and l["buy"]["status"] == "filled" for l in legs), legs
+        assert [abs(l["delta"] - l["target"]) < 0.1 for l in legs] == [True] * 3, legs
+        assert all(o["position_intent"] == "buy_to_open" for o in br.orders.values())
+        alpopt.tick(SUB, s, [t])                                     # same open trade: no second buy
+        assert len(br.orders) == 3
+        br.spot = 604.0
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 11, 0)
+        out = alpopt.tick(SUB, s, [{**t, "status": "closed", "why": "time", "out": "11:00"}])
+        legs = out["legs"][alpopt._key(t)]
+        assert all(l["sell"]["status"] == "filled" and l["pnl"] > 0 for l in legs), legs
+        v = alpopt.view(SUB, s)
+        assert [x["delta"] for x in v["summary"]] == [0.3, 0.5, 0.7] and all(x["done"] == 1 for x in v["summary"])
+        sh = {**t, "side": "short", "in": "13:00"}                     # short → puts, flat at 15:50
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 13, 5)
+        out = alpopt.tick(SUB, s, [sh])
+        assert all(l["right"] == "P" for l in out["legs"][alpopt._key(sh)])
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 15, 50)
+        out = alpopt.tick(SUB, s, [sh])
+        assert all(l["sell"]["why"] == "15:50 flat" for l in out["legs"][alpopt._key(sh)])
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 15, 40)
+        assert call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [2]})[0] == 400
+        st, r = call("POST", f"/strategies/{s['id']}/alpopt", {"on": False})
+        assert st == 200 and not r["cfg"]["on"]
+    finally:
+        alpopt._req, alpopt.now_ny = old_req, old_now
+
+
 def test_06b6_opt0dte():
     import time
     import alpaca

@@ -317,6 +317,47 @@ def fake_uw_get(token, path, params=None, timeout=60):
     return {"data": sel[page * lim:(page + 1) * lim]}
 
 
+class FakeAlpacaBroker:
+    """paper-api orders / account and v1beta1 option snapshots, in memory."""
+    def __init__(self, spot=600.0):
+        self.spot, self.orders, self.n = spot, {}, 0
+
+    def __call__(self, creds, method, url, body=None, timeout=30):
+        import alpaca
+        if "paper-api.alpaca.markets" not in url and "/v1beta1/" not in url:
+            raise AssertionError("not the paper endpoint: " + url)
+        path = url.split("/v2/")[-1] if "/v2/" in url else url.split("/v1beta1/")[-1]
+        if path == "account":
+            return {"account_number": "PA1TEST", "status": "ACTIVE", "cash": "100000", "options_buying_power": "100000", "options_trading_level": 3}
+        if path.startswith("options/snapshots/"):
+            q = dict(urllib.parse.parse_qsl(path.split("?", 1)[1]))
+            und, call = path.split("?")[0].split("/")[-1], q["type"] == "call"
+            exp = q["expiration_date"][2:].replace("-", "")
+            out = {}
+            for k in range(int(self.spot) - 10, int(self.spot) + 11):
+                m = (self.spot - k) if call else (k - self.spot)
+                d = 1 / (1 + math.exp(-m / 2.5))
+                px = max(0.05, round(max(0, m) + 1.2 * d * (1 - d) * 4, 2))
+                out[f"{und}{exp}{'C' if call else 'P'}{k * 1000:08d}"] = {"greeks": {"delta": d if call else -d}, "latestQuote": {"bp": px - 0.02, "ap": px + 0.02}}
+            return {"snapshots": out}
+        if path == "orders" and method == "POST":
+            self.n += 1
+            oid = f"o{self.n}"
+            k = int(body["symbol"][-8:]) / 1000
+            call = body["symbol"][-9] == "C"
+            m = (self.spot - k) if call else (k - self.spot)
+            px = round(max(0.05, max(0, m) + 1.0), 2)
+            self.orders[oid] = {"id": oid, "status": "filled", "filled_avg_price": str(px), "filled_at": "2026-11-12T15:00:00Z", **body}
+            return {"id": oid, "status": "accepted"}
+        if path.startswith("orders/"):
+            oid = path.split("/")[1]
+            if method == "DELETE":
+                self.orders[oid]["status"] = "canceled"
+                return {}
+            return self.orders[oid]
+        raise AssertionError("unexpected " + method + " " + url)
+
+
 def install(fake_databento=False, data_dir=None, persist=True):
     global PERSIST
     PERSIST = persist
