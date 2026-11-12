@@ -503,13 +503,15 @@ def strategy_options(sub, claims, body, q, sid):
     f = lambda k, d, lo, hi: min(hi, max(lo, float(q.get(k) or d)))
     try:
         dte = int(q.get("dte") or 0) if str(q.get("dte") or 0).isdigit() and int(q.get("dte") or 0) in opt0dte.DTES else 0
-        cov = opt0dte.coverage(ts, dte)
-        r = opt0dte.replay(ts, f("slip", 0.02, 0, 1), f("comm", 0.65, 0, 5), f("budget", 1000, 50, 1e6), dte=dte) if cov["have"] else {"rows": []}
+        und = "index" if q.get("und") == "index" else "etf"
+        cov = opt0dte.coverage(ts, dte, und)
+        r = opt0dte.replay(ts, f("slip", 0.02, 0, 1), f("comm", 0.65, 0, 5), f("budget", 1000, 50, 1e6), dte=dte, und=und) if cov["have"] else {"rows": []}
     except Exception as e:                              # show what went wrong instead of a bare 500
         import traceback
         traceback.print_exc()
         raise BadRequest(f"Options replay failed: {type(e).__name__}: {e}")
-    return {**r, "dte": dte, "coverage": cov, "job": jobs.status(sub, f"opt0dte-{sid}" + (f"-{dte}" if dte else ""))}
+    return {**r, "dte": dte, "und": und, "coverage": cov,
+            "job": jobs.status(sub, f"opt0dte-{sid}" + (f"-{dte}" if dte else "") + ("-idx" if und == "index" else ""))}
 
 
 @route("GET", "/strategies/(?P<sid>[a-f0-9]{10})/compare")
@@ -536,7 +538,9 @@ def strategy_options_download(sub, claims, body, q, sid):
     dte = int(body.get("dte") or 0)
     if dte not in opt0dte.DTES:
         raise BadRequest(f"Days to expiry: one of {', '.join(map(str, opt0dte.DTES))}.")
-    return {"job": jobs.start(sub, f"opt0dte-{sid}" + (f"-{dte}" if dte else ""), "opt0dte", {"id": sid, "dte": dte})}
+    und = "index" if body.get("und") == "index" else "etf"
+    return {"job": jobs.start(sub, f"opt0dte-{sid}" + (f"-{dte}" if dte else "") + ("-idx" if und == "index" else ""), "opt0dte",
+                              {"id": sid, "dte": dte, "und": und})}
 
 
 @route("POST", "/strategies/(?P<sid>[a-f0-9]{10})/run")

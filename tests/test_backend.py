@@ -302,6 +302,16 @@ def test_06b6_opt0dte():
     f0 = c["rows"][0]
     assert f0["train"]["n"] + f0["test"]["n"] == len([t for t in ts if t.get("net") is not None])
     assert all(x["test"]["n"] == 0 or x["test2x"] <= x["test"]["total"] + 1e-6 for x in c["rows"])     # 2x costs never helps
+    # NDX index options: the level from put-call parity, strikes in 10s
+    assert opt0dte.job(SUB, ts[:6] + ts[-4:], lambda m: None, time.time() + 600, lambda e: None, {}, 0, "index")
+    pk = opt0dte.pack("NDX", 0)
+    day = next(v for v in pk.values() if v.get("strikes"))
+    assert day["root"] == "NDXP" and day["S"] and abs(day["open"] / 41.0 / 656.10 - 1) < 0.05, (day["root"], day["open"])
+    assert all(int(k) % 10 == 0 for k in day["strikes"])
+    st, ri = call("GET", f"/strategies/{s['id']}/options", q={"und": "index"})
+    assert st == 200 and ri["und"] == "index" and any(x["n"] for x in ri["rows"]), ri["rows"][:2]
+    st, c = call("GET", f"/strategies/{s['id']}/compare")
+    assert any(x["name"].startswith("NDX") for x in c["rows"]), [x["name"] for x in c["rows"]]
     st, j = call("POST", f"/strategies/{s['id']}/options", {"dte": 4})
     assert st == 400
     # Black-Scholes sanity: an at-the-money call is about 0.5, deep in / out near 1 / 0

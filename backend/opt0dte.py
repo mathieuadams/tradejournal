@@ -17,6 +17,12 @@ import store
 from util import BadRequest, utc_to_ny
 
 ETF = {"NQ": "QQQ", "QQQ": "QQQ", "ES": "SPY", "SPY": "SPY"}
+INDEX = {"NQ": "NDX", "QQQ": "NDX", "ES": "SPX", "SPY": "SPX"}
+UND = {"etf": ETF, "index": INDEX}
+# index options: the PM-settled daily root first (SPXW, NDXP), its ETF for a first guess of the level (x ratio), the
+# strike steps near the money / further out. The level itself comes from the options (put-call parity at the money).
+IDX = {"SPX": {"etf": "SPY", "roots": ("SPXW", "SPX"), "ratio": 10.03, "step": 5, "far": 25},
+       "NDX": {"etf": "QQQ", "roots": ("NDXP", "NDX"), "ratio": 41.0, "step": 10, "far": 50}}
 DELTAS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 YEAR_MIN = 365 * 24 * 60
 
@@ -107,13 +113,13 @@ def delta(S, K, T, price, call):
 
 # ---------------------------------------------------------------- data
 
-def trade_days(trades):
-    """[(etf, day, side 'C' / 'P')] of the same-day regular-hours trades."""
+def trade_days(trades, und="etf"):
+    """[(underlying, day, side 'C' / 'P')] of the same-day regular-hours trades (und: etf = QQQ / SPY, index = NDX / SPX)."""
     out = set()
     for t in trades:
         if t.get("status") == "open" or not t.get("out") or t["in"][:10] != t["out"][:10] or not ("09:29" <= t["in"][11:16] < "16:00"):
             continue                                    # (an entry at the 09:25 candle's close is stamped 09:29)
-        e = ETF.get(t["s"])
+        e = UND[und].get(t["s"])
         if e:
             out.add((e, t["in"][:10], "C" if t["side"] == "long" else "P"))
     return sorted(out, key=lambda x: (x[1], x[0], x[2]))
@@ -149,6 +155,8 @@ def fetch_day(sub, etf, day, side, dte=0):
     $1 steps for 0DTE; for later expiries ±1.5% in $1 steps, then $2 steps out to ±(1.5% + 1% per day to expiry, up to
     5%) (deltas 0.1-0.9 sit further out when there's more time). Returned; the job stores them in the pack."""
     import uwhales
+    if etf in IDX:
+        return fetch_index_day(sub, etf, day, side, dte)
     px = etf_price(etf, day, "09:30")
     if not px:
         return {"none": "no ETF price"}
@@ -185,6 +193,64 @@ def fetch_day(sub, etf, day, side, dte=0):
     return out
 
 
+def _minute_rows(r):
+    import uwhales
+    rows = []
+    for m in r.get("data") or []:
+        t = utc_to_ny(datetime.strptime(str(m["start_time"])[:19], "%Y-%m-%dT%H:%M:%S")).strftime("%H:%M")
+        o, c = uwhales._num(m.get("open")), uwhales._num(m.get("close"))
+        if c:
+            rows.append([t, o or c, c])
+    return rows
+
+
+def _contract(tok, root, exp, side, k, day):
+    import uwhales
+    try:
+        return _slots(_minute_rows(uwhales._get_retry(tok, f"option-contract/{occ(root, exp, side, k)}/intraday", {"date": day})))
+    except Exception as e:                              # not listed
+        print("opt0dte", root, day, exp, side, k, e)
+        return None
+
+
+def fetch_index_day(sub, idx, day, side, dte=0):
+    """SPX / NDX options: the index level from put-call parity at the money (S = K + call - put, each 5-minute slot), then
+    the strikes on `side` around it (the same widths as the ETFs, in the index's strike steps)."""
+    import uwhales
+    sp = IDX[idx]
+    px = etf_price(sp["etf"], day, "09:30")
+    if not px:
+        return {"none": "no ETF price"}
+    tok = uwhales.token(sub)
+    st = sp["step"]
+    k0 = round(px * sp["ratio"] / st) * st
+    for exp in (expiry(day, dte), expiry(day, dte + 1)) if dte else (day,):
+        for root in sp["roots"]:
+            pair = None
+            for k in (k0, k0 + st, k0 - st, k0 + 2 * st, k0 - 2 * st):
+                c, p = _contract(tok, root, exp, "C", k, day), _contract(tok, root, exp, "P", k, day)
+                if c and p and c["o"][0] is not None and p["o"][0] is not None:
+                    pair = (k, c, p)
+                    break
+            if not pair:
+                continue
+            k, c, p = pair
+            S = [round(k + c["c"][i] - p["c"][i], 2) if c["c"][i] is not None and p["c"][i] is not None else None for i in range(78)]
+            S0 = round(k + c["o"][0] - p["o"][0], 2)
+            near, far = (0.012, 0.012) if not dte else (0.015, min(0.05, 0.015 + 0.01 * dte))
+            ks = sorted(set(range(int(math.floor(S0 * (1 - near) / st) * st), int(math.ceil(S0 * (1 + near) / st) * st) + 1, st))
+                        | set(range(int(math.floor(S0 * (1 - far) / sp["far"]) * sp["far"]), int(math.ceil(S0 * (1 + far) / sp["far"]) * sp["far"]) + 1, sp["far"])))
+            out = {"open": S0, "S": S, "root": root, "exp": exp, "strikes": {}}
+            have = {k: (c if side == "C" else p)}
+            for kk in ks:
+                sl = have.get(kk) or _contract(tok, root, exp, side, kk, day)
+                if sl:
+                    out["strikes"][str(kk)] = sl
+            if out["strikes"]:
+                return out
+    return {"none": f"no {idx} options found for {day}"}
+
+
 def _slots(rows):
     """Minute rows [[hh:mm, open, close]] -> {"o": [first open in each 5-minute slot], "c": [last close in each]} for
     the 78 slots 09:30-15:55 (None where it didn't trade): small enough to keep 2 years in one file."""
@@ -198,18 +264,18 @@ def _slots(rows):
     return {"o": o, "c": c} if any(x is not None for x in c) else None
 
 
-def coverage(trades, dte=0):
-    need = trade_days(trades)
+def coverage(trades, dte=0, und="etf"):
+    need = trade_days(trades, und)
     have = sum(1 for e, d, s in need if _have(e, d, s, dte))
     return {"need": len(need), "have": have, "from": need[0][1] if need else None, "to": need[-1][1] if need else None}
 
 
-def job(sub, trades, prog, dl, invoke, event, dte=0):
+def job(sub, trades, prog, dl, invoke, event, dte=0, und="etf"):
     """Download the missing days (resumes in a new run when the time runs out)."""
     import time
     import stockdata
-    need = trade_days(trades)
-    for e in sorted({x[0] for x in need}):
+    need = trade_days(trades, und)
+    for e in sorted({IDX[x[0]]["etf"] if x[0] in IDX else x[0] for x in need}):
         stockdata.ensure(sub, e, 520)
     packs = {e: dict(pack(e, dte)) for e in {x[0] for x in need}}
     todo = [x for x in need if f"{x[1]}-{x[2]}" not in packs[x[0]]]
@@ -221,7 +287,7 @@ def job(sub, trades, prog, dl, invoke, event, dte=0):
                 return False
             prog(f"{dte}DTE options: {e} {d} {'calls' if s == 'C' else 'puts'} ({len(need) - len(todo) + i + 1}/{len(need)})")
             try:
-                old = store.get_json(_key(e, d, s)) if not dte else None   # a day stored on its own by build 86 (minute lists)
+                old = store.get_json(_key(e, d, s)) if not dte and e not in IDX else None   # a day stored on its own by build 86 (minute lists)
                 if old is not None and isinstance(old.get("strikes"), dict):
                     old["strikes"] = {k: v for k, v in ((k, _slots(v) if isinstance(v, list) else v) for k, v in old["strikes"].items()) if v}
                 packs[e][f"{d}-{s}"] = old if old is not None else fetch_day(sub, e, d, s, dte)
@@ -245,14 +311,14 @@ def _mins(hm):
     return int(hm[:2]) * 60 + int(hm[3:5])
 
 
-def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5, dte=0, keep=False):
+def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5, dte=0, keep=False, und="etf"):
     import nightkit as N
     rows = {d: [] for d in deltas}
     skipped = 0
     for t in trades:
         if t.get("status") == "open" or not t.get("out") or t["in"][:10] != t["out"][:10] or not ("09:29" <= t["in"][11:16] < "16:00"):
             continue
-        e = ETF.get(t["s"])
+        e = UND[und].get(t["s"])
         side = "C" if t["side"] == "long" else "P"
         day = t["in"][:10]
         data = pack(e, dte).get(f"{day}-{side}") if e else None
@@ -277,7 +343,11 @@ def replay(trades, slip=0.02, comm=0.65, budget=1000.0, deltas=DELTAS, tf=5, dte
 def _one(t, e, day, side, data, tf, deltas, slip, comm, budget, N):
     hin = max(t["in"][11:16], "09:30")
     hout = N.K.end_of(t["out"], tf)[11:16] if len(t["out"]) >= 16 else t["out"][11:16]
-    S = etf_price(e, day, hin) or data["open"]
+    if data.get("S"):                                   # an index: its level from put-call parity at that slot
+        i0 = (_mins(hin) - 570) // 5                     # the same moment as the option's entry price (see below)
+        S = (data["S"][i0 - 1] if 0 < i0 <= 78 else None) or data["open"]
+    else:
+        S = etf_price(e, day, hin) or data["open"]
     from datetime import date
     days_left = (date.fromisoformat(data.get("exp") or day) - date.fromisoformat(day)).days    # calendar days to expiry
     T = max(1, (16 * 60) - (int(hin[:2]) * 60 + int(hin[3:5])) + days_left * 1440) / YEAR_MIN
@@ -382,22 +452,23 @@ def compare(trades, slip=0.02, comm=0.65, risk=1000.0, train=0.6, tf=5):
         fr.append((t["in"][:10], t["net"] * k))
         fr2.append((t["in"][:10], (t["net"] - (t.get("cost") or 0)) * k))
     out.append(_row("Futures (" + ", ".join(sorted({t["s"] for t in done})) + ")", None, None, fr, fr2, cut))
-    etfs = {ETF.get(t["s"]) for t in done} - {None}
-    for dte in DTES:                                   # each expiry with downloaded prices, at its best train delta
-        if not any(pack(e, dte) for e in etfs):
-            continue
-        rows = replay(done, slip, comm, risk, DELTAS, tf, dte, keep=True)
-        sized = lambda r, sl, cm: [(x["d"], ((max(0.0, x["raw"][1] - sl) - (x["raw"][0] + sl)) * 100 - 2 * cm) / ((x["raw"][0] + sl) * 100) * risk) for x in r]
-        best, bt = None, None
-        most = max(len([1 for x in rows[dl_] if x["d"] < cut]) for dl_ in DELTAS)
-        for dl_ in DELTAS:
-            tr = [v for d, v in sized(rows[dl_], slip, comm) if d < cut]
-            if tr and len(tr) >= min(20, most) and (bt is None or sum(tr) > bt):
-                best, bt = dl_, sum(tr)
-        if best is None:
-            continue
-        out.append(_row(f"{'Same-day (0DTE)' if not dte else f'{dte} days out'} options", dte, best,
-                        sized(rows[best], slip, comm), sized(rows[best], 2 * slip, 2 * comm), cut))
+    sized = lambda r, sl, cm: [(x["d"], ((max(0.0, x["raw"][1] - sl) - (x["raw"][0] + sl)) * 100 - 2 * cm) / ((x["raw"][0] + sl) * 100) * risk) for x in r]
+    for und in ("etf", "index"):
+        unds = {UND[und].get(t["s"]) for t in done} - {None}
+        for dte in DTES:                               # each underlying / expiry with downloaded prices, at its best train delta
+            if not any(pack(e, dte) for e in unds):
+                continue
+            rows = replay(done, slip, comm, risk, DELTAS, tf, dte, keep=True, und=und)
+            best, bt = None, None
+            most = max(len([1 for x in rows[dl_] if x["d"] < cut]) for dl_ in DELTAS)
+            for dl_ in DELTAS:
+                tr = [v for d, v in sized(rows[dl_], slip, comm) if d < cut]
+                if tr and len(tr) >= min(20, most) and (bt is None or sum(tr) > bt):
+                    best, bt = dl_, sum(tr)
+            if best is None:
+                continue
+            out.append(_row(f"{'/'.join(sorted(unds))} {'same-day (0DTE)' if not dte else f'{dte} days out'} options", dte, best,
+                            sized(rows[best], slip, comm), sized(rows[best], 2 * slip, 2 * comm), cut))
     return {"rows": out, "cut": cut, "risk": risk, "slip": slip, "comm": comm}
 
 

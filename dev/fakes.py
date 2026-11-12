@@ -258,7 +258,8 @@ def fake_uw_get(token, path, params=None, timeout=60):
         day = params.get("date")
         rnd2 = random.Random(osym + str(day))
         out = []
-        base_px = UW_PX.get(osym[:3], 100.0)
+        root = osym[:len(osym) - 15]                    # SPXW / NDXP: the index (SPY x 10, QQQ x 41)
+        base_px = {"SPXW": UW_PX["SPY"] * 10.03, "SPX": UW_PX["SPY"] * 10.03, "NDXP": UW_PX["QQQ"] * 41.0, "NDX": UW_PX["QQQ"] * 41.0}.get(root, UW_PX.get(root, 100.0))
         for mm in range(0, 390, 3):
             from util import ny_to_utc
             t = ny_to_utc(datetime.strptime(day, "%Y-%m-%d").replace(hour=9, minute=30)) + timedelta(minutes=mm)   # 09:30 ET (DST-aware)

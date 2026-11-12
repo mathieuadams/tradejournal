@@ -114,7 +114,7 @@ def handler(event, ctx=None):
         elif job == "opt0dte":                          # a strategy's trades on 0DTE options: download the option minutes
             import opt0dte
             ts = strategy.trades(sub, p["id"], "study")
-            if not opt0dte.job(sub, ts, prog, dl, _invoke, event, int(p.get("dte") or 0)):
+            if not opt0dte.job(sub, ts, prog, dl, _invoke, event, int(p.get("dte") or 0), p.get("und") or "etf"):
                 return {"continued": True}
             set_status(sub, name, status="done", msg=f"{int(p.get('dte') or 0)}DTE option prices downloaded.")
         elif job == "study":
