@@ -18,14 +18,15 @@ DEFAULT = {"tickers": ["NQ"], "tf": 5, "stop": "mid", "stopPart": 0.25, "deadPct
            "side": "both", "exit": "target", "days": 500}
 FACTORS = [("side", "Side"), ("wd", "Weekday"), ("pos", "Open in the overnight range"), ("held", "Broke and closed beyond the target"), ("onr", "Overnight range"),
            ("vr", "Volatility (percentile of the daily range)")]
-EXITS = ("10:00", "10:30", "11:00", "11:30", "12:00", "13:00", "14:00", "15:55")
+EXITS = ("10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "15:55")
 
 
-def clean(p):
-    p = {**DEFAULT, **(p or {})}
-    out = {"setup": SETUP, "tf": 5, "exitAt": p.get("exitAt") if p.get("exitAt") in EXITS else DEFAULT["exitAt"],
+def clean(p, setup=SETUP, default=None):
+    default = default or DEFAULT
+    p = {**default, **(p or {})}
+    out = {"setup": setup, "tf": 5, "exitAt": p.get("exitAt") if p.get("exitAt") in EXITS else default["exitAt"],
            "stop": p.get("stop") if p.get("stop") in ("mid", "opp", "part") else "mid",
-           "hold": "off" if p.get("hold") == "off" else "close",
+           "hold": p.get("hold") if p.get("hold") in ("off", "close", "never") else "close",
            "holdStop": p.get("holdStop") if p.get("holdStop") in ("be", "level", "orig") else "be"}
     N.K.num(p, out, (("stopPart", 0.05, 2, 0.25), ("deadPct", 0, 45, 0), ("minRR", 0, 10, 0)))
     N.clean_common(p, out, bias="none")
@@ -70,6 +71,11 @@ def engine(sym, d, on, R, F, VF, E, prev, p):
     risk = (o - stop) * dd
     if risk <= 0 or (tgt - o) * dd <= 0 or (p["minRR"] and (tgt - o) * dd < p["minRR"] * risk):
         return []
+    if p["hold"] == "never":                             # no target: the stop or the out-at time
+        x, j = N.trade(F, k, dd, o, stop, None, risk, {**p, "tgtR": 0} if p["exit"] == "target" else p, E, f"{d}T{p['exitAt']}",
+                       pos=pos, onr=rng / o * 100, sweepLvl=tgt, held=None, onx=tgt)
+        x["held"] = (max(b[2] for b in F[k + 1:]) >= tgt if dd > 0 else min(b[3] for b in F[k + 1:]) <= tgt) if len(F) > k + 1 else False
+        return [(x, (k, f"{d}T09:30", f"{d}T{p['exitAt']}"))]
     if p["hold"] == "off" or p["exit"] != "target":
         x, j = N.trade(F, k, dd, o, stop, tgt if p["exit"] == "target" else None, risk, p, E, f"{d}T{p['exitAt']}",
                        pos=pos, onr=rng / o * 100, sweepLvl=tgt, held=False)
@@ -120,7 +126,7 @@ def decorate(x, p):
     N.decorate_common(x)
     v = x.get("pos")
     x["pos"] = "—" if v is None else "bottom quarter" if v < 0.25 else "lower middle" if v < 0.5 else "upper middle" if v < 0.75 else "top quarter"
-    x["held"] = "yes: held to 15:55" if x.get("held") else "no"
+    x["held"] = ("yes" if x.get("held") else "no") if p.get("hold") == "never" else "yes: held to 15:55" if x.get("held") else "no"
     v = x.get("onr") or 0
     x["onr"] = "under 0.5%" if v < 0.5 else "0.5-1%" if v < 1 else "1-1.5%" if v < 1.5 else "1.5%+"
     v = x.get("vr")

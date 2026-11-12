@@ -170,6 +170,7 @@ def test_06_other_setups():
                      ("volclimax", {"days": 60, "volMult": 1.5}), ("pwsweep", {"days": 60, "fresh": False}), ("trendday", {"days": 60, "rangeMult": 0.3}),
                      ("onmid", {"days": 60}), ("onmid", {"days": 60, "stop": "opp", "deadPct": 10, "exitAt": "11:30"}),
                      ("onmid", {"days": 60, "stop": "part", "stopPart": 0.15, "minRR": 1}),
+                     ("onhold", {"days": 60}), ("onhold", {"days": 60, "exitAt": "11:30", "stop": "opp"}),
                      ("onmid", {"days": 60, "hold": "off"}), ("onmid", {"days": 60, "holdStop": "level", "exitAt": "11:30"}),
                      ("fractal", {"days": 60}), ("fractal", {"days": 60, "entry": "fade", "macro": "none", "tf": 5}),
                      ("fractal", {"days": 60, "entry": "count", "macro": "none", "oddsMax": 0.3, "hours": "rth", "tgt": "r", "tgtR": 2}),
@@ -254,6 +255,15 @@ def test_06b4_onmid_hold():
     F3 = F[:3] + [c("10:00", 105, 105, 99, 99.5)] + F[4:]
     z = onmid.hold_trade(F3, 0, 1, 100, 98, 105, 2, p, day)
     assert z["held"] and z["x"] == 100 and "break-even" in z["why"], z
+
+
+def test_06b5_onhold():
+    s = strategy.create(SUB, {"setup": "onhold", "params": {"days": 60, "hold": "close", "exitAt": "12:30"}})
+    assert s["params"]["hold"] == "never" and s["params"]["exitAt"] == "12:30"
+    strategy.study(SUB, s["id"])
+    ts = strategy.trades(SUB, s["id"], "study")
+    assert ts and all(t["why"] in ("stop", "time") for t in ts), {t["why"] for t in ts}       # never a target exit
+    assert all(t["out"][11:16] <= "12:35" for t in ts)
 
 
 def test_06c_fractal_on_stocks():
