@@ -36,6 +36,12 @@ F = {
     "txGuide": (-1, 1, None, 0.0, "tx"), "txToneChg": (-1, 1, None, 0.0, "tx"),
     "cTone": (-1, 1, None, 0.0, "ctx"), "cToneQA": (-1, 1, None, 0.0, "ctx"), "cUncert": (0, 40, None, 8.0, "ctx"),
     "cGuide": (-1, 1, None, 0.0, "ctx"), "cToneChg": (-1, 1, None, 0.0, "ctx"),
+    "offLow": (0, 3, None, 0.3, "px"), "rangePos": (0, 1, None, 0.5, "px"), "beta": (-1, 4, None, 1.0, "px"),
+    "volTrend42": (0.2, 5, "log", 1.0, "vol"), "volTrend126": (0.2, 5, "log", 1.0, "vol"), "udVol42": (0, 1, None, 0.5, "vol"),
+    "udVol126": (0, 1, None, 0.5, "vol"), "cmf42": (-1, 1, None, 0.0, "vol"), "cmf126": (-1, 1, None, 0.0, "vol"),
+    "pre126ab": (-1, 1, None, 0.0, "vol"),
+    "spy21": (-0.3, 0.3, None, 0.0, "mkt"), "spy63": (-0.4, 0.4, None, 0.0, "mkt"), "spyVs200": (-0.4, 0.4, None, 0.0, "mkt"),
+    "spyVol20": (0.001, 0.08, "log", 0.01, "mkt"),
     "amc": (0, 1, None, 0.0, None),
     "r1ab": (-0.4, 0.4, None, 0.0, None), "gap": (-0.4, 0.4, None, 0.0, None), "z1": (-15, 15, None, 0.0, None),
     "vol0": (0.1, 20, "log", 1.0, None),
@@ -56,18 +62,26 @@ LABEL = {"prevRevYoY": "Revenue YoY, last reported quarter", "prevRevAccel": "Re
          "txUncert": "Call uncertainty", "txGuide": "Call guidance score", "txToneChg": "Call tone change", "miss_grades": "No analyst data",
          "miss_prevtx": "No previous call", "miss_tx": "No call transcript", "cTone": "Call tone (after-close releases)",
          "cToneQA": "Call tone, Q&A (after-close)", "cUncert": "Call uncertainty (after-close)", "cGuide": "Call guidance (after-close)",
-         "cToneChg": "Call tone change (after-close)", "miss_ctx": "No call before the open"}
+         "cToneChg": "Call tone change (after-close)", "miss_ctx": "No call before the open", "offLow": "Distance above the 52w low",
+         "rangePos": "Position in the 52-week range", "volTrend42": "Volume 2 months vs the year", "volTrend126": "Volume 6 months vs the year",
+         "udVol42": "Up-day volume share, 2 months", "udVol126": "Up-day volume share, 6 months", "cmf42": "Accumulation (CMF) 2 months",
+         "cmf126": "Accumulation (CMF) 6 months", "pre126ab": "6 months before vs bench", "miss_vol": "No 1-year volume history", "beta": "Beta (1 year)", "spy21": "Market 1 month before", "spy63": "Market 3 months before",
+         "spyVs200": "Market vs its 200-day average", "spyVol20": "Market volatility", "miss_mkt": "No market data"}
 
 PRE = ["prevRevYoY", "prevRevAccel", "prevEpsYoY", "prevAccruals", "estEpsG", "estRevG", "pre1ab", "pre5ab", "pre21ab", "pre63ab",
        "offHigh", "sma50", "sma200", "vol20", "relVol1", "relVol5", "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab",
-       "gradeNet30", "gradeNet90", "gradeN90", "prevTxTone", "prevTxGuide", "prevTxUncert", "amc"]
+       "gradeNet30", "gradeNet90", "gradeN90", "prevTxTone", "prevTxGuide", "prevTxUncert",
+       "offLow", "rangePos", "beta", "spy21", "spy63", "spyVs200", "spyVol20",
+       "volTrend42", "volTrend126", "udVol42", "udVol126", "cmf42", "cmf126", "pre126ab", "amc"]
 POST = ["revYoY", "revAccel", "revQoQ", "epsYoY", "epsAccel", "accruals", "epsSurprise", "revSurprise", "guideN", "r1ab", "gap", "z1",
         "vol0", "pre21ab", "pre63ab", "offHigh", "relVol5", "cmf20", "ownMean", "gradeNet90",
-        "txTone", "txToneQA", "txUncert", "txGuide", "txToneChg", "amc"]
+        "txTone", "txToneQA", "txUncert", "txGuide", "txToneChg", "rangePos", "beta", "spy21", "spy63", "spyVs200", "spyVol20",
+        "volTrend126", "udVol126", "cmf126", "pre126ab", "amc"]
 # at the day-0 open (after the call): the reported numbers, surprises, the gap; the call's scores only for releases
 # after the close (the call is over before the open; a morning call can still be running at 09:30)
 CALL = ["revYoY", "revAccel", "revQoQ", "epsYoY", "epsAccel", "accruals", "epsSurprise", "revSurprise", "guideN", "cTone", "cToneQA",
-        "cUncert", "cGuide", "cToneChg", "gap", "pre5ab", "pre21ab", "pre63ab", "offHigh", "relVol5", "cmf20", "ownMean", "amc"]
+        "cUncert", "cGuide", "cToneChg", "gap", "pre5ab", "pre21ab", "pre63ab", "offHigh", "rangePos", "relVol5", "cmf20", "ownMean",
+        "beta", "spy21", "spy63", "spyVs200", "spyVol20", "volTrend126", "udVol126", "cmf126", "amc"]
 CALL_TX = {"cTone": "txTone", "cToneQA": "txToneQA", "cUncert": "txUncert", "cGuide": "txGuide", "cToneChg": "txToneChg"}
 
 
@@ -433,7 +447,8 @@ def evaluate(rows, prog=None, min_train=MIN_TRAIN):
         if len(recent) >= 50:
             out["scoreCuts"] = {"p20": recent[len(recent) // 5], "p80": recent[4 * len(recent) // 5], "n": len(recent)}
         # the fixed post-release score: nothing fitted, so every release with a score is out-of-sample
-        for key, label, known in (("drift20", "Post-release score → drift d0→d20", "t20"), ("drift40", "Post-release score → drift d0→d40", "t40")):
+        for key, label, known in (("drift20", "Post-release score → drift d0→d20", "t20"), ("drift40", "Post-release score → drift d0→d40", "t40"),
+                                  ("drift40b", "Post-release score → drift d0→d40, beta-adjusted", "t40")):
             preds = []
             for r0, r in zip(rows, rk):
                 sc_, y = post_score(r), r0.get(key)

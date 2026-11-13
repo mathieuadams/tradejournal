@@ -661,7 +661,36 @@ def pre_signals(bars, bmap, k):
     rets = [c(i) / c(i - 1) - 1 for i in range(k - 19, k + 1)]
     m = sum(rets) / len(rets)
     out["vol20"] = math.sqrt(sum((x - m) ** 2 for x in rets) / (len(rets) - 1))
-    out["offHigh"] = c(k) / max(b[2] for b in bars[max(0, k - 251):k + 1]) - 1
+    hi52, lo52 = max(b[2] for b in bars[max(0, k - 251):k + 1]), min(b[3] for b in bars[max(0, k - 251):k + 1])
+    out["offHigh"] = c(k) / hi52 - 1
+    out["offLow"] = c(k) / lo52 - 1 if lo52 > 0 else None
+    out["rangePos"] = (c(k) - lo52) / (hi52 - lo52) if hi52 > lo52 else None     # 0 = at the 52-week low, 1 = at the high
+    if k >= 252:                                       # volume over 2 and 6 months: rising / falling, and who did it
+        v1y = sum(v(i) for i in range(k - 251, k + 1)) / 252
+        for n, tag in ((42, "42"), (126, "126")):
+            win = range(k - n + 1, k + 1)
+            tv_ = sum(v(i) for i in win)
+            if v1y > 0:
+                out["volTrend" + tag] = tv_ / n / v1y      # the window's average volume vs the year's
+            if tv_ > 0:
+                out["udVol" + tag] = sum(v(i) for i in win if c(i) > c(i - 1)) / tv_    # share of volume on up days
+                mf = 0.0
+                for i in win:
+                    h, l_, cl = bars[i][2], bars[i][3], bars[i][4]
+                    mf += (((cl - l_) - (h - cl)) / (h - l_) if h > l_ else 0) * v(i)
+                out["cmf" + tag] = mf / tv_
+        out["pre126"], out["pre126ab"] = ab(126)
+    rs, ms = [], []                                    # beta vs the benchmark over the year before
+    for i in range(max(1, k - 251), k + 1):
+        a0, a1 = bmap.get(dates(i - 1)), bmap.get(dates(i))
+        if a0 and a1:
+            rs.append(c(i) / c(i - 1) - 1)
+            ms.append(a1 / a0 - 1)
+    if len(rs) >= 120:
+        mr, mm = sum(rs) / len(rs), sum(ms) / len(ms)
+        vm = sum((x - mm) ** 2 for x in ms)
+        if vm > 0:
+            out["beta"] = max(-1.0, min(4.0, sum((x - mr) * (y - mm) for x, y in zip(rs, ms)) / vm))
     out["sma50"] = c(k) / (sum(c(i) for i in range(k - 49, k + 1)) / 50) - 1
     if k >= 200:
         out["sma200"] = c(k) / (sum(c(i) for i in range(k - 199, k + 1)) / 200) - 1
@@ -681,7 +710,42 @@ def pre_signals(bars, bmap, k):
     return out
 
 
-def reaction(ev, bars, bench, bmap=None, bopen=None):
+def volume_patterns(r):
+    """Range position × 6-month volume: rising volume near the lows with buying (accumulation) vs selling, light or heavy
+    volume near the highs (distribution)."""
+    rp, vt, ud = r.get("rangePos"), r.get("volTrend126"), r.get("udVol126")
+    out = {}
+    if rp is None:
+        return out
+    zone = "Near the low" if rp < 0.3 else "Near the high" if rp > 0.7 else "Mid-range"
+    if vt is not None:
+        out["rangeVol"] = f"{zone} · 6m volume " + ("rising" if vt > 1.15 else "falling" if vt < 0.87 else "flat")
+    if ud is not None:
+        out["rangeFlow"] = f"{zone} · 6m " + ("buying (up-day volume > 52%)" if ud > 0.52 else "selling (up-day volume < 48%)" if ud < 0.48 else "balanced")
+    return out
+
+
+def market_ctx(bench):
+    """The market (benchmark) state at each date's close: 1- and 3-month returns, distance from its 200-day average,
+    20-day daily volatility. {date: {...}} computed once per study."""
+    out, cl = {}, [b[4] for b in bench]
+    for k in range(200, len(bench)):
+        rets = [cl[i] / cl[i - 1] - 1 for i in range(k - 19, k + 1)]
+        m = sum(rets) / 20
+        out[bench[k][0]] = {"spy21": cl[k] / cl[k - 21] - 1, "spy63": cl[k] / cl[k - 63] - 1,
+                            "spyVs200": cl[k] / (sum(cl[k - 199:k + 1]) / 200) - 1,
+                            "spyVol20": math.sqrt(sum((x - m) ** 2 for x in rets) / 19)}
+    return out
+
+
+def regime_of(ctx):
+    if not ctx or ctx.get("spy63") is None:
+        return None
+    up = ctx.get("spyVs200", 0) >= 0
+    return ("Above 200d" if up else "Below 200d") + (", 3m up" if ctx["spy63"] >= 0 else ", 3m down")
+
+
+def reaction(ev, bars, bench, bmap=None, bopen=None, mctx=None):
     """Price reaction around one release. Base = the last close before the market could react (the release day's close
     after an after-close release, the previous close otherwise); day 0 = the first session that could react."""
     dates = [b[0] for b in bars]
@@ -720,6 +784,25 @@ def reaction(ev, bars, bench, bmap=None, bopen=None):
         if k < len(bars) and bd.get(dates[k]):
             out["after5"] = c(k) / o0 - 1 - (bd[dates[k]] / so - 1)
     out.update(pre_signals(bars, bd, base))
+    if mctx is not None:
+        ctx = mctx.get(dates[base])
+        if ctx:
+            out.update(ctx)
+            out["regime"] = regime_of(ctx)
+    b_ = out.get("beta")
+    if b_ is not None:                                 # beta-adjusted: the stock minus beta × the benchmark
+        for name, n in (("r1", 1), ("r20", 20), ("r40", 40)):
+            k = base + n
+            if out.get(name) is not None:
+                br = bret(base, k)
+                if br is not None:
+                    out[name + "b"] = out[name] - b_ * br
+        for name, n in (("drift20", 20), ("drift40", 40)):
+            k = base + n
+            if k < len(bars):
+                br = bret(d0, k)
+                if br is not None:
+                    out[name + "b"] = c(k) / c(d0) - 1 - b_ * br
     if out.get("r1ab") is not None and out.get("vol20"):
         out["z1"] = out["r1ab"] / out["vol20"]         # day-0 abnormal move in daily standard deviations
     if bars[d0][5] and out.get("relVol1") is not None:
@@ -759,9 +842,9 @@ def setup_of(e):
 
 # ---------------------------------------------------------------- the study
 
-OUTCOMES = [("gap", "Gap"), ("o2c", "Day 0 open → close vs bench"), ("r1ab", "Day 0 vs bench"), ("z1", "Day 0 (σ)"), ("r5ab", "5 days vs bench"),
+OUTCOMES = [("gap", "Gap"), ("o2c", "Day 0 open → close vs bench"), ("r1ab", "Day 0 vs bench"), ("r1b", "Day 0 beta-adjusted"), ("z1", "Day 0 (σ)"), ("r5ab", "5 days vs bench"),
             ("r20ab", "1 month vs bench"), ("r40ab", "2 months vs bench"), ("drift5", "Drift d1→d5"), ("drift20", "Drift d1→d20"),
-            ("drift40", "Drift d1→d40")]
+            ("drift40", "Drift d1→d40"), ("drift40b", "Drift d1→d40 beta-adjusted")]
 NUM_SIGNALS = [("pre1ab", "Day before vs bench"), ("pre5ab", "5 days before vs bench"), ("pre21ab", "1 month before vs bench"),
                ("pre63ab", "3 months before vs bench"), ("offHigh", "Distance from 52w high"), ("sma50", "vs 50-day average"),
                ("sma200", "vs 200-day average"), ("vol20", "20-day volatility"), ("relVol1", "Volume, day before (× 50d avg)"),
@@ -772,11 +855,18 @@ NUM_SIGNALS = [("pre1ab", "Day before vs bench"), ("pre5ab", "5 days before vs b
                ("revYoY", "Revenue YoY (reported)"), ("revAccel", "Revenue YoY change (reported)"), ("revQoQ", "Revenue QoQ"),
                ("rev3y", "Revenue 3Y CAGR"), ("epsYoY", "EPS YoY (reported)"), ("epsAccel", "EPS acceleration"),
                ("accruals", "Accrual ratio"), ("cashConv", "Cash conversion"), ("prevRevYoY", "Revenue YoY, prior quarter"),
-               ("ownAbs", "Own average |day-0 move|, past releases"), ("gradeNet90", "Analyst upgrades − downgrades, 90 days before"),
+               ("ownAbs", "Own average |day-0 move|, past releases"), ("offLow", "Distance above the 52w low"),
+               ("rangePos", "Position in the 52-week range (0 low … 1 high)"),
+               ("volTrend42", "Volume, last 2 months vs the year"), ("volTrend126", "Volume, last 6 months vs the year"),
+               ("udVol42", "Up-day share of volume, 2 months"), ("udVol126", "Up-day share of volume, 6 months"),
+               ("cmf42", "Accumulation (CMF), 2 months"), ("cmf126", "Accumulation (CMF), 6 months"), ("pre126ab", "6 months before vs bench"), ("beta", "Beta vs the benchmark (1 year)"),
+               ("spy21", "Market (benchmark) 1 month before"), ("spy63", "Market 3 months before"), ("spyVs200", "Market vs its 200-day average"),
+               ("spyVol20", "Market volatility (20d)"), ("gradeNet90", "Analyst upgrades − downgrades, 90 days before"),
                ("gradeNet30", "Analyst upgrades − downgrades, 30 days before"), ("txTone", "Call tone"), ("txToneQA", "Call tone, Q&A"),
                ("txToneChg", "Call tone change vs previous call"), ("txUncert", "Call uncertainty (per 1,000 words)"),
                ("txGuide", "Call guidance score (raise − lower)"), ("prevTxTone", "Previous call tone (known before)")]
-CAT_SIGNALS = [("setup", "Beat / raise"), ("guide", "Guidance (CSV, else from the call)"), ("timing", "Release timing"), ("quality", "Earnings quality"),
+CAT_SIGNALS = [("regime", "Market regime"), ("range52", "52-week range"), ("rangeVol", "52-week range × 6-month volume trend"),
+               ("rangeFlow", "52-week range × 6-month buying / selling"), ("setup", "Beat / raise"), ("guide", "Guidance (CSV, else from the call)"), ("timing", "Release timing"), ("quality", "Earnings quality"),
                ("inflection", "EPS inflection"), ("revDir", "Revenue growth direction"), ("sector", "Sector (SIC)")]
 SIC_DIV = [(100, "Agriculture"), (1000, "Mining & energy"), (1500, "Construction"), (2000, "Manufacturing"), (4000, "Transport, utilities, telecom"),
            (5000, "Wholesale"), (5200, "Retail"), (6000, "Finance & real estate"), (7000, "Services"), (7370, "Software & IT services"),
@@ -944,6 +1034,7 @@ def build_rows(sub, opts, prog=None, deadline=None):
     bench = prices(sub, bench_sym, need, max_age_h=72)
     bmap = {b[0]: b[4] for b in bench}
     bopen = {b[0]: b[1] for b in bench}
+    mctx = market_ctx(bench)
     rows, skipped, t_last = [], [], 0.0
     uni_set = set(uni)
     plan_ok = {"grades": True, "tx": True}
@@ -1019,10 +1110,13 @@ def build_rows(sub, opts, prog=None, deadline=None):
         sec = sector_of((c or {}).get("sic"))
         mine = []
         for e in sorted(evs.values(), key=lambda x: x["date"]):
-            re_ = reaction(e, bars, bench, bmap, bopen)
+            re_ = reaction(e, bars, bench, bmap, bopen, mctx)
             if not re_:
                 continue
             row = {**{k2: v for k2, v in e.items() if k2 != "x"}, **re_, "sector": sec}
+            rp = row.get("rangePos")
+            row["range52"] = None if rp is None else "Near the low (bottom 20%)" if rp < 0.2 else "Near the high (top 20%)" if rp > 0.8 else "Middle of the range"
+            row.update(volume_patterns(row))
             q = _quarter_for(c, e["date"])
             if q:
                 row["qEnd"] = q["end"]
@@ -1150,7 +1244,9 @@ EXPORT_KEYS = ["sym", "date", "timing", "src", "sector", "base", "day0", "qEnd",
                "txDate", "txTone", "txTonePrep", "txToneQA", "txUncert", "txNeg", "txGuide", "txGuideDir", "txToneChg", "prevTxTone", "prevTxGuide",
                "pre1", "pre1ab", "pre5", "pre5ab", "pre21", "pre21ab", "pre63", "pre63ab", "offHigh", "sma50", "sma200", "vol20", "relVol1", "relVol5",
                "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab", "gap", "vol0", "r1", "r1ab", "z1", "r5", "r5ab", "r20", "r20ab", "r40",
-               "r40ab", "r60", "r60ab", "drift5", "drift20", "drift40", "drift60", "o2c", "after5", "t1", "t5", "t20", "t40", "t60"]
+               "r40ab", "r60", "r60ab", "drift5", "drift20", "drift40", "drift60", "o2c", "after5", "t1", "t5", "t20", "t40", "t60",
+               "offLow", "rangePos", "range52", "rangeVol", "rangeFlow", "volTrend42", "volTrend126", "udVol42", "udVol126", "cmf42", "cmf126",
+               "pre126", "pre126ab", "beta", "r1b", "r20b", "r40b", "drift20b", "drift40b", "spy21", "spy63", "spyVs200", "spyVol20", "regime"]
 
 
 def _r6(v):
@@ -1388,7 +1484,12 @@ def project(sub, sym, k_nn=None):
     now = {"prevRevYoY": q.get("revYoY"), "prevRevAccel": q.get("revAccel"), "prevEpsYoY": q.get("epsYoY"), "prevAccruals": q.get("accruals"),
            "accruals": q.get("accruals")}
     now.update(pre_signals(bars, bmap, len(bars) - 1))
+    now.update(volume_patterns(now))
     now["asOf"], now["close"] = bars[-1][0], bars[-1][4]
+    ctx = market_ctx(bench[-260:]).get(bars[-1][0])
+    if ctx:
+        now.update(ctx)
+        now["regime"] = regime_of(ctx)
     past = [r for r in own if r.get("r1ab") is not None][-12:]
     if past:
         now.update({"ownAbs": sum(abs(r["r1ab"]) for r in past) / len(past), "ownMean": sum(r["r1ab"] for r in past) / (len(past) + 4),
@@ -1536,6 +1637,9 @@ def today_list(sub, day, prog=None, deadline=None):
     start = (D - timedelta(days=420)).isoformat()
     bench = alpaca.daily_range(sub, bench_sym, start)
     bmap, bopen = {b[0]: b[4] for b in bench}, {b[0]: b[1] for b in bench}
+    mctx = market_ctx(bench[-300:])
+    pdays = [d for d in sorted(mctx) if d < day]
+    market = {**mctx[pdays[-1]], "asOf": pdays[-1], "regime": regime_of(mctx[pdays[-1]])} if pdays else None
     c_alp = alpaca.creds(sub)
     rows, notes = [], []
     seen = set()
@@ -1570,6 +1674,9 @@ def today_list(sub, day, prog=None, deadline=None):
                 continue
             base = ix[-1]
             e.update(pre_signals(bars, bmap, base))
+            e.update(volume_patterns(e))
+            if mctx.get(bars[base][0]):
+                e.update(mctx[bars[base][0]])
             op, indicated = None, False
             if base + 1 < len(bars) and bars[base + 1][0] == day:
                 op = bars[base + 1][1]
@@ -1606,7 +1713,7 @@ def today_list(sub, day, prog=None, deadline=None):
             notes.append(f"{s}: {str(ex)[:100]}")
     rows.sort(key=lambda x: (x.get("flag") is None, -(abs(x.get("gap") or 0))))
     calls = {t["key"]: {k: t.get(k) for k in ("verdict", "hit", "hitBase", "icQ", "spread", "n")} for t in mdl.get("targets") or [] if t.get("kind") == "call"}
-    out = {"day": day, "at": iso(now_ny()), "bench": bench_sym, "rows": rows, "notes": notes[:30], "cuts": cuts, "models": calls,
+    out = {"day": day, "at": iso(now_ny()), "bench": bench_sym, "rows": rows, "notes": notes[:30], "cuts": cuts, "models": calls, "market": market,
            "studyAt": sd.get("at")}
     store.put_json(f"fund/u/{sub}/today/{day}", out)
     return out

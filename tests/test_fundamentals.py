@@ -134,6 +134,39 @@ def test_reaction_windows():
     assert F.reaction({"date": days[30], "timing": "bmo"}, bars, bench) is None        # not enough history before
 
 
+def test_range_beta_market():
+    import random
+    from datetime import date, timedelta
+    rnd = random.Random(1)
+    days, d = [], date(2023, 1, 2)
+    while len(days) < 420:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += timedelta(days=1)
+    m, st, bench, bars = 100.0, 50.0, [], []
+    for x in days:
+        r = rnd.gauss(0, 0.01)
+        m *= 1 + r
+        st *= 1 + 2 * r                                 # beta 2 exactly
+        bench.append([x, m, m, m, m, 1])
+        bars.append([x, st, st * 1.01, st * 0.99, st, 1000])
+    out = F.reaction({"date": days[350], "timing": "bmo"}, bars, bench, None, None, F.market_ctx(bench))
+    assert abs(out["beta"] - 2) < 1e-6, out["beta"]
+    k = 349
+    hi = max(b[2] for b in bars[k - 251:k + 1]); lo = min(b[3] for b in bars[k - 251:k + 1])
+    assert abs(out["rangePos"] - (bars[k][4] - lo) / (hi - lo)) < 1e-12 and abs(out["offLow"] - (bars[k][4] / lo - 1)) < 1e-12
+    assert abs(out["spy63"] - (bench[k][4] / bench[k - 63][4] - 1)) < 1e-12 and out["regime"]
+    assert abs(out["r40b"]) < 0.02 and abs(out["drift40b"]) < 0.02 and abs(out["r40ab"]) > abs(out["r40b"])   # beta 2 explains the moves (up to compounding)
+    assert abs(out["volTrend126"] - 1) < 1e-9 and 0 < out["udVol126"] < 1 and abs(out["cmf126"]) < 1e-9      # flat volume, closes mid-range
+    up = sum(1 for i in range(k - 125, k + 1) if bars[i][4] > bars[i - 1][4])
+    assert abs(out["udVol126"] - up / 126) < 1e-12
+    vb = [b[:5] + [3000 if i > k - 42 else 1000] for i, b in enumerate(bars)]
+    o2 = F.reaction({"date": days[350], "timing": "bmo"}, vb, bench)
+    assert abs(o2["volTrend42"] - 3000 / ((42 * 3000 + 210 * 1000) / 252)) < 1e-9 and F.volume_patterns(o2)["rangeVol"].endswith("rising")
+    late = [b if i <= k else [b[0], 1, 1, 1, 1, 1] for i, b in enumerate(bench)]
+    assert F.market_ctx(late)[days[k]] == F.market_ctx(bench)[days[k]]       # the market context uses closes up to that day only
+
+
 def test_spearman():
     assert abs(F.spearman(list(range(10)), [x * x for x in range(10)])[0] - 1) < 1e-12
     assert abs(F.spearman(list(range(10)), [-x for x in range(10)])[0] + 1) < 1e-12
@@ -210,9 +243,13 @@ def test_api_flow():
     st, ex = call("GET", "/fund/study/export", None, {"kind": "csv"})
     assert _gz.decompress(base64.b64decode(ex["data"])).decode().splitlines()[0].startswith("sym,date,timing")
     st, p = call("GET", "/fund/project", None, {"sym": "AAA"})
+    assert p["now"].get("regime") and p["now"].get("rangePos") is not None
     assert p["priceTarget"]["upside"] is not None and "gradeNet90" in p["now"] and p["now"]["lastCall"]["tone"] is not None
     assert st == 200 and p["next"]["source"] == "FMP" and p["next"]["epsEst"] is not None and "relVol5" in p["now"], p["next"]
     assert {"o2c", "after5"} <= {t["key"] for t in s["model"]["targets"]} and any(x.get("o2c") is not None for x in s["rows"])
+    assert any(x.get("regime") and x.get("range52") and x.get("beta") is not None and x.get("drift40b") is not None for x in s["rows"])
+    assert any(x.get("rangeVol") and x.get("udVol126") is not None for x in s["rows"])
+    assert {"Market regime", "52-week range"} <= {g["label"] for g in s["groups"]} and "score_drift40b" in {t["key"] for t in s["model"]["targets"]}
     from datetime import date as _date, timedelta as _td
     d = _date(_date.today().year, 7, 28)
     while d.weekday() >= 5:
@@ -221,6 +258,7 @@ def test_api_flow():
     assert st == 200 and r["status"] == "done", r
     st, t = call("GET", "/fund/today", None, {"day": d.isoformat()})
     assert t["rows"] and all(x["sym"] in ("AAA", "BBB", "CCC") for x in t["rows"]), t
+    assert t["market"]["regime"] and all("rangePos" in x for x in t["rows"])
     for x in t["rows"]:
         assert x["timing"] in ("bmo", "amc") and "epsSurprise" in x and x.get("gap") is not None and "scoreBand" not in x or x["scoreBand"] in ("top", "middle", "bottom")
     st, r = call("POST", "/fund/universe", {"tickers": []})

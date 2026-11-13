@@ -144,6 +144,10 @@ function enProjHtml(p) {
     offHigh: ['From 52w high', pct], sma50: ['vs 50-day average', pct], sma200: ['vs 200-day average', pct], vol20: ['Daily volatility (20d)', v => pct(v, 2)],
     relVol1: ['Volume last day (× 50d avg)', x], relVol5: ['Volume 5 days (× 50d avg)', x], relVol20: ['Volume 20 days (× 50d avg)', x],
     cmf20: ['Accumulation (CMF 20d)', v => v == null ? '—' : v.toFixed(2)], obv20: ['On-balance volume 20d', v => v == null ? '—' : v.toFixed(2)],
+    rangePos: ['Position in the 52-week range', v => (v * 100).toFixed(0) + '% (0 low … 100 high)'], offLow: ['Above the 52w low', pct], beta: ['Beta (1 year)', v => v.toFixed(2)],
+    spy63: ['Market 3 months', pct], spyVs200: ['Market vs 200-day avg', pct],
+    volTrend42: ['Volume 2 months (× 1-year avg)', x], volTrend126: ['Volume 6 months (× 1-year avg)', x], udVol126: ['Up-day volume share, 6 months', v => (v * 100).toFixed(0) + '%'],
+    cmf126: ['Accumulation (CMF 6 months)', v => v.toFixed(2)], pre126ab: ['6 months vs ' + p.bench, pct],
     ownAbs: ['Own average |day-0 move|', pct], gradeNet90: ['Analyst net upgrades, 90 days', v => (v > 0 ? '+' : '') + v],
     prevTxTone: ['Last call tone', v => v.toFixed(2)], prevTxGuide: ['Last call guidance score', v => v.toFixed(2)] };
   const ptv = p.priceTarget;
@@ -170,6 +174,7 @@ function enProjHtml(p) {
   return `<section class="panel"><div class="hd"><h2>Next release: projection</h2><span class="dim" style="font-size:13px">${when}</span><div class="grow"></div>
       <div class="seg"><button data-enpm="ab" aria-pressed="${m === 'ab'}">vs ${esc(p.bench)}</button><button data-enpm="raw" aria-pressed="${m === 'raw'}">Raw</button></div></div>
     <div class="bd">${sizeHtml}<div class="kv" style="grid-template-columns:repeat(5,minmax(0,1fr))">${Object.entries(SIG).map(([k, [l, f]]) => `<div><div class="k">${l}</div><div class="v ${['pre1ab', 'pre5ab', 'pre21ab', 'pre63ab'].includes(k) ? cls(n[k]) : ''}">${n[k] == null ? '—' : f(n[k])}</div></div>`).join('')}</div>
+      ${n.rangeFlow ? `<div class="note" style="margin-top:8px">Volume pattern: <b>${esc(n.rangeVol || '')}</b> · <b>${esc(n.rangeFlow)}</b> — see the “52-week range × 6-month …” groups in the Event study for how each pattern did after releases.</div>` : ''}
       ${ptv && ptv.targetConsensus ? `<div class="note" style="margin-top:8px">Analysts' consensus price target $${ptv.targetConsensus.toFixed(2)} (low $${(ptv.targetLow || 0).toFixed(0)} – high $${(ptv.targetHigh || 0).toFixed(0)}): <b class="${cls(ptv.upside)}">${pct(ptv.upside)}</b> from the last close. Today's snapshot only: not in the backtest.</div>` : ''}
       ${n.lastCall ? `<div class="note">Last call ${esc(n.lastCall.date)}: tone ${n.lastCall.tone == null ? '—' : n.lastCall.tone.toFixed(2)}, Q&A ${n.lastCall.toneQA == null ? '—' : n.lastCall.toneQA.toFixed(2)}, guidance ${esc(n.lastCall.guideDir || '—')} · <a href="#earnings" data-entx="${esc(n.lastCall.date)}">read it</a></div>` : ''}
       <div class="note" style="margin-top:8px">Going into the release: the last reported quarter, the consensus (FMP), analysts' actions, the last call, and what the stock did up to the ${esc(n.asOf || '—')} close.</div></div>
@@ -198,6 +203,11 @@ async function enTodayLoad() {
   try { const r = await api('/fund/today?day=' + S.en.day); S.enToday = r; el.innerHTML = enTodayHtml(r); }
   catch (e) { el.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; }
 }
+function enRange(x) {
+  if (x.rangePos == null) return '—';
+  const p = Math.max(0, Math.min(1, x.rangePos)) * 100;
+  return `<span title="${pct(x.offLow)} above the 52w low · ${pct(x.offHigh)} from the 52w high" style="display:inline-flex;align-items:center;gap:6px"><span style="position:relative;display:inline-block;width:70px;height:6px;background:var(--line2);border-radius:3px"><i style="position:absolute;left:calc(${p.toFixed(0)}% - 4px);top:-2px;width:8px;height:10px;border-radius:2px;background:${p < 20 ? 'var(--sellT)' : p > 80 ? 'var(--buyT)' : 'var(--fg)'}"></i></span><span class="dim">${p.toFixed(0)}%</span></span>`;
+}
 function enTodayHtml(r) {
   if (!r.rows) return `<div class="panel"><div class="empty">No list for ${esc(r.day)} yet: <b>Build the list</b>.</div></div>`;
   const VER = { edge: ['ok', 'tested edge'], weak: ['', 'weak'], none: ['loss', 'no tested edge'] };
@@ -205,15 +215,20 @@ function enTodayHtml(r) {
   const band = b => b === 'top' ? '<span class="pill ok">top fifth</span>' : b === 'bottom' ? '<span class="pill warn">bottom fifth</span>' : b ? '<span class="dim">middle</span>' : '—';
   const flag = f => f ? `<span class="pill ${f.startsWith('Bad') ? 'warn' : 'ok'}"><b>${esc(f)}</b></span>` : '';
   return `<section class="panel"><div class="hd"><h2>${esc(r.day)} · ${r.rows.length} release(s)</h2><span class="dim" style="font-size:13px">built ${esc((r.at || '').replace('T', ' ').slice(0, 16))} · vs ${esc(r.bench)}</span></div>
+    ${r.market ? `<div class="bd" style="padding-bottom:0"><div class="kv" style="grid-template-columns:repeat(5,minmax(0,1fr))"><div><div class="k">Market (${esc(r.bench)}) at the ${esc(r.market.asOf)} close</div><div class="v">${esc(r.market.regime || '—')}</div></div>
+      <div><div class="k">1 month</div><div class="v ${cls(r.market.spy21)}">${pct(r.market.spy21)}</div></div><div><div class="k">3 months</div><div class="v ${cls(r.market.spy63)}">${pct(r.market.spy63)}</div></div>
+      <div><div class="k">vs 200-day average</div><div class="v ${cls(r.market.spyVs200)}">${pct(r.market.spyVs200)}</div></div><div><div class="k">Daily volatility (20d)</div><div class="v">${pct(r.market.spyVol20, 2)}</div></div></div>
+      <div class="note">History: after a 3-month market drop, top-fifth releases drifted +2.2% over 2 months; after a rising market, bottom-fifth releases lagged most (−1.0 to −1.4%). In a sharp selloff during the 2 months, the top fifth fell harder than the market.</div></div>` : ''}
     <div class="bd" style="padding-bottom:0"><div class="note">History: “bad news + gap up” (bottom-fifth score, gap above +2%) averaged −0.72% from the open to the close, down 58% of the time; “good news + gap down” (top fifth, gap below −2%) +0.39%. After the call model — ${mh || 'run the event study to train it'}.</div></div>
     <div class="tbl-wrap"><table class="tbl" style="min-width:1450px"><thead><tr><th>Ticker</th><th>Release</th><th>Flag</th><th>Score</th><th class="r">EPS surp.</th><th class="r">Rev surp.</th><th class="r">Rev YoY</th><th class="r">YoY change</th>
-      <th class="r">Call tone</th><th class="r">Tone change</th><th>Guidance</th><th class="r">Gap</th><th class="r">Open → now vs bench</th><th class="r">Model: open → close</th><th class="r">Model: 5 days</th><th class="r">1m before</th></tr></thead><tbody>
-    ${r.rows.map(x => `<tr><td><a class="name" href="#earnings" data-enco="${esc(x.sym)}">${esc(x.sym)}</a></td><td class="mono">${esc(x.date)} ${esc(x.timing)}</td><td>${flag(x.flag)}</td><td>${band(x.scoreBand)}</td>
+      <th class="r">Call tone</th><th class="r">Tone change</th><th>Guidance</th><th class="r">Gap</th><th class="r">Open → now vs bench</th><th class="r">Model: open → close</th><th class="r">Model: 5 days</th><th class="r">1m before</th><th>52-week range</th><th class="r">Volume 6m</th><th class="r">Up-day vol. 6m</th><th class="r">Beta</th></tr></thead><tbody>
+    ${r.rows.map(x => `<tr><td><a class="name" href="#earnings" data-enco="${esc(x.sym)}">${esc(x.sym)}</a></td><td class="mono" style="white-space:nowrap">${esc(x.date)} ${esc(x.timing)}</td><td>${flag(x.flag)}</td><td>${band(x.scoreBand)}</td>
       <td class="r ${cls(x.epsSurprise)}">${x.epsSurprise == null ? '—' : sgn(x.epsSurprise, 1, '%')}</td><td class="r ${cls(x.revSurprise)}">${x.revSurprise == null ? '—' : sgn(x.revSurprise, 1, '%')}</td>
       <td class="r ${cls(x.revYoY)}">${pct(x.revYoY)}</td><td class="r ${cls(x.revAccel)}">${pp(x.revAccel)}</td>
       <td class="r ${cls(x.txTone)}">${x.txTone == null ? '—' : x.txTone.toFixed(2)}${x.timing !== 'amc' && x.txTone != null ? ' <span class="dim" title="morning call: may end after the open">*</span>' : ''}</td><td class="r ${cls(x.txToneChg)}">${x.txToneChg == null ? '—' : (x.txToneChg > 0 ? '+' : '') + x.txToneChg.toFixed(2)}</td>
       <td>${x.txGuideDir ? esc(x.txGuideDir) : '—'}</td><td class="r ${cls(x.gap)}"><b>${pct(x.gap)}</b>${x.indicated ? ' <span class="dim" title="pre-market">pm</span>' : ''}</td><td class="r ${cls(x.o2cSoFar)}">${pct(x.o2cSoFar, 2)}</td>
-      <td class="r ${cls(x.pred_o2c)}">${pct(x.pred_o2c, 2)}</td><td class="r ${cls(x.pred_after5)}">${pct(x.pred_after5, 2)}</td><td class="r ${cls(x.pre21ab)}">${pct(x.pre21ab)}</td></tr>`).join('') || '<tr><td colspan="16" class="dim">No release of the study universe reacts on this day.</td></tr>'}</tbody></table></div>
+      <td class="r ${cls(x.pred_o2c)}">${pct(x.pred_o2c, 2)}</td><td class="r ${cls(x.pred_after5)}">${pct(x.pred_after5, 2)}</td><td class="r ${cls(x.pre21ab)}">${pct(x.pre21ab)}</td><td>${enRange(x)}</td><td class="r ${x.volTrend126 > 1.15 ? 'gain' : x.volTrend126 < 0.87 ? 'dim' : ''}" title="2 months: ${x.volTrend42 == null ? '—' : x.volTrend42.toFixed(2) + '×'}">${x.volTrend126 == null ? '—' : x.volTrend126.toFixed(2) + '×'}</td>
+      <td class="r ${x.udVol126 > 0.52 ? 'gain' : x.udVol126 < 0.48 ? 'loss' : ''}">${x.udVol126 == null ? '—' : (x.udVol126 * 100).toFixed(0) + '%'}</td><td class="r">${x.beta == null ? '—' : x.beta.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="20" class="dim">No release of the study universe reacts on this day.</td></tr>'}</tbody></table></div>
     ${(r.notes || []).length ? `<div class="note" style="padding:8px 16px">${r.notes.map(esc).join(' · ')}</div>` : ''}
     <div class="note" style="padding:8px 16px 14px">Score = the post-release score (EPS and revenue surprise, call tone, tone change, revenue acceleration) ranked against the last year's releases; growth from FMP's reported actuals. * a morning call may still be running at the open: the model ignores those call scores.</div></section>`;
 }
