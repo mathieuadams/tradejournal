@@ -233,7 +233,7 @@ def daily(sub, sym, n=260):
 def daily_range(sub, sym, start, end=None, adjustment="split"):
     """Daily bars from `start` (YYYY-MM-DD) to `end` (default: now), split-adjusted by default so returns across a split
     are real: [["YYYY-MM-DD", o, h, l, c, v], ...]. Used by the earnings event study (Earnings page)."""
-    sym = check_sym(sym)
+    sym = check_sym(sym).replace("-", ".")             # share classes: BRK.B, BF.B at Alpaca
     c, feed = creds(sub), status(sub)["feed"]
     t1 = datetime.utcnow() - timedelta(minutes=16 if feed == "sip" else 0)
     if end:

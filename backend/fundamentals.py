@@ -112,9 +112,40 @@ def cik_map(sub):
     return mp
 
 
+def _cik_from_fmp(sub, sym):
+    """A former ticker's SEC company number from FMP's profile (cached; the filings stay on EDGAR after a delisting)."""
+    import fmp
+    key = "fund/cik/" + sym
+    c = store.get_json(key)
+    if c is not None:
+        return c.get("hit")
+    hit = None
+    try:
+        if fmp.status(sub)["connected"]:
+            raw = fmp._get(fmp._key(sub), "profile", {"symbol": fmp._sym(sym)}) or []
+            p = raw[0] if isinstance(raw, list) and raw else {}
+            if p.get("cik"):
+                hit = [int(str(p["cik"]).lstrip("0") or 0), p.get("companyName") or sym]
+            if not hit:                                # FMP's search covers delisted symbols too
+                raw = fmp._get(fmp._key(sub), "search-symbol", {"query": fmp._sym(sym), "limit": 5}) or []
+                for r in raw if isinstance(raw, list) else []:
+                    if str(r.get("symbol", "")).upper() == fmp._sym(sym) and r.get("cik"):
+                        hit = [int(str(r["cik"]).lstrip("0") or 0), r.get("name") or sym]
+                        break
+    except Exception as e:
+        print("cik fmp", sym, e)
+        return None                                    # not cached: try again next time
+    if hit and not hit[0]:
+        hit = None
+    store.put_json(key, {"hit": hit})
+    return hit
+
+
 def lookup(sub, sym):
     mp = cik_map(sub)
     hit = mp.get(sym) or mp.get(sym.replace(".", "-")) or mp.get(sym.replace("-", "."))
+    if not hit:                                        # acquired / delisted: SEC's list only has today's tickers
+        hit = _cik_from_fmp(sub, sym)
     if not hit:
         raise BadRequest(f"{sym} isn't in SEC EDGAR's ticker list (US filers only; foreign 20-F filers have no quarterly XBRL).")
     return hit
@@ -871,6 +902,8 @@ def _surprises(e):
         e["epsSurprise"] = round((e["epsAct"] - e["epsEst"]) / abs(e["epsEst"]) * 100, 3)
     if e.get("revSurprise") is None and e.get("revEst") and e.get("revAct") is not None:
         e["revSurprise"] = round((e["revAct"] - e["revEst"]) / abs(e["revEst"]) * 100, 3)
+    if e.get("revSurprise") is not None and abs(e["revSurprise"]) > 50:
+        e["revSurpriseOff"] = e.pop("revSurprise")     # the estimate is on another basis (REITs, insurers): not a surprise
 
 
 def _prev_quarter(c, q):
@@ -1109,7 +1142,7 @@ EXPORT_KEYS = ["sym", "date", "timing", "src", "sector", "base", "day0", "qEnd",
                "txDate", "txTone", "txTonePrep", "txToneQA", "txUncert", "txNeg", "txGuide", "txGuideDir", "txToneChg", "prevTxTone", "prevTxGuide",
                "pre1", "pre1ab", "pre5", "pre5ab", "pre21", "pre21ab", "pre63", "pre63ab", "offHigh", "sma50", "sma200", "vol20", "relVol1", "relVol5",
                "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab", "gap", "vol0", "r1", "r1ab", "z1", "r5", "r5ab", "r20", "r20ab", "r40",
-               "r40ab", "r60", "r60ab", "drift5", "drift20", "drift40", "drift60"]
+               "r40ab", "r60", "r60ab", "drift5", "drift20", "drift40", "drift60", "t1", "t5", "t20", "t40", "t60"]
 
 
 def _r6(v):
@@ -1271,6 +1304,44 @@ def _dist(xs):
             "absMed": _pctl([abs(x) for x in xs], 0.5)}
 
 
+def implied_move(sub, und, day0, spot=None):
+    """The move the options price in through the release: the at-the-money straddle (call + put mid) of the first
+    expiry on or after the reaction day, as a share of the stock price. Includes the ordinary days to that expiry."""
+    import alpaca
+    import alpopt
+    import urllib.parse
+    c = alpaca.creds(sub)
+    spot = spot or alpopt._spot(c, und.replace("-", "."))
+    if not spot:
+        return None
+    hi = (_d(day0) + timedelta(days=10)).isoformat()
+    by = {}                                            # expiry -> strike -> {"C": mid, "P": mid}
+    for typ in ("call", "put"):
+        tok = None
+        for _ in range(5):
+            q = {"feed": "indicative", "type": typ, "expiration_date_gte": day0, "expiration_date_lte": hi,
+                 "strike_price_gte": round(spot * 0.85, 2), "strike_price_lte": round(spot * 1.15, 2), "limit": 1000, "page_token": tok}
+            r = alpopt._req(c, "GET", alpopt.DATA + f"options/snapshots/{und.replace('-', '.')}?" + urllib.parse.urlencode({k: v for k, v in q.items() if v}))
+            for osym, x in (r.get("snapshots") or {}).items():
+                qt = x.get("latestQuote") or {}
+                bid, ask = float(qt.get("bp") or 0), float(qt.get("ap") or 0)
+                if ask <= 0:
+                    continue
+                exp = "20" + osym[-15:-13] + "-" + osym[-13:-11] + "-" + osym[-11:-9]
+                k = float(osym[-8:]) / 1000
+                by.setdefault(exp, {}).setdefault(k, {})[osym[-9]] = (bid + ask) / 2
+            tok = r.get("next_page_token")
+            if not tok:
+                break
+    for exp in sorted(by):
+        both = [(abs(k - spot), k, v) for k, v in by[exp].items() if "C" in v and "P" in v]
+        if both:
+            _, k, v = min(both)
+            return {"expiry": exp, "strike": k, "call": round(v["C"], 2), "put": round(v["P"], 2), "spot": spot,
+                    "move": (v["C"] + v["P"]) / spot}
+    return None
+
+
 def project(sub, sym, k_nn=None):
     """The next release: (1) the walk-forward model's expectation for this setup, with its tested accuracy; (2) what the
     most similar past releases did; (3) this company's own history. All from signals known before the release."""
@@ -1377,7 +1448,21 @@ def project(sub, sym, k_nn=None):
                    "all": {"raw": _dist([r.get(key) for r in ref]), "ab": _dist([r.get(key + "ab") for r in ref])},
                    "volRange": now.get("vol20") * math.sqrt(int(key[1:])) if now.get("vol20") else None})
     keep = ("sym", "date", "timing", "prevRevYoY", "estEpsG", "pre21ab", "relVol5", "cmf20", "r1ab", "r5ab", "r20ab", "r40ab")
+    implied = None
+    if nxt:
+        d0 = _d(nxt["date"])
+        if nxt.get("timing") == "amc":
+            d0 += timedelta(days=1)
+        while d0.weekday() >= 5:
+            d0 += timedelta(days=1)
+        try:
+            implied = implied_move(sub, c["sym"], d0.isoformat(), now.get("close"))
+            if implied:
+                implied["reactionDay"] = d0.isoformat()
+        except Exception as e:
+            implied = {"error": str(e)[:160]}
     return {"sym": c["sym"], "name": c.get("name"), "bench": bench_sym, "next": nxt, "now": now, "signals": use, "priceTarget": pt,
+            "implied": implied,
             "refN": len(ref), "ownN": len(own), "studyAt": sd.get("at"), "horizons": hz,
             "model": model.apply(sd.get("model"), now),
             "neighbours": [{"dist": round(dd, 3), **{k: r.get(k) for k in keep}} for dd, r in neigh[:25]]}

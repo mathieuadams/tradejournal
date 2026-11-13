@@ -298,43 +298,153 @@ def score(preds, size=False):
     return res
 
 
+# ---------------------------------------------------------------- trailing percentile ranks
+
+RANK_WINDOW = 365                                      # days of earlier releases each value is ranked against
+RANK_MIN = 50
+RAW = {"amc", "guideN"}                                # kept as they are (flags / categories)
+POST_SCORE = [("epsSurprise", 1), ("revSurprise", 1), ("txTone", 1), ("txToneChg", 1), ("revAccel", 1), ("accruals", -1)]
+
+
+def _rank_in(sorted_vals, v):
+    import bisect
+    n = len(sorted_vals)
+    lo, hi = bisect.bisect_left(sorted_vals, v), bisect.bisect_right(sorted_vals, v)
+    return (lo + hi) / 2 / n - 0.5
+
+
+def ranked(rows, keys):
+    """Copies of the rows where every feature is its percentile (−0.5 … +0.5) among the releases of the previous
+    RANK_WINDOW days (by base date). Uses only earlier releases' feature values: no outcomes, no look-ahead. Robust to
+    outliers and comparable across years. Returns (rows, reference: {key: sorted last-window values})."""
+    import bisect
+    from datetime import date, timedelta
+    order = sorted(range(len(rows)), key=lambda i: rows[i].get("base") or rows[i]["date"])
+    out = [dict(r) for r in rows]
+    windows = {k: [] for k in keys if k not in RAW}
+    queue = []                                         # (base, key, value) in arrival order, for expiry
+    qi = 0
+    for i in order:
+        r = rows[i]
+        b = r.get("base") or r["date"]
+        cut = (date.fromisoformat(b) - timedelta(days=RANK_WINDOW)).isoformat()
+        while qi < len(queue) and queue[qi][0] < cut:
+            _, k, v = queue[qi]
+            w = windows[k]
+            j = bisect.bisect_left(w, v)
+            if j < len(w) and w[j] == v:
+                w.pop(j)
+            qi += 1
+        for k, w in windows.items():
+            v = _val(r, k)
+            out[i][k] = _rank_in(w, v) if v is not None and len(w) >= RANK_MIN else None
+        for k, w in windows.items():                   # this release joins the window for the later ones
+            v = _val(r, k)
+            if v is not None:
+                bisect.insort(w, v)
+                queue.append((b, k, v))
+    ref = {k: (w[::max(1, len(w) // 400)] if w else []) for k, w in windows.items()}
+    return out, ref
+
+
+def _val(r, k):
+    v = r.get(k)
+    if k == "revSurprise" and isinstance(v, (int, float)) and abs(v) > 50:
+        return None                                    # FMP revenue estimate on another basis (REITs, insurers)
+    return v if isinstance(v, (int, float)) and math.isfinite(v) else None
+
+
+def rank_snapshot(now, ref):
+    return {**now, **{k: (_rank_in(w, _val(now, k)) if _val(now, k) is not None and len(w) >= 20 else None) for k, w in ref.items()}}
+
+
+RANK_SPEC = (-0.5, 0.5, None, 0.0)
+
+
+def _spec_ranked():
+    """F with every non-raw feature on the percentile scale."""
+    return {k: (RANK_SPEC + (v[4],)) if k not in RAW else v for k, v in F.items()}
+
+
+def post_score(r):
+    """The post-release score: the average percentile of EPS surprise, revenue surprise, call tone, call tone change,
+    revenue acceleration and low accruals (r: a ranked row). Fixed weights: nothing is fitted."""
+    xs = [sgn * r[k] for k, sgn in POST_SCORE if r.get(k) is not None]
+    return sum(xs) / len(xs) if len(xs) >= 2 else None
+
+
 def evaluate(rows, prog=None, min_train=MIN_TRAIN):
-    """Walk-forward scorecards for every target, and the final models (fitted on everything) for the projection."""
-    out = {"minTrain": min_train, "lambda": LAMBDA, "targets": [], "final": {}}
-    for key, label, kind, known, fn in TARGETS:
-        if prog:
-            prog(f"Walk-forward model: {label}…")
-        keys = PRE if kind == "pre" else POST
-        pred_on = "base" if kind == "pre" else "day0"
-        preds = walk_forward(rows, keys, fn, known, pred_on, min_train, cap=Y_CAP)
-        sc = score(preds, size=key == "abs1")
-        blks = blocks(keys)
-        data = [(vec(r, keys, blks), fn(r)) for r in rows if fn(r) is not None]
-        fin = None
-        if len(data) >= min_train:
-            S = Sums(len(keys) + len(blks))
-            for x, y in data:
-                S.add(x, min(Y_CAP, max(-Y_CAP, y)))
-            fin = S.fit()
-            nm = names(keys, blks)
-            sc["coef"] = sorted(({"key": k, "label": LABEL.get(k, k), "beta": b} for k, b in zip(nm, fin["beta"])),
-                                key=lambda c: -abs(c["beta"]))[:12]
-            out["final"][key] = {"keys": keys, "blocks": blks, **fin}
-        out["targets"].append({"key": key, "label": label, "kind": kind, **sc})
+    """Walk-forward scorecards for every target, and the final models (fitted on everything) for the projection.
+    Features are trailing percentiles (see ranked); return targets are capped at ±25%."""
+    global F
+    if prog:
+        prog("Ranking the signals against the previous year's releases…")
+    rk, ref = ranked(rows, sorted(set(PRE) | set(POST)))
+    out = {"minTrain": min_train, "lambda": LAMBDA, "targets": [], "final": {}, "scale": "trailing percentiles", "ref": ref}
+    F0, F = F, _spec_ranked()
+    try:
+        for key, label, kind, known, fn in TARGETS:
+            if prog:
+                prog(f"Walk-forward model: {label}…")
+            keys = PRE if kind == "pre" else POST
+            pred_on = "base" if kind == "pre" else "day0"
+            cap = 0.5 if key == "abs1" else 0.25
+            preds = walk_forward(rk, keys, fn, known, pred_on, min_train, cap=cap)
+            sc = score(preds, size=key == "abs1")
+            blks = blocks(keys)
+            data = [(vec(r, keys, blks), fn(r)) for r in rk if fn(r) is not None]
+            if len(data) >= min_train:
+                S = Sums(len(keys) + len(blks))
+                for x, y in data:
+                    S.add(x, min(cap, max(-cap, y)))
+                fin = S.fit()
+                nm = names(keys, blks)
+                sc["coef"] = sorted(({"key": k, "label": LABEL.get(k, k), "beta": b} for k, b in zip(nm, fin["beta"])),
+                                    key=lambda c: -abs(c["beta"]))[:12]
+                out["final"][key] = {"keys": keys, "blocks": blks, **fin}
+            out["targets"].append({"key": key, "label": label, "kind": kind, **sc})
+        # the fixed post-release score: nothing fitted, so every release with a score is out-of-sample
+        for key, label, known in (("drift20", "Post-release score → drift d0→d20", "t20"), ("drift40", "Post-release score → drift d0→d40", "t40")):
+            preds = []
+            for r0, r in zip(rows, rk):
+                sc_, y = post_score(r), r0.get(key)
+                if sc_ is not None and y is not None:
+                    preds.append((r0, sc_, 0.0, max(-0.25, min(0.25, y)), r0.get("day0") or r0["date"]))
+            preds.sort(key=lambda x: x[4])
+            sc = score(preds)
+            if sc.get("up") is not None:               # baseline: always guessing the more frequent direction
+                sc["hitBase"] = max(sc["up"], 1 - sc["up"])
+                t_ = (sc.get("icQ") or {}).get("t")
+                sc["verdict"] = "edge" if t_ is not None and t_ >= 2 and (sc.get("spread") or {}).get("t", 0) >= 2 else \
+                    "weak" if t_ is not None and t_ >= 1 and sc["icQ"]["mean"] > 0 else "none"
+            sc["r2"] = None                            # a score, not a return forecast
+            sc.pop("mae", None)
+            sc.pop("mae0", None)
+            out["targets"].append({"key": "score_" + key, "label": label, "kind": "score", **sc})
+    finally:
+        F = F0
     return out
 
 
 def apply(mdl, now):
     """The final models applied to a snapshot taken before a release (pre-release targets only), with their scorecard."""
+    global F
     if not mdl:
         return None
-    res = []
-    for t in mdl.get("targets") or []:
-        fin = (mdl.get("final") or {}).get(t["key"])
-        if t["kind"] != "pre" or not fin:
-            continue
-        x = vec(now, fin["keys"], fin["blocks"])
-        res.append({"key": t["key"], "label": t["label"], "pred": predict(fin, x), "verdict": t.get("verdict"), "hit": t.get("hit"),
-                    "hitBase": t.get("hitBase"), "ic": (t.get("icQ") or {}).get("mean"), "icT": (t.get("icQ") or {}).get("t"),
-                    "r2": t.get("r2"), "n": t.get("n"), "mae": t.get("mae")})
-    return res
+    snap = rank_snapshot(now, mdl.get("ref") or {}) if mdl.get("scale") == "trailing percentiles" else now
+    F0 = F
+    if mdl.get("scale") == "trailing percentiles":
+        F = _spec_ranked()
+    try:
+        res = []
+        for t in mdl.get("targets") or []:
+            fin = (mdl.get("final") or {}).get(t["key"])
+            if t["kind"] != "pre" or not fin:
+                continue
+            x = vec(snap, fin["keys"], fin["blocks"])
+            res.append({"key": t["key"], "label": t["label"], "pred": predict(fin, x), "verdict": t.get("verdict"), "hit": t.get("hit"),
+                        "hitBase": t.get("hitBase"), "ic": (t.get("icQ") or {}).get("mean"), "icT": (t.get("icQ") or {}).get("t"),
+                        "r2": t.get("r2"), "n": t.get("n"), "mae": t.get("mae")})
+        return res
+    finally:
+        F = F0

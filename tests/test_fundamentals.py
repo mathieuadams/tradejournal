@@ -184,11 +184,13 @@ def test_api_flow():
     st, r = call("POST", "/fund/study", {"years": 6, "useSec": True})
     assert r["status"] == "done", r
     st, s = call("GET", "/fund/study")
-    assert s["sources"]["fmp"] > 30 and s["withEst"] > 30 and any("DDD" in x for x in s["skipped"]), (s["sources"], s["skipped"][:3])
+    assert s["sources"]["fmp"] > 30 and s["withEst"] > 30, (s["sources"], s["skipped"][:3])
+    assert not any(x.startswith("DDD:") for x in s["skipped"]), s["skipped"]      # removed ticker: SEC number from FMP's profile
     row = next(x for x in s["rows"] if x.get("epsSurprise") is not None and x.get("ownAbs") is not None)
     for k in ("pre1ab", "pre5ab", "pre21ab", "pre63ab", "relVol5", "cmf20", "obv20", "sma50", "estEpsG", "epsSurprise", "drift5"):
         assert k in row, k
-    assert {t["key"] for t in s["model"]["targets"]} >= {"r1ab", "abs1", "r40ab", "drift20"}
+    assert {t["key"] for t in s["model"]["targets"]} >= {"r1ab", "abs1", "r40ab", "drift20", "score_drift40"}
+    assert s["model"]["scale"] == "trailing percentiles"
     tx = [x for x in s["rows"] if x.get("txTone") is not None]
     assert len(tx) > 20 and any(x.get("guideSrc") == "call" for x in tx) and any(x.get("txToneChg") is not None for x in tx)
     assert all("gradeNet90" in x for x in s["rows"] if x["src"] == "fmp")
@@ -264,6 +266,40 @@ def test_model_finds_planted_signal():
     assert all(t[k]["verdict"] != "edge" for k in ("r20ab", "r40ab", "drift20")), [(k, t[k]["verdict"], t[k]["icQ"]) for k in ("r20ab", "r40ab", "drift20")]
     pr = model.apply(m, {"cmf20": 0.4, "vol20": 0.02})
     assert next(x for x in pr if x["key"] == "r1ab")["pred"] > 0.01
+
+
+def test_ranked_uses_earlier_releases_only():
+    import model
+    rows = [{"sym": "A", "date": f"2020-01-{d:02d}", "base": f"2020-01-{d:02d}", "cmf20": float(d)} for d in range(1, 31)]
+    model.RANK_MIN, old = 5, model.RANK_MIN
+    try:
+        rk, ref = model.ranked(rows, ["cmf20"])
+    finally:
+        model.RANK_MIN = old
+    assert rk[3]["cmf20"] is None and rk[10]["cmf20"] == 0.5        # above every earlier value: top percentile
+    rows[29]["cmf20"] = -100.0                                       # changing the last release changes no earlier rank
+    model.RANK_MIN = 5
+    try:
+        rk2, _ = model.ranked(rows, ["cmf20"])
+    finally:
+        model.RANK_MIN = old
+    assert [r["cmf20"] for r in rk[:29]] == [r["cmf20"] for r in rk2[:29]]
+    assert model.post_score({"epsSurprise": 0.4, "accruals": 0.4}) == 0.0
+
+
+def test_implied_move():
+    import alpopt
+    snaps = {"call": {"QQQ261120C00500000": {"latestQuote": {"bp": 9.8, "ap": 10.2}}, "QQQ261127C00500000": {"latestQuote": {"bp": 15, "ap": 15}},
+                      "QQQ261120C00510000": {"latestQuote": {"bp": 5, "ap": 5.2}}},
+             "put": {"QQQ261120P00500000": {"latestQuote": {"bp": 9.9, "ap": 10.1}}, "QQQ261120P00510000": {"latestQuote": {"bp": 14, "ap": 14.4}}}}
+    old = alpopt._req
+    alpopt._req = lambda c, m, url, body=None, timeout=30: {"snapshots": snaps["call" if "type=call" in url else "put"]}
+    try:
+        call("PUT", "/alpaca", {"keyId": "PK" + "A" * 18, "secret": "s" * 30})
+        im = F.implied_move(SUB, "QQQ", "2026-11-19", 501.0)
+    finally:
+        alpopt._req = old
+    assert im["expiry"] == "2026-11-20" and im["strike"] == 500 and abs(im["move"] - 20 / 501) < 1e-9, im
 
 
 def test_model_no_lookahead():
