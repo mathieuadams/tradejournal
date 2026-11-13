@@ -90,17 +90,27 @@ def call_fields(r):
     return {c: (r.get(t) if r.get("timing") == "amc" else None) for c, t in CALL_TX.items()}
 
 
-TARGETS = [  # key, label, model, outcome known on, value
-    ("r1ab", "Day 0 vs bench", "pre", "t1", lambda r: r.get("r1ab")),
-    ("abs1", "Size of the day-0 move", "pre", "t1", lambda r: abs(r["r1ab"]) if r.get("r1ab") is not None else None),
-    ("r5ab", "5 days vs bench", "pre", "t5", lambda r: r.get("r5ab")),
-    ("r20ab", "1 month vs bench", "pre", "t20", lambda r: r.get("r20ab")),
-    ("r40ab", "2 months vs bench", "pre", "t40", lambda r: r.get("r40ab")),
-    ("o2c", "Day 0 open → close vs bench", "call", "t1", lambda r: r.get("o2c")),
-    ("after5", "Day 0 open → 5 days vs bench", "call", "t5", lambda r: r.get("after5")),
-    ("drift5", "Drift d0→d5", "post", "t5", lambda r: r.get("drift5")),
-    ("drift20", "Drift d0→d20", "post", "t20", lambda r: r.get("drift20")),
-    ("drift40", "Drift d0→d40", "post", "t40", lambda r: r.get("drift40")),
+# Trimmed feature sets (build 104): only signals with the same sign and a meaningful t in both 2016-21 and 2022-26 for
+# their target family, plus the release timing. Fewer inputs: less noise for the ridge to chase.
+SIZE = ["ownAbs", "relVol1", "relVol5", "vol20", "beta", "offHigh", "offLow", "rangePos", "estRevG", "prevRevYoY", "prevTxTone",
+        "volTrend42", "cmf126", "amc"]
+PRE_DIR = ["ownMean", "offLow", "gradeN90", "prevTxGuide", "estRevG", "spyVs200", "spy21", "cmf126", "udVol126", "amc"]
+CALL_T = ["cToneChg", "revAccel", "epsSurprise", "revSurprise", "cmf126", "cUncert", "gap", "amc"]
+POST_T = ["epsSurprise", "revSurprise", "accruals", "txTone", "txGuide", "ownMean", "revAccel", "gap", "z1", "vol0", "spy21",
+          "spyVs200", "cmf126", "amc"]
+
+TARGETS = [  # key, label, model, outcome known on, value, features
+    ("r1ab", "Day 0 vs bench", "pre", "t1", lambda r: r.get("r1ab"), PRE_DIR),
+    ("abs1", "Size of the day-0 move", "pre", "t1", lambda r: abs(r["r1ab"]) if r.get("r1ab") is not None else None, SIZE),
+    ("r5ab", "5 days vs bench", "pre", "t5", lambda r: r.get("r5ab"), PRE_DIR),
+    ("r20ab", "1 month vs bench", "pre", "t20", lambda r: r.get("r20ab"), PRE_DIR),
+    ("r40ab", "2 months vs bench", "pre", "t40", lambda r: r.get("r40ab"), PRE_DIR),
+    ("o2c", "Day 0 open → close vs bench", "call", "t1", lambda r: r.get("o2c"), CALL_T),
+    ("after5", "Day 0 open → 5 days vs bench", "call", "t5", lambda r: r.get("after5"), CALL_T),
+    ("drift5", "Drift d0→d5", "post", "t5", lambda r: r.get("drift5"), POST_T),
+    ("drift20", "Drift d0→d20", "post", "t20", lambda r: r.get("drift20"), POST_T),
+    ("drift40", "Drift d0→d40", "post", "t40", lambda r: r.get("drift40"), POST_T),
+    ("drift40b", "Drift d0→d40, beta-adjusted", "post", "t40", lambda r: r.get("drift40b"), POST_T),
 ]
 MIN_TRAIN = 300
 LAMBDA = 0.10                                          # ridge penalty on the correlation scale
@@ -421,10 +431,9 @@ def evaluate(rows, prog=None, min_train=MIN_TRAIN):
     out = {"minTrain": min_train, "lambda": LAMBDA, "targets": [], "final": {}, "scale": "trailing percentiles", "ref": ref}
     F0, F = F, _spec_ranked()
     try:
-        for key, label, kind, known, fn in TARGETS:
+        for key, label, kind, known, fn, keys in TARGETS:
             if prog:
                 prog(f"Walk-forward model: {label}…")
-            keys = {"pre": PRE, "post": POST, "call": CALL}[kind]
             pred_on = "base" if kind == "pre" else "day0"         # call: the day-0 open; post: the day-0 close
             cap = 0.5 if key == "abs1" else 0.25
             preds = walk_forward(rk, keys, fn, known, pred_on, min_train, cap=cap)

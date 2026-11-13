@@ -266,18 +266,18 @@ def test_api_flow():
 
 
 def _synth(n=3000, seed=7):
-    """Releases with a planted pre-release signal: day-0 return = 0.02 × cmf20 + noise; size = 0.5 × vol20 + noise."""
+    """Releases with a planted pre-release signal: day-0 return = 0.02 × cmf126 + noise; size = 0.5 × vol20 + noise."""
     import random
     from datetime import date, timedelta
     rnd = random.Random(seed)
     rows, d0 = [], date(2015, 1, 2)
     for i in range(n):
         d = d0 + timedelta(days=i * 3650 // n)
-        cmf, vol = rnd.uniform(-0.5, 0.5), rnd.uniform(0.01, 0.05)
+        cmf, vol = rnd.uniform(-0.5, 0.5), rnd.uniform(0.01, 0.05)   # planted in cmf126 (a direction signal) and vol20 (size)
         r1 = 0.02 * cmf / 0.29 + rnd.gauss(0, 0.04)
         r = {"sym": f"S{i % 300}", "date": d.isoformat(), "base": d.isoformat(), "day0": (d + timedelta(days=1)).isoformat(),
              "t1": (d + timedelta(days=1)).isoformat(), "t5": (d + timedelta(days=7)).isoformat(), "t20": (d + timedelta(days=28)).isoformat(),
-             "t40": (d + timedelta(days=56)).isoformat(), "cmf20": cmf, "vol20": vol, "pre21ab": rnd.gauss(0, 0.05),
+             "t40": (d + timedelta(days=56)).isoformat(), "cmf126": cmf, "vol20": vol, "pre21ab": rnd.gauss(0, 0.05),
              "r1ab": r1 + (abs(rnd.gauss(0, vol * 2)) * (1 if r1 > 0 else -1)), "r5ab": rnd.gauss(0, 0.05), "r20ab": rnd.gauss(0, 0.08),
              "r40ab": rnd.gauss(0, 0.1), "drift5": rnd.gauss(0, 0.03), "drift20": rnd.gauss(0, 0.05), "drift40": rnd.gauss(0, 0.07)}
         rows.append(r)
@@ -310,10 +310,10 @@ def test_model_finds_planted_signal():
     m = model.evaluate(_synth(), min_train=300)
     t = {x["key"]: x for x in m["targets"]}
     assert t["r1ab"]["verdict"] == "edge" and t["r1ab"]["hit"] > t["r1ab"]["hitBase"] and t["r1ab"]["icQ"]["t"] > 3, t["r1ab"]
-    assert t["r1ab"]["coef"][0]["key"] == "cmf20" and t["r1ab"]["spread"]["mean"] > 0.01
+    assert t["r1ab"]["coef"][0]["key"] == "cmf126" and t["r1ab"]["spread"]["mean"] > 0.01
     assert t["abs1"]["ic"] > 0.1                        # size follows volatility
     assert all(t[k]["verdict"] != "edge" for k in ("r20ab", "r40ab", "drift20")), [(k, t[k]["verdict"], t[k]["icQ"]) for k in ("r20ab", "r40ab", "drift20")]
-    pr = model.apply(m, {"cmf20": 0.4, "vol20": 0.02})
+    pr = model.apply(m, {"cmf126": 0.4, "vol20": 0.02})
     assert next(x for x in pr if x["key"] == "r1ab")["pred"] > 0.01
 
 
