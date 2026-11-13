@@ -212,6 +212,17 @@ def test_api_flow():
     st, p = call("GET", "/fund/project", None, {"sym": "AAA"})
     assert p["priceTarget"]["upside"] is not None and "gradeNet90" in p["now"] and p["now"]["lastCall"]["tone"] is not None
     assert st == 200 and p["next"]["source"] == "FMP" and p["next"]["epsEst"] is not None and "relVol5" in p["now"], p["next"]
+    assert {"o2c", "after5"} <= {t["key"] for t in s["model"]["targets"]} and any(x.get("o2c") is not None for x in s["rows"])
+    from datetime import date as _date, timedelta as _td
+    d = _date(_date.today().year, 7, 28)
+    while d.weekday() >= 5:
+        d += _td(days=1)
+    st, r = call("POST", "/fund/today", {"day": d.isoformat()})
+    assert st == 200 and r["status"] == "done", r
+    st, t = call("GET", "/fund/today", None, {"day": d.isoformat()})
+    assert t["rows"] and all(x["sym"] in ("AAA", "BBB", "CCC") for x in t["rows"]), t
+    for x in t["rows"]:
+        assert x["timing"] in ("bmo", "amc") and "epsSurprise" in x and x.get("gap") is not None and "scoreBand" not in x or x["scoreBand"] in ("top", "middle", "bottom")
     st, r = call("POST", "/fund/universe", {"tickers": []})
     assert r["universe"] == []
 

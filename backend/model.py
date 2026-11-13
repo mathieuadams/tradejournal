@@ -34,6 +34,8 @@ F = {
     "prevTxTone": (-1, 1, None, 0.0, "prevtx"), "prevTxGuide": (-1, 1, None, 0.0, "prevtx"), "prevTxUncert": (0, 40, None, 8.0, "prevtx"),
     "txTone": (-1, 1, None, 0.0, "tx"), "txToneQA": (-1, 1, None, 0.0, "tx"), "txUncert": (0, 40, None, 8.0, "tx"),
     "txGuide": (-1, 1, None, 0.0, "tx"), "txToneChg": (-1, 1, None, 0.0, "tx"),
+    "cTone": (-1, 1, None, 0.0, "ctx"), "cToneQA": (-1, 1, None, 0.0, "ctx"), "cUncert": (0, 40, None, 8.0, "ctx"),
+    "cGuide": (-1, 1, None, 0.0, "ctx"), "cToneChg": (-1, 1, None, 0.0, "ctx"),
     "amc": (0, 1, None, 0.0, None),
     "r1ab": (-0.4, 0.4, None, 0.0, None), "gap": (-0.4, 0.4, None, 0.0, None), "z1": (-15, 15, None, 0.0, None),
     "vol0": (0.1, 20, "log", 1.0, None),
@@ -52,7 +54,9 @@ LABEL = {"prevRevYoY": "Revenue YoY, last reported quarter", "prevRevAccel": "Re
          "gradeNet90": "Analyst net upgrades, 90 days before", "gradeN90": "Analyst actions, 90 days before", "prevTxTone": "Previous call tone",
          "prevTxGuide": "Previous call guidance score", "prevTxUncert": "Previous call uncertainty", "txTone": "Call tone", "txToneQA": "Call tone, Q&A",
          "txUncert": "Call uncertainty", "txGuide": "Call guidance score", "txToneChg": "Call tone change", "miss_grades": "No analyst data",
-         "miss_prevtx": "No previous call", "miss_tx": "No call transcript"}
+         "miss_prevtx": "No previous call", "miss_tx": "No call transcript", "cTone": "Call tone (after-close releases)",
+         "cToneQA": "Call tone, Q&A (after-close)", "cUncert": "Call uncertainty (after-close)", "cGuide": "Call guidance (after-close)",
+         "cToneChg": "Call tone change (after-close)", "miss_ctx": "No call before the open"}
 
 PRE = ["prevRevYoY", "prevRevAccel", "prevEpsYoY", "prevAccruals", "estEpsG", "estRevG", "pre1ab", "pre5ab", "pre21ab", "pre63ab",
        "offHigh", "sma50", "sma200", "vol20", "relVol1", "relVol5", "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab",
@@ -60,12 +64,26 @@ PRE = ["prevRevYoY", "prevRevAccel", "prevEpsYoY", "prevAccruals", "estEpsG", "e
 POST = ["revYoY", "revAccel", "revQoQ", "epsYoY", "epsAccel", "accruals", "epsSurprise", "revSurprise", "guideN", "r1ab", "gap", "z1",
         "vol0", "pre21ab", "pre63ab", "offHigh", "relVol5", "cmf20", "ownMean", "gradeNet90",
         "txTone", "txToneQA", "txUncert", "txGuide", "txToneChg", "amc"]
+# at the day-0 open (after the call): the reported numbers, surprises, the gap; the call's scores only for releases
+# after the close (the call is over before the open; a morning call can still be running at 09:30)
+CALL = ["revYoY", "revAccel", "revQoQ", "epsYoY", "epsAccel", "accruals", "epsSurprise", "revSurprise", "guideN", "cTone", "cToneQA",
+        "cUncert", "cGuide", "cToneChg", "gap", "pre5ab", "pre21ab", "pre63ab", "offHigh", "relVol5", "cmf20", "ownMean", "amc"]
+CALL_TX = {"cTone": "txTone", "cToneQA": "txToneQA", "cUncert": "txUncert", "cGuide": "txGuide", "cToneChg": "txToneChg"}
+
+
+def call_fields(r):
+    """The call's scores as the model at the open may use them: after-close releases only."""
+    return {c: (r.get(t) if r.get("timing") == "amc" else None) for c, t in CALL_TX.items()}
+
+
 TARGETS = [  # key, label, model, outcome known on, value
     ("r1ab", "Day 0 vs bench", "pre", "t1", lambda r: r.get("r1ab")),
     ("abs1", "Size of the day-0 move", "pre", "t1", lambda r: abs(r["r1ab"]) if r.get("r1ab") is not None else None),
     ("r5ab", "5 days vs bench", "pre", "t5", lambda r: r.get("r5ab")),
     ("r20ab", "1 month vs bench", "pre", "t20", lambda r: r.get("r20ab")),
     ("r40ab", "2 months vs bench", "pre", "t40", lambda r: r.get("r40ab")),
+    ("o2c", "Day 0 open → close vs bench", "call", "t1", lambda r: r.get("o2c")),
+    ("after5", "Day 0 open → 5 days vs bench", "call", "t5", lambda r: r.get("after5")),
     ("drift5", "Drift d0→d5", "post", "t5", lambda r: r.get("drift5")),
     ("drift20", "Drift d0→d20", "post", "t20", lambda r: r.get("drift20")),
     ("drift40", "Drift d0→d40", "post", "t40", lambda r: r.get("drift40")),
@@ -366,6 +384,11 @@ def _spec_ranked():
     return {k: (RANK_SPEC + (v[4],)) if k not in RAW else v for k, v in F.items()}
 
 
+def _year_before(d):
+    from datetime import date, timedelta
+    return (date.fromisoformat(d[:10]) - timedelta(days=365)).isoformat()
+
+
 def post_score(r):
     """The post-release score: the average percentile of EPS surprise, revenue surprise, call tone, call tone change,
     revenue acceleration and low accruals (r: a ranked row). Fixed weights: nothing is fitted."""
@@ -379,15 +402,16 @@ def evaluate(rows, prog=None, min_train=MIN_TRAIN):
     global F
     if prog:
         prog("Ranking the signals against the previous year's releases…")
-    rk, ref = ranked(rows, sorted(set(PRE) | set(POST)))
+    rows = [{**r, **call_fields(r)} for r in rows]
+    rk, ref = ranked(rows, sorted(set(PRE) | set(POST) | set(CALL)))
     out = {"minTrain": min_train, "lambda": LAMBDA, "targets": [], "final": {}, "scale": "trailing percentiles", "ref": ref}
     F0, F = F, _spec_ranked()
     try:
         for key, label, kind, known, fn in TARGETS:
             if prog:
                 prog(f"Walk-forward model: {label}…")
-            keys = PRE if kind == "pre" else POST
-            pred_on = "base" if kind == "pre" else "day0"
+            keys = {"pre": PRE, "post": POST, "call": CALL}[kind]
+            pred_on = "base" if kind == "pre" else "day0"         # call: the day-0 open; post: the day-0 close
             cap = 0.5 if key == "abs1" else 0.25
             preds = walk_forward(rk, keys, fn, known, pred_on, min_train, cap=cap)
             sc = score(preds, size=key == "abs1")
@@ -403,6 +427,11 @@ def evaluate(rows, prog=None, min_train=MIN_TRAIN):
                                     key=lambda c: -abs(c["beta"]))[:12]
                 out["final"][key] = {"keys": keys, "blocks": blks, **fin}
             out["targets"].append({"key": key, "label": label, "kind": kind, **sc})
+        last = sorted(r0.get("day0") or r0["date"] for r0 in rows)
+        recent = [post_score(r) for r0, r in zip(rows, rk) if (r0.get("day0") or "") >= _year_before(last[-1] if last else "2000-01-01")]
+        recent = sorted(x for x in recent if x is not None)
+        if len(recent) >= 50:
+            out["scoreCuts"] = {"p20": recent[len(recent) // 5], "p80": recent[4 * len(recent) // 5], "n": len(recent)}
         # the fixed post-release score: nothing fitted, so every release with a score is out-of-sample
         for key, label, known in (("drift20", "Post-release score → drift d0→d20", "t20"), ("drift40", "Post-release score → drift d0→d40", "t40")):
             preds = []
@@ -426,11 +455,13 @@ def evaluate(rows, prog=None, min_train=MIN_TRAIN):
     return out
 
 
-def apply(mdl, now):
-    """The final models applied to a snapshot taken before a release (pre-release targets only), with their scorecard."""
+def apply(mdl, now, kind="pre"):
+    """The final models of one kind ("pre": before the release; "call": at the day-0 open) applied to a snapshot."""
     global F
     if not mdl:
         return None
+    if kind == "call":
+        now = {**now, **call_fields(now)}
     snap = rank_snapshot(now, mdl.get("ref") or {}) if mdl.get("scale") == "trailing percentiles" else now
     F0 = F
     if mdl.get("scale") == "trailing percentiles":
@@ -439,7 +470,7 @@ def apply(mdl, now):
         res = []
         for t in mdl.get("targets") or []:
             fin = (mdl.get("final") or {}).get(t["key"])
-            if t["kind"] != "pre" or not fin:
+            if t["kind"] != kind or not fin:
                 continue
             x = vec(snap, fin["keys"], fin["blocks"])
             res.append({"key": t["key"], "label": t["label"], "pred": predict(fin, x), "verdict": t.get("verdict"), "hit": t.get("hit"),

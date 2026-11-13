@@ -446,6 +446,13 @@ def fake_fmp_get(key, path, params, timeout=40):
     sym = params.get("symbol")
     if sym == "AAPL":                                  # the plan probe asks about AAPL
         sym = "AAA"
+    if path == "earnings-calendar":
+        out = []
+        for k in SEC_COS:
+            for r in fake_fmp_get(key, "earnings", {"symbol": k}):
+                if params["from"] <= r["date"] <= params["to"]:
+                    out.append({kk: v for kk, v in r.items() if kk != "time"})
+        return out
     if path == "profile":
         return [{"symbol": params.get("symbol"), "cik": "0000001002", "companyName": "Delta Removed Co."}] if params.get("symbol") == "DDD" else []
     if path == "grades":

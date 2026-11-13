@@ -135,6 +135,11 @@ def handler(event, ctx=None):
                 done.append(s_)
             set_status(sub, name, status="error" if bad and len(bad) == len(syms) else "done",
                        msg=f"Fundamentals updated for {len(syms) - len(bad)} of {len(syms)} ticker(s)." + (" Skipped: " + "; ".join(bad[:6]) if bad else ""))
+        elif job == "fundtoday":                        # releases reacting at a day's open
+            import fundamentals
+            r = fundamentals.today_list(sub, p["day"], prog, dl)
+            flagged = sum(1 for x in r["rows"] if x.get("flag"))
+            set_status(sub, name, status="done", msg=f"{p['day']}: {len(r['rows'])} release(s), {flagged} flagged.")
         elif job == "fundexport":                       # the study's downloads (review file + CSV)
             import fundamentals
             prog("Writing the export files…")

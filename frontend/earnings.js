@@ -13,7 +13,7 @@ async function vEarnings() {
   const d = await api('/fund');
   S.enD = d;
   view(`${head('Earnings', 'Revenue growth, EPS inflection and earnings quality from SEC filings; how releases reprice the stock.')}
-    <div class="seg" style="margin-bottom:12px">${[['screen', 'Screen'], ['company', 'Company'], ['study', 'Event study']].map(([k, l]) => `<button data-entab="${k}" aria-pressed="${E.tab === k}">${l}</button>`).join('')}</div>
+    <div class="seg" style="margin-bottom:12px">${[['screen', 'Screen'], ['company', 'Company'], ['today', 'Today'], ['study', 'Event study']].map(([k, l]) => `<button data-entab="${k}" aria-pressed="${E.tab === k}">${l}</button>`).join('')}</div>
     <div id="en-body"></div><div id="job" style="margin-top:12px">${jobHtml(d.job)}</div>`);
   if (d.job && d.job.status === 'running') pollJob('/fund', r => r.job, r => { S.enD = r; if (E.tab === 'study' && r.job.job === 'fundstudy') { S.enStudy = null; } enBody(); });
   return enBody();
@@ -23,6 +23,7 @@ function enBody() {
   if (!b) return;
   if (E.tab === 'screen') b.innerHTML = enScreen();
   else if (E.tab === 'company') { b.innerHTML = enCompanyShell(); if (E.sym) enCompanyLoad(); }
+  else if (E.tab === 'today') { b.innerHTML = enTodayShell(); enTodayLoad(); }
   else { b.innerHTML = enStudyShell(); enStudyLoad(); }
 }
 
@@ -181,6 +182,40 @@ function enProjHtml(p) {
       ${p.neighbours.map(r => `<tr><td class="mono">${esc(r.date)}</td><td>${esc(r.sym)}</td><td class="r">${r.dist.toFixed(2)}</td><td class="r">${pct(r.prevRevYoY)}</td><td class="r">${pct(r.estEpsG)}</td><td class="r ${cls(r.pre21ab)}">${pct(r.pre21ab)}</td><td class="r">${x(r.relVol5)}</td><td class="r">${r.cmf20 == null ? '—' : r.cmf20.toFixed(2)}</td>
         <td class="r ${cls(r.r1ab)}">${pct(r.r1ab)}</td><td class="r ${cls(r.r5ab)}">${pct(r.r5ab)}</td><td class="r ${cls(r.r20ab)}">${pct(r.r20ab)}</td><td class="r ${cls(r.r40ab)}">${pct(r.r40ab)}</td></tr>`).join('')}</tbody></table></div>
       <p class="note">Nearest neighbours on standardised pre-release signals, drawn from the last event study${p.studyAt ? ' (' + esc(p.studyAt.slice(0, 10)) + ')' : ' (none run yet: own releases only)'} plus this company's own releases.</p></details></section>`;
+}
+
+/* ---------- Today: releases reacting at the open ---------- */
+function enTodayShell() {
+  const E = S.en, d = E.day || new Date(Date.now() - 8 * 3600e3).toISOString().slice(0, 10);
+  E.day = d;
+  return `<section class="panel"><div class="bd" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+      <label class="f">Reaction day<input type="date" id="en-day" value="${esc(d)}"></label><button class="btn primary" data-en="today-build">Build the list</button>
+      <span class="note">Releases of the study universe that react at this day's open: after-close releases of the business day before and before-open releases of the day. Before 09:30 the gap uses the latest pre-market trade; rebuild after the open for the real one.</span></div></section>
+    <div id="en-today" style="margin-top:12px"><div class="panel"><div class="empty">Loading…</div></div></div>`;
+}
+async function enTodayLoad() {
+  const el = $('#en-today'); if (!el) return;
+  try { const r = await api('/fund/today?day=' + S.en.day); S.enToday = r; el.innerHTML = enTodayHtml(r); }
+  catch (e) { el.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; }
+}
+function enTodayHtml(r) {
+  if (!r.rows) return `<div class="panel"><div class="empty">No list for ${esc(r.day)} yet: <b>Build the list</b>.</div></div>`;
+  const VER = { edge: ['ok', 'tested edge'], weak: ['', 'weak'], none: ['loss', 'no tested edge'] };
+  const mh = Object.entries(r.models || {}).map(([k, t]) => `${k === 'o2c' ? 'Open → close' : 'Open → 5 days'}: <span class="pill ${(VER[t.verdict] || [''])[0]}">${(VER[t.verdict] || ['', '—'])[1]}</span> (rank corr. ${t.icQ && t.icQ.mean != null ? t.icQ.mean.toFixed(3) : '—'}, top − bottom fifth ${t.spread ? pct(t.spread.mean, 2) : '—'})`).join(' · ');
+  const band = b => b === 'top' ? '<span class="pill ok">top fifth</span>' : b === 'bottom' ? '<span class="pill warn">bottom fifth</span>' : b ? '<span class="dim">middle</span>' : '—';
+  const flag = f => f ? `<span class="pill ${f.startsWith('Bad') ? 'warn' : 'ok'}"><b>${esc(f)}</b></span>` : '';
+  return `<section class="panel"><div class="hd"><h2>${esc(r.day)} · ${r.rows.length} release(s)</h2><span class="dim" style="font-size:13px">built ${esc((r.at || '').replace('T', ' ').slice(0, 16))} · vs ${esc(r.bench)}</span></div>
+    <div class="bd" style="padding-bottom:0"><div class="note">History: “bad news + gap up” (bottom-fifth score, gap above +2%) averaged −0.72% from the open to the close, down 58% of the time; “good news + gap down” (top fifth, gap below −2%) +0.39%. After the call model — ${mh || 'run the event study to train it'}.</div></div>
+    <div class="tbl-wrap"><table class="tbl" style="min-width:1450px"><thead><tr><th>Ticker</th><th>Release</th><th>Flag</th><th>Score</th><th class="r">EPS surp.</th><th class="r">Rev surp.</th><th class="r">Rev YoY</th><th class="r">YoY change</th>
+      <th class="r">Call tone</th><th class="r">Tone change</th><th>Guidance</th><th class="r">Gap</th><th class="r">Open → now vs bench</th><th class="r">Model: open → close</th><th class="r">Model: 5 days</th><th class="r">1m before</th></tr></thead><tbody>
+    ${r.rows.map(x => `<tr><td><a class="name" href="#earnings" data-enco="${esc(x.sym)}">${esc(x.sym)}</a></td><td class="mono">${esc(x.date)} ${esc(x.timing)}</td><td>${flag(x.flag)}</td><td>${band(x.scoreBand)}</td>
+      <td class="r ${cls(x.epsSurprise)}">${x.epsSurprise == null ? '—' : sgn(x.epsSurprise, 1, '%')}</td><td class="r ${cls(x.revSurprise)}">${x.revSurprise == null ? '—' : sgn(x.revSurprise, 1, '%')}</td>
+      <td class="r ${cls(x.revYoY)}">${pct(x.revYoY)}</td><td class="r ${cls(x.revAccel)}">${pp(x.revAccel)}</td>
+      <td class="r ${cls(x.txTone)}">${x.txTone == null ? '—' : x.txTone.toFixed(2)}${x.timing !== 'amc' && x.txTone != null ? ' <span class="dim" title="morning call: may end after the open">*</span>' : ''}</td><td class="r ${cls(x.txToneChg)}">${x.txToneChg == null ? '—' : (x.txToneChg > 0 ? '+' : '') + x.txToneChg.toFixed(2)}</td>
+      <td>${x.txGuideDir ? esc(x.txGuideDir) : '—'}</td><td class="r ${cls(x.gap)}"><b>${pct(x.gap)}</b>${x.indicated ? ' <span class="dim" title="pre-market">pm</span>' : ''}</td><td class="r ${cls(x.o2cSoFar)}">${pct(x.o2cSoFar, 2)}</td>
+      <td class="r ${cls(x.pred_o2c)}">${pct(x.pred_o2c, 2)}</td><td class="r ${cls(x.pred_after5)}">${pct(x.pred_after5, 2)}</td><td class="r ${cls(x.pre21ab)}">${pct(x.pre21ab)}</td></tr>`).join('') || '<tr><td colspan="16" class="dim">No release of the study universe reacts on this day.</td></tr>'}</tbody></table></div>
+    ${(r.notes || []).length ? `<div class="note" style="padding:8px 16px">${r.notes.map(esc).join(' · ')}</div>` : ''}
+    <div class="note" style="padding:8px 16px 14px">Score = the post-release score (EPS and revenue surprise, call tone, tone change, revenue acceleration) ranked against the last year's releases; growth from FMP's reported actuals. * a morning call may still be running at the open: the model ignores those call scores.</div></section>`;
 }
 
 /* ---------- Call transcript viewer ---------- */
@@ -364,6 +399,9 @@ document.addEventListener('click', async e => {
       case 'more': E.rshow = 1e9; $('#en-res').innerHTML = enResults(S.enStudy); return;
       case 'csv': return enDownload('csv', el);
       case 'review': return enDownload('review', el);
+      case 'today-build': { S.en.day = $('#en-day').value; el.disabled = true; await api('/fund/today', { method: 'POST', body: { day: S.en.day } }); toast('Building the list…');
+        const t0 = Date.now(); while (Date.now() - t0 < 240000) { await new Promise(r => setTimeout(r, 3000)); const r = await api('/fund/today?day=' + S.en.day); if (!r.job || r.job.status !== 'running') { S.enToday = r; $('#en-today').innerHTML = enTodayHtml(r); if (r.job && r.job.status === 'error') toast(r.job.msg); break; } }
+        el.disabled = false; return; }
       case 'tx-close': $('#en-tx-view').innerHTML = ''; return;
       case 'uni-sp500': { el.disabled = true; toast('Loading the S&P 500 from FMP…'); const r = await api('/fund/universe', { method: 'POST', body: { source: 'sp500', removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(); }
       case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings();
@@ -380,3 +418,4 @@ document.addEventListener('input', e => {
   const n = document.querySelector(`[data-enf="${id}"]`); if (n && n.type !== 'checkbox') { n.focus(); try { n.setSelectionRange(pos, pos); } catch (x) { /* number inputs */ } }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'en-sym') { e.preventDefault(); document.querySelector('[data-en="co-load"]').click(); } });
+document.addEventListener('change', e => { if (e.target.id === 'en-day') { S.en.day = e.target.value; enTodayLoad(); } });

@@ -705,6 +705,27 @@ def fund_export(sub, claims, body, q):
     return {"pending": True}
 
 
+@route("GET", "/fund/today")
+def fund_today(sub, claims, body, q):
+    import fundamentals as F
+    day = q.get("day") or F.now_ny().date().isoformat()
+    return {**F.today_view(sub, day), "job": jobs.status(sub, "fund")}
+
+
+@route("POST", "/fund/today")
+def fund_today_build(sub, claims, body, q):
+    import fmp
+    import fundamentals as F
+    day = body.get("day") or F.now_ny().date().isoformat()
+    try:
+        F.date.fromisoformat(day)
+    except ValueError:
+        raise BadRequest("day: YYYY-MM-DD.")
+    if not fmp.status(sub)["connected"] or not alpaca.status(sub)["connected"]:
+        raise BadRequest("Today's list needs FMP and Alpaca (Data page).")
+    return jobs.start(sub, "fund", "fundtoday", {"day": day})
+
+
 @route("GET", "/fund/study/rows")
 def fund_study_rows(sub, claims, body, q):
     import fundamentals as F

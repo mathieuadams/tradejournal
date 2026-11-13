@@ -227,3 +227,17 @@ def transcript(sub, sym, year, quarter):
     raw = _get(_key(sub), "earning-call-transcript", {"symbol": _sym(sym), "year": year, "quarter": quarter}) or []
     r = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
     return {"date": str(r.get("date") or "")[:10], "content": r.get("content") or ""} if r.get("content") else None
+
+
+def calendar(sub, d0, d1):
+    """Every company's releases between two dates: [{symbol, date, epsAct, epsEst, revAct, revEst, timing}]."""
+    raw = _get(_key(sub), "earnings-calendar", {"from": d0, "to": d1}) or []
+    out = []
+    for r in raw if isinstance(raw, list) else []:
+        d = str(r.get("date") or "")[:10]
+        if not r.get("symbol") or len(d) != 10:
+            continue
+        t = str(r.get("time") or r.get("reportTime") or r.get("when") or "").strip().lower()
+        out.append({"symbol": str(r["symbol"]).upper(), "date": d, "epsAct": _f(r.get("epsActual")), "epsEst": _f(r.get("epsEstimated")),
+                    "revAct": _f(r.get("revenueActual")), "revEst": _f(r.get("revenueEstimated")), "timing": TIMES.get(t)})
+    return out

@@ -681,7 +681,7 @@ def pre_signals(bars, bmap, k):
     return out
 
 
-def reaction(ev, bars, bench, bmap=None):
+def reaction(ev, bars, bench, bmap=None, bopen=None):
     """Price reaction around one release. Base = the last close before the market could react (the release day's close
     after an after-close release, the previous close otherwise); day 0 = the first session that could react."""
     dates = [b[0] for b in bars]
@@ -712,6 +712,13 @@ def reaction(ev, bars, bench, bmap=None):
         if k < len(bars):
             br = bret(d0, k)
             out[name] = c(k) / c(d0) - 1 - br if br is not None else None
+    bo = bopen if bopen is not None else {b[0]: b[1] for b in bench}
+    o0, so, sc0 = bars[d0][1], bo.get(dates[d0]), bd.get(dates[d0])
+    if o0 and so and sc0:                              # after the call: from the day-0 open, vs the benchmark's own open
+        out["o2c"] = c(d0) / o0 - 1 - (sc0 / so - 1)
+        k = base + 5
+        if k < len(bars) and bd.get(dates[k]):
+            out["after5"] = c(k) / o0 - 1 - (bd[dates[k]] / so - 1)
     out.update(pre_signals(bars, bd, base))
     if out.get("r1ab") is not None and out.get("vol20"):
         out["z1"] = out["r1ab"] / out["vol20"]         # day-0 abnormal move in daily standard deviations
@@ -752,7 +759,7 @@ def setup_of(e):
 
 # ---------------------------------------------------------------- the study
 
-OUTCOMES = [("gap", "Gap"), ("r1ab", "Day 0 vs bench"), ("z1", "Day 0 (σ)"), ("r5ab", "5 days vs bench"),
+OUTCOMES = [("gap", "Gap"), ("o2c", "Day 0 open → close vs bench"), ("r1ab", "Day 0 vs bench"), ("z1", "Day 0 (σ)"), ("r5ab", "5 days vs bench"),
             ("r20ab", "1 month vs bench"), ("r40ab", "2 months vs bench"), ("drift5", "Drift d1→d5"), ("drift20", "Drift d1→d20"),
             ("drift40", "Drift d1→d40")]
 NUM_SIGNALS = [("pre1ab", "Day before vs bench"), ("pre5ab", "5 days before vs bench"), ("pre21ab", "1 month before vs bench"),
@@ -798,13 +805,13 @@ class NoPlan(Exception):
     """The FMP plan doesn't include this dataset: stop asking for it in this run."""
 
 
-def tx_index(sub, sym, since, fetch=True, deadline=None):
+def tx_index(sub, sym, since, fetch=True, deadline=None, force=False):
     """The company's scored call transcripts (texts cached for good in S3: they stay after a plan downgrade)."""
     import fmp
     import sentiment
     key = "fund/txi/" + sym
     idx = store.get_json(key) or {"at": "", "items": []}
-    if not fetch or idx.get("at", "") > iso(now_ny() - timedelta(days=5)):
+    if not fetch or (not force and idx.get("at", "") > iso(now_ny() - timedelta(days=5))):
         return idx["items"]
     try:
         dates = fmp.transcript_dates(sub, sym)
@@ -936,6 +943,7 @@ def build_rows(sub, opts, prog=None, deadline=None):
         prog(f"Prices: {bench_sym}")
     bench = prices(sub, bench_sym, need, max_age_h=72)
     bmap = {b[0]: b[4] for b in bench}
+    bopen = {b[0]: b[1] for b in bench}
     rows, skipped, t_last = [], [], 0.0
     uni_set = set(uni)
     plan_ok = {"grades": True, "tx": True}
@@ -1011,7 +1019,7 @@ def build_rows(sub, opts, prog=None, deadline=None):
         sec = sector_of((c or {}).get("sic"))
         mine = []
         for e in sorted(evs.values(), key=lambda x: x["date"]):
-            re_ = reaction(e, bars, bench, bmap)
+            re_ = reaction(e, bars, bench, bmap, bopen)
             if not re_:
                 continue
             row = {**{k2: v for k2, v in e.items() if k2 != "x"}, **re_, "sector": sec}
@@ -1142,7 +1150,7 @@ EXPORT_KEYS = ["sym", "date", "timing", "src", "sector", "base", "day0", "qEnd",
                "txDate", "txTone", "txTonePrep", "txToneQA", "txUncert", "txNeg", "txGuide", "txGuideDir", "txToneChg", "prevTxTone", "prevTxGuide",
                "pre1", "pre1ab", "pre5", "pre5ab", "pre21", "pre21ab", "pre63", "pre63ab", "offHigh", "sma50", "sma200", "vol20", "relVol1", "relVol5",
                "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab", "gap", "vol0", "r1", "r1ab", "z1", "r5", "r5ab", "r20", "r20ab", "r40",
-               "r40ab", "r60", "r60ab", "drift5", "drift20", "drift40", "drift60", "t1", "t5", "t20", "t40", "t60"]
+               "r40ab", "r60", "r60ab", "drift5", "drift20", "drift40", "drift60", "o2c", "after5", "t1", "t5", "t20", "t40", "t60"]
 
 
 def _r6(v):
@@ -1466,3 +1474,143 @@ def project(sub, sym, k_nn=None):
             "refN": len(ref), "ownN": len(own), "studyAt": sd.get("at"), "horizons": hz,
             "model": model.apply(sd.get("model"), now),
             "neighbours": [{"dist": round(dd, 3), **{k: r.get(k) for k in keep}} for dd, r in neigh[:25]]}
+
+
+# ---------------------------------------------------------------- today's list: releases reacting at today's open
+
+def _bday(d, step):
+    d = d + timedelta(days=step)
+    while d.weekday() >= 5:
+        d += timedelta(days=step)
+    return d
+
+
+def _fmp_growth(frows, r):
+    """Year-over-year growth of the release's actuals from FMP's own history (the 10-Q isn't filed yet on release day)."""
+    done = [x for x in frows if x["date"] < r["date"] and (x["epsAct"] is not None or x["revAct"] is not None)]
+    out = {}
+
+    def ago(days_lo, days_hi, ref_date):
+        for x in reversed(done):
+            n = (_d(ref_date) - _d(x["date"])).days
+            if days_lo <= n <= days_hi:
+                return x
+        return None
+    ya = ago(300, 430, r["date"])
+    if ya:
+        out["revYoY"], out["epsYoY"] = _g(r.get("revAct"), ya["revAct"]), _g(r.get("epsAct"), ya["epsAct"])
+    prev = done[-1] if done else None
+    if prev:
+        out["revQoQ"] = _g(r.get("revAct"), prev["revAct"])
+        pya = ago(300, 430, prev["date"]) if prev else None
+        if pya and out.get("revYoY") is not None:
+            py = _g(prev["revAct"], pya["revAct"])
+            if py is not None:
+                out["revAccel"] = out["revYoY"] - py
+        if pya and out.get("epsYoY") is not None:
+            pe = _g(prev["epsAct"], pya["epsAct"])
+            if pe is not None:
+                out["epsAccel"] = out["epsYoY"] - pe
+    return out
+
+
+def today_list(sub, day, prog=None, deadline=None):
+    """The study universe's releases whose first reaction is `day` (after-close releases of the previous business day,
+    before-open releases of the day): surprises, the call, the gap at the open, the post-release score and its flags, the
+    'after the call' model's expectation. Stored per day."""
+    import alpaca
+    import alpopt
+    import fmp
+    import model
+    st = settings(sub)
+    uni = set(study_tickers(st))
+    if not uni:
+        raise BadRequest("Set the study universe first (Event study → Load the S&P 500).")
+    sd = study(sub) or {}
+    mdl = sd.get("model") or {}
+    cuts = mdl.get("scoreCuts")
+    D = _d(day)
+    prev = _bday(D, -1)
+    cal = [r for r in fmp.calendar(sub, prev.isoformat(), day) if r["symbol"].replace(".", "-") in uni or r["symbol"] in uni]
+    bench_sym = st["bench"]
+    start = (D - timedelta(days=420)).isoformat()
+    bench = alpaca.daily_range(sub, bench_sym, start)
+    bmap, bopen = {b[0]: b[4] for b in bench}, {b[0]: b[1] for b in bench}
+    c_alp = alpaca.creds(sub)
+    rows, notes = [], []
+    seen = set()
+    for n, r in enumerate(cal):
+        if deadline and time.time() > deadline:
+            notes.append("Out of time: the list is partial.")
+            break
+        s = check_sym(r["symbol"].replace(".", "-"))
+        if s in seen:
+            continue
+        if prog:
+            prog(f"{n + 1}/{len(cal)}: {s}")
+        try:
+            frows = fmp.earnings(sub, s, max_age_h=0)
+            fr = next((x for x in frows if x["date"] == r["date"]), None) or {**r, "timing": r.get("timing")}
+            timing = fr.get("timing") or r.get("timing") or "unknown"
+            d0 = _bday(_d(r["date"]), 1) if timing == "amc" else _d(r["date"])
+            if d0.weekday() >= 5:
+                d0 = _bday(d0, 1)
+            if d0 != D:
+                continue
+            seen.add(s)
+            e = {"sym": s, "date": r["date"], "timing": timing, "epsEst": fr.get("epsEst"), "epsAct": fr.get("epsAct"),
+                 "revEst": fr.get("revEst"), "revAct": fr.get("revAct")}
+            _surprises(e)
+            if e.get("epsAct") is None and e.get("revAct") is None:
+                notes.append(f"{s}: no actuals yet")
+            e.update(_fmp_growth(frows, e))
+            bars = alpaca.daily_range(sub, s, start)
+            ix = [i for i, b in enumerate(bars) if b[0] < day]
+            if not ix:
+                continue
+            base = ix[-1]
+            e.update(pre_signals(bars, bmap, base))
+            op, indicated = None, False
+            if base + 1 < len(bars) and bars[base + 1][0] == day:
+                op = bars[base + 1][1]
+                e["last"] = bars[base + 1][4]
+            else:
+                op, indicated = alpopt._spot(c_alp, s.replace("-", ".")), True      # before the open: the latest trade
+            if op:
+                e["gap"] = op / bars[base][4] - 1
+                e["open"], e["indicated"] = op, indicated
+                if not indicated and e.get("last") and bopen.get(day) and bmap.get(day):
+                    e["o2cSoFar"] = e["last"] / op - 1 - (bmap[day] / bopen[day] - 1)
+            try:
+                items = tx_index(sub, s, (D - timedelta(days=400)).isoformat(), True, force=True)
+            except Exception as ex:
+                items = (store.get_json("fund/txi/" + s) or {}).get("items") or []
+                notes.append(f"{s} call: {str(ex)[:80]}")
+            _tx_fields(e, [i for i in items if i["date"] <= day])
+            e["callBeforeOpen"] = timing == "amc"
+            e["setup"] = setup_of(e)
+            if mdl.get("ref"):
+                snap = model.rank_snapshot(e, mdl["ref"])
+                e["score"] = model.post_score(snap)
+                if cuts and e["score"] is not None:
+                    e["scoreBand"] = "top" if e["score"] >= cuts["p80"] else "bottom" if e["score"] <= cuts["p20"] else "middle"
+                for p_ in model.apply(mdl, e, "call") or []:
+                    e["pred_" + p_["key"]] = p_["pred"]
+            g = e.get("gap")
+            if e.get("scoreBand") == "bottom" and g is not None and g > 0.02:
+                e["flag"] = "Bad news + gap up"
+            elif e.get("scoreBand") == "top" and g is not None and g < -0.02:
+                e["flag"] = "Good news + gap down"
+            rows.append(e)
+        except Exception as ex:
+            notes.append(f"{s}: {str(ex)[:100]}")
+    rows.sort(key=lambda x: (x.get("flag") is None, -(abs(x.get("gap") or 0))))
+    calls = {t["key"]: {k: t.get(k) for k in ("verdict", "hit", "hitBase", "icQ", "spread", "n")} for t in mdl.get("targets") or [] if t.get("kind") == "call"}
+    out = {"day": day, "at": iso(now_ny()), "bench": bench_sym, "rows": rows, "notes": notes[:30], "cuts": cuts, "models": calls,
+           "studyAt": sd.get("at")}
+    store.put_json(f"fund/u/{sub}/today/{day}", out)
+    return out
+
+
+def today_view(sub, day):
+    return store.get_json(f"fund/u/{sub}/today/{day}") or {"day": day, "rows": None}
