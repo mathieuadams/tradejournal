@@ -140,8 +140,8 @@ def handler(event, ctx=None):
             try:
                 r = fundamentals.run_study(sub, p, prog, dl)
             except TimeoutError:                        # fundamentals and prices are cached as they come: go on in a new run
-                if int(p.get("round") or 0) >= 8:
-                    raise RuntimeError("The study ran out of time eight times: fewer tickers or years.")
+                if int(p.get("round") or 0) >= 40:
+                    raise RuntimeError("The study ran out of time 40 times: fewer tickers or years.")
                 _invoke({**event, "params": {**p, "round": int(p.get("round") or 0) + 1}})
                 return {"continued": True}
             set_status(sub, name, status="done", msg=f"Event study: {r['n']} releases, {r['tickers']} tickers vs {r['bench']}.")

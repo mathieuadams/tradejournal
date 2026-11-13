@@ -619,10 +619,11 @@ def fund_view(sub, claims, body, q):
         rows.append(F.screen_row(c) if c else {"sym": s, "missing": True})
     ev = F.events(sub)
     sd = F.study(sub)
-    return {"settings": st, "rows": rows, "job": jobs.status(sub, "fund"), "alpaca": alpaca.status(sub)["connected"],
+    import fmp
+    return {"settings": st, "rows": rows, "job": jobs.status(sub, "fund"), "alpaca": alpaca.status(sub)["connected"], "fmp": fmp.status(sub),
             "events": {"n": len(ev["events"]), "tickers": len({e["sym"] for e in ev["events"]}), "cols": ev.get("cols") or [], "at": ev.get("at"),
                        "sample": ev["events"][:5]},
-            "study": {k: sd.get(k) for k in ("at", "n", "tickers", "from", "to", "bench")} if sd else None, "benches": F.BENCHES}
+            "study": {k: sd.get(k) for k in ("at", "n", "tickers", "from", "to", "bench", "sources", "withEst")} if sd else None, "benches": F.BENCHES}
 
 
 @route("PUT", "/fund/settings")
@@ -656,6 +657,36 @@ def fund_project(sub, claims, body, q):
     return F.project(sub, q.get("sym") or "")
 
 
+@route("PUT", "/fmp")
+def fmp_save(sub, claims, body, q):
+    import fmp
+    return fmp.save_key(sub, body.get("key"))
+
+
+@route("DELETE", "/fmp")
+def fmp_delete(sub, claims, body, q):
+    import fmp
+    return fmp.delete_key(sub)
+
+
+@route("POST", "/fund/universe")
+def fund_universe(sub, claims, body, q):
+    import fundamentals as F
+    if body.get("source") == "sp500":
+        return F.load_universe(sub, "sp500", int(body.get("years") or 10), bool(body.get("removed", True)))
+    return F.save_settings(sub, {"universe": body.get("tickers") or [], "uniName": "Custom" if body.get("tickers") else ""})
+
+
+@route("GET", "/fund/study/rows")
+def fund_study_rows(sub, claims, body, q):
+    import fundamentals as F
+    try:
+        page = max(0, int(q.get("page") or 0))
+    except ValueError:
+        raise BadRequest("page must be a number.")
+    return F.study_rows(sub, page)
+
+
 @route("POST", "/fund/events")
 def fund_import(sub, claims, body, q):
     import fundamentals as F
@@ -677,7 +708,7 @@ def fund_study_run(sub, claims, body, q):
     st = F.settings(sub)
     if not alpaca.status(sub)["connected"]:
         raise BadRequest("The event study measures price reactions with Alpaca daily bars: connect Alpaca on the Data page.")
-    if not F.events(sub)["events"] and not (st["useSec"] and st["tickers"]):
+    if not F.events(sub)["events"] and not (st["useSec"] and F.study_tickers(st)):
         raise BadRequest("No releases to study: import your CSV, or add tickers and use their SEC 8-K dates.")
     opts = {k: body[k] for k in ("bench", "years", "useSec") if k in body}
     if opts:

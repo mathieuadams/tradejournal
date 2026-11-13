@@ -415,7 +415,7 @@ def _sec_subs(sym):
             if d >= _dt.today():
                 continue
             n += 1
-            t = "16:05:12" if (n + len(sym)) % 2 else "07:01:44"
+            t = "21:05:12" if (n + len(sym)) % 2 else "12:01:44"
             for form, items in (("8-K", "2.02,9.01"), ("4", "")):
                 rec["accessionNumber"].append(f"0000{cik}-{y % 100:02d}-{n:06d}")
                 rec["filingDate"].append(d.isoformat())
@@ -435,6 +435,37 @@ def fake_sec_http(url, ua, timeout=40):
     return _sec_facts(sym) if "companyfacts" in url else _sec_subs(sym)
 
 
+# ---------------------------------------------------------------- fake Financial Modeling Prep (Earnings page)
+
+def fake_fmp_get(key, path, params, timeout=40):
+    from datetime import date as _dt
+    if path == "sp500-constituent":
+        return [{"symbol": k, "name": v[1]} for k, v in SEC_COS.items()]
+    if path == "historical-sp500-constituent":
+        return [{"date": (_dt.today() - timedelta(days=400)).isoformat(), "removedTicker": "DDD", "symbol": "XYZ"}]
+    if path != "earnings":
+        return []
+    sym = params.get("symbol")
+    if sym not in SEC_COS:
+        return []
+    rnd = random.Random("fmp" + sym)
+    out, n = [], 0
+    for y in range(_dt.today().year - 6, _dt.today().year + 2):
+        for m in (1, 4, 7, 10):
+            d = _dt(y, m, 28)
+            while d.weekday() >= 5:
+                d += timedelta(days=1)
+            n += 1
+            est = round(0.5 + 0.02 * n, 2)
+            past = d < _dt.today()
+            if not past and d > _dt.today() + timedelta(days=120):
+                continue
+            out.append({"symbol": sym, "date": d.isoformat(), "epsEstimated": est, "epsActual": round(est * (1 + rnd.gauss(0.03, 0.06)), 2) if past else None,
+                        "revenueEstimated": 1e9 + n * 1e7, "revenueActual": round((1e9 + n * 1e7) * (1 + rnd.gauss(0.01, 0.02))) if past else None,
+                        "time": "amc" if (n + len(sym)) % 2 else "bmo"})
+    return out[::-1]
+
+
 def install(fake_databento=False, data_dir=None, persist=True):
     global PERSIST
     PERSIST = persist
@@ -449,10 +480,14 @@ def install(fake_databento=False, data_dir=None, persist=True):
     import uwhales
     alpaca._kms = lambda: FakeKMS()
     uwhales._kms = lambda: FakeKMS()
+    import fmp
+    fmp._kms = lambda: FakeKMS()
     if fake_databento:
         databento._open = fake_open
         alpaca._get = fake_alpaca_get
         uwhales._get = fake_uw_get
         import fundamentals
         fundamentals._http = fake_sec_http
+        import fmp
+        fmp._get = fake_fmp_get
     _ = urllib.parse

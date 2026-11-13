@@ -4,11 +4,6 @@ When a paper trade opens (strategy.paper_one marks it "open"), 1 contract (or `q
 a call for a long, a put for a short, on QQQ (NQ) or SPY (ES), expiring today. When the trade closes (its stop,
 target or time exit on the futures candles), every leg is sold to close; anything still open is sold at 15:50.
 
-Signal: the NQ / ES candles arrive hours late, so for the overnight-midpoint setups (onmid / onhold) the signal is
-computed live from the ETF's own Alpaca bars (real time): overnight = the previous session's after-hours 16:00-20:00 plus
-today's pre-market 04:00-09:29; the open = the 09:25 candle's close; then the strategy's own rules (stop, target, hold,
-out-at time) run on the ETF's 5-minute candles. Other setups follow the futures paper trades (late when the data is).
-
 Trading: https://paper-api.alpaca.markets/v2/ only (orders, account). Contract pick: option snapshots with greeks,
 https://data.alpaca.markets/v1beta1/options/snapshots/{underlying}?feed=indicative (Black-Scholes from the quote
 when greeks are missing). State: strat/<sub>/<id>/alpopt = {"legs": {trade key: [leg, ...]}, "log": [...]}."""
@@ -192,63 +187,6 @@ def _close_leg(c, leg, why, log):
         log.append(f"sell {leg['sym']} failed: {e}")
 
 
-LIVE_SETUPS = ("onmid", "onhold")
-
-
-def etf_bars(sub, und):
-    """The last two sessions of 5-minute bars, extended hours: [["YYYY-MM-DDTHH:MM", o, h, l, c], ...]."""
-    out = []
-    for b in alpaca.bars(sub, und, days=2, tf=5, rth=False, close_bar=False):
-        out.append([b[0].replace(" ", "T"), float(b[1]), float(b[2]), float(b[3]), float(b[4])])
-    return out
-
-
-def live_signal(sub, s, fut, day, B=None):
-    """The overnight-midpoint trade for `day`, run on the ETF's own bars. Returns (trade or None, info)."""
-    import nightkit as N
-    import onmid
-    und = UND[fut]
-    B = B if B is not None else etf_bars(sub, und)
-    days = sorted({b[0][:10] for b in B})
-    prev = [d for d in days if d < day]
-    info = {"und": und, "day": day}
-    if not prev:
-        info["msg"] = f"no {und} bars from the previous session yet"
-        return None, info
-    pd = prev[-1]
-    on = [b for b in B if (b[0][:10] == pd and "16:00" <= b[0][11:16] < "20:00") or (b[0][:10] == day and "04:00" <= b[0][11:16] < "09:30")]
-    F = [b for b in B if b[0][:10] == day and b[0][11:16] < "16:00"]
-    if not on:
-        info["msg"] = f"no {und} after-hours / pre-market bars"
-        return None, info
-    hi, lo = max(b[2] for b in on), min(b[3] for b in on)
-    info.update(onh=hi, onl=lo, mid=round((hi + lo) / 2, 3), n=len(on))
-    if N.idx_at(F, f"{day}T09:25") is None:
-        pre = [b for b in F if b[0][11:16] < "09:25"]
-        if not pre or not any(b[0][11:16] >= "09:30" for b in F):
-            info["msg"] = "waiting for the 09:30 open"
-            return None, info
-        c = pre[-1][4]                                 # no 09:25 print: the last pre-market close stands in
-        F = [b for b in F if b[0][11:16] < "09:25"] + [[f"{day}T09:25", c, c, c, c]] + [b for b in F if b[0][11:16] >= "09:30"]
-    k = N.idx_at(F, f"{day}T09:25")
-    info["open"] = F[k][4]
-    if len(F) <= k + 1:
-        info["msg"] = "waiting for the 09:30 open"
-        return None, info
-    p = {**s["params"], "tf": 5}
-    r = onmid.engine(und, day, on, None, F, None, onmid.N.ifvg.ema_track(F), None, p)
-    if not r:
-        info["msg"] = "no trade today (open outside the range, in the dead zone, or the side / R:R filter)"
-        return None, info
-    x = r[0][0]
-    hm = now_ny().strftime("%H:%M")
-    t = {"s": fut, "d": day, "in": x["in"][:16], "out": str(x["out"])[:16], "side": x["side"], "why": x["why"], "e": x["e"], "x": x["x"],
-         "stop": x.get("stop"), "tgt": x.get("tgt"), "und": und,
-         "status": "open" if x["why"] == "close" and hm < "16:00" else "closed"}
-    info.update(side=t["side"], stop=t["stop"], tgt=t["tgt"], status=t["status"], why=t["why"])
-    return t, info
-
-
 def tick(sub, s, trades):
     """Called after paper_one: opens legs for new open trades today, closes legs whose trade closed."""
     cfg = config(s)
@@ -259,15 +197,6 @@ def tick(sub, s, trades):
     c = alpaca.creds(sub)
     now = now_ny()
     today, hm = now.strftime("%Y-%m-%d"), now.strftime("%H:%M")
-    sig = st.get("signal") or {}
-    if s.get("setup") in LIVE_SETUPS and now.weekday() < 5 and "09:30" <= hm < "16:30":
-        trades, sig = [], {}
-        for fut in s["params"]["tickers"]:
-            if fut in UND:
-                t, info = live_signal(sub, s, fut, today)
-                sig[fut] = {**info, "at": hm}
-                if t:
-                    trades.append(t)
     by = {_key(t): t for t in trades}
     for k, ls in legs.items():                       # fills first, then exits
         for l in ls:
@@ -298,7 +227,7 @@ def tick(sub, s, trades):
     for ls in legs.values():
         for l in ls:
             _update(c, l)
-    st = {"legs": legs, "log": log[-50:], "at": iso(now), "signal": sig}
+    st = {"legs": legs, "log": log[-50:], "at": iso(now)}
     store.put_json(_path(sub, s["id"]), st)
     return st
 
@@ -336,5 +265,4 @@ def view(sub, s):
     except Exception as e:
         acct = {"error": str(e)[:200]}
     return {"cfg": config(s), "legs": sorted(rows, key=lambda l: ((l.get("buy") or {}).get("at") or "", l["target"]), reverse=True)[:120],
-            "summary": [by[k] for k in sorted(by)], "log": (st.get("log") or [])[-15:], "at": st.get("at"), "account": acct,
-            "live": s.get("setup") in LIVE_SETUPS, "signal": st.get("signal") or {}}
+            "summary": [by[k] for k in sorted(by)], "log": (st.get("log") or [])[-15:], "at": st.get("at"), "account": acct}

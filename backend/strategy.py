@@ -678,10 +678,8 @@ def _alp_today(sub, s, today, fills, out):
                     "err": b.get("err") or x.get("err")})
     if not cfg.get("on") and not td and not opn:
         return None
-    sig = [g for g in (st.get("signal") or {}).values() if g.get("day") == today]
     return {"on": bool(cfg.get("on")), "open": len(opn), "today": round(sum(l.get("pnl") or 0 for l in td), 2), "legs": len(td),
-            "err": (s.get("paper") or {}).get("alpErr"), "at": st.get("at"),
-            "signal": [{k: g.get(k) for k in ("und", "side", "status", "why", "msg", "mid", "open", "at")} for g in sig]}
+            "err": (s.get("paper") or {}).get("alpErr"), "at": st.get("at")}
 
 
 def _hm(ts):

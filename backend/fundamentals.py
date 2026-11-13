@@ -20,7 +20,7 @@ Quarters: 10-Qs report 3-month figures (and year-to-date ones); Q4 is only in th
 quarters are derived: year-to-date differences (cash flow is usually only reported year to date), then full year minus
 the three other quarters. Derived values are marked "d" (Q4 EPS derived this way ignores share count changes).
 
-Acceptance times in EDGAR's submissions file are Eastern time (the trailing Z is not UTC)."""
+Acceptance times in EDGAR's submissions file are UTC; they are shown and classified in New York time."""
 import csv
 import io
 import json
@@ -33,7 +33,7 @@ from datetime import date, datetime, timedelta
 
 import db
 import store
-from util import BadRequest, Unavailable, iso, now_ny
+from util import BadRequest, Unavailable, iso, now_ny, utc_to_ny
 
 SK_WATCH = "FUND#watch"
 SEC_WWW = "https://www.sec.gov/"
@@ -41,6 +41,8 @@ SEC_DATA = "https://data.sec.gov/"
 PX_FROM = "2015-01-01"
 BENCHES = ("SPY", "QQQ", "IWM", "DIA")
 MAX_WATCH = 150
+MAX_UNIVERSE = 700
+SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 REV = ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet",
        "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueGoodsNet", "RevenuesNetOfInterestExpense"]
@@ -313,9 +315,12 @@ def earnings_filings(subs_json, pages=()):
                 continue
             fd = b["filingDate"][k]
             acc = (b.get("acceptanceDateTime") or [""] * len(forms))[k] or ""
-            t = acc[11:16] if len(acc) >= 16 else ""
-            if acc[:10] and acc[:10] < fd:             # accepted after 17:30: dated the next business day, released that evening
-                fd = acc[:10]
+            t = ""
+            if len(acc) >= 16:                         # acceptance time is UTC: convert to New York time
+                et = utc_to_ny(datetime.strptime(acc[:16], "%Y-%m-%dT%H:%M"))
+                t, ad = et.strftime("%H:%M"), et.strftime("%Y-%m-%d")
+                if ad < fd:                            # accepted after 17:30 ET: dated the next business day, released that evening
+                    fd = ad
             if fd in seen or form == "8-K/A":
                 continue
             seen.add(fd)
@@ -343,15 +348,18 @@ def company(sub, sym, max_age_h=20, force=False):
     ua, ck = _ua(sub), f"CIK{cik:010d}"
     facts = _http(SEC_DATA + f"api/xbrl/companyfacts/{ck}.json", ua) or {}
     subs = _http(SEC_DATA + f"submissions/{ck}.json", ua) or {}
-    pages = []
-    for f in ((subs.get("filings") or {}).get("files") or [])[:3]:      # older filings (heavy filers fill "recent" fast)
+    pages, since = [], (now_ny().date() - timedelta(days=365 * 11)).isoformat()
+    for f in ((subs.get("filings") or {}).get("files") or [])[:12]:     # older filings (heavy filers fill "recent" fast)
+        if f.get("filingTo") and f["filingTo"] < since:
+            continue
         try:
             pages.append(_http(SEC_DATA + "submissions/" + f["name"], ua))
         except Exception as e:
             print("sec page failed", sym, e)
     qs = metrics(build_quarters(facts))
     c = {"sym": sym, "cik": cik, "name": subs.get("name") or name, "at": iso(now_ny()), "fiscalYearEnd": subs.get("fiscalYearEnd"),
-         "quarters": qs[-28:], "releases": earnings_filings(subs, pages)}
+         "quarters": qs[-48:], "releases": earnings_filings(subs, pages),
+         "sic": subs.get("sic"), "industry": subs.get("sicDescription")}
     store.put_json(key, c)
     return c
 
@@ -377,7 +385,12 @@ def screen_row(c):
 def settings(sub):
     it = db.get(db.upk(sub), SK_WATCH) or {}
     return {"tickers": it.get("tickers") or [], "useSec": it.get("useSec", True), "years": it.get("years", 5),
-            "bench": it.get("bench", "SPY")}
+            "bench": it.get("bench", "SPY"), "universe": it.get("universe") or [], "uniName": it.get("uniName") or ""}
+
+
+def study_tickers(st):
+    """The tickers whose SEC 8-K release dates go into the study: the study universe, or the screen's tickers."""
+    return st["universe"] or st["tickers"]
 
 
 def save_settings(sub, b):
@@ -392,11 +405,22 @@ def save_settings(sub, b):
         if len(out) > MAX_WATCH:
             raise BadRequest(f"{MAX_WATCH} tickers at most.")
         cur["tickers"] = out
+    if "universe" in b:
+        raw = b["universe"] if isinstance(b["universe"], list) else str(b["universe"]).replace(",", " ").split()
+        out = []
+        for s in raw:
+            s = check_sym(s)
+            if s not in out:
+                out.append(s)
+        if len(out) > MAX_UNIVERSE:
+            raise BadRequest(f"{MAX_UNIVERSE} tickers at most in the study universe.")
+        cur["universe"] = out
+        cur["uniName"] = str(b.get("uniName") or ("Custom" if out else ""))[:60]
     if "useSec" in b:
         cur["useSec"] = bool(b["useSec"])
     if "years" in b:
         try:
-            cur["years"] = max(1, min(10, int(b["years"])))
+            cur["years"] = max(1, min(11, int(b["years"])))
         except (TypeError, ValueError):
             raise BadRequest("Years must be a whole number.")
     if "bench" in b:
@@ -559,7 +583,14 @@ def prices(sub, sym, need_from=PX_FROM, max_age_h=18):
     p = store.get_json(key)
     if p and p.get("from", "9") <= need_from and p.get("at", "") > iso(now_ny() - timedelta(hours=max_age_h)):
         return p["bars"]
-    bars = alpaca.daily_range(sub, sym, min(need_from, PX_FROM))
+    for attempt in range(5):                          # a 500-ticker study hits Alpaca's 200 requests / minute
+        try:
+            bars = alpaca.daily_range(sub, sym, min(need_from, PX_FROM))
+            break
+        except Unavailable as e:
+            if "rate limit" not in str(e) or attempt == 4:
+                raise
+            time.sleep(15)
     if not bars:
         raise BadRequest(f"Alpaca returned no daily bars for {sym}.")
     store.put_json(key, {"at": iso(now_ny()), "from": min(need_from, PX_FROM), "bars": bars})
@@ -569,6 +600,7 @@ def prices(sub, sym, need_from=PX_FROM, max_age_h=18):
 # ---------------------------------------------------------------- one release: signals and reaction
 
 WIN = (("r1", 1), ("r5", 5), ("r20", 20), ("r40", 40), ("r60", 60))     # sessions after the base close; 40 ≈ 2 months
+FMP_SIGNALS = ("epsEst", "revEst", "epsAct", "revAct")
 
 
 def _idx_on_or_after(dates, d):
@@ -577,22 +609,60 @@ def _idx_on_or_after(dates, d):
     return i if i < len(dates) else None
 
 
-def reaction(ev, bars, bench):
+def pre_signals(bars, bmap, k):
+    """What the stock did into the close of session k (the last close before the release could be priced):
+    returns over 1 / 5 / 21 / 63 sessions vs the benchmark, trend, volume and accumulation. Uses bars[..k] only."""
+    if k < 64:
+        return {}
+    c = lambda i: bars[i][4]
+    v = lambda i: bars[i][5] or 0
+    dates = lambda i: bars[i][0]
+
+    def ab(n):
+        raw = c(k) / c(k - n) - 1
+        a, b = bmap.get(dates(k - n)), bmap.get(dates(k))
+        return raw, (raw - (b / a - 1)) if a and b else None
+
+    out = {}
+    for n, key in ((1, "pre1"), (5, "pre5"), (21, "pre21"), (63, "pre63")):
+        out[key], out[key + "ab"] = ab(n)
+    out["runup20"] = ab(20)[1] if ab(20)[1] is not None else ab(20)[0]
+    rets = [c(i) / c(i - 1) - 1 for i in range(k - 19, k + 1)]
+    m = sum(rets) / len(rets)
+    out["vol20"] = math.sqrt(sum((x - m) ** 2 for x in rets) / (len(rets) - 1))
+    out["offHigh"] = c(k) / max(b[2] for b in bars[max(0, k - 251):k + 1]) - 1
+    out["sma50"] = c(k) / (sum(c(i) for i in range(k - 49, k + 1)) / 50) - 1
+    if k >= 200:
+        out["sma200"] = c(k) / (sum(c(i) for i in range(k - 199, k + 1)) / 200) - 1
+    v50 = sum(v(i) for i in range(k - 49, k + 1)) / 50
+    if v50 > 0:
+        out["relVol1"] = v(k) / v50                    # the last session's volume vs its 50-day average
+        out["relVol5"] = sum(v(i) for i in range(k - 4, k + 1)) / 5 / v50
+        out["relVol20"] = sum(v(i) for i in range(k - 19, k + 1)) / 20 / v50
+    tv = sum(v(i) for i in range(k - 19, k + 1))
+    if tv > 0:                                         # accumulation over 20 sessions
+        mf = 0.0
+        for i in range(k - 19, k + 1):
+            h, l_, cl = bars[i][2], bars[i][3], bars[i][4]
+            mf += (((cl - l_) - (h - cl)) / (h - l_) if h > l_ else 0) * v(i)
+        out["cmf20"] = mf / tv                         # Chaikin money flow: closes near the high on volume
+        out["obv20"] = sum((1 if c(i) > c(i - 1) else -1 if c(i) < c(i - 1) else 0) * v(i) for i in range(k - 19, k + 1)) / tv
+    return out
+
+
+def reaction(ev, bars, bench, bmap=None):
     """Price reaction around one release. Base = the last close before the market could react (the release day's close
     after an after-close release, the previous close otherwise); day 0 = the first session that could react."""
     dates = [b[0] for b in bars]
     i = _idx_on_or_after(dates, ev["date"])
     if i is None:
         return None
-    if ev.get("timing") == "amc":
-        base = i if dates[i] == ev["date"] else i - 1
-    else:
-        base = i - 1
+    base = (i if dates[i] == ev["date"] else i - 1) if ev.get("timing") == "amc" else i - 1
     d0 = base + 1
-    if base < 21 or d0 >= len(bars):
+    if base < 64 or d0 >= len(bars):
         return None
     c = lambda k: bars[k][4]
-    bd = {b[0]: b[4] for b in bench}
+    bd = bmap if bmap is not None else {b[0]: b[4] for b in bench}
 
     def bret(k0, k1):
         a, b = bd.get(dates[k0]), bd.get(dates[k1])
@@ -602,26 +672,21 @@ def reaction(ev, bars, bench):
     for name, n in WIN:
         k = base + n
         if k < len(bars):
+            out["t" + name[1:]] = dates[k]
             out[name] = c(k) / c(base) - 1
             br = bret(base, k)
             out[name + "ab"] = out[name] - br if br is not None else None
-    if out.get("r1") is not None:
-        for name, n in (("drift20", 20), ("drift60", 60)):    # after day 0: post-earnings drift
-            k = base + n
-            if k < len(bars):
-                br = bret(d0, k)
-                out[name] = c(k) / c(d0) - 1 - (br or 0) if br is not None else None
-    rets = [c(k) / c(k - 1) - 1 for k in range(base - 19, base + 1)]
-    m = sum(rets) / len(rets)
-    vol = math.sqrt(sum((x - m) ** 2 for x in rets) / (len(rets) - 1))
-    out["vol20"] = vol
-    if out.get("r1ab") is not None and vol > 0:
-        out["z1"] = out["r1ab"] / vol                  # day-0 abnormal move in daily standard deviations
-    run = c(base) / c(base - 20) - 1
-    br = bret(base - 20, base)
-    out["runup20"] = run - br if br is not None else run
-    hi = max(b[2] for b in bars[max(0, base - 251):base + 1])
-    out["offHigh"] = c(base) / hi - 1
+    for name, n in (("drift5", 5), ("drift20", 20), ("drift40", 40), ("drift60", 60)):   # after day 0, vs the benchmark
+        k = base + n
+        if k < len(bars):
+            br = bret(d0, k)
+            out[name] = c(k) / c(d0) - 1 - br if br is not None else None
+    out.update(pre_signals(bars, bd, base))
+    if out.get("r1ab") is not None and out.get("vol20"):
+        out["z1"] = out["r1ab"] / out["vol20"]         # day-0 abnormal move in daily standard deviations
+    if bars[d0][5] and out.get("relVol1") is not None:
+        v50 = sum(bars[x][5] or 0 for x in range(base - 49, base + 1)) / 50
+        out["vol0"] = bars[d0][5] / v50 if v50 else None   # reaction-day volume vs normal
     return out
 
 
@@ -657,89 +722,185 @@ def setup_of(e):
 # ---------------------------------------------------------------- the study
 
 OUTCOMES = [("gap", "Gap"), ("r1ab", "Day 0 vs bench"), ("z1", "Day 0 (σ)"), ("r5ab", "5 days vs bench"),
-            ("r20ab", "20 days vs bench"), ("r40ab", "2 months vs bench"), ("drift20", "Drift d1→d20"), ("drift60", "Drift d1→d60")]
-NUM_SIGNALS = [("revYoY", "Revenue YoY"), ("revAccel", "Revenue acceleration (YoY change)"), ("revQoQ", "Revenue QoQ"),
-               ("rev3y", "Revenue 3Y CAGR"), ("epsYoY", "EPS YoY"), ("epsAccel", "EPS acceleration"),
-               ("accruals", "Accrual ratio"), ("cashConv", "Cash conversion"), ("epsSurprise", "EPS surprise %"),
-               ("revSurprise", "Revenue surprise %"), ("runup20", "20-day run-up vs bench"), ("offHigh", "Distance from 52w high"),
-               ("vol20", "20-day volatility")]
+            ("r20ab", "1 month vs bench"), ("r40ab", "2 months vs bench"), ("drift5", "Drift d1→d5"), ("drift20", "Drift d1→d20"),
+            ("drift40", "Drift d1→d40")]
+NUM_SIGNALS = [("pre1ab", "Day before vs bench"), ("pre5ab", "5 days before vs bench"), ("pre21ab", "1 month before vs bench"),
+               ("pre63ab", "3 months before vs bench"), ("offHigh", "Distance from 52w high"), ("sma50", "vs 50-day average"),
+               ("sma200", "vs 200-day average"), ("vol20", "20-day volatility"), ("relVol1", "Volume, day before (× 50d avg)"),
+               ("relVol5", "Volume, 5 days before (× 50d avg)"), ("relVol20", "Volume, 20 days before (× 50d avg)"),
+               ("cmf20", "Accumulation (Chaikin money flow 20d)"), ("obv20", "On-balance volume 20d (share of volume)"),
+               ("estEpsG", "Expected EPS growth (consensus vs year ago)"), ("estRevG", "Expected revenue growth (consensus)"),
+               ("epsSurprise", "EPS surprise %"), ("revSurprise", "Revenue surprise %"),
+               ("revYoY", "Revenue YoY (reported)"), ("revAccel", "Revenue YoY change (reported)"), ("revQoQ", "Revenue QoQ"),
+               ("rev3y", "Revenue 3Y CAGR"), ("epsYoY", "EPS YoY (reported)"), ("epsAccel", "EPS acceleration"),
+               ("accruals", "Accrual ratio"), ("cashConv", "Cash conversion"), ("prevRevYoY", "Revenue YoY, prior quarter"),
+               ("ownAbs", "Own average |day-0 move|, past releases")]
 CAT_SIGNALS = [("setup", "Beat / raise"), ("guide", "Guidance"), ("timing", "Release timing"), ("quality", "Earnings quality"),
-               ("inflection", "EPS inflection"), ("revDir", "Revenue growth direction")]
+               ("inflection", "EPS inflection"), ("revDir", "Revenue growth direction"), ("sector", "Sector (SIC)")]
+SIC_DIV = [(100, "Agriculture"), (1000, "Mining & energy"), (1500, "Construction"), (2000, "Manufacturing"), (4000, "Transport, utilities, telecom"),
+           (5000, "Wholesale"), (5200, "Retail"), (6000, "Finance & real estate"), (7000, "Services"), (7370, "Software & IT services"),
+           (7380, "Services"), (8000, "Health & other services"), (9100, "Public administration")]
+
+
+def sector_of(sic):
+    try:
+        n = int(sic)
+    except (TypeError, ValueError):
+        return None
+    if 2830 <= n <= 2836 or 3840 <= n <= 3851:
+        return "Pharma & medical devices"
+    if 3570 <= n <= 3579 or 3660 <= n <= 3679:
+        return "Hardware & semiconductors"
+    name = None
+    for lo, nm in SIC_DIV:
+        if n >= lo:
+            name = nm
+    return name
+
+
+def _merge_fmp(evs, s, frows, since):
+    """FMP releases: the announcement date, consensus and actuals; they override the 8-K date within 3 days."""
+    for r in frows:
+        if r["date"] < since or r["epsAct"] is None and r["revAct"] is None:
+            continue                                   # upcoming: no reaction yet
+        near = [k for k in evs if k[0] == s and abs((_d(k[1]) - _d(r["date"])).days) <= 3]
+        e = evs.pop(near[0]) if near else {"sym": s, "src": "fmp"}
+        if e.get("src") == "csv":                      # your CSV wins; FMP only fills what it lacks
+            for a, b in (("epsEst", "epsEst"), ("epsAct", "epsAct"), ("revEst", "revEst"), ("revAct", "revAct")):
+                if e.get(a) is None and r[b] is not None:
+                    e[a] = r[b]
+            evs[(s, e["date"])] = e
+            continue
+        if e.get("src") == "sec":
+            e["sec"] = True
+        e.update({"date": r["date"], "src": "fmp" if e.get("src") != "csv" else "csv", "epsEst": r["epsEst"], "epsAct": r["epsAct"],
+                  "revEst": r["revEst"], "revAct": r["revAct"]})
+        if r["timing"]:
+            e["timing"] = r["timing"]
+        evs[(s, e["date"])] = e
+
+
+def _surprises(e):
+    if e.get("epsSurprise") is None and e.get("epsEst") not in (None, 0) and e.get("epsAct") is not None:
+        e["epsSurprise"] = round((e["epsAct"] - e["epsEst"]) / abs(e["epsEst"]) * 100, 3)
+    if e.get("revSurprise") is None and e.get("revEst") and e.get("revAct") is not None:
+        e["revSurprise"] = round((e["revAct"] - e["revEst"]) / abs(e["revEst"]) * 100, 3)
+
+
+def _prev_quarter(c, q):
+    qs = (c or {}).get("quarters") or []
+    for k, x in enumerate(qs):
+        if x is q:
+            return qs[k - 1] if k > 0 else None
+    return None
 
 
 def build_rows(sub, opts, prog=None, deadline=None):
-    """Every release (imported + SEC 8-K 2.02 dates of the watched tickers) with its signals and reaction."""
+    """Every release with what the stock did before it, the fundamentals and consensus, and the reaction.
+    Sources: your CSV, FMP releases (when connected) and SEC 8-K 2.02 dates of the study universe (or the screen)."""
+    import fmp
     imp = events(sub)["events"]
     st = settings(sub)
     bench_sym = opts.get("bench") or st["bench"]
+    use_sec = opts.get("useSec", st["useSec"])
     since = (now_ny().date() - timedelta(days=365 * int(opts.get("years") or st["years"]))).isoformat()
-    evs = {}
+    uni = study_tickers(st) if use_sec else []
+    has_fmp = fmp.status(sub)["connected"]
+    by_sym = {}
     for e in imp:
-        evs[(e["sym"], e["date"])] = dict(e)
-    syms = sorted({e["sym"] for e in imp} | (set(st["tickers"]) if opts.get("useSec", st["useSec"]) else set()))
-    cos, skipped = {}, []
+        by_sym.setdefault(e["sym"], {})[(e["sym"], e["date"])] = dict(e)
+    syms = sorted(set(by_sym) | set(uni))
+    need = (_d(since) - timedelta(days=400)).isoformat()
+    first_imp = min((e["date"] for e in imp), default=since)
+    need = min(need, (_d(first_imp) - timedelta(days=400)).isoformat())
+    if prog:
+        prog(f"Prices: {bench_sym}")
+    bench = prices(sub, bench_sym, need, max_age_h=72)
+    bmap = {b[0]: b[4] for b in bench}
+    rows, skipped, t_last = [], [], 0.0
+    uni_set = set(uni)
     for n, s in enumerate(syms):
         if deadline and time.time() > deadline:
             raise TimeoutError("out of time")
-        if prog and n % 5 == 0:
-            prog(f"Fundamentals {n + 1}/{len(syms)}: {s}")
+        if prog and time.time() - t_last > 3:
+            prog(f"{n + 1}/{len(syms)}: {s} · {len(rows)} releases so far")
+            t_last = time.time()
+        evs = by_sym.get(s, {})
         try:
-            cos[s] = company(sub, s, max_age_h=72)
-        except Exception as e:
-            skipped.append(f"{s}: {e}")
-            cos[s] = None
-    if opts.get("useSec", st["useSec"]):
-        for s in st["tickers"]:
-            for r in ((cos.get(s) or {}).get("releases") or []):
+            c = company(sub, s, max_age_h=24 * 14)
+        except Exception as ex:
+            skipped.append(f"{s}: {str(ex)[:100]}")
+            c = None
+        if s in uni_set:
+            for r in ((c or {}).get("releases") or []):
                 if r["date"] < since:
                     continue
-                near = [k for k in evs if k[0] == s and abs((_d(k[1]) - _d(r["date"])).days) <= 3]
-                if near:                               # the imported row wins; fill the timing from the 8-K if missing
+                near = [k for k in evs if abs((_d(k[1]) - _d(r["date"])).days) <= 3]
+                if near:
                     evs[near[0]].setdefault("timing", timing_of(r["time"]))
                     evs[near[0]]["sec"] = True
                 else:
                     evs[(s, r["date"])] = {"sym": s, "date": r["date"], "timing": timing_of(r["time"]), "src": "sec", "time": r["time"]}
-    for k, e in evs.items():                           # imported rows without a timing: from the 8-K the same day
-        if not e.get("timing"):
-            rel = [r for r in ((cos.get(e["sym"]) or {}).get("releases") or []) if abs((_d(r["date"]) - _d(e["date"])).days) <= 3]
-            e["timing"] = timing_of(rel[0]["time"]) if rel else "unknown"
-    first = min((e["date"] for e in evs.values()), default=PX_FROM)
-    need = (_d(first) - timedelta(days=400)).isoformat()
-    if prog:
-        prog(f"Prices: {bench_sym}")
-    bench = prices(sub, bench_sym, need)
-    px = {}
-    rows = []
-    for n, (k, e) in enumerate(sorted(evs.items(), key=lambda kv: (kv[0][1], kv[0][0]))):
-        s = e["sym"]
-        if s not in px:
-            if deadline and time.time() > deadline:
-                raise TimeoutError("out of time")
-            if prog:
-                prog(f"Prices {len(px) + 1}: {s}")
+        frows = []
+        if has_fmp and s in uni_set | set(by_sym):
             try:
-                px[s] = prices(sub, s, need)
+                frows = fmp.earnings(sub, s, max_age_h=24 * 7)
+                _merge_fmp(evs, s, frows, min(since, first_imp))
             except Exception as ex:
-                skipped.append(f"{s} prices: {ex}")
-                px[s] = None
-        if not px[s]:
+                skipped.append(f"{s} FMP: {str(ex)[:100]}")
+        for e in evs.values():
+            if not e.get("timing"):
+                rel = [r for r in ((c or {}).get("releases") or []) if abs((_d(r["date"]) - _d(e["date"])).days) <= 3]
+                e["timing"] = timing_of(rel[0]["time"]) if rel else "unknown"
+            _surprises(e)
+        if not evs:
             continue
-        re_ = reaction(e, px[s], bench)
-        if not re_:
+        try:
+            bars = prices(sub, s, need, max_age_h=72)
+        except Exception as ex:
+            skipped.append(f"{s} prices: {str(ex)[:100]}")
             continue
-        q = _quarter_for(cos.get(s), e["date"])
-        row = {**{k2: v for k2, v in e.items() if k2 != "x"}, **re_}
-        if q:
-            row["qEnd"] = q["end"]
-            for k2 in ("revYoY", "revAccel", "revQoQ", "rev3y", "epsYoY", "epsAccel", "accruals", "cashConv", "quality"):
-                row[k2] = q.get(k2)
-            fl = q.get("flags") or []
-            row["inflection"] = next((f for f in fl if "EPS" in f), "None")
-            row["revDir"] = None if q.get("revAccel") is None else "Accelerating" if q["revAccel"] > 0.005 else "Decelerating" if q["revAccel"] < -0.005 else "Flat"
-        row["setup"] = setup_of(e)
-        if e.get("x"):
-            row["x"] = e["x"]
-        rows.append(row)
+        fact = {r["date"]: r for r in frows if r["epsAct"] is not None or r["revAct"] is not None}
+        fdates = sorted(fact)
+        sec = sector_of((c or {}).get("sic"))
+        mine = []
+        for e in sorted(evs.values(), key=lambda x: x["date"]):
+            re_ = reaction(e, bars, bench, bmap)
+            if not re_:
+                continue
+            row = {**{k2: v for k2, v in e.items() if k2 != "x"}, **re_, "sector": sec}
+            q = _quarter_for(c, e["date"])
+            if q:
+                row["qEnd"] = q["end"]
+                for k2 in ("revYoY", "revAccel", "revQoQ", "rev3y", "epsYoY", "epsAccel", "accruals", "cashConv", "quality"):
+                    row[k2] = q.get(k2)
+                fl = q.get("flags") or []
+                row["inflection"] = next((f for f in fl if "EPS" in f), "None")
+                row["revDir"] = None if q.get("revAccel") is None else "Accelerating" if q["revAccel"] > 0.005 else "Decelerating" if q["revAccel"] < -0.005 else "Flat"
+                pq = _prev_quarter(c, q)                # known before this release: the previous quarter
+                if pq:
+                    for k2 in ("revYoY", "revAccel", "epsYoY", "accruals"):
+                        row["prev" + k2[0].upper() + k2[1:]] = pq.get(k2)
+            # consensus growth expected going in: estimate vs the actual four releases earlier (FMP's own basis)
+            if e.get("epsEst") is not None or e.get("revEst") is not None:
+                before = [x for x in fdates if x < (_d(e["date"]) - timedelta(days=300)).isoformat()]
+                ya = fact[before[-1]] if before and (_d(e["date"]) - _d(before[-1])).days <= 430 else None
+                if ya:
+                    row["estEpsG"] = _g(e.get("epsEst"), ya["epsAct"])
+                    row["estRevG"] = _g(e.get("revEst"), ya["revAct"])
+            row["setup"] = setup_of(e)
+            if e.get("x"):
+                row["x"] = e["x"]
+            # this stock's own history of reactions, releases before this one only
+            prior = [m for m in mine if m.get("r1ab") is not None and m.get("t1", "9") < row["base"]][-12:]
+            if prior:
+                row["ownAbs"] = sum(abs(m["r1ab"]) for m in prior) / len(prior)
+                row["ownMean"] = sum(m["r1ab"] for m in prior) / (len(prior) + 4)     # shrunk toward zero
+                row["prevR1ab"] = prior[-1]["r1ab"]
+                row["ownN"] = len(prior)
+            mine.append(row)
+        rows.extend(mine)
+    rows.sort(key=lambda r: (r["date"], r["sym"]))
     return rows, bench_sym, skipped
 
 
@@ -821,19 +982,60 @@ def aggregate(rows):
     return out
 
 
+ROW_PAGE = 4000
+
+
 def run_study(sub, opts, prog=None, deadline=None):
+    import model
     rows, bench, skipped = build_rows(sub, opts, prog, deadline)
     if prog:
         prog(f"Statistics over {len(rows)} releases…")
+    if deadline and time.time() > deadline - 240:     # leave the model a full run: rows and prices are cached by now
+        raise TimeoutError("out of time")
+    agg = aggregate(rows)
+    if prog:
+        prog(f"Walk-forward model over {len(rows)} releases…")
+    mdl = model.evaluate(rows, prog)
+    store.put_json(f"fund/u/{sub}/study_rows", {"rows": rows})
     res = {"at": iso(now_ny()), "bench": bench, "n": len(rows), "tickers": len({r["sym"] for r in rows}),
            "from": rows[0]["date"] if rows else None, "to": rows[-1]["date"] if rows else None,
-           "outcomes": OUTCOMES, "skipped": skipped[:40], **aggregate(rows), "rows": rows}
+           "sources": {k: sum(1 for r in rows if r.get("src") == k) for k in ("csv", "fmp", "sec")},
+           "withEst": sum(1 for r in rows if r.get("epsSurprise") is not None),
+           "outcomes": OUTCOMES, "skipped": skipped[:60], "nSkipped": len(skipped), **agg, "model": mdl,
+           "rows": rows[-300:][::-1], "rowPages": max(1, math.ceil(len(rows) / ROW_PAGE))}
     store.put_json(f"fund/u/{sub}/study", res)
     return res
 
 
 def study(sub):
     return store.get_json(f"fund/u/{sub}/study")
+
+
+def study_rows(sub, page=0):
+    r = store.get_json(f"fund/u/{sub}/study_rows") or {"rows": []}
+    rows = r["rows"]
+    return {"page": page, "pages": max(1, math.ceil(len(rows) / ROW_PAGE)), "rows": rows[page * ROW_PAGE:(page + 1) * ROW_PAGE]}
+
+
+def load_universe(sub, source, years=10, removed=True):
+    """The study universe: the S&P 500 from FMP (with the companies removed in the period: less survivorship bias)."""
+    import fmp
+    if source != "sp500":
+        raise BadRequest("Unknown universe.")
+    r = fmp.sp500(sub, years)
+    syms = r["current"] + (r["removed"] if removed else [])
+    ok = []
+    for x in syms:
+        try:
+            x = check_sym(x)
+        except BadRequest:
+            continue
+        if x not in ok:
+            ok.append(x)
+    if not ok:
+        raise BadRequest("FMP returned no S&P 500 list for this plan: paste the tickers instead.")
+    cur = save_settings(sub, {"universe": ok[:MAX_UNIVERSE], "uniName": f"S&P 500 ({len(r['current'])} current" + (f" + {len(r['removed'])} removed" if removed and r["removed"] else "") + ")"})
+    return {**cur, "note": r["note"]}
 
 
 def company_view(sub, sym, bench=None):
@@ -862,7 +1064,9 @@ def company_view(sub, sym, bench=None):
 # ---------------------------------------------------------------- projection for the next release
 
 HORIZONS = (("r1", "1 day"), ("r5", "5 days"), ("r20", "1 month"), ("r40", "2 months"))
-NN_SIGNALS = ("revYoY", "revAccel", "epsYoY", "epsAccel", "accruals", "runup20", "offHigh", "vol20")
+# known before a release: the last reported quarter (prev*), consensus growth, price / volume into the release, own history
+NN_SIGNALS = ("prevRevYoY", "prevRevAccel", "prevEpsYoY", "estEpsG", "pre5ab", "pre21ab", "pre63ab", "offHigh", "vol20",
+              "relVol5", "cmf20")
 
 
 def _pctl(xs, p):
@@ -883,60 +1087,67 @@ def _dist(xs):
             "absMed": _pctl([abs(x) for x in xs], 0.5)}
 
 
-def _now_signals(bars, bench):
-    """The price signals as of the last close (what they will be going into the release if nothing changes)."""
-    k = len(bars) - 1
-    if k < 21:
-        return {}
-    c = lambda i: bars[i][4]
-    bd = {b[0]: b[4] for b in bench}
-    rets = [c(i) / c(i - 1) - 1 for i in range(k - 19, k + 1)]
-    m = sum(rets) / len(rets)
-    vol = math.sqrt(sum((x - m) ** 2 for x in rets) / (len(rets) - 1))
-    run = c(k) / c(k - 20) - 1
-    a, b = bd.get(bars[k - 20][0]), bd.get(bars[k][0])
-    return {"asOf": bars[k][0], "close": c(k), "vol20": vol, "runup20": run - (b / a - 1) if a and b else run,
-            "offHigh": c(k) / max(x[2] for x in bars[max(0, k - 251):k + 1]) - 1}
-
-
 def project(sub, sym, k_nn=None):
-    """What past releases with signals like this company's current ones did over 1 day, 5 days, 1 and 2 months.
-
-    Reference set: the last event study's releases plus this company's own past releases. Neighbours: the k nearest
-    releases on the standardised signals both sides have (revenue / EPS growth and acceleration, accruals, run-up,
-    distance from the high, volatility). An empirical distribution, not a model: read N and the spread."""
+    """The next release: (1) the walk-forward model's expectation for this setup, with its tested accuracy; (2) what the
+    most similar past releases did; (3) this company's own history. All from signals known before the release."""
+    import fmp
+    import model
     c = company(sub, sym)
     st = settings(sub)
     bench_sym = st["bench"]
     rel = c.get("releases") or []
-    need = (_d(rel[0]["date"]) - timedelta(days=400)).isoformat() if rel else PX_FROM
+    frows = []
+    if fmp.status(sub)["connected"]:
+        try:
+            frows = fmp.earnings(sub, c["sym"])
+        except Exception as e:
+            print("fmp", e)
+    need = (_d(min([rel[0]["date"]] if rel else [PX_FROM])) - timedelta(days=400)).isoformat()
     bars, bench = prices(sub, c["sym"], need), prices(sub, bench_sym, need)
+    bmap = {b[0]: b[4] for b in bench}
     own = []
     for r in rel:
         e = {"sym": c["sym"], "date": r["date"], "timing": timing_of(r["time"])}
-        x = reaction(e, bars, bench)
-        if not x:
-            continue
-        q = _quarter_for(c, r["date"])
-        own.append({**e, **x, **({k: q.get(k) for k in ("revYoY", "revAccel", "epsYoY", "epsAccel", "accruals")} if q else {})})
+        x = reaction(e, bars, bench, bmap)
+        if x:
+            own.append({**e, **x})
     sd = study(sub) or {}
-    ref = {(r["sym"], r["date"]): r for r in (sd.get("rows") or []) if sd.get("bench") == bench_sym}
+    ref = {}
+    if sd.get("bench") == bench_sym:
+        for r in (store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []:
+            ref[(r["sym"], r["date"])] = r
     for r in own:
         ref.setdefault((r["sym"], r["date"]), r)
     ref = list(ref.values())
-    # this company now: the latest quarter's fundamentals and today's price signals
-    q = (c.get("quarters") or [{}])[-1]
-    now = {k: q.get(k) for k in ("revYoY", "revAccel", "epsYoY", "epsAccel", "accruals")}
-    now.update(_now_signals(bars, bench))
-    gaps = sorted((_d(b["date"]) - _d(a["date"])).days for a, b in zip(rel, rel[1:]) if 60 <= (_d(b["date"]) - _d(a["date"])).days <= 130)
+    # this company going into its next release
+    qs = c.get("quarters") or []
+    q = qs[-1] if qs else {}
+    now = {"prevRevYoY": q.get("revYoY"), "prevRevAccel": q.get("revAccel"), "prevEpsYoY": q.get("epsYoY"), "prevAccruals": q.get("accruals"),
+           "accruals": q.get("accruals")}
+    now.update(pre_signals(bars, bmap, len(bars) - 1))
+    now["asOf"], now["close"] = bars[-1][0], bars[-1][4]
+    past = [r for r in own if r.get("r1ab") is not None][-12:]
+    if past:
+        now.update({"ownAbs": sum(abs(r["r1ab"]) for r in past) / len(past), "ownMean": sum(r["r1ab"] for r in past) / (len(past) + 4),
+                    "prevR1ab": past[-1]["r1ab"], "ownN": len(past)})
     nxt = None
-    if rel:
+    up = [r for r in frows if r["date"] >= now_ny().date().isoformat() and r["epsAct"] is None]
+    if up:                                             # FMP's calendar: the scheduled date and the consensus
+        u = up[0]
+        nxt = {"date": u["date"], "timing": u["timing"] or (timing_of(rel[-1]["time"]) if rel else "unknown"), "estimated": False,
+               "epsEst": u["epsEst"], "revEst": u["revEst"], "source": "FMP"}
+        done = [r for r in frows if r["epsAct"] is not None and r["date"] < (_d(u["date"]) - timedelta(days=300)).isoformat()]
+        if done and (_d(u["date"]) - _d(done[-1]["date"])).days <= 430:
+            now["estEpsG"], now["estRevG"] = _g(u["epsEst"], done[-1]["epsAct"]), _g(u["revEst"], done[-1]["revAct"])
+    elif rel:
+        gaps = sorted((_d(b["date"]) - _d(a["date"])).days for a, b in zip(rel, rel[1:]) if 60 <= (_d(b["date"]) - _d(a["date"])).days <= 130)
         step = gaps[len(gaps) // 2] if gaps else 91
         nd = _d(rel[-1]["date"]) + timedelta(days=step)
         while nd < now_ny().date():
             nd += timedelta(days=step)
         nxt = {"date": nd.isoformat(), "timing": timing_of(rel[-1]["time"]), "estimated": True, "last": rel[-1]["date"], "spacing": step}
-    # nearest neighbours on standardised signals
+    now["amc"] = 1.0 if nxt and nxt.get("timing") == "amc" else 0.0
+    # nearest neighbours on standardised pre-release signals
     use = [k for k in NN_SIGNALS if now.get(k) is not None and sum(1 for r in ref if r.get(k) is not None) >= 10]
     neigh = []
     if use:
@@ -944,18 +1155,15 @@ def project(sub, sym, k_nn=None):
         for k in use:
             xs = [r[k] for r in ref if r.get(k) is not None]
             m = sum(xs) / len(xs)
-            s = math.sqrt(sum((x - m) ** 2 for x in xs) / max(1, len(xs) - 1)) or 1
-            sc[k] = (m, s)
+            sc[k] = math.sqrt(sum((x - m) ** 2 for x in xs) / max(1, len(xs) - 1)) or 1
         scored = []
         for r in ref:
             have = [k for k in use if r.get(k) is not None]
             if len(have) < max(2, len(use) // 2):
                 continue
-            d2 = sum(((r[k] - now[k]) / sc[k][1]) ** 2 for k in have) / len(have)
-            scored.append((math.sqrt(d2), r))
+            scored.append((math.sqrt(sum(((r[k] - now[k]) / sc[k]) ** 2 for k in have) / len(have)), r))
         scored.sort(key=lambda t: t[0])
-        kk = k_nn or max(10, min(40, len(scored) // 4))
-        neigh = scored[:kk]
+        neigh = scored[:k_nn or max(10, min(50, len(scored) // 20 or 10))]
     hz = []
     for key, label in HORIZONS:
         hz.append({"key": key, "label": label,
@@ -963,7 +1171,8 @@ def project(sub, sym, k_nn=None):
                    "own": {"raw": _dist([r.get(key) for r in own]), "ab": _dist([r.get(key + "ab") for r in own])},
                    "all": {"raw": _dist([r.get(key) for r in ref]), "ab": _dist([r.get(key + "ab") for r in ref])},
                    "volRange": now.get("vol20") * math.sqrt(int(key[1:])) if now.get("vol20") else None})
-    keep = ("sym", "date", "timing", "revYoY", "revAccel", "epsYoY", "runup20", "r1ab", "r5ab", "r20ab", "r40ab")
+    keep = ("sym", "date", "timing", "prevRevYoY", "estEpsG", "pre21ab", "relVol5", "cmf20", "r1ab", "r5ab", "r20ab", "r40ab")
     return {"sym": c["sym"], "name": c.get("name"), "bench": bench_sym, "next": nxt, "now": now, "signals": use,
             "refN": len(ref), "ownN": len(own), "studyAt": sd.get("at"), "horizons": hz,
+            "model": model.apply(sd.get("model"), now),
             "neighbours": [{"dist": round(dd, 3), **{k: r.get(k) for k in keep}} for dd, r in neigh[:25]]}

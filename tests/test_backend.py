@@ -292,7 +292,7 @@ def test_06b7_alpaca_options_paper():
     old_req, old_now = alpopt._req, alpopt.now_ny
     alpopt._req = br
     try:
-        s = strategy.create(SUB, {"setup": "orb", "params": {"days": 60, "tickers": ["NQ"]}})
+        s = strategy.create(SUB, {"setup": "onhold", "params": {"days": 60}})
         st, r = call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [0.3, 0.5, 0.7], "qty": 1})
         assert st == 200 and r["cfg"]["on"] and r["account"]["level"] == 3, r
         s = strategy.get(SUB, s["id"])
@@ -343,60 +343,6 @@ def test_06b7_alpaca_options_paper():
         assert st == 200 and not r["cfg"]["on"]
     finally:
         alpopt._req, alpopt.now_ny = old_req, old_now
-
-
-def _etf_day(path):
-    """Synthetic QQQ 5-minute bars: 2026-11-11 after-hours 600-606, 2026-11-12 pre-market 598-604, then `path` from 09:30."""
-    B, day0, day = [], "2026-11-11", "2026-11-12"
-    for i in range(48):                                   # 16:00-19:55
-        m = 16 * 60 + 5 * i
-        px = 600 + 6 * (i / 47)
-        B.append([f"{day0}T{m // 60:02d}:{m % 60:02d}", px, px + 0.01, px - 0.01, px])
-    for i in range(66):                                   # 04:00-09:25
-        m = 4 * 60 + 5 * i
-        px = 598 + 6.5 * (i / 65)
-        B.append([f"{day}T{m // 60:02d}:{m % 60:02d}", px, px + 0.01, px - 0.01, px])
-    for i, px in enumerate(path):
-        m = 9 * 60 + 30 + 5 * i
-        B.append([f"{day}T{m // 60:02d}:{m % 60:02d}", px, px + 0.2, px - 0.2, px])
-    return B
-
-
-def test_06b7b_alpaca_options_live_signal():
-    from datetime import datetime as _dt
-    import alpaca
-    import alpopt
-    import fakes
-    alpaca.save_key(SUB, "PK1234567890AB", "s" * 40)
-    br = fakes.FakeAlpacaBroker(604.5)
-    old = alpopt._req, alpopt.now_ny, alpopt.etf_bars
-    alpopt._req = br
-    path = [604.6, 604.9, 605.3]
-    alpopt.etf_bars = lambda sub, und: _etf_day(path)
-    try:
-        s = strategy.create(SUB, {"setup": "onhold", "params": {"days": 60, "tickers": ["NQ"]}})
-        assert call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [0.5], "qty": 1})[0] == 200
-        s = strategy.get(SUB, s["id"])
-        alpopt.now_ny = lambda: _dt(2026, 11, 12, 9, 47)
-        t, info = alpopt.live_signal(SUB, s, "NQ", "2026-11-12")
-        assert info["onh"] == 606.01 and info["onl"] == 597.99 and abs(info["mid"] - 602.0) < 0.01, info
-        assert t and t["side"] == "long" and t["status"] == "open" and t["und"] == "QQQ", (t, info)
-        alpopt.now_ny = lambda: _dt(2026, 11, 12, 9, 47)
-        out = alpopt.tick(SUB, s, [])                                  # the futures trades are ignored: live signal
-        legs = [l for ls in out["legs"].values() for l in ls]
-        assert len(legs) == 1 and legs[0]["sym"].startswith("QQQ261112C") and out["signal"]["NQ"]["side"] == "long", out
-        path[:] = path + [603.0, 601.5]                              # falls through the mid: stopped
-        alpopt.now_ny = lambda: _dt(2026, 11, 12, 9, 57)
-        out = alpopt.tick(SUB, s, [])
-        legs = [l for ls in out["legs"].values() for l in ls]
-        assert legs[0]["sell"]["why"].startswith("trade stop") and legs[0]["pnl"] is not None, legs
-        v = alpopt.view(SUB, s)
-        assert v["live"] and v["signal"]["NQ"]["status"] == "closed"
-        B = [b if b[0] != "2026-11-12T09:25" else [b[0], 600.0, 600.0, 600.0, 600.0] for b in _etf_day([600.1, 599.8])]
-        t, info = alpopt.live_signal(SUB, s, "NQ", "2026-11-12", B)    # open in the bottom half: short
-        assert info["open"] == 600.0 and t["side"] == "short" and t["status"] == "open", (t, info)
-    finally:
-        alpopt._req, alpopt.now_ny, alpopt.etf_bars = old
 
 
 def test_06b6_opt0dte():
