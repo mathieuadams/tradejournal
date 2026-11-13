@@ -293,8 +293,8 @@ def test_06b7_alpaca_options_paper():
     alpopt._req = br
     try:
         s = strategy.create(SUB, {"setup": "onhold", "params": {"days": 60}})
-        st, r = call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [0.3, 0.5, 0.7], "qty": 1})
-        assert st == 200 and r["cfg"]["on"] and r["account"]["level"] == 3, r
+        st, r = call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [0.3, 0.5, 0.7], "qty": 1, "exitOn": "trade"})
+        assert st == 200 and r["cfg"]["on"] and r["cfg"]["exitOn"] == "trade" and r["account"]["level"] == 3, r
         s = strategy.get(SUB, s["id"])
         t = {"s": "NQ", "d": "2026-11-12", "in": "09:34", "out": "09:40", "side": "long", "why": "open", "status": "open"}
         alpopt.now_ny = lambda: _dt(2026, 11, 12, 9, 40)
@@ -319,6 +319,43 @@ def test_06b7_alpaca_options_paper():
         alpopt.now_ny = lambda: _dt(2026, 11, 12, 15, 50)
         out = alpopt.tick(SUB, s, [sh])
         assert all(l["sell"]["why"] == "15:50 flat" for l in out["legs"][alpopt._key(sh)])
+        # a re-run that moves the entry by a bar is the same trade; a trade missing once is not sold yet
+        t3 = {**t, "in": "14:00", "status": "open", "why": "open"}
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 14, 5)
+        alpopt.tick(SUB, s, [t3])
+        n_orders = len(br.orders)
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 14, 20)
+        out = alpopt.tick(SUB, s, [{**t3, "in": "14:05"}])
+        assert len(br.orders) == n_orders and not any(l.get("sell") for l in out["legs"][alpopt._key(t3)])
+        assert alpopt._key({**t3, "in": "14:05"}) not in out["legs"]
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 14, 35)
+        out = alpopt.tick(SUB, s, [], [({**t3, "in": "14:05"}, "daily loss limit")])
+        assert not any(l.get("sell") for l in out["legs"][alpopt._key(t3)]) and out["gone"][alpopt._key(t3)]["n"] == 1
+        alpopt.now_ny = lambda: _dt(2026, 11, 12, 14, 50)
+        out = alpopt.tick(SUB, s, [], [({**t3, "in": "14:05"}, "daily loss limit")])
+        assert all(l["sell"]["why"].startswith("trade gone (daily loss limit") for l in out["legs"][alpopt._key(t3)]), out["legs"][alpopt._key(t3)]
+        # default exit: only a 1-minute close back across the stop (the midpoint) sells; the futures time exit does not
+        import futdata as _fd
+        assert call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [0.3, 0.5, 0.7], "qty": 1})[1]["cfg"]["exitOn"] == "mid"
+        s = strategy.get(SUB, s["id"])
+        t4 = {**t, "in": "14:10", "status": "open", "why": "open", "stop": 28127.0}
+        old_bars = _fd.bars_between
+        _fd.bars_between = lambda sym, d0, d1: [["2026-11-12 14:00", 0, 0, 0, 28000.0, 1], ["2026-11-12 14:20", 0, 0, 0, 28300.0, 1]]
+        try:
+            alpopt.now_ny = lambda: _dt(2026, 11, 12, 14, 12)
+            alpopt.tick(SUB, s, [t4])
+            alpopt.now_ny = lambda: _dt(2026, 11, 12, 14, 30)
+            out = alpopt.tick(SUB, s, [{**t4, "status": "closed", "why": "time", "out": "14:30"}])
+            assert not any(l.get("sell") for l in out["legs"][alpopt._key(t4)])   # the 14:00 close below was before the entry
+            alpopt.now_ny = lambda: _dt(2026, 11, 12, 14, 45)
+            out = alpopt.tick(SUB, s, [])                                         # trade gone: still held
+            assert not any(l.get("sell") for l in out["legs"][alpopt._key(t4)])
+            _fd.bars_between = lambda sym, d0, d1: [["2026-11-12 14:20", 0, 0, 0, 28300.0, 1], ["2026-11-12 14:51", 0, 0, 0, 28120.5, 1]]
+            alpopt.now_ny = lambda: _dt(2026, 11, 12, 14, 55)
+            out = alpopt.tick(SUB, s, [])
+            assert all(l["sell"]["why"] == "midpoint crossed 28,120.50 at 14:51" for l in out["legs"][alpopt._key(t4)]), out["legs"][alpopt._key(t4)]
+        finally:
+            _fd.bars_between = old_bars
         alpopt.now_ny = lambda: _dt(2026, 11, 12, 15, 40)
         assert call("POST", f"/strategies/{s['id']}/alpopt", {"on": True, "deltas": [2]})[0] == 400
         import db as _db

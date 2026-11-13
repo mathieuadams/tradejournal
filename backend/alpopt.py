@@ -1,8 +1,14 @@
 """Same-day options on the user's Alpaca PAPER account, following a paper strategy's NQ / ES trades.
 
 When a paper trade opens (strategy.paper_one marks it "open"), 1 contract (or `qty`) is bought at each target delta:
-a call for a long, a put for a short, on QQQ (NQ) or SPY (ES), expiring today. When the trade closes (its stop,
-target or time exit on the futures candles), every leg is sold to close; anything still open is sold at 15:50.
+a call for a long, a put for a short, on QQQ (NQ) or SPY (ES), expiring today. Exit ("exitOn"):
+  mid (default)  every leg is sold only when a 1-minute futures close crosses back over the trade's stop level (the
+                 overnight midpoint for the midpoint strategies), recorded when the legs were bought. The futures
+                 trade's target or time exit (e.g. "Out at 11:30") and a re-run that drops the trade do not sell.
+  trade          every leg is sold when the futures trade closes (stop, target or time exit).
+Anything still open is sold at 15:50: same-day options can't be held through the close.
+The simulation is re-run on every check: a trade whose entry moved by a bar is still the same trade (SHIFT_MIN), and a
+trade missing from the re-run is only sold after GONE_CHECKS checks in a row, with the reason logged.
 
 Trading: https://paper-api.alpaca.markets/v2/ only (orders, account). Contract pick: option snapshots with greeks,
 https://data.alpaca.markets/v1beta1/options/snapshots/{underlying}?feed=indicative (Black-Scholes from the quote
@@ -20,7 +26,9 @@ from util import BadRequest, Unavailable, iso, now_ny
 PAPER = "https://paper-api.alpaca.markets/v2/"
 DATA = "https://data.alpaca.markets/v1beta1/"
 UND = {"NQ": "QQQ", "ES": "SPY"}
-DEFAULT = {"on": False, "deltas": [0.3, 0.5, 0.7], "qty": 1}
+DEFAULT = {"on": False, "deltas": [0.3, 0.5, 0.7], "qty": 1, "exitOn": "mid"}
+EXITS = ("mid", "trade")       # mid: sell only when a futures close crosses back over the trade's stop (the midpoint);
+                               # trade: sell on any exit of the futures trade (stop, target, time)
 LAST_ENTRY = "15:30"                                  # no new legs after this (0DTE)
 FLAT_AT = "15:50"                                     # everything still open is sold here
 
@@ -61,7 +69,10 @@ def clean(b):
         raise BadRequest("Pick 1 to 5 deltas between 0.05 and 0.95.")
     if not 1 <= qty <= 10:
         raise BadRequest("Contracts per delta: 1 to 10.")
-    return {"on": bool(b.get("on")), "deltas": ds, "qty": qty}
+    ex = b.get("exitOn") or DEFAULT["exitOn"]
+    if ex not in EXITS:
+        raise BadRequest("Exit: mid or trade.")
+    return {"on": bool(b.get("on")), "deltas": ds, "qty": qty, "exitOn": ex}
 
 
 def account(sub):
@@ -187,31 +198,113 @@ def _close_leg(c, leg, why, log):
         log.append(f"sell {leg['sym']} failed: {e}")
 
 
-def tick(sub, s, trades):
-    """Called after paper_one: opens legs for new open trades today, closes legs whose trade closed."""
+SHIFT_MIN = 5                                         # a recalculated trade's entry may move one 5-minute bar and still be the same trade
+GONE_CHECKS = 2                                       # "trade gone" must be seen on this many checks in a row before selling
+
+
+def _mins(hhmm):
+    try:
+        return int(hhmm[-5:-3]) * 60 + int(hhmm[-2:])
+    except (TypeError, ValueError):
+        return None
+
+
+def _find(k, by, claimed, pool=None):
+    """The trade behind a set of legs: the same key, else the same symbol / day / side with the entry moved by at most
+    SHIFT_MIN minutes (a re-run of the simulation can move the entry by a bar). Returns (key, trade) or (None, None)."""
+    if k in by:
+        return k, by[k]
+    s_, d_, in_, side = k.split("|")
+    m0, best = _mins(in_), (None, None, 10 ** 9)
+    for k2, t in (pool if pool is not None else by).items():
+        if k2 in claimed or t["s"] != s_ or t["d"] != d_ or t["side"] != side:
+            continue
+        m = _mins(t["in"])
+        if m0 is not None and m is not None and abs(m - m0) <= SHIFT_MIN and abs(m - m0) < best[2]:
+            best = (k2, t, abs(m - m0))
+    return best[0], best[1]
+
+
+def _crossed(meta, today):
+    """The first 1-minute futures close since the entry that is back across the stop level: ('HH:MM', price) or None."""
+    import futdata
+    lvl, side, sym, t_in = meta.get("stop"), meta.get("side"), meta.get("s"), (meta.get("in") or "")[-5:]
+    if lvl is None or not sym:
+        return None
+    try:
+        bars = futdata.bars_between(sym, today, today)
+    except Exception as e:
+        print("alpopt bars", e)
+        return None
+    for b in bars:
+        hm = b[0][11:16]
+        if hm <= t_in:
+            continue
+        if (side == "long" and b[4] < lvl) or (side == "short" and b[4] > lvl):
+            return hm, b[4]
+    return None
+
+
+def tick(sub, s, trades, dropped=None):
+    """Called after paper_one: opens legs for new open trades today, closes legs whose trade closed.
+    `dropped`: [(trade, reason)] the simulation found but the paper filters removed (market condition, daily loss)."""
     cfg = config(s)
     st = store.get_json(_path(sub, s["id"]), {}) or {}
-    legs, log = st.get("legs") or {}, st.get("log") or []
+    legs, log, gone, meta = st.get("legs") or {}, st.get("log") or [], st.get("gone") or {}, st.get("meta") or {}
     if not cfg["on"] and not any(not l.get("sell") and (l.get("buy") or {}).get("status") == "filled" for ls in legs.values() for l in ls):
         return st
     c = alpaca.creds(sub)
     now = now_ny()
     today, hm = now.strftime("%Y-%m-%d"), now.strftime("%H:%M")
     by = {_key(t): t for t in trades}
+    drop = {_key(t): (t, why) for t, why in (dropped or [])}
     for k, ls in legs.items():                       # fills first, then exits
         for l in ls:
             _update(c, l)
+    claimed = set()
+    for k in legs:                                   # exact matches first, so a shifted match never steals another's trade
+        if k in by:
+            claimed.add(k)
     for k, ls in legs.items():
-        t = by.get(k)
+        done = all(l.get("sell") or (l.get("buy") or {}).get("status") in ("error", "canceled", "rejected", "expired") for l in ls)
+        k2, t = _find(k, by, claimed - {k}) if not done or k in by else (None, None)
+        if k2:
+            claimed.add(k2)
+            if k2 != k and not any(l.get("shifted") == k2 for l in ls):
+                for l in ls:
+                    l["shifted"] = k2
+                log.append(f"{hm} {k}: the recalculated trade now enters at {t['in'][-5:]}; the legs follow it")
+        if k not in meta and t is not None:          # the stop level the legs were bought against
+            meta[k] = {"stop": t.get("stop"), "side": t["side"], "s": t["s"], "in": t["in"]}
+        open_legs = any(not l.get("sell") and (l.get("buy") or {}).get("status") in ("filled", "new", "accepted", "pending_new", "partially_filled") for l in ls)
         why = None
         if k.split("|")[1] < today:
             why = "expired"
         elif hm >= FLAT_AT:
             why = "15:50 flat"
+        elif cfg["exitOn"] == "mid":
+            m = meta.get(k) or {}
+            hit = _crossed(m, today) if open_legs else None
+            if hit:
+                why = f"midpoint crossed {hit[1]:,.2f} at {hit[0]}"
+            elif open_legs and m.get("stop") is None and t is not None and t.get("status") == "closed" and t.get("why") == "stop":
+                why = f"trade stop {t.get('out', '')[-5:]}"           # no level recorded: the futures stop itself
         elif t is None:
-            why = "trade gone"
+            if open_legs:
+                _, dt_ = _find(k, {kk: v[0] for kk, v in drop.items()}, set())
+                reason = next((v[1] for kk, v in drop.items() if v[0] is dt_), None) if dt_ else None
+                g = gone.get(k) or {"n": 0, "since": hm}
+                g["n"] += 1
+                g["reason"] = reason or "no longer in the simulation's trades"
+                gone[k] = g
+                if g["n"] >= GONE_CHECKS:
+                    why = f"trade gone ({g['reason']}, since {g['since']})"
+                else:
+                    log.append(f"{hm} {k}: missing from the recalculation ({g['reason']}); legs kept, checking again")
         elif t.get("status") == "closed":
             why = f"trade {t.get('why')} {t.get('out', '')[-5:]}"
+        if t is not None:
+            gone.pop(k, None)
         if why:
             for l in ls:
                 if why == "expired":
@@ -221,13 +314,15 @@ def tick(sub, s, trades):
                 _close_leg(c, l, why, log)
     if cfg["on"] and "09:30" <= hm < LAST_ENTRY:
         for k, t in by.items():
-            if t["d"] == today and t.get("status") == "open" and k not in legs and t["s"] in UND:
+            if t["d"] == today and t.get("status") == "open" and k not in legs and k not in claimed and t["s"] in UND:
                 legs[k] = _open_legs(c, t, cfg, log)
+                meta[k] = {"stop": t.get("stop"), "side": t["side"], "s": t["s"], "in": t["in"]}
                 log.append(f"{hm} opened {t['side']} {t['s']} {t['in']}: {len(legs[k])} legs")
     for ls in legs.values():
         for l in ls:
             _update(c, l)
-    st = {"legs": legs, "log": log[-50:], "at": iso(now)}
+    st = {"legs": legs, "log": log[-50:], "at": iso(now), "gone": {k: v for k, v in gone.items() if k.split("|")[1] >= today},
+          "meta": {k: v for k, v in meta.items() if k.split("|")[1] >= today}}
     store.put_json(_path(sub, s["id"]), st)
     return st
 

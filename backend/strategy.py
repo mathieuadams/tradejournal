@@ -547,11 +547,13 @@ def paper_one(sub, s):
     ts = [t for t in ts if t["d"] >= pp["since"]]
     last = {t: futdata.last_bar_time(t) for t in s["params"]["tickers"]}
     now = now_ny().strftime("%Y-%m-%dT%H:%M")
-    kept, day_net = [], defaultdict(float)
+    kept, day_net, dropped = [], defaultdict(float), []
     for t in ts:
         if t.get("cell") and not s.get("cells", {}).get(t["cell"]):
+            dropped.append((t, "market condition not approved"))
             continue                                   # a market condition that isn't approved
         if s.get("dailyLoss") and day_net[t["d"]] <= -s["dailyLoss"]:
+            dropped.append((t, "daily loss limit"))
             continue                                   # the day's loss limit was hit
         intraday = s["params"].get("tf") != "1D"
         if t["why"] in ("open", "close") and t["out"][:16] >= (last.get(t["s"]) or "")[:16] and (not intraday or now < f"{t['d']}T16:00"):
@@ -564,7 +566,7 @@ def paper_one(sub, s):
     if (s.get("alpOpt") or {}).get("on"):
         try:
             import alpopt
-            alpopt.tick(sub, s, kept)
+            alpopt.tick(sub, s, kept, dropped)
             pp.pop("alpErr", None)
         except Exception as e:
             print("alpaca options failed", s.get("id"), e)

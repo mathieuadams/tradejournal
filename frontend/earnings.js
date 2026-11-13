@@ -208,13 +208,13 @@ function enStudyShell() {
         ${uni.length ? '<button class="btn" data-en="uni-clear">Use the screen\'s tickers instead</button>' : ''}</div>
       <details style="margin-top:10px"><summary class="dim" style="cursor:pointer">Or paste a ticker list</summary><textarea id="en-uni" rows="3" style="width:100%;margin-top:8px;font-family:var(--mono)" placeholder="AAPL MSFT NVDA …">${esc(uni.join(' '))}</textarea><button class="btn" style="margin-top:8px" data-en="uni-save">Save list</button></details>
       <p class="note">A 500-ticker, 10-year study reads ~500 SEC filings sets, ~500 FMP histories and ~500 price histories the first time (about 30–60 minutes, in several background runs); later runs reuse them. Removed companies without SEC or Alpaca data are listed as skipped.</p></div></section>
-    <section class="panel"><div class="hd"><h2>Your releases</h2><div class="grow"></div>${ev.n ? `<span class="pill ok">${ev.n} releases · ${ev.tickers} tickers</span>` : '<span class="pill">None imported</span>'}</div>
-      <div class="bd"><p class="muted" style="margin-top:0">Import your own release list (e.g. your 142-release study) as CSV. <b>ticker</b> and <b>date</b> are required. Recognised: <span class="mono">timing</span> (bmo / amc), <span class="mono">eps_est</span>, <span class="mono">eps_actual</span>, <span class="mono">rev_est</span>, <span class="mono">rev_actual</span>, <span class="mono">eps_surprise</span> / <span class="mono">rev_surprise</span> (%), <span class="mono">guidance</span> (raise / maintain / lower / none). Every other column becomes a signal of its own (numbers → terciles, text → groups).</p>
+    <details class="panel" ${ev.n ? 'open' : ''} style="padding:0"><summary class="dim" style="cursor:pointer;padding:12px 16px">Optional: import your own release list (not needed: FMP, SEC and Alpaca supply everything)</summary><div class="bd"><p class="muted" style="margin-top:0">Import your own release list (e.g. your 142-release study) as CSV. <b>ticker</b> and <b>date</b> are required. Recognised: <span class="mono">timing</span> (bmo / amc), <span class="mono">eps_est</span>, <span class="mono">eps_actual</span>, <span class="mono">rev_est</span>, <span class="mono">rev_actual</span>, <span class="mono">eps_surprise</span> / <span class="mono">rev_surprise</span> (%), <span class="mono">guidance</span> (raise / maintain / lower / none). Every other column becomes a signal of its own (numbers → terciles, text → groups).</p>
       ${ev.n ? `<div class="note" style="margin-bottom:10px">Columns: ${ev.cols.map(c => `<span class="mono">${esc(c)}</span>`).join(', ') || '—'} · imported ${esc((ev.at || '').replace('T', ' ').slice(0, 16))}</div>` : ''}
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="file" id="en-file" accept=".csv,.tsv,.txt,text/csv">
         <button class="btn primary" data-en="imp-replace">Import (replace)</button><button class="btn" data-en="imp-merge">Import (add)</button>${ev.n ? '<button class="btn danger" data-en="imp-clear">Clear</button>' : ''}</div>
       <details style="margin-top:10px"><summary class="dim" style="cursor:pointer">Or paste the CSV</summary><textarea id="en-csv" rows="6" style="width:100%;margin-top:8px;font-family:var(--mono)" placeholder="ticker,date,timing,eps_est,eps_actual,rev_surprise,guidance&#10;NVDA,2025-08-27,amc,1.01,1.05,1.2,raise"></textarea></details>
-      </div></section>
+      </div></details>
+
     <section class="panel"><div class="hd"><h2>Run the study</h2></div><div class="bd"><div class="form" style="align-items:end">
       <label class="check"><input type="checkbox" id="en-sec" ${st.useSec ? 'checked' : ''}> Add every release of the study universe (${(uni.length || st.tickers.length)} tickers: SEC 8-K${fm.connected ? ' + FMP' : ''})</label>
       <label class="f">Years back<input type="number" id="en-years" min="1" max="11" value="${st.years}"></label>
@@ -269,7 +269,10 @@ function enResults(r) {
       ${rows.length > E.rshow ? `<div class="bd"><button class="btn sm" data-en="more">Show all ${rows.length}</button></div>` : ''}</section>`;
 }
 function enModelHtml(r) {
-  const md = r.model; if (!md) return '';
+  const md = r.model;
+  const bar = `<section class="panel" style="margin-bottom:12px"><div class="bd" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>Study of ${r.n} releases · ${r.tickers} tickers · ${esc(r.from || '')} → ${esc(r.to || '')}</b><div class="grow"></div>
+    <span class="note">One file with everything: scorecards, groups, correlations and every release with all its signals. Attach it in the chat for review.</span><button class="btn primary" data-en="review">Export for review</button></div></section>`;
+  if (!md) return bar;
   const VER = { edge: ['ok', 'Tested edge'], weak: ['', 'Weak'], none: ['loss', 'No tested edge'] };
   const T = md.targets || [], sel = T.find(t => t.key === S.en.mt) || T[0];
   const row = t => { const size = t.key === 'abs1', q = t.icQ || {}, sp = t.spread || {};
@@ -285,7 +288,7 @@ function enModelHtml(r) {
     <div><h3 style="font-size:13px;margin:8px 0">What drives it (final model, standardised weights)</h3><table class="tbl"><thead><tr><th>Signal</th><th class="r">Weight</th></tr></thead><tbody>
       ${(sel.coef || []).map(c => `<tr><td>${esc(c.label)}</td><td class="r ${cls(c.beta)}">${(c.beta * 100).toFixed(2)}${enBar(c.beta, Math.max(...sel.coef.map(x => Math.abs(x.beta))))}</td></tr>`).join('')}</tbody></table>
       <p class="note">Weight = change in the expected outcome (in % points) for a one-standard-deviation move in the signal, other signals equal.</p></div></div>`;
-  return `<section class="panel"><div class="hd"><h2>Forward-looking model: walk-forward test</h2><span class="dim" style="font-size:13px">ridge regression, refitted each quarter on releases whose outcome was already known; the first ${md.minTrain} releases only train</span></div>
+  return bar + `<section class="panel"><div class="hd"><h2>Forward-looking model: walk-forward test</h2><span class="dim" style="font-size:13px">ridge regression, refitted each quarter on releases whose outcome was already known; the first ${md.minTrain} releases only train</span></div>
     <div class="tbl-wrap"><table class="tbl" style="min-width:1200px"><thead><tr><th>Target</th><th class="r">Tested on</th><th>Verdict</th><th class="r">Hit rate</th><th class="r">Always-up baseline</th><th class="r">Rank corr. / quarter</th><th class="r">t</th><th class="r">Quarters &gt; 0</th><th class="r">Top − bottom fifth</th><th class="r">t</th><th class="r">Out-of-sample R²</th><th class="r">Own history (size)</th></tr></thead>
     <tbody>${T.map(row).join('')}</tbody></table></div>${det}
     <div class="note" style="padding:0 16px 14px">Tested edge = rank correlation t ≥ 2 across quarters, positive out-of-sample R² and a hit rate above always guessing the training average's sign. Earnings returns are noisy: R² of a fraction of a percent with a steady positive rank correlation is already meaningful; a hit rate near 50% is normal. Click a row for its calibration and weights.</div></section>`;
@@ -293,6 +296,25 @@ function enModelHtml(r) {
 function enRowsSorted(rows) {
   const E = S.en, k = E.rsort;
   return rows.slice().sort((a, b) => { const x = a[k], y = b[k]; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1; return (typeof x === 'string' ? x.localeCompare(y) : x - y) * E.rdir; });
+}
+async function enReview(btn) {
+  const r = S.enStudy; if (!r) return;
+  btn.disabled = true;
+  try {
+    let all = [];
+    for (let pg = 0; pg < (r.rowPages || 1); pg++) { btn.textContent = `Collecting ${pg + 1}/${r.rowPages || 1}…`; all = all.concat((await api('/fund/study/rows?page=' + pg)).rows); }
+    const rnd = v => typeof v === 'number' ? (Number.isInteger(v) ? v : +v.toPrecision(6)) : v;
+    const cols = [...new Set(all.flatMap(x => Object.keys(x)))].filter(k => k !== 'x');
+    const xk = [...new Set(all.flatMap(x => Object.keys(x.x || {})))];
+    const { rows: _, ...summary } = r;
+    const out = { kind: 'tradejournal-earnings-study', exportedAt: new Date().toISOString(), summary,
+      releases: { cols: cols.concat(xk.map(k => 'x:' + k)), data: all.map(x => cols.map(k => rnd(x[k] ?? null)).concat(xk.map(k => rnd((x.x || {})[k] ?? null)))) } };
+    const name = `earnings_study_review_${r.bench}_${(r.at || '').slice(0, 10)}.json`;
+    let blob = new Blob([JSON.stringify(out)], { type: 'application/json' }), fname = name;
+    if (window.CompressionStream) { blob = await new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob(); fname = name + '.gz'; }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; a.click(); URL.revokeObjectURL(a.href);
+    toast(`Saved ${fname} (${(blob.size / 1048576).toFixed(1)} MB): attach it in the chat.`);
+  } finally { btn.disabled = false; btn.textContent = 'Export for review'; }
 }
 async function enCsv() {
   const r = S.enStudy; if (!r) return;
@@ -343,6 +365,7 @@ document.addEventListener('click', async e => {
       case 'run': el.disabled = true; await api('/fund/study', { method: 'POST', body: { useSec: $('#en-sec').checked, years: +$('#en-years').value || 5, bench: $('#en-bench').value, transcripts: $('#en-tx').checked } }); toast('Event study started.'); S.enStudy = null; return vEarnings();
       case 'more': E.rshow = 1e9; $('#en-res').innerHTML = enResults(S.enStudy); return;
       case 'csv': return enCsv();
+      case 'review': return enReview(el);
       case 'tx-close': $('#en-tx-view').innerHTML = ''; return;
       case 'uni-sp500': { el.disabled = true; toast('Loading the S&P 500 from FMP…'); const r = await api('/fund/universe', { method: 'POST', body: { source: 'sp500', removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(); }
       case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings();

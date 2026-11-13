@@ -1555,12 +1555,13 @@ async function alpLoad(id) {
   const c = d.cfg, a = d.account || {}, pp = (S.cur && S.cur.paper) || {};
   const px = o => o && o.px != null ? '$' + o.px.toFixed(2) : o ? `<span class="muted">${esc(o.status || '')}</span>` : '—';
   out.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px">
-    <div class="note" style="margin:0">When a paper trade opens, buys ${c.qty} same-day ${(S.cur.params.tickers || []).map(t => t === 'NQ' ? 'QQQ' : 'SPY').join(' / ')} contract(s) at each delta (call for a long, put for a short) on your Alpaca <b>paper</b> account; sells them when the trade closes, or at 15:50. Checked every 5 minutes with the candles, so fills can be a few minutes after the signal. No new legs after 15:30.</div>
+    <div class="note" style="margin:0">When a paper trade opens, buys ${c.qty} same-day ${(S.cur.params.tickers || []).map(t => t === 'NQ' ? 'QQQ' : 'SPY').join(' / ')} contract(s) at each delta (call for a long, put for a short) on your Alpaca <b>paper</b> account; sells them ${c.exitOn === 'trade' ? 'when the futures trade closes (stop, target or time exit)' : '<b>only when a 1-minute NQ / ES close crosses back over the trade\'s stop (the midpoint)</b>; the futures target / “Out at” time does not sell them'}, or at 15:50 (same-day options can't be held through the close). Checked every 5 minutes with the candles, so fills can be a few minutes after the signal. No new legs after 15:30.</div>
     ${a.error ? `<div class="job error">Alpaca paper account: ${esc(a.error)}</div>` : `<div class="note" style="margin:0">Paper account ${esc(a.number || '')} · ${esc(a.status || '')} · options level ${a.level ?? '—'} · options buying power ${a.buyingPower ? money(+a.buyingPower) : '—'}</div>`}
     ${pp.alpErr ? `<div class="job error">Last run: ${esc(pp.alpErr)}</div>` : ''}
     <div class="form" style="grid-template-columns:repeat(2,minmax(0,1fr))">
       <label class="f">Deltas (comma separated)<input id="alp-d" value="${c.deltas.join(', ')}"></label>
       <label class="f">Contracts per delta<input id="alp-q" type="number" min="1" max="10" value="${c.qty}"></label>
+      <label class="f" style="grid-column:1 / -1">Sell the options when<div style="display:flex;gap:8px"><select id="alp-x" style="flex:1"><option value="mid" ${c.exitOn !== 'trade' ? 'selected' : ''}>A close crosses back over the midpoint (stop) — nothing else</option><option value="trade" ${c.exitOn === 'trade' ? 'selected' : ''}>The futures trade exits (stop, target or time)</option></select><button class="btn" data-act="alp-exit" data-on="${c.on ? 1 : 0}">Save</button></div></label>
     </div>
     ${c.on && !pp.on ? '<div class="job error">Alpaca options is ON but paper trading is stopped: nothing will trade. Click Start paper trading above.</div>' : ''}
     ${c.on ? '<button class="btn" data-act="alp-off">Stop Alpaca options (sells open legs)</button>' : `<button class="btn primary" data-act="alp-on">Start Alpaca options</button>${pp.on ? '' : '<div class="note">Runs while paper trading is on.</div>'}`}
@@ -1575,7 +1576,7 @@ async function alpLoad(id) {
 }
 async function alpSet(on) {
   const deltas = $('#alp-d').value.split(',').map(x => +x.trim()).filter(x => x);
-  try { await api(`/strategies/${S.cur.id}/alpopt`, { method: 'POST', body: { on, deltas, qty: +$('#alp-q').value || 1 } }); } catch (e) { toast(e.message); }
+  try { await api(`/strategies/${S.cur.id}/alpopt`, { method: 'POST', body: { on, deltas, qty: +$('#alp-q').value || 1, exitOn: $('#alp-x') ? $('#alp-x').value : 'mid' } }); toast('Saved.'); } catch (e) { toast(e.message); }
   alpLoad(S.cur.id);
 }
 /* 0DTE options: the study trades on same-day calls / puts, by delta at the entry (backend opt0dte.py). */
@@ -1919,6 +1920,7 @@ document.addEventListener('click', async e => {
         fxFold(p, !open); try { localStorage.setItem(key, open ? '0' : '1'); } catch (e) { /* private mode */ } break; }
       case 'opt-dl': try { await api(`/strategies/${S.cur.id}/options`, { method: 'POST', body: { dte: S.opt.dte, und: S.opt.und } }); } catch (e) { toast(e.message); } optLoad(S.cur.id); break;
       case 'alp-on': alpSet(true); break;
+      case 'alp-exit': alpSet(ds.on === '1'); break;
       case 'alp-off': alpSet(false); break;
       case 'opt-calc': S.opt = { slip: +$('#opt-slip').value || 0, comm: +$('#opt-comm').value || 0, budget: +$('#opt-budget').value || 1000, dte: +$('#opt-dte').value || 0, und: $('#opt-und').value }; optLoad(S.cur.id); break;
       case 'vp-load': S.vp = { ...S.vp, fwd: +$('#vp-fwd').value || 1, match: $('#vp-match').value, wave: +$('#vp-wave').value || 1, days: +$('#vp-days').value || 200 }; $('#vp-out').innerHTML = '<div class="empty muted">Calculating…</div>'; await vpLoad(); break;
