@@ -70,19 +70,20 @@ def save_key(sub, key):
     _get(key, "earnings", {"symbol": "AAPL", "limit": 1})   # refused keys stop here
     blob = _kms().encrypt(KeyId=os.environ.get("KMS_KEY_ID", ""), Plaintext=key.encode())["CiphertextBlob"]
     db.put({"PK": db.upk(sub), "SK": SK, "enc": base64.b64encode(blob).decode(), "last4": key[-4:], "savedAt": iso(now_ny())})
-    return status(sub)
+    return probe(sub)
 
 
 def _key(sub):
     it = db.get(db.upk(sub), SK)
     if not it or not it.get("enc"):
-        raise BadRequest("Connect Financial Modeling Prep first (Earnings → Event study).")
+        raise BadRequest("Connect Financial Modeling Prep first (Data → Financial Modeling Prep).")
     return _kms().decrypt(CiphertextBlob=base64.b64decode(it["enc"]))["Plaintext"].decode()
 
 
 def status(sub):
     it = db.get(db.upk(sub), SK) or {}
-    return {"connected": bool(it.get("enc")), "last4": it.get("last4"), "savedAt": it.get("savedAt")}
+    return {"connected": bool(it.get("enc")), "last4": it.get("last4"), "savedAt": it.get("savedAt"), "plan": it.get("plan"),
+            "testedAt": it.get("testedAt")}
 
 
 def delete_key(sub):
@@ -143,3 +144,76 @@ def sp500(sub, years=10):
     except Exception as e:                            # not in every plan: the current list alone
         note = f"Removed companies not available ({str(e)[:120]})."
     return {"current": syms, "removed": removed, "note": note}
+
+
+# ---------------------------------------------------------------- what the key's plan includes
+
+def probe(sub):
+    """Which datasets this key's plan answers (FMP refuses what the plan doesn't include)."""
+    k, out = _key(sub), {}
+    for name, path, params in (("earnings", "earnings", {"symbol": "AAPL", "limit": 1}), ("sp500", "sp500-constituent", {}),
+                               ("grades", "grades", {"symbol": "AAPL", "limit": 1}), ("priceTarget", "price-target-consensus", {"symbol": "AAPL"}),
+                               ("transcripts", "earning-call-transcript-dates", {"symbol": "AAPL"})):
+        try:
+            r = _get(k, path, params)
+            out[name] = bool(r)
+        except Exception as e:
+            out[name] = False
+            out[name + "Error"] = str(e)[:160]
+    it = db.get(db.upk(sub), SK) or {}
+    if it:
+        it["plan"], it["testedAt"] = out, iso(now_ny())
+        db.put(it)
+    return {**status(sub), "plan": out}
+
+
+# ---------------------------------------------------------------- analysts
+
+def grades(sub, sym, max_age_h=24 * 7):
+    """Analyst rating actions, oldest first: [{date, firm, from, to, action}] (upgrade / downgrade / maintain / init …)."""
+    key = "fund/grades/" + sym
+    c = store.get_json(key)
+    if c and c.get("at", "") > iso(now_ny() - timedelta(hours=max_age_h)):
+        return c["rows"]
+    raw = _get(_key(sub), "grades", {"symbol": _sym(sym), "limit": 5000}) or []
+    rows = []
+    for r in raw if isinstance(raw, list) else []:
+        d = str(r.get("date") or "")[:10]
+        if len(d) != 10:
+            continue
+        act = str(r.get("action") or "").lower()
+        rows.append({"date": d, "firm": r.get("gradingCompany") or r.get("company"), "from": r.get("previousGrade"), "to": r.get("newGrade"),
+                     "action": "up" if act.startswith("up") else "down" if act.startswith("down") else "init" if act.startswith("init") else "keep"})
+    rows.sort(key=lambda x: x["date"])
+    store.put_json(key, {"at": iso(now_ny()), "rows": rows})
+    return rows
+
+
+def price_target(sub, sym):
+    """Today's consensus price target (a snapshot: used for the next release only, never in the backtest)."""
+    r = _get(_key(sub), "price-target-consensus", {"symbol": _sym(sym)}) or []
+    r = r[0] if isinstance(r, list) and r else r if isinstance(r, dict) else {}
+    return {k: _f(r.get(k)) for k in ("targetConsensus", "targetMedian", "targetHigh", "targetLow")} if r else None
+
+
+# ---------------------------------------------------------------- earnings call transcripts (Ultimate)
+
+def transcript_dates(sub, sym):
+    raw = _get(_key(sub), "earning-call-transcript-dates", {"symbol": _sym(sym)}) or []
+    out = []
+    for r in raw if isinstance(raw, list) else []:
+        d = str(r.get("date") or "")[:10]
+        q, y = r.get("quarter") or r.get("period"), r.get("fiscalYear") or r.get("year")
+        try:
+            q, y = int(str(q).lstrip("Qq")), int(y)
+        except (TypeError, ValueError):
+            continue
+        if len(d) == 10:
+            out.append({"date": d, "year": y, "quarter": q})
+    return sorted(out, key=lambda x: x["date"])
+
+
+def transcript(sub, sym, year, quarter):
+    raw = _get(_key(sub), "earning-call-transcript", {"symbol": _sym(sym), "year": year, "quarter": quarter}) or []
+    r = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
+    return {"date": str(r.get("date") or "")[:10], "content": r.get("content") or ""} if r.get("content") else None

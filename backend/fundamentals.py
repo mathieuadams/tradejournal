@@ -734,8 +734,11 @@ NUM_SIGNALS = [("pre1ab", "Day before vs bench"), ("pre5ab", "5 days before vs b
                ("revYoY", "Revenue YoY (reported)"), ("revAccel", "Revenue YoY change (reported)"), ("revQoQ", "Revenue QoQ"),
                ("rev3y", "Revenue 3Y CAGR"), ("epsYoY", "EPS YoY (reported)"), ("epsAccel", "EPS acceleration"),
                ("accruals", "Accrual ratio"), ("cashConv", "Cash conversion"), ("prevRevYoY", "Revenue YoY, prior quarter"),
-               ("ownAbs", "Own average |day-0 move|, past releases")]
-CAT_SIGNALS = [("setup", "Beat / raise"), ("guide", "Guidance"), ("timing", "Release timing"), ("quality", "Earnings quality"),
+               ("ownAbs", "Own average |day-0 move|, past releases"), ("gradeNet90", "Analyst upgrades − downgrades, 90 days before"),
+               ("gradeNet30", "Analyst upgrades − downgrades, 30 days before"), ("txTone", "Call tone"), ("txToneQA", "Call tone, Q&A"),
+               ("txToneChg", "Call tone change vs previous call"), ("txUncert", "Call uncertainty (per 1,000 words)"),
+               ("txGuide", "Call guidance score (raise − lower)"), ("prevTxTone", "Previous call tone (known before)")]
+CAT_SIGNALS = [("setup", "Beat / raise"), ("guide", "Guidance (CSV, else from the call)"), ("timing", "Release timing"), ("quality", "Earnings quality"),
                ("inflection", "EPS inflection"), ("revDir", "Revenue growth direction"), ("sector", "Sector (SIC)")]
 SIC_DIV = [(100, "Agriculture"), (1000, "Mining & energy"), (1500, "Construction"), (2000, "Manufacturing"), (4000, "Transport, utilities, telecom"),
            (5000, "Wholesale"), (5200, "Retail"), (6000, "Finance & real estate"), (7000, "Services"), (7370, "Software & IT services"),
@@ -756,6 +759,89 @@ def sector_of(sic):
         if n >= lo:
             name = nm
     return name
+
+
+# ---------------------------------------------------------------- transcripts and analyst actions (FMP)
+
+class NoPlan(Exception):
+    """The FMP plan doesn't include this dataset: stop asking for it in this run."""
+
+
+def tx_index(sub, sym, since, fetch=True, deadline=None):
+    """The company's scored call transcripts (texts cached for good in S3: they stay after a plan downgrade)."""
+    import fmp
+    import sentiment
+    key = "fund/txi/" + sym
+    idx = store.get_json(key) or {"at": "", "items": []}
+    if not fetch or idx.get("at", "") > iso(now_ny() - timedelta(days=5)):
+        return idx["items"]
+    try:
+        dates = fmp.transcript_dates(sub, sym)
+    except BadRequest as e:
+        if "plan" in str(e) or "402" in str(e) or "refused" in str(e):
+            raise NoPlan(str(e))
+        raise
+    have = {i["date"] for i in idx["items"]}
+    changed = False
+    for d in dates:
+        if d["date"] < since or d["date"] in have:
+            continue
+        if deadline and time.time() > deadline:
+            break
+        t = fmp.transcript(sub, sym, d["year"], d["quarter"])
+        if not t:
+            continue
+        sc = sentiment.score(t["content"])
+        store.put_json(f"fund/tx/{sym}/{d['date']}", {"sym": sym, **d, "content": t["content"], "guideSents": sc["guideSents"]})
+        idx["items"].append({**d, **{k: v for k, v in sc.items() if k != "guideSents"}})
+        have.add(d["date"])
+        changed = True
+    else:
+        idx["at"] = iso(now_ny())
+        changed = True
+    if changed:
+        idx["items"].sort(key=lambda x: x["date"])
+        store.put_json(key, idx)
+    if deadline and time.time() > deadline:
+        raise TimeoutError("out of time")
+    return idx["items"]
+
+
+def transcript_view(sub, sym, date_):
+    sym = check_sym(sym)
+    t = store.get_json(f"fund/tx/{sym}/{date_}")
+    if not t:
+        raise BadRequest("No stored transcript for that call: run the Event study with FMP Ultimate connected to download them.")
+    item = next((i for i in (store.get_json("fund/txi/" + sym) or {}).get("items") or [] if i["date"] == date_), {})
+    return {**t, "scores": item}
+
+
+def _tx_fields(row, items):
+    """The call that goes with this release (0-3 days after it) and the one before it."""
+    d = _d(row["date"])
+    cur = next((i for i in items if -1 <= (_d(i["date"]) - d).days <= 3), None)
+    prev = [i for i in items if (_d(i["date"]) - d).days < -20]
+    prev = prev[-1] if prev else None
+    if cur:
+        row.update({"txDate": cur["date"], "txTone": cur.get("tone"), "txTonePrep": cur.get("tonePrep"), "txToneQA": cur.get("toneQA"),
+                    "txUncert": cur.get("uncert"), "txNeg": cur.get("neg"), "txGuide": cur.get("guide"), "txGuideDir": cur.get("guideDir")})
+    if prev:
+        row.update({"prevTxTone": prev.get("tone"), "prevTxGuide": prev.get("guide"), "prevTxUncert": prev.get("uncert")})
+        if cur and cur.get("tone") is not None and prev.get("tone") is not None:
+            row["txToneChg"] = cur["tone"] - prev["tone"]
+    if not row.get("guide") and row.get("txGuideDir"):
+        row["guide"], row["guideSrc"] = row["txGuideDir"], "call"
+
+
+def _grade_fields(row, grades, base):
+    """Analyst upgrades minus downgrades before the base close (dated actions strictly before it: no look-ahead)."""
+    b = _d(base)
+    for n in (30, 90):
+        lo = (b - timedelta(days=n)).isoformat()
+        sel = [g for g in grades if lo <= g["date"] < base]
+        row[f"gradeNet{n}"] = sum(1 for g in sel if g["action"] == "up") - sum(1 for g in sel if g["action"] == "down")
+        if n == 90:
+            row["gradeN90"] = len(sel)
 
 
 def _merge_fmp(evs, s, frows, since):
@@ -819,6 +905,7 @@ def build_rows(sub, opts, prog=None, deadline=None):
     bmap = {b[0]: b[4] for b in bench}
     rows, skipped, t_last = [], [], 0.0
     uni_set = set(uni)
+    plan_ok = {"grades": True, "tx": True}
     for n, s in enumerate(syms):
         if deadline and time.time() > deadline:
             raise TimeoutError("out of time")
@@ -860,6 +947,27 @@ def build_rows(sub, opts, prog=None, deadline=None):
         except Exception as ex:
             skipped.append(f"{s} prices: {str(ex)[:100]}")
             continue
+        grades, txs = None, []
+        if has_fmp and plan_ok["grades"]:
+            try:
+                grades = fmp.grades(sub, s)
+            except BadRequest as ex:
+                plan_ok["grades"] = False
+                skipped.append(f"Analyst grades not in the FMP plan: {str(ex)[:100]}")
+            except Exception as ex:
+                skipped.append(f"{s} grades: {str(ex)[:80]}")
+        if has_fmp and plan_ok["tx"] and opts.get("transcripts", True):
+            try:
+                txs = tx_index(sub, s, min(since, first_imp), True, deadline)
+            except NoPlan as ex:
+                plan_ok["tx"] = False
+                skipped.append(f"Transcripts not in the FMP plan (Ultimate): {str(ex)[:100]}")
+            except TimeoutError:
+                raise
+            except Exception as ex:
+                skipped.append(f"{s} transcripts: {str(ex)[:80]}")
+        else:
+            txs = (store.get_json("fund/txi/" + s) or {}).get("items") or []
         fact = {r["date"]: r for r in frows if r["epsAct"] is not None or r["revAct"] is not None}
         fdates = sorted(fact)
         sec = sector_of((c or {}).get("sic"))
@@ -888,7 +996,11 @@ def build_rows(sub, opts, prog=None, deadline=None):
                 if ya:
                     row["estEpsG"] = _g(e.get("epsEst"), ya["epsAct"])
                     row["estRevG"] = _g(e.get("revEst"), ya["revAct"])
-            row["setup"] = setup_of(e)
+            if grades is not None:
+                _grade_fields(row, grades, row["base"])
+            if txs:
+                _tx_fields(row, txs)
+            row["setup"] = setup_of(row)
             if e.get("x"):
                 row["x"] = e["x"]
             # this stock's own history of reactions, releases before this one only
@@ -1054,6 +1166,9 @@ def company_view(sub, sym, bench=None):
             q = _quarter_for(c, r["date"])
             rs.append({**e, **(x or {}), "qEnd": q["end"] if q else None,
                        **({k: q.get(k) for k in ("revYoY", "revAccel", "epsYoY", "quality")} if q else {})})
+        items = (store.get_json("fund/txi/" + c["sym"]) or {}).get("items") or []
+        for x in rs:
+            _tx_fields(x, items)
         out["reactions"] = rs[::-1]
         out["bench"] = bench
     except Exception as e:                             # Alpaca not connected: the fundamentals alone
@@ -1147,6 +1262,27 @@ def project(sub, sym, k_nn=None):
             nd += timedelta(days=step)
         nxt = {"date": nd.isoformat(), "timing": timing_of(rel[-1]["time"]), "estimated": True, "last": rel[-1]["date"], "spacing": step}
     now["amc"] = 1.0 if nxt and nxt.get("timing") == "amc" else 0.0
+    pt = None
+    if frows:                                          # FMP connected: analysts and the last call
+        try:
+            _grade_fields(now, fmp.grades(sub, c["sym"]), (_d(now["asOf"]) + timedelta(days=1)).isoformat())
+        except Exception as e:
+            print("grades", e)
+        try:
+            items = tx_index(sub, c["sym"], (now_ny().date() - timedelta(days=400)).isoformat(), True)
+        except Exception as e:
+            items = (store.get_json("fund/txi/" + c["sym"]) or {}).get("items") or []
+            print("tx", e)
+        if items:
+            last = items[-1]
+            now.update({"prevTxTone": last.get("tone"), "prevTxGuide": last.get("guide"), "prevTxUncert": last.get("uncert"),
+                        "lastCall": {k: last.get(k) for k in ("date", "tone", "toneQA", "uncert", "guide", "guideDir")}})
+        try:
+            pt = fmp.price_target(sub, c["sym"])
+            if pt and pt.get("targetConsensus"):
+                pt["upside"] = pt["targetConsensus"] / now["close"] - 1
+        except Exception as e:
+            print("pt", e)
     # nearest neighbours on standardised pre-release signals
     use = [k for k in NN_SIGNALS if now.get(k) is not None and sum(1 for r in ref if r.get(k) is not None) >= 10]
     neigh = []
@@ -1172,7 +1308,7 @@ def project(sub, sym, k_nn=None):
                    "all": {"raw": _dist([r.get(key) for r in ref]), "ab": _dist([r.get(key + "ab") for r in ref])},
                    "volRange": now.get("vol20") * math.sqrt(int(key[1:])) if now.get("vol20") else None})
     keep = ("sym", "date", "timing", "prevRevYoY", "estEpsG", "pre21ab", "relVol5", "cmf20", "r1ab", "r5ab", "r20ab", "r40ab")
-    return {"sym": c["sym"], "name": c.get("name"), "bench": bench_sym, "next": nxt, "now": now, "signals": use,
+    return {"sym": c["sym"], "name": c.get("name"), "bench": bench_sym, "next": nxt, "now": now, "signals": use, "priceTarget": pt,
             "refN": len(ref), "ownN": len(own), "studyAt": sd.get("at"), "horizons": hz,
             "model": model.apply(sd.get("model"), now),
             "neighbours": [{"dist": round(dd, 3), **{k: r.get(k) for k in keep}} for dd, r in neigh[:25]]}

@@ -98,7 +98,7 @@ async function enCompanyLoad() {
   try {
     const c = await api('/fund/company?sym=' + encodeURIComponent(E.sym));
     S.enCo = c;
-    out.innerHTML = `<div id="en-proj"><section class="panel"><div class="empty">Projecting the next release…</div></section></div>` + enCompanyHtml(c);
+    out.innerHTML = `<div id="en-tx-view"></div><div id="en-proj"><section class="panel"><div class="empty">Projecting the next release…</div></section></div>` + enCompanyHtml(c);
     enProjLoad();
   } catch (e) { out.innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; }
 }
@@ -119,11 +119,12 @@ function enCompanyHtml(c) {
   <section class="panel" style="margin-top:12px"><div class="hd"><h2>Earnings releases</h2><span class="dim" style="font-size:13px">${rs.length} since ${esc(rs.length ? rs[rs.length - 1].date : '—')}${c.bench ? ' · vs ' + esc(c.bench) : ''}${avgAbs != null ? ` · average day-0 move ${(avgAbs * 100).toFixed(1)}% · up ${(up * 100).toFixed(0)}% of the time` : ''}</span></div>
     ${c.reactionsError ? `<div class="note" style="padding:10px 16px">Price reactions need Alpaca (Data page): ${esc(c.reactionsError)}</div>` : ''}
     <div class="tbl-wrap"><table class="tbl" style="min-width:1200px"><thead><tr><th>Release</th><th>Time ET</th><th>Reaction day</th><th>Quarter</th><th class="r">Rev YoY</th><th class="r">YoY change</th><th class="r">EPS YoY</th>
-      <th class="r">Run-up 20d</th><th class="r">Gap</th><th class="r">Day 0</th><th class="r">Day 0 vs bench</th><th class="r">σ</th><th class="r">5d vs bench</th><th class="r">20d vs bench</th><th class="r">2m vs bench</th><th class="r">Drift d1→d20</th></tr></thead><tbody>
+      <th class="r">Run-up 20d</th><th class="r">Gap</th><th class="r">Day 0</th><th class="r">Day 0 vs bench</th><th class="r">σ</th><th class="r">5d vs bench</th><th class="r">20d vs bench</th><th class="r">2m vs bench</th><th class="r">Drift d1→d20</th><th class="r">Call tone</th><th>Guidance (call)</th></tr></thead><tbody>
     ${rs.map(r => `<tr><td class="mono">${esc(r.date)}</td><td class="mono dim">${esc(r.time || '')} ${esc(r.timing)}</td><td class="mono">${esc(r.day0 || '—')}</td><td class="mono dim">${esc(r.qEnd || '—')}</td>
       <td class="r ${cls(r.revYoY)}">${pct(r.revYoY)}</td><td class="r ${cls(r.revAccel)}">${pp(r.revAccel)}</td><td class="r ${cls(r.epsYoY)}">${pct(r.epsYoY)}</td><td class="r ${cls(r.runup20)}">${pct(r.runup20)}</td>
       <td class="r ${cls(r.gap)}">${pct(r.gap)}</td><td class="r ${cls(r.r1)}">${pct(r.r1)}</td><td class="r ${cls(r.r1ab)}"><b>${pct(r.r1ab)}</b></td><td class="r">${r.z1 == null ? '—' : r.z1.toFixed(1)}</td>
-      <td class="r ${cls(r.r5ab)}">${pct(r.r5ab)}</td><td class="r ${cls(r.r20ab)}">${pct(r.r20ab)}</td><td class="r ${cls(r.r40ab)}">${pct(r.r40ab)}</td><td class="r ${cls(r.drift20)}">${pct(r.drift20)}</td></tr>`).join('') || `<tr><td colspan="16" class="dim">No 8-K item 2.02 filings found.</td></tr>`}</tbody></table></div></section>`;
+      <td class="r ${cls(r.r5ab)}">${pct(r.r5ab)}</td><td class="r ${cls(r.r20ab)}">${pct(r.r20ab)}</td><td class="r ${cls(r.r40ab)}">${pct(r.r40ab)}</td><td class="r ${cls(r.drift20)}">${pct(r.drift20)}</td>
+      <td class="r ${cls(r.txTone)}">${r.txTone == null ? '—' : `<a href="#earnings" data-entx="${esc(r.txDate)}">${r.txTone.toFixed(2)}</a>`}</td><td>${r.txGuideDir ? `<span class="pill ${r.txGuideDir === 'raise' ? 'ok' : r.txGuideDir === 'lower' ? 'warn' : ''}">${esc(r.txGuideDir)}</span>` : '<span class="dim">—</span>'}</td></tr>`).join('') || `<tr><td colspan="18" class="dim">No 8-K item 2.02 filings found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 /* ---------- Projection: the next release ---------- */
@@ -142,7 +143,9 @@ function enProjHtml(p) {
     offHigh: ['From 52w high', pct], sma50: ['vs 50-day average', pct], sma200: ['vs 200-day average', pct], vol20: ['Daily volatility (20d)', v => pct(v, 2)],
     relVol1: ['Volume last day (× 50d avg)', x], relVol5: ['Volume 5 days (× 50d avg)', x], relVol20: ['Volume 20 days (× 50d avg)', x],
     cmf20: ['Accumulation (CMF 20d)', v => v == null ? '—' : v.toFixed(2)], obv20: ['On-balance volume 20d', v => v == null ? '—' : v.toFixed(2)],
-    ownAbs: ['Own average |day-0 move|', pct] };
+    ownAbs: ['Own average |day-0 move|', pct], gradeNet90: ['Analyst net upgrades, 90 days', v => (v > 0 ? '+' : '') + v],
+    prevTxTone: ['Last call tone', v => v.toFixed(2)], prevTxGuide: ['Last call guidance score', v => v.toFixed(2)] };
+  const ptv = p.priceTarget;
   const range = d => d.n ? `<span class="mono">${pct(d.p25)} … ${pct(d.p75)}</span><div class="sub">10–90%: ${pct(d.p10)} … ${pct(d.p90)}</div>` : '—';
   const col = d => `<td class="r ${cls(d.median)}">${d.n ? pct(d.median) : '—'}</td><td class="r">${range(d)}</td><td class="r">${d.hit == null ? '—' : (d.hit * 100).toFixed(0) + '%'}</td><td class="r">${d.n || 0}</td>`;
   const VER = { edge: ['ok', 'Tested edge'], weak: ['', 'Weak'], none: ['loss', 'No tested edge'] };
@@ -158,7 +161,9 @@ function enProjHtml(p) {
   return `<section class="panel"><div class="hd"><h2>Next release: projection</h2><span class="dim" style="font-size:13px">${when}</span><div class="grow"></div>
       <div class="seg"><button data-enpm="ab" aria-pressed="${m === 'ab'}">vs ${esc(p.bench)}</button><button data-enpm="raw" aria-pressed="${m === 'raw'}">Raw</button></div></div>
     <div class="bd"><div class="kv" style="grid-template-columns:repeat(5,minmax(0,1fr))">${Object.entries(SIG).map(([k, [l, f]]) => `<div><div class="k">${l}</div><div class="v ${['pre1ab', 'pre5ab', 'pre21ab', 'pre63ab'].includes(k) ? cls(n[k]) : ''}">${n[k] == null ? '—' : f(n[k])}</div></div>`).join('')}</div>
-      <div class="note" style="margin-top:8px">Going into the release: the last reported quarter, the consensus (FMP), and what the stock did up to the ${esc(n.asOf || '—')} close.</div></div>
+      ${ptv && ptv.targetConsensus ? `<div class="note" style="margin-top:8px">Analysts' consensus price target $${ptv.targetConsensus.toFixed(2)} (low $${(ptv.targetLow || 0).toFixed(0)} – high $${(ptv.targetHigh || 0).toFixed(0)}): <b class="${cls(ptv.upside)}">${pct(ptv.upside)}</b> from the last close. Today's snapshot only: not in the backtest.</div>` : ''}
+      ${n.lastCall ? `<div class="note">Last call ${esc(n.lastCall.date)}: tone ${n.lastCall.tone == null ? '—' : n.lastCall.tone.toFixed(2)}, Q&A ${n.lastCall.toneQA == null ? '—' : n.lastCall.toneQA.toFixed(2)}, guidance ${esc(n.lastCall.guideDir || '—')} · <a href="#earnings" data-entx="${esc(n.lastCall.date)}">read it</a></div>` : ''}
+      <div class="note" style="margin-top:8px">Going into the release: the last reported quarter, the consensus (FMP), analysts' actions, the last call, and what the stock did up to the ${esc(n.asOf || '—')} close.</div></div>
     ${modelHtml}
     <div class="tbl-wrap"><table class="tbl" style="min-width:1100px"><thead><tr><th>Horizon</th><th class="r" colspan="4">Similar releases (nearest ${p.neighbours.length})</th><th class="r" colspan="4">${esc(p.sym)}'s own ${p.ownN} releases</th><th class="r" colspan="4">All ${p.refN} releases</th><th class="r">±1σ from volatility</th></tr>
       <tr>${'<th></th>' + ['', '', ''].map(() => '<th class="r">Median</th><th class="r">25–75%</th><th class="r">Up</th><th class="r">N</th>').join('') + '<th></th>'}</tr></thead><tbody>
@@ -170,14 +175,33 @@ function enProjHtml(p) {
       <p class="note">Nearest neighbours on standardised pre-release signals, drawn from the last event study${p.studyAt ? ' (' + esc(p.studyAt.slice(0, 10)) + ')' : ' (none run yet: own releases only)'} plus this company's own releases.</p></details></section>`;
 }
 
+/* ---------- Call transcript viewer ---------- */
+async function enTxShow(date) {
+  const el = $('#en-tx-view'); if (!el) return;
+  el.innerHTML = '<section class="panel" style="margin-bottom:12px"><div class="empty">Loading the call…</div></section>';
+  try {
+    const t = await api(`/fund/transcript?sym=${encodeURIComponent(S.en.sym)}&date=${date}`), c = t.scores || {};
+    const num = v => v == null ? '—' : v.toFixed(2);
+    const hl = esc(t.content || '').replace(/\n/g, '<br>').replace(/\b(rais(?:e|ed|ing)|lower(?:ed|ing)?|reaffirm(?:ed|ing)?|guidance|outlook)\b/gi, '<mark>$1</mark>');
+    el.innerHTML = `<section class="panel" style="margin-bottom:12px"><div class="hd"><h2>${esc(t.sym)} earnings call · ${esc(t.date)} (Q${t.quarter} ${t.year})</h2><div class="grow"></div><button class="btn sm" data-en="tx-close">Close</button></div>
+      <div class="bd"><div class="kv" style="grid-template-columns:repeat(6,minmax(0,1fr))"><div><div class="k">Tone</div><div class="v ${cls(c.tone)}">${num(c.tone)}</div></div><div><div class="k">Prepared remarks</div><div class="v ${cls(c.tonePrep)}">${num(c.tonePrep)}</div></div>
+        <div><div class="k">Q&A</div><div class="v ${cls(c.toneQA)}">${num(c.toneQA)}</div></div><div><div class="k">Uncertainty / 1,000 words</div><div class="v">${num(c.uncert)}</div></div>
+        <div><div class="k">Guidance</div><div class="v">${esc(c.guideDir || '—')} (${c.guideUp || 0}↑ ${c.guideDown || 0}↓ ${c.guideKeep || 0}=)</div></div><div><div class="k">Words</div><div class="v">${(c.words || 0).toLocaleString('en-US')}</div></div></div>
+        ${(t.guideSents || []).length ? `<h3 style="font-size:13px;margin:14px 0 6px">Guidance sentences</h3>${t.guideSents.map(g => `<div style="margin:4px 0"><span class="pill ${g.dir === 'raise' ? 'ok' : g.dir === 'lower' ? 'warn' : ''}">${esc(g.dir)}</span> ${esc(g.text)}</div>`).join('')}` : ''}
+        <details style="margin-top:12px"><summary class="dim" style="cursor:pointer">Full transcript</summary><div style="max-height:520px;overflow:auto;margin-top:8px;font-size:13px;line-height:1.55">${hl}</div></details>
+        <p class="note">Tone = (positive − negative words) / (positive + negative), from −1 to +1; word-list scoring, negations flipped. Guidance = sentences about the outlook, classified by their verbs.</p></div></section>`;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { el.innerHTML = `<section class="panel" style="margin-bottom:12px"><div class="empty loss">${esc(e.message)}</div></section>`; }
+}
+
 /* ---------- Event study ---------- */
 function enStudyShell() {
   const d = S.enD, ev = d.events, st = d.settings, fm = d.fmp || {};
   const uni = st.universe || [];
   return `<div class="row"><div class="col-main">
-    <section class="panel"><div class="hd"><h2>Financial Modeling Prep</h2><div class="grow"></div>${fm.connected ? `<span class="pill ok">Connected ··${esc(fm.last4)}</span>` : '<span class="pill">Not connected</span>'}</div>
-      <div class="bd"><p class="muted" style="margin-top:0">Consensus EPS / revenue, actuals and before-open / after-close timing for every release, the next scheduled date, and the S&P 500 list. Your key stays encrypted on the server; FMP data is for your own research (redistributing it needs FMP's display licence).</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><input id="en-fmpkey" type="password" placeholder="FMP API key" style="width:320px" autocomplete="off"><button class="btn primary" data-en="fmp-save">${fm.connected ? 'Replace key' : 'Connect'}</button>${fm.connected ? '<button class="btn danger" data-en="fmp-del">Disconnect</button>' : ''}</div></div></section>
+    <section class="panel"><div class="bd" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><b>Financial Modeling Prep</b>
+      ${fm.connected ? `<span class="pill ok">Connected</span>${fm.plan ? ['earnings', 'grades', 'transcripts'].map(k => `<span class="pill ${fm.plan[k] ? 'ok' : 'warn'}">${fm.plan[k] ? '✓' : '✗'} ${{ earnings: 'consensus', grades: 'analyst grades', transcripts: 'call transcripts' }[k]}</span>`).join('') : ''}` : '<span class="pill warn">Not connected</span>'}
+      <div class="grow"></div><a class="btn sm" href="#data">${fm.connected ? 'Manage on the Data page' : 'Connect on the Data page'}</a></div></section>
     <section class="panel"><div class="hd"><h2>Study universe</h2><div class="grow"></div><span class="pill ${uni.length ? 'ok' : ''}">${uni.length ? esc(st.uniName || 'Custom') + ' · ' + uni.length + ' tickers' : 'The screen\'s ' + st.tickers.length + ' tickers'}</span></div>
       <div class="bd"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" data-en="uni-sp500" ${fm.connected ? '' : 'disabled'}>Load the S&P 500 (FMP)</button>
         <label class="check"><input type="checkbox" id="en-removed" checked> + companies removed from the index in the period (less survivorship bias)</label>
@@ -194,6 +218,7 @@ function enStudyShell() {
     <section class="panel"><div class="hd"><h2>Run the study</h2></div><div class="bd"><div class="form" style="align-items:end">
       <label class="check"><input type="checkbox" id="en-sec" ${st.useSec ? 'checked' : ''}> Add every release of the study universe (${(uni.length || st.tickers.length)} tickers: SEC 8-K${fm.connected ? ' + FMP' : ''})</label>
       <label class="f">Years back<input type="number" id="en-years" min="1" max="11" value="${st.years}"></label>
+      <label class="check"><input type="checkbox" id="en-tx" ${fm.connected && (!fm.plan || fm.plan.transcripts) ? 'checked' : ''} ${fm.connected ? '' : 'disabled'}> Download and score the call transcripts (kept for good)</label>
       <label class="f">Benchmark<select id="en-bench">${d.benches.map(b => `<option ${b === st.bench ? 'selected' : ''}>${b}</option>`).join('')}</select></label>
       <button class="btn primary" data-en="run" ${d.alpaca ? '' : 'disabled'}>Run event study</button></div>
       ${d.alpaca ? '' : '<p class="note loss">Connect Alpaca on the Data page: the reactions are measured on its daily bars (split-adjusted).</p>'}
@@ -226,10 +251,10 @@ function enResults(r) {
     ${g.groups.map(x => { const s = x[o] || {}; return `<tr><td>${esc(x.name)}${rng(g, x)}</td><td class="r">${s.n || 0}</td><td class="r ${cls(s.mean)}">${f(s.mean)}${enBar(s.mean, scale)}</td><td class="r ${cls(s.median)}">${f(s.median)}</td><td class="r">${s.hit == null ? '—' : (s.hit * 100).toFixed(0) + '%'}</td><td class="r">${tstat(s.t)}</td></tr>`; }).join('')}</tbody></table></div></section>`;
   const rhoCell = c => { if (!c || c.rho == null) return '<td class="r dim">—</td>'; const a = Math.min(1, Math.abs(c.rho) / 0.4); return `<td class="r" style="background:${c.rho > 0 ? `rgba(76,195,138,${(a * 0.35).toFixed(2)})` : `rgba(240,100,100,${(a * 0.35).toFixed(2)})`}" title="n = ${c.n}">${c.rho.toFixed(2)}</td>`; };
   const rows = enRowsSorted(r.rows || []);
-  const RC = [['date', 'Release'], ['sym', 'Ticker'], ['timing', 'Timing'], ['setup', 'Beat / raise'], ['revYoY', 'Rev YoY'], ['revAccel', 'YoY change'], ['epsYoY', 'EPS YoY'], ['epsSurprise', 'EPS surp.'], ['revSurprise', 'Rev surp.'], ['pre5ab', '5d before'], ['pre21ab', '1m before'], ['relVol5', 'Vol 5d ×'], ['cmf20', 'CMF'],
+  const RC = [['date', 'Release'], ['sym', 'Ticker'], ['timing', 'Timing'], ['setup', 'Beat / raise'], ['revYoY', 'Rev YoY'], ['revAccel', 'YoY change'], ['epsYoY', 'EPS YoY'], ['epsSurprise', 'EPS surp.'], ['revSurprise', 'Rev surp.'], ['pre5ab', '5d before'], ['pre21ab', '1m before'], ['relVol5', 'Vol 5d ×'], ['cmf20', 'CMF'], ['gradeNet90', 'Net upgr. 90d'], ['txTone', 'Call tone'],
     ['gap', 'Gap'], ['r1ab', 'Day 0 vs bench'], ['z1', 'σ'], ['r5ab', '5d'], ['r20ab', '20d'], ['r40ab', '2m'], ['drift20', 'Drift 20'], ['drift60', 'Drift 60']];
   const rc = (x, k) => { const v = x[k]; if (['date', 'sym', 'timing'].includes(k)) return `<td class="mono">${esc(v || '—')}</td>`; if (k === 'setup') return `<td>${esc(v || '—')}</td>`;
-    if (k === 'epsSurprise' || k === 'revSurprise') return `<td class="r ${cls(v)}">${v == null ? '—' : sgn(v, 1, '%')}</td>`; if (k === 'z1' || k === 'cmf20') return `<td class="r">${v == null ? '—' : v.toFixed(k === 'z1' ? 1 : 2)}</td>`; if (k === 'relVol5') return `<td class="r">${v == null ? '—' : v.toFixed(2)}</td>`; if (k === 'revAccel') return `<td class="r ${cls(v)}">${pp(v)}</td>`; return `<td class="r ${cls(v)}">${pct(v)}</td>`; };
+    if (k === 'epsSurprise' || k === 'revSurprise') return `<td class="r ${cls(v)}">${v == null ? '—' : sgn(v, 1, '%')}</td>`; if (k === 'z1' || k === 'cmf20') return `<td class="r">${v == null ? '—' : v.toFixed(k === 'z1' ? 1 : 2)}</td>`; if (k === 'gradeNet90') return `<td class="r ${cls(v)}">${v == null ? '—' : (v > 0 ? '+' : '') + v}</td>`; if (k === 'txTone') return `<td class="r ${cls(v)}">${v == null ? '—' : v.toFixed(2)}${x.guideSrc === 'call' && x.guide ? ' <span class="dim">' + esc(x.guide) + '</span>' : ''}</td>`; if (k === 'relVol5') return `<td class="r">${v == null ? '—' : v.toFixed(2)}</td>`; if (k === 'revAccel') return `<td class="r ${cls(v)}">${pp(v)}</td>`; return `<td class="r ${cls(v)}">${pct(v)}</td>`; };
   return enModelHtml(r) + `<section class="panel" style="margin-top:12px"><div class="bd" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
       <div class="seg">${outs.map(([k, l]) => `<button data-enout="${k}" aria-pressed="${k === o}">${l}</button>`).join('')}</div><div class="grow"></div>
       <span>All releases: <b class="${cls(all.mean)}">${f(all.mean)}</b> mean · ${f(all.median)} median · ${all.hit == null ? '—' : (all.hit * 100).toFixed(0) + '% up'} · t ${tstat(all.t)} · N ${all.n || 0}</span></div>
@@ -276,6 +301,7 @@ async function enCsv() {
   const xk = [...new Set(all.flatMap(x => Object.keys(x.x || {})))];
   const keys = ['sym', 'date', 'timing', 'src', 'sector', 'base', 'day0', 'qEnd', 'prevRevYoY', 'prevRevAccel', 'prevEpsYoY', 'revYoY', 'revAccel', 'revQoQ', 'rev3y', 'epsYoY', 'epsAccel', 'accruals', 'cashConv', 'quality', 'inflection', 'revDir',
     'epsEst', 'epsAct', 'epsSurprise', 'revEst', 'revAct', 'revSurprise', 'estEpsG', 'estRevG', 'guide', 'setup',
+    'gradeNet30', 'gradeNet90', 'gradeN90', 'txDate', 'txTone', 'txTonePrep', 'txToneQA', 'txUncert', 'txNeg', 'txGuide', 'txGuideDir', 'txToneChg', 'prevTxTone', 'guideSrc',
     'pre1', 'pre1ab', 'pre5', 'pre5ab', 'pre21', 'pre21ab', 'pre63', 'pre63ab', 'offHigh', 'sma50', 'sma200', 'vol20', 'relVol1', 'relVol5', 'relVol20', 'cmf20', 'obv20', 'ownAbs', 'ownMean', 'prevR1ab',
     'gap', 'vol0', 'r1', 'r1ab', 'z1', 'r5', 'r5ab', 'r20', 'r20ab', 'r40', 'r40ab', 'r60', 'r60ab', 'drift5', 'drift20', 'drift40', 'drift60'];
   const q = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
@@ -294,13 +320,14 @@ async function enImport(mode) {
 }
 
 document.addEventListener('click', async e => {
-  const el = e.target.closest('[data-entab],[data-en],[data-enco],[data-ensort],[data-enout],[data-enrsort],[data-enpm],[data-enmt]');
+  const el = e.target.closest('[data-entab],[data-en],[data-enco],[data-ensort],[data-enout],[data-enrsort],[data-enpm],[data-enmt],[data-entx]');
   if (!el || el.disabled) return;
   const E = S.en, ds = el.dataset;
   try {
     if (ds.entab) { E.tab = ds.entab; document.querySelectorAll('[data-entab]').forEach(b => b.setAttribute('aria-pressed', b === el)); return enBody(); }
     if (ds.enco) { e.preventDefault(); E.sym = ds.enco; E.tab = 'company'; return vEarnings(); }
     if (ds.ensort) { E.dir = E.sort === ds.ensort ? -E.dir : -1; E.sort = ds.ensort; return enBody(); }
+    if (ds.entx) { e.preventDefault(); return enTxShow(ds.entx); }
     if (ds.enmt) { S.en.mt = ds.enmt; $('#en-res').innerHTML = enResults(S.enStudy); return; }
     if (ds.enpm) { S.en.pmode = ds.enpm; $('#en-proj').innerHTML = enProjHtml(S.enProj); return; }
     if (ds.enout) { E.out = ds.enout; $('#en-res').innerHTML = enResults(S.enStudy); return; }
@@ -313,11 +340,10 @@ document.addEventListener('click', async e => {
       case 'imp-replace': return enImport('replace');
       case 'imp-merge': return enImport('merge');
       case 'imp-clear': if (!confirm('Remove the imported releases?')) return; await api('/fund/events', { method: 'DELETE' }); return vEarnings();
-      case 'run': el.disabled = true; await api('/fund/study', { method: 'POST', body: { useSec: $('#en-sec').checked, years: +$('#en-years').value || 5, bench: $('#en-bench').value } }); toast('Event study started.'); S.enStudy = null; return vEarnings();
+      case 'run': el.disabled = true; await api('/fund/study', { method: 'POST', body: { useSec: $('#en-sec').checked, years: +$('#en-years').value || 5, bench: $('#en-bench').value, transcripts: $('#en-tx').checked } }); toast('Event study started.'); S.enStudy = null; return vEarnings();
       case 'more': E.rshow = 1e9; $('#en-res').innerHTML = enResults(S.enStudy); return;
       case 'csv': return enCsv();
-      case 'fmp-save': { const k = $('#en-fmpkey').value.trim(); if (!k) return toast('Paste the FMP key.'); el.disabled = true; await api('/fmp', { method: 'PUT', body: { key: k } }); toast('FMP connected.'); return vEarnings(); }
-      case 'fmp-del': if (!confirm('Disconnect FMP?')) return; await api('/fmp', { method: 'DELETE' }); return vEarnings();
+      case 'tx-close': $('#en-tx-view').innerHTML = ''; return;
       case 'uni-sp500': { el.disabled = true; toast('Loading the S&P 500 from FMP…'); const r = await api('/fund/universe', { method: 'POST', body: { source: 'sp500', removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(); }
       case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings();
       case 'uni-save': await api('/fund/universe', { method: 'POST', body: { tickers: $('#en-uni').value } }); toast('Universe saved.'); return vEarnings();

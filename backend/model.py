@@ -4,7 +4,8 @@ Two questions, two feature sets:
   pre   before the release (numbers unknown): the last reported quarter, consensus growth expected, what the stock did
         into the release (returns 1 / 5 / 21 / 63 sessions vs the benchmark, trend, volume, accumulation), its own past
         reactions, timing. Targets: day 0, size of the day-0 move, 5 days, 1 month, 2 months (vs the benchmark).
-  post  after day 0 (numbers out): the reported quarter, surprises, guidance, the day-0 reaction and the run-up into it.
+  post  after day 0 (numbers out): the reported quarter, surprises, guidance, the earnings call (tone, Q&A tone, uncertainty,
+        guidance language, change vs the previous call), the day-0 reaction and the run-up into it.
         Targets: the drift after day 0 (5 / 20 / 40 sessions, vs the benchmark).
 
 Model: ridge regression on standardised, capped features (missing values set to a neutral value, with a flag per block).
@@ -29,6 +30,10 @@ F = {
     "relVol5": (0.1, 10, "log", 1.0, "px"), "relVol20": (0.1, 10, "log", 1.0, "px"), "cmf20": (-1, 1, None, 0.0, "px"),
     "obv20": (-1, 1, None, 0.0, "px"),
     "ownAbs": (0, 0.4, None, 0.05, "own"), "ownMean": (-0.2, 0.2, None, 0.0, "own"), "prevR1ab": (-0.4, 0.4, None, 0.0, "own"),
+    "gradeNet30": (-5, 5, None, 0.0, "grades"), "gradeNet90": (-8, 8, None, 0.0, "grades"), "gradeN90": (0, 30, None, 0.0, "grades"),
+    "prevTxTone": (-1, 1, None, 0.0, "prevtx"), "prevTxGuide": (-1, 1, None, 0.0, "prevtx"), "prevTxUncert": (0, 40, None, 8.0, "prevtx"),
+    "txTone": (-1, 1, None, 0.0, "tx"), "txToneQA": (-1, 1, None, 0.0, "tx"), "txUncert": (0, 40, None, 8.0, "tx"),
+    "txGuide": (-1, 1, None, 0.0, "tx"), "txToneChg": (-1, 1, None, 0.0, "tx"),
     "amc": (0, 1, None, 0.0, None),
     "r1ab": (-0.4, 0.4, None, 0.0, None), "gap": (-0.4, 0.4, None, 0.0, None), "z1": (-15, 15, None, 0.0, None),
     "vol0": (0.1, 20, "log", 1.0, None),
@@ -43,12 +48,18 @@ LABEL = {"prevRevYoY": "Revenue YoY, last reported quarter", "prevRevAccel": "Re
          "cmf20": "Accumulation (CMF 20d)", "obv20": "On-balance volume 20d", "ownAbs": "Own average |day-0 move|", "ownMean": "Own average day-0 move",
          "prevR1ab": "Last release's day-0 move", "amc": "After the close", "r1ab": "Day-0 move vs bench", "gap": "Day-0 gap", "z1": "Day-0 move (σ)",
          "vol0": "Day-0 volume (log × avg)", "miss_fund": "No fundamentals", "miss_est": "No consensus", "miss_surp": "No surprise data",
-         "miss_guide": "No guidance", "miss_own": "No past releases"}
+         "miss_guide": "No guidance", "miss_own": "No past releases", "gradeNet30": "Analyst net upgrades, 30 days before",
+         "gradeNet90": "Analyst net upgrades, 90 days before", "gradeN90": "Analyst actions, 90 days before", "prevTxTone": "Previous call tone",
+         "prevTxGuide": "Previous call guidance score", "prevTxUncert": "Previous call uncertainty", "txTone": "Call tone", "txToneQA": "Call tone, Q&A",
+         "txUncert": "Call uncertainty", "txGuide": "Call guidance score", "txToneChg": "Call tone change", "miss_grades": "No analyst data",
+         "miss_prevtx": "No previous call", "miss_tx": "No call transcript"}
 
 PRE = ["prevRevYoY", "prevRevAccel", "prevEpsYoY", "prevAccruals", "estEpsG", "estRevG", "pre1ab", "pre5ab", "pre21ab", "pre63ab",
-       "offHigh", "sma50", "sma200", "vol20", "relVol1", "relVol5", "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab", "amc"]
+       "offHigh", "sma50", "sma200", "vol20", "relVol1", "relVol5", "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab",
+       "gradeNet30", "gradeNet90", "gradeN90", "prevTxTone", "prevTxGuide", "prevTxUncert", "amc"]
 POST = ["revYoY", "revAccel", "revQoQ", "epsYoY", "epsAccel", "accruals", "epsSurprise", "revSurprise", "guideN", "r1ab", "gap", "z1",
-        "vol0", "pre21ab", "pre63ab", "offHigh", "relVol5", "cmf20", "ownMean", "amc"]
+        "vol0", "pre21ab", "pre63ab", "offHigh", "relVol5", "cmf20", "ownMean", "gradeNet90",
+        "txTone", "txToneQA", "txUncert", "txGuide", "txToneChg", "amc"]
 TARGETS = [  # key, label, model, outcome known on, value
     ("r1ab", "Day 0 vs bench", "pre", "t1", lambda r: r.get("r1ab")),
     ("abs1", "Size of the day-0 move", "pre", "t1", lambda r: abs(r["r1ab"]) if r.get("r1ab") is not None else None),

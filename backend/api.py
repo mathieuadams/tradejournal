@@ -346,7 +346,7 @@ def _estimate(sub, kind, syms, d0, d1, window="rth"):
 
 @route("GET", "/data")
 def data_view(sub, claims, body, q):
-    return {"coverage": futdata.coverage(), "job": jobs.status(sub, "data"), "databento": databento.status(sub), "alpaca": alpaca.status(sub), "uw": uwhales.status(sub), "refresh": jobs.status(sub, "refresh")}
+    return {"coverage": futdata.coverage(), "job": jobs.status(sub, "data"), "databento": databento.status(sub), "alpaca": alpaca.status(sub), "uw": uwhales.status(sub), "fmp": __import__("fmp").status(sub), "refresh": jobs.status(sub, "refresh")}
 
 
 @route("POST", "/data/estimate")
@@ -667,6 +667,21 @@ def fmp_save(sub, claims, body, q):
 def fmp_delete(sub, claims, body, q):
     import fmp
     return fmp.delete_key(sub)
+
+
+@route("POST", "/fmp/test")
+def fmp_test(sub, claims, body, q):
+    import fmp
+    return fmp.probe(sub)
+
+
+@route("GET", "/fund/transcript")
+def fund_transcript(sub, claims, body, q):
+    import fundamentals as F
+    d = q.get("date") or ""
+    if len(d) != 10:
+        raise BadRequest("date: YYYY-MM-DD.")
+    return F.transcript_view(sub, q.get("sym") or "", d)
 
 
 @route("POST", "/fund/universe")

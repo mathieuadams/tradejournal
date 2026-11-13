@@ -164,7 +164,7 @@ def test_api_flow():
     st, s = call("GET", "/fund/study")
     assert s["bench"] == "QQQ" and s["n"] >= 36 and s["rows"][0]["timing"] in ("amc", "bmo")
     labels = {g["label"] for g in s["groups"]}
-    assert {"Guidance", "Beat / raise", "pre_signal", "Revenue YoY (reported)", "Accumulation (Chaikin money flow 20d)"} <= labels, labels
+    assert {"Guidance (CSV, else from the call)", "Beat / raise", "pre_signal", "Revenue YoY (reported)", "Accumulation (Chaikin money flow 20d)"} <= labels, labels
     assert all(x["timing"] != "unknown" for x in s["rows"] if x["src"] == "csv")       # timing filled from the same-day 8-K
     st, p = call("GET", "/fund/project", None, {"sym": "BBB"})
     assert st == 200 and [h["label"] for h in p["horizons"]] == ["1 day", "5 days", "1 month", "2 months"], p
@@ -189,9 +189,18 @@ def test_api_flow():
     for k in ("pre1ab", "pre5ab", "pre21ab", "pre63ab", "relVol5", "cmf20", "obv20", "sma50", "estEpsG", "epsSurprise", "drift5"):
         assert k in row, k
     assert {t["key"] for t in s["model"]["targets"]} >= {"r1ab", "abs1", "r40ab", "drift20"}
+    tx = [x for x in s["rows"] if x.get("txTone") is not None]
+    assert len(tx) > 20 and any(x.get("guideSrc") == "call" for x in tx) and any(x.get("txToneChg") is not None for x in tx)
+    assert all("gradeNet90" in x for x in s["rows"] if x["src"] == "fmp")
+    assert {"Call tone", "Analyst upgrades − downgrades, 90 days before"} <= {g["label"] for g in s["groups"]}
+    st, t = call("GET", "/fund/transcript", None, {"sym": "AAA", "date": tx[0]["txDate"]})
+    assert st == 200 and "question-and-answer" in t["content"] and t["scores"]["tone"] is not None and t["guideSents"]
+    st, pr = call("POST", "/fmp/test", {})
+    assert pr["plan"]["transcripts"] and pr["plan"]["grades"]
     st, pg = call("GET", "/fund/study/rows", None, {"page": "0"})
     assert st == 200 and len(pg["rows"]) == s["n"] and pg["pages"] == 1
     st, p = call("GET", "/fund/project", None, {"sym": "AAA"})
+    assert p["priceTarget"]["upside"] is not None and "gradeNet90" in p["now"] and p["now"]["lastCall"]["tone"] is not None
     assert st == 200 and p["next"]["source"] == "FMP" and p["next"]["epsEst"] is not None and "relVol5" in p["now"], p["next"]
     st, r = call("POST", "/fund/universe", {"tickers": []})
     assert r["universe"] == []
@@ -214,6 +223,27 @@ def _synth(n=3000, seed=7):
              "r40ab": rnd.gauss(0, 0.1), "drift5": rnd.gauss(0, 0.03), "drift20": rnd.gauss(0, 0.05), "drift40": rnd.gauss(0, 0.07)}
         rows.append(r)
     return rows
+
+
+def test_sentiment_scores():
+    import sentiment
+    up = sentiment.score("CEO: Record growth, strong demand and robust margins. We are raising our full-year guidance. "
+                         "We now expect revenue at the upper end of the range. Operator: We will now begin the question-and-answer session. "
+                         "Analyst: Great quarter. CEO: Momentum is strong.")
+    dn = sentiment.score("CEO: Demand was weak and orders declined. We are lowering our outlook for the full year. "
+                         "Operator: Our first question comes from Analyst. CEO: It may remain uncertain and difficult.")
+    assert up["tone"] > 0.5 and dn["tone"] < -0.5 and up["guideDir"] == "raise" and dn["guideDir"] == "lower"
+    assert up["toneQA"] is not None and dn["uncert"] > up["uncert"]
+    assert sentiment.score("Results were not weak. We reaffirm our full-year guidance.")["guideDir"] == "maintain"
+    assert sentiment.score("Results were not weak.")["tone"] > 0           # negation flips
+
+
+def test_grades_before_base_only():
+    row = {}
+    grades = [{"date": "2025-01-10", "action": "up"}, {"date": "2025-03-01", "action": "down"}, {"date": "2025-03-02", "action": "up"},
+              {"date": "2025-03-03", "action": "up"}]
+    F._grade_fields(row, grades, "2025-03-03")          # the action on the base day itself is excluded
+    assert row == {"gradeNet30": 0, "gradeNet90": 1, "gradeN90": 3}, row
 
 
 def test_model_finds_planted_signal():

@@ -1262,6 +1262,17 @@ async function vData() {
             <p class="note">Keys: Alpaca dashboard → API keys (paper or live keys both work for market data). SIP matches TradeWellX's prices; on the free plan it stops 15 minutes before now.</p>`}
           </div></section>
 
+        <section class="panel"><div class="hd"><h2>Financial Modeling Prep</h2><span class="dim" style="font-size:13px">Earnings: consensus, timing, S&P 500, analysts, call transcripts</span><div class="grow"></div>${d.fmp && d.fmp.connected ? '<span class="pill ok">Connected</span>' : '<span class="pill warn">Not connected</span>'}</div>
+          <div class="bd">${d.fmp && d.fmp.connected ? `
+            <div class="kv" style="margin-bottom:14px"><div><div class="k">Key</div><div class="v">••••${esc(d.fmp.last4)}</div></div><div><div class="k">Saved</div><div class="v">${esc((d.fmp.savedAt || '').replace('T', ' ').slice(0, 16))}</div></div><div><div class="k">Checked</div><div class="v">${esc((d.fmp.testedAt || '').replace('T', ' ').slice(0, 16) || '—')}</div></div><div></div></div>
+            ${d.fmp.plan ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${[['earnings', 'Earnings + consensus'], ['sp500', 'S&P 500 list'], ['grades', 'Analyst grades'], ['priceTarget', 'Price targets'], ['transcripts', 'Call transcripts (Ultimate)']].map(([k, l]) => `<span class="pill ${d.fmp.plan[k] ? 'ok' : 'warn'}" title="${esc(d.fmp.plan[k + 'Error'] || '')}">${d.fmp.plan[k] ? '✓' : '✗'} ${l}</span>`).join('')}</div>` : ''}
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="password" id="fmp-key" placeholder="Replace the key" autocomplete="off" style="flex:1 1 260px;max-width:360px"><button class="btn" data-act="fmp-connect">Replace</button><button class="btn" data-act="fmp-test">Check plan</button><button class="btn danger" data-act="fmp-del">Disconnect</button></div>
+            <p class="note">Transcripts downloaded while your plan includes them stay stored (Earnings → Event study downloads them), so they remain available after a downgrade. FMP data is for your own research; showing it to other people needs FMP's display licence.</p>` : `
+            <p class="muted" style="margin-top:0">Paste your FMP API key (financialmodelingprep.com → Dashboard). It is checked against FMP, then stored encrypted (AWS KMS); the browser never sees it again.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input type="password" id="fmp-key" placeholder="FMP API key" autocomplete="off" style="flex:1 1 300px;max-width:420px"><button class="btn primary" data-act="fmp-connect">Connect</button></div>
+            <p class="note">Premium: consensus / actuals, timing, S&P 500 list, analyst grades, price targets. Ultimate adds the earnings call transcripts.</p>`}
+          </div></section>
+
         <section class="panel"><div class="hd"><h2>Download 1-minute candles</h2><span class="dim" style="font-size:13px">Charts, studies, validation and paper trading</span></div>
           <div class="bd"><div class="form" style="align-items:end">
             <div class="f" style="font-size:13px;color:var(--muted)">Contracts<div class="seg">${['NQ', 'ES'].map(s => `<button data-symc="${s}" aria-pressed="${(S.dlSyms || ['NQ', 'ES']).includes(s)}">${s}</button>`).join('')}</div></div>
@@ -1918,6 +1929,9 @@ document.addEventListener('click', async e => {
       case 'alp-save': await api('/alpaca', { method: 'PUT', body: { feed: $('#alp-feed2').value } }); toast('Saved.'); vData(); break;
       case 'alp-test': el.disabled = true; await api('/alpaca/test', { method: 'POST' }); toast('Alpaca answered.'); vData(); break;
       case 'alp-del': if (!confirm('Disconnect Alpaca?')) return; await api('/alpaca', { method: 'DELETE' }); vData(); break;
+      case 'fmp-connect': { const k = $('#fmp-key').value.trim(); if (!k) return toast('Paste the FMP key.'); el.disabled = true; el.textContent = 'Checking…'; await api('/fmp', { method: 'PUT', body: { key: k } }); toast('FMP connected.'); vData(); break; }
+      case 'fmp-test': el.disabled = true; el.textContent = 'Checking…'; await api('/fmp/test', { method: 'POST' }); toast('FMP plan checked.'); vData(); break;
+      case 'fmp-del': if (!confirm('Disconnect FMP?')) return; await api('/fmp', { method: 'DELETE' }); vData(); break;
       case 'db-connect': { const k = $('#db-key').value.trim(); if (!k) return toast('Paste the key first.'); el.disabled = true; el.textContent = 'Checking…'; await api('/databento', { method: 'PUT', body: { key: k } }); toast('Databento connected.'); vData(); break; }
       case 'db-save': await api('/databento', { method: 'PUT', body: { auto: $('#db-auto').checked, autoFp: $('#db-autofp').checked, maxCost: +$('#db-cap').value } }); toast('Saved.'); vData(); break;
       case 'db-test': el.disabled = true; await api('/databento/test', { method: 'POST' }); toast('Databento answered.'); vData(); break;

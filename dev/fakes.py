@@ -443,9 +443,52 @@ def fake_fmp_get(key, path, params, timeout=40):
         return [{"symbol": k, "name": v[1]} for k, v in SEC_COS.items()]
     if path == "historical-sp500-constituent":
         return [{"date": (_dt.today() - timedelta(days=400)).isoformat(), "removedTicker": "DDD", "symbol": "XYZ"}]
+    sym = params.get("symbol")
+    if sym == "AAPL":                                  # the plan probe asks about AAPL
+        sym = "AAA"
+    if path == "grades":
+        if sym not in SEC_COS:
+            return []
+        rnd = random.Random("gr" + sym)
+        out = []
+        for k in range(120):
+            d = _dt.today() - timedelta(days=k * 17 + rnd.randint(0, 9))
+            a = rnd.choice(["upgrade", "downgrade", "maintain", "maintain"])
+            out.append({"symbol": sym, "date": d.isoformat(), "gradingCompany": rnd.choice(["Firm A", "Firm B", "Firm C"]), "previousGrade": "Hold",
+                        "newGrade": {"upgrade": "Buy", "downgrade": "Sell"}.get(a, "Hold"), "action": a})
+        return out
+    if path == "price-target-consensus":
+        return [{"symbol": sym, "targetHigh": 150, "targetLow": 90, "targetConsensus": 125, "targetMedian": 124}] if sym in SEC_COS else []
+    if path in ("earning-call-transcript-dates", "earning-call-transcript"):
+        if sym not in SEC_COS:
+            return []
+        dates = []
+        for y in range(_dt.today().year - 6, _dt.today().year + 1):
+            for qn, m in enumerate((1, 4, 7, 10), start=1):
+                d = _dt(y, m, 28)
+                while d.weekday() >= 5:
+                    d += timedelta(days=1)
+                if d < _dt.today():
+                    dates.append({"quarter": qn, "fiscalYear": y, "date": d.isoformat()})
+        if path == "earning-call-transcript-dates":
+            return dates[::-1]
+        d = next((x for x in dates if x["fiscalYear"] == int(params["year"]) and x["quarter"] == int(params["quarter"])), None)
+        if not d:
+            return []
+        rnd = random.Random(sym + d["date"])
+        mood = rnd.choice(["strong", "weak", "steady"])
+        g = {"strong": "We are raising our full-year guidance and now expect revenue at the upper end of the range.",
+             "weak": "Given softer demand we are lowering our outlook for the full year and expect headwinds to persist.",
+             "steady": "We reaffirm our full-year guidance."}[mood]
+        body = {"strong": "Demand was strong and we delivered record growth with robust margins and great momentum. ",
+                "weak": "Results were weak, with declining orders, pricing pressure and a difficult environment. ",
+                "steady": "The quarter was solid, and results were consistent with expectations. "}[mood]
+        content = ("Operator: Good afternoon and welcome.\nCEO: " + body * 3 + g + "\nCFO: " + body + g +
+                   "\nOperator: We will now begin the question-and-answer session. Our first question comes from Analyst.\n"
+                   "Analyst: Could you discuss the uncertainty around margins?\nCEO: It may vary, but we believe trends are " + ("good." if mood != "weak" else "challenging and uncertain."))
+        return [{"symbol": sym, "period": "Q%d" % d["quarter"], "year": d["fiscalYear"], "date": d["date"], "content": content}]
     if path != "earnings":
         return []
-    sym = params.get("symbol")
     if sym not in SEC_COS:
         return []
     rnd = random.Random("fmp" + sym)
