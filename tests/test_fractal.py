@@ -282,9 +282,15 @@ def test_landscape():
 
 def test_mm_history():
     import uwhales
-    st, a = call("POST", "/mmhistory/snapshot", {"sym": "QQQ"})
-    assert st == 200 and {"price", "pml", "ceiling", "floor", "pa", "pb", "ca", "cb"} <= set(a), a
-    st, b = call("POST", "/mmhistory/snapshot", {"sym": "NQ"})          # NQ records QQQ; same minute replaces the row
+    real_now = uwhales.now_ny
+    frozen = real_now().replace(second=5, microsecond=0)                # both snapshots in the same minute, whatever the clock
+    uwhales.now_ny = lambda: frozen
+    try:
+        st, a = call("POST", "/mmhistory/snapshot", {"sym": "QQQ"})
+        assert st == 200 and {"price", "pml", "ceiling", "floor", "pa", "pb", "ca", "cb"} <= set(a), a
+        st, b = call("POST", "/mmhistory/snapshot", {"sym": "NQ"})      # NQ records QQQ; same minute replaces the row
+    finally:
+        uwhales.now_ny = real_now
     st, h = call("GET", "/mmhistory", q={"sym": "QQQ", "days": "3"})
     assert st == 200 and h["days"] and len(h["days"][-1]["rows"]) == 1, h
     assert uwhales.stock_session(__import__("datetime").datetime(2026, 11, 6, 10, 0)) and not uwhales.stock_session(__import__("datetime").datetime(2026, 11, 7, 10, 0))
