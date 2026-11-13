@@ -69,3 +69,36 @@ def delete(key):
     else:
         _client().delete_object(Bucket=_bucket(), Key=key + ".json.gz")
     _cache.pop(key, None)
+
+
+def put_raw(key, data, content_type="application/octet-stream"):
+    """A file stored as is (exports): `key` is the full object name."""
+    if LOCAL:
+        path = os.path.join(LOCAL, key)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+    else:
+        _client().put_object(Bucket=_bucket(), Key=key, Body=data, ContentType=content_type)
+
+
+def get_raw(key):
+    try:
+        if LOCAL:
+            with open(os.path.join(LOCAL, key), "rb") as f:
+                return f.read()
+        return _client().get_object(Bucket=_bucket(), Key=key)["Body"].read()
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        if "NoSuchKey" in str(e) or "404" in str(e) or type(e).__name__ == "NoSuchKey":
+            return None
+        raise
+
+
+def url(key, filename, expires=3600):
+    """A time-limited download link for a raw file (None locally: the API sends the bytes instead)."""
+    if LOCAL:
+        return None
+    return _client().generate_presigned_url("get_object", Params={"Bucket": _bucket(), "Key": key,
+                                            "ResponseContentDisposition": f'attachment; filename="{filename}"'}, ExpiresIn=expires)

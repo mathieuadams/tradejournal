@@ -226,7 +226,10 @@ function enStudyShell() {
     </div></section></div>
     <aside class="col-side"><section class="panel"><div class="hd"><h2>Last study</h2></div><div class="bd" id="en-sum">${d.study ? `<div class="kv kv3"><div><div class="k">Releases</div><div class="v">${d.study.n}</div></div><div><div class="k">Tickers</div><div class="v">${d.study.tickers}</div></div><div><div class="k">Benchmark</div><div class="v">${esc(d.study.bench)}</div></div>
       <div><div class="k">From</div><div class="v">${esc(d.study.from || '—')}</div></div><div><div class="k">To</div><div class="v">${esc(d.study.to || '—')}</div></div><div><div class="k">Run</div><div class="v">${esc((d.study.at || '').slice(5, 16).replace('T', ' '))}</div></div>
-      <div><div class="k">With consensus</div><div class="v">${d.study.withEst ?? '—'}</div></div><div><div class="k">From FMP</div><div class="v">${(d.study.sources || {}).fmp ?? '—'}</div></div><div><div class="k">CSV / SEC only</div><div class="v">${(d.study.sources || {}).csv ?? 0} / ${(d.study.sources || {}).sec ?? 0}</div></div></div>` : '<div class="dim">Not run yet.</div>'}</div></section></aside></div>
+      <div><div class="k">With call transcript</div><div class="v">${d.study.withTx ?? '—'}</div></div><div><div class="k">With analyst actions</div><div class="v">${d.study.withGrades ?? '—'}</div></div><div></div>
+      <div><div class="k">With consensus</div><div class="v">${d.study.withEst ?? '—'}</div></div><div><div class="k">From FMP</div><div class="v">${(d.study.sources || {}).fmp ?? '—'}</div></div><div><div class="k">CSV / SEC only</div><div class="v">${(d.study.sources || {}).csv ?? 0} / ${(d.study.sources || {}).sec ?? 0}</div></div></div>
+      ${d.study.withTx ? `<p class="note">Call sentiment: the “Call tone”, “Call tone, Q&A”, “Call uncertainty” and “Call guidance” groups and the Signal → reaction table below; the drift model's weights; Company tab → Call tone column (click to read the call).</p>`
+        : `<p class="note loss">No call transcripts in this study${d.study.txStatus ? (d.study.txStatus.on ? (d.study.txStatus.planOk ? ` (${d.study.txStatus.failed} ticker(s) failed${(d.study.txStatus.notes || []).length ? ': ' + esc(d.study.txStatus.notes.join(' · ')) : ''})` : ': ' + esc((d.study.txStatus.notes || [])[0] || 'not in the FMP plan')) : ': the transcript box was off') : ' (this study ran before transcripts were added, or the box was off)'}.</p>`}` : '<div class="dim">Not run yet.</div>'}</div></section></aside></div>
     <div id="en-res" style="margin-top:12px"></div>`;
 }
 async function enStudyLoad() {
@@ -297,39 +300,26 @@ function enRowsSorted(rows) {
   const E = S.en, k = E.rsort;
   return rows.slice().sort((a, b) => { const x = a[k], y = b[k]; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1; return (typeof x === 'string' ? x.localeCompare(y) : x - y) * E.rdir; });
 }
-async function enReview(btn) {
-  const r = S.enStudy; if (!r) return;
+async function enDownload(kind, btn) {
+  const label = btn.textContent;
   btn.disabled = true;
   try {
-    let all = [];
-    for (let pg = 0; pg < (r.rowPages || 1); pg++) { btn.textContent = `Collecting ${pg + 1}/${r.rowPages || 1}…`; all = all.concat((await api('/fund/study/rows?page=' + pg)).rows); }
-    const rnd = v => typeof v === 'number' ? (Number.isInteger(v) ? v : +v.toPrecision(6)) : v;
-    const cols = [...new Set(all.flatMap(x => Object.keys(x)))].filter(k => k !== 'x');
-    const xk = [...new Set(all.flatMap(x => Object.keys(x.x || {})))];
-    const { rows: _, ...summary } = r;
-    const out = { kind: 'tradejournal-earnings-study', exportedAt: new Date().toISOString(), summary,
-      releases: { cols: cols.concat(xk.map(k => 'x:' + k)), data: all.map(x => cols.map(k => rnd(x[k] ?? null)).concat(xk.map(k => rnd((x.x || {})[k] ?? null)))) } };
-    const name = `earnings_study_review_${r.bench}_${(r.at || '').slice(0, 10)}.json`;
-    let blob = new Blob([JSON.stringify(out)], { type: 'application/json' }), fname = name;
-    if (window.CompressionStream) { blob = await new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob(); fname = name + '.gz'; }
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; a.click(); URL.revokeObjectURL(a.href);
-    toast(`Saved ${fname} (${(blob.size / 1048576).toFixed(1)} MB): attach it in the chat.`);
-  } finally { btn.disabled = false; btn.textContent = 'Export for review'; }
-}
-async function enCsv() {
-  const r = S.enStudy; if (!r) return;
-  let all = [];
-  for (let pg = 0; pg < (r.rowPages || 1); pg++) { toast(`Export: part ${pg + 1} of ${r.rowPages || 1}…`); all = all.concat((await api('/fund/study/rows?page=' + pg)).rows); }
-  const xk = [...new Set(all.flatMap(x => Object.keys(x.x || {})))];
-  const keys = ['sym', 'date', 'timing', 'src', 'sector', 'base', 'day0', 'qEnd', 'prevRevYoY', 'prevRevAccel', 'prevEpsYoY', 'revYoY', 'revAccel', 'revQoQ', 'rev3y', 'epsYoY', 'epsAccel', 'accruals', 'cashConv', 'quality', 'inflection', 'revDir',
-    'epsEst', 'epsAct', 'epsSurprise', 'revEst', 'revAct', 'revSurprise', 'estEpsG', 'estRevG', 'guide', 'setup',
-    'gradeNet30', 'gradeNet90', 'gradeN90', 'txDate', 'txTone', 'txTonePrep', 'txToneQA', 'txUncert', 'txNeg', 'txGuide', 'txGuideDir', 'txToneChg', 'prevTxTone', 'guideSrc',
-    'pre1', 'pre1ab', 'pre5', 'pre5ab', 'pre21', 'pre21ab', 'pre63', 'pre63ab', 'offHigh', 'sma50', 'sma200', 'vol20', 'relVol1', 'relVol5', 'relVol20', 'cmf20', 'obv20', 'ownAbs', 'ownMean', 'prevR1ab',
-    'gap', 'vol0', 'r1', 'r1ab', 'z1', 'r5', 'r5ab', 'r20', 'r20ab', 'r40', 'r40ab', 'r60', 'r60ab', 'drift5', 'drift20', 'drift40', 'drift60'];
-  const q = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
-  const lines = [keys.concat(xk).join(',')].concat(all.map(x => keys.map(k => q(x[k])).concat(xk.map(k => q((x.x || {})[k]))).join(',')));
-  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
-  a.download = `earnings_event_study_${r.bench}_${(r.at || '').slice(0, 10)}.csv`; a.click(); URL.revokeObjectURL(a.href);
+    for (let i = 0; i < 120; i++) {
+      const r = await api('/fund/study/export?kind=' + kind);
+      if (r.url || r.data) {
+        const a = document.createElement('a');
+        if (r.url) a.href = r.url;
+        else { const b = Uint8Array.from(atob(r.data), c => c.charCodeAt(0)); a.href = URL.createObjectURL(new Blob([b], { type: 'application/gzip' })); }
+        a.download = r.name; document.body.appendChild(a); a.click(); a.remove();
+        toast(kind === 'review' ? `Downloading ${r.name}: attach it in the chat.` : `Downloading ${r.name}.`);
+        return;
+      }
+      btn.textContent = 'Preparing the file…';
+      await new Promise(res => setTimeout(res, 3000));
+    }
+    toast('The export is taking long: try again in a minute.');
+  } catch (e) { toast(e.message); }
+  finally { btn.disabled = false; btn.textContent = label; }
 }
 async function enImport(mode) {
   const file = $('#en-file').files[0];
@@ -364,8 +354,8 @@ document.addEventListener('click', async e => {
       case 'imp-clear': if (!confirm('Remove the imported releases?')) return; await api('/fund/events', { method: 'DELETE' }); return vEarnings();
       case 'run': el.disabled = true; await api('/fund/study', { method: 'POST', body: { useSec: $('#en-sec').checked, years: +$('#en-years').value || 5, bench: $('#en-bench').value, transcripts: $('#en-tx').checked } }); toast('Event study started.'); S.enStudy = null; return vEarnings();
       case 'more': E.rshow = 1e9; $('#en-res').innerHTML = enResults(S.enStudy); return;
-      case 'csv': return enCsv();
-      case 'review': return enReview(el);
+      case 'csv': return enDownload('csv', el);
+      case 'review': return enDownload('review', el);
       case 'tx-close': $('#en-tx-view').innerHTML = ''; return;
       case 'uni-sp500': { el.disabled = true; toast('Loading the S&P 500 from FMP…'); const r = await api('/fund/universe', { method: 'POST', body: { source: 'sp500', removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(); }
       case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings();

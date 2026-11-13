@@ -196,9 +196,17 @@ def test_api_flow():
     st, t = call("GET", "/fund/transcript", None, {"sym": "AAA", "date": tx[0]["txDate"]})
     assert st == 200 and "question-and-answer" in t["content"] and t["scores"]["tone"] is not None and t["guideSents"]
     st, pr = call("POST", "/fmp/test", {})
-    assert pr["plan"]["transcripts"] and pr["plan"]["grades"]
+    assert pr["plan"]["transcripts"] and pr["plan"]["transcriptText"] and pr["plan"]["grades"]
     st, pg = call("GET", "/fund/study/rows", None, {"page": "0"})
-    assert st == 200 and len(pg["rows"]) == s["n"] and pg["pages"] == 1
+    assert st == 200 and len(pg["rows"]) == min(s["n"], F.ROW_PAGE)
+    assert s["withTx"] > 20 and s["withGrades"] > 20 and s["txStatus"]["planOk"]
+    import base64
+    import gzip as _gz
+    st, ex = call("GET", "/fund/study/export", None, {"kind": "review"})
+    rv = json.loads(_gz.decompress(base64.b64decode(ex["data"])))
+    assert ex["name"].endswith(".json.gz") and len(rv["releases"]["data"]) == s["n"] and "txTone" in rv["releases"]["cols"] and rv["summary"]["model"]
+    st, ex = call("GET", "/fund/study/export", None, {"kind": "csv"})
+    assert _gz.decompress(base64.b64decode(ex["data"])).decode().splitlines()[0].startswith("sym,date,timing")
     st, p = call("GET", "/fund/project", None, {"sym": "AAA"})
     assert p["priceTarget"]["upside"] is not None and "gradeNet90" in p["now"] and p["now"]["lastCall"]["tone"] is not None
     assert st == 200 and p["next"]["source"] == "FMP" and p["next"]["epsEst"] is not None and "relVol5" in p["now"], p["next"]

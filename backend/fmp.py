@@ -160,6 +160,16 @@ def probe(sub):
         except Exception as e:
             out[name] = False
             out[name + "Error"] = str(e)[:160]
+    if out.get("transcripts"):                         # the text itself, not only the list of calls
+        try:
+            ds = transcript_dates(sub, "AAPL")
+            t = transcript(sub, "AAPL", ds[-1]["year"], ds[-1]["quarter"]) if ds else None
+            out["transcriptText"] = bool(t and len(t["content"]) > 500)
+            if not out["transcriptText"]:
+                out["transcriptTextError"] = "the transcript came back empty" if ds else "no call dates parsed"
+        except Exception as e:
+            out["transcriptText"] = False
+            out["transcriptTextError"] = str(e)[:160]
     it = db.get(db.upk(sub), SK) or {}
     if it:
         it["plan"], it["testedAt"] = out, iso(now_ny())

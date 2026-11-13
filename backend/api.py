@@ -623,7 +623,7 @@ def fund_view(sub, claims, body, q):
     return {"settings": st, "rows": rows, "job": jobs.status(sub, "fund"), "alpaca": alpaca.status(sub)["connected"], "fmp": fmp.status(sub),
             "events": {"n": len(ev["events"]), "tickers": len({e["sym"] for e in ev["events"]}), "cols": ev.get("cols") or [], "at": ev.get("at"),
                        "sample": ev["events"][:5]},
-            "study": {k: sd.get(k) for k in ("at", "n", "tickers", "from", "to", "bench", "sources", "withEst")} if sd else None, "benches": F.BENCHES}
+            "study": {k: sd.get(k) for k in ("at", "n", "tickers", "from", "to", "bench", "sources", "withEst", "withTx", "withGrades", "txStatus")} if sd else None, "benches": F.BENCHES}
 
 
 @route("PUT", "/fund/settings")
@@ -690,6 +690,19 @@ def fund_universe(sub, claims, body, q):
     if body.get("source") == "sp500":
         return F.load_universe(sub, "sp500", int(body.get("years") or 10), bool(body.get("removed", True)))
     return F.save_settings(sub, {"universe": body.get("tickers") or [], "uniName": "Custom" if body.get("tickers") else ""})
+
+
+@route("GET", "/fund/study/export")
+def fund_export(sub, claims, body, q):
+    import fundamentals as F
+    kind = q.get("kind") if q.get("kind") in ("review", "csv") else "review"
+    link = F.export_link(sub, kind)
+    if link:
+        return link
+    st = jobs.status(sub, "fund") or {}
+    if st.get("status") != "running":
+        jobs.start(sub, "fund", "fundexport", {})
+    return {"pending": True}
 
 
 @route("GET", "/fund/study/rows")

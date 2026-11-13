@@ -135,6 +135,11 @@ def handler(event, ctx=None):
                 done.append(s_)
             set_status(sub, name, status="error" if bad and len(bad) == len(syms) else "done",
                        msg=f"Fundamentals updated for {len(syms) - len(bad)} of {len(syms)} ticker(s)." + (" Skipped: " + "; ".join(bad[:6]) if bad else ""))
+        elif job == "fundexport":                       # the study's downloads (review file + CSV)
+            import fundamentals
+            prog("Writing the export files…")
+            fundamentals.build_exports(sub)
+            set_status(sub, name, status="done", msg="Export files ready.")
         elif job == "fundstudy":                        # the earnings event study
             import fundamentals
             try:

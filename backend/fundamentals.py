@@ -778,7 +778,7 @@ def tx_index(sub, sym, since, fetch=True, deadline=None):
     try:
         dates = fmp.transcript_dates(sub, sym)
     except BadRequest as e:
-        if "plan" in str(e) or "402" in str(e) or "refused" in str(e):
+        if "isn't in your plan" in str(e) or "402" in str(e):
             raise NoPlan(str(e))
         raise
     have = {i["date"] for i in idx["items"]}
@@ -906,6 +906,7 @@ def build_rows(sub, opts, prog=None, deadline=None):
     rows, skipped, t_last = [], [], 0.0
     uni_set = set(uni)
     plan_ok = {"grades": True, "tx": True}
+    tx_note, tx_fail = [], [0]
     for n, s in enumerate(syms):
         if deadline and time.time() > deadline:
             raise TimeoutError("out of time")
@@ -961,10 +962,14 @@ def build_rows(sub, opts, prog=None, deadline=None):
                 txs = tx_index(sub, s, min(since, first_imp), True, deadline)
             except NoPlan as ex:
                 plan_ok["tx"] = False
+                tx_note.append(f"Transcripts not in the FMP plan: {str(ex)[:160]}")
                 skipped.append(f"Transcripts not in the FMP plan (Ultimate): {str(ex)[:100]}")
             except TimeoutError:
                 raise
             except Exception as ex:
+                tx_fail[0] += 1
+                if len(tx_note) < 5:
+                    tx_note.append(f"{s}: {str(ex)[:160]}")
                 skipped.append(f"{s} transcripts: {str(ex)[:80]}")
         else:
             txs = (store.get_json("fund/txi/" + s) or {}).get("items") or []
@@ -1013,6 +1018,7 @@ def build_rows(sub, opts, prog=None, deadline=None):
             mine.append(row)
         rows.extend(mine)
     rows.sort(key=lambda r: (r["date"], r["sym"]))
+    TX_NOTE[0] = {"on": bool(has_fmp and opts.get("transcripts", True)), "planOk": plan_ok["tx"], "failed": tx_fail[0], "notes": tx_note}
     return rows, bench_sym, skipped
 
 
@@ -1094,7 +1100,63 @@ def aggregate(rows):
     return out
 
 
-ROW_PAGE = 4000
+TX_NOTE = [None]
+ROW_PAGE = 1200                                       # an API response must stay under 6 MB
+
+EXPORT_KEYS = ["sym", "date", "timing", "src", "sector", "base", "day0", "qEnd", "prevRevYoY", "prevRevAccel", "prevEpsYoY", "revYoY", "revAccel",
+               "revQoQ", "rev3y", "epsYoY", "epsAccel", "accruals", "cashConv", "quality", "inflection", "revDir", "epsEst", "epsAct", "epsSurprise",
+               "revEst", "revAct", "revSurprise", "estEpsG", "estRevG", "guide", "guideSrc", "setup", "gradeNet30", "gradeNet90", "gradeN90",
+               "txDate", "txTone", "txTonePrep", "txToneQA", "txUncert", "txNeg", "txGuide", "txGuideDir", "txToneChg", "prevTxTone", "prevTxGuide",
+               "pre1", "pre1ab", "pre5", "pre5ab", "pre21", "pre21ab", "pre63", "pre63ab", "offHigh", "sma50", "sma200", "vol20", "relVol1", "relVol5",
+               "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab", "gap", "vol0", "r1", "r1ab", "z1", "r5", "r5ab", "r20", "r20ab", "r40",
+               "r40ab", "r60", "r60ab", "drift5", "drift20", "drift40", "drift60"]
+
+
+def _r6(v):
+    return float(f"{v:.6g}") if isinstance(v, float) else v
+
+
+def build_exports(sub, res=None, rows=None):
+    """The two downloads, written next to the study: the review file (summary + every release, columnar JSON, gzip)
+    and the CSV of every release (gzip)."""
+    import csv as _csv
+    import gzip
+    res = res or study(sub)
+    if not res:
+        raise BadRequest("Run the event study first.")
+    if rows is None:
+        rows = (store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []
+    xk = sorted({k for r in rows for k in (r.get("x") or {})})
+    cols = EXPORT_KEYS + ["x:" + k for k in xk]
+    summary = {k: v for k, v in res.items() if k != "rows"}
+    review = {"kind": "tradejournal-earnings-study", "exportedAt": iso(now_ny()), "summary": summary,
+              "releases": {"cols": cols, "data": [[_r6(r.get(k)) for k in EXPORT_KEYS] + [_r6((r.get("x") or {}).get(k)) for k in xk] for r in rows]}}
+    store.put_raw(f"fund/u/{sub}/export/review.json.gz", gzip.compress(json.dumps(review, separators=(",", ":"), default=str).encode()), "application/gzip")
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(cols)
+    for r in review["releases"]["data"]:
+        w.writerow(["" if v is None else v for v in r])
+    store.put_raw(f"fund/u/{sub}/export/releases.csv.gz", gzip.compress(buf.getvalue().encode()), "application/gzip")
+    store.put_json(f"fund/u/{sub}/export/meta", {"studyAt": res.get("at"), "at": iso(now_ny()), "n": len(rows)})
+
+
+def export_link(sub, kind):
+    """The download link of the review file or the CSV; None while it's being written (a job builds it)."""
+    res = study(sub)
+    if not res:
+        raise BadRequest("Run the event study first.")
+    meta = store.get_json(f"fund/u/{sub}/export/meta") or {}
+    if meta.get("studyAt") != res.get("at"):
+        return None
+    day = (res.get("at") or "")[:10]
+    key, name = {"review": ("review.json.gz", f"earnings_study_review_{res.get('bench')}_{day}.json.gz"),
+                 "csv": ("releases.csv.gz", f"earnings_study_releases_{res.get('bench')}_{day}.csv.gz")}[kind]
+    u = store.url(f"fund/u/{sub}/export/{key}", name)
+    if u:
+        return {"url": u, "name": name}
+    import base64
+    return {"name": name, "data": base64.b64encode(store.get_raw(f"fund/u/{sub}/export/{key}") or b"").decode()}
 
 
 def run_study(sub, opts, prog=None, deadline=None):
@@ -1115,7 +1177,14 @@ def run_study(sub, opts, prog=None, deadline=None):
            "withEst": sum(1 for r in rows if r.get("epsSurprise") is not None),
            "outcomes": OUTCOMES, "skipped": skipped[:60], "nSkipped": len(skipped), **agg, "model": mdl,
            "rows": rows[-300:][::-1], "rowPages": max(1, math.ceil(len(rows) / ROW_PAGE))}
+    res["withTx"] = sum(1 for r in rows if r.get("txTone") is not None)
+    res["txStatus"] = TX_NOTE[0]
+    res["withGrades"] = sum(1 for r in rows if r.get("gradeN90"))
     store.put_json(f"fund/u/{sub}/study", res)
+    try:
+        build_exports(sub, res, rows)
+    except Exception as e:                            # the study stands without its downloads (rebuilt on request)
+        print("exports failed", e)
     return res
 
 
@@ -1124,7 +1193,7 @@ def study(sub):
 
 
 def study_rows(sub, page=0):
-    r = store.get_json(f"fund/u/{sub}/study_rows") or {"rows": []}
+    r = store.get_json(f"fund/u/{sub}/study_rows", max_age=600) or {"rows": []}
     rows = r["rows"]
     return {"page": page, "pages": max(1, math.ceil(len(rows) / ROW_PAGE)), "rows": rows[page * ROW_PAGE:(page + 1) * ROW_PAGE]}
 
