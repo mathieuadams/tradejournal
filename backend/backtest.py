@@ -198,11 +198,15 @@ def walk(P, off, short, n, stop, trail, target, max_days=None, at_open=False):
         return None
     e = 1 + P[off + 1] / 1e4 if at_open else 1.0
     se = (P[off + 5] if P[off + 5] != MISSING else None) if at_open else 0
-    best, last = 1.0, None
+    best, last, end = 1.0, None, "time"
     for j in range(0 if at_open else 1, n + 1):
         b = off + j * W
         dd = P[b]
-        if dd == MISSING or (max_days is not None and dd > max_days):
+        if dd == MISSING:
+            end = "data"
+            break
+        if max_days is not None and dd > max_days:
+            end = "expiry"
             break
         o, h, l, c = ((1 + P[b + 1] / 1e4) / e, (1 + P[b + 2] / 1e4) / e, (1 + P[b + 3] / 1e4) / e, (1 + P[b + 4] / 1e4) / e)
         if j == 0:                                     # entered at this open; SPY's day-0 close is 0 by definition
@@ -227,8 +231,8 @@ def walk(P, off, short, n, stop, trail, target, max_days=None, at_open=False):
             if target and l <= 1 - target:
                 return j, min(o, 1 - target), dd, s, "target"
             best = min(best, l)
-        last = (j, c, dd, s, "time" if j == n else "expiry" if max_days is not None else "data")
-    return last
+        last = (j, c, dd, s, "time")
+    return last if last is None or end == "time" else last[:4] + (end,)
 
 
 R_FREE = 0.04
@@ -341,11 +345,15 @@ def needs_paths(c):
 
 def context(rows):
     """What every setting shares: the trailing percentiles of the score and of the model's prediction."""
-    return {"score": trailing_pct(rows, "postScore"), "pred": trailing_pct(rows, "oosO2c")}
+    last = max((r["day0"] for r in rows if r.get("day0")), default=None)
+    return {"score": trailing_pct(rows, "postScore"), "pred": trailing_pct(rows, "oosO2c"),
+            "openAfter": (_d(last) - timedelta(days=7)).isoformat() if last else None}
 
 
-def trades_for(rows, ctx, c, only=None, paths=None):
-    """The trades of the enabled legs (or of one leg, `only`), oldest first. `paths`: load_paths(), for the exits."""
+def trades_for(rows, ctx, c, only=None, paths=None, keep_open=False):
+    """The trades of the enabled legs (or of one leg, `only`), oldest first. `paths`: load_paths(), for the exits.
+    A position whose planned exit is after the last price (still open today) is marked "open" and left out unless
+    `keep_open`: it isn't a result yet."""
     stake, legs = c["stake"], c["legs"]
     base_cost, borrow_y = c["costBps"] / 1e4, c["borrowPct"] / 100
     score_p, pred_p = ctx["score"], ctx["pred"]
@@ -399,11 +407,11 @@ def trades_for(rows, ctx, c, only=None, paths=None):
                     ok = not L["strong"] or ((_f(r.get("spyVs200")) or 0) > 0 and (_f(r.get("spy63")) or 0) > 0)
                     why = f"score bottom {sp * 100:.0f}%"
                 if ok:
-                    hold_trade(k, L, r, d0, why, add, paths, c, out)
-    return out
+                    hold_trade(k, L, r, d0, why, add, paths, c, out, ctx.get("openAfter"))
+    return out if keep_open else [t for t in out if not t.get("open")]
 
 
-def hold_trade(k, L, r, d0, why, add, paths, c, out):
+def hold_trade(k, L, r, d0, why, add, paths, c, out, open_after=None):
     """C or D: from the day-0 close to the first exit (stop, trailing stop, target, the last session; an option's expiry)."""
     n, short = L["hold"], k == "D"
     side = "short" if short else "long"
@@ -427,6 +435,7 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out):
         return
     j, fill, dd, s, reason = w
     exit_d = (_d(d0) + timedelta(days=dd)).isoformat()
+    still_open = reason == "data" and open_after is not None and exit_d >= open_after   # the data ends: today, not an exit
     raw, spy = fill - 1, (s / 1e4 if s is not None else None)
     tag = (" · in at the open" if at_open else "") + ("" if reason in ("time", "data") else f" · {reason}")
     if not opt:
@@ -440,7 +449,10 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out):
             b = _f(r.get("beta"))
             ret = raw - (b if b is not None else 1.0) * spy
         cost = base_cost * (2 if L["hedge"] != "none" else 1)
+        n0 = len(out)
         add(k, side, ret, exit_d, dd, cost, why + tag, raw - spy if spy is not None else None)
+        if still_open and len(out) > n0:
+            out[-1]["open"] = True
         return
     vol, call = opt_vol(r, c["ivMult"]), not short
     K = 1 + L["mny"] if call else 1 - L["mny"]
@@ -455,6 +467,8 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out):
          "pnl": round(c["stake"] * (ret - spread), 2), "why": f"{why} · {lab} at {vol * 100:.0f}% vol" + tag}
     if spy is not None:                                # beyond the market: minus what the option's delta made on SPY's move
         t["alpha"] = round(c["stake"] * (ret - delta / p0 * spy - spread), 2)
+    if still_open:
+        t["open"] = True
     out.append(t)
 
 
@@ -472,7 +486,11 @@ def split_date(rows):
 def run(rows, cfg, ctx=None, paths=None):
     c = clean(cfg)
     ctx = ctx or context(rows)
-    out = summarize(trades_for(rows, ctx, c, paths=paths), c)
+    allt = trades_for(rows, ctx, c, paths=paths, keep_open=True)
+    opens = [t for t in allt if t.get("open")]
+    out = summarize([t for t in allt if not t.get("open")], c)
+    out["open"] = {"n": len(opens), "mtm": round(sum(t["pnl"] for t in opens), 2),
+                   "trades": sorted(opens, key=lambda t: t["entry"])}
     out["alpha"] = _stats(out["_all"], "alpha")
     sd = split_date(rows)
     if sd:

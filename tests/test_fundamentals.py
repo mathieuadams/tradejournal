@@ -462,6 +462,8 @@ def test_exits_and_option():
     assert why == "stop" and abs(fill - 1.05) < 1e-9 and j == 2
     j, fill, dd, s, why = B.walk(P, 0, True, 5, 0, 0, 0.04)                  # short, target 4%: low 94 → 96 (open 98)
     assert why == "target" and abs(fill - 0.96) < 1e-9
+    assert B.walk(P, 0, False, 9, 0, 0, 0)[4] == "data"                      # the prices end before the planned exit
+    assert B.walk(P, 0, False, 9, 0, 0, 0, max_days=60)[4] == "data"
     j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0, max_days=3)        # an option expiring after 3 days
     assert why == "expiry" and dd == 3
     c, d = B.bs(1.0, 1.0, 60 / 365, 0.3, True)                               # an ATM 2-month call ≈ 5% of the stock, delta ≈ 0.55
