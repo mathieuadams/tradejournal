@@ -8,6 +8,7 @@ const big = v => { if (v == null) return '—'; const a = Math.abs(v), s = v < 0
 const QCOL = { strong: 'gain', weak: 'loss', ok: '' };
 const tstat = t => t == null ? '—' : `<span class="${Math.abs(t) >= 2 ? (t > 0 ? 'gain' : 'loss') : 'dim'}">${t.toFixed(1)}</span>`;
 
+const BM = () => EN_U[S.enU || 'spy'].bench;              // the universe's benchmark (SPY / QQQ)
 const EN_U = { spy: { title: 'Earnings — SPY universe', idx: 'S&P 500', src: 'sp500', bench: 'SPY' }, qqq: { title: 'Earnings — QQQ universe', idx: 'Nasdaq-100', src: 'nasdaq100', bench: 'QQQ' } };
 async function vEarnings(u = 'spy') {
   const E = S.en;
@@ -243,7 +244,7 @@ const BT_CSET = [['rs', 'the stock beat SPY over the month before'], ['cash', 'c
   ['quiet', 'no heavy volume the week before (≤1.2× normal)']];
 const BT_DSET = [['calm', 'the market up <4% over 3 months'], ['gapDown', 'gapped down ≥3% at the open'], ['miss', 'EPS missed by >2%'], ['notRaised', 'guidance not raised on the call']];
 const BT_CF = Object.fromEntries(BT_CSET.map(([k]) => [k, false])), BT_DF = Object.fromEntries(BT_DSET.map(([k]) => [k, false]));
-const BT_EXIT = { entry: 'close', stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
+const BT_EXIT = { entry: 'close', d0stop: false, stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
 S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1, ivMult: 1, optSpreadPct: 5,
   legs: { A: { on: true, cut: 0.2 }, B: { on: true, band: 0.2, gap: 0.02 },
     C: { on: true, band: 0.2, hold: 40, hedge: 'spy', weak: true, heavy: false, far: false, ...BT_CF, ...BT_EXIT }, D: { on: true, band: 0.2, hold: 40, hedge: 'spy', strong: true, ...BT_DF, ...BT_EXIT } } };
@@ -260,10 +261,11 @@ function enBtShell() {
     <label class="f">Stop${sel(leg, 'stop', pcs([0, 0.05, 0.1, 0.15, 0.2, 0.25]))}</label>
     <label class="f">Trailing stop${sel(leg, 'trail', pcs([0, 0.05, 0.1, 0.15, 0.2, 0.25]))}</label>
     <label class="f">Profit target${sel(leg, 'target', pcs([0, 0.1, 0.2, 0.3, 0.5]))}</label>
+    <label class="f" title="Out at the close of the first session after day 0 that closes ${leg === 'C' ? 'below day 0\u2019s low' : 'above day 0\u2019s high'}">Day-0 candle stop${sel(leg, 'd0stop', [[false, 'Off'], [true, leg === 'C' ? 'Close below day-0 low' : 'Close above day-0 high']])}</label>
     <label class="f">Trade${sel(leg, 'inst', [['stock', 'The stock'], ['option', leg === 'C' ? 'Option: a call' : 'Option: a put']])}</label>
     ${L[leg].inst === 'option' ? `<label class="f">Expiry${sel(leg, 'dte', [[30, '30 days'], [60, '60 days'], [90, '90 days']])}</label>
     <label class="f">Strike${sel(leg, 'mny', [[-0.05, '5% in the money'], [0, 'At the money'], [0.05, '5% out of the money'], [0.1, '10% out of the money']])}</label>` : ''}</div>`;
-  const hedge = leg => `<label class="f">Hedge${sel(leg, 'hedge', [['none', 'None'], ['spy', 'SPY 1:1'], ['beta', 'Beta × SPY']])}</label>`;
+  const hedge = leg => `<label class="f">Hedge${sel(leg, 'hedge', [['none', 'None'], ['spy', BM() + ' 1:1'], ['beta', 'Beta × ' + BM()]])}</label>`;
   const box = (leg, title, desc, body) => `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px"><label class="check"><b>${ck(leg, 'on')} ${leg} · ${title}</b></label>
     <div class="note" style="margin:4px 0 8px 24px">${desc}</div><div style="margin-left:24px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">${body}</div></div>`;
   return `<section class="panel"><div class="hd"><h2>Earnings strategy</h2><span class="dim" style="font-size:13px">the event study's rules, traded with a fixed stake per trade over all the study's releases (10 years): the last 5 years are the test period</span></div>
@@ -275,7 +277,7 @@ function enBtShell() {
         <label class="check">${ck('C', 'heavy')} only when day 0 was up >2% on heavy volume (≥2.5× normal)</label>
         <label class="check">${ck('C', 'far')} only when the stock is >25% below its 52-week high</label>
         <div class="dim" style="margin-top:6px;font-size:12px">Setup filters (from the real-option review — the optimizer tests them on all the years):</div>
-        ${BT_CSET.map(([k, t]) => `<label class="check">${ck('C', k)} ${t}</label>`).join('')}</div>`)}
+        ${BT_CSET.map(([k, t]) => `<label class="check">${ck('C', k)} ${t.replace('SPY', BM())}</label>`).join('')}</div>`)}
       ${box('D', 'Post-release short', 'Score in the bottom part. Short at the day-0 close or open.', band('D', 'Score bottom') + hold('D') + hedge('D') + exits('D') + `<label class="check" style="flex-basis:100%">${ck('D', 'strong')} only when the market is strong going in (above its 200-day average and up over 3 months)</label>
         <div style="flex-basis:100%"><div class="dim" style="font-size:12px">Setup filters:</div>${BT_DSET.map(([k, t]) => `<label class="check">${ck('D', k)} ${t}</label>`).join('')}</div>`)}
     </div>
@@ -286,7 +288,7 @@ function enBtShell() {
       <label class="f" title="The option's volatility = the stock's 20-day volatility × this">Option vol. ×<input type="number" min="0.3" max="3" step="0.1" data-enbtv="ivMult" value="${c.ivMult}"></label>
       <label class="f" title="Bid-ask, round trip, in % of the premium">Option spread (%)<input type="number" min="0" max="50" step="1" data-enbtv="optSpreadPct" value="${c.optSpreadPct}"></label>
       <button class="btn primary" data-en="bt-run">Run backtest</button></div>
-    <p class="note">No look-ahead: the score uses signals ranked against earlier releases, the after-the-call prediction is the walk-forward one, and the top / bottom parts are judged against the previous 365 days. A and B are day trades, unhedged; for C and D a hedge is a second trade, and its cost is counted too. “Beyond the market” = the same trades measured against SPY: what the earnings rules added, not the market's own move.
+    <p class="note">No look-ahead: the score uses signals ranked against earlier releases, the after-the-call prediction is the walk-forward one, and the top / bottom parts are judged against the previous 365 days. A and B are day trades, unhedged; for C and D a hedge is a second trade, and its cost is counted too. “Beyond the market” = the same trades measured against ${BM()}: what the earnings rules added, not the market's own move.
       Exits (C, D) use the stock's daily bars: a stop is filled at its price, or at the open on a gap through it; on a day that touches the stop and the target, the stop counts. Hold = the longest the trade stays open.
       Options: no historical option quotes here — the call / put is <b>priced</b> with Black-Scholes at the stock's 20-day volatility × the multiplier, bought at the day-0 close for the stake and sold when the stock exit triggers (or at expiry). It shows leverage and time decay, not real fills; the hedge doesn't apply.</p></div></section>
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">like Research: every setting of each leg, ranked on the first 5 years (train) only; the last 5 years (test) show whether it holds</span><div class="grow"></div>
@@ -300,6 +302,14 @@ async function enRealLoad() {
   const el = $('#en-real'); if (!el) return;
   try { const r = await api('/fund/backtest/real'); S.enReal = r; el.innerHTML = enRealHtml(r); if (r.job && r.job.status === 'running' && r.job.job === 'fundreal') setTimeout(enRealLoad, 4000); }
   catch (e) { el.innerHTML = `<div class="bd loss">${esc(e.message)}</div>`; }
+}
+function enD0Html(d, money) {                        // closes beyond the day-0 candle: winners vs losers
+  if (!d) return '';
+  const pc = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+  const row = (lab, g) => `<tr><td>${lab}</td><td class="r">${g.n}</td><td class="r"><b>${g.hit}</b> (${pc(g.hit, g.n)})</td><td class="r ${cls(g.hitReal)}">${money(g.hitReal)}</td><td class="r ${cls(g.hitRule)}">${money(g.hitRule)}</td><td class="r ${cls(g.real)}">${money(g.real)}</td><td class="r ${cls(g.withRule)}"><b>${money(g.withRule)}</b></td></tr>`;
+  return `<div class="hd" style="margin-top:8px"><h2 style="font-size:14px">Closed beyond the day-0 candle</h2><span class="dim" style="font-size:12px">a close below day 0's low (puts: above its high) on a later session, before the option was sold — sold that day at the bid instead</span></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th class="r">Trades</th><th class="r">Closed beyond it</th><th class="r">Those trades: real</th><th class="r">Sold that day</th><th class="r">All: real</th><th class="r">All: with the rule</th></tr></thead><tbody>
+    ${Object.entries(d).map(([leg, x]) => row(`${leg} · winners`, x.win) + row(`${leg} · losers`, x.loss) + row(`<b>${leg} · all</b>`, x.all)).join('')}</tbody></table></div>`;
 }
 function enOcc(o) {                                   // KLAC260320P00290000 → KLAC Put $290 · 20 Mar 26
   const m = /^([A-Z.]+?)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(o || ''); if (!m) return o || '';
@@ -321,6 +331,7 @@ function enRealHtml(r) {
       ${miss ? `<br>Not priced: ${miss}.` : ''}</div></div>
     <div class="tbl-wrap" style="margin-top:8px"><table class="tbl">${head}<tbody>${row('All', v.all)}${row(BT_LEG.C, v.legs.C)}${row(BT_LEG.D, v.legs.D)}</tbody></table></div>
     <div class="tbl-wrap" style="margin-top:8px"><table class="tbl">${head.replace('<th></th>', '<th>Year (exit)</th>')}<tbody>${v.years.map(y => row(y.year, y)).join('')}</tbody></table></div>
+    ${enD0Html(v.d0, money)}
     <div class="hd" style="margin-top:8px"><h2 style="font-size:14px">The 20 largest (real)</h2><div class="grow"></div><button class="btn sm" data-en="real-csv">Export the priced trades (CSV)</button></div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Entry</th><th>Exit</th><th>Contract</th><th class="r">Bought</th><th class="r">Sold</th><th class="r">IV</th><th class="r">Stock</th><th class="r">Model</th><th class="r">Real</th><th>Exit priced</th></tr></thead><tbody>
       ${v.top.map(x => `<tr><td>${x.leg}</td><td>${esc(x.sym)}</td><td class="mono">${esc(x.entry)}</td><td class="mono" title="${x.plannedExit && x.plannedExit !== x.exit ? 'planned exit ' + esc(x.plannedExit) : ''}">${esc(x.exit)}</td><td title="${esc(x.occ)}">${esc(enOcc(x.occ))}</td><td class="r">${x.buy.toFixed(2)}</td><td class="r">${x.sell.toFixed(2)}</td>
@@ -333,12 +344,12 @@ function enOptSetting(leg, p) {
   const pc = v => (v * 100).toFixed(0) + '%';
   if (leg === 'A') return `model top ${pc(p.cut)}`;
   if (leg === 'B') return `score bottom ${pc(p.band)}, gap > +${pc(p.gap)}`;
-  const SH = { rs: 'beat SPY 1m', cash: 'cash > earnings', raised: 'guidance raised', mktUp: 'market up 3m', noQ4: 'no Jan–Apr', noWeakSec: 'no weak sectors', quiet: 'no heavy volume',
+  const SH = { rs: 'beat ' + BM() + ' 1m', cash: 'cash > earnings', raised: 'guidance raised', mktUp: 'market up 3m', noQ4: 'no Jan–Apr', noWeakSec: 'no weak sectors', quiet: 'no heavy volume',
     calm: 'calm market', gapDown: 'gap down', miss: 'EPS miss', notRaised: 'guidance not raised' };
   const f = (leg === 'C' ? [p.weak && 'weak market', p.heavy && 'heavy-volume up day', p.far && '>25% below high'] : [p.strong && 'strong market'])
     .concat((leg === 'C' ? BT_CSET : BT_DSET).map(([k]) => p[k] && SH[k])).filter(Boolean);
-  const x = [p.stop && `stop ${pc(p.stop)}`, p.trail && `trailing ${pc(p.trail)}`, p.target && `target ${pc(p.target)}`].filter(Boolean);
-  const o = p.inst === 'option' ? ` · ${leg === 'C' ? 'call' : 'put'} ${p.dte}d ${p.mny ? pc(Math.abs(p.mny)) + (p.mny > 0 ? ' OTM' : ' ITM') : 'ATM'}` : ` · hedge ${p.hedge}`;
+  const x = [p.d0stop && (leg === 'C' ? 'close < day-0 low' : 'close > day-0 high'), p.stop && `stop ${pc(p.stop)}`, p.trail && `trailing ${pc(p.trail)}`, p.target && `target ${pc(p.target)}`].filter(Boolean);
+  const o = p.inst === 'option' ? ` · ${leg === 'C' ? 'call' : 'put'} ${p.dte}d ${p.mny ? pc(Math.abs(p.mny)) + (p.mny > 0 ? ' OTM' : ' ITM') : 'ATM'}` : ` · hedge ${{ none: 'none', spy: BM() + ' 1:1', beta: 'beta × ' + BM() }[p.hedge] || p.hedge}`;
   return `score ${leg === 'C' ? 'top' : 'bottom'} ${pc(p.band)}${p.entry === 'open' ? ' · in at the open' : ''} · hold ≤ ${p.hold}${x.length ? ' · ' + x.join(', ') : ''}${o}${f.length ? ' · ' + f.join(', ') : ''}`;
 }
 async function enOptLoad() {
@@ -356,7 +367,7 @@ function enOptHtml(r) {
       <button class="btn" data-en="opt-best" style="margin-top:8px">Use the best setting of each leg</button></div>
     ${['A', 'B', 'C', 'C4', 'C2', 'C3', 'D', 'D4', 'D2', 'D3'].filter(leg => o.legs[leg]).map(leg => `<div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>${BT_LEG[leg]}</th><th class="r">Train trades</th><th class="r">Train P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th class="r">Test trades</th><th class="r">Test P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th></th></tr></thead><tbody>
       ${(o.legs[leg] || []).slice(0, 6).map((x, i) => `<tr><td>${esc(enOptSetting(leg[0], x.p))}</td>${cell(x.train, x.trainX)}${cell(x.test, x.testX)}<td><button class="btn sm" data-enoptuse="${leg}.${i}">Use</button></td></tr>`).join('')}</tbody></table></div>`).join('')}
-    <div class="note" style="padding:8px 16px 14px">Beyond mkt = the same trades measured against SPY. In a rising market an unhedged long wins on the market alone: compare the two columns, and trust the test period.</div>`;
+    <div class="note" style="padding:8px 16px 14px">Beyond mkt = the same trades measured against ${BM()}. In a rising market an unhedged long wins on the market alone: compare the two columns, and trust the test period.</div>`;
 }
 function enBtEquity(eq) {
   if (!eq || eq.length < 2) return '';
@@ -631,6 +642,6 @@ document.addEventListener('change', e => { if (e.target.id === 'en-day') { S.en.
 
 document.addEventListener('change', e => {
   const t = e.target, c = S.en.bt;
-  if (t.dataset.enleg) { const [leg, k] = t.dataset.enleg.split('.'); c.legs[leg][k] = t.type === 'checkbox' ? t.checked : (['cut', 'band', 'gap', 'hold', 'stop', 'trail', 'target', 'dte', 'mny'].includes(k) ? +t.value : t.value); if (k === 'inst') enBody(); }
+  if (t.dataset.enleg) { const [leg, k] = t.dataset.enleg.split('.'); c.legs[leg][k] = t.type === 'checkbox' ? t.checked : k === 'd0stop' ? t.value === 'true' : (['cut', 'band', 'gap', 'hold', 'stop', 'trail', 'target', 'dte', 'mny'].includes(k) ? +t.value : t.value); if (k === 'inst') enBody(); }
   else if (t.dataset.enbtv) { const k = t.dataset.enbtv; c[k] = ['stake', 'costBps', 'borrowPct', 'ivMult', 'optSpreadPct'].includes(k) ? +t.value : t.value; }
 });

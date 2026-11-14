@@ -19,6 +19,7 @@ Setup filters (toggles; from the real-option review, Nov 2026 — check them on 
   D  calm: SPY up < 4% over 3 months · gapDown: gapped down ≥ 3% · miss: EPS missed by > 2% · notRaised: guidance not
      raised on the call
 Entry for C and D: the day-0 close (default) or the day-0 open (`entry`; then day 0's own range counts for the stops).
+Day-0 stop (`d0stop`): out at the close of the first session that closes below day 0's low (D: above its high).
 Exits for C and D (on the stock's daily bars after day 0, from the study's price files): a stop `stop` below the entry,
 a trailing stop `trail` below the best price since the entry (above, for a short), a profit target `target`; whichever
 comes first, else the close of the last session. A stop is filled at the stop price, or at the open when the stock gaps
@@ -82,10 +83,10 @@ LEG_DEFAULT = {"A": {"on": True, "cut": 0.2},
                "B": {"on": True, "band": 0.2, "gap": 0.02},
                "C": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "weak": True, "heavy": False, "far": False,
                      "rs": False, "cash": False, "raised": False, "mktUp": False, "noQ4": False, "noWeakSec": False, "quiet": False,
-                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "inst": "stock", "dte": 60, "mny": 0.0},
+                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "d0stop": False, "inst": "stock", "dte": 60, "mny": 0.0},
                "D": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "strong": True,
                      "calm": False, "gapDown": False, "miss": False, "notRaised": False,
-                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "inst": "stock", "dte": 60, "mny": 0.0}}
+                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "d0stop": False, "inst": "stock", "dte": 60, "mny": 0.0}}
 DEFAULT = {"stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "ivMult": 1.0, "optSpreadPct": 5.0, "from": None, "to": None}
 HOLDS = (5, 20, 40, 60)
 HEDGES = ("none", "spy", "beta")
@@ -128,6 +129,7 @@ def clean(cfg):
             for f in ("stop", "trail", "target"):
                 leg[f] = max(0.0, min(0.9, float(leg.get(f) or 0)))
             leg["inst"] = "option" if leg.get("inst") == "option" else "stock"
+            leg["d0stop"] = bool(leg.get("d0stop"))
             leg["entry"] = "open" if leg.get("entry") == "open" else "close"
             for f in (C_FILTERS if k == "C" else D_FILTERS):
                 leg[f] = bool(leg.get(f))
@@ -201,14 +203,16 @@ def path_key(r):
     return f"{r['sym']}|{r['day0']}"
 
 
-def walk(P, off, short, n, stop, trail, target, max_days=None, at_open=False):
+def walk(P, off, short, n, stop, trail, target, max_days=None, at_open=False, d0=False):
     """The exit of one position from its path: (session index, fill as a multiple of the ENTRY price, calendar days, bench
     move since the entry in bp or None, reason). Entry: the day-0 close, or the day-0 open (`at_open`: day 0's range then
     counts too). `n`: the sessions after day 0 (hold n = the close n-1 sessions after day 0, like the study's t<n>).
+    `d0`: out at the close of the first session after day 0 that closes below day 0's low (a short: above its high).
     None without data."""
     if P[off] == MISSING:
         return None
     e = 1 + P[off + 1] / 1e4 if at_open else 1.0
+    lo0, hi0 = (1 + P[off + 3] / 1e4) / e, (1 + P[off + 2] / 1e4) / e
     se = (P[off + 5] if P[off + 5] != MISSING else None) if at_open else 0
     best, last, end = 1.0, None, "time"
     for j in range(0 if at_open else 1, n + 1):
@@ -233,6 +237,8 @@ def walk(P, off, short, n, stop, trail, target, max_days=None, at_open=False):
                 return j, min(o, lvl), dd, s, why
             if target and h >= 1 + target:
                 return j, max(o, 1 + target), dd, s, "target"
+            if d0 and j >= 1 and c < lo0:
+                return j, c, dd, s, "closed below the day-0 low"
             best = max(best, h)
         else:
             lvl, why = (1 + stop, "stop") if stop else (None, None)
@@ -242,6 +248,8 @@ def walk(P, off, short, n, stop, trail, target, max_days=None, at_open=False):
                 return j, max(o, lvl), dd, s, why
             if target and l <= 1 - target:
                 return j, min(o, 1 - target), dd, s, "target"
+            if d0 and j >= 1 and c > hi0:
+                return j, c, dd, s, "closed above the day-0 high"
             best = min(best, l)
         last = (j, c, dd, s, "time")
     return last if last is None or end == "time" else last[:4] + (end,)
@@ -351,7 +359,7 @@ def build_paths(sub, rows, prog=None):
 
 
 def needs_paths(c):
-    return any(c["legs"][k]["on"] and (c["legs"][k]["stop"] or c["legs"][k]["trail"] or c["legs"][k]["target"] or
+    return any(c["legs"][k]["on"] and (c["legs"][k]["stop"] or c["legs"][k]["trail"] or c["legs"][k]["target"] or c["legs"][k]["d0stop"] or
                                        c["legs"][k]["inst"] == "option" or c["legs"][k]["hold"] == 60 or c["legs"][k]["entry"] == "open") for k in "CD")
 
 
@@ -466,7 +474,7 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out, open_after=None):
     side = "short" if short else "long"
     base_cost = c["costBps"] / 1e4
     at_open = L["entry"] == "open"
-    rules = L["stop"] or L["trail"] or L["target"] or L["inst"] == "option" or n == 60 or at_open
+    rules = L["stop"] or L["trail"] or L["target"] or L["d0stop"] or L["inst"] == "option" or n == 60 or at_open
     off = paths[0].get(path_key(r)) if paths else None
     if off is None:
         if rules:                                      # needs the daily path, and this release has none
@@ -479,7 +487,7 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out, open_after=None):
         return
     P = paths[1]
     opt = L["inst"] == "option"
-    w = walk(P, off, short, max(1, n - 1), L["stop"], L["trail"], L["target"], L["dte"] if opt else None, at_open)
+    w = walk(P, off, short, max(1, n - 1), L["stop"], L["trail"], L["target"], L["dte"] if opt else None, at_open, L["d0stop"])
     if not w:
         return
     j, fill, dd, s, reason = w
@@ -627,7 +635,7 @@ GRID = {                                              # stage 1: the entries (ex
           "far": [False, True]},
     "D": {"band": [0.1, 0.2, 0.3], "hold": [5, 20, 40], "hedge": ["none", "spy", "beta"], "strong": [False, True]},
 }
-EXIT_GRID = {"entry": ["close", "open"], "hold": [20, 40, 60], "stop": [0.0, 0.05, 0.1, 0.15, 0.2], "trail": [0.0, 0.05, 0.1, 0.15, 0.2],
+EXIT_GRID = {"entry": ["close", "open"], "d0stop": [False, True], "hold": [20, 40, 60], "stop": [0.0, 0.05, 0.1, 0.15, 0.2], "trail": [0.0, 0.05, 0.1, 0.15, 0.2],
              "target": [0.0, 0.1, 0.2, 0.3]}            # stage 2: the exits, on stage 1's best entry
 OPT_GRID = {"dte": [30, 60, 90], "mny": [-0.05, 0.0, 0.05]}   # stage 3: the option, on stage 2's best exits
 STAGES = {1: "entry", 4: "setup filters", 2: "exits", 3: "option"}    # run in this order

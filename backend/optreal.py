@@ -22,7 +22,7 @@ import store
 from util import BadRequest, Unavailable, iso, now_ny
 
 START = "2022-01-01"                                  # the oldest option data Unusual Whales has
-V = 3                                                 # 3: as-traded prices (splits); an expiry that outlives the planned exit
+V = 4                                                 # 4: + the day-0 candle check; 3: as-traded prices, an expiry that outlives the exit
 MIN_PREMIUM = 0.05                                    # an entry under 5 cents isn't a real fill
 KEY = "{pre}/optreal"
 
@@ -126,7 +126,7 @@ def history(tok, occ):
 
 # ---------------------------------------------------------------- one trade
 
-def price_trade(tok, t, L, close_px, close_on, adj_close):
+def price_trade(tok, t, L, close_px, close_on, adj_close, bars=None):
     """The real result of one C / D trade as an option. `close_px`: the stock's day-0 close (or open, for an entry at the
     open), `adj_close`: its day-0 close, `close_on(day)`: its close on a day (for an expiry before the exit) — all from
     split-ADJUSTED bars; the contract's own history gives the price as it traded then, and the strike is re-picked if a
@@ -184,10 +184,30 @@ def price_trade(tok, t, L, close_px, close_on, adj_close):
         if sell is None:
             return {"err": "no exit price", "occ": occ}
     vol_model = backtest.opt_vol({"vol20": t.get("vol20")}, 1.0) if t.get("vol20") else None
-    return {"occ": occ, "expiry": ex, "strike": k, "buy": round(buy, 4), "sell": round(sell, 4), "mid0": round(mid0, 4), "mid1": round(smid, 4),
+    d0x = d0_check(t, call, bars, h, xd, buy) if bars else None
+    return {**(d0x or {}), "occ": occ, "expiry": ex, "strike": k, "buy": round(buy, 4), "sell": round(sell, 4), "mid0": round(mid0, 4), "mid1": round(smid, 4),
             "ret": sell / buy - 1, "retMid": smid / mid0 - 1 if mid0 else None, "iv": e.get("implied_volatility"), "volModel": vol_model,
             "spread": (ask0 - bid0) / ((ask0 + bid0) / 2) if bid0 is not None and ask0 and ask0 + bid0 > 0 else None,
             "exitDay": xd, "how": how}
+
+
+def d0_check(t, call, bars, h, last_day, buy):
+    """Did the stock CLOSE below the day-0 candle's low (a put: above its high) on a session after day 0, before the
+    option was sold / expired? Then: that day, and the option sold at that day's bid (the last quote before, if none)."""
+    b0 = bars.get(t["entry"])
+    if not b0:
+        return None
+    lvl = b0[3] if call else b0[2]
+    for d in sorted(x for x in bars if t["entry"] < x <= last_day):
+        c = bars[d][4]
+        if (call and c < lvl) or (not call and c > lvl):
+            q = [x for x in sorted(h) if t["entry"] < x <= d]
+            if not q:
+                return {"d0Day": d}
+            x = h[q[-1]]
+            sell = x.get("nbbo_bid") if x.get("nbbo_bid") is not None and x.get("nbbo_ask") else x.get("last_price")
+            return {"d0Day": d, "d0Ret": (sell / buy - 1) if sell is not None else None}
+    return {"d0Day": None}
 
 
 # ---------------------------------------------------------------- the job and the view
@@ -253,7 +273,7 @@ def run_job(sub, prog=None, deadline=None):
             continue
         try:
             res = price_trade(tok, {**t, "vol20": vol_by.get((t["sym"], t["entry"]))}, L, d0[1] if L.get("entry") == "open" else d0[4],
-                              lambda day: (b.get(day) or [None] * 5)[4], d0[4])
+                              lambda day: (b.get(day) or [None] * 5)[4], d0[4], b)
         except BadRequest as ex:
             msg = str(ex)
             if "historic_data_access_missing" in msg or "403" in msg:
@@ -312,7 +332,8 @@ def summarize(trades, done, cfg):
         out.append({**{k: t[k] for k in ("leg", "sym", "release", "entry", "why")}, "exit": r.get("exitDay") or t["exit"], "plannedExit": t["exit"], "occ": r["occ"], "expiry": r["expiry"], "strike": r["strike"],
                     "buy": r["buy"], "sell": r["sell"], "model": t["pnl"], "real": real,
                     "realMid": round(stake * r["retMid"], 2) if r.get("retMid") is not None else None,
-                    "iv": r.get("iv"), "how": r["how"], "stock": t["ret"]})
+                    "iv": r.get("iv"), "how": r["how"], "stock": t["ret"], "d0Day": r.get("d0Day"), "d0Done": "d0Day" in r,
+                    "d0Real": round(stake * r["d0Ret"], 2) if r.get("d0Ret") is not None else None})
         if r.get("iv") and r.get("volModel"):
             ivr.append(r["iv"] / r["volModel"])
         if r.get("spread") is not None:
@@ -333,7 +354,26 @@ def summarize(trades, done, cfg):
     return {"at": iso(now_ny()), "from": START, "cfg": cfg, "all": block(out), "legs": legs,
             "years": [{"year": y, **block(v)} for y, v in sorted(years.items())],
             "ivRatio": med(ivr), "spreadMedian": med(spreads), "modelSpread": spread, "missing": miss,
-            "top": top, "trades": sorted(out, key=lambda x: x["exit"])[-1500:]}
+            "top": top, "d0": d0_summary(out), "trades": sorted(out, key=lambda x: x["exit"])[-1500:]}
+
+
+def d0_summary(out):
+    """Winners and losers: how many closed beyond the day-0 candle before the exit, and the P/L had they been sold then."""
+    xs = [x for x in out if x.get("d0Done")]
+    if not xs:
+        return None
+
+    def grp(g):
+        hit = [x for x in g if x.get("d0Day")]
+        alt = sum((x["d0Real"] if x.get("d0Day") and x.get("d0Real") is not None else x["real"]) for x in g)
+        return {"n": len(g), "hit": len(hit), "real": round(sum(x["real"] for x in g), 2), "withRule": round(alt, 2),
+                "hitReal": round(sum(x["real"] for x in hit), 2), "hitRule": round(sum(x["d0Real"] for x in hit if x.get("d0Real") is not None), 2)}
+    out_ = {}
+    for leg in "CD":
+        g = [x for x in xs if x["leg"] == leg]
+        if g:
+            out_[leg] = {"win": grp([x for x in g if x["real"] > 0]), "loss": grp([x for x in g if x["real"] <= 0]), "all": grp(g)}
+    return out_
 
 
 def view(sub):

@@ -316,6 +316,12 @@ def test_api_flow():
     r3 = optreal.price_trade(tok, {**t, "exit": "2024-05-20"}, L, 101.0, lambda d: 100.0, 101.0)
     assert r3["expiry"] >= "2024-05-20" and r3["how"] == "close", r3      # an expiry that outlives the planned exit
     assert optreal.price_trade(tok, t, L, 101.0, lambda d: 100.0, 101.0)["occ"] == r["occ"]
+    bars = {"2024-03-04": ["2024-03-04", 100, 102, 99, 101, 1], "2024-03-05": ["2024-03-05", 101, 101, 97, 98, 1]}
+    rd = optreal.price_trade(tok, t, L, 101.0, lambda d: 100.0, 101.0, bars)    # closed below the day-0 low (99) on day 1
+    assert rd["d0Day"] == "2024-03-05" and rd["d0Ret"] is not None, rd
+    assert optreal.price_trade(tok, t, L, 101.0, lambda d: 100.0, 101.0, {**bars, "2024-03-05": ["2024-03-05", 101, 103, 100, 102, 1]})["d0Day"] is None
+    sm = optreal.summarize([{**t, "why": "x", "release": "2024-03-03"}], {optreal.tkey(t): rd}, backtest.clean({}))
+    assert sm["d0"]["C"]["all"]["hit"] == 1, sm["d0"]
     t2 = {**t, "exit": "2024-08-01"}                   # past every listed expiry: intrinsic value then
     r2 = optreal.price_trade(tok, t2, L, 101.0, lambda d: 112.0, 101.0)
     assert r2["how"] == "expired" and abs(r2["sell"] - 12.0) < 1e-9, r2
@@ -467,6 +473,10 @@ def test_exits_and_option():
     assert why == "target" and abs(fill - 0.96) < 1e-9
     assert B.walk(P, 0, False, 9, 0, 0, 0)[4] == "data"                      # the prices end before the planned exit
     assert B.walk(P, 0, False, 9, 0, 0, 0, max_days=60)[4] == "data"
+    j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0, d0=True)           # day-0 low 98: day 4 closes at 95
+    assert why == "closed below the day-0 low" and j == 4 and abs(fill - 0.95) < 1e-9, (j, fill, why)
+    j, fill, dd, s, why = B.walk(P, 0, True, 5, 0, 0, 0, d0=True)            # day-0 high 100: day 1 closes at 101
+    assert why == "closed above the day-0 high" and j == 1 and abs(fill - 1.01) < 1e-9, (j, fill, why)
     j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0, max_days=3)        # an option expiring after 3 days
     assert why == "expiry" and dd == 3
     c, d = B.bs(1.0, 1.0, 60 / 365, 0.3, True)                               # an ATM 2-month call ≈ 5% of the stock, delta ≈ 0.55
