@@ -740,6 +740,20 @@ def fund_backtest(sub, claims, body, q):
     return out
 
 
+@route("POST", "/fund/backtest/opt")
+def fund_bt_opt(sub, claims, body, q):
+    import fundamentals as F
+    if body.get("cfg"):                                # stake, costs and borrow the optimizer trades with
+        F.store.put_json(f"fund/u/{sub}/btopt", {"cfg": body["cfg"], "res": []})
+    return jobs.start(sub, "fund", "fundopt", {})
+
+
+@route("GET", "/fund/backtest/opt")
+def fund_bt_opt_view(sub, claims, body, q):
+    import backtest
+    return {"opt": backtest.opt_view(sub, "pnl" if q.get("on") == "pnl" else "alpha"), "job": jobs.status(sub, "fund")}
+
+
 @route("GET", "/fund/study/rows")
 def fund_study_rows(sub, claims, body, q):
     import fundamentals as F

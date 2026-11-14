@@ -140,6 +140,12 @@ def handler(event, ctx=None):
             r = fundamentals.today_list(sub, p["day"], prog, dl)
             flagged = sum(1 for x in r["rows"] if x.get("flag"))
             set_status(sub, name, status="done", msg=f"{p['day']}: {len(r['rows'])} release(s), {flagged} flagged.")
+        elif job == "fundopt":                          # the earnings strategy optimizer
+            import backtest
+            if not backtest.opt_job(sub, prog, dl):
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="Optimizer: every setting of every leg tested (train / test).")
         elif job == "fundexport":                       # the study's downloads (review file + CSV)
             import fundamentals
             prog("Writing the export files…")

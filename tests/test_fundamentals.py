@@ -179,15 +179,23 @@ def test_backtest_math():
                      "spyVs200": 0.01, "spy63": 0.02})
     p = backtest.trailing_pct(rows, "postScore")
     assert 0 not in p and 199 not in p and 200 in p                        # needs 200 earlier releases
-    r = backtest.run(rows, {"stake": 1000, "costBps": 10, "borrowPct": 0, "hedge": "none", "legs": {"A": False, "B": False, "C": True, "D": True}})
+    r = backtest.run(rows, {"stake": 1000, "costBps": 10, "borrowPct": 0, "legs": {"A": {"on": False}, "B": {"on": False},
+                            "C": {"on": True, "hedge": "none", "weak": False}, "D": {"on": True, "hedge": "none", "strong": False}}})
     c = next(x for x in r["legs"] if x["leg"] == "C")
     d = next(x for x in r["legs"] if x["leg"] == "D")
     assert c["avg"] == 99.0 and d["avg"] == -101.0, (c, d)                  # +10% − 0.1% cost; short loses 10% + cost
-    r = backtest.run(rows, {"hedge": "spy", "costBps": 10, "borrowPct": 0, "legs": {"A": False, "B": False, "C": True, "D": False}})
+    r = backtest.run(rows, {"costBps": 10, "borrowPct": 0, "legs": {"A": {"on": False}, "B": {"on": False}, "C": {"on": True, "hedge": "spy", "weak": False},
+                            "D": {"on": False}}})
     assert r["legs"][0]["avg"] == 48.0                                     # +5% vs SPY − 2 × 0.1% (the hedge is a trade)
-    r = backtest.run(rows, {"hedge": "beta", "costBps": 0, "borrowPct": 0, "legs": {"A": False, "B": False, "C": False, "D": True},
-                            "filters": {"dStrongMarket": True}})
-    assert r["legs"][0]["avg"] == -40.0 and r["maxOpen"] >= 5
+    r = backtest.run(rows, {"costBps": 0, "borrowPct": 0, "legs": {"A": {"on": False}, "B": {"on": False}, "C": {"on": False},
+                            "D": {"on": True, "hedge": "beta", "strong": True}}})
+    assert r["legs"][0]["avg"] == -50.0 and r["maxOpen"] >= 5                # no beta on the rows: beta 1 = SPY
+    res, ok = backtest.optimize(rows, {})
+    assert ok and len(res) == sum(len(backtest.combos(k)) for k in "ABCD") and res[0]["train"] is not None
+    rk = backtest.ranked(res)
+    assert rk["C"][0]["train"]["n"] >= rk["C"][-1]["train"]["n"] or (rk["C"][0]["trainX"].get("t") or 0) >= (rk["C"][-1]["trainX"].get("t") or -1e9)
+    r = backtest.run(rows, {"legs": {"A": {"on": False}, "B": {"on": False}, "C": {"on": True, "band": 0.3, "hold": 40, "hedge": "none", "weak": False}, "D": {"on": False}}})
+    assert r["split"]["train"]["n"] + r["split"]["test"]["n"] == r["n"] and r["alpha"]["avg"] == 48.0     # vs SPY, on the hedged cost basis
     rows2 = [dict(x) for x in rows]
     rows2[-1]["postScore"] = -99.0                                         # a later value changes no earlier percentile
     assert all(backtest.trailing_pct(rows2, "postScore")[i] == p[i] for i in p if i < 599)
@@ -289,6 +297,10 @@ def test_api_flow():
         assert x["timing"] in ("bmo", "amc") and "epsSurprise" in x and x.get("gap") is not None and "scoreBand" not in x or x["scoreBand"] in ("top", "middle", "bottom")
     st, bt = call("POST", "/fund/backtest", {"cfg": {"stake": 1000}})
     assert st == 200 and "legs" in bt and bt["cfg"]["stake"] == 1000, bt
+    st, r = call("POST", "/fund/backtest/opt", {"cfg": {"stake": 500}})
+    assert st == 200 and r["status"] == "done", r
+    st, o = call("GET", "/fund/backtest/opt", None, {"on": "alpha"})
+    assert o["opt"]["complete"] and set(o["opt"]["legs"]) == set("ABCD") and o["opt"]["cfg"]["stake"] == 500, o
     st, r = call("POST", "/fund/universe", {"tickers": []})
     assert r["universe"] == []
 
