@@ -43,6 +43,7 @@ import gzip
 import itertools
 import math
 from datetime import date, timedelta
+import space
 
 WINDOW = 365
 MIN_PRIOR = 200
@@ -283,13 +284,13 @@ _PATHS = {}
 def load_paths(sub):
     """The saved paths: (index {key: offset}, int16 array) or None. Kept in the container between calls."""
     import store
-    meta = store.get_json(f"fund/u/{sub}/paths_meta")
+    meta = store.get_json(f"{space.pre(sub)}/paths_meta")
     if not meta:
         return None
     hit = _PATHS.get(sub)
     if hit and hit[0] == meta.get("at"):
         return hit[1]
-    raw = store.get_raw(f"fund/u/{sub}/paths.bin.gz")
+    raw = store.get_raw(f"{space.pre(sub)}/paths.bin.gz")
     if not raw:
         return None
     a = array.array("h")
@@ -302,7 +303,7 @@ def load_paths(sub):
 
 def paths_ready(sub, rows):
     import store
-    meta = store.get_json(f"fund/u/{sub}/paths_meta") or {}
+    meta = store.get_json(f"{space.pre(sub)}/paths_meta") or {}
     return bool(rows) and meta.get("n") == len(rows) and meta.get("last") == path_key(rows[-1]) and meta.get("v") == PATH_V
 
 
@@ -343,8 +344,8 @@ def build_paths(sub, rows, prog=None):
                 done.add(k)
                 keys.append(k)
                 a.extend(p)
-    store.put_raw(f"fund/u/{sub}/paths.bin.gz", gzip.compress(a.tobytes(), 6), "application/gzip")
-    store.put_json(f"fund/u/{sub}/paths_meta", {"v": PATH_V, "at": iso(now_ny()), "n": len(rows), "last": path_key(rows[-1]), "keys": keys})
+    store.put_raw(f"{space.pre(sub)}/paths.bin.gz", gzip.compress(a.tobytes(), 6), "application/gzip")
+    store.put_json(f"{space.pre(sub)}/paths_meta", {"v": PATH_V, "at": iso(now_ny()), "n": len(rows), "last": path_key(rows[-1]), "keys": keys})
     _PATHS.clear()
     return len(keys)
 
@@ -751,18 +752,18 @@ def prepare(sub, prog=None, paths=True):
     import model
     import store
     from util import BadRequest
-    rows = (store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []
+    rows = (store.get_json(f"{space.pre(sub)}/study_rows") or {}).get("rows") or []
     if not rows:
         raise BadRequest("Run the event study first.")
     if not ready(rows):
         if prog:
             prog(f"Scoring {len(rows)} releases for the backtest…")
         mdl = model.evaluate(rows, prog)
-        store.put_json(f"fund/u/{sub}/study_rows", {"rows": rows})
-        sd = store.get_json(f"fund/u/{sub}/study")
+        store.put_json(f"{space.pre(sub)}/study_rows", {"rows": rows})
+        sd = store.get_json(f"{space.pre(sub)}/study")
         if sd:
             sd["model"] = mdl
-            store.put_json(f"fund/u/{sub}/study", sd)
+            store.put_json(f"{space.pre(sub)}/study", sd)
     if paths and not paths_ready(sub, rows):
         build_paths(sub, rows, prog)
     return rows
@@ -773,17 +774,17 @@ def opt_job(sub, prog=None, deadline=None):
     import store
     from util import iso, now_ny
     rows = prepare(sub, prog)
-    prev = store.get_json(f"fund/u/{sub}/btopt") or {}
+    prev = store.get_json(f"{space.pre(sub)}/btopt") or {}
     cfg = prev.get("cfg") or {}
     res, ok = optimize(rows, cfg, prog, deadline, None if prev.get("complete") else prev.get("res"), load_paths(sub))
-    store.put_json(f"fund/u/{sub}/btopt", {"at": iso(now_ny()), "cfg": clean(cfg), "split": split_date(rows), "res": res, "complete": ok,
+    store.put_json(f"{space.pre(sub)}/btopt", {"at": iso(now_ny()), "cfg": clean(cfg), "split": split_date(rows), "res": res, "complete": ok,
                                            "grid": GRID, "exitGrid": EXIT_GRID, "optGrid": OPT_GRID, "total": n_combos()})
     return ok
 
 
 def opt_view(sub, on="alpha", top=12):
     import store
-    o = store.get_json(f"fund/u/{sub}/btopt")
+    o = store.get_json(f"{space.pre(sub)}/btopt")
     if not o:
         return None
     res = o["res"]

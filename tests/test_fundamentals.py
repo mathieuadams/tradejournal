@@ -502,6 +502,25 @@ def test_setup_filters():
     assert len(B.filter_grid("C")) == 128 and len(B.filter_grid("D")) == 16
 
 
+
+def test_qqq_universe_is_separate():
+    import space
+    st, spy = call("GET", "/fund")
+    spy_uni = spy["settings"]["universe"]
+    Q = {"u": "qqq"}
+    st, r = call("POST", "/fund/universe", {"source": "nasdaq100", "years": 5}, Q)
+    assert st == 200 and r["uniName"].startswith("Nasdaq-100") and len(r["universe"]) == 2, r
+    st, q = call("GET", "/fund", None, Q)
+    assert q["settings"]["bench"] == "QQQ" and q["settings"]["space"]["id"] == "qqq" and q["settings"]["universe"] == r["universe"]
+    st, b = call("GET", "/fund/backtest/real", None, Q)
+    assert st == 200 and b["view"] is None                                  # nothing priced in this universe yet
+    space.set("qqq")
+    assert space.pre("x") == "fund/u/x/qqq" and space.job("fund") == "fund-qqq"
+    space.set("spy")
+    st, again = call("GET", "/fund")
+    assert again["settings"] == spy["settings"] and again["settings"]["space"]["id"] == "spy"   # the SPY universe untouched
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

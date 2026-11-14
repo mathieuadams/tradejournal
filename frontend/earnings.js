@@ -8,11 +8,14 @@ const big = v => { if (v == null) return '—'; const a = Math.abs(v), s = v < 0
 const QCOL = { strong: 'gain', weak: 'loss', ok: '' };
 const tstat = t => t == null ? '—' : `<span class="${Math.abs(t) >= 2 ? (t > 0 ? 'gain' : 'loss') : 'dim'}">${t.toFixed(1)}</span>`;
 
-async function vEarnings() {
+const EN_U = { spy: { title: 'Earnings — SPY universe', idx: 'S&P 500', src: 'sp500', bench: 'SPY' }, qqq: { title: 'Earnings — QQQ universe', idx: 'Nasdaq-100', src: 'nasdaq100', bench: 'QQQ' } };
+async function vEarnings(u = 'spy') {
   const E = S.en;
+  if (S.enU !== u) { S.enU = u; ['enBt', 'enCo', 'enD', 'enOpt', 'enProj', 'enReal', 'enStudy', 'enToday'].forEach(k => { S[k] = null; }); }
   const d = await api('/fund');
   S.enD = d;
-  view(`${head('Earnings', 'Revenue growth, EPS inflection and earnings quality from SEC filings; how releases reprice the stock.')}
+  const U = EN_U[u];
+  view(`${head(U.title, `The ${U.idx}, measured against ${U.bench}. Revenue growth, EPS inflection and earnings quality from SEC filings; how releases reprice the stock. Each universe keeps its own study, backtest, optimizer and real-option results.`)}
     <div class="seg" style="margin-bottom:12px">${[['screen', 'Screen'], ['company', 'Company'], ['today', 'Today'], ['study', 'Event study'], ['bt', 'Strategy backtest']].map(([k, l]) => `<button data-entab="${k}" aria-pressed="${E.tab === k}">${l}</button>`).join('')}</div>
     <div id="en-body"></div><div id="job" style="margin-top:12px">${jobHtml(d.job)}</div>`);
   if (d.job && d.job.status === 'running') pollJob('/fund', r => r.job, r => { S.enD = r; if (E.tab === 'study' && r.job.job === 'fundstudy') { S.enStudy = null; } enBody(); });
@@ -427,7 +430,7 @@ function enStudyShell() {
       ${fm.connected ? `<span class="pill ok">Connected</span>${fm.plan ? ['earnings', 'grades', 'transcripts'].map(k => `<span class="pill ${fm.plan[k] ? 'ok' : 'warn'}">${fm.plan[k] ? '✓' : '✗'} ${{ earnings: 'consensus', grades: 'analyst grades', transcripts: 'call transcripts' }[k]}</span>`).join('') : ''}` : '<span class="pill warn">Not connected</span>'}
       <div class="grow"></div><a class="btn sm" href="#data">${fm.connected ? 'Manage on the Data page' : 'Connect on the Data page'}</a></div></section>
     <section class="panel"><div class="hd"><h2>Study universe</h2><div class="grow"></div><span class="pill ${uni.length ? 'ok' : ''}">${uni.length ? esc(st.uniName || 'Custom') + ' · ' + uni.length + ' tickers' : 'The screen\'s ' + st.tickers.length + ' tickers'}</span></div>
-      <div class="bd"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" data-en="uni-sp500" ${fm.connected ? '' : 'disabled'}>Load the S&P 500 (FMP)</button>
+      <div class="bd"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" data-en="uni-sp500" ${fm.connected ? '' : 'disabled'}>Load the ${EN_U[S.enU || 'spy'].idx} (FMP)</button>
         <label class="check"><input type="checkbox" id="en-removed" checked> + companies removed from the index in the period (less survivorship bias)</label>
         ${uni.length ? '<button class="btn" data-en="uni-clear">Use the screen\'s tickers instead</button>' : ''}</div>
       <details style="margin-top:10px"><summary class="dim" style="cursor:pointer">Or paste a ticker list</summary><textarea id="en-uni" rows="3" style="width:100%;margin-top:8px;font-family:var(--mono)" placeholder="AAPL MSFT NVDA …">${esc(uni.join(' '))}</textarea><button class="btn" style="margin-top:8px" data-en="uni-save">Save list</button></details>
@@ -552,7 +555,7 @@ async function enImport(mode) {
   const r = await api('/fund/events', { method: 'POST', body: { csv: text, mode } });
   toast(`${r.n} releases, ${r.tickers} tickers imported.${r.problems.length ? ' ' + r.problems.length + ' row(s) skipped.' : ''}`);
   if (r.problems.length) alert('Rows not imported:\n' + r.problems.join('\n'));
-  return vEarnings();
+  return vEarnings(S.enU);
 }
 
 document.addEventListener('click', async e => {
@@ -561,7 +564,7 @@ document.addEventListener('click', async e => {
   const E = S.en, ds = el.dataset;
   try {
     if (ds.entab) { E.tab = ds.entab; document.querySelectorAll('[data-entab]').forEach(b => b.setAttribute('aria-pressed', b === el)); return enBody(); }
-    if (ds.enco) { e.preventDefault(); E.sym = ds.enco; E.tab = 'company'; return vEarnings(); }
+    if (ds.enco) { e.preventDefault(); E.sym = ds.enco; E.tab = 'company'; return vEarnings(S.enU); }
     if (ds.ensort) { E.dir = E.sort === ds.ensort ? -E.dir : -1; E.sort = ds.ensort; return enBody(); }
     if (ds.enopton) { S.en.optOn = ds.enopton; document.querySelectorAll('[data-enopton]').forEach(b => b.setAttribute('aria-pressed', b === el)); return enOptLoad(); }
     if (ds.enoptuse) { const [key, i] = ds.enoptuse.split('.'), leg = key[0]; const x = S.enOpt.opt.legs[key][+i]; Object.assign(S.en.bt.legs[leg], leg === 'C' ? { ...BT_CF, ...BT_EXIT } : leg === 'D' ? { ...BT_DF, ...BT_EXIT } : {}, x.p, { on: true }); enBody(); toast(`${leg}: ${enOptSetting(leg, x.p)}. Run the backtest.`); return; }
@@ -571,14 +574,14 @@ document.addEventListener('click', async e => {
     if (ds.enout) { E.out = ds.enout; $('#en-res').innerHTML = enResults(S.enStudy); return; }
     if (ds.enrsort) { E.rdir = E.rsort === ds.enrsort ? -E.rdir : -1; E.rsort = ds.enrsort; $('#en-res').innerHTML = enResults(S.enStudy); return; }
     switch (ds.en) {
-      case 'save-tickers': await api('/fund/settings', { method: 'PUT', body: { tickers: $('#en-tickers').value } }); toast('Saved.'); return vEarnings();
-      case 'refresh': await api('/fund/settings', { method: 'PUT', body: { tickers: $('#en-tickers').value } }); await api('/fund/refresh', { method: 'POST', body: {} }); toast('Reading the SEC filings…'); return vEarnings();
+      case 'save-tickers': await api('/fund/settings', { method: 'PUT', body: { tickers: $('#en-tickers').value } }); toast('Saved.'); return vEarnings(S.enU);
+      case 'refresh': await api('/fund/settings', { method: 'PUT', body: { tickers: $('#en-tickers').value } }); await api('/fund/refresh', { method: 'POST', body: {} }); toast('Reading the SEC filings…'); return vEarnings(S.enU);
       case 'co-load': { const s = $('#en-sym').value.trim().toUpperCase(); if (!s) return toast('Enter a ticker.'); E.sym = s; $('#en-co').innerHTML = '<div class="panel"><div class="empty">Reading the SEC filings…</div></div>'; document.querySelector('[data-en="co-update"]').disabled = false; return enCompanyLoad(); }
-      case 'co-update': el.disabled = true; await api('/fund/refresh', { method: 'POST', body: { sym: E.sym } }); toast('Updating from SEC…'); return vEarnings();
+      case 'co-update': el.disabled = true; await api('/fund/refresh', { method: 'POST', body: { sym: E.sym } }); toast('Updating from SEC…'); return vEarnings(S.enU);
       case 'imp-replace': return enImport('replace');
       case 'imp-merge': return enImport('merge');
-      case 'imp-clear': if (!confirm('Remove the imported releases?')) return; await api('/fund/events', { method: 'DELETE' }); return vEarnings();
-      case 'run': el.disabled = true; await api('/fund/study', { method: 'POST', body: { useSec: $('#en-sec').checked, years: +$('#en-years').value || 5, bench: $('#en-bench').value, transcripts: $('#en-tx').checked } }); toast('Event study started.'); S.enStudy = null; return vEarnings();
+      case 'imp-clear': if (!confirm('Remove the imported releases?')) return; await api('/fund/events', { method: 'DELETE' }); return vEarnings(S.enU);
+      case 'run': el.disabled = true; await api('/fund/study', { method: 'POST', body: { useSec: $('#en-sec').checked, years: +$('#en-years').value || 5, bench: $('#en-bench').value, transcripts: $('#en-tx').checked } }); toast('Event study started.'); S.enStudy = null; return vEarnings(S.enU);
       case 'more': E.rshow = 1e9; $('#en-res').innerHTML = enResults(S.enStudy); return;
       case 'csv': return enDownload('csv', el);
       case 'review': return enDownload('review', el);
@@ -609,9 +612,9 @@ document.addEventListener('click', async e => {
       case 'opt-run': el.disabled = true; await api('/fund/backtest/opt', { method: 'POST', body: { cfg: { stake: S.en.bt.stake, costBps: S.en.bt.costBps, borrowPct: S.en.bt.borrowPct, ivMult: S.en.bt.ivMult, optSpreadPct: S.en.bt.optSpreadPct } } }); toast('Optimizing…'); setTimeout(enOptLoad, 1500); return;
       case 'opt-best': { const o = S.enOpt.opt, B = o.best || {}; 'ABCD'.split('').forEach(k => { const p = B[k] || (o.legs[k] && o.legs[k][0] && o.legs[k][0].p); if (p) Object.assign(S.en.bt.legs[k], k === 'C' ? { ...BT_CF, ...BT_EXIT } : k === 'D' ? { ...BT_DF, ...BT_EXIT } : {}, p, { on: true }); }); enBody(); toast('Best train setting of each leg applied: run the backtest.'); return; }
       case 'tx-close': $('#en-tx-view').innerHTML = ''; return;
-      case 'uni-sp500': { el.disabled = true; toast('Loading the S&P 500 from FMP…'); const r = await api('/fund/universe', { method: 'POST', body: { source: 'sp500', removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(); }
-      case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings();
-      case 'uni-save': await api('/fund/universe', { method: 'POST', body: { tickers: $('#en-uni').value } }); toast('Universe saved.'); return vEarnings();
+      case 'uni-sp500': { el.disabled = true; toast(`Loading the ${EN_U[S.enU || 'spy'].idx} from FMP…`); const r = await api('/fund/universe', { method: 'POST', body: { source: EN_U[S.enU || 'spy'].src, removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(S.enU); }
+      case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings(S.enU);
+      case 'uni-save': await api('/fund/universe', { method: 'POST', body: { tickers: $('#en-uni').value } }); toast('Universe saved.'); return vEarnings(S.enU);
     }
   } catch (err) { toast(err.message); el.disabled = false; }
 });

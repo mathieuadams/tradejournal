@@ -30,6 +30,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
+import space
 
 import db
 import store
@@ -414,9 +415,9 @@ def screen_row(c):
 # ---------------------------------------------------------------- watchlist / settings
 
 def settings(sub):
-    it = db.get(db.upk(sub), SK_WATCH) or {}
+    it = db.get(db.upk(sub), space.sk(SK_WATCH)) or {}
     return {"tickers": it.get("tickers") or [], "useSec": it.get("useSec", True), "years": it.get("years", 5),
-            "bench": it.get("bench", "SPY"), "universe": it.get("universe") or [], "uniName": it.get("uniName") or ""}
+            "bench": it.get("bench", space.info()["bench"]), "space": space.info(), "universe": it.get("universe") or [], "uniName": it.get("uniName") or ""}
 
 
 def study_tickers(st):
@@ -458,7 +459,7 @@ def save_settings(sub, b):
         if b["bench"] not in BENCHES:
             raise BadRequest("Benchmark: " + ", ".join(BENCHES) + ".")
         cur["bench"] = b["bench"]
-    db.put({"PK": db.upk(sub), "SK": SK_WATCH, **cur})
+    db.put({"PK": db.upk(sub), "SK": space.sk(SK_WATCH), **{k: v for k, v in cur.items() if k != "space"}})
     return cur
 
 
@@ -584,7 +585,7 @@ def parse_csv(text):
 
 
 def events(sub):
-    return store.get_json(f"fund/u/{sub}/events") or {"events": [], "cols": [], "at": None}
+    return store.get_json(f"{space.pre(sub)}/events") or {"events": [], "cols": [], "at": None}
 
 
 def import_events(sub, text, mode="replace"):
@@ -597,12 +598,12 @@ def import_events(sub, text, mode="replace"):
         evs, cols = sorted(have.values(), key=lambda e: (e["date"], e["sym"])), sorted(set(cur.get("cols") or []) | set(cols))
     else:
         evs = sorted(evs, key=lambda e: (e["date"], e["sym"]))
-    store.put_json(f"fund/u/{sub}/events", {"events": evs, "cols": cols, "at": iso(now_ny())})
+    store.put_json(f"{space.pre(sub)}/events", {"events": evs, "cols": cols, "at": iso(now_ny())})
     return {"n": len(evs), "tickers": len({e["sym"] for e in evs}), "cols": cols, "problems": problems}
 
 
 def clear_events(sub):
-    store.delete(f"fund/u/{sub}/events")
+    store.delete(f"{space.pre(sub)}/events")
     return {"n": 0}
 
 
@@ -1262,20 +1263,20 @@ def build_exports(sub, res=None, rows=None):
     if not res:
         raise BadRequest("Run the event study first.")
     if rows is None:
-        rows = (store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []
+        rows = (store.get_json(f"{space.pre(sub)}/study_rows") or {}).get("rows") or []
     xk = sorted({k for r in rows for k in (r.get("x") or {})})
     cols = EXPORT_KEYS + ["x:" + k for k in xk]
     summary = {k: v for k, v in res.items() if k != "rows"}
     review = {"kind": "tradejournal-earnings-study", "exportedAt": iso(now_ny()), "summary": summary,
               "releases": {"cols": cols, "data": [[_r6(r.get(k)) for k in EXPORT_KEYS] + [_r6((r.get("x") or {}).get(k)) for k in xk] for r in rows]}}
-    store.put_raw(f"fund/u/{sub}/export/review.json.gz", gzip.compress(json.dumps(review, separators=(",", ":"), default=str).encode()), "application/gzip")
+    store.put_raw(f"{space.pre(sub)}/export/review.json.gz", gzip.compress(json.dumps(review, separators=(",", ":"), default=str).encode()), "application/gzip")
     buf = io.StringIO()
     w = _csv.writer(buf)
     w.writerow(cols)
     for r in review["releases"]["data"]:
         w.writerow(["" if v is None else v for v in r])
-    store.put_raw(f"fund/u/{sub}/export/releases.csv.gz", gzip.compress(buf.getvalue().encode()), "application/gzip")
-    store.put_json(f"fund/u/{sub}/export/meta", {"studyAt": res.get("at"), "at": iso(now_ny()), "n": len(rows)})
+    store.put_raw(f"{space.pre(sub)}/export/releases.csv.gz", gzip.compress(buf.getvalue().encode()), "application/gzip")
+    store.put_json(f"{space.pre(sub)}/export/meta", {"studyAt": res.get("at"), "at": iso(now_ny()), "n": len(rows)})
 
 
 def export_link(sub, kind):
@@ -1283,17 +1284,17 @@ def export_link(sub, kind):
     res = study(sub)
     if not res:
         raise BadRequest("Run the event study first.")
-    meta = store.get_json(f"fund/u/{sub}/export/meta") or {}
+    meta = store.get_json(f"{space.pre(sub)}/export/meta") or {}
     if meta.get("studyAt") != res.get("at"):
         return None
     day = (res.get("at") or "")[:10]
     key, name = {"review": ("review.json.gz", f"earnings_study_review_{res.get('bench')}_{day}.json.gz"),
                  "csv": ("releases.csv.gz", f"earnings_study_releases_{res.get('bench')}_{day}.csv.gz")}[kind]
-    u = store.url(f"fund/u/{sub}/export/{key}", name)
+    u = store.url(f"{space.pre(sub)}/export/{key}", name)
     if u:
         return {"url": u, "name": name}
     import base64
-    return {"name": name, "data": base64.b64encode(store.get_raw(f"fund/u/{sub}/export/{key}") or b"").decode()}
+    return {"name": name, "data": base64.b64encode(store.get_raw(f"{space.pre(sub)}/export/{key}") or b"").decode()}
 
 
 def run_study(sub, opts, prog=None, deadline=None):
@@ -1307,7 +1308,7 @@ def run_study(sub, opts, prog=None, deadline=None):
     if prog:
         prog(f"Walk-forward model over {len(rows)} releases…")
     mdl = model.evaluate(rows, prog)
-    store.put_json(f"fund/u/{sub}/study_rows", {"rows": rows})
+    store.put_json(f"{space.pre(sub)}/study_rows", {"rows": rows})
     res = {"at": iso(now_ny()), "bench": bench, "n": len(rows), "tickers": len({r["sym"] for r in rows}),
            "from": rows[0]["date"] if rows else None, "to": rows[-1]["date"] if rows else None,
            "sources": {k: sum(1 for r in rows if r.get("src") == k) for k in ("csv", "fmp", "sec")},
@@ -1317,7 +1318,7 @@ def run_study(sub, opts, prog=None, deadline=None):
     res["withTx"] = sum(1 for r in rows if r.get("txTone") is not None)
     res["txStatus"] = TX_NOTE[0]
     res["withGrades"] = sum(1 for r in rows if r.get("gradeN90"))
-    store.put_json(f"fund/u/{sub}/study", res)
+    store.put_json(f"{space.pre(sub)}/study", res)
     try:
         build_exports(sub, res, rows)
     except Exception as e:                            # the study stands without its downloads (rebuilt on request)
@@ -1326,21 +1327,23 @@ def run_study(sub, opts, prog=None, deadline=None):
 
 
 def study(sub):
-    return store.get_json(f"fund/u/{sub}/study")
+    return store.get_json(f"{space.pre(sub)}/study")
 
 
 def study_rows(sub, page=0):
-    r = store.get_json(f"fund/u/{sub}/study_rows", max_age=600) or {"rows": []}
+    r = store.get_json(f"{space.pre(sub)}/study_rows", max_age=600) or {"rows": []}
     rows = r["rows"]
     return {"page": page, "pages": max(1, math.ceil(len(rows) / ROW_PAGE)), "rows": rows[page * ROW_PAGE:(page + 1) * ROW_PAGE]}
 
 
 def load_universe(sub, source, years=10, removed=True):
-    """The study universe: the S&P 500 from FMP (with the companies removed in the period: less survivorship bias)."""
+    """The study universe: the S&P 500 or the Nasdaq-100 from FMP (with the companies removed in the period: less
+    survivorship bias)."""
     import fmp
-    if source != "sp500":
+    if source not in ("sp500", "nasdaq100"):
         raise BadRequest("Unknown universe.")
-    r = fmp.sp500(sub, years)
+    r = fmp.sp500(sub, years) if source == "sp500" else fmp.nasdaq100(sub, years)
+    label = "S&P 500" if source == "sp500" else "Nasdaq-100"
     syms = r["current"] + (r["removed"] if removed else [])
     ok = []
     for x in syms:
@@ -1351,8 +1354,8 @@ def load_universe(sub, source, years=10, removed=True):
         if x not in ok:
             ok.append(x)
     if not ok:
-        raise BadRequest("FMP returned no S&P 500 list for this plan: paste the tickers instead.")
-    cur = save_settings(sub, {"universe": ok[:MAX_UNIVERSE], "uniName": f"S&P 500 ({len(r['current'])} current" + (f" + {len(r['removed'])} removed" if removed and r["removed"] else "") + ")"})
+        raise BadRequest(f"FMP returned no {label} list for this plan: paste the tickers instead.")
+    cur = save_settings(sub, {"universe": ok[:MAX_UNIVERSE], "uniName": f"{label} ({len(r['current'])} current" + (f" + {len(r['removed'])} removed" if removed and r["removed"] else "") + ")"})
     return {**cur, "note": r["note"]}
 
 
@@ -1473,7 +1476,7 @@ def project(sub, sym, k_nn=None):
     sd = study(sub) or {}
     ref = {}
     if sd.get("bench") == bench_sym:
-        for r in (store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []:
+        for r in (store.get_json(f"{space.pre(sub)}/study_rows") or {}).get("rows") or []:
             ref[(r["sym"], r["date"])] = r
     for r in own:
         ref.setdefault((r["sym"], r["date"]), r)
@@ -1715,9 +1718,9 @@ def today_list(sub, day, prog=None, deadline=None):
     calls = {t["key"]: {k: t.get(k) for k in ("verdict", "hit", "hitBase", "icQ", "spread", "n")} for t in mdl.get("targets") or [] if t.get("kind") == "call"}
     out = {"day": day, "at": iso(now_ny()), "bench": bench_sym, "rows": rows, "notes": notes[:30], "cuts": cuts, "models": calls, "market": market,
            "studyAt": sd.get("at")}
-    store.put_json(f"fund/u/{sub}/today/{day}", out)
+    store.put_json(f"{space.pre(sub)}/today/{day}", out)
     return out
 
 
 def today_view(sub, day):
-    return store.get_json(f"fund/u/{sub}/today/{day}") or {"day": day, "rows": None}
+    return store.get_json(f"{space.pre(sub)}/today/{day}") or {"day": day, "rows": None}

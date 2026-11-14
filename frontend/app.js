@@ -15,6 +15,7 @@ async function api(path, { method = 'GET', body } = {}) {
   if (!token) { Auth.login(); return new Promise(() => {}); }
   let r;
   const ac = new AbortController(), tm = setTimeout(() => ac.abort(), 45000);
+  if (S.enU && S.enU !== 'spy' && path.startsWith('/fund')) path += (path.includes('?') ? '&' : '?') + 'u=' + S.enU;   // the earnings universe
   try { r = await fetch(C.apiUrl + path, { method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: ac.signal }); }
   catch (e) { throw new Error(ac.signal.aborted ? 'The server didn’t answer in time.' : 'Can’t reach the server.'); }
   finally { clearTimeout(tm); }
@@ -244,8 +245,9 @@ function route() {
   if (S.heat) { S.heat.destroy(); S.heat = null; }
   const h = (location.hash || '#running').slice(1), [page, arg] = h.split('/');
   S.page = page;
-  document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.r === (page === 'strategy' ? 'research' : page)));
-  const v = { running: vRunning, chart: vChart, research: vResearch, strategy: () => vStrategy(arg), data: vData, levels: vLevels, fractal: vFractal, earnings: () => vEarnings() }[page] || vRunning;
+  const navKey = page === 'strategy' ? 'research' : page === 'earnings' && arg === 'qqq' ? 'earnings/qqq' : page;
+  document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.r === navKey));
+  const v = { running: vRunning, chart: vChart, research: vResearch, strategy: () => vStrategy(arg), data: vData, levels: vLevels, fractal: vFractal, earnings: () => vEarnings(arg === 'qqq' ? 'qqq' : 'spy') }[page] || vRunning;
   v().catch(e => { $('#view').innerHTML = `<div class="panel"><div class="empty loss">${esc(e.message)}</div></div>`; });
 }
 const view = html => { $('#view').innerHTML = html; };

@@ -129,12 +129,21 @@ def earnings(sub, sym, max_age_h=72):
 
 def sp500(sub, years=10):
     """The current S&P 500, plus (when the plan allows it) the companies removed in the last `years` years."""
+    return _index(sub, "sp500", years)
+
+
+def nasdaq100(sub, years=10):
+    """The current Nasdaq-100 (FMP nasdaq-constituent), plus the companies removed in the last `years` years."""
+    return _index(sub, "nasdaq", years)
+
+
+def _index(sub, name, years):
     k = _key(sub)
-    cur = _get(k, "sp500-constituent", {}) or []
+    cur = _get(k, f"{name}-constituent", {}) or []
     syms = [str(r.get("symbol") or "").upper() for r in cur if r.get("symbol")]
     removed, note = [], ""
     try:
-        hist = _get(k, "historical-sp500-constituent", {}) or []
+        hist = _get(k, f"historical-{name}-constituent", {}) or []
         since = (now_ny().date() - timedelta(days=365 * years)).isoformat()
         for r in hist:
             s = str(r.get("removedTicker") or "").upper()

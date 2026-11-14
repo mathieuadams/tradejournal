@@ -6,6 +6,7 @@ import json
 import os
 import time
 from datetime import date, timedelta
+import space
 
 import databento
 import db
@@ -25,6 +26,7 @@ def _invoke(payload):
 
 
 def status(sub, name):
+    name = space.job(name)
     it = db.get(db.upk(sub), "JOB#" + name) or {}
     return {k: v for k, v in it.items() if k not in ("PK", "SK")}
 
@@ -36,11 +38,12 @@ def set_status(sub, name, **kw):
 
 
 def start(sub, name, job, params):
+    name = space.job(name)
     cur = status(sub, name)
     if cur.get("status") == "running" and cur.get("at", "") > iso(now_ny() - timedelta(minutes=20)):
         return cur
     set_status(sub, name, status="running", msg="Starting…", job=job)
-    _invoke({"sub": sub, "name": name, "job": job, "params": params})
+    _invoke({"sub": sub, "name": name, "job": job, "params": params, "space": space.get()})
     return status(sub, name)
 
 
@@ -55,6 +58,7 @@ def handler(event, ctx=None):
     if event.get("job") == "scheduled":
         return scheduled(ctx, live=bool(event.get("live")))
     sub, name, job, p = event["sub"], event.get("name") or "data", event["job"], event.get("params") or {}
+    space.set(event.get("space"))
     prog = lambda m: set_status(sub, name, status="running", msg=m)
     dl = _deadline(ctx)
     try:

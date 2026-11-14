@@ -3,6 +3,7 @@
 The user id always comes from the verified token (sub claim), never from the request."""
 import re
 from datetime import date, timedelta
+import space
 
 import alpaca
 import uwhales
@@ -687,8 +688,8 @@ def fund_transcript(sub, claims, body, q):
 @route("POST", "/fund/universe")
 def fund_universe(sub, claims, body, q):
     import fundamentals as F
-    if body.get("source") == "sp500":
-        return F.load_universe(sub, "sp500", int(body.get("years") or 10), bool(body.get("removed", True)))
+    if body.get("source") in ("sp500", "nasdaq100"):
+        return F.load_universe(sub, body["source"], int(body.get("years") or 10), bool(body.get("removed", True)))
     return F.save_settings(sub, {"universe": body.get("tickers") or [], "uniName": "Custom" if body.get("tickers") else ""})
 
 
@@ -730,7 +731,7 @@ def fund_today_build(sub, claims, body, q):
 def fund_backtest(sub, claims, body, q):
     import backtest
     import fundamentals as F
-    rows = (F.store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []
+    rows = (F.store.get_json(f"{space.pre(sub)}/study_rows") or {}).get("rows") or []
     if not rows:
         raise BadRequest("Run the event study first.")
     cfg = backtest.clean(body.get("cfg") or {})
@@ -741,7 +742,7 @@ def fund_backtest(sub, claims, body, q):
             jobs.start(sub, "fund", "fundprep", {})
         return {"preparing": True, "paths": need}
     out = backtest.run(rows, cfg, paths=backtest.load_paths(sub) if need else None)
-    F.store.put_json(f"fund/u/{sub}/backtest", {k: v for k, v in out.items() if k != "trades"})
+    F.store.put_json(f"{space.pre(sub)}/backtest", {k: v for k, v in out.items() if k != "trades"})
     return out
 
 
@@ -761,7 +762,7 @@ def fund_bt_real_view(sub, claims, body, q):
 def fund_bt_opt(sub, claims, body, q):
     import fundamentals as F
     if body.get("cfg"):                                # stake, costs and borrow the optimizer trades with
-        F.store.put_json(f"fund/u/{sub}/btopt", {"cfg": body["cfg"], "res": []})
+        F.store.put_json(f"{space.pre(sub)}/btopt", {"cfg": body["cfg"], "res": []})
     return jobs.start(sub, "fund", "fundopt", {})
 
 
@@ -834,6 +835,7 @@ def handler(event, context):
     except KeyError:
         return resp(401, {"error": "Sign in required."})
     q = event.get("queryStringParameters") or {}
+    space.set(q.get("u"))                              # the earnings universe (?u=qqq); "spy" by default
     for m, pat, fn in ROUTES:
         if m != method:
             continue

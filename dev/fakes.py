@@ -469,6 +469,10 @@ def fake_fmp_get(key, path, params, timeout=40):
     from datetime import date as _dt
     if path == "sp500-constituent":
         return [{"symbol": k, "name": v[1]} for k, v in SEC_COS.items()]
+    if path == "nasdaq-constituent":
+        return [{"symbol": k, "name": v[1]} for k, v in list(SEC_COS.items())[:2]]
+    if path == "historical-nasdaq-constituent":
+        return []
     if path == "historical-sp500-constituent":
         return [{"date": (_dt.today() - timedelta(days=400)).isoformat(), "removedTicker": "DDD", "symbol": "XYZ"}]
     sym = params.get("symbol")

@@ -16,6 +16,7 @@ left on the model price and counted apart.
 Results in fund/u/<sub>/optreal; a background job ("fundreal"), resumed across runs (1-3 calls per trade)."""
 import time
 from datetime import date, timedelta
+import space
 
 import store
 from util import BadRequest, Unavailable, iso, now_ny
@@ -23,7 +24,7 @@ from util import BadRequest, Unavailable, iso, now_ny
 START = "2022-01-01"                                  # the oldest option data Unusual Whales has
 V = 3                                                 # 3: as-traded prices (splits); an expiry that outlives the planned exit
 MIN_PREMIUM = 0.05                                    # an entry under 5 cents isn't a real fill
-KEY = "fund/u/{sub}/optreal"
+KEY = "{pre}/optreal"
 
 
 def _d(s):
@@ -195,7 +196,7 @@ def start(sub, cfg):
     """A new run (the trades priced before with the same settings are kept)."""
     import backtest
     import jobs
-    key = KEY.format(sub=sub)
+    key = KEY.format(pre=space.pre(sub))
     c = backtest.clean(cfg)
     for k in "CD":
         c["legs"][k]["inst"] = "option"
@@ -215,7 +216,7 @@ def run_job(sub, prog=None, deadline=None):
     import backtest
     import fundamentals as F
     import uwhales
-    key = KEY.format(sub=sub)
+    key = KEY.format(pre=space.pre(sub))
     st = store.get_json(key) or {}
     cfg = backtest.clean(st.get("cfg") or {})
     for k in "CD":
@@ -337,6 +338,6 @@ def summarize(trades, done, cfg):
 
 def view(sub):
     import jobs
-    st = store.get_json(KEY.format(sub=sub)) or {}
-    v = store.get_json(KEY.format(sub=sub) + "_view")
+    st = store.get_json(KEY.format(pre=space.pre(sub))) or {}
+    v = store.get_json(KEY.format(pre=space.pre(sub)) + "_view")
     return {"view": v, "done": len(st.get("done") or {}), "complete": st.get("complete"), "job": jobs.status(sub, "fund")}
