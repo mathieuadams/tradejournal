@@ -15,7 +15,7 @@ No look-ahead: the score uses signals ranked against earlier releases only, the 
 walk-forward (out-of-sample) one, and "top / bottom" is judged against the previous 365 days of releases.
 
 The optimizer works like the Research one: every setting of a leg's grid is traded over the whole period, the trades
-are split at a date (the first 60% of the period = train, the rest = test), a setting is ranked on the TRAIN trades
+are split at a date (the last 5 years = test, the years before = train), a setting is ranked on the TRAIN trades
 only (the t of the P/L per trade, at least MIN_TRADES trades), and the test columns show whether the ranking holds.
 Costs: a round trip in basis points of the stake (default 10 = $1 per $1,000; doubled when hedged: the hedge is a second
 trade), plus, for shorts, a borrow fee per year."""
@@ -26,7 +26,7 @@ from datetime import date, timedelta
 
 WINDOW = 365
 MIN_PRIOR = 200
-TRAIN = 0.6
+TEST_YEARS = 5                                        # the last 5 years = test, everything before = train
 MIN_TRADES = 60
 
 
@@ -192,11 +192,14 @@ def trades_for(rows, ctx, c, only=None):
 
 
 def split_date(rows):
+    """The start of the test period: TEST_YEARS before the last release (60% of the period if it's shorter than 7 years)."""
     ds = sorted(r["day0"] for r in rows if r.get("day0"))
     if not ds:
         return None
     a, b = _d(ds[0]), _d(ds[-1])
-    return (a + timedelta(days=int((b - a).days * TRAIN))).isoformat()
+    if (b - a).days >= 365.25 * (TEST_YEARS + 2):
+        return b.replace(year=b.year - TEST_YEARS).isoformat()
+    return (a + timedelta(days=int((b - a).days * 0.6))).isoformat()
 
 
 def run(rows, cfg, ctx=None):
@@ -336,13 +339,36 @@ def ranked(res, on="alpha"):
     return out
 
 
+def ready(rows):
+    return bool(rows) and any("postScore" in r for r in rows[-500:])
+
+
+def prepare(sub, prog=None):
+    """A study run before the backtest existed: score its releases now (the walk-forward model fills the post-release
+    score and the after-the-call predictions) and save them."""
+    import model
+    import store
+    from util import BadRequest
+    rows = (store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []
+    if not rows:
+        raise BadRequest("Run the event study first.")
+    if not ready(rows):
+        if prog:
+            prog(f"Scoring {len(rows)} releases for the backtest…")
+        mdl = model.evaluate(rows, prog)
+        store.put_json(f"fund/u/{sub}/study_rows", {"rows": rows})
+        sd = store.get_json(f"fund/u/{sub}/study")
+        if sd:
+            sd["model"] = mdl
+            store.put_json(f"fund/u/{sub}/study", sd)
+    return rows
+
+
 def opt_job(sub, prog=None, deadline=None):
     """The optimizer over the last study's releases (a background job); results in fund/u/<sub>/btopt."""
     import store
-    from util import BadRequest, iso, now_ny
-    rows = (store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []
-    if not rows or not any("postScore" in r for r in rows[-500:]):
-        raise BadRequest("Run the event study first (once with this version).")
+    from util import iso, now_ny
+    rows = prepare(sub, prog)
     prev = store.get_json(f"fund/u/{sub}/btopt") or {}
     cfg = prev.get("cfg") or {}
     res, ok = optimize(rows, cfg, prog, deadline, None if prev.get("complete") else prev.get("res"))

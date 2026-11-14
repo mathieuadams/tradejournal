@@ -297,6 +297,12 @@ def test_api_flow():
         assert x["timing"] in ("bmo", "amc") and "epsSurprise" in x and x.get("gap") is not None and "scoreBand" not in x or x["scoreBand"] in ("top", "middle", "bottom")
     st, bt = call("POST", "/fund/backtest", {"cfg": {"stake": 1000}})
     assert st == 200 and "legs" in bt and bt["cfg"]["stake"] == 1000, bt
+    sr = F.store.get_json(f"fund/u/{SUB}/study_rows")
+    F.store.put_json(f"fund/u/{SUB}/study_rows", {"rows": [{k: v for k, v in r.items() if k not in ("postScore", "oosO2c")} for r in sr["rows"]]})
+    st, bt = call("POST", "/fund/backtest", {"cfg": {}})             # an older study: scored in the background, then run
+    assert bt.get("preparing") or "legs" in bt, bt
+    st, bt = call("POST", "/fund/backtest", {"cfg": {}})
+    assert st == 200 and "legs" in bt and "split" in bt or bt.get("n") == 0, bt
     st, r = call("POST", "/fund/backtest/opt", {"cfg": {"stake": 500}})
     assert st == 200 and r["status"] == "done", r
     st, o = call("GET", "/fund/backtest/opt", None, {"on": "alpha"})

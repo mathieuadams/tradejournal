@@ -730,11 +730,14 @@ def fund_today_build(sub, claims, body, q):
 def fund_backtest(sub, claims, body, q):
     import backtest
     import fundamentals as F
-    rows = (F.store.get_json(f"fund/u/{sub}/study_rows", max_age=600) or {}).get("rows") or []
+    rows = (F.store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []
     if not rows:
         raise BadRequest("Run the event study first.")
-    if not any("postScore" in r for r in rows[-500:]):
-        raise BadRequest("This study predates the strategy backtest: re-run the event study once.")
+    if not backtest.ready(rows):                       # a study from before the backtest: score it in the background
+        st = jobs.status(sub, "fund") or {}
+        if st.get("status") != "running":
+            jobs.start(sub, "fund", "fundprep", {})
+        return {"preparing": True}
     out = backtest.run(rows, body.get("cfg") or {})
     F.store.put_json(f"fund/u/{sub}/backtest", {k: v for k, v in out.items() if k != "trades"})
     return out

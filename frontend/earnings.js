@@ -235,7 +235,7 @@ function enTodayHtml(r) {
 }
 
 /* ---------- Strategy backtest ---------- */
-S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1, from: '', to: '',
+S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1,
   legs: { A: { on: true, cut: 0.2 }, B: { on: true, band: 0.2, gap: 0.02 },
     C: { on: true, band: 0.2, hold: 40, hedge: 'spy', weak: true, heavy: false, far: false }, D: { on: true, band: 0.2, hold: 40, hedge: 'spy', strong: true } } };
 S.en.optOn = 'alpha';
@@ -248,7 +248,7 @@ function enBtShell() {
   const hedge = leg => `<label class="f">Hedge${sel(leg, 'hedge', [['none', 'None'], ['spy', 'SPY 1:1'], ['beta', 'Beta × SPY']])}</label>`;
   const box = (leg, title, desc, body) => `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px"><label class="check"><b>${ck(leg, 'on')} ${leg} · ${title}</b></label>
     <div class="note" style="margin:4px 0 8px 24px">${desc}</div><div style="margin-left:24px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">${body}</div></div>`;
-  return `<section class="panel"><div class="hd"><h2>Earnings strategy</h2><span class="dim" style="font-size:13px">the event study's rules, traded with a fixed stake per trade over the last study's releases</span></div>
+  return `<section class="panel"><div class="hd"><h2>Earnings strategy</h2><span class="dim" style="font-size:13px">the event study's rules, traded with a fixed stake per trade over all the study's releases (10 years): the last 5 years are the test period</span></div>
     <div class="bd"><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       ${box('A', 'After the call: buy at the open', 'The after-the-call model (out-of-sample) in the top part of the previous year’s predictions, and not “bad news + gap up”. Buy at the day-0 open, sell at the close.', band('A', 'Model top'))}
       ${box('B', 'Fade “bad news + gap up”', 'Post-release score in the bottom part and a gap up. Short at the open, cover at the close.', band('B', 'Score bottom') + `<label class="f">Gap above${sel('B', 'gap', [[0.01, '+1%'], [0.02, '+2%'], [0.04, '+4%']])}</label>`)}
@@ -262,10 +262,9 @@ function enBtShell() {
       <label class="f">$ per trade<input type="number" min="10" step="100" data-enbtv="stake" value="${c.stake}"></label>
       <label class="f">Costs, round trip (bps)<input type="number" min="0" step="1" data-enbtv="costBps" value="${c.costBps}"></label>
       <label class="f">Short borrow (%/year)<input type="number" min="0" step="0.5" data-enbtv="borrowPct" value="${c.borrowPct}"></label>
-      <label class="f">From<input type="date" data-enbtv="from" value="${esc(c.from)}"></label><label class="f">To<input type="date" data-enbtv="to" value="${esc(c.to)}"></label>
       <button class="btn primary" data-en="bt-run">Run backtest</button></div>
     <p class="note">No look-ahead: the score uses signals ranked against earlier releases, the after-the-call prediction is the walk-forward one, and the top / bottom parts are judged against the previous 365 days. A and B are day trades, unhedged; for C and D a hedge is a second trade, and its cost is counted too. “Beyond the market” = the same trades measured against SPY: what the earnings rules added, not the market's own move.</p></div></section>
-    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">like Research: every setting of each leg, trades split at a date (first 60% of the period = train, the rest = test), ranked on train only</span><div class="grow"></div>
+    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">like Research: every setting of each leg, ranked on the first 5 years (train) only; the last 5 years (test) show whether it holds</span><div class="grow"></div>
       <div class="seg"><button data-enopton="alpha" aria-pressed="${S.en.optOn === 'alpha'}">Rank on profit beyond the market</button><button data-enopton="pnl" aria-pressed="${S.en.optOn === 'pnl'}">Rank on profit as traded</button></div>
       <button class="btn primary" data-en="opt-run" style="margin-left:8px">Run optimizer</button></div><div id="en-opt"><div class="bd dim">Loading…</div></div></section>
     <div id="en-bt-res" style="margin-top:12px"></div>`;
@@ -525,7 +524,17 @@ document.addEventListener('click', async e => {
         const t0 = Date.now(); while (Date.now() - t0 < 240000) { await new Promise(r => setTimeout(r, 3000)); const r = await api('/fund/today?day=' + S.en.day); if (!r.job || r.job.status !== 'running') { S.enToday = r; $('#en-today').innerHTML = enTodayHtml(r); if (r.job && r.job.status === 'error') toast(r.job.msg); break; } }
         el.disabled = false; return; }
       case 'bt-run': { el.disabled = true; el.textContent = 'Running…'; $('#en-bt-res').innerHTML = '<div class="panel"><div class="empty">Running the backtest…</div></div>';
-        try { S.enBt = await api('/fund/backtest', { method: 'POST', body: { cfg: S.en.bt } }); $('#en-bt-res').innerHTML = enBtHtml(S.enBt); }
+        try {
+          let r = await api('/fund/backtest', { method: 'POST', body: { cfg: S.en.bt } });
+          for (let i = 0; r.preparing && i < 100; i++) {         // an older study: scored once in the background (~2 minutes)
+            $('#en-bt-res').innerHTML = '<div class="panel"><div class="empty">Scoring the study\'s releases for the backtest (once, about 2 minutes)…</div></div>';
+            await new Promise(res => setTimeout(res, 4000));
+            const j = (await api('/fund')).job || {};
+            if (j.status === 'error') throw new Error(j.msg || 'Scoring failed.');
+            if (j.status !== 'running') r = await api('/fund/backtest', { method: 'POST', body: { cfg: S.en.bt } });
+          }
+          S.enBt = r; $('#en-bt-res').innerHTML = enBtHtml(S.enBt);
+        }
         catch (err) { $('#en-bt-res').innerHTML = `<div class="panel"><div class="empty loss">${esc(err.message)}</div></div>`; }
         el.disabled = false; el.textContent = 'Run backtest'; return; }
       case 'bt-csv': return enBtCsv();

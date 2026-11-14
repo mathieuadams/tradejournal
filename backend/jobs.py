@@ -140,6 +140,10 @@ def handler(event, ctx=None):
             r = fundamentals.today_list(sub, p["day"], prog, dl)
             flagged = sum(1 for x in r["rows"] if x.get("flag"))
             set_status(sub, name, status="done", msg=f"{p['day']}: {len(r['rows'])} release(s), {flagged} flagged.")
+        elif job == "fundprep":                         # score an older study for the backtest
+            import backtest
+            backtest.prepare(sub, prog)
+            set_status(sub, name, status="done", msg="Study scored for the backtest.")
         elif job == "fundopt":                          # the earnings strategy optimizer
             import backtest
             if not backtest.opt_job(sub, prog, dl):
