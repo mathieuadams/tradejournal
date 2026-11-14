@@ -235,10 +235,15 @@ function enTodayHtml(r) {
 }
 
 /* ---------- Strategy backtest ---------- */
+const BT_CSET = [['rs', 'the stock beat SPY over the month before'], ['cash', 'cash earnings ahead of reported earnings (accruals < −4%)'], ['raised', 'guidance raised on the call'],
+  ['mktUp', 'the market up >6% over 3 months'], ['noQ4', 'no entry January–April (Q4 reports)'], ['noWeakSec', 'not services, retail, mining & energy, transport / utilities / telecom'],
+  ['quiet', 'no heavy volume the week before (≤1.2× normal)']];
+const BT_DSET = [['calm', 'the market up <4% over 3 months'], ['gapDown', 'gapped down ≥3% at the open'], ['miss', 'EPS missed by >2%'], ['notRaised', 'guidance not raised on the call']];
+const BT_CF = Object.fromEntries(BT_CSET.map(([k]) => [k, false])), BT_DF = Object.fromEntries(BT_DSET.map(([k]) => [k, false]));
 const BT_EXIT = { entry: 'close', stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
 S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1, ivMult: 1, optSpreadPct: 5,
   legs: { A: { on: true, cut: 0.2 }, B: { on: true, band: 0.2, gap: 0.02 },
-    C: { on: true, band: 0.2, hold: 40, hedge: 'spy', weak: true, heavy: false, far: false, ...BT_EXIT }, D: { on: true, band: 0.2, hold: 40, hedge: 'spy', strong: true, ...BT_EXIT } } };
+    C: { on: true, band: 0.2, hold: 40, hedge: 'spy', weak: true, heavy: false, far: false, ...BT_CF, ...BT_EXIT }, D: { on: true, band: 0.2, hold: 40, hedge: 'spy', strong: true, ...BT_DF, ...BT_EXIT } } };
 S.en.optOn = 'alpha';
 function enBtShell() {
   const c = S.en.bt, L = c.legs;
@@ -265,8 +270,11 @@ function enBtShell() {
       ${box('C', 'Post-release long', 'Score in the top part. Buy at the day-0 close or open.', band('C', 'Score top') + hold('C') + hedge('C') + exits('C') + `<div style="display:flex;flex-direction:column;gap:2px;flex-basis:100%">
         <label class="check">${ck('C', 'weak')} only when the market is weak going in (below its 200-day average or down over 3 months)</label>
         <label class="check">${ck('C', 'heavy')} only when day 0 was up >2% on heavy volume (≥2.5× normal)</label>
-        <label class="check">${ck('C', 'far')} only when the stock is >25% below its 52-week high</label></div>`)}
-      ${box('D', 'Post-release short', 'Score in the bottom part. Short at the day-0 close or open.', band('D', 'Score bottom') + hold('D') + hedge('D') + exits('D') + `<label class="check" style="flex-basis:100%">${ck('D', 'strong')} only when the market is strong going in (above its 200-day average and up over 3 months)</label>`)}
+        <label class="check">${ck('C', 'far')} only when the stock is >25% below its 52-week high</label>
+        <div class="dim" style="margin-top:6px;font-size:12px">Setup filters (from the real-option review — the optimizer tests them on all the years):</div>
+        ${BT_CSET.map(([k, t]) => `<label class="check">${ck('C', k)} ${t}</label>`).join('')}</div>`)}
+      ${box('D', 'Post-release short', 'Score in the bottom part. Short at the day-0 close or open.', band('D', 'Score bottom') + hold('D') + hedge('D') + exits('D') + `<label class="check" style="flex-basis:100%">${ck('D', 'strong')} only when the market is strong going in (above its 200-day average and up over 3 months)</label>
+        <div style="flex-basis:100%"><div class="dim" style="font-size:12px">Setup filters:</div>${BT_DSET.map(([k, t]) => `<label class="check">${ck('D', k)} ${t}</label>`).join('')}</div>`)}
     </div>
     <div class="form" style="margin-top:12px;align-items:end">
       <label class="f">$ per trade<input type="number" min="10" step="100" data-enbtv="stake" value="${c.stake}"></label>
@@ -317,12 +325,15 @@ function enRealHtml(r) {
     <div class="note" style="padding:8px 16px 14px">Daily history only: an exit by a stop / trailing stop / target is priced at that day's closing quotes. A contract that expires before the exit is worth its value at expiry.</div>`;
 }
 const BT_LEG = { A: 'A · after the call, buy at the open', B: 'B · fade bad news + gap up', C: 'C · post-release long', D: 'D · post-release short',
-  C2: 'C · exits (on the best entry)', D2: 'D · exits (on the best entry)', C3: 'C · as a call (on the best exits)', D3: 'D · as a put (on the best exits)' };
+  C4: 'C · setup filters (on the best entry)', D4: 'D · setup filters (on the best entry)', C2: 'C · exits (on the best entry)', D2: 'D · exits (on the best entry)', C3: 'C · as a call (on the best exits)', D3: 'D · as a put (on the best exits)' };
 function enOptSetting(leg, p) {
   const pc = v => (v * 100).toFixed(0) + '%';
   if (leg === 'A') return `model top ${pc(p.cut)}`;
   if (leg === 'B') return `score bottom ${pc(p.band)}, gap > +${pc(p.gap)}`;
-  const f = leg === 'C' ? [p.weak && 'weak market', p.heavy && 'heavy-volume up day', p.far && '>25% below high'].filter(Boolean) : [p.strong && 'strong market'].filter(Boolean);
+  const SH = { rs: 'beat SPY 1m', cash: 'cash > earnings', raised: 'guidance raised', mktUp: 'market up 3m', noQ4: 'no Jan–Apr', noWeakSec: 'no weak sectors', quiet: 'no heavy volume',
+    calm: 'calm market', gapDown: 'gap down', miss: 'EPS miss', notRaised: 'guidance not raised' };
+  const f = (leg === 'C' ? [p.weak && 'weak market', p.heavy && 'heavy-volume up day', p.far && '>25% below high'] : [p.strong && 'strong market'])
+    .concat((leg === 'C' ? BT_CSET : BT_DSET).map(([k]) => p[k] && SH[k])).filter(Boolean);
   const x = [p.stop && `stop ${pc(p.stop)}`, p.trail && `trailing ${pc(p.trail)}`, p.target && `target ${pc(p.target)}`].filter(Boolean);
   const o = p.inst === 'option' ? ` · ${leg === 'C' ? 'call' : 'put'} ${p.dte}d ${p.mny ? pc(Math.abs(p.mny)) + (p.mny > 0 ? ' OTM' : ' ITM') : 'ATM'}` : ` · hedge ${p.hedge}`;
   return `score ${leg === 'C' ? 'top' : 'bottom'} ${pc(p.band)}${p.entry === 'open' ? ' · in at the open' : ''} · hold ≤ ${p.hold}${x.length ? ' · ' + x.join(', ') : ''}${o}${f.length ? ' · ' + f.join(', ') : ''}`;
@@ -335,12 +346,12 @@ async function enOptLoad() {
 function enOptHtml(r) {
   const o = r.opt;
   if (r.job && r.job.status === 'running' && r.job.job === 'fundopt') return `<div class="bd">${esc(r.job.msg || 'Optimizing…')}</div>`;
-  if (!o || !o.legs) return '<div class="bd dim">Not run yet. Three stages: the entries of each leg, then (C, D) the entry at the day-0 open or close and every exit — hold, stop, trailing stop, target — on the best entry, then the option on the best exits. About 1,500 settings, a few minutes.</div>';
+  if (!o || !o.legs) return '<div class="bd dim">Not run yet. Four stages: the entries of each leg, then (C, D) every combination of the setup filters, then the entry at the day-0 open or close and every exit — hold, stop, trailing stop, target — on the best entry, then the option on the best exits. About 1,650 settings, a few minutes.</div>';
   const money = v => v == null ? '—' : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
   const cell = (m, x) => `<td class="r">${m.n || 0}</td><td class="r ${cls(m.total)}">${money(m.total)}</td><td class="r ${cls(x && x.total)}">${money(x && x.total)}</td><td class="r">${tstat(x && x.t)}</td>`;
   return `<div class="bd" style="padding-bottom:0"><div class="note">Split: train before ${esc(o.split || '—')}, test after. ${o.legs.C2 ? '' : '<b>The exit and option stages need the daily paths: run the optimizer again once the backtest has built them.</b> '} Ranked on the train ${o.on === 'alpha' ? 'profit beyond the market' : 'profit as traded'} (t of the P/L per trade, at least ${o.minTrades} trades). A setting that also holds on the test period is the one to use. ${esc((o.at || '').replace('T', ' ').slice(0, 16))}</div>
       <button class="btn" data-en="opt-best" style="margin-top:8px">Use the best setting of each leg</button></div>
-    ${['A', 'B', 'C', 'C2', 'C3', 'D', 'D2', 'D3'].filter(leg => o.legs[leg]).map(leg => `<div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>${BT_LEG[leg]}</th><th class="r">Train trades</th><th class="r">Train P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th class="r">Test trades</th><th class="r">Test P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th></th></tr></thead><tbody>
+    ${['A', 'B', 'C', 'C4', 'C2', 'C3', 'D', 'D4', 'D2', 'D3'].filter(leg => o.legs[leg]).map(leg => `<div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>${BT_LEG[leg]}</th><th class="r">Train trades</th><th class="r">Train P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th class="r">Test trades</th><th class="r">Test P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th></th></tr></thead><tbody>
       ${(o.legs[leg] || []).slice(0, 6).map((x, i) => `<tr><td>${esc(enOptSetting(leg[0], x.p))}</td>${cell(x.train, x.trainX)}${cell(x.test, x.testX)}<td><button class="btn sm" data-enoptuse="${leg}.${i}">Use</button></td></tr>`).join('')}</tbody></table></div>`).join('')}
     <div class="note" style="padding:8px 16px 14px">Beyond mkt = the same trades measured against SPY. In a rising market an unhedged long wins on the market alone: compare the two columns, and trust the test period.</div>`;
 }
@@ -553,7 +564,7 @@ document.addEventListener('click', async e => {
     if (ds.enco) { e.preventDefault(); E.sym = ds.enco; E.tab = 'company'; return vEarnings(); }
     if (ds.ensort) { E.dir = E.sort === ds.ensort ? -E.dir : -1; E.sort = ds.ensort; return enBody(); }
     if (ds.enopton) { S.en.optOn = ds.enopton; document.querySelectorAll('[data-enopton]').forEach(b => b.setAttribute('aria-pressed', b === el)); return enOptLoad(); }
-    if (ds.enoptuse) { const [key, i] = ds.enoptuse.split('.'), leg = key[0]; const x = S.enOpt.opt.legs[key][+i]; Object.assign(S.en.bt.legs[leg], leg in { C: 1, D: 1 } ? BT_EXIT : {}, x.p, { on: true }); enBody(); toast(`${leg}: ${enOptSetting(leg, x.p)}. Run the backtest.`); return; }
+    if (ds.enoptuse) { const [key, i] = ds.enoptuse.split('.'), leg = key[0]; const x = S.enOpt.opt.legs[key][+i]; Object.assign(S.en.bt.legs[leg], leg === 'C' ? { ...BT_CF, ...BT_EXIT } : leg === 'D' ? { ...BT_DF, ...BT_EXIT } : {}, x.p, { on: true }); enBody(); toast(`${leg}: ${enOptSetting(leg, x.p)}. Run the backtest.`); return; }
     if (ds.entx) { e.preventDefault(); return enTxShow(ds.entx); }
     if (ds.enmt) { S.en.mt = ds.enmt; $('#en-res').innerHTML = enResults(S.enStudy); return; }
     if (ds.enpm) { S.en.pmode = ds.enpm; $('#en-proj').innerHTML = enProjHtml(S.enProj); return; }
@@ -596,7 +607,7 @@ document.addEventListener('click', async e => {
         const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(v.trades.map(t => keys.map(k => q(k === 'contract' ? enOcc(t.occ) : t[k])).join(','))).join('\n')], { type: 'text/csv' }));
         a.download = 'earnings_real_options.csv'; a.click(); URL.revokeObjectURL(a.href); return; }
       case 'opt-run': el.disabled = true; await api('/fund/backtest/opt', { method: 'POST', body: { cfg: { stake: S.en.bt.stake, costBps: S.en.bt.costBps, borrowPct: S.en.bt.borrowPct, ivMult: S.en.bt.ivMult, optSpreadPct: S.en.bt.optSpreadPct } } }); toast('Optimizing…'); setTimeout(enOptLoad, 1500); return;
-      case 'opt-best': { const o = S.enOpt.opt, B = o.best || {}; 'ABCD'.split('').forEach(k => { const p = B[k] || (o.legs[k] && o.legs[k][0] && o.legs[k][0].p); if (p) Object.assign(S.en.bt.legs[k], k in { C: 1, D: 1 } ? BT_EXIT : {}, p, { on: true }); }); enBody(); toast('Best train setting of each leg applied: run the backtest.'); return; }
+      case 'opt-best': { const o = S.enOpt.opt, B = o.best || {}; 'ABCD'.split('').forEach(k => { const p = B[k] || (o.legs[k] && o.legs[k][0] && o.legs[k][0].p); if (p) Object.assign(S.en.bt.legs[k], k === 'C' ? { ...BT_CF, ...BT_EXIT } : k === 'D' ? { ...BT_DF, ...BT_EXIT } : {}, p, { on: true }); }); enBody(); toast('Best train setting of each leg applied: run the backtest.'); return; }
       case 'tx-close': $('#en-tx-view').innerHTML = ''; return;
       case 'uni-sp500': { el.disabled = true; toast('Loading the S&P 500 from FMP…'); const r = await api('/fund/universe', { method: 'POST', body: { source: 'sp500', removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(); }
       case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings();

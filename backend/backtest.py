@@ -11,6 +11,13 @@ Four legs, each optional, each with its own settings and a fixed stake per trade
   D  Post-release short: score in the bottom `band`. Short at the day-0 close, hold up to `hold` sessions. Filter: the
      market strong going in (above its 200-day average and up over 3 months). Hedge as C.
 
+Setup filters (toggles; from the real-option review, Nov 2026 — check them on the years before 2024):
+  C  rs: the stock beat SPY over the month before (pre21ab > 0) · cash: cash earnings ahead of reported (accruals < −4%)
+     · raised: guidance raised on the call · mktUp: SPY up > 6% over 3 months · noQ4: no entry January–April (Q4
+     reports) · noWeakSec: not services, retail, mining & energy, transport / utilities / telecom · quiet: no heavy
+     volume the week before (relVol5 ≤ 1.2)
+  D  calm: SPY up < 4% over 3 months · gapDown: gapped down ≥ 3% · miss: EPS missed by > 2% · notRaised: guidance not
+     raised on the call
 Entry for C and D: the day-0 close (default) or the day-0 open (`entry`; then day 0's own range counts for the stops).
 Exits for C and D (on the stock's daily bars after day 0, from the study's price files): a stop `stop` below the entry,
 a trailing stop `trail` below the best price since the entry (above, for a short), a profit target `target`; whichever
@@ -73,8 +80,10 @@ def trailing_pct(rows, key, when="day0"):
 LEG_DEFAULT = {"A": {"on": True, "cut": 0.2},
                "B": {"on": True, "band": 0.2, "gap": 0.02},
                "C": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "weak": True, "heavy": False, "far": False,
+                     "rs": False, "cash": False, "raised": False, "mktUp": False, "noQ4": False, "noWeakSec": False, "quiet": False,
                      "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "inst": "stock", "dte": 60, "mny": 0.0},
                "D": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "strong": True,
+                     "calm": False, "gapDown": False, "miss": False, "notRaised": False,
                      "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "inst": "stock", "dte": 60, "mny": 0.0}}
 DEFAULT = {"stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "ivMult": 1.0, "optSpreadPct": 5.0, "from": None, "to": None}
 HOLDS = (5, 20, 40, 60)
@@ -119,6 +128,8 @@ def clean(cfg):
                 leg[f] = max(0.0, min(0.9, float(leg.get(f) or 0)))
             leg["inst"] = "option" if leg.get("inst") == "option" else "stock"
             leg["entry"] = "open" if leg.get("entry") == "open" else "close"
+            for f in (C_FILTERS if k == "C" else D_FILTERS):
+                leg[f] = bool(leg.get(f))
             leg["dte"] = int(leg["dte"]) if int(leg.get("dte") or 0) in DTES else 60
             leg["mny"] = max(-0.3, min(0.3, float(leg.get("mny") or 0)))
         legs[k] = leg
@@ -400,15 +411,52 @@ def trades_for(rows, ctx, c, only=None, paths=None, keep_open=False):
                         ok &= (_f(r.get("r1ab")) or 0) > 0.02 and (_f(r.get("vol0")) or 0) >= 2.5
                     if L["far"]:
                         ok &= (_f(r.get("offHigh")) or 0) < -0.25
+                    ok = ok and setup_ok("C", L, r, d0)
                     why = f"score top {100 - sp * 100:.0f}%"
                 else:
                     if sp > L["band"]:
                         continue
                     ok = not L["strong"] or ((_f(r.get("spyVs200")) or 0) > 0 and (_f(r.get("spy63")) or 0) > 0)
+                    ok = ok and setup_ok("D", L, r, d0)
                     why = f"score bottom {sp * 100:.0f}%"
                 if ok:
                     hold_trade(k, L, r, d0, why, add, paths, c, out, ctx.get("openAfter"))
     return out if keep_open else [t for t in out if not t.get("open")]
+
+
+WEAK_SECTORS = ("Services", "Retail", "Mining & energy", "Transport, utilities, telecom")
+C_FILTERS = ("rs", "cash", "raised", "mktUp", "noQ4", "noWeakSec", "quiet")
+D_FILTERS = ("calm", "gapDown", "miss", "notRaised")
+
+
+def setup_ok(k, L, r, d0):
+    """The setup toggles of leg C / D (a missing value fails the filter)."""
+    g = lambda f: _f(r.get(f))
+    if k == "C":
+        if L.get("rs") and not ((g("pre21ab") or -1) > 0):
+            return False
+        if L.get("cash") and not ((g("accruals") if g("accruals") is not None else 1) < -0.04):
+            return False
+        if L.get("raised") and not ((g("txGuide") or 0) >= 1):
+            return False
+        if L.get("mktUp") and not ((g("spy63") or 0) > 0.06):
+            return False
+        if L.get("noQ4") and int(d0[5:7]) <= 4:
+            return False
+        if L.get("noWeakSec") and r.get("sector") in WEAK_SECTORS:
+            return False
+        if L.get("quiet") and (g("relVol5") or 0) > 1.2:
+            return False
+        return True
+    if L.get("calm") and not ((g("spy63") if g("spy63") is not None else 1) < 0.04):
+        return False
+    if L.get("gapDown") and not ((g("gap") or 0) <= -0.03):
+        return False
+    if L.get("miss") and not ((g("epsSurprise") or 0) < -2):
+        return False
+    if L.get("notRaised") and not ((g("txGuide") if g("txGuide") is not None else 1) <= 0):
+        return False
+    return True
 
 
 def hold_trade(k, L, r, d0, why, add, paths, c, out, open_after=None):
@@ -581,7 +629,7 @@ GRID = {                                              # stage 1: the entries (ex
 EXIT_GRID = {"entry": ["close", "open"], "hold": [20, 40, 60], "stop": [0.0, 0.05, 0.1, 0.15, 0.2], "trail": [0.0, 0.05, 0.1, 0.15, 0.2],
              "target": [0.0, 0.1, 0.2, 0.3]}            # stage 2: the exits, on stage 1's best entry
 OPT_GRID = {"dte": [30, 60, 90], "mny": [-0.05, 0.0, 0.05]}   # stage 3: the option, on stage 2's best exits
-STAGES = {1: "entry", 2: "exits", 3: "option"}
+STAGES = {1: "entry", 4: "setup filters", 2: "exits", 3: "option"}    # run in this order
 
 
 def _grid(g):
@@ -594,7 +642,24 @@ def combos(leg):
 
 
 def n_combos():
-    return sum(len(combos(k)) for k in GRID) + 2 * (len(_grid(EXIT_GRID)) + len(_grid(OPT_GRID)))
+    return sum(len(combos(k)) for k in GRID) + 2 ** len(C_FILTERS) + 2 ** len(D_FILTERS) + 2 * (len(_grid(EXIT_GRID)) + len(_grid(OPT_GRID)))
+
+
+def filter_grid(leg):
+    fs = C_FILTERS if leg == "C" else D_FILTERS
+    return [dict(zip(fs, v)) for v in itertools.product([False, True], repeat=len(fs))]
+
+
+def _best_of(res, leg, stages, on="alpha"):
+    """The best of several stages' winners on train (the later stage only if it beats the earlier)."""
+    key = "trainX" if on == "alpha" else "train"
+    cand = []
+    for st in stages:
+        xs = ranked([x for x in res if x.get("stage", 1) == st], on).get(leg) or []
+        if xs:
+            cand.append(xs[0])
+    ok = [x for x in cand if (x["train"].get("n") or 0) >= MIN_TRADES] or cand
+    return max(ok, key=lambda x: (x.get(key) or {}).get("t") or -1e9)["p"] if ok else None
 
 
 def _sig(leg, stage, p):
@@ -638,10 +703,16 @@ def optimize(rows, cfg, prog=None, deadline=None, done=None, paths=None):
         for p in combos(leg):
             if not test(leg, 1, p):
                 return res, False
+    for leg in "CD":                                   # the setup filters, every combination, on the best entry
+        base = {**LEG_DEFAULT[leg], **(_best(res, leg, 1) or {})}
+        base.pop("on", None)
+        for f in filter_grid(leg):
+            if not test(leg, 4, {**base, **f}):
+                return res, False
     if not paths:
         return res, True
     for leg in "CD":
-        base = {**LEG_DEFAULT[leg], **(_best(res, leg, 1) or {})}
+        base = {**LEG_DEFAULT[leg], **(_best_of(res, leg, (1, 4)) or {})}
         base.pop("on", None)
         for e in _grid(EXIT_GRID):
             if not test(leg, 2, {**base, **e, "inst": "stock"}):
@@ -724,7 +795,7 @@ def opt_view(sub, on="alpha", top=12):
                 legs[k if st == 1 else f"{k}{st}"] = v[:top]
     key = "trainX" if on == "alpha" else "train"
     for k in "ABCD":                                   # the best of each leg: a later stage only if it beats the earlier on train
-        cand = [legs[x][0] for x in (k, f"{k}2", f"{k}3") if legs.get(x)]
+        cand = [legs[x][0] for x in (k, f"{k}4", f"{k}2", f"{k}3") if legs.get(x)]
         cand = [x for x in cand if (x["train"].get("n") or 0) >= MIN_TRADES] or cand
         if cand:
             best[k] = max(cand, key=lambda x: (x.get(key) or {}).get("t") or -1e9)["p"]

@@ -192,7 +192,7 @@ def test_backtest_math():
                             "D": {"on": True, "hedge": "beta", "strong": True}}})
     assert r["legs"][0]["avg"] == -50.0 and r["maxOpen"] >= 5                # no beta on the rows: beta 1 = SPY
     res, ok = backtest.optimize(rows, {})
-    assert ok and len(res) == sum(len(backtest.combos(k)) for k in "ABCD") and res[0]["train"] is not None
+    assert ok and len(res) == sum(len(backtest.combos(k)) for k in "ABCD") + 128 + 16 and res[0]["train"] is not None
     rk = backtest.ranked(res)
     assert rk["C"][0]["train"]["n"] >= rk["C"][-1]["train"]["n"] or (rk["C"][0]["trainX"].get("t") or 0) >= (rk["C"][-1]["trainX"].get("t") or -1e9)
     r = backtest.run(rows, {"legs": {"A": {"on": False}, "B": {"on": False}, "C": {"on": True, "band": 0.3, "hold": 40, "hedge": "none", "weak": False}, "D": {"on": False}}})
@@ -331,7 +331,7 @@ def test_api_flow():
     st, r = call("POST", "/fund/backtest/opt", {"cfg": {"stake": 500}})
     assert st == 200 and r["status"] == "done", r
     st, o = call("GET", "/fund/backtest/opt", None, {"on": "alpha"})
-    assert o["opt"]["complete"] and set("ABCD") <= set(o["opt"]["legs"]) and {"C2", "D2", "C3", "D3"} <= set(o["opt"]["legs"]) and o["opt"]["cfg"]["stake"] == 500, o
+    assert o["opt"]["complete"] and set("ABCD") <= set(o["opt"]["legs"]) and {"C4", "D4", "C2", "D2", "C3", "D3"} <= set(o["opt"]["legs"]) and o["opt"]["cfg"]["stake"] == 500, o
     st, r = call("POST", "/fund/universe", {"tickers": []})
     assert r["universe"] == []
 
@@ -483,6 +483,23 @@ def test_exits_and_option():
     adds = []
     B.hold_trade("C", cfg["legs"]["C"], row, "2024-01-02", "test", lambda *a, **k: adds.append(a), paths, cfg, out)
     assert adds and abs(adds[0][2] - (-0.04 - (404 / 400 - 1))) < 1e-3 and "stop" in adds[0][6], adds
+
+
+
+def test_setup_filters():
+    import backtest as B
+    c = B.clean({"legs": {"C": {"rs": 1, "cash": True, "noQ4": True, "noWeakSec": True}, "D": {"gapDown": True, "notRaised": True}}})
+    L, D = c["legs"]["C"], c["legs"]["D"]
+    assert L["rs"] is True and L["raised"] is False and D["miss"] is False
+    good = {"pre21ab": 0.05, "accruals": -0.08, "sector": "Hardware & semiconductors"}
+    assert B.setup_ok("C", L, good, "2025-05-01")
+    assert not B.setup_ok("C", L, good, "2025-02-01")                        # Q4 reports
+    assert not B.setup_ok("C", L, {**good, "pre21ab": -0.01}, "2025-05-01")
+    assert not B.setup_ok("C", L, {**good, "accruals": None}, "2025-05-01")  # unknown: filtered out
+    assert not B.setup_ok("C", L, {**good, "sector": "Retail"}, "2025-05-01")
+    assert B.setup_ok("C", B.clean({})["legs"]["C"], {}, "2025-02-01")      # all off: everything passes
+    assert B.setup_ok("D", D, {"gap": -0.05, "txGuide": 0}, "2025-05-01") and not B.setup_ok("D", D, {"gap": -0.05, "txGuide": 1}, "2025-05-01")
+    assert len(B.filter_grid("C")) == 128 and len(B.filter_grid("D")) == 16
 
 
 if __name__ == "__main__":
