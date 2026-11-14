@@ -235,16 +235,25 @@ function enTodayHtml(r) {
 }
 
 /* ---------- Strategy backtest ---------- */
-S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1,
+const BT_EXIT = { stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
+S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1, ivMult: 1, optSpreadPct: 5,
   legs: { A: { on: true, cut: 0.2 }, B: { on: true, band: 0.2, gap: 0.02 },
-    C: { on: true, band: 0.2, hold: 40, hedge: 'spy', weak: true, heavy: false, far: false }, D: { on: true, band: 0.2, hold: 40, hedge: 'spy', strong: true } } };
+    C: { on: true, band: 0.2, hold: 40, hedge: 'spy', weak: true, heavy: false, far: false, ...BT_EXIT }, D: { on: true, band: 0.2, hold: 40, hedge: 'spy', strong: true, ...BT_EXIT } } };
 S.en.optOn = 'alpha';
 function enBtShell() {
   const c = S.en.bt, L = c.legs;
   const ck = (leg, k) => `<input type="checkbox" data-enleg="${leg}.${k}" ${L[leg][k] ? 'checked' : ''}>`;
   const sel = (leg, k, opts) => `<select data-enleg="${leg}.${k}">${opts.map(([v, l]) => `<option value="${v}" ${String(L[leg][k]) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
   const band = (leg, lab) => `<label class="f">${lab}${sel(leg, leg === 'A' ? 'cut' : 'band', [[0.1, '10%'], [0.2, '20%'], [0.3, '30%']])}</label>`;
-  const hold = leg => `<label class="f">Hold${sel(leg, 'hold', [[5, '5 sessions'], [20, '20 sessions (~1 month)'], [40, '40 sessions (~2 months)']])}</label>`;
+  const hold = leg => `<label class="f">Hold up to${sel(leg, 'hold', [[5, '5 sessions'], [20, '20 sessions (~1 month)'], [40, '40 sessions (~2 months)'], [60, '60 sessions (~3 months)']])}</label>`;
+  const pcs = a => a.map(v => [v, v ? (v * 100).toFixed(0) + '%' : 'Off']);
+  const exits = leg => `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;flex-basis:100%;border-top:1px dashed var(--line);padding-top:8px">
+    <label class="f">Stop${sel(leg, 'stop', pcs([0, 0.05, 0.1, 0.15, 0.2, 0.25]))}</label>
+    <label class="f">Trailing stop${sel(leg, 'trail', pcs([0, 0.05, 0.1, 0.15, 0.2, 0.25]))}</label>
+    <label class="f">Profit target${sel(leg, 'target', pcs([0, 0.1, 0.2, 0.3, 0.5]))}</label>
+    <label class="f">Trade${sel(leg, 'inst', [['stock', 'The stock'], ['option', leg === 'C' ? 'Option: a call' : 'Option: a put']])}</label>
+    ${L[leg].inst === 'option' ? `<label class="f">Expiry${sel(leg, 'dte', [[30, '30 days'], [60, '60 days'], [90, '90 days']])}</label>
+    <label class="f">Strike${sel(leg, 'mny', [[-0.05, '5% in the money'], [0, 'At the money'], [0.05, '5% out of the money'], [0.1, '10% out of the money']])}</label>` : ''}</div>`;
   const hedge = leg => `<label class="f">Hedge${sel(leg, 'hedge', [['none', 'None'], ['spy', 'SPY 1:1'], ['beta', 'Beta × SPY']])}</label>`;
   const box = (leg, title, desc, body) => `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px"><label class="check"><b>${ck(leg, 'on')} ${leg} · ${title}</b></label>
     <div class="note" style="margin:4px 0 8px 24px">${desc}</div><div style="margin-left:24px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">${body}</div></div>`;
@@ -252,30 +261,37 @@ function enBtShell() {
     <div class="bd"><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       ${box('A', 'After the call: buy at the open', 'The after-the-call model (out-of-sample) in the top part of the previous year’s predictions, and not “bad news + gap up”. Buy at the day-0 open, sell at the close.', band('A', 'Model top'))}
       ${box('B', 'Fade “bad news + gap up”', 'Post-release score in the bottom part and a gap up. Short at the open, cover at the close.', band('B', 'Score bottom') + `<label class="f">Gap above${sel('B', 'gap', [[0.01, '+1%'], [0.02, '+2%'], [0.04, '+4%']])}</label>`)}
-      ${box('C', 'Post-release long', 'Score in the top part. Buy at the day-0 close.', band('C', 'Score top') + hold('C') + hedge('C') + `<div style="display:flex;flex-direction:column;gap:2px;flex-basis:100%">
+      ${box('C', 'Post-release long', 'Score in the top part. Buy at the day-0 close.', band('C', 'Score top') + hold('C') + hedge('C') + exits('C') + `<div style="display:flex;flex-direction:column;gap:2px;flex-basis:100%">
         <label class="check">${ck('C', 'weak')} only when the market is weak going in (below its 200-day average or down over 3 months)</label>
         <label class="check">${ck('C', 'heavy')} only when day 0 was up >2% on heavy volume (≥2.5× normal)</label>
         <label class="check">${ck('C', 'far')} only when the stock is >25% below its 52-week high</label></div>`)}
-      ${box('D', 'Post-release short', 'Score in the bottom part. Short at the day-0 close.', band('D', 'Score bottom') + hold('D') + hedge('D') + `<label class="check" style="flex-basis:100%">${ck('D', 'strong')} only when the market is strong going in (above its 200-day average and up over 3 months)</label>`)}
+      ${box('D', 'Post-release short', 'Score in the bottom part. Short at the day-0 close.', band('D', 'Score bottom') + hold('D') + hedge('D') + exits('D') + `<label class="check" style="flex-basis:100%">${ck('D', 'strong')} only when the market is strong going in (above its 200-day average and up over 3 months)</label>`)}
     </div>
     <div class="form" style="margin-top:12px;align-items:end">
       <label class="f">$ per trade<input type="number" min="10" step="100" data-enbtv="stake" value="${c.stake}"></label>
       <label class="f">Costs, round trip (bps)<input type="number" min="0" step="1" data-enbtv="costBps" value="${c.costBps}"></label>
       <label class="f">Short borrow (%/year)<input type="number" min="0" step="0.5" data-enbtv="borrowPct" value="${c.borrowPct}"></label>
+      <label class="f" title="The option's volatility = the stock's 20-day volatility × this">Option vol. ×<input type="number" min="0.3" max="3" step="0.1" data-enbtv="ivMult" value="${c.ivMult}"></label>
+      <label class="f" title="Bid-ask, round trip, in % of the premium">Option spread (%)<input type="number" min="0" max="50" step="1" data-enbtv="optSpreadPct" value="${c.optSpreadPct}"></label>
       <button class="btn primary" data-en="bt-run">Run backtest</button></div>
-    <p class="note">No look-ahead: the score uses signals ranked against earlier releases, the after-the-call prediction is the walk-forward one, and the top / bottom parts are judged against the previous 365 days. A and B are day trades, unhedged; for C and D a hedge is a second trade, and its cost is counted too. “Beyond the market” = the same trades measured against SPY: what the earnings rules added, not the market's own move.</p></div></section>
+    <p class="note">No look-ahead: the score uses signals ranked against earlier releases, the after-the-call prediction is the walk-forward one, and the top / bottom parts are judged against the previous 365 days. A and B are day trades, unhedged; for C and D a hedge is a second trade, and its cost is counted too. “Beyond the market” = the same trades measured against SPY: what the earnings rules added, not the market's own move.
+      Exits (C, D) use the stock's daily bars: a stop is filled at its price, or at the open on a gap through it; on a day that touches the stop and the target, the stop counts. Hold = the longest the trade stays open.
+      Options: no historical option quotes here — the call / put is <b>priced</b> with Black-Scholes at the stock's 20-day volatility × the multiplier, bought at the day-0 close for the stake and sold when the stock exit triggers (or at expiry). It shows leverage and time decay, not real fills; the hedge doesn't apply.</p></div></section>
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">like Research: every setting of each leg, ranked on the first 5 years (train) only; the last 5 years (test) show whether it holds</span><div class="grow"></div>
       <div class="seg"><button data-enopton="alpha" aria-pressed="${S.en.optOn === 'alpha'}">Rank on profit beyond the market</button><button data-enopton="pnl" aria-pressed="${S.en.optOn === 'pnl'}">Rank on profit as traded</button></div>
       <button class="btn primary" data-en="opt-run" style="margin-left:8px">Run optimizer</button></div><div id="en-opt"><div class="bd dim">Loading…</div></div></section>
     <div id="en-bt-res" style="margin-top:12px"></div>`;
 }
-const BT_LEG = { A: 'A · after the call, buy at the open', B: 'B · fade bad news + gap up', C: 'C · post-release long', D: 'D · post-release short' };
+const BT_LEG = { A: 'A · after the call, buy at the open', B: 'B · fade bad news + gap up', C: 'C · post-release long', D: 'D · post-release short',
+  C2: 'C · exits (on the best entry)', D2: 'D · exits (on the best entry)', C3: 'C · as a call (on the best exits)', D3: 'D · as a put (on the best exits)' };
 function enOptSetting(leg, p) {
   const pc = v => (v * 100).toFixed(0) + '%';
   if (leg === 'A') return `model top ${pc(p.cut)}`;
   if (leg === 'B') return `score bottom ${pc(p.band)}, gap > +${pc(p.gap)}`;
   const f = leg === 'C' ? [p.weak && 'weak market', p.heavy && 'heavy-volume up day', p.far && '>25% below high'].filter(Boolean) : [p.strong && 'strong market'].filter(Boolean);
-  return `score ${leg === 'C' ? 'top' : 'bottom'} ${pc(p.band)} · hold ${p.hold} · hedge ${p.hedge}${f.length ? ' · ' + f.join(', ') : ''}`;
+  const x = [p.stop && `stop ${pc(p.stop)}`, p.trail && `trailing ${pc(p.trail)}`, p.target && `target ${pc(p.target)}`].filter(Boolean);
+  const o = p.inst === 'option' ? ` · ${leg === 'C' ? 'call' : 'put'} ${p.dte}d ${p.mny ? pc(Math.abs(p.mny)) + (p.mny > 0 ? ' OTM' : ' ITM') : 'ATM'}` : ` · hedge ${p.hedge}`;
+  return `score ${leg === 'C' ? 'top' : 'bottom'} ${pc(p.band)} · hold ≤ ${p.hold}${x.length ? ' · ' + x.join(', ') : ''}${o}${f.length ? ' · ' + f.join(', ') : ''}`;
 }
 async function enOptLoad() {
   const el = $('#en-opt'); if (!el) return;
@@ -285,13 +301,13 @@ async function enOptLoad() {
 function enOptHtml(r) {
   const o = r.opt;
   if (r.job && r.job.status === 'running' && r.job.job === 'fundopt') return `<div class="bd">${esc(r.job.msg || 'Optimizing…')}</div>`;
-  if (!o || !o.legs) return '<div class="bd dim">Not run yet. It tests every setting of each leg (about 280) in under a minute.</div>';
+  if (!o || !o.legs) return '<div class="bd dim">Not run yet. Three stages: the entries of each leg, then (C, D) every exit — hold, stop, trailing stop, target — on the best entry, then the option on the best exits. About 900 settings, a few minutes.</div>';
   const money = v => v == null ? '—' : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
   const cell = (m, x) => `<td class="r">${m.n || 0}</td><td class="r ${cls(m.total)}">${money(m.total)}</td><td class="r ${cls(x && x.total)}">${money(x && x.total)}</td><td class="r">${tstat(x && x.t)}</td>`;
-  return `<div class="bd" style="padding-bottom:0"><div class="note">Split: train before ${esc(o.split || '—')}, test after. Ranked on the train ${o.on === 'alpha' ? 'profit beyond the market' : 'profit as traded'} (t of the P/L per trade, at least ${o.minTrades} trades). A setting that also holds on the test period is the one to use. ${esc((o.at || '').replace('T', ' ').slice(0, 16))}</div>
+  return `<div class="bd" style="padding-bottom:0"><div class="note">Split: train before ${esc(o.split || '—')}, test after. ${o.legs.C2 ? '' : '<b>The exit and option stages need the daily paths: run the optimizer again once the backtest has built them.</b> '} Ranked on the train ${o.on === 'alpha' ? 'profit beyond the market' : 'profit as traded'} (t of the P/L per trade, at least ${o.minTrades} trades). A setting that also holds on the test period is the one to use. ${esc((o.at || '').replace('T', ' ').slice(0, 16))}</div>
       <button class="btn" data-en="opt-best" style="margin-top:8px">Use the best setting of each leg</button></div>
-    ${'ABCD'.split('').map(leg => `<div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>${BT_LEG[leg]}</th><th class="r">Train trades</th><th class="r">Train P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th class="r">Test trades</th><th class="r">Test P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th></th></tr></thead><tbody>
-      ${(o.legs[leg] || []).slice(0, 6).map((x, i) => `<tr><td>${esc(enOptSetting(leg, x.p))}</td>${cell(x.train, x.trainX)}${cell(x.test, x.testX)}<td><button class="btn sm" data-enoptuse="${leg}.${i}">Use</button></td></tr>`).join('')}</tbody></table></div>`).join('')}
+    ${['A', 'B', 'C', 'C2', 'C3', 'D', 'D2', 'D3'].filter(leg => o.legs[leg]).map(leg => `<div class="tbl-wrap" style="margin-top:10px"><table class="tbl"><thead><tr><th>${BT_LEG[leg]}</th><th class="r">Train trades</th><th class="r">Train P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th class="r">Test trades</th><th class="r">Test P/L</th><th class="r">Beyond mkt</th><th class="r">t</th><th></th></tr></thead><tbody>
+      ${(o.legs[leg] || []).slice(0, 6).map((x, i) => `<tr><td>${esc(enOptSetting(leg[0], x.p))}</td>${cell(x.train, x.trainX)}${cell(x.test, x.testX)}<td><button class="btn sm" data-enoptuse="${leg}.${i}">Use</button></td></tr>`).join('')}</tbody></table></div>`).join('')}
     <div class="note" style="padding:8px 16px 14px">Beyond mkt = the same trades measured against SPY. In a rising market an unhedged long wins on the market alone: compare the two columns, and trust the test period.</div>`;
 }
 function enBtEquity(eq) {
@@ -326,12 +342,12 @@ function enBtHtml(r) {
       <section class="panel"><div class="hd"><h2>By leg</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.legs.map(x => row(BT_LEG[x.leg] || x.leg, x)).join('')}</tbody></table></div></section>
       <section class="panel"><div class="hd"><h2>By year (exit)</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.years.map(x => row(x.year, x)).join('')}</tbody></table></div></section></div>
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Trades</h2><span class="dim" style="font-size:13px">the latest ${Math.min(300, r.trades.length)} of ${r.nTrades.toLocaleString('en-US')}</span><div class="grow"></div><button class="btn sm" data-en="bt-csv">Export trades (CSV)</button></div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Release</th><th>Entry</th><th>Exit</th><th>Side</th><th class="r">Return</th><th class="r">P/L</th><th>Why</th></tr></thead><tbody>
-      ${r.trades.slice(-300).reverse().map(t => `<tr><td>${t.leg}</td><td><a class="name" href="#earnings" data-enco="${esc(t.sym)}">${esc(t.sym)}</a></td><td class="mono">${esc(t.release)}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td>${t.side}</td><td class="r ${cls(t.side === 'long' ? t.ret : -t.ret)}">${pct(t.ret, 2)}</td><td class="r ${cls(t.pnl)}"><b>${money2(t.pnl)}</b></td><td class="dim">${esc(t.why)}</td></tr>`).join('')}</tbody></table></div></section>`;
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Release</th><th>Entry</th><th>Exit</th><th>Side</th><th class="r" title="the trade's result: a short's sign flipped, an option's own return">Result</th><th class="r">P/L</th><th>Why</th></tr></thead><tbody>
+      ${r.trades.slice(-300).reverse().map(t => `<tr><td>${t.leg}</td><td><a class="name" href="#earnings" data-enco="${esc(t.sym)}">${esc(t.sym)}</a></td><td class="mono">${esc(t.release)}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td>${t.side}</td><td class="r ${cls(t.res ?? (t.side === 'short' ? -t.ret : t.ret))}" title="stock ${pct(t.ret, 2)}">${pct(t.res ?? (t.side === 'short' ? -t.ret : t.ret), 2)}</td><td class="r ${cls(t.pnl)}"><b>${money2(t.pnl)}</b></td><td class="dim">${esc(t.why)}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 function enBtCsv() {
   const r = S.enBt; if (!r) return;
-  const keys = ['leg', 'sym', 'release', 'entry', 'exit', 'side', 'ret', 'pnl', 'why'];
+  const keys = ['leg', 'sym', 'release', 'entry', 'exit', 'side', 'ret', 'res', 'pnl', 'alpha', 'why'];
   const q = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(r.trades.map(t => keys.map(k => q(t[k])).join(','))).join('\n')], { type: 'text/csv' }));
   a.download = 'earnings_strategy_trades.csv'; a.click(); URL.revokeObjectURL(a.href);
@@ -502,7 +518,7 @@ document.addEventListener('click', async e => {
     if (ds.enco) { e.preventDefault(); E.sym = ds.enco; E.tab = 'company'; return vEarnings(); }
     if (ds.ensort) { E.dir = E.sort === ds.ensort ? -E.dir : -1; E.sort = ds.ensort; return enBody(); }
     if (ds.enopton) { S.en.optOn = ds.enopton; document.querySelectorAll('[data-enopton]').forEach(b => b.setAttribute('aria-pressed', b === el)); return enOptLoad(); }
-    if (ds.enoptuse) { const [leg, i] = ds.enoptuse.split('.'); const x = S.enOpt.opt.legs[leg][+i]; Object.assign(S.en.bt.legs[leg], x.p, { on: true }); enBody(); toast(`${leg}: ${enOptSetting(leg, x.p)}. Run the backtest.`); return; }
+    if (ds.enoptuse) { const [key, i] = ds.enoptuse.split('.'), leg = key[0]; const x = S.enOpt.opt.legs[key][+i]; Object.assign(S.en.bt.legs[leg], leg in { C: 1, D: 1 } ? BT_EXIT : {}, x.p, { on: true }); enBody(); toast(`${leg}: ${enOptSetting(leg, x.p)}. Run the backtest.`); return; }
     if (ds.entx) { e.preventDefault(); return enTxShow(ds.entx); }
     if (ds.enmt) { S.en.mt = ds.enmt; $('#en-res').innerHTML = enResults(S.enStudy); return; }
     if (ds.enpm) { S.en.pmode = ds.enpm; $('#en-proj').innerHTML = enProjHtml(S.enProj); return; }
@@ -527,7 +543,7 @@ document.addEventListener('click', async e => {
         try {
           let r = await api('/fund/backtest', { method: 'POST', body: { cfg: S.en.bt } });
           for (let i = 0; r.preparing && i < 100; i++) {         // an older study: scored once in the background (~2 minutes)
-            $('#en-bt-res').innerHTML = '<div class="panel"><div class="empty">Scoring the study\'s releases for the backtest (once, about 2 minutes)…</div></div>';
+            $('#en-bt-res').innerHTML = `<div class="panel"><div class="empty">${esc(((await api('/fund')).job || {}).msg || 'Preparing the study for the backtest (once, a few minutes)…')}</div></div>`;
             await new Promise(res => setTimeout(res, 4000));
             const j = (await api('/fund')).job || {};
             if (j.status === 'error') throw new Error(j.msg || 'Scoring failed.');
@@ -538,8 +554,8 @@ document.addEventListener('click', async e => {
         catch (err) { $('#en-bt-res').innerHTML = `<div class="panel"><div class="empty loss">${esc(err.message)}</div></div>`; }
         el.disabled = false; el.textContent = 'Run backtest'; return; }
       case 'bt-csv': return enBtCsv();
-      case 'opt-run': el.disabled = true; await api('/fund/backtest/opt', { method: 'POST', body: { cfg: { stake: S.en.bt.stake, costBps: S.en.bt.costBps, borrowPct: S.en.bt.borrowPct } } }); toast('Optimizing…'); setTimeout(enOptLoad, 1500); return;
-      case 'opt-best': { const L = S.enOpt.opt.legs; 'ABCD'.split('').forEach(k => { if (L[k] && L[k][0]) Object.assign(S.en.bt.legs[k], L[k][0].p, { on: true }); }); enBody(); toast('Best train setting of each leg applied: run the backtest.'); return; }
+      case 'opt-run': el.disabled = true; await api('/fund/backtest/opt', { method: 'POST', body: { cfg: { stake: S.en.bt.stake, costBps: S.en.bt.costBps, borrowPct: S.en.bt.borrowPct, ivMult: S.en.bt.ivMult, optSpreadPct: S.en.bt.optSpreadPct } } }); toast('Optimizing…'); setTimeout(enOptLoad, 1500); return;
+      case 'opt-best': { const o = S.enOpt.opt, B = o.best || {}; 'ABCD'.split('').forEach(k => { const p = B[k] || (o.legs[k] && o.legs[k][0] && o.legs[k][0].p); if (p) Object.assign(S.en.bt.legs[k], k in { C: 1, D: 1 } ? BT_EXIT : {}, p, { on: true }); }); enBody(); toast('Best train setting of each leg applied: run the backtest.'); return; }
       case 'tx-close': $('#en-tx-view').innerHTML = ''; return;
       case 'uni-sp500': { el.disabled = true; toast('Loading the S&P 500 from FMP…'); const r = await api('/fund/universe', { method: 'POST', body: { source: 'sp500', removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(); }
       case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings();
@@ -560,6 +576,6 @@ document.addEventListener('change', e => { if (e.target.id === 'en-day') { S.en.
 
 document.addEventListener('change', e => {
   const t = e.target, c = S.en.bt;
-  if (t.dataset.enleg) { const [leg, k] = t.dataset.enleg.split('.'); c.legs[leg][k] = t.type === 'checkbox' ? t.checked : (['cut', 'band', 'gap', 'hold'].includes(k) ? +t.value : t.value); }
-  else if (t.dataset.enbtv) { const k = t.dataset.enbtv; c[k] = ['stake', 'costBps', 'borrowPct'].includes(k) ? +t.value : t.value; }
+  if (t.dataset.enleg) { const [leg, k] = t.dataset.enleg.split('.'); c.legs[leg][k] = t.type === 'checkbox' ? t.checked : (['cut', 'band', 'gap', 'hold', 'stop', 'trail', 'target', 'dte', 'mny'].includes(k) ? +t.value : t.value); if (k === 'inst') enBody(); }
+  else if (t.dataset.enbtv) { const k = t.dataset.enbtv; c[k] = ['stake', 'costBps', 'borrowPct', 'ivMult', 'optSpreadPct'].includes(k) ? +t.value : t.value; }
 });

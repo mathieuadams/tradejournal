@@ -143,7 +143,7 @@ def handler(event, ctx=None):
         elif job == "fundprep":                         # score an older study for the backtest
             import backtest
             backtest.prepare(sub, prog)
-            set_status(sub, name, status="done", msg="Study scored for the backtest.")
+            set_status(sub, name, status="done", msg="Study ready for the backtest (scores and daily paths).")
         elif job == "fundopt":                          # the earnings strategy optimizer
             import backtest
             if not backtest.opt_job(sub, prog, dl):

@@ -733,12 +733,14 @@ def fund_backtest(sub, claims, body, q):
     rows = (F.store.get_json(f"fund/u/{sub}/study_rows") or {}).get("rows") or []
     if not rows:
         raise BadRequest("Run the event study first.")
-    if not backtest.ready(rows):                       # a study from before the backtest: score it in the background
-        st = jobs.status(sub, "fund") or {}
+    cfg = backtest.clean(body.get("cfg") or {})
+    need = backtest.needs_paths(cfg)
+    if not backtest.ready(rows) or (need and not backtest.paths_ready(sub, rows)):
+        st = jobs.status(sub, "fund") or {}           # scored / daily paths built once, in the background
         if st.get("status") != "running":
             jobs.start(sub, "fund", "fundprep", {})
-        return {"preparing": True}
-    out = backtest.run(rows, body.get("cfg") or {})
+        return {"preparing": True, "paths": need}
+    out = backtest.run(rows, cfg, paths=backtest.load_paths(sub) if need else None)
     F.store.put_json(f"fund/u/{sub}/backtest", {k: v for k, v in out.items() if k != "trades"})
     return out
 

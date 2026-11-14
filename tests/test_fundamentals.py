@@ -1,3 +1,4 @@
+import math
 """Earnings page tests: XBRL quarters, growth / inflection / quality, 8-K timing, CSV import, reactions, the study.
 No network (fake SEC EDGAR and Alpaca from dev/fakes.py).
 
@@ -306,7 +307,7 @@ def test_api_flow():
     st, r = call("POST", "/fund/backtest/opt", {"cfg": {"stake": 500}})
     assert st == 200 and r["status"] == "done", r
     st, o = call("GET", "/fund/backtest/opt", None, {"on": "alpha"})
-    assert o["opt"]["complete"] and set(o["opt"]["legs"]) == set("ABCD") and o["opt"]["cfg"]["stake"] == 500, o
+    assert o["opt"]["complete"] and set("ABCD") <= set(o["opt"]["legs"]) and {"C2", "D2", "C3", "D3"} <= set(o["opt"]["legs"]) and o["opt"]["cfg"]["stake"] == 500, o
     st, r = call("POST", "/fund/universe", {"tickers": []})
     assert r["universe"] == []
 
@@ -411,6 +412,45 @@ def test_model_no_lookahead():
     for r, p, base, y, when in preds:
         seen[when] = True
     assert preds and all(r["t1"] > r["base"] for r, *_ in preds)
+
+
+def test_exits_and_option():
+    import array
+    import backtest as B
+    # one release: day-0 close 100; then 101, 104 (high 106), 99 (low 97), 95, 110
+    bars = [["2024-01-02", 99, 100, 98, 100, 1], ["2024-01-03", 100, 101.5, 99.5, 101, 1], ["2024-01-04", 101, 106, 100, 104, 1],
+            ["2024-01-05", 103, 103.5, 97, 99, 1], ["2024-01-08", 98, 98, 94, 95, 1], ["2024-01-09", 96, 111, 95, 110, 1]]
+    bmap = {b[0]: 400 + i for i, b in enumerate(bars)}
+    P = array.array("h", B.path_of(bars, {b[0]: i for i, b in enumerate(bars)}, "2024-01-02", bmap))
+    assert P[0] == 1 and P[4] == 100 and P[5] == round(1 / 400 * 1e4)
+    j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0)                    # no rule: the last close
+    assert why == "time" and abs(fill - 1.10) < 1e-9 and dd == 7, (j, fill, dd, why)
+    j, fill, dd, s, why = B.walk(P, 0, False, 5, 0.04, 0, 0)                 # stop 4%: the 94 low on day 4 → filled at 96
+    assert why == "stop" and abs(fill - 0.96) < 1e-9 and j == 3
+    j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0.05, 0)                 # trailing 5% from the 106 high → 100.7, low 97
+    assert why == "trailing stop" and abs(fill - 1.06 * 0.95) < 1e-9 and j == 2, (j, fill, why)
+    j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0.05)                 # target 5%: the 106 high on day 2
+    assert why == "target" and abs(fill - 1.05) < 1e-9 and j == 1
+    j, fill, dd, s, why = B.walk(P, 0, True, 5, 0.05, 0, 0)                  # short, stop 5%: the 106 high
+    assert why == "stop" and abs(fill - 1.05) < 1e-9 and j == 1
+    j, fill, dd, s, why = B.walk(P, 0, True, 5, 0, 0, 0.04)                  # short, target 4%: low 94 → 96 (open 98)
+    assert why == "target" and abs(fill - 0.96) < 1e-9
+    j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0, max_days=3)        # an option expiring after 3 days
+    assert why == "expiry" and dd == 3
+    c, d = B.bs(1.0, 1.0, 60 / 365, 0.3, True)                               # an ATM 2-month call ≈ 5% of the stock, delta ≈ 0.55
+    assert 0.045 < c < 0.06 and 0.5 < d < 0.6, (c, d)
+    p_, d2 = B.bs(1.0, 1.0, 60 / 365, 0.3, False)
+    assert abs((c - p_) - (1 - math.exp(-B.R_FREE * 60 / 365))) < 1e-9 and d2 < 0      # put-call parity
+    row = {"sym": "X", "date": "2024-01-01", "day0": "2024-01-02", "vol20": 0.3 / math.sqrt(252), "beta": 1.0}
+    paths = ({"X|2024-01-02": 0}, P)
+    out, cfg = [], B.clean({"legs": {"C": {"hold": 5, "inst": "option", "dte": 60, "hedge": "none"}}})
+    B.hold_trade("C", cfg["legs"]["C"], row, "2024-01-02", "test", None, paths, cfg, out)
+    t = out[0]
+    assert t["side"].startswith("call 60d") and t["exit"] == "2024-01-08" and t["res"] < -0.3 and t["pnl"] == round(1000 * (t["res"] - 0.05), 2), t   # hold 5 = 4 sessions: −5% stock ≈ −50% call
+    out, cfg = [], B.clean({"legs": {"C": {"hold": 5, "stop": 0.04, "hedge": "spy"}}})
+    adds = []
+    B.hold_trade("C", cfg["legs"]["C"], row, "2024-01-02", "test", lambda *a, **k: adds.append(a), paths, cfg, out)
+    assert adds and abs(adds[0][2] - (-0.04 - (404 / 400 - 1))) < 1e-3 and "stop" in adds[0][6], adds
 
 
 if __name__ == "__main__":
