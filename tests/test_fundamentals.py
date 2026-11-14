@@ -521,6 +521,28 @@ def test_qqq_universe_is_separate():
     assert again["settings"] == spy["settings"] and again["settings"]["space"]["id"] == "spy"   # the SPY universe untouched
 
 
+
+def test_reaction_skips_a_gap_in_prices():
+    import fundamentals as F
+    from datetime import date, timedelta
+    bars, d = [], date(2022, 1, 3)
+    while len(bars) < 120:                               # 120 sessions, then nothing for two years, then 30 more
+        if d.weekday() < 5:
+            bars.append([d.isoformat(), 10, 10.2, 9.8, 10, 1000])
+        d += timedelta(days=1)
+    d = date(2025, 8, 29)
+    for _ in range(30):
+        if d.weekday() < 5:
+            bars.append([d.isoformat(), 1200, 1300, 1100, 1250, 1000])
+        d += timedelta(days=1)
+    bench = [[b[0], 400, 401, 399, 400, 1] for b in bars]
+    last = bars[119][0]
+    ev = {"sym": "BBBY", "date": (date.fromisoformat(last) + timedelta(days=3)).isoformat(), "timing": "bmo"}
+    assert F.reaction(ev, bars, bench) is None                       # day 0 would be 2025-08-29
+    ok = {"sym": "BBBY", "date": bars[100][0], "timing": "bmo"}
+    assert F.reaction(ok, bars, bench) is not None
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

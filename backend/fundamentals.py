@@ -757,6 +757,9 @@ def reaction(ev, bars, bench, bmap=None, bopen=None, mctx=None):
     d0 = base + 1
     if base < 64 or d0 >= len(bars):
         return None
+    rd = _d(ev["date"])                                # a gap in the price history (a delisted ticker reused later,
+    if (_d(dates[d0]) - rd).days > 5 or (rd - _d(dates[base])).days > 6:   # e.g. BBBY 2023 → 2025): not this release's reaction
+        return None
     c = lambda k: bars[k][4]
     bd = bmap if bmap is not None else {b[0]: b[4] for b in bench}
 
