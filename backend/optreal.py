@@ -21,6 +21,8 @@ import store
 from util import BadRequest, Unavailable, iso, now_ny
 
 START = "2022-01-01"                                  # the oldest option data Unusual Whales has
+V = 3                                                 # 3: as-traded prices (splits); an expiry that outlives the planned exit
+MIN_PREMIUM = 0.05                                    # an entry under 5 cents isn't a real fill
 KEY = "fund/u/{sub}/optreal"
 
 
@@ -89,13 +91,14 @@ def chain_on(tok, sym, day, call, dte):
     return out
 
 
-def pick(chain, day, dte, strike):
-    """The expiry nearest to day + dte (a later one on a tie), then the strike nearest to `strike` (open interest
-    breaks ties)."""
+def pick(chain, day, dte, strike, need=None):
+    """The expiry nearest to day + dte among those on or after `need` (the planned exit: the option must still be alive
+    to sell it; any expiry if none is); then the strike nearest to `strike` (open interest breaks ties)."""
     if not chain:
         return None
     want = _d(day) + timedelta(days=dte)
-    exps = sorted({c[1] for c in chain}, key=lambda e: (abs((_d(e) - want).days), -_d(e).toordinal()))
+    alive = {c[1] for c in chain if need and c[1] >= need} or {c[1] for c in chain}
+    exps = sorted(alive, key=lambda e: (abs((_d(e) - want).days), -_d(e).toordinal()))
     ex = exps[0]
     cs = [c for c in chain if c[1] == ex]
     return min(cs, key=lambda c: (abs(c[2] - strike), -c[3]))
@@ -133,7 +136,7 @@ def price_trade(tok, t, L, close_px, close_on, adj_close):
     f = 1.0                                            # traded price / adjusted price (a later split)
     for _ in range(2):
         strike = close_px * f * (1 + L["mny"] if call else 1 - L["mny"])
-        c = pick(ch, t["entry"], L["dte"], strike)
+        c = pick(ch, t["entry"], L["dte"], strike, t["exit"])
         if not c:
             return {"err": "no listed contract"}
         occ, ex, k, _ = c
@@ -155,6 +158,10 @@ def price_trade(tok, t, L, close_px, close_on, adj_close):
         mid0 = (bid0 + ask0) / 2 if bid0 is not None and ask0 else buy
     if not buy or buy <= 0:
         return {"err": "no entry price", "occ": occ}
+    if buy < MIN_PREMIUM:
+        return {"err": "premium under $0.05", "occ": occ}
+    if abs(k / strike - 1) > 0.25:
+        return {"err": "no strike near the target", "occ": occ}
     xd = t["exit"]
     how = "close"
     if ex < xd:                                        # expired first: intrinsic value at expiry
@@ -198,7 +205,8 @@ def start(sub, cfg):
     uwhales.token(sub)                                 # connected?
     st = store.get_json(key) or {}
     same = st.get("cfg") and {k: st["cfg"]["legs"][k] for k in "CD"} == {k: c["legs"][k] for k in "CD"} and st["cfg"]["stake"] == c["stake"]
-    store.put_json(key, {"cfg": c, "done": st.get("done") if same else {}, "complete": False})
+    same = same and st.get("v") == V
+    store.put_json(key, {"v": V, "cfg": c, "done": st.get("done") if same else {}, "complete": False})
     return jobs.start(sub, "fund", "fundreal", {})
 
 
@@ -222,10 +230,10 @@ def run_job(sub, prog=None, deadline=None):
     px_cache = {}
 
     def bars_of(sym):
+        """The stock's daily bars AS TRADED (not split-adjusted): option strikes are in those prices."""
         if sym not in px_cache:
-            b = (store.get_json("fund/px/" + sym) or {}).get("bars") or []
             px_cache.clear()
-            px_cache[sym] = {x[0]: x for x in b}
+            px_cache[sym] = raw_bars(sub, sym)
         return px_cache[sym]
     todo.sort(key=lambda t: (t["sym"], t["entry"]))
     t_last, n0, stopped = 0.0, len(done), False
@@ -266,6 +274,22 @@ def run_job(sub, prog=None, deadline=None):
     return not stopped
 
 
+def raw_bars(sub, sym):
+    """{date: bar} of the unadjusted daily bars since START (Alpaca adjustment=raw), kept a day; the split-adjusted
+    study prices otherwise (a stock that never split is the same)."""
+    import alpaca
+    ck = f"fund/pxraw/{sym}"
+    hit = store.get_json(ck)
+    if hit and hit.get("at", "") > iso(now_ny() - timedelta(hours=20)):
+        return {x[0]: x for x in hit["bars"]}
+    try:
+        b = alpaca.daily_range(sub, sym, (_d(START) - timedelta(days=5)).isoformat(), adjustment="raw")
+        store.put_json(ck, {"at": iso(now_ny()), "bars": b})
+    except Exception:
+        b = (store.get_json("fund/px/" + sym) or {}).get("bars") or []
+    return {x[0]: x for x in b}
+
+
 def _agg(xs, k):
     v = [x[k] for x in xs if x.get(k) is not None]
     return round(sum(v), 2) if v else 0.0
@@ -284,7 +308,7 @@ def summarize(trades, done, cfg):
             miss[(r or {}).get("err") or "not priced yet"] = miss.get((r or {}).get("err") or "not priced yet", 0) + 1
             continue
         real = round(stake * r["ret"], 2)
-        out.append({**{k: t[k] for k in ("leg", "sym", "release", "entry", "exit", "why")}, "occ": r["occ"], "expiry": r["expiry"], "strike": r["strike"],
+        out.append({**{k: t[k] for k in ("leg", "sym", "release", "entry", "why")}, "exit": r.get("exitDay") or t["exit"], "plannedExit": t["exit"], "occ": r["occ"], "expiry": r["expiry"], "strike": r["strike"],
                     "buy": r["buy"], "sell": r["sell"], "model": t["pnl"], "real": real,
                     "realMid": round(stake * r["retMid"], 2) if r.get("retMid") is not None else None,
                     "iv": r.get("iv"), "how": r["how"], "stock": t["ret"]})

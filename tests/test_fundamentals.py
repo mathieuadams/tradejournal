@@ -313,7 +313,10 @@ def test_api_flow():
     assert r.get("occ", "").startswith("AAA24") and "C00100000" in r["occ"] and r["how"] == "close", r     # the nearest strike: 100
     assert abs((_d := __import__("datetime").date)(*map(int, r["expiry"].split("-"))).toordinal() - _d(2024, 5, 3).toordinal()) <= 3, r
     assert r["buy"] > r["mid0"] and r["sell"] < r["mid1"] and abs(r["ret"] - (r["sell"] / r["buy"] - 1)) < 1e-12, r
-    t2 = {**t, "exit": "2024-08-01"}                   # held past the expiry: intrinsic value then
+    r3 = optreal.price_trade(tok, {**t, "exit": "2024-05-20"}, L, 101.0, lambda d: 100.0, 101.0)
+    assert r3["expiry"] >= "2024-05-20" and r3["how"] == "close", r3      # an expiry that outlives the planned exit
+    assert optreal.price_trade(tok, t, L, 101.0, lambda d: 100.0, 101.0)["occ"] == r["occ"]
+    t2 = {**t, "exit": "2024-08-01"}                   # past every listed expiry: intrinsic value then
     r2 = optreal.price_trade(tok, t2, L, 101.0, lambda d: 112.0, 101.0)
     assert r2["how"] == "expired" and abs(r2["sell"] - 12.0) < 1e-9, r2
     tr = [{**t, "why": "x", "release": "2024-03-03"}]

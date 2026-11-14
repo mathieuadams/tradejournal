@@ -290,6 +290,12 @@ async function enRealLoad() {
   try { const r = await api('/fund/backtest/real'); S.enReal = r; el.innerHTML = enRealHtml(r); if (r.job && r.job.status === 'running' && r.job.job === 'fundreal') setTimeout(enRealLoad, 4000); }
   catch (e) { el.innerHTML = `<div class="bd loss">${esc(e.message)}</div>`; }
 }
+function enOcc(o) {                                   // KLAC260320P00290000 → KLAC Put $290 · 20 Mar 26
+  const m = /^([A-Z.]+?)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec(o || ''); if (!m) return o || '';
+  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m[3] - 1];
+  const k = +m[6] / 1000;
+  return `${m[1]} ${m[5] === 'C' ? 'Call' : 'Put'} $${k % 1 ? k.toFixed(2) : k} · ${m[4]} ${mon} ${m[2]}`;
+}
 function enRealHtml(r) {
   if (r.job && r.job.status === 'running' && r.job.job === 'fundreal') return `<div class="bd">${esc(r.job.msg || 'Pricing…')} <span class="dim">(1–3 Unusual Whales calls per trade; contracts are kept, so a re-run is fast)</span></div>`;
   const v = r.view;
@@ -306,7 +312,7 @@ function enRealHtml(r) {
     <div class="tbl-wrap" style="margin-top:8px"><table class="tbl">${head.replace('<th></th>', '<th>Year (exit)</th>')}<tbody>${v.years.map(y => row(y.year, y)).join('')}</tbody></table></div>
     <div class="hd" style="margin-top:8px"><h2 style="font-size:14px">The 20 largest (real)</h2><div class="grow"></div><button class="btn sm" data-en="real-csv">Export the priced trades (CSV)</button></div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Entry</th><th>Exit</th><th>Contract</th><th class="r">Bought</th><th class="r">Sold</th><th class="r">IV</th><th class="r">Stock</th><th class="r">Model</th><th class="r">Real</th><th>Exit priced</th></tr></thead><tbody>
-      ${v.top.map(x => `<tr><td>${x.leg}</td><td>${esc(x.sym)}</td><td class="mono">${esc(x.entry)}</td><td class="mono">${esc(x.exit)}</td><td class="mono">${esc(x.occ)}</td><td class="r">${x.buy.toFixed(2)}</td><td class="r">${x.sell.toFixed(2)}</td>
+      ${v.top.map(x => `<tr><td>${x.leg}</td><td>${esc(x.sym)}</td><td class="mono">${esc(x.entry)}</td><td class="mono" title="${x.plannedExit && x.plannedExit !== x.exit ? 'planned exit ' + esc(x.plannedExit) : ''}">${esc(x.exit)}</td><td title="${esc(x.occ)}">${esc(enOcc(x.occ))}</td><td class="r">${x.buy.toFixed(2)}</td><td class="r">${x.sell.toFixed(2)}</td>
         <td class="r">${x.iv == null ? '—' : (x.iv * 100).toFixed(0) + '%'}</td><td class="r ${cls(x.stock)}">${pct(x.stock, 1)}</td><td class="r ${cls(x.model)}">${money(x.model)}</td><td class="r ${cls(x.real)}"><b>${money(x.real)}</b></td><td class="dim">${esc(x.how)}</td></tr>`).join('')}</tbody></table></div>
     <div class="note" style="padding:8px 16px 14px">Daily history only: an exit by a stop / trailing stop / target is priced at that day's closing quotes. A contract that expires before the exit is worth its value at expiry.</div>`;
 }
@@ -585,9 +591,9 @@ document.addEventListener('click', async e => {
       case 'bt-csv': return enBtCsv();
       case 'real-run': el.disabled = true; await api('/fund/backtest/real', { method: 'POST', body: { cfg: S.en.bt } }); toast('Pricing the C / D trades with real options…'); setTimeout(enRealLoad, 1500); el.disabled = false; return;
       case 'real-csv': { const v = (S.enReal || {}).view; if (!v) return;
-        const keys = ['leg', 'sym', 'release', 'entry', 'exit', 'occ', 'expiry', 'strike', 'buy', 'sell', 'iv', 'stock', 'model', 'real', 'realMid', 'how', 'why'];
+        const keys = ['leg', 'sym', 'release', 'entry', 'exit', 'plannedExit', 'contract', 'occ', 'expiry', 'strike', 'buy', 'sell', 'iv', 'stock', 'model', 'real', 'realMid', 'how', 'why'];
         const q = x => x == null ? '' : /[",\n]/.test(String(x)) ? '"' + String(x).replace(/"/g, '""') + '"' : String(x);
-        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(v.trades.map(t => keys.map(k => q(t[k])).join(','))).join('\n')], { type: 'text/csv' }));
+        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(v.trades.map(t => keys.map(k => q(k === 'contract' ? enOcc(t.occ) : t[k])).join(','))).join('\n')], { type: 'text/csv' }));
         a.download = 'earnings_real_options.csv'; a.click(); URL.revokeObjectURL(a.href); return; }
       case 'opt-run': el.disabled = true; await api('/fund/backtest/opt', { method: 'POST', body: { cfg: { stake: S.en.bt.stake, costBps: S.en.bt.costBps, borrowPct: S.en.bt.borrowPct, ivMult: S.en.bt.ivMult, optSpreadPct: S.en.bt.optSpreadPct } } }); toast('Optimizing…'); setTimeout(enOptLoad, 1500); return;
       case 'opt-best': { const o = S.enOpt.opt, B = o.best || {}; 'ABCD'.split('').forEach(k => { const p = B[k] || (o.legs[k] && o.legs[k][0] && o.legs[k][0].p); if (p) Object.assign(S.en.bt.legs[k], k in { C: 1, D: 1 } ? BT_EXIT : {}, p, { on: true }); }); enBody(); toast('Best train setting of each leg applied: run the backtest.'); return; }
