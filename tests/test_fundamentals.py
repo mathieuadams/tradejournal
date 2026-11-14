@@ -298,6 +298,27 @@ def test_api_flow():
         assert x["timing"] in ("bmo", "amc") and "epsSurprise" in x and x.get("gap") is not None and "scoreBand" not in x or x["scoreBand"] in ("top", "middle", "bottom")
     st, bt = call("POST", "/fund/backtest", {"cfg": {"stake": 1000}})
     assert st == 200 and "legs" in bt and bt["cfg"]["stake"] == 1000, bt
+    import uwhales                                     # the C / D trades with real option prices
+    uwhales.save_key(SUB, "uw_test_token_1234567890")
+    import optreal
+    import backtest
+    st, r = call("POST", "/fund/backtest/real", {"cfg": {"legs": {"C": {"band": 0.3, "weak": False}, "D": {"band": 0.3, "strong": False}}}})
+    assert st == 200, r
+    st, v = call("GET", "/fund/backtest/real")
+    assert st == 200 and v["complete"] and v["view"] and "all" in v["view"], v.get("job")
+    tok = uwhales.token(SUB)                           # one trade priced with the (fake) contract history
+    L = {"mny": 0.0, "dte": 60, "entry": "close"}
+    t = {"leg": "C", "sym": "AAA", "entry": "2024-03-04", "exit": "2024-04-01", "pnl": 10.0, "ret": 0.05, "vol20": 0.02}
+    r = optreal.price_trade(tok, t, L, 101.0, lambda d: 100.0, 101.0)
+    assert r.get("occ", "").startswith("AAA24") and "C00100000" in r["occ"] and r["how"] == "close", r     # the nearest strike: 100
+    assert abs((_d := __import__("datetime").date)(*map(int, r["expiry"].split("-"))).toordinal() - _d(2024, 5, 3).toordinal()) <= 3, r
+    assert r["buy"] > r["mid0"] and r["sell"] < r["mid1"] and abs(r["ret"] - (r["sell"] / r["buy"] - 1)) < 1e-12, r
+    t2 = {**t, "exit": "2024-08-01"}                   # held past the expiry: intrinsic value then
+    r2 = optreal.price_trade(tok, t2, L, 101.0, lambda d: 112.0, 101.0)
+    assert r2["how"] == "expired" and abs(r2["sell"] - 12.0) < 1e-9, r2
+    tr = [{**t, "why": "x", "release": "2024-03-03"}]
+    sm = optreal.summarize(tr, {optreal.tkey(t): {**r}}, backtest.clean({}))
+    assert sm["all"]["n"] == 1 and sm["all"]["real"] == round(1000 * r["ret"], 2) and sm["legs"]["C"]["model"] == 10.0, sm["all"]
     sr = F.store.get_json(f"fund/u/{SUB}/study_rows")
     F.store.put_json(f"fund/u/{SUB}/study_rows", {"rows": [{k: v for k, v in r.items() if k not in ("postScore", "oosO2c")} for r in sr["rows"]]})
     st, bt = call("POST", "/fund/backtest", {"cfg": {}})             # an older study: scored in the background, then run

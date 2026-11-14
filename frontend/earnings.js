@@ -24,7 +24,7 @@ function enBody() {
   if (E.tab === 'screen') b.innerHTML = enScreen();
   else if (E.tab === 'company') { b.innerHTML = enCompanyShell(); if (E.sym) enCompanyLoad(); }
   else if (E.tab === 'today') { b.innerHTML = enTodayShell(); enTodayLoad(); }
-  else if (E.tab === 'bt') { b.innerHTML = enBtShell(); enOptLoad(); if (S.enBt) $('#en-bt-res').innerHTML = enBtHtml(S.enBt); }
+  else if (E.tab === 'bt') { b.innerHTML = enBtShell(); enOptLoad(); enRealLoad(); if (S.enBt) $('#en-bt-res').innerHTML = enBtHtml(S.enBt); }
   else { b.innerHTML = enStudyShell(); enStudyLoad(); }
 }
 
@@ -281,7 +281,34 @@ function enBtShell() {
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">like Research: every setting of each leg, ranked on the first 5 years (train) only; the last 5 years (test) show whether it holds</span><div class="grow"></div>
       <div class="seg"><button data-enopton="alpha" aria-pressed="${S.en.optOn === 'alpha'}">Rank on profit beyond the market</button><button data-enopton="pnl" aria-pressed="${S.en.optOn === 'pnl'}">Rank on profit as traded</button></div>
       <button class="btn primary" data-en="opt-run" style="margin-left:8px">Run optimizer</button></div><div id="en-opt"><div class="bd dim">Loading…</div></div></section>
+    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Real option prices</h2><span class="dim" style="font-size:13px">legs C and D as calls / puts (their expiry and strike settings), priced with Unusual Whales' daily option history since 2022</span><div class="grow"></div>
+      <button class="btn primary" data-en="real-run">Price with real options</button></div><div id="en-real"><div class="bd dim">Loading…</div></div></section>
     <div id="en-bt-res" style="margin-top:12px"></div>`;
+}
+async function enRealLoad() {
+  const el = $('#en-real'); if (!el) return;
+  try { const r = await api('/fund/backtest/real'); S.enReal = r; el.innerHTML = enRealHtml(r); if (r.job && r.job.status === 'running' && r.job.job === 'fundreal') setTimeout(enRealLoad, 4000); }
+  catch (e) { el.innerHTML = `<div class="bd loss">${esc(e.message)}</div>`; }
+}
+function enRealHtml(r) {
+  if (r.job && r.job.status === 'running' && r.job.job === 'fundreal') return `<div class="bd">${esc(r.job.msg || 'Pricing…')} <span class="dim">(1–3 Unusual Whales calls per trade; contracts are kept, so a re-run is fast)</span></div>`;
+  const v = r.view;
+  if (!v) return '<div class="bd dim">Not run yet. For each C / D trade since 2022: the contract listed that day nearest to your expiry and strike, bought at the NBBO ask, sold at the NBBO bid on the exit day (the mid is shown too). Needs Unusual Whales connected (Data page).</div>';
+  const money = x => x == null ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const row = (lab, x) => `<tr><td>${lab}</td><td class="r">${(x.n || 0).toLocaleString('en-US')}</td><td class="r ${cls(x.model)}">${money(x.model)}</td><td class="r ${cls(x.real)}"><b>${money(x.real)}</b></td><td class="r ${cls(x.realMid)}">${money(x.realMid)}</td><td class="r">${x.win == null ? '—' : (x.win * 100).toFixed(1) + '%'}</td><td class="r gain">${money(x.best)}</td><td class="r loss">${money(x.worst)}</td></tr>`;
+  const head = '<thead><tr><th></th><th class="r">Trades</th><th class="r">Model P/L</th><th class="r">Real P/L (ask → bid)</th><th class="r">Real at mid</th><th class="r">Win (real)</th><th class="r">Best</th><th class="r">Worst</th></tr></thead>';
+  const miss = Object.entries(v.missing || {}).map(([k, n]) => `${n} ${esc(k)}`).join(' · ');
+  return `<div class="bd" style="padding-bottom:0"><div class="note">Same trades, same stake (${money(v.cfg.stake)}), since ${esc(v.from)}. ${esc((v.at || '').replace('T', ' ').slice(0, 16))}.
+      ${v.ivRatio ? `Real implied volatility at entry = <b>${v.ivRatio.toFixed(2)} ×</b> the model's 20-day volatility (median): set <b>Option vol. ×</b> to ${v.ivRatio.toFixed(1)} for the years before 2022.` : ''}
+      ${v.spreadMedian != null ? ` Real bid-ask spread at entry: <b>${(v.spreadMedian * 100).toFixed(1)}%</b> of the premium (median; the model uses ${(v.modelSpread * 100).toFixed(0)}% round trip).` : ''}
+      ${miss ? `<br>Not priced: ${miss}.` : ''}</div></div>
+    <div class="tbl-wrap" style="margin-top:8px"><table class="tbl">${head}<tbody>${row('All', v.all)}${row(BT_LEG.C, v.legs.C)}${row(BT_LEG.D, v.legs.D)}</tbody></table></div>
+    <div class="tbl-wrap" style="margin-top:8px"><table class="tbl">${head.replace('<th></th>', '<th>Year (exit)</th>')}<tbody>${v.years.map(y => row(y.year, y)).join('')}</tbody></table></div>
+    <div class="hd" style="margin-top:8px"><h2 style="font-size:14px">The 20 largest (real)</h2><div class="grow"></div><button class="btn sm" data-en="real-csv">Export the priced trades (CSV)</button></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Entry</th><th>Exit</th><th>Contract</th><th class="r">Bought</th><th class="r">Sold</th><th class="r">IV</th><th class="r">Stock</th><th class="r">Model</th><th class="r">Real</th><th>Exit priced</th></tr></thead><tbody>
+      ${v.top.map(x => `<tr><td>${x.leg}</td><td>${esc(x.sym)}</td><td class="mono">${esc(x.entry)}</td><td class="mono">${esc(x.exit)}</td><td class="mono">${esc(x.occ)}</td><td class="r">${x.buy.toFixed(2)}</td><td class="r">${x.sell.toFixed(2)}</td>
+        <td class="r">${x.iv == null ? '—' : (x.iv * 100).toFixed(0) + '%'}</td><td class="r ${cls(x.stock)}">${pct(x.stock, 1)}</td><td class="r ${cls(x.model)}">${money(x.model)}</td><td class="r ${cls(x.real)}"><b>${money(x.real)}</b></td><td class="dim">${esc(x.how)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="note" style="padding:8px 16px 14px">Daily history only: an exit by a stop / trailing stop / target is priced at that day's closing quotes. A contract that expires before the exit is worth its value at expiry.</div>`;
 }
 const BT_LEG = { A: 'A · after the call, buy at the open', B: 'B · fade bad news + gap up', C: 'C · post-release long', D: 'D · post-release short',
   C2: 'C · exits (on the best entry)', D2: 'D · exits (on the best entry)', C3: 'C · as a call (on the best exits)', D3: 'D · as a put (on the best exits)' };
@@ -555,6 +582,12 @@ document.addEventListener('click', async e => {
         catch (err) { $('#en-bt-res').innerHTML = `<div class="panel"><div class="empty loss">${esc(err.message)}</div></div>`; }
         el.disabled = false; el.textContent = 'Run backtest'; return; }
       case 'bt-csv': return enBtCsv();
+      case 'real-run': el.disabled = true; await api('/fund/backtest/real', { method: 'POST', body: { cfg: S.en.bt } }); toast('Pricing the C / D trades with real options…'); setTimeout(enRealLoad, 1500); el.disabled = false; return;
+      case 'real-csv': { const v = (S.enReal || {}).view; if (!v) return;
+        const keys = ['leg', 'sym', 'release', 'entry', 'exit', 'occ', 'expiry', 'strike', 'buy', 'sell', 'iv', 'stock', 'model', 'real', 'realMid', 'how', 'why'];
+        const q = x => x == null ? '' : /[",\n]/.test(String(x)) ? '"' + String(x).replace(/"/g, '""') + '"' : String(x);
+        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(v.trades.map(t => keys.map(k => q(t[k])).join(','))).join('\n')], { type: 'text/csv' }));
+        a.download = 'earnings_real_options.csv'; a.click(); URL.revokeObjectURL(a.href); return; }
       case 'opt-run': el.disabled = true; await api('/fund/backtest/opt', { method: 'POST', body: { cfg: { stake: S.en.bt.stake, costBps: S.en.bt.costBps, borrowPct: S.en.bt.borrowPct, ivMult: S.en.bt.ivMult, optSpreadPct: S.en.bt.optSpreadPct } } }); toast('Optimizing…'); setTimeout(enOptLoad, 1500); return;
       case 'opt-best': { const o = S.enOpt.opt, B = o.best || {}; 'ABCD'.split('').forEach(k => { const p = B[k] || (o.legs[k] && o.legs[k][0] && o.legs[k][0].p); if (p) Object.assign(S.en.bt.legs[k], k in { C: 1, D: 1 } ? BT_EXIT : {}, p, { on: true }); }); enBody(); toast('Best train setting of each leg applied: run the backtest.'); return; }
       case 'tx-close': $('#en-tx-view').innerHTML = ''; return;

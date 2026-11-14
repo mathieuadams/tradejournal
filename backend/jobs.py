@@ -144,6 +144,12 @@ def handler(event, ctx=None):
             import backtest
             backtest.prepare(sub, prog)
             set_status(sub, name, status="done", msg="Study ready for the backtest (scores and daily paths).")
+        elif job == "fundreal":                         # the C / D option trades with real prices (Unusual Whales)
+            import optreal
+            if not optreal.run_job(sub, prog, dl):
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="Real option prices: done.")
         elif job == "fundopt":                          # the earnings strategy optimizer
             import backtest
             if not backtest.opt_job(sub, prog, dl):

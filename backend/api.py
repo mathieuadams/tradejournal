@@ -745,6 +745,18 @@ def fund_backtest(sub, claims, body, q):
     return out
 
 
+@route("POST", "/fund/backtest/real")
+def fund_bt_real(sub, claims, body, q):
+    import optreal
+    return optreal.start(sub, body.get("cfg") or {})
+
+
+@route("GET", "/fund/backtest/real")
+def fund_bt_real_view(sub, claims, body, q):
+    import optreal
+    return optreal.view(sub)
+
+
 @route("POST", "/fund/backtest/opt")
 def fund_bt_opt(sub, claims, body, q):
     import fundamentals as F

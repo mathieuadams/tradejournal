@@ -287,6 +287,34 @@ def fake_uw_get(token, path, params=None, timeout=60):
         d0 = datetime.now().date()
         days = [d0 + timedelta(days=i) for i in range(0, 20) if (d0 + timedelta(days=i)).weekday() < 5][:6]
         return {"data": [{"expires": d.isoformat() + "T00:00:00.000Z", "open_interest": 100000 - i * 9000, "volume": 50000, "chains": 400} for i, d in enumerate(days)]}
+    if path.startswith("option-contract/") and path.endswith("/historic"):
+        osym = path.split("/")[1]
+        exp = datetime.strptime("20" + osym[-15:-9], "%Y%m%d").date()
+        k = int(osym[-8:]) / 1000
+        rnd2 = random.Random(osym)
+        out, d = [], exp - timedelta(days=150)
+        while d <= exp:
+            if d.weekday() < 5:
+                left = (exp - d).days
+                mid = round(0.5 + 0.04 * left + 0.3 * math.sin(d.toordinal() / 5) + 0.1 * rnd2.random(), 2)
+                out.append({"date": d.isoformat() + "T00:00:00.000Z", "open_price": str(mid), "last_price": str(mid),
+                            "nbbo_bid": f"{max(0.01, mid - 0.05):.2f}", "nbbo_ask": f"{mid + 0.05:.2f}", "implied_volatility": "0.42",
+                            "volume": 100, "open_interest": 1000})
+            d += timedelta(days=1)
+        return {"chains": out}
+    if path.endswith("/option-contracts") and params.get("date"):
+        d0 = datetime.strptime(params["date"], "%Y-%m-%d").date()
+        lo, hi = int(params.get("min_dte") or 0), int(params.get("max_dte") or 400)
+        typ = "C" if str(params.get("option_type", "call")).lower() == "call" else "P"
+        out = []
+        for i in range(lo, hi + 1):
+            ex = d0 + timedelta(days=i)
+            if ex.weekday() != 4:
+                continue
+            for k in range(5, 1005, 5):
+                out.append({"option_symbol": f"{sym.replace('.', '')}{ex.strftime('%y%m%d')}{typ}{k * 1000:08d}", "open_interest": 100 + k % 7})
+        lim, page = int(params.get("limit") or 500), int(params.get("page") or 0)
+        return {"data": out[page * lim:(page + 1) * lim]}
     if path.endswith("/option-contracts"):
         ex = str(params.get("expiry"))[:10]
         out = []
