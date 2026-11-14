@@ -235,7 +235,7 @@ function enTodayHtml(r) {
 }
 
 /* ---------- Strategy backtest ---------- */
-const BT_EXIT = { stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
+const BT_EXIT = { entry: 'close', stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
 S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1, ivMult: 1, optSpreadPct: 5,
   legs: { A: { on: true, cut: 0.2 }, B: { on: true, band: 0.2, gap: 0.02 },
     C: { on: true, band: 0.2, hold: 40, hedge: 'spy', weak: true, heavy: false, far: false, ...BT_EXIT }, D: { on: true, band: 0.2, hold: 40, hedge: 'spy', strong: true, ...BT_EXIT } } };
@@ -248,6 +248,7 @@ function enBtShell() {
   const hold = leg => `<label class="f">Hold up to${sel(leg, 'hold', [[5, '5 sessions'], [20, '20 sessions (~1 month)'], [40, '40 sessions (~2 months)'], [60, '60 sessions (~3 months)']])}</label>`;
   const pcs = a => a.map(v => [v, v ? (v * 100).toFixed(0) + '%' : 'Off']);
   const exits = leg => `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;flex-basis:100%;border-top:1px dashed var(--line);padding-top:8px">
+    <label class="f">${leg === 'C' ? 'Buy' : 'Short'} at${sel(leg, 'entry', [['close', 'Day-0 close'], ['open', 'Day-0 open']])}</label>
     <label class="f">Stop${sel(leg, 'stop', pcs([0, 0.05, 0.1, 0.15, 0.2, 0.25]))}</label>
     <label class="f">Trailing stop${sel(leg, 'trail', pcs([0, 0.05, 0.1, 0.15, 0.2, 0.25]))}</label>
     <label class="f">Profit target${sel(leg, 'target', pcs([0, 0.1, 0.2, 0.3, 0.5]))}</label>
@@ -261,11 +262,11 @@ function enBtShell() {
     <div class="bd"><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       ${box('A', 'After the call: buy at the open', 'The after-the-call model (out-of-sample) in the top part of the previous year’s predictions, and not “bad news + gap up”. Buy at the day-0 open, sell at the close.', band('A', 'Model top'))}
       ${box('B', 'Fade “bad news + gap up”', 'Post-release score in the bottom part and a gap up. Short at the open, cover at the close.', band('B', 'Score bottom') + `<label class="f">Gap above${sel('B', 'gap', [[0.01, '+1%'], [0.02, '+2%'], [0.04, '+4%']])}</label>`)}
-      ${box('C', 'Post-release long', 'Score in the top part. Buy at the day-0 close.', band('C', 'Score top') + hold('C') + hedge('C') + exits('C') + `<div style="display:flex;flex-direction:column;gap:2px;flex-basis:100%">
+      ${box('C', 'Post-release long', 'Score in the top part. Buy at the day-0 close or open.', band('C', 'Score top') + hold('C') + hedge('C') + exits('C') + `<div style="display:flex;flex-direction:column;gap:2px;flex-basis:100%">
         <label class="check">${ck('C', 'weak')} only when the market is weak going in (below its 200-day average or down over 3 months)</label>
         <label class="check">${ck('C', 'heavy')} only when day 0 was up >2% on heavy volume (≥2.5× normal)</label>
         <label class="check">${ck('C', 'far')} only when the stock is >25% below its 52-week high</label></div>`)}
-      ${box('D', 'Post-release short', 'Score in the bottom part. Short at the day-0 close.', band('D', 'Score bottom') + hold('D') + hedge('D') + exits('D') + `<label class="check" style="flex-basis:100%">${ck('D', 'strong')} only when the market is strong going in (above its 200-day average and up over 3 months)</label>`)}
+      ${box('D', 'Post-release short', 'Score in the bottom part. Short at the day-0 close or open.', band('D', 'Score bottom') + hold('D') + hedge('D') + exits('D') + `<label class="check" style="flex-basis:100%">${ck('D', 'strong')} only when the market is strong going in (above its 200-day average and up over 3 months)</label>`)}
     </div>
     <div class="form" style="margin-top:12px;align-items:end">
       <label class="f">$ per trade<input type="number" min="10" step="100" data-enbtv="stake" value="${c.stake}"></label>
@@ -291,7 +292,7 @@ function enOptSetting(leg, p) {
   const f = leg === 'C' ? [p.weak && 'weak market', p.heavy && 'heavy-volume up day', p.far && '>25% below high'].filter(Boolean) : [p.strong && 'strong market'].filter(Boolean);
   const x = [p.stop && `stop ${pc(p.stop)}`, p.trail && `trailing ${pc(p.trail)}`, p.target && `target ${pc(p.target)}`].filter(Boolean);
   const o = p.inst === 'option' ? ` · ${leg === 'C' ? 'call' : 'put'} ${p.dte}d ${p.mny ? pc(Math.abs(p.mny)) + (p.mny > 0 ? ' OTM' : ' ITM') : 'ATM'}` : ` · hedge ${p.hedge}`;
-  return `score ${leg === 'C' ? 'top' : 'bottom'} ${pc(p.band)} · hold ≤ ${p.hold}${x.length ? ' · ' + x.join(', ') : ''}${o}${f.length ? ' · ' + f.join(', ') : ''}`;
+  return `score ${leg === 'C' ? 'top' : 'bottom'} ${pc(p.band)}${p.entry === 'open' ? ' · in at the open' : ''} · hold ≤ ${p.hold}${x.length ? ' · ' + x.join(', ') : ''}${o}${f.length ? ' · ' + f.join(', ') : ''}`;
 }
 async function enOptLoad() {
   const el = $('#en-opt'); if (!el) return;
@@ -301,7 +302,7 @@ async function enOptLoad() {
 function enOptHtml(r) {
   const o = r.opt;
   if (r.job && r.job.status === 'running' && r.job.job === 'fundopt') return `<div class="bd">${esc(r.job.msg || 'Optimizing…')}</div>`;
-  if (!o || !o.legs) return '<div class="bd dim">Not run yet. Three stages: the entries of each leg, then (C, D) every exit — hold, stop, trailing stop, target — on the best entry, then the option on the best exits. About 900 settings, a few minutes.</div>';
+  if (!o || !o.legs) return '<div class="bd dim">Not run yet. Three stages: the entries of each leg, then (C, D) the entry at the day-0 open or close and every exit — hold, stop, trailing stop, target — on the best entry, then the option on the best exits. About 1,500 settings, a few minutes.</div>';
   const money = v => v == null ? '—' : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
   const cell = (m, x) => `<td class="r">${m.n || 0}</td><td class="r ${cls(m.total)}">${money(m.total)}</td><td class="r ${cls(x && x.total)}">${money(x && x.total)}</td><td class="r">${tstat(x && x.t)}</td>`;
   return `<div class="bd" style="padding-bottom:0"><div class="note">Split: train before ${esc(o.split || '—')}, test after. ${o.legs.C2 ? '' : '<b>The exit and option stages need the daily paths: run the optimizer again once the backtest has built them.</b> '} Ranked on the train ${o.on === 'alpha' ? 'profit beyond the market' : 'profit as traded'} (t of the P/L per trade, at least ${o.minTrades} trades). A setting that also holds on the test period is the one to use. ${esc((o.at || '').replace('T', ' ').slice(0, 16))}</div>

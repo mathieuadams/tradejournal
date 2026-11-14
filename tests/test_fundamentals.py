@@ -421,18 +421,24 @@ def test_exits_and_option():
     bars = [["2024-01-02", 99, 100, 98, 100, 1], ["2024-01-03", 100, 101.5, 99.5, 101, 1], ["2024-01-04", 101, 106, 100, 104, 1],
             ["2024-01-05", 103, 103.5, 97, 99, 1], ["2024-01-08", 98, 98, 94, 95, 1], ["2024-01-09", 96, 111, 95, 110, 1]]
     bmap = {b[0]: 400 + i for i, b in enumerate(bars)}
-    P = array.array("h", B.path_of(bars, {b[0]: i for i, b in enumerate(bars)}, "2024-01-02", bmap))
-    assert P[0] == 1 and P[4] == 100 and P[5] == round(1 / 400 * 1e4)
+    bopen = {"2024-01-02": 398}
+    P = array.array("h", B.path_of(bars, {b[0]: i for i, b in enumerate(bars)}, "2024-01-02", bmap, bopen))
+    assert P[0] == 0 and P[1] == -100 and P[4] == 0 and P[5] == -50                 # day 0: open 99 vs close 100; SPY opened 398
+    assert P[6] == 1 and P[10] == 100 and P[11] == round(1 / 400 * 1e4)
+    j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0, at_open=True)     # in at the 99 open, out at 110
+    assert why == "time" and abs(fill - 110 / 99) < 1e-9 and abs(s - (405 - 398) / 400 * 1e4) < 2, (fill, s)
+    j, fill, dd, s, why = B.walk(P, 0, False, 5, 0.01, 0, 0, at_open=True)  # day 0's own low (98 < 98.01) stops it
+    assert why == "stop" and j == 0 and dd == 0 and abs(fill - 0.99) < 1e-9
     j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0)                    # no rule: the last close
     assert why == "time" and abs(fill - 1.10) < 1e-9 and dd == 7, (j, fill, dd, why)
     j, fill, dd, s, why = B.walk(P, 0, False, 5, 0.04, 0, 0)                 # stop 4%: the 94 low on day 4 → filled at 96
-    assert why == "stop" and abs(fill - 0.96) < 1e-9 and j == 3
+    assert why == "stop" and abs(fill - 0.96) < 1e-9 and j == 4
     j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0.05, 0)                 # trailing 5% from the 106 high → 100.7, low 97
-    assert why == "trailing stop" and abs(fill - 1.06 * 0.95) < 1e-9 and j == 2, (j, fill, why)
+    assert why == "trailing stop" and abs(fill - 1.06 * 0.95) < 1e-9 and j == 3, (j, fill, why)
     j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0.05)                 # target 5%: the 106 high on day 2
-    assert why == "target" and abs(fill - 1.05) < 1e-9 and j == 1
+    assert why == "target" and abs(fill - 1.05) < 1e-9 and j == 2
     j, fill, dd, s, why = B.walk(P, 0, True, 5, 0.05, 0, 0)                  # short, stop 5%: the 106 high
-    assert why == "stop" and abs(fill - 1.05) < 1e-9 and j == 1
+    assert why == "stop" and abs(fill - 1.05) < 1e-9 and j == 2
     j, fill, dd, s, why = B.walk(P, 0, True, 5, 0, 0, 0.04)                  # short, target 4%: low 94 → 96 (open 98)
     assert why == "target" and abs(fill - 0.96) < 1e-9
     j, fill, dd, s, why = B.walk(P, 0, False, 5, 0, 0, 0, max_days=3)        # an option expiring after 3 days

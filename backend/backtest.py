@@ -11,6 +11,7 @@ Four legs, each optional, each with its own settings and a fixed stake per trade
   D  Post-release short: score in the bottom `band`. Short at the day-0 close, hold up to `hold` sessions. Filter: the
      market strong going in (above its 200-day average and up over 3 months). Hedge as C.
 
+Entry for C and D: the day-0 close (default) or the day-0 open (`entry`; then day 0's own range counts for the stops).
 Exits for C and D (on the stock's daily bars after day 0, from the study's price files): a stop `stop` below the entry,
 a trailing stop `trail` below the best price since the entry (above, for a short), a profit target `target`; whichever
 comes first, else the close of the last session. A stop is filled at the stop price, or at the open when the stock gaps
@@ -72,9 +73,9 @@ def trailing_pct(rows, key, when="day0"):
 LEG_DEFAULT = {"A": {"on": True, "cut": 0.2},
                "B": {"on": True, "band": 0.2, "gap": 0.02},
                "C": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "weak": True, "heavy": False, "far": False,
-                     "stop": 0.0, "trail": 0.0, "target": 0.0, "inst": "stock", "dte": 60, "mny": 0.0},
+                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "inst": "stock", "dte": 60, "mny": 0.0},
                "D": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "strong": True,
-                     "stop": 0.0, "trail": 0.0, "target": 0.0, "inst": "stock", "dte": 60, "mny": 0.0}}
+                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "inst": "stock", "dte": 60, "mny": 0.0}}
 DEFAULT = {"stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "ivMult": 1.0, "optSpreadPct": 5.0, "from": None, "to": None}
 HOLDS = (5, 20, 40, 60)
 HEDGES = ("none", "spy", "beta")
@@ -117,6 +118,7 @@ def clean(cfg):
             for f in ("stop", "trail", "target"):
                 leg[f] = max(0.0, min(0.9, float(leg.get(f) or 0)))
             leg["inst"] = "option" if leg.get("inst") == "option" else "stock"
+            leg["entry"] = "open" if leg.get("entry") == "open" else "close"
             leg["dte"] = int(leg["dte"]) if int(leg.get("dte") or 0) in DTES else 60
             leg["mny"] = max(-0.3, min(0.3, float(leg.get("mny") or 0)))
         legs[k] = leg
@@ -153,8 +155,9 @@ def _hold(r, n, hedge):
 
 # ---------------------------------------------------------------- daily paths after day 0 (for the exits)
 
-STEPS = 60                                            # sessions after day 0 kept per release
+STEPS = 61                                            # day 0, then 60 sessions after it
 W = 6                                                 # per session: calendar days since day 0, open, high, low, close, SPY close
+PATH_V = 2                                            # (day 0's slot holds SPY's day-0 open instead of its close)
 MISSING = -32768
 
 
@@ -162,20 +165,21 @@ def _bp(x):
     return max(-32767, min(32767, int(round(x * 1e4))))
 
 
-def path_of(bars, idx, d0, bmap):
-    """One release's sessions after day 0 as int16 values: [days, open, high, low, close, bench close] per session; prices
-    in basis points from the day-0 close. None when day 0 isn't in the bars."""
+def path_of(bars, idx, d0, bmap, bopen=None):
+    """One release's day 0 and the sessions after it as int16 values: [days, open, high, low, close, bench close] per
+    session; prices in basis points from the day-0 close. Day 0's bench slot holds the bench's day-0 OPEN (its close
+    is 0 by definition), for an entry at the open. None when day 0 isn't in the bars."""
     k0 = idx.get(d0)
     if k0 is None or not bars[k0][4]:
         return None
     c0, s0, t0 = bars[k0][4], bmap.get(d0), _d(d0)
     out = [MISSING] * (STEPS * W)
     for j in range(STEPS):
-        k = k0 + 1 + j
+        k = k0 + j
         if k >= len(bars):
             break
         b = bars[k]
-        s = bmap.get(b[0])
+        s = (bopen or {}).get(b[0]) if j == 0 else bmap.get(b[0])
         out[j * W:(j + 1) * W] = [min(32767, (_d(b[0]) - t0).days), _bp(b[1] / c0 - 1), _bp(b[2] / c0 - 1), _bp(b[3] / c0 - 1), _bp(b[4] / c0 - 1),
                                   _bp(s / s0 - 1) if s and s0 else MISSING]
     return out
@@ -185,18 +189,26 @@ def path_key(r):
     return f"{r['sym']}|{r['day0']}"
 
 
-def walk(P, off, short, n, stop, trail, target, max_days=None):
-    """The exit of one position from its path: (session index, fill as a multiple of the entry price, calendar days, bench
-    move in bp or None, reason). `n`: the last session counted (hold n = the close n-1 sessions after day 0, like the
-    study's t<n>). None without data."""
+def walk(P, off, short, n, stop, trail, target, max_days=None, at_open=False):
+    """The exit of one position from its path: (session index, fill as a multiple of the ENTRY price, calendar days, bench
+    move since the entry in bp or None, reason). Entry: the day-0 close, or the day-0 open (`at_open`: day 0's range then
+    counts too). `n`: the sessions after day 0 (hold n = the close n-1 sessions after day 0, like the study's t<n>).
+    None without data."""
+    if P[off] == MISSING:
+        return None
+    e = 1 + P[off + 1] / 1e4 if at_open else 1.0
+    se = (P[off + 5] if P[off + 5] != MISSING else None) if at_open else 0
     best, last = 1.0, None
-    for j in range(n):
+    for j in range(0 if at_open else 1, n + 1):
         b = off + j * W
         dd = P[b]
         if dd == MISSING or (max_days is not None and dd > max_days):
             break
-        o, h, l, c = (1 + P[b + 1] / 1e4, 1 + P[b + 2] / 1e4, 1 + P[b + 3] / 1e4, 1 + P[b + 4] / 1e4)
-        s = P[b + 5] if P[b + 5] != MISSING else None
+        o, h, l, c = ((1 + P[b + 1] / 1e4) / e, (1 + P[b + 2] / 1e4) / e, (1 + P[b + 3] / 1e4) / e, (1 + P[b + 4] / 1e4) / e)
+        if j == 0:                                     # entered at this open; SPY's day-0 close is 0 by definition
+            o, s = 1.0, (-se if se is not None else None)
+        else:
+            s = P[b + 5] - se if P[b + 5] != MISSING and se is not None else None
         if not short:
             lvl, why = (1 - stop, "stop") if stop else (None, None)
             if trail and (lvl is None or best * (1 - trail) > lvl):
@@ -215,7 +227,7 @@ def walk(P, off, short, n, stop, trail, target, max_days=None):
             if target and l <= 1 - target:
                 return j, min(o, 1 - target), dd, s, "target"
             best = min(best, l)
-        last = (j, c, dd, s, "time" if j == n - 1 else "expiry" if max_days is not None else "data")
+        last = (j, c, dd, s, "time" if j == n else "expiry" if max_days is not None else "data")
     return last
 
 
@@ -276,7 +288,7 @@ def load_paths(sub):
 def paths_ready(sub, rows):
     import store
     meta = store.get_json(f"fund/u/{sub}/paths_meta") or {}
-    return bool(rows) and meta.get("n") == len(rows) and meta.get("last") == path_key(rows[-1]) and meta.get("v") == 1
+    return bool(rows) and meta.get("n") == len(rows) and meta.get("last") == path_key(rows[-1]) and meta.get("v") == PATH_V
 
 
 def build_paths(sub, rows, prog=None):
@@ -290,6 +302,7 @@ def build_paths(sub, rows, prog=None):
     need = (_d(first) - timedelta(days=10)).isoformat()
     bench = F.prices(sub, st.get("bench") or "SPY", need, max_age_h=72)
     bmap = {b[0]: b[4] for b in bench}
+    bopen = {b[0]: b[1] for b in bench}
     by_sym = {}
     for i, r in enumerate(rows):
         if r.get("day0"):
@@ -310,20 +323,20 @@ def build_paths(sub, rows, prog=None):
             k = path_key(rows[i])
             if k in done:
                 continue
-            p = path_of(bars, idx, rows[i]["day0"], bmap)
+            p = path_of(bars, idx, rows[i]["day0"], bmap, bopen)
             if p:
                 done.add(k)
                 keys.append(k)
                 a.extend(p)
     store.put_raw(f"fund/u/{sub}/paths.bin.gz", gzip.compress(a.tobytes(), 6), "application/gzip")
-    store.put_json(f"fund/u/{sub}/paths_meta", {"v": 1, "at": iso(now_ny()), "n": len(rows), "last": path_key(rows[-1]), "keys": keys})
+    store.put_json(f"fund/u/{sub}/paths_meta", {"v": PATH_V, "at": iso(now_ny()), "n": len(rows), "last": path_key(rows[-1]), "keys": keys})
     _PATHS.clear()
     return len(keys)
 
 
 def needs_paths(c):
     return any(c["legs"][k]["on"] and (c["legs"][k]["stop"] or c["legs"][k]["trail"] or c["legs"][k]["target"] or
-                                       c["legs"][k]["inst"] == "option" or c["legs"][k]["hold"] == 60) for k in "CD")
+                                       c["legs"][k]["inst"] == "option" or c["legs"][k]["hold"] == 60 or c["legs"][k]["entry"] == "open") for k in "CD")
 
 
 def context(rows):
@@ -395,7 +408,8 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out):
     n, short = L["hold"], k == "D"
     side = "short" if short else "long"
     base_cost = c["costBps"] / 1e4
-    rules = L["stop"] or L["trail"] or L["target"] or L["inst"] == "option" or n == 60
+    at_open = L["entry"] == "open"
+    rules = L["stop"] or L["trail"] or L["target"] or L["inst"] == "option" or n == 60 or at_open
     off = paths[0].get(path_key(r)) if paths else None
     if off is None:
         if rules:                                      # needs the daily path, and this release has none
@@ -408,13 +422,13 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out):
         return
     P = paths[1]
     opt = L["inst"] == "option"
-    w = walk(P, off, short, n - 1 if n > 1 else 1, L["stop"], L["trail"], L["target"], L["dte"] if opt else None)
+    w = walk(P, off, short, max(1, n - 1), L["stop"], L["trail"], L["target"], L["dte"] if opt else None, at_open)
     if not w:
         return
     j, fill, dd, s, reason = w
     exit_d = (_d(d0) + timedelta(days=dd)).isoformat()
     raw, spy = fill - 1, (s / 1e4 if s is not None else None)
-    tag = "" if reason in ("time", "data") else f" · {reason}"
+    tag = (" · in at the open" if at_open else "") + ("" if reason in ("time", "data") else f" · {reason}")
     if not opt:
         if L["hedge"] == "none":
             ret = raw
@@ -436,7 +450,7 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out):
     p1, _ = bs(fill, K, max(0.0, (L["dte"] - dd) / 365), vol, call)
     ret = p1 / p0 - 1
     spread = c["optSpreadPct"] / 100
-    lab = opt_label({**L, "_leg": k})
+    lab = opt_label({**L, "_leg": k})                 # strike and premium relative to the entry price (fill is too)
     t = {"leg": k, "sym": r["sym"], "release": r["date"], "entry": d0, "exit": exit_d, "side": lab, "ret": round(raw, 6), "res": round(ret, 6),
          "pnl": round(c["stake"] * (ret - spread), 2), "why": f"{why} · {lab} at {vol * 100:.0f}% vol" + tag}
     if spy is not None:                                # beyond the market: minus what the option's delta made on SPY's move
@@ -546,7 +560,7 @@ GRID = {                                              # stage 1: the entries (ex
           "far": [False, True]},
     "D": {"band": [0.1, 0.2, 0.3], "hold": [5, 20, 40], "hedge": ["none", "spy", "beta"], "strong": [False, True]},
 }
-EXIT_GRID = {"hold": [20, 40, 60], "stop": [0.0, 0.05, 0.1, 0.15, 0.2], "trail": [0.0, 0.05, 0.1, 0.15, 0.2],
+EXIT_GRID = {"entry": ["close", "open"], "hold": [20, 40, 60], "stop": [0.0, 0.05, 0.1, 0.15, 0.2], "trail": [0.0, 0.05, 0.1, 0.15, 0.2],
              "target": [0.0, 0.1, 0.2, 0.3]}            # stage 2: the exits, on stage 1's best entry
 OPT_GRID = {"dte": [30, 60, 90], "mny": [-0.05, 0.0, 0.05]}   # stage 3: the option, on stage 2's best exits
 STAGES = {1: "entry", 2: "exits", 3: "option"}
