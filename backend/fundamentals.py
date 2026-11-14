@@ -1246,7 +1246,7 @@ EXPORT_KEYS = ["sym", "date", "timing", "src", "sector", "base", "day0", "qEnd",
                "relVol20", "cmf20", "obv20", "ownAbs", "ownMean", "prevR1ab", "gap", "vol0", "r1", "r1ab", "z1", "r5", "r5ab", "r20", "r20ab", "r40",
                "r40ab", "r60", "r60ab", "drift5", "drift20", "drift40", "drift60", "o2c", "after5", "t1", "t5", "t20", "t40", "t60",
                "offLow", "rangePos", "range52", "rangeVol", "rangeFlow", "volTrend42", "volTrend126", "udVol42", "udVol126", "cmf42", "cmf126",
-               "pre126", "pre126ab", "beta", "r1b", "r20b", "r40b", "drift20b", "drift40b", "spy21", "spy63", "spyVs200", "spyVol20", "regime"]
+               "pre126", "pre126ab", "beta", "r1b", "r20b", "r40b", "drift20b", "drift40b", "spy21", "spy63", "spyVs200", "spyVol20", "regime", "postScore", "oosO2c"]
 
 
 def _r6(v):

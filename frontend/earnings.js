@@ -13,7 +13,7 @@ async function vEarnings() {
   const d = await api('/fund');
   S.enD = d;
   view(`${head('Earnings', 'Revenue growth, EPS inflection and earnings quality from SEC filings; how releases reprice the stock.')}
-    <div class="seg" style="margin-bottom:12px">${[['screen', 'Screen'], ['company', 'Company'], ['today', 'Today'], ['study', 'Event study']].map(([k, l]) => `<button data-entab="${k}" aria-pressed="${E.tab === k}">${l}</button>`).join('')}</div>
+    <div class="seg" style="margin-bottom:12px">${[['screen', 'Screen'], ['company', 'Company'], ['today', 'Today'], ['study', 'Event study'], ['bt', 'Strategy backtest']].map(([k, l]) => `<button data-entab="${k}" aria-pressed="${E.tab === k}">${l}</button>`).join('')}</div>
     <div id="en-body"></div><div id="job" style="margin-top:12px">${jobHtml(d.job)}</div>`);
   if (d.job && d.job.status === 'running') pollJob('/fund', r => r.job, r => { S.enD = r; if (E.tab === 'study' && r.job.job === 'fundstudy') { S.enStudy = null; } enBody(); });
   return enBody();
@@ -24,6 +24,7 @@ function enBody() {
   if (E.tab === 'screen') b.innerHTML = enScreen();
   else if (E.tab === 'company') { b.innerHTML = enCompanyShell(); if (E.sym) enCompanyLoad(); }
   else if (E.tab === 'today') { b.innerHTML = enTodayShell(); enTodayLoad(); }
+  else if (E.tab === 'bt') { b.innerHTML = enBtShell(); if (S.enBt) $('#en-bt-res').innerHTML = enBtHtml(S.enBt); }
   else { b.innerHTML = enStudyShell(); enStudyLoad(); }
 }
 
@@ -233,6 +234,75 @@ function enTodayHtml(r) {
     <div class="note" style="padding:8px 16px 14px">Score = the post-release score (EPS and revenue surprise, call tone, tone change, revenue acceleration) ranked against the last year's releases; growth from FMP's reported actuals. * a morning call may still be running at the open: the model ignores those call scores.</div></section>`;
 }
 
+/* ---------- Strategy backtest ---------- */
+S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1, hedge: 'spy', hold: 40, legs: { A: true, B: true, C: true, D: true },
+  filters: { cWeakMarket: true, cHeavyUp: false, cFarFromHigh: false, dStrongMarket: true }, from: '', to: '' };
+function enBtShell() {
+  const c = S.en.bt, ck = (path, on) => `<input type="checkbox" data-enbt="${path}" ${on ? 'checked' : ''}>`;
+  const leg = (k, title, desc, extra = '') => `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px"><label class="check"><b>${ck('legs.' + k, c.legs[k])} ${k} · ${title}</b></label><div class="note" style="margin:4px 0 0 24px">${desc}</div>${extra}</div>`;
+  return `<section class="panel"><div class="hd"><h2>Earnings strategy</h2><span class="dim" style="font-size:13px">the event study's rules, traded with a fixed stake per trade over the last study's releases</span></div>
+    <div class="bd"><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      ${leg('A', 'After the call: buy at the open', 'The “after the call” model (out-of-sample) is in the top fifth of the previous year’s predictions and the release isn’t “bad news + gap up”. Buy at the day-0 open, sell at the close.')}
+      ${leg('B', 'Fade “bad news + gap up”', 'Post-release score in the bottom fifth and a gap above +2%. Short at the open, cover at the close.')}
+      ${leg('C', 'Post-release long', 'Score in the top fifth. Buy at the day-0 close, hold.', `<div style="margin:6px 0 0 24px;display:flex;flex-direction:column;gap:2px">
+        <label class="check">${ck('filters.cWeakMarket', c.filters.cWeakMarket)} only when the market is weak going in (below its 200-day average or down over 3 months)</label>
+        <label class="check">${ck('filters.cHeavyUp', c.filters.cHeavyUp)} only when day 0 was up >2% on heavy volume (≥2.5× normal)</label>
+        <label class="check">${ck('filters.cFarFromHigh', c.filters.cFarFromHigh)} only when the stock is >25% below its 52-week high</label></div>`)}
+      ${leg('D', 'Post-release short', 'Score in the bottom fifth. Short at the day-0 close, hold.', `<div style="margin:6px 0 0 24px"><label class="check">${ck('filters.dStrongMarket', c.filters.dStrongMarket)} only when the market is strong going in (above its 200-day average and up over 3 months)</label></div>`)}
+    </div>
+    <div class="form" style="margin-top:12px;align-items:end">
+      <label class="f">$ per trade<input type="number" min="10" step="100" data-enbtv="stake" value="${c.stake}"></label>
+      <label class="f">Hold (C, D)<select data-enbtv="hold"><option value="40" ${c.hold == 40 ? 'selected' : ''}>40 sessions (~2 months)</option><option value="20" ${c.hold == 20 ? 'selected' : ''}>20 sessions (~1 month)</option></select></label>
+      <label class="f">Hedge (C, D)<select data-enbtv="hedge"><option value="none" ${c.hedge === 'none' ? 'selected' : ''}>None: the stock alone</option><option value="spy" ${c.hedge === 'spy' ? 'selected' : ''}>SPY 1:1 (opposite position)</option><option value="beta" ${c.hedge === 'beta' ? 'selected' : ''}>Beta × SPY</option></select></label>
+      <label class="f">Costs, round trip (bps)<input type="number" min="0" step="1" data-enbtv="costBps" value="${c.costBps}"></label>
+      <label class="f">Short borrow (%/year)<input type="number" min="0" step="0.5" data-enbtv="borrowPct" value="${c.borrowPct}"></label>
+      <label class="f">From<input type="date" data-enbtv="from" value="${esc(c.from)}"></label><label class="f">To<input type="date" data-enbtv="to" value="${esc(c.to)}"></label>
+      <button class="btn primary" data-en="bt-run">Run backtest</button></div>
+    <p class="note">No look-ahead: the score uses signals ranked against earlier releases, the after-the-call prediction is the walk-forward one, and “top / bottom fifth” is judged against the previous 365 days. A and B are day trades, unhedged; for C and D a hedge is a second trade, and its cost is counted too. The rules were chosen after looking at this same data, so the result is optimistic: the year-by-year table is the honest check.</p></div></section>
+    <div id="en-bt-res" style="margin-top:12px"></div>`;
+}
+function enBtEquity(eq) {
+  if (!eq || eq.length < 2) return '';
+  const W = 1000, H = 220, P = 78, ys = eq.map(e => e[1]), lo = Math.min(0, ...ys), hi = Math.max(0, ...ys), t0 = Date.parse(eq[0][0]), t1 = Date.parse(eq[eq.length - 1][0]);
+  const X = d => P + (Date.parse(d) - t0) / (t1 - t0 || 1) * (W - P - 10), Y = v => 10 + (hi - v) / (hi - lo || 1) * (H - 30);
+  const pts = eq.map(e => `${X(e[0]).toFixed(1)},${Y(e[1]).toFixed(1)}`).join(' ');
+  const yrs = []; for (let y = +eq[0][0].slice(0, 4) + 1; y <= +eq[eq.length - 1][0].slice(0, 4); y++) yrs.push(y);
+  const money = v => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v)).toLocaleString('en-US');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+    <line x1="${P}" x2="${W - 10}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line2)"/>
+    ${yrs.map(y => `<line x1="${X(y + '-01-01')}" x2="${X(y + '-01-01')}" y1="10" y2="${H - 20}" stroke="var(--line)" /><text x="${X(y + '-01-01')}" y="${H - 5}" font-size="11" fill="var(--muted)" text-anchor="middle">${y}</text>`).join('')}
+    <text x="${P - 4}" y="${Y(hi) + 4}" font-size="11" fill="var(--muted)" text-anchor="end">${money(hi)}</text><text x="${P - 4}" y="${Y(lo) + 4}" font-size="11" fill="var(--muted)" text-anchor="end">${money(lo)}</text>
+    <polyline points="${pts}" fill="none" stroke="#4A9EFF" stroke-width="1.6"/></svg>`;
+}
+function enBtHtml(r) {
+  if (!r.n) return '<div class="panel"><div class="empty">No trades with these rules.</div></div>';
+  const money = v => v == null ? '—' : (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const money2 = v => v == null ? '—' : (v < 0 ? '−$' : '$') + Math.abs(v).toFixed(2);
+  const LEG = { A: 'A · after the call, buy at the open', B: 'B · fade bad news + gap up', C: 'C · post-release long', D: 'D · post-release short' };
+  const row = (lab, x) => `<tr><td>${lab}</td><td class="r">${x.n.toLocaleString('en-US')}</td><td class="r ${cls(x.total)}"><b>${money(x.total)}</b></td><td class="r ${cls(x.avg)}">${money2(x.avg)}</td><td class="r">${(x.win * 100).toFixed(1)}%</td>
+    <td class="r">${x.profitFactor ?? '—'}</td><td class="r gain">${money2(x.avgWin)}</td><td class="r loss">${money2(x.avgLoss)}</td><td class="r">${tstat(x.t)}</td></tr>`;
+  const head = `<thead><tr><th></th><th class="r">Trades</th><th class="r">P/L</th><th class="r">Avg / trade</th><th class="r">Win</th><th class="r">Profit factor</th><th class="r">Avg win</th><th class="r">Avg loss</th><th class="r">t</th></tr></thead>`;
+  const k = (l, v, sub = '', c = '') => `<div><div class="k">${l}</div><div class="v ${c}" style="font-size:20px">${v}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+  return `<section class="panel"><div class="bd"><div class="kv" style="grid-template-columns:repeat(6,minmax(0,1fr))">
+      ${k('Total P/L', money(r.total), `${esc(r.from)} → ${esc(r.to)}`, cls(r.total))}${k('Per year', money(r.perYear), '', cls(r.perYear))}${k('Trades', r.n.toLocaleString('en-US'), `${money(r.cfg.stake)} each · avg ${money2(r.avg)}`)}
+      ${k('Win rate', (r.win * 100).toFixed(1) + '%', `profit factor ${r.profitFactor ?? '—'}`)}${k('Max drawdown', money(-r.maxDrawdown), esc(r.maxDrawdownAt || ''), 'loss')}
+      ${k('Capital in use', money(r.avgCapital) + ' avg', `peak ${money(r.capitalNeeded)} (${r.maxOpen} positions) · ${r.returnOnAvgCapitalPerYear == null ? '—' : (r.returnOnAvgCapitalPerYear * 100).toFixed(1) + '%/yr on the average'}`)}</div></div>
+    <div style="padding:0 16px 8px">${enBtEquity(r.equity)}</div><div class="note" style="padding:0 16px 12px">Cumulative P/L by exit date, after costs.</div></section>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+      <section class="panel"><div class="hd"><h2>By leg</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.legs.map(x => row(LEG[x.leg] || x.leg, x)).join('')}</tbody></table></div></section>
+      <section class="panel"><div class="hd"><h2>By year (exit)</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.years.map(x => row(x.year, x)).join('')}</tbody></table></div></section></div>
+    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Trades</h2><span class="dim" style="font-size:13px">the latest ${Math.min(300, r.trades.length)} of ${r.nTrades.toLocaleString('en-US')}</span><div class="grow"></div><button class="btn sm" data-en="bt-csv">Export trades (CSV)</button></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Release</th><th>Entry</th><th>Exit</th><th>Side</th><th class="r">Return</th><th class="r">P/L</th><th>Why</th></tr></thead><tbody>
+      ${r.trades.slice(-300).reverse().map(t => `<tr><td>${t.leg}</td><td><a class="name" href="#earnings" data-enco="${esc(t.sym)}">${esc(t.sym)}</a></td><td class="mono">${esc(t.release)}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td>${t.side}</td><td class="r ${cls(t.side === 'long' ? t.ret : -t.ret)}">${pct(t.ret, 2)}</td><td class="r ${cls(t.pnl)}"><b>${money2(t.pnl)}</b></td><td class="dim">${esc(t.why)}</td></tr>`).join('')}</tbody></table></div></section>`;
+}
+function enBtCsv() {
+  const r = S.enBt; if (!r) return;
+  const keys = ['leg', 'sym', 'release', 'entry', 'exit', 'side', 'ret', 'pnl', 'why'];
+  const q = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(r.trades.map(t => keys.map(k => q(t[k])).join(','))).join('\n')], { type: 'text/csv' }));
+  a.download = 'earnings_strategy_trades.csv'; a.click(); URL.revokeObjectURL(a.href);
+}
+
 /* ---------- Call transcript viewer ---------- */
 async function enTxShow(date) {
   const el = $('#en-tx-view'); if (!el) return;
@@ -417,6 +487,11 @@ document.addEventListener('click', async e => {
       case 'today-build': { S.en.day = $('#en-day').value; el.disabled = true; await api('/fund/today', { method: 'POST', body: { day: S.en.day } }); toast('Building the list…');
         const t0 = Date.now(); while (Date.now() - t0 < 240000) { await new Promise(r => setTimeout(r, 3000)); const r = await api('/fund/today?day=' + S.en.day); if (!r.job || r.job.status !== 'running') { S.enToday = r; $('#en-today').innerHTML = enTodayHtml(r); if (r.job && r.job.status === 'error') toast(r.job.msg); break; } }
         el.disabled = false; return; }
+      case 'bt-run': { el.disabled = true; el.textContent = 'Running…'; $('#en-bt-res').innerHTML = '<div class="panel"><div class="empty">Running the backtest…</div></div>';
+        try { S.enBt = await api('/fund/backtest', { method: 'POST', body: { cfg: S.en.bt } }); $('#en-bt-res').innerHTML = enBtHtml(S.enBt); }
+        catch (err) { $('#en-bt-res').innerHTML = `<div class="panel"><div class="empty loss">${esc(err.message)}</div></div>`; }
+        el.disabled = false; el.textContent = 'Run backtest'; return; }
+      case 'bt-csv': return enBtCsv();
       case 'tx-close': $('#en-tx-view').innerHTML = ''; return;
       case 'uni-sp500': { el.disabled = true; toast('Loading the S&P 500 from FMP…'); const r = await api('/fund/universe', { method: 'POST', body: { source: 'sp500', removed: $('#en-removed').checked, years: +$('#en-years').value || 10 } }); toast(r.uniName + ' loaded.' + (r.note ? ' ' + r.note : '')); return vEarnings(); }
       case 'uni-clear': await api('/fund/universe', { method: 'POST', body: { tickers: [] } }); return vEarnings();
@@ -434,3 +509,9 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'en-sym') { e.preventDefault(); document.querySelector('[data-en="co-load"]').click(); } });
 document.addEventListener('change', e => { if (e.target.id === 'en-day') { S.en.day = e.target.value; enTodayLoad(); } });
+
+document.addEventListener('change', e => {
+  const t = e.target, c = S.en.bt;
+  if (t.dataset.enbt) { const [a, b] = t.dataset.enbt.split('.'); c[a][b] = t.checked; }
+  else if (t.dataset.enbtv) { const k = t.dataset.enbtv; c[k] = ['stake', 'costBps', 'borrowPct', 'hold'].includes(k) ? +t.value : t.value; }
+});

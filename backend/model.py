@@ -426,8 +426,12 @@ def evaluate(rows, prog=None, min_train=MIN_TRAIN):
     global F
     if prog:
         prog("Ranking the signals against the previous year's releases…")
+    orig = rows
     rows = [{**r, **call_fields(r)} for r in rows]
     rk, ref = ranked(rows, sorted(set(PRE) | set(POST) | set(CALL)))
+    pos = {id(r): i for i, r in enumerate(rk)}
+    for i, r in enumerate(rk):                         # kept on the rows for the strategy backtest
+        orig[i]["postScore"] = post_score(r)
     out = {"minTrain": min_train, "lambda": LAMBDA, "targets": [], "final": {}, "scale": "trailing percentiles", "ref": ref}
     F0, F = F, _spec_ranked()
     try:
@@ -437,6 +441,9 @@ def evaluate(rows, prog=None, min_train=MIN_TRAIN):
             pred_on = "base" if kind == "pre" else "day0"         # call: the day-0 open; post: the day-0 close
             cap = 0.5 if key == "abs1" else 0.25
             preds = walk_forward(rk, keys, fn, known, pred_on, min_train, cap=cap)
+            if key == "o2c":                           # out-of-sample predictions, for the strategy backtest
+                for r_, p_, *_ in preds:
+                    orig[pos[id(r_)]]["oosO2c"] = p_
             sc = score(preds, size=key == "abs1")
             blks = blocks(keys)
             data = [(vec(r, keys, blks), fn(r)) for r in rk if fn(r) is not None]

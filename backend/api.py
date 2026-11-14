@@ -726,6 +726,20 @@ def fund_today_build(sub, claims, body, q):
     return jobs.start(sub, "fund", "fundtoday", {"day": day})
 
 
+@route("POST", "/fund/backtest")
+def fund_backtest(sub, claims, body, q):
+    import backtest
+    import fundamentals as F
+    rows = (F.store.get_json(f"fund/u/{sub}/study_rows", max_age=600) or {}).get("rows") or []
+    if not rows:
+        raise BadRequest("Run the event study first.")
+    if not any("postScore" in r for r in rows[-500:]):
+        raise BadRequest("This study predates the strategy backtest: re-run the event study once.")
+    out = backtest.run(rows, body.get("cfg") or {})
+    F.store.put_json(f"fund/u/{sub}/backtest", {k: v for k, v in out.items() if k != "trades"})
+    return out
+
+
 @route("GET", "/fund/study/rows")
 def fund_study_rows(sub, claims, body, q):
     import fundamentals as F

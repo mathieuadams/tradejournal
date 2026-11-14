@@ -167,6 +167,32 @@ def test_range_beta_market():
     assert F.market_ctx(late)[days[k]] == F.market_ctx(bench)[days[k]]       # the market context uses closes up to that day only
 
 
+def test_backtest_math():
+    import backtest
+    from datetime import date, timedelta
+    rows = []
+    for i in range(600):                                # 600 days of releases, one per day
+        d = (date(2020, 1, 1) + timedelta(days=i)).isoformat()
+        sc = (i % 10) / 10                              # scores cycle 0.0 … 0.9
+        rows.append({"sym": f"S{i}", "date": d, "day0": d, "t40": (date(2020, 1, 1) + timedelta(days=i + 56)).isoformat(),
+                     "postScore": sc, "oosO2c": None, "r1": 0.0, "gap": 0.0, "o2c": 0.0, "r40": 0.10, "drift40": 0.05, "drift40b": 0.04,
+                     "spyVs200": 0.01, "spy63": 0.02})
+    p = backtest.trailing_pct(rows, "postScore")
+    assert 0 not in p and 199 not in p and 200 in p                        # needs 200 earlier releases
+    r = backtest.run(rows, {"stake": 1000, "costBps": 10, "borrowPct": 0, "hedge": "none", "legs": {"A": False, "B": False, "C": True, "D": True}})
+    c = next(x for x in r["legs"] if x["leg"] == "C")
+    d = next(x for x in r["legs"] if x["leg"] == "D")
+    assert c["avg"] == 99.0 and d["avg"] == -101.0, (c, d)                  # +10% − 0.1% cost; short loses 10% + cost
+    r = backtest.run(rows, {"hedge": "spy", "costBps": 10, "borrowPct": 0, "legs": {"A": False, "B": False, "C": True, "D": False}})
+    assert r["legs"][0]["avg"] == 48.0                                     # +5% vs SPY − 2 × 0.1% (the hedge is a trade)
+    r = backtest.run(rows, {"hedge": "beta", "costBps": 0, "borrowPct": 0, "legs": {"A": False, "B": False, "C": False, "D": True},
+                            "filters": {"dStrongMarket": True}})
+    assert r["legs"][0]["avg"] == -40.0 and r["maxOpen"] >= 5
+    rows2 = [dict(x) for x in rows]
+    rows2[-1]["postScore"] = -99.0                                         # a later value changes no earlier percentile
+    assert all(backtest.trailing_pct(rows2, "postScore")[i] == p[i] for i in p if i < 599)
+
+
 def test_spearman():
     assert abs(F.spearman(list(range(10)), [x * x for x in range(10)])[0] - 1) < 1e-12
     assert abs(F.spearman(list(range(10)), [-x for x in range(10)])[0] + 1) < 1e-12
@@ -261,6 +287,8 @@ def test_api_flow():
     assert t["market"]["regime"] and all("rangePos" in x for x in t["rows"])
     for x in t["rows"]:
         assert x["timing"] in ("bmo", "amc") and "epsSurprise" in x and x.get("gap") is not None and "scoreBand" not in x or x["scoreBand"] in ("top", "middle", "bottom")
+    st, bt = call("POST", "/fund/backtest", {"cfg": {"stake": 1000}})
+    assert st == 200 and "legs" in bt and bt["cfg"]["stake"] == 1000, bt
     st, r = call("POST", "/fund/universe", {"tickers": []})
     assert r["universe"] == []
 
