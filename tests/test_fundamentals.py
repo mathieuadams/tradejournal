@@ -322,6 +322,9 @@ def test_api_flow():
     assert optreal.price_trade(tok, t, L, 101.0, lambda d: 100.0, 101.0, {**bars, "2024-03-05": ["2024-03-05", 101, 103, 100, 102, 1]})["d0Day"] is None
     sm = optreal.summarize([{**t, "why": "x", "release": "2024-03-03"}], {optreal.tkey(t): rd}, backtest.clean({}))
     assert sm["d0"]["C"]["all"]["hit"] == 1, sm["d0"]
+    sk = optreal.price_trade(tok, t, {**L, "ivCap": 1.0}, 101.0, lambda d: 100.0, 101.0)   # fake IV 42% vs 0.02×√252 ≈ 32%
+    assert sk["err"].startswith("skipped: implied vol above 1"), sk
+    assert "err" not in optreal.price_trade(tok, t, {**L, "ivCap": 1.5}, 101.0, lambda d: 100.0, 101.0)
     t2 = {**t, "exit": "2024-08-01"}                   # past every listed expiry: intrinsic value then
     r2 = optreal.price_trade(tok, t2, L, 101.0, lambda d: 112.0, 101.0)
     assert r2["how"] == "expired" and abs(r2["sell"] - 12.0) < 1e-9, r2

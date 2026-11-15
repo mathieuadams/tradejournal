@@ -149,6 +149,10 @@ def price_trade(tok, t, L, close_px, close_on, adj_close, bars=None):
         if not u or not adj_close or abs(u / (adj_close * f) - 1) < 0.03:
             break
         f = u / adj_close
+    cap = L.get("ivCap") or 0
+    if cap and e.get("implied_volatility") and t.get("vol20"):
+        if e["implied_volatility"] / (t["vol20"] * 252 ** 0.5) > cap:   # the option is expensive vs the stock's own moves
+            return {"err": f"skipped: implied vol above {cap:g}× the stock's 20-day vol", "occ": occ}
     at_open = L.get("entry") == "open"
     bid0, ask0 = e.get("nbbo_bid"), e.get("nbbo_ask")
     if at_open:

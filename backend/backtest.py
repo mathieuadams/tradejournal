@@ -85,10 +85,10 @@ LEG_DEFAULT = {"A": {"on": True, "cut": 0.2},
                "C": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "weak": True, "heavy": False, "far": False,
                      "rs": False, "cash": False, "raised": False, "mktUp": False, "noQ4": False, "noWeakSec": False, "quiet": False,
                      "cheap": False, "toneUp": False,
-                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "d0stop": False, "inst": "stock", "dte": 60, "mny": 0.0},
+                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "d0stop": False, "ivCap": 0.0, "inst": "stock", "dte": 60, "mny": 0.0},
                "D": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "strong": True,
                      "calm": False, "gapDown": False, "miss": False, "notRaised": False,
-                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "d0stop": False, "inst": "stock", "dte": 60, "mny": 0.0}}
+                     "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "d0stop": False, "ivCap": 0.0, "inst": "stock", "dte": 60, "mny": 0.0}}
 DEFAULT = {"stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "ivMult": 1.0, "optSpreadPct": 5.0, "from": None, "to": None}
 HOLDS = (5, 20, 40, 60)
 HEDGES = ("none", "spy", "beta")
@@ -132,6 +132,7 @@ def clean(cfg):
                 leg[f] = max(0.0, min(0.9, float(leg.get(f) or 0)))
             leg["inst"] = "option" if leg.get("inst") == "option" else "stock"
             leg["d0stop"] = bool(leg.get("d0stop"))
+            leg["ivCap"] = max(0.0, min(5.0, float(leg.get("ivCap") or 0)))   # real-option pricing only (needs a real implied vol)
             leg["entry"] = "open" if leg.get("entry") == "open" else "close"
             for f in (C_FILTERS if k == "C" else D_FILTERS):
                 leg[f] = bool(leg.get(f))

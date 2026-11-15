@@ -245,7 +245,7 @@ const BT_CSET = [['rs', 'the stock beat SPY over the month before'], ['cash', 'c
   ['toneUp', 'call tone change not in the bottom third of the year before']];
 const BT_DSET = [['calm', 'the market up <4% over 3 months'], ['gapDown', 'gapped down ≥3% at the open'], ['miss', 'EPS missed by >2%'], ['notRaised', 'guidance not raised on the call']];
 const BT_CF = Object.fromEntries(BT_CSET.map(([k]) => [k, false])), BT_DF = Object.fromEntries(BT_DSET.map(([k]) => [k, false]));
-const BT_EXIT = { entry: 'close', d0stop: false, stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
+const BT_EXIT = { entry: 'close', d0stop: false, ivCap: 0, stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
 S.en.bt = { stake: 1000, costBps: 10, borrowPct: 1, ivMult: 1, optSpreadPct: 5,
   legs: { A: { on: true, cut: 0.2 }, B: { on: true, band: 0.2, gap: 0.02 },
     C: { on: true, band: 0.2, hold: 40, hedge: 'spy', weak: true, heavy: false, far: false, ...BT_CF, ...BT_EXIT }, D: { on: true, band: 0.2, hold: 40, hedge: 'spy', strong: true, ...BT_DF, ...BT_EXIT } } };
@@ -265,6 +265,7 @@ function enBtShell() {
     <label class="f" title="Out at the close of the first session after day 0 that closes ${leg === 'C' ? 'below day 0\u2019s low' : 'above day 0\u2019s high'}">Day-0 candle stop${sel(leg, 'd0stop', [[false, 'Off'], [true, leg === 'C' ? 'Close below day-0 low' : 'Close above day-0 high']])}</label>
     <label class="f">Trade${sel(leg, 'inst', [['stock', 'The stock'], ['option', leg === 'C' ? 'Option: a call' : 'Option: a put']])}</label>
     ${L[leg].inst === 'option' ? `<label class="f">Expiry${sel(leg, 'dte', [[30, '30 days'], [60, '60 days'], [90, '90 days']])}</label>
+    <label class="f" title="Real option prices only: skip the trade when the option's implied volatility at entry is above this multiple of the stock's own 20-day volatility (the backtest has no real implied volatility)">Skip if option expensive (real prices)${sel(leg, 'ivCap', [[0, 'Off'], [1, 'implied > 1.0× stock vol'], [1.24, 'implied > 1.24×'], [1.5, 'implied > 1.5×'], [2, 'implied > 2×']])}</label>
     <label class="f">Strike${sel(leg, 'mny', [[-0.05, '5% in the money'], [0, 'At the money'], [0.05, '5% out of the money'], [0.1, '10% out of the money']])}</label>` : ''}</div>`;
   const hedge = leg => `<label class="f">Hedge${sel(leg, 'hedge', [['none', 'None'], ['spy', BM() + ' 1:1'], ['beta', 'Beta × ' + BM()]])}</label>`;
   const box = (leg, title, desc, body) => `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px"><label class="check"><b>${ck(leg, 'on')} ${leg} · ${title}</b></label>
@@ -661,6 +662,6 @@ document.addEventListener('change', e => { if (e.target.id === 'en-day') { S.en.
 
 document.addEventListener('change', e => {
   const t = e.target, c = S.en.bt;
-  if (t.dataset.enleg) { const [leg, k] = t.dataset.enleg.split('.'); c.legs[leg][k] = t.type === 'checkbox' ? t.checked : k === 'd0stop' ? t.value === 'true' : (['cut', 'band', 'gap', 'hold', 'stop', 'trail', 'target', 'dte', 'mny'].includes(k) ? +t.value : t.value); if (k === 'inst') enBody(); }
+  if (t.dataset.enleg) { const [leg, k] = t.dataset.enleg.split('.'); c.legs[leg][k] = t.type === 'checkbox' ? t.checked : k === 'd0stop' ? t.value === 'true' : (['cut', 'band', 'gap', 'hold', 'stop', 'trail', 'target', 'dte', 'mny', 'ivCap'].includes(k) ? +t.value : t.value); if (k === 'inst') enBody(); }
   else if (t.dataset.enbtv) { const k = t.dataset.enbtv; c[k] = ['stake', 'costBps', 'borrowPct', 'ivMult', 'optSpreadPct'].includes(k) ? +t.value : t.value; }
 });
