@@ -546,7 +546,8 @@ def run(rows, cfg, ctx=None, paths=None):
     allt = trades_for(rows, ctx, c, paths=paths, keep_open=True)
     opens = [t for t in allt if t.get("open")]
     out = summarize([t for t in allt if not t.get("open")], c)
-    out["drivers"] = drivers([t for t in allt if not t.get("open")], rows)
+    closed = [t for t in allt if not t.get("open")]   # per leg: what helps a long hurts a short
+    out["drivers"] = {k: d for k in "ABCD" if (d := drivers([t for t in closed if t["leg"] == k], rows))}
     out["open"] = {"n": len(opens), "mtm": round(sum(t["pnl"] for t in opens), 2),
                    "trades": sorted(opens, key=lambda t: t["entry"])}
     out["alpha"] = _stats(out["_all"], "alpha")

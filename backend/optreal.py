@@ -371,8 +371,8 @@ def _drivers(out, rows):
         v = r.get("vol20")
         xs.append({**x, "ivRatio": x["iv"] / (v * 252 ** 0.5) if x.get("iv") and v else None,
                    "premPct": x["buy"] / x["strike"] if x.get("strike") else None})
-    return backtest.drivers(xs, rows, "real", {"iv": "Option implied volatility at entry", "ivRatio": "Implied ÷ the stock's 20-day volatility",
-                                               "premPct": "Premium as a share of the strike"})
+    ex = {"iv": "Option implied volatility at entry", "ivRatio": "Implied ÷ the stock's 20-day volatility", "premPct": "Premium as a share of the strike"}
+    return {k: d for k in "CD" if (d := backtest.drivers([x for x in xs if x["leg"] == k], rows, "real", ex))}   # calls and puts apart
 
 
 def d0_summary(out):

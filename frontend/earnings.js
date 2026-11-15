@@ -303,14 +303,19 @@ async function enRealLoad() {
   try { const r = await api('/fund/backtest/real'); S.enReal = r; el.innerHTML = enRealHtml(r); if (r.job && r.job.status === 'running' && r.job.job === 'fundreal') setTimeout(enRealLoad, 4000); }
   catch (e) { el.innerHTML = `<div class="bd loss">${esc(e.message)}</div>`; }
 }
-function enDrivers(d, money, what) {                 // what separates winners from losers, every signal, no pre-selection
+function enDrivers(all, money, what) {               // per leg: what separates winners from losers, every signal, no pre-selection
+  if (!all) return '';
+  if (all.num) all = { '': all };                      // an older result (legs together)
+  return Object.entries(all).map(([leg, d]) => enDriversLeg(d, money, what, leg)).join('');
+}
+function enDriversLeg(d, money, what, leg) {
   if (!d || !d.num) return '';
   const f = v => v == null ? '—' : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(3);
   const cell = g => `<td class="r"><span class="dim" style="font-size:11px">${f(g.lo)} … ${f(g.hi)}</span><br><span class="${cls(g.avg)}">${money(g.avg)}</span> <span class="dim">· ${(g.win * 100).toFixed(0)}%</span></td>`;
   const rows = d.num.map(x => `<tr${x.consistent ? '' : ' style="opacity:.55"'}><td>${esc(x.label)}<br><span class="dim" style="font-size:11px">${x.n} trades</span></td>${x.thirds.map(cell).join('')}
     <td class="r ${cls(x.spread)}"><b>${money(x.spread)}</b></td><td class="r"><span class="${cls(x.first)}">${money(x.first)}</span> / <span class="${cls(x.second)}">${money(x.second)}</span></td><td>${x.consistent ? '✓ both halves' : 'flips'}</td></tr>`).join('');
   const cats = (d.cat || []).map(c => `<div style="margin-top:6px"><b>${esc(c.label)}</b>: ${c.cat.map(x => `${esc(x.name)} <span class="${cls(x.avg)}">${money(x.avg)}</span> <span class="dim">(${x.n}, ${(x.win * 100).toFixed(0)}%)</span>`).join(' · ')}</div>`).join('');
-  return `<section class="panel" style="margin-top:12px"><div class="hd"><h2>What separates winners from losers</h2><span class="dim" style="font-size:12px">${d.n} ${what}: every signal the study records, split in thirds by its value — average ${what === 'trades' ? 'P/L' : 'real P/L'} per trade and win rate per third. "Both halves" = High − Low keeps its sign before and after ${esc(d.split)}.</span></div>
+  return `<section class="panel" style="margin-top:12px"><div class="hd"><h2>What separates winners from losers${leg ? ' · ' + esc(BT_LEG[leg] || leg) : ''}</h2><span class="dim" style="font-size:12px">${d.n} ${what}: every signal the study records, split in thirds by its value — average ${what === 'trades' ? 'P/L' : 'real P/L'} per trade and win rate per third. "Both halves" = High − Low keeps its sign before and after ${esc(d.split)}.</span></div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Signal</th><th class="r">Low third</th><th class="r">Middle</th><th class="r">High third</th><th class="r">High − Low</th><th class="r">1st half / 2nd half</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="note" style="padding:6px 16px 12px">${cats}<br>Faded rows flip between the two halves: likely one period's luck. Nothing here is chosen beforehand; read it as a list of candidates to test as filters.</div></section>`;
 }
