@@ -192,7 +192,7 @@ def test_backtest_math():
                             "D": {"on": True, "hedge": "beta", "strong": True}}})
     assert r["legs"][0]["avg"] == -50.0 and r["maxOpen"] >= 5                # no beta on the rows: beta 1 = SPY
     res, ok = backtest.optimize(rows, {})
-    assert ok and len(res) == sum(len(backtest.combos(k)) for k in "ABCD") + 128 + 16 and res[0]["train"] is not None
+    assert ok and len(res) == sum(len(backtest.combos(k)) for k in "ABCD") + 512 + 16 and res[0]["train"] is not None
     rk = backtest.ranked(res)
     assert rk["C"][0]["train"]["n"] >= rk["C"][-1]["train"]["n"] or (rk["C"][0]["trainX"].get("t") or 0) >= (rk["C"][-1]["trainX"].get("t") or -1e9)
     r = backtest.run(rows, {"legs": {"A": {"on": False}, "B": {"on": False}, "C": {"on": True, "band": 0.3, "hold": 40, "hedge": "none", "weak": False}, "D": {"on": False}}})
@@ -509,7 +509,10 @@ def test_setup_filters():
     assert not B.setup_ok("C", L, {**good, "sector": "Retail"}, "2025-05-01")
     assert B.setup_ok("C", B.clean({})["legs"]["C"], {}, "2025-02-01")      # all off: everything passes
     assert B.setup_ok("D", D, {"gap": -0.05, "txGuide": 0}, "2025-05-01") and not B.setup_ok("D", D, {"gap": -0.05, "txGuide": 1}, "2025-05-01")
-    assert len(B.filter_grid("C")) == 128 and len(B.filter_grid("D")) == 16
+    assert len(B.filter_grid("C")) == 512 and len(B.filter_grid("D")) == 16
+    L2 = B.clean({"legs": {"C": {"cheap": True, "toneUp": True}}})["legs"]["C"]
+    assert B.setup_ok("C", L2, {}, "2025-05-01", {"ey": 0.8, "tone": 0.5}) and not B.setup_ok("C", L2, {}, "2025-05-01", {"ey": 0.5, "tone": 0.5})
+    assert not B.setup_ok("C", L2, {}, "2025-05-01", {"ey": 0.9, "tone": 0.2}) and not B.setup_ok("C", L2, {}, "2025-05-01", {})
 
 
 

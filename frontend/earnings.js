@@ -241,7 +241,8 @@ function enTodayHtml(r) {
 /* ---------- Strategy backtest ---------- */
 const BT_CSET = [['rs', 'the stock beat SPY over the month before'], ['cash', 'cash earnings ahead of reported earnings (accruals < −4%)'], ['raised', 'guidance raised on the call'],
   ['mktUp', 'the market up >6% over 3 months'], ['noQ4', 'no entry January–April (Q4 reports)'], ['noWeakSec', 'not services, retail, mining & energy, transport / utilities / telecom'],
-  ['quiet', 'no heavy volume the week before (≤1.2× normal)']];
+  ['quiet', 'no heavy volume the week before (≤1.2× normal)'], ['cheap', 'cheap: earnings yield (1 / P/E) in the top third of the year before'],
+  ['toneUp', 'call tone change not in the bottom third of the year before']];
 const BT_DSET = [['calm', 'the market up <4% over 3 months'], ['gapDown', 'gapped down ≥3% at the open'], ['miss', 'EPS missed by >2%'], ['notRaised', 'guidance not raised on the call']];
 const BT_CF = Object.fromEntries(BT_CSET.map(([k]) => [k, false])), BT_DF = Object.fromEntries(BT_DSET.map(([k]) => [k, false]));
 const BT_EXIT = { entry: 'close', d0stop: false, stop: 0, trail: 0, target: 0, inst: 'stock', dte: 60, mny: 0 };
@@ -361,7 +362,7 @@ function enOptSetting(leg, p) {
   const pc = v => (v * 100).toFixed(0) + '%';
   if (leg === 'A') return `model top ${pc(p.cut)}`;
   if (leg === 'B') return `score bottom ${pc(p.band)}, gap > +${pc(p.gap)}`;
-  const SH = { rs: 'beat ' + BM() + ' 1m', cash: 'cash > earnings', raised: 'guidance raised', mktUp: 'market up 3m', noQ4: 'no Jan–Apr', noWeakSec: 'no weak sectors', quiet: 'no heavy volume',
+  const SH = { rs: 'beat ' + BM() + ' 1m', cash: 'cash > earnings', raised: 'guidance raised', mktUp: 'market up 3m', noQ4: 'no Jan–Apr', noWeakSec: 'no weak sectors', quiet: 'no heavy volume', cheap: 'cheap P/E', toneUp: 'tone up',
     calm: 'calm market', gapDown: 'gap down', miss: 'EPS miss', notRaised: 'guidance not raised' };
   const f = (leg === 'C' ? [p.weak && 'weak market', p.heavy && 'heavy-volume up day', p.far && '>25% below high'] : [p.strong && 'strong market'])
     .concat((leg === 'C' ? BT_CSET : BT_DSET).map(([k]) => p[k] && SH[k])).filter(Boolean);

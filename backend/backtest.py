@@ -15,7 +15,8 @@ Setup filters (toggles; from the real-option review, Nov 2026 — check them on 
   C  rs: the stock beat SPY over the month before (pre21ab > 0) · cash: cash earnings ahead of reported (accruals < −4%)
      · raised: guidance raised on the call · mktUp: SPY up > 6% over 3 months · noQ4: no entry January–April (Q4
      reports) · noWeakSec: not services, retail, mining & energy, transport / utilities / telecom · quiet: no heavy
-     volume the week before (relVol5 ≤ 1.2)
+     volume the week before (relVol5 ≤ 1.2) · cheap: earnings yield (1 / P/E) in the top third of the year before ·
+     toneUp: call tone change not in the bottom third of the year before
   D  calm: SPY up < 4% over 3 months · gapDown: gapped down ≥ 3% · miss: EPS missed by > 2% · notRaised: guidance not
      raised on the call
 Entry for C and D: the day-0 close (default) or the day-0 open (`entry`; then day 0's own range counts for the stops).
@@ -83,6 +84,7 @@ LEG_DEFAULT = {"A": {"on": True, "cut": 0.2},
                "B": {"on": True, "band": 0.2, "gap": 0.02},
                "C": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "weak": True, "heavy": False, "far": False,
                      "rs": False, "cash": False, "raised": False, "mktUp": False, "noQ4": False, "noWeakSec": False, "quiet": False,
+                     "cheap": False, "toneUp": False,
                      "entry": "close", "stop": 0.0, "trail": 0.0, "target": 0.0, "d0stop": False, "inst": "stock", "dte": 60, "mny": 0.0},
                "D": {"on": True, "band": 0.2, "hold": 40, "hedge": "spy", "strong": True,
                      "calm": False, "gapDown": False, "miss": False, "notRaised": False,
@@ -367,6 +369,7 @@ def context(rows):
     """What every setting shares: the trailing percentiles of the score and of the model's prediction."""
     last = max((r["day0"] for r in rows if r.get("day0")), default=None)
     return {"score": trailing_pct(rows, "postScore"), "pred": trailing_pct(rows, "oosO2c"),
+            "ey": trailing_pct(rows, "ey"), "tone": trailing_pct(rows, "txToneChg"),     # cheap / tone up: vs the year before
             "openAfter": (_d(last) - timedelta(days=7)).isoformat() if last else None}
 
 
@@ -420,7 +423,7 @@ def trades_for(rows, ctx, c, only=None, paths=None, keep_open=False):
                         ok &= (_f(r.get("r1ab")) or 0) > 0.02 and (_f(r.get("vol0")) or 0) >= 2.5
                     if L["far"]:
                         ok &= (_f(r.get("offHigh")) or 0) < -0.25
-                    ok = ok and setup_ok("C", L, r, d0)
+                    ok = ok and setup_ok("C", L, r, d0, {"ey": (ctx.get("ey") or {}).get(i), "tone": (ctx.get("tone") or {}).get(i)})
                     why = f"score top {100 - sp * 100:.0f}%"
                 else:
                     if sp > L["band"]:
@@ -434,14 +437,20 @@ def trades_for(rows, ctx, c, only=None, paths=None, keep_open=False):
 
 
 WEAK_SECTORS = ("Services", "Retail", "Mining & energy", "Transport, utilities, telecom")
-C_FILTERS = ("rs", "cash", "raised", "mktUp", "noQ4", "noWeakSec", "quiet")
+C_FILTERS = ("rs", "cash", "raised", "mktUp", "noQ4", "noWeakSec", "quiet", "cheap", "toneUp")
 D_FILTERS = ("calm", "gapDown", "miss", "notRaised")
 
 
-def setup_ok(k, L, r, d0):
-    """The setup toggles of leg C / D (a missing value fails the filter)."""
+def setup_ok(k, L, r, d0, pct=None):
+    """The setup toggles of leg C / D (a missing value fails the filter). `pct`: the release's trailing percentiles
+    (earnings yield, call tone change) against the year before — no fixed cut-off, no look-ahead."""
     g = lambda f: _f(r.get(f))
+    pct = pct or {}
     if k == "C":
+        if L.get("cheap") and not ((pct.get("ey") if pct.get("ey") is not None else -1) >= 2 / 3):
+            return False
+        if L.get("toneUp") and not ((pct.get("tone") if pct.get("tone") is not None else -1) >= 1 / 3):
+            return False
         if L.get("rs") and not ((g("pre21ab") or -1) > 0):
             return False
         if L.get("cash") and not ((g("accruals") if g("accruals") is not None else 1) < -0.04):
