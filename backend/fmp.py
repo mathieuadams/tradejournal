@@ -208,6 +208,29 @@ def grades(sub, sym, max_age_h=24 * 7):
     return rows
 
 
+RATIO_FIELDS = {"pe": "priceToEarningsRatio", "ps": "priceToSalesRatio", "pb": "priceToBookRatio", "pfcf": "priceToFreeCashFlowRatio",
+                "peg": "priceToEarningsGrowthRatio", "netMargin": "netProfitMargin", "grossMargin": "grossProfitMargin",
+                "debtEq": "debtToEquityRatio"}
+
+
+def ratios(sub, sym, max_age_h=24 * 7):
+    """Quarterly valuation and margin ratios, oldest first: [{date (quarter end), pe, ps, pb, pfcf, peg, netMargin,
+    grossMargin, debtEq}] (GET /stable/ratios?period=quarter). Kept a week."""
+    key = "fund/ratios/" + sym
+    c = store.get_json(key)
+    if c and c.get("at", "") > iso(now_ny() - timedelta(hours=max_age_h)):
+        return c["rows"]
+    raw = _get(_key(sub), "ratios", {"symbol": _sym(sym), "period": "quarter", "limit": 80}) or []
+    rows = []
+    for r in raw if isinstance(raw, list) else []:
+        d = str(r.get("date") or "")[:10]
+        if len(d) == 10:
+            rows.append({"date": d, **{k: _f(r.get(f)) for k, f in RATIO_FIELDS.items()}})
+    rows.sort(key=lambda x: x["date"])
+    store.put_json(key, {"at": iso(now_ny()), "rows": rows})
+    return rows
+
+
 def price_target(sub, sym):
     """Today's consensus price target (a snapshot: used for the next release only, never in the backtest)."""
     r = _get(_key(sub), "price-target-consensus", {"symbol": _sym(sym)}) or []

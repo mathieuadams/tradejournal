@@ -303,6 +303,17 @@ async function enRealLoad() {
   try { const r = await api('/fund/backtest/real'); S.enReal = r; el.innerHTML = enRealHtml(r); if (r.job && r.job.status === 'running' && r.job.job === 'fundreal') setTimeout(enRealLoad, 4000); }
   catch (e) { el.innerHTML = `<div class="bd loss">${esc(e.message)}</div>`; }
 }
+function enDrivers(d, money, what) {                 // what separates winners from losers, every signal, no pre-selection
+  if (!d || !d.num) return '';
+  const f = v => v == null ? '—' : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(3);
+  const cell = g => `<td class="r"><span class="dim" style="font-size:11px">${f(g.lo)} … ${f(g.hi)}</span><br><span class="${cls(g.avg)}">${money(g.avg)}</span> <span class="dim">· ${(g.win * 100).toFixed(0)}%</span></td>`;
+  const rows = d.num.map(x => `<tr${x.consistent ? '' : ' style="opacity:.55"'}><td>${esc(x.label)}<br><span class="dim" style="font-size:11px">${x.n} trades</span></td>${x.thirds.map(cell).join('')}
+    <td class="r ${cls(x.spread)}"><b>${money(x.spread)}</b></td><td class="r"><span class="${cls(x.first)}">${money(x.first)}</span> / <span class="${cls(x.second)}">${money(x.second)}</span></td><td>${x.consistent ? '✓ both halves' : 'flips'}</td></tr>`).join('');
+  const cats = (d.cat || []).map(c => `<div style="margin-top:6px"><b>${esc(c.label)}</b>: ${c.cat.map(x => `${esc(x.name)} <span class="${cls(x.avg)}">${money(x.avg)}</span> <span class="dim">(${x.n}, ${(x.win * 100).toFixed(0)}%)</span>`).join(' · ')}</div>`).join('');
+  return `<section class="panel" style="margin-top:12px"><div class="hd"><h2>What separates winners from losers</h2><span class="dim" style="font-size:12px">${d.n} ${what}: every signal the study records, split in thirds by its value — average ${what === 'trades' ? 'P/L' : 'real P/L'} per trade and win rate per third. "Both halves" = High − Low keeps its sign before and after ${esc(d.split)}.</span></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Signal</th><th class="r">Low third</th><th class="r">Middle</th><th class="r">High third</th><th class="r">High − Low</th><th class="r">1st half / 2nd half</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="note" style="padding:6px 16px 12px">${cats}<br>Faded rows flip between the two halves: likely one period's luck. Nothing here is chosen beforehand; read it as a list of candidates to test as filters.</div></section>`;
+}
 function enD0Html(d, money) {                        // closes beyond the day-0 candle: winners vs losers
   if (!d) return '';
   const pc = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
@@ -332,6 +343,7 @@ function enRealHtml(r) {
     <div class="tbl-wrap" style="margin-top:8px"><table class="tbl">${head}<tbody>${row('All', v.all)}${row(BT_LEG.C, v.legs.C)}${row(BT_LEG.D, v.legs.D)}</tbody></table></div>
     <div class="tbl-wrap" style="margin-top:8px"><table class="tbl">${head.replace('<th></th>', '<th>Year (exit)</th>')}<tbody>${v.years.map(y => row(y.year, y)).join('')}</tbody></table></div>
     ${enD0Html(v.d0, money)}
+    ${enDrivers(v.drivers, money, 'priced option trades')}
     <div class="hd" style="margin-top:8px"><h2 style="font-size:14px">The 20 largest (real)</h2><div class="grow"></div><button class="btn sm" data-en="real-csv">Export the priced trades (CSV)</button></div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Entry</th><th>Exit</th><th>Contract</th><th class="r">Bought</th><th class="r">Sold</th><th class="r">IV</th><th class="r">Stock</th><th class="r">Model</th><th class="r">Real</th><th>Exit priced</th></tr></thead><tbody>
       ${v.top.map(x => `<tr><td>${x.leg}</td><td>${esc(x.sym)}</td><td class="mono">${esc(x.entry)}</td><td class="mono" title="${x.plannedExit && x.plannedExit !== x.exit ? 'planned exit ' + esc(x.plannedExit) : ''}">${esc(x.exit)}</td><td title="${esc(x.occ)}">${esc(enOcc(x.occ))}</td><td class="r">${x.buy.toFixed(2)}</td><td class="r">${x.sell.toFixed(2)}</td>
@@ -401,6 +413,7 @@ function enBtHtml(r) {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
       <section class="panel"><div class="hd"><h2>By leg</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.legs.map(x => row(BT_LEG[x.leg] || x.leg, x)).join('')}</tbody></table></div></section>
       <section class="panel"><div class="hd"><h2>By year (exit)</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.years.map(x => row(x.year, x)).join('')}</tbody></table></div></section></div>
+    ${enDrivers(r.drivers, money2, 'trades')}
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Trades</h2><span class="dim" style="font-size:13px">the latest ${Math.min(300, r.trades.length)} of ${r.nTrades.toLocaleString('en-US')}</span><div class="grow"></div><button class="btn sm" data-en="bt-csv">Export trades (CSV)</button></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Release</th><th>Entry</th><th>Exit</th><th>Side</th><th class="r" title="the trade's result: a short's sign flipped, an option's own return">Result</th><th class="r">P/L</th><th>Why</th></tr></thead><tbody>
       ${r.trades.slice(-300).reverse().map(t => `<tr><td>${t.leg}</td><td><a class="name" href="#earnings" data-enco="${esc(t.sym)}">${esc(t.sym)}</a></td><td class="mono">${esc(t.release)}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td>${t.side}</td><td class="r ${cls(t.res ?? (t.side === 'short' ? -t.ret : t.ret))}" title="stock ${pct(t.ret, 2)}">${pct(t.res ?? (t.side === 'short' ? -t.ret : t.ret), 2)}</td><td class="r ${cls(t.pnl)}"><b>${money2(t.pnl)}</b></td><td class="dim">${esc(t.why)}</td></tr>`).join('')}</tbody></table></div></section>`;

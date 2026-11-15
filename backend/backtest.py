@@ -546,6 +546,7 @@ def run(rows, cfg, ctx=None, paths=None):
     allt = trades_for(rows, ctx, c, paths=paths, keep_open=True)
     opens = [t for t in allt if t.get("open")]
     out = summarize([t for t in allt if not t.get("open")], c)
+    out["drivers"] = drivers([t for t in allt if not t.get("open")], rows)
     out["open"] = {"n": len(opens), "mtm": round(sum(t["pnl"] for t in opens), 2),
                    "trades": sorted(opens, key=lambda t: t["entry"])}
     out["alpha"] = _stats(out["_all"], "alpha")
@@ -624,6 +625,61 @@ def summarize(trades, c):
             "legs": [{"leg": k, **_stats(v)} for k, v in sorted(legs.items())],
             "equity": eq[::max(1, len(eq) // 600)] + ([eq[-1]] if eq and len(eq) > 600 else []),
             "trades": trades[-3000:], "nTrades": len(trades), "_all": trades}
+
+
+# ---------------------------------------------------------------- what separates winners from losers (no assumptions)
+
+def drivers(trades, rows, val="pnl", extra=None, top=30):
+    """Every signal the study records (fundamentals, valuation, call, analysts, price and volume before, the market),
+    with no choice made beforehand: the trades split in thirds by the signal's value, the average result of each third,
+    High − Low, and the same split on the first and second half of the period (by entry date) — a difference that keeps
+    its sign in both halves is more than one period's luck. `extra`: {key: label} of values carried on the trades
+    themselves (e.g. an option's implied volatility). Ranked: consistent first, then by |High − Low|."""
+    import fundamentals as F
+    by = {(r["sym"], r.get("day0")): r for r in rows if r.get("day0")}
+    sig = list(F.NUM_SIGNALS) + list((extra or {}).items())
+    xs = [(t, by.get((t["sym"], t["entry"]))) for t in trades if t.get(val) is not None]
+    if len(xs) < 60:
+        return None
+    mid = sorted(t["entry"] for t, _ in xs)[len(xs) // 2]
+
+    def v_of(t, r, k):
+        x = t.get(k) if extra and k in extra else (r or {}).get(k)
+        return x if isinstance(x, (int, float)) and x == x else None
+
+    def thirds(pairs):
+        if len(pairs) < 45:
+            return None
+        pairs.sort(key=lambda p: p[0])
+        n = len(pairs)
+        g = [pairs[i * n // 3:(i + 1) * n // 3] for i in range(3)]
+        return [{"lo": a[0][0], "hi": a[-1][0], "n": len(a), "avg": sum(p[1] for p in a) / len(a), "win": sum(1 for p in a if p[1] > 0) / len(a)} for a in g]
+    out = []
+    for k, label in sig:
+        pr = [(v_of(t, r, k), t[val], t["entry"]) for t, r in xs]
+        pr = [p for p in pr if p[0] is not None]
+        th = thirds([(a, b) for a, b, _ in pr])
+        if not th:
+            continue
+        h1 = thirds([(a, b) for a, b, e in pr if e < mid])
+        h2 = thirds([(a, b) for a, b, e in pr if e >= mid])
+        sp = th[2]["avg"] - th[0]["avg"]
+        s1 = h1[2]["avg"] - h1[0]["avg"] if h1 else None
+        s2 = h2[2]["avg"] - h2[0]["avg"] if h2 else None
+        out.append({"key": k, "label": label, "n": len(pr), "thirds": th, "spread": sp, "first": s1, "second": s2,
+                    "consistent": s1 is not None and s2 is not None and s1 * s2 > 0 and s1 * sp > 0})
+    for k in ("sector", "timing"):                     # categories: the average per value (20+ trades)
+        g = {}
+        for t, r in xs:
+            c = (r or {}).get(k)
+            if c:
+                g.setdefault(c, []).append(t[val])
+        cats = sorted(({"name": c, "n": len(v), "avg": sum(v) / len(v), "win": sum(1 for x in v if x > 0) / len(v)} for c, v in g.items() if len(v) >= 20),
+                      key=lambda x: -x["avg"])
+        if len(cats) >= 2:
+            out.append({"key": k, "label": "Sector" if k == "sector" else "Release timing", "cat": cats})
+    num = sorted([x for x in out if "thirds" in x], key=lambda x: (not x["consistent"], -abs(x["spread"])))
+    return {"n": len(xs), "split": mid, "val": val, "num": num[:top], "cat": [x for x in out if "cat" in x]}
 
 
 # ---------------------------------------------------------------- the optimizer

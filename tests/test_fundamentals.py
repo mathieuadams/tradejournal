@@ -553,6 +553,28 @@ def test_reaction_skips_a_gap_in_prices():
     assert F.reaction(ok, bars, bench) is not None
 
 
+
+def test_valuation_and_drivers():
+    import fundamentals as F
+    import backtest as B
+    rs = [{"date": "2024-03-31", "pe": 20.0, "ps": 3.0}, {"date": "2024-06-30", "pe": -10.0, "ps": 2.0}]
+    assert F._ratio_fields(rs, "2024-05-01")["pe"] == 20.0 and abs(F._ratio_fields(rs, "2024-05-01")["ey"] - 0.05) < 1e-12
+    assert F._ratio_fields(rs, "2024-07-25")["ey"] == -0.1 and F._ratio_fields(rs, "2025-01-30") == {}
+    assert any(k == "ey" for k, _ in F.NUM_SIGNALS) and "pe" in F.EXPORT_KEYS
+    import random
+    rnd = random.Random(3)
+    rows, trades = [], []
+    for i in range(300):                               # cheap (high earnings yield) wins; the rest is noise
+        ey = rnd.uniform(-0.05, 0.1)
+        d = f"202{3 + i // 150}-{1 + i % 12:02d}-{1 + i % 27:02d}"
+        rows.append({"sym": f"S{i}", "day0": d, "ey": ey, "vol20": rnd.uniform(0.01, 0.04), "sector": "Retail" if i % 2 else "Services"})
+        trades.append({"sym": f"S{i}", "entry": d, "pnl": (300 if ey > 0.05 else -100) + rnd.uniform(-50, 50)})
+    dv = B.drivers(trades, rows)
+    top = dv["num"][0]
+    assert top["key"] == "ey" and top["consistent"] and top["spread"] > 300 and top["thirds"][2]["win"] > 0.9, top
+    assert any(x["key"] == "sector" for x in dv["cat"]) and B.drivers(trades[:20], rows) is None
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

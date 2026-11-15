@@ -469,6 +469,17 @@ def fake_fmp_get(key, path, params, timeout=40):
     from datetime import date as _dt
     if path == "sp500-constituent":
         return [{"symbol": k, "name": v[1]} for k, v in SEC_COS.items()]
+    if path == "ratios":
+        out, d = [], datetime(2016, 3, 31).date()
+        rnd = random.Random(str(params.get("symbol")))
+        while d.year < 2027:
+            out.append({"date": d.isoformat(), "priceToEarningsRatio": round(rnd.uniform(-20, 80), 2), "priceToSalesRatio": round(rnd.uniform(0.5, 15), 2),
+                        "priceToBookRatio": round(rnd.uniform(1, 20), 2), "priceToFreeCashFlowRatio": round(rnd.uniform(5, 60), 2),
+                        "priceToEarningsGrowthRatio": round(rnd.uniform(-3, 5), 2), "netProfitMargin": round(rnd.uniform(-0.1, 0.3), 3),
+                        "grossProfitMargin": round(rnd.uniform(0.2, 0.8), 3), "debtToEquityRatio": round(rnd.uniform(0, 2), 2)})
+            m = d.month + 3
+            d = (datetime(d.year + (m > 12), (m - 1) % 12 + 1, 28) + timedelta(days=4)).date().replace(day=1) - timedelta(days=1)
+        return list(reversed(out))
     if path == "nasdaq-constituent":
         return [{"symbol": k, "name": v[1]} for k, v in list(SEC_COS.items())[:2]]
     if path == "historical-nasdaq-constituent":

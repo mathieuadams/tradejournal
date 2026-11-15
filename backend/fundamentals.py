@@ -849,7 +849,22 @@ def setup_of(e):
 OUTCOMES = [("gap", "Gap"), ("o2c", "Day 0 open → close vs bench"), ("r1ab", "Day 0 vs bench"), ("r1b", "Day 0 beta-adjusted"), ("z1", "Day 0 (σ)"), ("r5ab", "5 days vs bench"),
             ("r20ab", "1 month vs bench"), ("r40ab", "2 months vs bench"), ("drift5", "Drift d1→d5"), ("drift20", "Drift d1→d20"),
             ("drift40", "Drift d1→d40"), ("drift40b", "Drift d1→d40 beta-adjusted")]
-NUM_SIGNALS = [("pre1ab", "Day before vs bench"), ("pre5ab", "5 days before vs bench"), ("pre21ab", "1 month before vs bench"),
+def _ratio_fields(ratios, day):
+    """The valuation of the quarter just reported (FMP's quarter-end ratios: the last quarter end within 130 days
+    before the release). Earnings yield = 1 / P/E keeps losses in order (a negative P/E is not 'cheap')."""
+    q = [r for r in ratios or [] if r["date"] <= day and (_d(day) - _d(r["date"])).days <= 130]
+    if not q:
+        return {}
+    r = q[-1]
+    out = {k: r.get(k) for k in ("pe", "ps", "pb", "pfcf", "peg", "netMargin", "grossMargin", "debtEq")}
+    out["ey"] = 1 / r["pe"] if r.get("pe") else None
+    return out
+
+
+NUM_SIGNALS = [("pe", "P/E (quarter-end, FMP)"), ("ey", "Earnings yield (1 / P/E)"), ("ps", "Price / sales"), ("pb", "Price / book"),
+               ("pfcf", "Price / free cash flow"), ("peg", "PEG (P/E ÷ growth)"), ("netMargin", "Net margin"), ("grossMargin", "Gross margin"),
+               ("debtEq", "Debt / equity"),
+               ("pre1ab", "Day before vs bench"), ("pre5ab", "5 days before vs bench"), ("pre21ab", "1 month before vs bench"),
                ("pre63ab", "3 months before vs bench"), ("offHigh", "Distance from 52w high"), ("sma50", "vs 50-day average"),
                ("sma200", "vs 200-day average"), ("vol20", "20-day volatility"), ("relVol1", "Volume, day before (× 50d avg)"),
                ("relVol5", "Volume, 5 days before (× 50d avg)"), ("relVol20", "Volume, 20 days before (× 50d avg)"),
@@ -1041,7 +1056,7 @@ def build_rows(sub, opts, prog=None, deadline=None):
     mctx = market_ctx(bench)
     rows, skipped, t_last = [], [], 0.0
     uni_set = set(uni)
-    plan_ok = {"grades": True, "tx": True}
+    plan_ok = {"grades": True, "tx": True, "ratios": True}
     tx_note, tx_fail = [], [0]
     for n, s in enumerate(syms):
         if deadline and time.time() > deadline:
@@ -1093,6 +1108,15 @@ def build_rows(sub, opts, prog=None, deadline=None):
                 skipped.append(f"Analyst grades not in the FMP plan: {str(ex)[:100]}")
             except Exception as ex:
                 skipped.append(f"{s} grades: {str(ex)[:80]}")
+        ratios = []
+        if has_fmp and plan_ok["ratios"]:
+            try:
+                ratios = fmp.ratios(sub, s)
+            except BadRequest as ex:
+                plan_ok["ratios"] = False
+                skipped.append(f"Valuation ratios not in the FMP plan: {str(ex)[:100]}")
+            except Exception as ex:
+                skipped.append(f"{s} ratios: {str(ex)[:80]}")
         if has_fmp and plan_ok["tx"] and opts.get("transcripts", True):
             try:
                 txs = tx_index(sub, s, min(since, first_imp), True, deadline)
@@ -1121,6 +1145,7 @@ def build_rows(sub, opts, prog=None, deadline=None):
             rp = row.get("rangePos")
             row["range52"] = None if rp is None else "Near the low (bottom 20%)" if rp < 0.2 else "Near the high (top 20%)" if rp > 0.8 else "Middle of the range"
             row.update(volume_patterns(row))
+            row.update(_ratio_fields(ratios, e["date"]))
             q = _quarter_for(c, e["date"])
             if q:
                 row["qEnd"] = q["end"]
@@ -1242,7 +1267,7 @@ def aggregate(rows):
 TX_NOTE = [None]
 ROW_PAGE = 1200                                       # an API response must stay under 6 MB
 
-EXPORT_KEYS = ["sym", "date", "timing", "src", "sector", "base", "day0", "qEnd", "prevRevYoY", "prevRevAccel", "prevEpsYoY", "revYoY", "revAccel",
+EXPORT_KEYS = ["sym", "date", "timing", "src", "sector", "base", "day0", "qEnd", "pe", "ey", "ps", "pb", "pfcf", "peg", "netMargin", "grossMargin", "debtEq", "prevRevYoY", "prevRevAccel", "prevEpsYoY", "revYoY", "revAccel",
                "revQoQ", "rev3y", "epsYoY", "epsAccel", "accruals", "cashConv", "quality", "inflection", "revDir", "epsEst", "epsAct", "epsSurprise",
                "revEst", "revAct", "revSurprise", "estEpsG", "estRevG", "guide", "guideSrc", "setup", "gradeNet30", "gradeNet90", "gradeN90",
                "txDate", "txTone", "txTonePrep", "txToneQA", "txUncert", "txNeg", "txGuide", "txGuideDir", "txToneChg", "prevTxTone", "prevTxGuide",

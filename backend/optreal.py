@@ -291,7 +291,7 @@ def run_job(sub, prog=None, deadline=None):
     st.update(cfg=cfg, done=done, complete=not stopped, at=iso(now_ny()))
     store.put_json(key, st)
     if not stopped:
-        store.put_json(key + "_view", summarize(trades, done, cfg))
+        store.put_json(key + "_view", summarize(trades, done, cfg, rows))
     return not stopped
 
 
@@ -316,7 +316,7 @@ def _agg(xs, k):
     return round(sum(v), 2) if v else 0.0
 
 
-def summarize(trades, done, cfg):
+def summarize(trades, done, cfg, rows=None):
     """Model vs real, per leg and year, on the same trades; the model's volatility against the real implied one."""
     import statistics
     stake, spread = cfg["stake"], cfg["optSpreadPct"] / 100
@@ -354,7 +354,25 @@ def summarize(trades, done, cfg):
     return {"at": iso(now_ny()), "from": START, "cfg": cfg, "all": block(out), "legs": legs,
             "years": [{"year": y, **block(v)} for y, v in sorted(years.items())],
             "ivRatio": med(ivr), "spreadMedian": med(spreads), "modelSpread": spread, "missing": miss,
-            "top": top, "d0": d0_summary(out), "trades": sorted(out, key=lambda x: x["exit"])[-1500:]}
+            "top": top, "d0": d0_summary(out),
+            "drivers": _drivers(out, rows), "trades": sorted(out, key=lambda x: x["exit"])[-1500:]}
+
+
+def _drivers(out, rows):
+    """What separates the real winners from the real losers: every study signal, plus the option's own implied
+    volatility, its ratio to the stock's 20-day volatility, and the premium as a share of the strike."""
+    import backtest
+    if not rows:
+        return None
+    by = {(r["sym"], r.get("day0")): r for r in rows if r.get("day0")}
+    xs = []
+    for x in out:
+        r = by.get((x["sym"], x["entry"])) or {}
+        v = r.get("vol20")
+        xs.append({**x, "ivRatio": x["iv"] / (v * 252 ** 0.5) if x.get("iv") and v else None,
+                   "premPct": x["buy"] / x["strike"] if x.get("strike") else None})
+    return backtest.drivers(xs, rows, "real", {"iv": "Option implied volatility at entry", "ivRatio": "Implied ÷ the stock's 20-day volatility",
+                                               "premPct": "Premium as a share of the strike"})
 
 
 def d0_summary(out):
