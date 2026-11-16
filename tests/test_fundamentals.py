@@ -581,6 +581,26 @@ def test_valuation_and_drivers():
     assert any(x["key"] == "sector" for x in dv["cat"]) and B.drivers(trades[:20], rows) is None
 
 
+
+def test_etf_matrix():
+    import etf
+    st, r = call("GET", "/etf", None, {"days": "60"})
+    assert st == 200, r
+    n = len(r["syms"])
+    assert n >= 2 and r["window"] == 60 and sorted(r["order"]) == list(range(n)) and r["settings"]["syms"] == etf.DEFAULT
+    m = r["matrix"]
+    assert all(m[i][i] == 1.0 for i in range(n)) and all(m[i][j] == m[j][i] for i in range(n) for j in range(n))
+    assert all(-1.0001 <= m[i][j] <= 1.0001 for i in range(n) for j in range(n) if m[i][j] is not None)
+    assert not {"SPY", "DIA", "IWM", "QQQ", "HYG", "TLT"} & set(etf.DEFAULT)
+    st, s2 = call("PUT", "/etf/settings", {"syms": ["xle", "XLK", "xle", "GLD"]})
+    assert st == 200 and s2["syms"] == ["XLE", "XLK", "GLD"]
+    st, r2 = call("GET", "/etf", None, {"days": "20"})
+    assert st == 200 and r2["syms"] == ["XLE", "XLK", "GLD"] and r2["window"] == 20
+    st, bad = call("PUT", "/etf/settings", {"syms": ["XLE"]})
+    assert st == 400
+    assert abs(etf._corr([1, 2, 3, 4], [2, 4, 6, 8]) - 1) < 1e-12 and abs(etf._corr([1, 2, 3, 4], [4, 3, 2, 1]) + 1) < 1e-12
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

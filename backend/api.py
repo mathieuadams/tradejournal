@@ -610,6 +610,18 @@ def strategy_trades(sub, claims, body, q, sid):
 
 # ---------------------------------------------------------------- Earnings: fundamentals screen + event study
 
+@route("GET", "/etf")
+def etf_view(sub, claims, body, q):
+    import etf
+    return {**etf.matrix(sub, int(q.get("days") or 60)), "settings": etf.settings(sub)}
+
+
+@route("PUT", "/etf/settings")
+def etf_settings(sub, claims, body, q):
+    import etf
+    return etf.save(sub, body)
+
+
 @route("GET", "/fund")
 def fund_view(sub, claims, body, q):
     import fundamentals as F
