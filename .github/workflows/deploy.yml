@@ -31,6 +31,7 @@ jobs:
       STACK: ${{ vars.STACK_NAME || 'trade-journal' }}
       REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       COGNITO_DOMAIN_PREFIX: ${{ vars.COGNITO_DOMAIN_PREFIX }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # the workspace's AI chat (stored in SSM by deploy.sh)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,4 +51,6 @@ jobs:
       - name: Summary
         run: |
           URL=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" --query "Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue" --output text)
+          WS=$(aws cloudformation describe-stacks --stack-name "$STACK-workspace" --region "$REGION" --query "Stacks[0].Outputs[?OutputKey=='WorkspaceUrl'].OutputValue" --output text || echo "-")
           echo "### Deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Workspace: $WS (password: SSM /tradejournal/workspace/WORKSPACE_PASSWORD)" >> "$GITHUB_STEP_SUMMARY"

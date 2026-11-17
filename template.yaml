@@ -290,3 +290,5 @@ Outputs:
     Value: !Ref DataBucket
   TableName:
     Value: !Ref Table
+  BrokerKeyArn:
+    Value: !GetAtt BrokerKey.Arn

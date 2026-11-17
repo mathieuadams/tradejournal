@@ -42,6 +42,33 @@ sed -i "s|src=\"app.js\"|src=\"app.js?v=$STAMP\"|; s|src=\"auth.js\"|src=\"auth.
 aws s3 sync "$SITE" "s3://$(out SiteBucketName)" --delete --cache-control "no-cache" --region "$REGION"
 aws s3 cp "$SITE/index.html" "s3://$(out SiteBucketName)/index.html" --cache-control "no-cache" --content-type "text/html" --region "$REGION"
 aws cloudfront create-invalidation --distribution-id "$(out DistributionId)" --paths "/*" >/dev/null
+# ---------------------------------------------------------------- trading workspace (always-on server, workspace/)
+# Alpaca keys: read by the server from the app's Data page (DynamoDB + KMS). ANTHROPIC_API_KEY: the GitHub secret, passed
+# to this script as an environment variable by the workflow, stored in SSM. Password and origin secret: generated once.
+WS_STACK="$STACK-workspace"
+P="/tradejournal/workspace"
+param() { aws ssm get-parameter --name "$P/$1" --with-decryption --query Parameter.Value --output text --region "$REGION" 2>/dev/null || true; }
+for k in ANTHROPIC_API_KEY WORKSPACE_PASSWORD; do
+  if [ -n "${!k:-}" ]; then aws ssm put-parameter --name "$P/$k" --type SecureString --value "${!k}" --overwrite --region "$REGION" >/dev/null; fi
+done
+if [ -z "$(param WORKSPACE_PASSWORD)" ]; then
+  aws ssm put-parameter --name "$P/WORKSPACE_PASSWORD" --type SecureString --value "$(openssl rand -hex 12)" --region "$REGION" >/dev/null
+  echo "Workspace password generated: read it in AWS Systems Manager > Parameter Store > $P/WORKSPACE_PASSWORD"
+fi
+SECRET="$(param ORIGIN_SECRET)"
+if [ -z "$SECRET" ]; then SECRET="$(openssl rand -hex 24)"; aws ssm put-parameter --name "$P/ORIGIN_SECRET" --type SecureString --value "$SECRET" --region "$REGION" >/dev/null; fi
+aws cloudformation deploy --stack-name "$WS_STACK" --template-file workspace/infra/workspace.yaml --region "$REGION" \
+  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides "OriginSecret=$SECRET" "ParamPath=$P" "TableName=$(out TableName)" "KeyArn=$(out BrokerKeyArn)"
+wout() { aws cloudformation describe-stacks --stack-name "$WS_STACK" --region "$REGION" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
+[ -n "$(param ANTHROPIC_API_KEY)" ] || echo "Workspace AI is in demo mode: pass ANTHROPIC_API_KEY to deploy.sh in the workflow (env: ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }})."
+REL="$(mktemp -d)/workspace.zip"
+(cd workspace && zip -qr "$REL" server web -x '*/__pycache__/*')
+aws s3 cp "$REL" "s3://$(wout ReleaseBucket)/release/workspace.zip" --region "$REGION"
+aws ssm send-command --instance-ids "$(wout InstanceId)" --document-name AWS-RunShellScript \
+  --parameters 'commands=["systemctl restart workspace"]' --region "$REGION" >/dev/null \
+  || echo "(server not registered with SSM yet: it loads this release on its first start)"
+
 echo
 echo "Done. Open $(out SiteUrl)"
+echo "Workspace: $(wout WorkspaceUrl)  (user: anything, password: SSM $P/WORKSPACE_PASSWORD)"
 echo "(A brand-new CloudFront distribution can take a few minutes before the URL answers.)"

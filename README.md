@@ -13,6 +13,29 @@ NQ and ES: research, validate and paper trade intraday / swing strategies on CME
 - **Beat the Market** (Swing page tab; `backend/intramom.py`, `frontend/intramom.js`): Zarattini, Aziz & Barbon's SPY intraday momentum — noise area from the average move from the open at each time of day over 14 sessions (gap-adjusted, × VM), checks every 30 minutes (15 / 60 options), stop at the opposite band, the current band, or the current band / VWAP, flat at 16:00, 100% or volatility-target sizing (2% ÷ 14-day σ, max 4×), $0.0035 + $0.001 a share; SPY 1-minute bars from Alpaca since 2016 (stored by month), VIX daily from FMP (regime table and an optional VIX filter), day of week, 5-day RSI, long vs short, vs SPY buy & hold; train / test (last 5 years); optimizer (216 settings, train Sharpe).
 - **Data**: connect Databento and Alpaca (keys stored encrypted with KMS); Databento (key stored encrypted with KMS), download 1-minute candles and trades (footprint) with the cost shown first, automatic refresh every 15 minutes in the session and the day's trades after the close.
 
+## Workspace (new direction): chart + AI + Pine + paper trading
+`workspace/` is a TradingView-style trading workspace that runs next to the existing app (nothing above was removed). It needs a small always-on server instead of Lambda, because the charts stream live candles.
+
+    npm run workspace                      # http://localhost:8765 (simulated data, demo AI)
+    ALPACA_KEY_ID=... ALPACA_SECRET_KEY=... ANTHROPIC_API_KEY=... npm run workspace
+
+| Piece | Where |
+|---|---|
+| Server (`workspace/server/server.py`): web app, history at any timeframe, live stream (server-sent events), paper broker, Claude proxy | One process, Python 3 standard library only |
+| Live data (`market.py`) | Alpaca WebSocket (`wsclient.py`, trades + minute bars, stocks and crypto) → current 1-minute bar → every open chart; REST for history. No keys: deterministic simulated market that ticks 4× a second |
+| Chart (`web/chart.js`) | Canvas, no library. Wheel = zoom time around the cursor, drag = pan time and price, drag the price scale = zoom price, drag the time scale = zoom time, double-click price scale = auto. Panes per oscillator (resizable), candles / hollow / bars / Heikin Ashi / line / area, crosshair, last-price countdown, older history loads as you scroll left |
+| Pine Script (`web/pine.js`) | Interpreter for a large v5 / v6 subset: `var`, tuples, `if` / `for` / `while` / `switch`, functions, history `[]`, ~60 `ta.*`, plots / shapes / fills / bgcolor / barcolor, `line` / `label` / `box`, arrays, methods. Editor with highlighting, errors by line, Ctrl+Enter to run, saved scripts |
+| Indicator library (`web/library.js`) | 33 scripts written in Pine (Volume, MAs, VWAP, BB, Supertrend, Ichimoku, RSI, MACD, ADX, PDH / PDL, opening range, pivots, Smart Money Concepts with BOS / CHoCH / EQH / EQL / order blocks, FVGs, signals): search, families, favorites, previews, open the source and fork |
+| AI chat (`web/chat.js`) | Claude through the server (`llm.py`, key stays on the server). It gets a screenshot of the chart with each message plus the chart state, and tools: read bars (any symbol / timeframe), draw levels / zones / trend lines, change symbol / timeframe, add indicators, write Pine (compile errors are fed back so it fixes them), read the account, place paper orders (with a confirmation card) |
+| Paper trading (`paper.py`) | Market / limit / stop, bracket stop-loss + take-profit (OCO), longs and shorts, buying-power check, kill switch, ask-before-placing, order lines on the chart you can drag to modify, positions / orders / fills / closed trades (CSV) |
+| Workspace | Chart tabs (symbol + any timeframe: 1m … 22m … 4h … 1D 1W 1M), watchlist with live prices, drawing tools (trend, horizontal line / ray, vertical, rectangle, text, measure, magnet, undo), bar replay, object tree, ranges (1D … All). Layout, scripts and drawings are saved on the server (`workspace/.data/`) |
+
+Environment: `DATA=fake|alpaca`, `ALPACA_FEED=iex|sip`, `CLAUDE_MODEL` (default `claude-sonnet-5-5`), `WORKSPACE_PASSWORD` (HTTP basic auth: set it whenever the server is reachable from the internet), `HOST`, `PORT`, `DATA_DIR`.
+
+Deploy: push to `main`. After the main stack, `deploy.sh` deploys the `<STACK>-workspace` stack (`workspace/infra/workspace.yaml`: one t4g.micro running the server under systemd, CloudFront in front for HTTPS, code and data backups in its own S3 bucket), uploads the code and restarts the service. Keys: Alpaca comes from the journal's Data page (the server decrypts the stored key with the app's KMS key at every start; live stream on IEX, real time on the free plan); Claude comes from the `ANTHROPIC_API_KEY` GitHub secret (the workflow passes it to `deploy.sh`, which stores it in SSM `/tradejournal/workspace/`). `WORKSPACE_PASSWORD` and `ORIGIN_SECRET` are generated in SSM on the first deploy (the server refuses requests that don't come through CloudFront). The workspace URL is printed at the end of the deploy log. `workspace/Dockerfile` is there for other hosts. Tests: `python -I workspace/tests/test_server.py`, `node workspace/tests/pine.test.mjs` (both run in `npm test`).
+
+Not done yet: Databento futures (NQ / ES) in the workspace feed, `request.security` across timeframes, Pine strategies (orders / backtest), alerts, sending closed paper trades into the journal, the economic calendar, a real broker.
+
 ## What gets deployed
 | Piece | AWS |
 |---|---|

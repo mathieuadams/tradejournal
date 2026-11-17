@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0e1015">
+<title>Workspace · Tradejournal</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='5' fill='%230e1015'/><path d='M4 6l5 12 3-7 3 7 5-12' stroke='%23ffffff' stroke-width='2.2' fill='none' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <button class="icon-btn" id="toggleChat" title="Show / hide chat">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+    </button>
+    <div class="brand"><svg viewBox="0 0 24 24"><path d="M4 6l5 12 3-7 3 7 5-12"/></svg><span>Tradejournal</span></div>
+    <div class="tabs" id="tabs"></div>
+    <button class="icon-btn" id="addTab" title="New chart tab">+</button>
+    <div class="grow"></div>
+    <span class="pill" id="dataPill" title="Market data source">…</span>
+    <span class="pill" id="aiPill" title="AI">…</span>
+    <a class="pill link" href="/" id="journalLink" title="Back to the journal app" hidden>Journal</a>
+  </header>
+
+  <div class="main">
+    <aside class="chatpane" id="chatpane"></aside>
+
+    <section class="center">
+      <div class="toolbar">
+        <button class="tb sym" id="symBtn" title="Symbol search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg><b id="symLabel">—</b></button>
+        <div class="sep"></div>
+        <button class="tb" id="tfBtn" title="Timeframe (type a number on the chart)"><b id="tfLabel">1h</b><svg class="chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></button>
+        <div class="sep"></div>
+        <button class="tb" id="typeBtn" title="Chart type"><svg viewBox="0 0 24 24"><path d="M8 4v16M6 8h4v8H6zM16 3v18M14 6h4v6h-4z"/></svg></button>
+        <div class="sep"></div>
+        <button class="tb" id="indBtn" title="Indicators library (/)"><svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 4 8-9"/></svg><span>Indicators</span></button>
+        <button class="tb" id="replayBtn" title="Bar replay"><svg viewBox="0 0 24 24"><path d="M11 6l-7 6 7 6zM20 6l-7 6 7 6z"/></svg><span>Replay</span></button>
+        <div class="sep"></div>
+        <button class="tb" id="undoBtn" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/></svg></button>
+        <button class="tb" id="redoBtn" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/></svg></button>
+        <div class="grow"></div>
+        <button class="tb" id="snapBtn" title="Download a screenshot"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
+        <button class="tb trade" id="tradeBtn" title="Trading"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg><span>Trade</span><span class="tag">Paper</span><svg class="chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></button>
+      </div>
+      <div class="workarea">
+        <div class="drawbar" id="drawbar"></div>
+        <div class="chartwrap">
+          <div id="chart"></div>
+          <div class="quicktrade" id="quicktrade">
+            <div class="qt-head"><span>Paper account</span><span class="dim">● Simulated</span></div>
+            <div class="qt-row"><button class="qt-sell" data-side="sell"><b>Sell</b><small id="qtBid">Market</small></button>
+              <label class="qt-qty"><input id="qtQty" type="number" min="1" value="1"><small>shares</small></label>
+              <button class="qt-buy" data-side="buy"><b>Buy</b><small id="qtAsk">Market</small></button></div>
+          </div>
+          <div class="replaybar" id="replaybar" hidden>
+            <span class="dim">Replay</span>
+            <button id="rpPlay" title="Play / pause (space)">▶</button>
+            <button id="rpStep" title="Next bar (→)">⏭</button>
+            <select id="rpSpeed"><option value="1">1×</option><option value="3" selected>3×</option><option value="10">10×</option><option value="30">30×</option></select>
+            <span id="rpInfo" class="dim"></span>
+            <button id="rpExit" title="Exit replay">✕</button>
+          </div>
+          <div class="chart-msg" id="chartMsg" hidden></div>
+        </div>
+      </div>
+      <div class="bottombar">
+        <div class="ranges" id="ranges"></div>
+        <div class="grow"></div>
+        <button class="tb small" id="bottomToggle" title="Trading panel">Positions</button>
+        <span class="clock" id="clock"></span>
+      </div>
+      <div class="bottompanel" id="bottompanel" hidden></div>
+    </section>
+
+    <aside class="sidepanel" id="sidepanel" hidden><div class="side-resize" id="sideResize"></div><div class="side-body" id="sidebody"></div></aside>
+
+    <nav class="rail" id="rail">
+      <button data-p="watchlist" title="Watchlist"><svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg></button>
+      <button data-p="order" title="Order panel"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6M9 12h6M9 15h3"/></svg></button>
+      <button data-p="positions" title="Positions &amp; orders"><svg viewBox="0 0 24 24"><path d="M4 18h16M6 15V9M10 15V6M14 15v-4M18 15V8"/></svg></button>
+      <span class="rsep"></span>
+      <button data-p="editor" title="Pine Script editor"><svg viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg></button>
+      <button data-p="tree" title="Object tree"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></svg></button>
+      <div class="grow"></div>
+      <button data-p="settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg></button>
+    </nav>
+  </div>
+</div>
+
+<div class="popover" id="popover" hidden></div>
+<div class="modal-back" id="modal" hidden><div class="modal" id="modalBox"></div></div>
+<div class="toasts" id="toasts"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
