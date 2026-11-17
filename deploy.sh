@@ -50,11 +50,33 @@ aws cloudformation deploy --stack-name "$WS_STACK" --template-file workspace/inf
   --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides "OriginSecret=$SECRET" "ParamPath=$P" "TableName=$(out TableName)" "KeyArn=$(out BrokerKeyArn)"
 [ -n "$(param ANTHROPIC_API_KEY)" ] || echo "Workspace AI is in demo mode: pass ANTHROPIC_API_KEY to deploy.sh in the workflow (env: ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }})."
 REL="$(mktemp -d)/workspace.zip"
-(cd workspace && zip -qr "$REL" server web -x '*/__pycache__/*')
+(cd workspace && zip -qr "$REL" server web infra/ws-update.sh -x '*/__pycache__/*')
 aws s3 cp "$REL" "s3://$(wout ReleaseBucket)/release/workspace.zip" --region "$REGION"
-aws ssm send-command --instance-ids "$(wout InstanceId)" --document-name AWS-RunShellScript \
-  --parameters 'commands=["systemctl restart workspace"]' --region "$REGION" >/dev/null \
-  || echo "(server not registered with SSM yet: it loads this release on its first start)"
+# refresh the settings file and the start script on the running server, restart it, show how it started
+WS_ID="$(wout InstanceId)"; WS_BUCKET="$(wout ReleaseBucket)"; WS_TABLE="$(out TableName)"
+SSM_JSON="$(mktemp)"
+WS_BUCKET="$WS_BUCKET" REGION="$REGION" P="$P" WS_TABLE="$WS_TABLE" python3 - > "$SSM_JSON" <<'PY'
+import json, os
+e = os.environ
+conf = f"BUCKET={e['WS_BUCKET']}\nREGION={e['REGION']}\nPARAM_PATH={e['P']}\nTABLE={e['WS_TABLE']}\nFEED=iex\n"
+print(json.dumps({"commands": [
+    "cat > /etc/workspace.conf <<'CONF'\n" + conf + "CONF",
+    f"aws s3 cp s3://{e['WS_BUCKET']}/release/workspace.zip /tmp/ws.zip --region {e['REGION']} --quiet && unzip -o -q -j /tmp/ws.zip infra/ws-update.sh -d /tmp/wsu && install -m 755 /tmp/wsu/ws-update.sh /usr/local/bin/ws-update",
+    "systemctl reset-failed workspace || true",
+    "systemctl restart workspace",
+    "sleep 8",
+    "journalctl -u workspace --no-pager -n 15",
+    "curl -s -o /dev/null -w 'local http %{http_code}\\n' localhost:8765/ws/ || true",
+]}))
+PY
+CMD=$(aws ssm send-command --instance-ids "$WS_ID" --document-name AWS-RunShellScript --region "$REGION" \
+  --parameters "file://$SSM_JSON" --query Command.CommandId --output text 2>/dev/null || true)
+if [ -n "$CMD" ]; then
+  sleep 15
+  aws ssm get-command-invocation --command-id "$CMD" --instance-id "$WS_ID" --region "$REGION" --query StandardOutputContent --output text || true
+else
+  echo "(server not registered with SSM yet: it loads this release on its first start)"
+fi
 NEW_DNS="$(wout InstanceDns)"
 if [ -n "$NEW_DNS" ] && [ "$NEW_DNS" != "None" ] && [ "$NEW_DNS" != "$WS_DNS" ]; then
   echo "Routing <site>/ws/ to the workspace server ($NEW_DNS)"
