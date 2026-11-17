@@ -156,7 +156,8 @@ def dataset_range(key, schema=None):
 def _avail_from(err):
     """Databento's 422 'has data available up to '2026-10-30 14:00:00+00:00'' -> '2026-10-30T14:00:00' (or None)."""
     import re
-    m = re.search(r"available up to '(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", str(err))
+    m = re.search(r"available up to '(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", str(err)) or \
+        re.search(r"available between \S+ and (\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", str(err))
     return f"{m.group(1)}T{m.group(2)}" if m else None
 
 

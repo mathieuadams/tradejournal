@@ -703,6 +703,9 @@ def test_swing_futures():
     b = futdaily.bars("ES")
     jumps = max(abs(b[i][4] - b[i - 1][4]) for i in range(1, len(b)))
     assert jumps < 15, jumps
+    import databento
+    assert databento._avail_from("Schema `ohlcv-1d` for dataset `GLBX.MDP3` is only available between 2010-06-06T00:00:00.000000000Z and "
+                                 "2026-11-16T00:00:00.000000000Z. Try requesting a different schema (422).") == "2026-11-16T00:00:00"
     # the adjustment itself
     v0 = [["d1", 10, 11, 9, 10, 1, 1], ["d2", 12.5, 13, 12, 12.5, 1, 2], ["d3", 13, 14, 12, 13, 1, 2]]
     v1 = [["d1", 12, 13, 11, 12, 1, 2], ["d2", 13, 13, 13, 13, 1, 3]]

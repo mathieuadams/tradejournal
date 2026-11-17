@@ -37,7 +37,8 @@ def _syms(roots):
 
 
 def _end(key):
-    return databento.dataset_range(key)["end"][:19]
+    """The end of the daily bars (ohlcv-1d stops at the last complete day, before the dataset's own end)."""
+    return databento.dataset_range(key, "ohlcv-1d")["end"][:19]
 
 
 def cost(sub, roots=None):
