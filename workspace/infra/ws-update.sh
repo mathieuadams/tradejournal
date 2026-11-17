@@ -23,15 +23,22 @@ echo "ALPACA_FEED=${FEED:-iex}" >> "$ENV"
 
 # Alpaca keys: the ones saved in the journal (Data -> Alpaca), KMS-encrypted in DynamoDB
 alpaca() {
-  local enc plain
-  enc=$(aws dynamodb scan --table-name "$TABLE" --filter-expression "SK = :s" --expression-attribute-values '{":s":{"S":"DATASOURCE#alpaca"}}' \
-        --projection-expression "enc" --region "$REGION" --query 'Items[0].enc.S' --output text 2>/tmp/ws-err) || { log "alpaca: scan failed: $(cat /tmp/ws-err)"; return; }
-  if [ -z "$enc" ] || [ "$enc" = "None" ]; then log "alpaca: no key saved on the Data page (simulated data)"; return; fi
-  echo "$enc" | base64 -d > /tmp/alp.bin 2>/dev/null || { log "alpaca: stored key is not base64"; return; }
-  plain=$(aws kms decrypt --ciphertext-blob fileb:///tmp/alp.bin --region "$REGION" --query Plaintext --output text 2>/tmp/ws-err) || { log "alpaca: kms decrypt failed: $(cat /tmp/ws-err)"; rm -f /tmp/alp.bin; return; }
+  # the scan is paginated (the table is big): collect every saved key, try each until one decrypts
+  local all enc plain
+  all=$(aws dynamodb scan --table-name "$TABLE" --filter-expression "SK = :s" --expression-attribute-values '{":s":{"S":"DATASOURCE#alpaca"}}' \
+        --projection-expression "enc" --region "$REGION" --query 'Items[].enc.S' --output text 2>/tmp/ws-err) || { log "alpaca: scan failed: $(cat /tmp/ws-err)"; return; }
+  all=$(echo "$all" | tr '\t ' '\n\n' | grep -v -e '^None$' -e '^$' || true)
+  if [ -z "$all" ]; then log "alpaca: no key saved on the Data page (simulated data)"; return; fi
+  for enc in $all; do
+    echo "$enc" | base64 -d > /tmp/alp.bin 2>/dev/null || continue
+    plain=$(aws kms decrypt --ciphertext-blob fileb:///tmp/alp.bin --region "$REGION" --query Plaintext --output text 2>/tmp/ws-err) || { log "alpaca: kms decrypt failed: $(cat /tmp/ws-err)"; continue; }
+    rm -f /tmp/alp.bin
+    if echo "$plain" | base64 -d | /usr/bin/python3.12 -c 'import json,sys; k,s=json.load(sys.stdin); print("ALPACA_KEY_ID="+k); print("ALPACA_SECRET_KEY="+s)' >> "$ENV" 2>/tmp/ws-err; then
+      log "alpaca: key loaded"; return
+    fi
+    log "alpaca: unexpected key format"
+  done
   rm -f /tmp/alp.bin
-  echo "$plain" | base64 -d | /usr/bin/python3.12 -c 'import json,sys; k,s=json.load(sys.stdin); print("ALPACA_KEY_ID="+k); print("ALPACA_SECRET_KEY="+s)' >> "$ENV" 2>/tmp/ws-err \
-    && log "alpaca: key loaded" || log "alpaca: unexpected key format"
 }
 [ -n "${TABLE:-}" ] && alpaca
 mv "$ENV" /etc/workspace.env
