@@ -272,12 +272,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         q = HUB.add(symbols)
         try:
-            self.wfile.write(b"retry: 2000\n\n")
+            first = ["retry: 2000\n\n"]
             for s in symbols:  # current minute bar right away
                 b = MKT.cur.get(s)
                 if b:
-                    self.wfile.write(f"event: bar\ndata: {json.dumps({'s': s, 'b': b})}\n\n".encode())
-            self.wfile.write(f"event: paper\ndata: {json.dumps({'event': None, 'account': HUB.paper.snapshot()})}\n\n".encode())
+                    first.append(f"event: bar\ndata: {json.dumps({'s': s, 'b': b})}\n\n")
+            first.append(f"event: paper\ndata: {json.dumps({'event': None, 'account': HUB.paper.snapshot()})}\n\n")
+            self.wfile.write("".join(first).encode())
             self.wfile.flush()
             while True:
                 try:

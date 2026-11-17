@@ -174,9 +174,9 @@ check(code == 200 and b"get_chart_state" in body and b"message_stop" in body, "d
 with urllib.request.urlopen(base + "/api/stream?symbols=TSLA", timeout=30) as r:
     seen = b""
     t0 = time.time()
-    while b"event: bar" not in seen and time.time() - t0 < 20:
+    while not (b"event: bar" in seen and b"event: paper" in seen) and time.time() - t0 < 20:
         seen += r.read1(4096)
-check(b"event: bar" in seen and b"event: paper" in seen, "event stream")
+check(b"event: bar" in seen and b"event: paper" in seen, "event stream: " + repr(seen[:300]))
 with urllib.request.urlopen(base + "/", timeout=10) as r:
     check(b"<!doctype html>" in r.read().lower(), "index served")
 httpd.shutdown()
