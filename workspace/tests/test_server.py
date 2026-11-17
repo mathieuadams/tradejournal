@@ -181,3 +181,67 @@ with urllib.request.urlopen(base + "/", timeout=10) as r:
     check(b"<!doctype html>" in r.read().lower(), "index served")
 httpd.shutdown()
 print(f"all {ok} server checks passed")
+
+
+# ---- journal sign-in (Cognito ID token, RS256) and the /ws/ prefix
+import hashlib  # noqa: E402
+import random  # noqa: E402
+
+import cognito  # noqa: E402
+
+
+def _prime(bits, rnd):
+    while True:
+        n = rnd.getrandbits(bits) | (1 << (bits - 1)) | 1
+        if all(pow(a, n - 1, n) == 1 for a in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)):
+            return n
+
+
+rnd = random.Random(42)
+p_, q_ = _prime(512, rnd), _prime(512, rnd)
+N, E = p_ * q_, 65537
+D = pow(E, -1, (p_ - 1) * (q_ - 1))
+b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+iint = lambda i: b64(i.to_bytes((i.bit_length() + 7) // 8, "big"))
+
+
+def jwt(claims, kid="k1"):
+    h = b64(json.dumps({"alg": "RS256", "kid": kid}).encode()); pl = b64(json.dumps(claims).encode())
+    t = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(f"{h}.{pl}".encode()).digest()
+    k = (N.bit_length() + 7) // 8
+    em = b"\x00\x01" + b"\xff" * (k - len(t) - 3) + b"\x00" + t
+    return f"{h}.{pl}.{iint(pow(int.from_bytes(em, 'big'), D, N))}"
+
+
+jwks = {"keys": [{"kid": "k1", "kty": "RSA", "n": iint(N), "e": iint(E)}]}
+V = cognito.Verifier("us-east-1", "us-east-1_POOL", "client1", fetch=lambda url: jwks)
+good = {"iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_POOL", "aud": "client1", "token_use": "id", "exp": time.time() + 600, "email": "a@b.c"}
+check(V.verify(jwt(good))["email"] == "a@b.c", "valid token")
+check(V.verify(jwt({**good, "aud": "other"})) is None, "wrong audience")
+check(V.verify(jwt({**good, "exp": time.time() - 100})) is None, "expired")
+check(V.verify(jwt(good)[:-4] + "AAAA") is None, "bad signature")
+check(V.verify(jwt({**good, "token_use": "access"})) is None, "access token refused")
+
+server.COGNITO = V
+httpd = server.Server(("127.0.0.1", 0), server.Handler)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+base = f"http://127.0.0.1:{httpd.server_address[1]}"
+with urllib.request.urlopen(base + "/ws/", timeout=10) as r:
+    check(b"app.js" in r.read(), "page served under /ws/ without a token")
+try:
+    urllib.request.urlopen(base + "/ws/api/config", timeout=10); check(False, "api needs token")
+except urllib.error.HTTPError as e:
+    check(e.code == 401 and b"signin" in e.read(), "api refused without the journal token")
+req = urllib.request.Request(base + "/ws/api/config", headers={"Authorization": "Bearer " + jwt(good)})
+with urllib.request.urlopen(req, timeout=10) as r:
+    check(json.loads(r.read())["data"] == "fake", "api with the journal token under /ws/")
+with urllib.request.urlopen(base + "/ws/api/stream?symbols=TSLA&token=" + jwt(good), timeout=30) as r:
+    check(b"retry" in r.read1(4096), "stream with token in the query")
+server.ORIGIN_SECRET = "s3cret"
+try:
+    urllib.request.urlopen(req, timeout=10); check(False, "origin secret")
+except urllib.error.HTTPError as e:
+    check(e.code == 403, "requests that skip CloudFront are refused")
+server.ORIGIN_SECRET = ""
+httpd.shutdown()
+print(f"all {ok} server checks passed (with sign-in)")

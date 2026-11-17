@@ -44,6 +44,7 @@
       <a href="#swing" data-r="swing">Swing</a>
       <a href="#research" data-r="research">Research</a>
       <a href="#data" data-r="data">Data</a>
+      <a id="ws-link" href="/ws/" hidden>Workspace</a>
     </nav>
     <div class="grow"></div>
     <a href="#data" id="feed-pill" class="pill" style="text-decoration:none">Databento…</a>
@@ -53,6 +54,7 @@
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="config.js"></script>
+<script>(function () { if (window.TJ_CONFIG && window.TJ_CONFIG.workspace) document.getElementById('ws-link').hidden = false; })();</script>
 <script src="auth.js"></script>
 <script src="chart.js"></script>
 <script src="app.js"></script>

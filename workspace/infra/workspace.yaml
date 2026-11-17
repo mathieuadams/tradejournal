@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Trading workspace: one small always-on server (live candles, paper broker, Claude proxy) behind CloudFront (HTTPS).
+  Trading workspace: one small always-on server (live candles, paper broker, Claude proxy). The journal's CloudFront
+  serves it at /ws/ (same site, same Cognito sign-in); the server refuses requests without the origin secret.
   deploy.sh uploads the code to the release bucket and restarts the service on every push to main.
   Alpaca keys are read from the journal app (Data page: DynamoDB item SK=DATASOURCE#alpaca, KMS-encrypted) at every start.
-  Other secrets come from SSM Parameter Store under ParamPath (ANTHROPIC_API_KEY from the GitHub secret, WORKSPACE_PASSWORD, ORIGIN_SECRET).
+  Other settings come from SSM Parameter Store under ParamPath (ANTHROPIC_API_KEY from the GitHub secret, ORIGIN_SECRET, COGNITO_*).
 
 Parameters:
   OriginSecret:
@@ -169,31 +170,9 @@ Resources:
           systemctl daemon-reload
           systemctl enable --now workspace.service ws-backup.timer
 
-  Distribution:
-    Type: AWS::CloudFront::Distribution
-    Properties:
-      DistributionConfig:
-        Enabled: true
-        Comment: !Sub "${AWS::StackName} trading workspace"
-        HttpVersion: http2
-        PriceClass: PriceClass_100
-        Origins:
-          - Id: workspace
-            DomainName: !GetAtt Instance.PublicDnsName
-            CustomOriginConfig: { HTTPPort: 8765, OriginProtocolPolicy: http-only, OriginReadTimeout: 60, OriginKeepaliveTimeout: 60 }
-            OriginCustomHeaders: [{ HeaderName: X-Origin-Secret, HeaderValue: !Ref OriginSecret }]
-        DefaultCacheBehavior:
-          TargetOriginId: workspace
-          ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
-          CachedMethods: [GET, HEAD]
-          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad        # Managed-CachingDisabled
-          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader (passes Authorization, query strings)
-          Compress: false
-
 Outputs:
-  WorkspaceUrl:
-    Value: !Sub "https://${Distribution.DomainName}"
+  InstanceDns:
+    Value: !GetAtt Instance.PublicDnsName
   InstanceId:
     Value: !Ref Instance
   ReleaseBucket:

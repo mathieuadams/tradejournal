@@ -7,10 +7,18 @@ export const sleep = ms => new Promise(r => setTimeout(r, ms));
 export function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 export function throttle(fn, ms) { let last = 0, t = null; return (...a) => { const now = Date.now(); if (now - last >= ms) { last = now; fn(...a); } else if (!t) t = setTimeout(() => { t = null; last = Date.now(); fn(...a); }, ms - (now - last)); }; }
 
+// Served at /ws/ behind the journal (same site, same sign-in) or at / on its own.
+export const BASE = location.pathname.startsWith('/ws') ? '/ws' : '';
+export const LOCAL = !window.TJ_CONFIG || !!window.TJ_CONFIG.local;
+export async function authToken() { if (LOCAL || !window.Auth) return null; return window.Auth.token(); }
+export async function authHeaders() { const t = await authToken(); return t ? { Authorization: 'Bearer ' + t } : {}; }
+export function toSignIn() { location.assign('/'); }
 export async function api(path, body, method) {
-  const opt = body === undefined ? { method: method || 'GET' } : { method: method || 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
-  const r = await fetch('/api/' + path, opt);
+  const headers = await authHeaders();
+  const opt = body === undefined ? { method: method || 'GET', headers } : { method: method || 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const r = await fetch(BASE + '/api/' + path, opt);
   let j = null; try { j = await r.json(); } catch { /* not json */ }
+  if (r.status === 401 && j && j.signin) { toSignIn(); throw new Error('Sign in to the journal first'); }
   if (!r.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
   return j;
 }

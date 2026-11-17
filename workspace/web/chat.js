@@ -5,7 +5,7 @@ import { W } from './ctx.js';
 import { LIBRARY, findScript } from './library.js';
 import { compile } from './pine.js';
 import { newId, fmtPrice, nyParts } from './chart.js';
-import { $, h, esc, api, toast, marketStatus, money, priceDigits, nyNow } from './util.js';
+import { $, h, esc, api, toast, marketStatus, money, priceDigits, nyNow, BASE, authHeaders } from './util.js';
 import { openInEditor, runOnChart, editorState } from './editor.js';
 
 const C = { messages: [], busy: false, abort: null, ui: [] };
@@ -109,7 +109,7 @@ function trimmed() {
 
 async function callClaude() {
   C.abort = new AbortController();
-  const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: C.abort.signal, body: JSON.stringify({ system: systemPrompt(), messages: trimmed(), tools: TOOLS, max_tokens: 8000 }) });
+  const r = await fetch(BASE + '/api/chat', { method: 'POST', headers: { ...(await authHeaders()), 'Content-Type': 'application/json' }, signal: C.abort.signal, body: JSON.stringify({ system: systemPrompt(), messages: trimmed(), tools: TOOLS, max_tokens: 8000 }) });
   if (!r.ok || !r.body) throw new Error(`Chat failed (${r.status})`);
   const reader = r.body.getReader(), dec = new TextDecoder();
   let buf = '', stopReason = null; const blocks = []; let cur = null, el = null, txt = '';

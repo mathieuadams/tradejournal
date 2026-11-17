@@ -3,7 +3,9 @@
     python workspace/server/server.py            # http://localhost:8765
     DATA=fake | alpaca      (default: alpaca when ALPACA_KEY_ID / ALPACA_SECRET_KEY are set, else fake)
     ALPACA_FEED=iex | sip   ANTHROPIC_API_KEY=...   CLAUDE_MODEL=claude-sonnet-5-5
-    WORKSPACE_PASSWORD=...  (HTTP basic auth for everything; set it when the server is reachable from the internet)
+    COGNITO_USER_POOL_ID / COGNITO_CLIENT_ID / COGNITO_REGION: sign in with the journal app (its ID token is required on /api)
+    WORKSPACE_PASSWORD=...  (HTTP basic auth instead, for a server without the journal)
+    Served at / and at /ws/ (the journal's CloudFront sends /ws* here).
     PORT=8765  HOST=127.0.0.1  DATA_DIR=workspace/.data
 """
 import base64
@@ -22,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(os.path.dirname(HERE), "web")
 sys.path.insert(0, HERE)
 
+import cognito  # noqa: E402
 import llm  # noqa: E402
 import market  # noqa: E402
 from paper import Paper, PaperError  # noqa: E402
@@ -32,6 +35,9 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(HERE), ".data
 PASSWORD = os.environ.get("WORKSPACE_PASSWORD", "")
 ORIGIN_SECRET = os.environ.get("ORIGIN_SECRET", "")  # set when CloudFront fronts the server: requests without it are refused
 os.makedirs(DATA_DIR, exist_ok=True)
+COGNITO = cognito.Verifier(os.environ.get("COGNITO_REGION", "us-east-1"), os.environ["COGNITO_USER_POOL_ID"], os.environ.get("COGNITO_CLIENT_ID", "")) \
+    if os.environ.get("COGNITO_USER_POOL_ID") else None
+ROOT = os.path.dirname(os.path.dirname(HERE))
 
 
 def make_market():
@@ -119,7 +125,13 @@ class Handler(BaseHTTPRequestHandler):
         if "/api/stream" not in self.path:
             sys.stderr.write("  %s %s\n" % (self.command, self.path[:120]))
 
-    def _authed(self):
+    def _authed(self, api, q):
+        if COGNITO:
+            if not api:
+                return True                                   # the page itself; every /api call needs the token
+            h = self.headers.get("Authorization", "")
+            tok = h[7:] if h.startswith("Bearer ") else q.get("token", "")
+            return COGNITO.verify(tok) is not None
         if not PASSWORD:
             return True
         h = self.headers.get("Authorization", "")
@@ -166,11 +178,17 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self):
         if ORIGIN_SECRET and not hmac.compare_digest(self.headers.get("X-Origin-Secret", ""), ORIGIN_SECRET):
             return self._send(403, b"Forbidden", "text/plain")
-        if not self._authed():
-            return self._send(401, b"Sign in", "text/plain", {"WWW-Authenticate": 'Basic realm="Trading workspace"'})
         url = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         path = url.path
+        if path == "/ws":
+            return self._send(301, b"", "text/plain", {"Location": "/ws/"})
+        if path.startswith("/ws/"):
+            path = path[3:]
+        if not self._authed(path.startswith("/api/"), q):
+            if COGNITO:
+                return self._json({"error": "Sign in to the journal first.", "signin": True}, 401)
+            return self._send(401, b"Sign in", "text/plain", {"WWW-Authenticate": 'Basic realm="Trading workspace"'})
         try:
             if path.startswith("/api/"):
                 return self._api(path[5:], q)
@@ -189,6 +207,10 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self, path):
         if self.command != "GET":
             return self._send(405)
+        if path in ("/config.js", "/auth.js"):                # the journal's sign-in, when this server runs without the journal in front
+            src = os.path.join(ROOT, "frontend", "auth.js")
+            body = b"window.TJ_CONFIG = window.TJ_CONFIG || { local: true };" if path == "/config.js" else (open(src, "rb").read() if os.path.isfile(src) else b"")
+            return self._send(200, body, "text/javascript; charset=utf-8")
         rel = path.lstrip("/") or "index.html"
         full = os.path.normpath(os.path.join(WEB, rel))
         if not full.startswith(WEB) or not os.path.isfile(full):
@@ -321,7 +343,7 @@ class Server(ThreadingHTTPServer):
 
 def main():
     print(f"Trading workspace at http://{HOST}:{PORT}  |  data: {MKT.name}  |  AI: {'Claude ' + llm.MODEL if llm.configured() else 'demo (set ANTHROPIC_API_KEY)'}"
-          f"{'  |  password on' if PASSWORD else ''}")
+          f"{'  |  journal sign-in' if COGNITO else '  |  password on' if PASSWORD else ''}")
     Server((HOST, PORT), Handler).serve_forever()
 
 

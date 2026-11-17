@@ -3,7 +3,7 @@ import { Chart, newId, nyParts, fmtPrice } from './chart.js';
 import { compile, run, tfSeconds } from './pine.js';
 import { LIBRARY } from './library.js';
 import { W } from './ctx.js';
-import { $, $$, h, esc, api, toast, debounce, throttle, popover, closePopover, popAt, confirmDialog, money, priceDigits, nyNow, modal, closeModal } from './util.js';
+import { $, $$, h, esc, api, toast, debounce, throttle, popover, closePopover, popAt, confirmDialog, money, priceDigits, nyNow, modal, closeModal, BASE, LOCAL, authToken, toSignIn } from './util.js';
 import { initPanels, openSide, toggleBottom, indicatorSettings } from './panels.js';
 import { openLibrary, openSymbolSearch, openTfPopover } from './dialogs.js';
 import { initEditor, openInEditor } from './editor.js';
@@ -198,13 +198,14 @@ function wantedSymbols() {
   if (W.account) { W.account.positions.forEach(p => s.add(p.symbol)); W.account.orders.forEach(o => s.add(o.symbol)); }
   return [...s].sort();
 }
-const resubscribe = debounce(() => {
+const resubscribe = debounce(async () => {
   const syms = wantedSymbols().join(','); if (syms === esSyms && es && es.readyState !== 2) return;
   esSyms = syms; if (es) es.close();
-  es = new EventSource('/api/stream?symbols=' + encodeURIComponent(syms));
+  const tok = await authToken();
+  es = new EventSource(BASE + '/api/stream?symbols=' + encodeURIComponent(syms) + (tok ? '&token=' + encodeURIComponent(tok) : ''));
   es.addEventListener('bar', e => onBar(JSON.parse(e.data)));
   es.addEventListener('paper', e => onPaper(JSON.parse(e.data)));
-  es.onerror = () => { $('#dataPill').classList.add('warn'); };
+  es.onerror = () => { $('#dataPill').classList.add('warn'); if (!LOCAL) { es.close(); esSyms = ''; setTimeout(resubscribe, 3000); } };  // reconnect with a fresh sign-in token
   es.onopen = () => { $('#dataPill').classList.remove('warn'); };
 }, 250);
 W.resubscribe = resubscribe;
@@ -436,6 +437,8 @@ function keys() {
 
 // ------------------------------------------------------------------------------------------------ boot
 async function boot() {
+  if (!LOCAL && !(await authToken())) { toSignIn(); return; }   // same sign-in as the journal
+  if (!LOCAL) { const j = $('#journalLink'); j.hidden = false; j.href = '/'; }
   W.state = await loadState();
   try { W.cfg = await api('config'); } catch { W.cfg = { data: '?', llm: 'demo' }; }
   $('#dataPill').textContent = W.cfg.data === 'alpaca' ? `Alpaca ${W.cfg.feed || ''}`.trim() : W.cfg.data === 'fake' ? 'Simulated data' : 'Data offline';
