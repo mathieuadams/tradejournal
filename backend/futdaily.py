@@ -11,6 +11,7 @@ import databento
 import store
 from util import BadRequest, iso, now_ny
 
+TIMEOUT = 90                               # seconds per request: a stalled answer must not eat the job's 15 minutes
 START = "2010-06-07"                       # GLBX.MDP3 history starts in June 2010
 # root: (name, group, $ per point, tick)
 SPEC = {
@@ -58,7 +59,7 @@ def _rows(key, sym, end):
     import io
     params = {"dataset": databento.DATASET, "symbols": sym, "schema": "ohlcv-1d", "start": START, "end": end, "stype_in": "continuous",
               "encoding": "csv", "compression": "none", "pretty_px": "true", "pretty_ts": "true"}
-    r = databento._retry_end(lambda e: databento._open(key, "POST", "timeseries.get_range", {**params, "end": e}, timeout=300), end)
+    r = databento._retry_end(lambda e: databento._open(key, "POST", "timeseries.get_range", {**params, "end": e}, timeout=TIMEOUT), end)
     out = []
     try:
         for x in csv.DictReader(io.TextIOWrapper(r, encoding="utf-8", newline="")):
@@ -97,15 +98,19 @@ def download(sub, prog=None, deadline=None, cont=None):
     end = _end(key)
     roots = list(SPEC)
     for i in range((cont or 0), len(roots)):
-        if deadline and time.time() > deadline:
+        if deadline and time.time() > deadline - 4 * TIMEOUT:     # room for this market's two requests (and a retry each)
             return i
         r = roots[i]
+        old = store.get_json(f"fut/d/{r}") or {}
+        if old.get("bars") and not old.get("error") and (old.get("at") or "")[:10] == iso(now_ny())[:10]:
+            continue                                   # already fetched today (a resumed download skips it)
         if prog:
             prog(f"Futures daily bars: {r} ({i + 1}/{len(roots)})")
         try:
             v0, v1 = _rows(key, f"{r}.v.0", end), _rows(key, f"{r}.v.1", end)
-        except BadRequest as e:
-            store.put_json(f"fut/d/{r}", {"bars": [], "error": str(e), "at": iso(now_ny())})
+        except Exception as e:                         # refused, timed out, cut off: note it on the market, go on with the next
+            old = store.get_json(f"fut/d/{r}") or {}
+            store.put_json(f"fut/d/{r}", {**old, "bars": old.get("bars") or [], "error": (str(e) or type(e).__name__)[:300], "at": iso(now_ny())})
             continue
         bars, rolls, missing = adjust(v0, v1)
         store.put_json(f"fut/d/{r}", {"bars": bars, "rolls": rolls, "missing": missing, "at": iso(now_ny())})

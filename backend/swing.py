@@ -503,9 +503,16 @@ def view(sub, kind):
         rk = sorted(o.get("res") or [], key=lambda x: ((x["train"].get("n") or 0) >= MIN_TRADES, x["train"].get("t") or -1e9), reverse=True)
         opt = {k: v for k, v in o.items() if k not in ("res", "acc")} | {"top": rk[:15], "done": len(o.get("res") or []), "minTrades": MIN_TRADES}
     import futdaily
+    from datetime import timedelta
+
+    def js(name):
+        j = jobs.status(sub, name)
+        if j.get("status") == "running" and j.get("at", "") < iso(now_ny() - timedelta(minutes=20)):
+            j["stale"] = True                          # silent for 20 minutes: the run died (it can be started again)
+        return j
     fut = futdaily.status() if kind == "turtle" else None
-    return {"cfg": st.get("cfg") or clean(kind, {}), "res": st.get("res"), "opt": opt, "job": jobs.status(sub, "swing" + kind), "fut": fut,
-            "futJob": jobs.status(sub, "swingfut") if kind == "turtle" else None,
+    return {"cfg": st.get("cfg") or clean(kind, {}), "res": st.get("res"), "opt": opt, "job": js("swing" + kind), "fut": fut,
+            "futJob": js("swingfut") if kind == "turtle" else None,
             "groups": futdaily.GROUPS}
 
 

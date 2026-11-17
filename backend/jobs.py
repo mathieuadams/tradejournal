@@ -154,6 +154,18 @@ def handler(event, ctx=None):
                 _invoke(event)
                 return {"continued": True}
             set_status(sub, name, status="done", msg="Real option prices: done.")
+        elif job == "imdata":                           # SPY 1-minute bars (Alpaca) + VIX (FMP) for Beat the Market
+            import intramom
+            if not intramom.download(sub, prog, dl):
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="SPY 1-minute bars and VIX ready.")
+        elif job == "imopt":
+            import intramom
+            if not intramom.opt_job(sub, prog, dl):
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="Optimizer done (ranked on the years before the test period).")
         elif job == "futdaily":                         # futures daily bars (Databento), back-adjusted
             import futdaily
             nxt = futdaily.download(sub, prog, dl, p.get("cont"))

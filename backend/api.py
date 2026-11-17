@@ -647,6 +647,30 @@ def swing_run(sub, claims, body, q, kind=None):
     return swing.start(sub, kind, body.get("cfg") or {})
 
 
+@route("GET", "/intramom")
+def im_view(sub, claims, body, q):
+    import intramom
+    return intramom.view(sub)
+
+
+@route("POST", "/intramom")
+def im_run(sub, claims, body, q):
+    import intramom
+    return intramom.run(sub, body.get("cfg") or {})
+
+
+@route("POST", "/intramom/data")
+def im_data(sub, claims, body, q):
+    import intramom
+    return intramom.data_start(sub)
+
+
+@route("POST", "/intramom/opt")
+def im_opt(sub, claims, body, q):
+    import intramom
+    return intramom.opt_start(sub, body.get("cfg") or {})
+
+
 @route("POST", "/swing/futdaily")
 def swing_futdaily(sub, claims, body, q):
     import futdaily

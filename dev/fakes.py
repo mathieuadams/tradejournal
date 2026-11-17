@@ -487,6 +487,14 @@ def fake_sec_http(url, ua, timeout=40):
 
 def fake_fmp_get(key, path, params, timeout=40):
     from datetime import date as _dt
+    if path == "historical-price-eod/full" and params.get("symbol") == "^VIX":
+        rnd, out, d, v = random.Random(7), [], _dt(2015, 11, 2), 16.0
+        while d <= _dt.today():
+            if d.weekday() < 5:
+                v = max(9.0, min(80.0, v * (1 + rnd.gauss(0, 0.06)) + 0.05 * (17 - v)))
+                out.append({"symbol": "^VIX", "date": d.isoformat(), "open": round(v, 2), "close": round(v * (1 + rnd.gauss(0, 0.03)), 2)})
+            d += timedelta(days=1)
+        return out[::-1]
     if path == "sp500-constituent":
         return [{"symbol": k, "name": v[1]} for k, v in SEC_COS.items()]
     if path == "ratios":

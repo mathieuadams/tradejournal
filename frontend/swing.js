@@ -1,24 +1,26 @@
 // Swing: the Turtle breakout and Qullamaggie's breakout, backtested on daily bars over the earnings universes / ETFs.
 S.sw = S.sw || { kind: 'qulla', cfg: {} };
-const SW_LABEL = { turtle: 'Turtle', qulla: 'Qullamaggie breakout' };
+const SW_LABEL = { turtle: 'Turtle', qulla: 'Qullamaggie breakout', btm: 'Beat the Market (SPY intraday)' };
 const SW_UNI = [['both', 'S&P 500 + Nasdaq-100'], ['spy', 'S&P 500'], ['qqq', 'Nasdaq-100'], ['etf', 'ETF list']];
 const SW_UNI_T = [['fut', 'Futures (30 CME markets)'], ...SW_UNI];
 
 async function vSwing() {
   const W = S.sw;
-  const tabs = ['qulla', 'turtle'].map(k => `<button class="btn${W.kind === k ? ' primary' : ''}" data-sw-kind="${k}">${SW_LABEL[k]}</button>`).join(' ');
+  const tabs = ['qulla', 'turtle', 'btm'].map(k => `<button class="btn${W.kind === k ? ' primary' : ''}" data-sw-kind="${k}">${SW_LABEL[k]}</button>`).join(' ');
   view(`${head('Swing', 'Daily breakout strategies: Turtle on 30 CME futures (or stocks / ETFs), Qullamaggie on the S&P 500 / Nasdaq-100 (removed companies included) or the ETF list. The last 5 years are the test period.')}<div style="margin-bottom:12px">${tabs}</div><div id="sw-body"><div class="panel"><div class="empty">Loading…</div></div></div>`);
+  if (W.kind === 'btm') return imLoad();
   await swLoad();
 }
 
 async function swLoad() {
-  const W = S.sw, el = $('#sw-body'); if (!el) return;
+  const W = S.sw, el = $('#sw-body'); if (!el || W.kind === 'btm') return;
   let r;
   try { r = await api('/swing/' + W.kind); } catch (e) { el.innerHTML = `<div class="panel"><div class="bd loss">${esc(e.message)}</div></div>`; return; }
   W.r = r;
   if (!W.cfg[W.kind]) W.cfg[W.kind] = { ...r.cfg };
   el.innerHTML = swShell(r);
-  if ((r.job && r.job.status === 'running') || (r.futJob && r.futJob.status === 'running')) { clearTimeout(swLoad.h); swLoad.h = setTimeout(swLoad, 4000); }
+  const live = j => j && j.status === 'running' && !j.stale;
+  if (live(r.job) || live(r.futJob)) { clearTimeout(swLoad.h); swLoad.h = setTimeout(swLoad, 4000); }
 }
 
 function swShell(r) {
@@ -45,9 +47,10 @@ function swShell(r) {
   const rules = k === 'turtle'
     ? 'N = 20-day average true range. Long on a break of the highest high of the last 20 (55) days, filled at that level (or the open on a gap). Stop 2 N under the entry; exit on a break of the 10 (20)-day low. Pyramid: one more unit every ½ N, up to 4, the stop raised to 2 N under the last add. R = P/L ÷ the first unit\'s risk.'
     : 'Setup at a close: ADR ≥ the minimum, up ≥ the minimum over 30 or 60 days, above the 50-day with the 10 above the 20, the last N days\' range tight, price ≥ $5, average $ volume (20 days) ≥ the minimum (default $10M). Entry the next day on a break of the base high (or the open on a gap). Stop: that day\'s low, skipped if wider than one ADR — with daily bars the order of the day\'s moves is unknown, so this flatters the entry day. Partial sale at that day\'s close, then the stop to breakeven; the rest on the first close below the trailing average. R = return ÷ the entry-to-stop distance.';
-  const o = r.opt, run = r.job && r.job.status === 'running', fj = r.futJob || {}, frun = fj.status === 'running';
+  const live = j => j && j.status === 'running' && !j.stale;   // a job silent for 20 minutes died
+  const o = r.opt, run = live(r.job), fj = r.futJob || {}, frun = live(fj);
   const jerr = r.job && r.job.status === 'error' ? `<div class="bd loss" style="border-top:1px solid var(--line)">Last run failed: ${esc(r.job.msg || '')}</div>` : '';
-  const jdone = fj.status === 'error' ? `<div class="bd loss">Futures download failed: ${esc(fj.msg || '')}</div>` : frun || fj.status === 'done' ? `<div class="bd dim">${esc(fj.msg || '')}</div>` : '';
+  const jdone = fj.status === 'error' ? `<div class="bd loss">Futures download failed: ${esc(fj.msg || '')}</div>` : fj.status === 'running' && !frun ? `<div class="bd loss">The download stopped answering (${esc(fj.msg || '')}): press Update to resume.</div>` : frun || fj.status === 'done' ? `<div class="bd dim">${esc(fj.msg || '')}</div>` : '';
   const m = x => x == null ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: 0 });
   const st = x => `${(x.n || 0).toLocaleString('en-US')} · ${m(x.total)} · ${x.win == null ? '—' : (x.win * 100).toFixed(0) + '%'} · ${x.avgR == null ? '—' : x.avgR + ' R'} · t ${x.t ?? '—'}`;
   const optHtml = !o || !o.top || !o.top.length ? `<div class="bd dim">${o && o.i ? `Running: ${o.i} symbols done…` : 'Not run yet.'}</div>`

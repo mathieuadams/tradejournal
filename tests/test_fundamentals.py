@@ -706,6 +706,18 @@ def test_swing_futures():
     import databento
     assert databento._avail_from("Schema `ohlcv-1d` for dataset `GLBX.MDP3` is only available between 2010-06-06T00:00:00.000000000Z and "
                                  "2026-11-16T00:00:00.000000000Z. Try requesting a different schema (422).") == "2026-11-16T00:00:00"
+    # a market whose request stalls is noted and skipped; the others go on; a resumed download skips what's done today
+    import store
+    store.put_json("fut/d/NQ", {})
+    real = futdaily._rows
+    futdaily._rows = lambda key, sym, end: (_ for _ in ()).throw(TimeoutError("timed out")) if sym.startswith("NQ.") else real(key, sym, end)
+    try:
+        assert futdaily.download(SUB) is None
+    finally:
+        futdaily._rows = real
+    nq = [x for x in futdaily.status() if x["root"] == "NQ"][0]
+    assert nq["error"] == "timed out" and nq["n"] == 0, nq
+    assert futdaily.download(SUB) is None and [x for x in futdaily.status() if x["root"] == "NQ"][0]["n"] > 1000
     # the adjustment itself
     v0 = [["d1", 10, 11, 9, 10, 1, 1], ["d2", 12.5, 13, 12, 12.5, 1, 2], ["d3", 13, 14, 12, 13, 1, 2]]
     v1 = [["d1", 12, 13, 11, 12, 1, 2], ["d2", 13, 13, 13, 13, 1, 3]]
@@ -730,6 +742,48 @@ def test_swing_futures():
     st, r = call("POST", "/swing/qulla", {"cfg": {"uni": "fut"}})
     st, v = call("GET", "/swing/qulla")
     assert v["cfg"]["uni"] == "both"
+
+
+
+def test_intramom():
+    import intramom as IM
+    from datetime import date as _d, timedelta as _td
+    st, v = call("GET", "/intramom")
+    assert st == 200 and v["data"]["days"] == 0 and v["grid"] == 216
+    st, r = call("POST", "/intramom", {"cfg": {}})
+    assert st == 400 and "Download" in r["error"]
+    call("PUT", "/alpaca", {"keyId": "PK" + "A" * 18, "secret": "s" * 30})
+    call("PUT", "/fmp", {"key": "k" * 32})
+    t = _d.today()
+    IM.FROM = f"{(t - _td(days=100)).year}-{(t - _td(days=100)).month:02d}"           # 4 months in the tests (the fake Alpaca is slow)
+    st, r = call("POST", "/intramom/data")
+    assert st == 200, r
+    st, v = call("GET", "/intramom")
+    assert v["job"]["status"] == "done" and v["data"]["days"] > 50 and v["data"]["vix"] > 1000, (v["job"], v["data"])
+    days = IM.load()[0]
+    assert all(len(d[3]) == 26 for d in days) and days[5][3][-1] is not None
+    for stop in ("vwap", "band", "opp"):
+        st, r = call("POST", "/intramom", {"cfg": {"stop": stop, "vixMin": 0}})
+        assert st == 200 and r["all"]["days"] > 30 and r["nTrades"] > 0, r.get("all")
+        for x in r["trades"]:
+            assert x["in"] < x["out"] and x["side"] in (1, -1)
+    assert r["vixData"] and r["vix"] and r["dow"]
+    # the mechanics on a hand-made day: σ = 1% at every mark, open 100, yesterday 100
+    mk = lambda day, cl, vw: [day, 100.0, cl[-1], cl, vw, 389]
+    flat = [100.0 * 1.01] * 26
+    hist = [mk(f"2024-01-{i + 1:02d}", flat, [100.0] * 26) for i in range(14)]
+    ctx_days = hist + [mk("2024-01-20", [100.5] + [101.5] * 3 + [102.0] * 10 + [100.5] * 12, [100.2] * 26)]
+    ctx_days[13][2] = 100.0                               # yesterday's close 100
+    ctx = IM.context(ctx_days, [])
+    assert abs(ctx["sig"][14][0] - 0.01) < 1e-9
+    c = IM.clean({"sizing": "full", "comm": 0, "slip": 0, "acct": 10000, "stop": "band"})
+    daily, tr = IM.simulate(ctx_days, ctx, c, keep_trades=True)
+    # 10:00: 101.5 > 101 → long; out at the first 30-minute check back inside the band (13:30; 13:15 is not a check)
+    assert tr[0][1] == "10:00" and tr[0][3] == 1 and tr[0][2] == "13:30" and abs(tr[0][7] - 100 * (100.5 - 101.5)) < 1e-6, tr
+    st, o = call("POST", "/intramom/opt", {"cfg": {}})
+    assert st == 200, o
+    st, v = call("GET", "/intramom")
+    assert v["opt"]["complete"] and len(v["opt"]["top"]) == 20, v["job"]
 
 
 if __name__ == "__main__":
