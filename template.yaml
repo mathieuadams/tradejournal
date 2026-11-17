@@ -14,16 +14,16 @@ Parameters:
     Description: Globally unique prefix for the sign-in page, e.g. tradejournal-mathieu (no "aws", "amazon" or "cognito")
   WorkspaceOrigin:
     Type: String
-    Default: ""
-    Description: Public DNS of the workspace server (set by deploy.sh); the site sends /ws* there
+    Default: none
+    Description: Public DNS of the workspace server (set by deploy.sh; "none" = not deployed yet); the site sends /ws* there
   WorkspaceOriginSecret:
     Type: String
-    Default: ""
+    Default: none
     NoEcho: true
     Description: Header the workspace server requires (set by deploy.sh)
 
 Conditions:
-  HasWorkspace: !Not [!Equals [!Ref WorkspaceOrigin, ""]]
+  HasWorkspace: !Not [!Equals [!Ref WorkspaceOrigin, none]]
 
 Globals:
   Function:

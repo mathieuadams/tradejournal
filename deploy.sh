@@ -23,7 +23,7 @@ SECRET="$(param ORIGIN_SECRET)"
 if [ -z "$SECRET" ]; then SECRET="$(openssl rand -hex 24)"; setp ORIGIN_SECRET "$SECRET"; fi
 WS_DNS="$(wout InstanceDns)"; [ "$WS_DNS" = "None" ] && WS_DNS=""
 
-deploy_site_stack() {   # $1 = workspace server DNS ("" = no /ws route yet)
+deploy_site_stack() {   # $1 = workspace server DNS ("" = no /ws route yet; SAM refuses empty values, so "none")
   local cdp="${COGNITO_DOMAIN_PREFIX:-}"
   if [ -z "$cdp" ] && [ -f samconfig.toml ]; then
     cdp="$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" --query "Stacks[0].Parameters[?ParameterKey=='CognitoDomainPrefix'].ParameterValue" --output text)"
@@ -31,7 +31,7 @@ deploy_site_stack() {   # $1 = workspace server DNS ("" = no /ws route yet)
   if [ -n "$cdp" ]; then
     sam deploy --stack-name "$STACK" --region "$REGION" --resolve-s3 --capabilities CAPABILITY_IAM \
       --no-confirm-changeset --no-fail-on-empty-changeset \
-      --parameter-overrides "CognitoDomainPrefix=$cdp" "WorkspaceOrigin=$1" "WorkspaceOriginSecret=$SECRET"
+      --parameter-overrides "CognitoDomainPrefix=$cdp" "WorkspaceOrigin=${1:-none}" "WorkspaceOriginSecret=$SECRET"
   else
     echo "First deploy: SAM will ask for a Cognito domain prefix (must be globally unique, lowercase)."
     sam deploy --guided --stack-name "$STACK" --region "$REGION" --capabilities CAPABILITY_IAM
