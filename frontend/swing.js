@@ -33,7 +33,9 @@ function swShell(r) {
        <label class="f">Pyramid (+1 unit every ½ N, max 4)${yn('pyramid')}</label><label class="f">Shorts${yn('shorts')}</label>
        <label class="f">Skip after a winner (System 1)${yn('skipWin')}</label>${fut ? '' : `<label class="f">Market filter (benchmark vs 200-day)${yn('mkt')}</label>`}`
     : `<label class="f">ADR at least${sel('minAdr', [[0.02, '2%'], [0.03, '3%'], [0.04, '4%'], [0.05, '5%'], [0.06, '6%']])}</label>
-       <label class="f">Up over 60 days at least${sel('prior', [[0.2, '20%'], [0.3, '30%'], [0.5, '50%'], [1, '100%']])}</label>
+       <label class="f">Up at least${sel('prior', [[0.2, '20%'], [0.3, '30%'], [0.5, '50%'], [1, '100%']])}</label>
+       <label class="f">… over${sel('priorDays', [[30, '30 days'], [60, '60 days']])}</label>
+       <label class="f">$ volume (20-day avg) at least${sel('minDv', [[5e6, '$5M'], [10e6, '$10M'], [20e6, '$20M'], [50e6, '$50M']])}</label>
        <label class="f">Base (days)${sel('base', [[5, '5'], [10, '10'], [15, '15'], [20, '20']])}</label>
        <label class="f">Base range at most${sel('tight', [[0.08, '8%'], [0.1, '10%'], [0.15, '15%'], [0.2, '20%'], [0.3, '30%']])}</label>
        <label class="f">Partial sale${sel('partialDay', [[0, 'Off'], [3, 'day 3'], [4, 'day 4'], [5, 'day 5']])}</label>
@@ -42,7 +44,7 @@ function swShell(r) {
        <label class="f">Market filter (benchmark above its 20-day)${yn('mkt')}</label>`;
   const rules = k === 'turtle'
     ? 'N = 20-day average true range. Long on a break of the highest high of the last 20 (55) days, filled at that level (or the open on a gap). Stop 2 N under the entry; exit on a break of the 10 (20)-day low. Pyramid: one more unit every ½ N, up to 4, the stop raised to 2 N under the last add. R = P/L ÷ the first unit\'s risk.'
-    : 'Setup at a close: ADR ≥ the minimum, up ≥ the minimum over 60 days, above the 50-day with the 10 above the 20, the last N days\' range tight, price ≥ $5, $20M+ a day traded. Entry the next day on a break of the base high (or the open on a gap). Stop: that day\'s low, skipped if wider than one ADR — with daily bars the order of the day\'s moves is unknown, so this flatters the entry day. Partial sale at that day\'s close, then the stop to breakeven; the rest on the first close below the trailing average. R = return ÷ the entry-to-stop distance.';
+    : 'Setup at a close: ADR ≥ the minimum, up ≥ the minimum over 30 or 60 days, above the 50-day with the 10 above the 20, the last N days\' range tight, price ≥ $5, average $ volume (20 days) ≥ the minimum (default $10M). Entry the next day on a break of the base high (or the open on a gap). Stop: that day\'s low, skipped if wider than one ADR — with daily bars the order of the day\'s moves is unknown, so this flatters the entry day. Partial sale at that day\'s close, then the stop to breakeven; the rest on the first close below the trailing average. R = return ÷ the entry-to-stop distance.';
   const o = r.opt, run = r.job && r.job.status === 'running' && /^swing/.test(r.job.job || '');
   const m = x => x == null ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: 0 });
   const st = x => `${(x.n || 0).toLocaleString('en-US')} · ${m(x.total)} · ${x.win == null ? '—' : (x.win * 100).toFixed(0) + '%'} · ${x.avgR == null ? '—' : x.avgR + ' R'} · t ${x.t ?? '—'}`;

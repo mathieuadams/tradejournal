@@ -9,9 +9,9 @@ TURTLE (Dennis / Faith, "Way of the Turtle"):
   add. Shorts mirror it (option). System 1's filter (option): skip a breakout when this symbol's last trade won.
   Market filter (option): longs only above the benchmark's 200-day average, shorts only below.
 QULLAMAGGIE BREAKOUT (Kristjan Kullamägi):
-  Setup at a close: ADR(20) ≥ `minAdr`, up ≥ `prior` over the last 60 days (close vs the 60-day low), above the
+  Setup at a close: ADR(20) ≥ `minAdr`, up ≥ `prior` over the last `priorDays` (30 or 60) days (close vs that low), above the
   50-day average with the 10 above the 20, a tight base — the last `base` days' range ≤ `tight` × ADR × base^0.5
-  … simplified to: range of the last `base` days ≤ `tight` (share of the price) — price ≥ $5 and $20M+ a day traded.
+  … simplified to: range of the last `base` days ≤ `tight` (share of the price) — price ≥ $5 and the 20-day average $ volume ≥ `minDv` ($10M).
   Entry the next day when the high breaks the base's high (filled there, or at the open on a gap above it). Stop:
   that day's low; skipped when the stop is further than one ADR. After `partialDay` sessions `partial` of the
   position is sold at the close and the stop goes to breakeven; the rest is sold on the first close below the
@@ -33,10 +33,10 @@ MIN_TRADES = 30
 UNIS = ("fut", "spy", "qqq", "both", "etf")
 T_DEFAULT = {"uni": "fut", "entryN": 20, "exitN": 10, "stopN": 2.0, "pyramid": False, "shorts": True, "skipWin": False, "mkt": False,
              "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "risk": 1000.0, "whole": False, "comm": 5.0, "slip": 1.0, "groups": None}
-Q_DEFAULT = {"uni": "both", "minAdr": 0.04, "prior": 0.3, "base": 10, "tight": 0.15, "partialDay": 3, "partial": 1 / 3, "trail": 10, "mkt": False,
+Q_DEFAULT = {"uni": "both", "minAdr": 0.04, "prior": 0.3, "priorDays": 60, "minDv": 10e6, "base": 10, "tight": 0.15, "partialDay": 3, "partial": 1 / 3, "trail": 10, "mkt": False,
              "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0}
 T_GRID = {"entryN": [20, 55], "stopN": [2.0, 3.0], "pyramid": [False, True], "shorts": [False, True], "mkt": [False, True]}
-Q_GRID = {"minAdr": [0.03, 0.05], "prior": [0.3, 0.5], "tight": [0.10, 0.20], "trail": [10, 20], "partialDay": [0, 3], "mkt": [False, True]}
+Q_GRID = {"minAdr": [0.03, 0.05], "prior": [0.3, 0.5], "priorDays": [30, 60], "tight": [0.10, 0.20], "trail": [10, 20], "partialDay": [0, 3], "mkt": [False, True]}
 
 
 def _d(s):
@@ -68,6 +68,8 @@ def clean(kind, cfg):
     else:
         c["minAdr"] = max(0.0, min(0.3, float(c["minAdr"])))
         c["prior"] = max(0.0, min(5.0, float(c["prior"])))
+        c["priorDays"] = 30 if int(c["priorDays"]) == 30 else 60
+        c["minDv"] = max(0.0, float(c["minDv"]))
         c["base"] = int(c["base"]) if int(c["base"]) in (5, 10, 15, 20) else 10
         c["tight"] = max(0.02, min(0.6, float(c["tight"])))
         c["partialDay"] = int(c["partialDay"]) if int(c["partialDay"]) in (0, 3, 4, 5) else 3
@@ -253,11 +255,11 @@ def qulla(sym, b, c, mkt):
         if pos is None:
             if s50[p] is None or adr[p] is None or dv[p] is None:
                 continue
-            if cl[p] < 5 or dv[p] < 20e6 or adr[p] < c["minAdr"]:
+            if cl[p] < 5 or dv[p] < c["minDv"] or adr[p] < c["minAdr"]:
                 continue
             if not (cl[p] > s50[p] and s10[p] > s20[p]):
                 continue
-            if cl[p] / min(l[p - 60:p + 1]) - 1 < c["prior"]:
+            if cl[p] / min(l[p - c["priorDays"]:p + 1]) - 1 < c["prior"]:
                 continue
             bh, bl = max(h[p - B + 1:p + 1]), min(l[p - B + 1:p + 1])
             if bh / bl - 1 > c["tight"]:
@@ -326,15 +328,15 @@ def setups(sym, b, c, kind):
     s10, s20, s50 = sum(cl[p - 9:p + 1]) / 10, sum(cl[p - 19:p + 1]) / 20, sum(cl[p - 49:p + 1]) / 50
     adr = sum(h[i] / l[i] - 1 for i in range(p - 19, p + 1)) / 20
     dv = sum(cl[i] * v[i] for i in range(p - 19, p + 1)) / 20
-    if cl[p] < 5 or dv < 20e6 or adr < c["minAdr"] or not (cl[p] > s50 and s10 > s20):
+    if cl[p] < 5 or dv < c["minDv"] or adr < c["minAdr"] or not (cl[p] > s50 and s10 > s20):
         return None
-    prior = cl[p] / min(l[p - 60:p + 1]) - 1
+    prior = cl[p] / min(l[p - c["priorDays"]:p + 1]) - 1
     if prior < c["prior"]:
         return None
     bh, bl = max(h[p - c["base"] + 1:p + 1]), min(l[p - c["base"] + 1:p + 1])
     if bh / bl - 1 > c["tight"]:
         return None
-    return {"sym": sym, "date": ds[p], "level": round(bh, 2), "close": cl[p], "note": f"ADR {adr * 100:.1f}% · up {prior * 100:.0f}% in 60d · base {(bh / bl - 1) * 100:.1f}%",
+    return {"sym": sym, "date": ds[p], "level": round(bh, 2), "close": cl[p], "note": f"ADR {adr * 100:.1f}% · up {prior * 100:.0f}% in {c['priorDays']}d · base {(bh / bl - 1) * 100:.1f}%",
             "stop": None}
 
 
