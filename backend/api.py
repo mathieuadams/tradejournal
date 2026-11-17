@@ -616,6 +616,43 @@ def etf_view(sub, claims, body, q):
     return {**etf.matrix(sub, int(q.get("days") or 60)), "settings": etf.settings(sub)}
 
 
+@route("POST", "/etf/pairs")
+def etf_pairs(sub, claims, body, q):
+    import etfpairs
+    return etfpairs.run(sub, body.get("cfg") or {})
+
+
+@route("GET", "/etf/pairs/opt")
+def etf_pairs_opt_view(sub, claims, body, q):
+    import etfpairs
+    import jobs
+    return {"opt": etfpairs.opt_view(sub), "job": jobs.status(sub, "etf")}
+
+
+@route("POST", "/etf/pairs/opt")
+def etf_pairs_opt(sub, claims, body, q):
+    import etfpairs
+    return etfpairs.opt_start(sub, body.get("cfg") or {})
+
+
+@route("GET", "/swing/(?P<kind>turtle|qulla)")
+def swing_view(sub, claims, body, q, kind=None):
+    import swing
+    return swing.view(sub, kind)
+
+
+@route("POST", "/swing/(?P<kind>turtle|qulla)")
+def swing_run(sub, claims, body, q, kind=None):
+    import swing
+    return swing.start(sub, kind, body.get("cfg") or {})
+
+
+@route("POST", "/swing/(?P<kind>turtle|qulla)/opt")
+def swing_opt(sub, claims, body, q, kind=None):
+    import swing
+    return swing.opt_start(sub, kind, body.get("cfg") or {})
+
+
 @route("PUT", "/etf/settings")
 def etf_settings(sub, claims, body, q):
     import etf

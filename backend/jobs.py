@@ -154,6 +154,22 @@ def handler(event, ctx=None):
                 _invoke(event)
                 return {"continued": True}
             set_status(sub, name, status="done", msg="Real option prices: done.")
+        elif job == "swingrun":                         # Turtle / Qullamaggie backtest over the universe
+            import swing
+            swing.run_job(sub, p["kind"], prog)
+            set_status(sub, name, status="done", msg="Backtest done.")
+        elif job == "swingopt":
+            import swing
+            if not swing.opt_job(sub, p["kind"], prog, dl):
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="Optimizer: every setting on every symbol (train / test).")
+        elif job == "etfopt":                           # the ETF pairs optimizer
+            import etfpairs
+            if not etfpairs.opt_job(sub, prog, dl):
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="ETF pairs optimizer: every setting tested (train / test).")
         elif job == "fundopt":                          # the earnings strategy optimizer
             import backtest
             if not backtest.opt_job(sub, prog, dl):

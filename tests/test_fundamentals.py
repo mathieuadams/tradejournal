@@ -601,6 +601,73 @@ def test_etf_matrix():
     assert abs(etf._corr([1, 2, 3, 4], [2, 4, 6, 8]) - 1) < 1e-12 and abs(etf._corr([1, 2, 3, 4], [4, 3, 2, 1]) + 1) < 1e-12
 
 
+
+def test_etf_pairs():
+    import etfpairs as P
+    call("PUT", "/etf/settings", {"syms": ["XLE", "XLK", "GLD", "SMH"]})
+    st, r = call("POST", "/etf/pairs", {"cfg": {"entry": 1.5, "minCorr": -1}})
+    assert st == 200, r
+    assert r["nPairs"] == 6 and r["cfg"]["entry"] == 1.5 and "train" in r["split"] and r["now"], {k: r[k] for k in ("nPairs", "n")}
+    for t in r["trades"]:
+        assert t["entry"] <= t["exit"] and t["why"] in ("back to the mean", "stop", "time") and t["long"] != t["short"]
+    st, o = call("POST", "/etf/pairs/opt", {"cfg": {"stake": 500}})
+    assert st == 200, o
+    st, v = call("GET", "/etf/pairs/opt")
+    assert st == 200 and v["opt"] and v["opt"]["done"] == len(P.combos()) and v["opt"]["top"], v.get("job")
+    # the mechanics on a hand-made pair: A jumps 10% above B, then comes back
+    ds = [f"2020-01-{d:02d}" for d in range(1, 31)] + [f"2020-02-{d:02d}" for d in range(1, 29)] + [f"2020-03-{d:02d}" for d in range(1, 31)]
+    import math
+    pa, pb = {}, {}
+    for i, d in enumerate(ds):
+        base = 100 * (1 + 0.001 * math.sin(i))
+        bump = 1.10 if i in (70, 71) else 1.0
+        pa[d], pb[d] = (base * bump, base * bump), (base * (1 + 0.0005 * math.cos(i * 1.3)), base * (1 + 0.0005 * math.cos(i * 1.3)))
+    p = P.prep_pair(pa, pb, [20])
+    c = P.clean({"look": 20, "entry": 2, "exit": 0, "hold": 10, "minCorr": -1, "costBps": 0, "borrowPct": 0})
+    ts = [t for t in P.sim_pair("A", "B", p, c) if not t.get("open")]
+    t0 = next(t for t in ts if t["entry"] == ds[71])
+    assert t0["short"] == "A" and t0["long"] == "B" and t0["pnl"] > 50, t0      # bought back after the jump faded
+
+
+
+def test_swing():
+    import swing as SW
+    for kind in ("qulla", "turtle"):
+        st, r = call("POST", f"/swing/{kind}", {"cfg": {"uni": "etf", "minAdr": 0.0, "prior": 0.0, "tight": 0.5}})
+        assert st == 200, r
+        st, v = call("GET", f"/swing/{kind}")
+        assert st == 200 and v["res"] and v["res"]["kind"] == kind and "train" in v["res"]["split"], v.get("job")
+        for t in v["res"]["trades"]:
+            assert t["entry"] <= t["exit"]
+        st, o = call("POST", f"/swing/{kind}/opt", {"cfg": {"uni": "etf"}})
+        assert st == 200, o
+        st, v = call("GET", f"/swing/{kind}")
+        assert v["opt"] and v["opt"]["done"] == len(SW.grid(kind)), v.get("job")
+    # the mechanics: a flat base, a breakout, a run, then a close under the 10-day average
+    from datetime import date, timedelta
+    b, d, px = [], date(2020, 1, 2), 10.0
+    while len(b) < 140:
+        if d.weekday() < 5:
+            i = len(b)
+            if i < 60:
+                px *= 1.012                                # the prior move
+            elif i < 70:
+                px = px                                    # the base
+            elif i < 85:
+                px *= 1.03                                 # the breakout run
+            else:
+                px *= 0.97
+            b.append([d.isoformat(), px * 0.995, px * 1.02, px * 0.98, px, 5e6])
+        d += timedelta(days=1)
+    c = SW.clean("qulla", {"minAdr": 0.03, "prior": 0.3, "tight": 0.06, "partialDay": 3, "trail": 10, "costBps": 0})
+    ts = SW.qulla("X", b, c, {})
+    t0 = ts[0]
+    assert t0["entry"] == b[70][0] and t0["pnl"] > 0 and "10-day" in t0["why"], t0
+    c2 = SW.clean("turtle", {"costBps": 0})
+    tt = SW.turtle("X", b, c2, {})
+    assert tt and tt[0]["side"] == "long" and all(x["entry"] <= x["exit"] for x in tt)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
