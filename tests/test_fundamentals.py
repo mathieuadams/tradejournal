@@ -816,6 +816,8 @@ def test_swing_whole_market():
     call("PUT", "/alpaca", {"keyId": "PK" + "A" * 18, "secret": "s" * 30})
     call("PUT", "/fmp", {"key": "k" * 32})
     syms = dict(AL.symbols(SUB))
+    assert "AKO.A" in syms and "AKO-A" not in syms and not any(k.startswith(("XYZ", "ABC")) for k in syms)
+    assert AL._alp("BRK-B") == "BRK.B" and AL._alp("XYZ-PA") is None and AL._alp("ABCDEFG") is None
     assert "MOMO" in syms and "GONE" in syms and syms["GONE"] == "2022-06-30" and "OLDY" not in syms and "ETFX" not in syms
     st, r = call("POST", "/swing/qulla", {"cfg": {"uni": "all"}})
     assert st == 400 and "whole market" in r["error"]
@@ -825,13 +827,13 @@ def test_swing_whole_market():
     st, v = call("GET", "/swing/qulla")
     assert v["allJob"]["status"] == "done", v["allJob"]
     ix = AL.index()
-    assert set(ix["syms"]) == {"MOMO", "RUNR", "SLOW", "GONE"} and ix["shards"] == 2, ix
+    assert set(ix["syms"]) == {"MOMO", "RUNR", "SLOW", "GONE", "AKO.A"} and ix["shards"] == 3, ix          # QQBAD refused by Alpaca: dropped
     gone = AL.bars("GONE")
     assert gone[-1][0] <= "2022-06-30"
     st, r = call("POST", "/swing/qulla", {"cfg": {"uni": "all", "minAdr": 0.0, "prior": 0.0, "tight": 0.5, "minDv": 0}})
     assert st == 200, r
     st, v = call("GET", "/swing/qulla")
-    assert v["res"]["nSyms"] == 4 and v["res"]["n"] > 0, v["job"]
+    assert v["res"]["nSyms"] == 5 and v["res"]["n"] > 0, v["job"]
     assert SW_clean_default()["uni"] == "all"
 
 

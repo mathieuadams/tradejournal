@@ -244,6 +244,8 @@ def fake_alpaca_get(creds, path, params, timeout=60):
     if path == "stocks/bars":                           # several symbols: {"bars": {sym: [...]}}, paged over all of them
         allb = []
         for s in params["symbols"].split(","):
+            if s.startswith("QQ"):
+                raise BadRequest(f"Alpaca: invalid symbol: {s} (400).")
             if s.startswith("ZZ"):
                 continue                                # unknown to Alpaca
             for b in fake_alpaca_get(creds, f"stocks/{s}/bars", {**params, "limit": 10 ** 9, "page_token": None})["bars"]:
@@ -525,7 +527,7 @@ def fake_sec_http(url, ua, timeout=40):
 def fake_fmp_get(key, path, params, timeout=40):
     from datetime import date as _dt
     if path == "company-screener":
-        return [{"symbol": s, "isEtf": False, "isFund": False, "exchange": "NASDAQ"} for s in ("MOMO", "RUNR", "SLOW", "ZZNO")] + [{"symbol": "ETFX", "isEtf": True}]
+        return [{"symbol": s, "isEtf": False, "isFund": False, "exchange": "NASDAQ"} for s in ("MOMO", "RUNR", "SLOW", "ZZNO", "QQBAD", "AKO-A", "XYZ-PA", "ABC-WS")] + [{"symbol": "ETFX", "isEtf": True}]
     if path == "delisted-companies":
         return [{"symbol": "GONE", "exchange": "NYSE", "delistedDate": "2022-06-30"}, {"symbol": "OLDY", "exchange": "NYSE", "delistedDate": "2012-01-01"}] if int(params.get("page") or 0) == 0 else []
     if path == "historical-price-eod/full" and params.get("symbol") == "^VIX":

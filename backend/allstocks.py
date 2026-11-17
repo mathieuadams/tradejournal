@@ -17,6 +17,20 @@ EXCH = ("NYSE", "NASDAQ", "AMEX")
 MIN_DV, MIN_PX = 5e6, 3.0
 
 
+def _alp(sym):
+    """FMP's symbol as Alpaca writes it, or None: BRK-B → BRK.B (a share class); preferreds (AKO-A is a class, but
+    XYZ-PA / XYZ^A are preferreds), units, warrants and rights left out."""
+    s = str(sym or "").upper().strip()
+    if not s or len(s) > 7:
+        return None
+    if "-" in s or "." in s:
+        base, _, cls = s.replace(".", "-").partition("-")
+        if not (base.isalpha() and len(cls) == 1 and cls.isalpha() and len(base) <= 5):
+            return None
+        return f"{base}.{cls}"
+    return s if s.isalpha() and len(s) <= 5 else None
+
+
 def symbols(sub):
     """[(symbol, delisted date or None)]."""
     import fmp
@@ -25,8 +39,8 @@ def symbols(sub):
                                              "limit": 10000}) or []
     out = {}
     for r in act if isinstance(act, list) else []:
-        s = str(r.get("symbol") or "").upper()
-        if s and s.replace(".", "").replace("-", "").isalpha() and len(s) <= 6 and not r.get("isEtf") and not r.get("isFund"):
+        s = _alp(r.get("symbol"))
+        if s and not r.get("isEtf") and not r.get("isFund"):
             out[s] = None
     for page in range(200):
         raw = fmp._get(key, "delisted-companies", {"page": page, "limit": 100}) or []
@@ -34,11 +48,11 @@ def symbols(sub):
             break
         old = False
         for r in raw:
-            s, d = str(r.get("symbol") or "").upper(), str(r.get("delistedDate") or "")[:10]
+            s, d = _alp(r.get("symbol")), str(r.get("delistedDate") or "")[:10]
             if d and d < FROM:
                 old = True
                 continue
-            if s and s.isalpha() and len(s) <= 6 and str(r.get("exchange") or "").upper() in EXCH and s not in out:
+            if s and str(r.get("exchange") or "").upper() in EXCH and s not in out:
                 out[s] = d or None
         if old and page > 2:                           # newest first: past 2016 nothing more to take
             break
@@ -51,14 +65,24 @@ def _fetch(sub, syms, delisted):
     end = datetime.utcnow() - timedelta(minutes=16 if feed == "sip" else 0)
     out, token = {}, None
     for _ in range(400):
-        for attempt in range(5):
+        for attempt in range(40):
             try:
                 r = alpaca._get(c, "stocks/bars", {"symbols": ",".join(syms), "timeframe": "1Day", "start": FROM + "T05:00:00Z",
                                                    "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 10000, "adjustment": "split",
                                                    "feed": feed, "sort": "asc", "page_token": token})
                 break
+            except BadRequest as e:                    # one symbol Alpaca doesn't know spoils the batch: drop it, ask again
+                import re
+                m = re.search(r"invalid symbol:\s*([A-Z0-9.\-^/]+)", str(e), re.I)
+                if not m or m.group(1).upper() not in syms or len(syms) == 1:
+                    if len(syms) == 1:
+                        return out
+                    raise
+                syms = [x for x in syms if x != m.group(1).upper()]
+                token = None
+                out = {}
             except Unavailable as e:
-                if "rate limit" not in str(e) or attempt == 4:
+                if "rate limit" not in str(e) or attempt == 39:
                     raise
                 time.sleep(15)
         for s, bs in (r.get("bars") or {}).items():
@@ -170,6 +194,6 @@ def start(sub):
     fmp._key(sub)
     alpaca.creds(sub)
     st = store.get_json("all/state") or {}
-    if st.get("done"):
-        store.put_json("all/state", {})                # a fresh list and fresh bars
+    if st.get("done") or not st.get("i"):
+        store.put_json("all/state", {})                # a fresh list and fresh bars (also after a failure at the start)
     return jobs.start(sub, "swingall", "alldl", {})
