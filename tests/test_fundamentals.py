@@ -668,6 +668,53 @@ def test_swing():
     assert tt and tt[0]["side"] == "long" and all(x["entry"] <= x["exit"] for x in tt)
 
 
+
+def test_swing_futures():
+    import futdaily
+    import swing as SW
+    st, r = call("GET", "/swing/turtle")
+    assert st == 200 and SW.clean("turtle", {})["uni"] == "fut" and len(r["fut"]) == len(futdaily.SPEC)
+    st, r = call("POST", "/swing/futdaily")
+    assert st == 400                                      # Databento not connected
+    st, r = call("PUT", "/databento", {"key": "db-" + "A" * 29})
+    assert st == 200, r
+    st, r = call("POST", "/swing/futdaily")
+    assert st == 400 and "cost limit" in r["error"], r
+    call("PUT", "/databento", {"maxCost": 20})
+    st, r = call("POST", "/swing/futdaily")
+    assert st == 200, r
+    st, v = call("GET", "/swing/turtle")
+    assert all(x["n"] > 1000 and x["rolls"] > 20 and x["missing"] == 0 for x in v["fut"]), v["fut"][:2]
+    # back-adjusted: no jump at the rolls (the fake adds 1.5 points per later contract)
+    b = futdaily.bars("ES")
+    jumps = max(abs(b[i][4] - b[i - 1][4]) for i in range(1, len(b)))
+    assert jumps < 15, jumps
+    # the adjustment itself
+    v0 = [["d1", 10, 11, 9, 10, 1, 1], ["d2", 12.5, 13, 12, 12.5, 1, 2], ["d3", 13, 14, 12, 13, 1, 2]]
+    v1 = [["d1", 12, 13, 11, 12, 1, 2], ["d2", 13, 13, 13, 13, 1, 3]]
+    out, rolls, miss = futdaily.adjust(v0, v1)
+    assert rolls == 1 and miss == 0 and out[0][4] == 12 and out[1][4] == 12.5
+    st, r = call("POST", "/swing/turtle", {"cfg": {"uni": "fut", "risk": 2000, "groups": ["Metals", "Energy"]}})
+    assert st == 200, r
+    st, v = call("GET", "/swing/turtle")
+    res = v["res"]
+    assert res and res["nSyms"] == 8 and res["n"] > 0 and {g["group"] for g in res["groups"]} <= {"Metals", "Energy"}, res and res["nSyms"]
+    t = res["trades"][-1]
+    assert t["contracts"] > 0 and t["ret"] is None and t["R"] is not None
+    # 1 N against a unit = the $ risk per unit (fractional contracts)
+    spec = futdaily.SPEC["GC"]
+    c = SW.clean("turtle", {"uni": "fut", "risk": 1000, "comm": 0, "slip": 0})
+    tt = [x for x in SW.turtle("GC", futdaily.bars("GC"), c, {}, spec) if x["units"] == 1 and not x.get("open")][0]
+    assert abs(tt["pnl"] - tt["contracts"] * (tt["out"] - tt["in"]) * (1 if tt["side"] == "long" else -1) * spec[2]) < 1
+    st, o = call("POST", "/swing/turtle/opt", {"cfg": {"uni": "fut"}})
+    assert st == 200, o
+    st, v = call("GET", "/swing/turtle")
+    assert v["opt"]["done"] == len(SW.grid("turtle", "fut")) == 16
+    st, r = call("POST", "/swing/qulla", {"cfg": {"uni": "fut"}})
+    st, v = call("GET", "/swing/qulla")
+    assert v["cfg"]["uni"] == "both"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

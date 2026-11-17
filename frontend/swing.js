@@ -2,6 +2,7 @@
 S.sw = S.sw || { kind: 'qulla', cfg: {} };
 const SW_LABEL = { turtle: 'Turtle', qulla: 'Qullamaggie breakout' };
 const SW_UNI = [['both', 'S&P 500 + Nasdaq-100'], ['spy', 'S&P 500'], ['qqq', 'Nasdaq-100'], ['etf', 'ETF list']];
+const SW_UNI_T = [['fut', 'Futures (30 CME markets)'], ...SW_UNI];
 
 async function vSwing() {
   const W = S.sw;
@@ -25,11 +26,12 @@ function swShell(r) {
   const sel = (key, opts) => `<select data-swv="${key}">${opts.map(([v, t]) => `<option value="${v}"${String(c[key]) === String(v) ? ' selected' : ''}>${t}</option>`).join('')}</select>`;
   const num = (key, step) => `<input type="number" step="${step}" data-swv="${key}" value="${c[key]}">`;
   const yn = key => sel(key, [[false, 'Off'], [true, 'On']]);
+  const fut = k === 'turtle' && c.uni === 'fut';
   const form = k === 'turtle'
     ? `<label class="f">System${sel('entryN', [[20, '1: 20-day breakout, 10-day exit'], [55, '2: 55-day breakout, 20-day exit']])}</label>
        <label class="f">Stop${sel('stopN', [[1, '1 N'], [2, '2 N'], [3, '3 N'], [4, '4 N']])}</label>
        <label class="f">Pyramid (+1 unit every ½ N, max 4)${yn('pyramid')}</label><label class="f">Shorts${yn('shorts')}</label>
-       <label class="f">Skip after a winner (System 1)${yn('skipWin')}</label><label class="f">Market filter (benchmark vs 200-day)${yn('mkt')}</label>`
+       <label class="f">Skip after a winner (System 1)${yn('skipWin')}</label>${fut ? '' : `<label class="f">Market filter (benchmark vs 200-day)${yn('mkt')}</label>`}`
     : `<label class="f">ADR at least${sel('minAdr', [[0.02, '2%'], [0.03, '3%'], [0.04, '4%'], [0.05, '5%'], [0.06, '6%']])}</label>
        <label class="f">Up over 60 days at least${sel('prior', [[0.2, '20%'], [0.3, '30%'], [0.5, '50%'], [1, '100%']])}</label>
        <label class="f">Base (days)${sel('base', [[5, '5'], [10, '10'], [15, '15'], [20, '20']])}</label>
@@ -50,12 +52,23 @@ function swShell(r) {
       <div class="note" style="padding:6px 16px 12px">${o.done} of ${o.total} settings. Ranked on train only (at least ${o.minTrades} train trades).</div>`;
   return `<section class="panel"><div class="hd"><h2>${SW_LABEL[k]}</h2><div class="grow"></div>${run ? `<span class="dim">${esc(r.job.msg || 'Running…')}</span>` : ''}</div>
     <div class="bd" style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
-      <label class="f">Universe${sel('uni', SW_UNI)}</label>${form}
-      <label class="f">$ per unit${num('stake', 100)}</label><label class="f">Costs, round trip (bps)${num('costBps', 1)}</label><label class="f">Short borrow (%/year)${num('borrowPct', 0.5)}</label>
+      <label class="f">Universe${sel('uni', k === 'turtle' ? SW_UNI_T : SW_UNI)}</label>${form}
+      ${fut ? `<label class="f">$ risk per unit (1 N)${num('risk', 100)}</label><label class="f">Whole contracts${yn('whole')}</label>
+        <label class="f">Commission $ / contract, round trip${num('comm', 0.5)}</label><label class="f">Slippage (ticks per side)${num('slip', 0.5)}</label>
+        <div class="f" style="display:flex;gap:8px;flex-wrap:wrap">${(r.groups || []).map(g => `<label style="font-size:13px"><input type="checkbox" data-sw-grp="${esc(g)}"${!c.groups || c.groups.includes(g) ? ' checked' : ''}> ${esc(g)}</label>`).join('')}</div>`
+      : `<label class="f">$ per unit${num('stake', 100)}</label><label class="f">Costs, round trip (bps)${num('costBps', 1)}</label><label class="f">Short borrow (%/year)${num('borrowPct', 0.5)}</label>`}
       <button class="btn primary" data-sw="run" ${run ? 'disabled' : ''}>Run backtest</button></div>
-    <p class="note" style="padding:0 16px 14px">${rules} Costs on every unit; shorts pay borrow. Runs in the background (a minute or two for ~600 stocks).</p></section>
+    <p class="note" style="padding:0 16px 14px">${rules} ${fut ? 'Futures: unit = $ risk ÷ (N × $ per point) contracts, as the Turtles sized (1% of equity per N); P/L in points × $ per point, minus commission and slippage on every contract. Prices back-adjusted at each roll, so P/L is exact but old prices can be negative (no % returns). No portfolio unit limits (the Turtles capped 12 units per direction).' : 'Costs on every unit; shorts pay borrow. Runs in the background (a minute or two for ~600 stocks).'}</p>
+    ${fut ? swFutHtml(r.fut, run) : ''}</section>
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">every combination of the main settings on every symbol, ranked on the years before the test period</span><div class="grow"></div><button class="btn" data-sw="opt" ${run ? 'disabled' : ''}>Run optimizer</button></div>${optHtml}</section>
     <div style="margin-top:12px">${r.res ? swResHtml(r.res) : ''}</div>`;
+}
+
+function swFutHtml(f, run) {
+  const have = (f || []).filter(x => x.n).length;
+  const rows = (f || []).map(x => `<tr><td class="mono">${esc(x.root)}</td><td>${esc(x.name)}</td><td class="dim">${esc(x.group)}</td><td class="r">$${x.pv.toLocaleString('en-US')}</td><td class="mono">${esc(x.first || '—')}</td><td class="mono">${esc(x.last || '—')}</td><td class="r">${x.rolls ?? '—'}</td><td class="r">${x.missing ?? '—'}</td>${x.error ? `<td class="loss">${esc(x.error)}</td>` : '<td></td>'}</tr>`).join('');
+  return `<div class="bd" style="border-top:1px solid var(--line)"><div style="display:flex;align-items:center;gap:12px"><b>Futures daily bars</b><span class="dim">${have} of ${(f || []).length} markets downloaded · Databento GLBX ohlcv-1d since June 2010, front by volume, back-adjusted at each roll · the cost is checked against your Data-page limit first</span><div class="grow"></div><button class="btn" data-sw="futdl" ${run ? 'disabled' : ''}>${have ? 'Update' : 'Download'} futures daily bars</button></div>
+    <details style="margin-top:8px"><summary class="dim">Markets</summary><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Root</th><th>Market</th><th>Group</th><th class="r">$ / point</th><th>First</th><th>Last</th><th class="r">Rolls</th><th class="r">Rolls not adjusted</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></details></div>`;
 }
 
 function swResHtml(r) {
@@ -83,6 +96,7 @@ function swResHtml(r) {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
       <section class="panel"><div class="hd"><h2>By year (exit)</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.years.map(y => row(y.year, y)).join('')}</tbody></table></div></section>
       <section class="panel"><div class="hd"><h2>By exit reason</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.why.map(y => row(esc(y.why), y)).join('')}</tbody></table></div></section></div>
+    ${r.groups && r.groups.length ? `<section class="panel" style="margin-top:12px"><div class="hd"><h2>By market group</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.groups.map(g => row(esc(g.group), g)).join('')}</tbody></table></div></section>` : ''}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
       <section class="panel"><div class="hd"><h2>Best symbols</h2></div><div class="tbl-wrap"><table class="tbl">${sh}<tbody>${r.best.map(symRow).join('')}</tbody></table></div></section>
       <section class="panel"><div class="hd"><h2>Worst symbols</h2></div><div class="tbl-wrap"><table class="tbl">${sh}<tbody>${r.worst.map(symRow).join('')}</tbody></table></div></section></div>
@@ -94,13 +108,22 @@ function swResHtml(r) {
       ${r.open.length ? r.open.slice().reverse().map(t => `<tr><td class="mono">${esc(t.sym)}</td><td>${t.side}</td><td class="mono">${esc(t.entry)}</td><td class="r">${t.in}</td><td class="r">${t.out}</td><td class="r">${t.units}</td><td class="r ${cls(t.pnl)}">${m2(t.pnl)}</td><td class="r">${t.R ?? '—'}</td></tr>`).join('') : '<tr><td colspan="8" class="dim">None.</td></tr>'}</tbody></table></div></section>
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Trades</h2><span class="dim" style="font-size:13px">the latest ${r.trades.length} of ${r.n.toLocaleString('en-US')}</span><div class="grow"></div><button class="btn sm" data-sw="csv">Export trades (CSV)</button></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th class="r">In</th><th class="r">Out</th><th class="r">Units</th><th>Exit</th><th class="r">Return</th><th class="r">P/L</th><th class="r">R</th></tr></thead><tbody>
-      ${r.trades.slice().reverse().map(t => `<tr><td class="mono">${esc(t.sym)}</td><td>${t.side}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td class="r">${t.in}</td><td class="r">${t.out}</td><td class="r">${t.units}</td><td class="dim">${esc(t.why)}</td><td class="r ${cls(t.ret)}">${pcw(t.ret)}</td><td class="r ${cls(t.pnl)}">${m2(t.pnl)}</td><td class="r">${t.R ?? '—'}</td></tr>`).join('')}</tbody></table></div></section>`;
+      ${r.trades.slice().reverse().map(t => `<tr><td class="mono">${esc(t.sym)}</td><td>${t.side}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td class="r">${t.in}</td><td class="r">${t.out}</td><td class="r">${t.units}${t.contracts != null ? ' · ' + t.contracts + ' ct' : ''}</td><td class="dim">${esc(t.why)}</td><td class="r ${cls(t.ret ?? t.pts)}">${t.ret == null && t.pts != null ? t.pts + ' pts' : pcw(t.ret)}</td><td class="r ${cls(t.pnl)}">${m2(t.pnl)}</td><td class="r">${t.R ?? '—'}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 document.addEventListener('change', ev => {
-  const t = ev.target; if (!t.dataset || !t.dataset.swv) return;
-  const c = S.sw.cfg[S.sw.kind], k = t.dataset.swv;
+  const t = ev.target; if (!t.dataset) return;
+  const c = S.sw.cfg[S.sw.kind];
+  if (t.dataset.swGrp) {
+    const all = S.sw.r.groups, cur = c.groups || all.slice();
+    c.groups = t.checked ? [...new Set([...cur, t.dataset.swGrp])] : cur.filter(g => g !== t.dataset.swGrp);
+    if (c.groups.length === all.length) c.groups = null;
+    return;
+  }
+  if (!t.dataset.swv) return;
+  const k = t.dataset.swv;
   c[k] = t.value === 'true' ? true : t.value === 'false' ? false : k === 'uni' ? t.value : +t.value;
+  if (k === 'uni') $('#sw-body').innerHTML = swShell(S.sw.r);
 });
 
 document.addEventListener('click', async ev => {
@@ -111,10 +134,11 @@ document.addEventListener('click', async ev => {
     if (ds.swKind) { W.kind = ds.swKind; return vSwing(); }
     if (ds.swUse) { Object.assign(W.cfg[W.kind], W.r.opt.top[+ds.swUse].p); $('#sw-body').innerHTML = swShell(W.r); toast('Setting applied: run the backtest.'); return; }
     if (ds.sw === 'run') { el.disabled = true; await api('/swing/' + W.kind, { method: 'POST', body: { cfg: W.cfg[W.kind] } }); toast('Backtest started.'); setTimeout(swLoad, 1500); return; }
+    if (ds.sw === 'futdl') { el.disabled = true; await api('/swing/futdaily', { method: 'POST', body: {} }); toast('Download started.'); setTimeout(swLoad, 1500); return; }
     if (ds.sw === 'opt') { el.disabled = true; await api('/swing/' + W.kind + '/opt', { method: 'POST', body: { cfg: W.cfg[W.kind] } }); toast('Optimizer started.'); setTimeout(swLoad, 1500); return; }
     if (ds.sw === 'csv') {
       const r = W.r && W.r.res; if (!r) return;
-      const keys = ['sym', 'side', 'entry', 'exit', 'in', 'out', 'units', 'days', 'why', 'ret', 'pnl', 'R'];
+      const keys = ['sym', 'side', 'entry', 'exit', 'in', 'out', 'units', 'contracts', 'pts', 'days', 'why', 'ret', 'pnl', 'R'];
       const q = x => x == null ? '' : /[",\n]/.test(String(x)) ? '"' + String(x).replace(/"/g, '""') + '"' : String(x);
       const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(r.trades.map(t => keys.map(k => q(t[k])).join(','))).join('\n')], { type: 'text/csv' }));
       a.download = `swing_${W.kind}_trades.csv`; a.click(); URL.revokeObjectURL(a.href); return;

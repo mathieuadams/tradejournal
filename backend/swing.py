@@ -30,9 +30,9 @@ from util import BadRequest, iso, now_ny
 TEST_YEARS = 5
 FROM = "2016-01-01"
 MIN_TRADES = 30
-UNIS = ("spy", "qqq", "both", "etf")
-T_DEFAULT = {"uni": "both", "entryN": 20, "exitN": 10, "stopN": 2.0, "pyramid": False, "shorts": False, "skipWin": False, "mkt": False,
-             "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0}
+UNIS = ("fut", "spy", "qqq", "both", "etf")
+T_DEFAULT = {"uni": "fut", "entryN": 20, "exitN": 10, "stopN": 2.0, "pyramid": False, "shorts": True, "skipWin": False, "mkt": False,
+             "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "risk": 1000.0, "whole": False, "comm": 5.0, "slip": 1.0, "groups": None}
 Q_DEFAULT = {"uni": "both", "minAdr": 0.04, "prior": 0.3, "base": 10, "tight": 0.15, "partialDay": 3, "partial": 1 / 3, "trail": 10, "mkt": False,
              "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0}
 T_GRID = {"entryN": [20, 55], "stopN": [2.0, 3.0], "pyramid": [False, True], "shorts": [False, True], "mkt": [False, True]}
@@ -46,7 +46,9 @@ def _d(s):
 def clean(kind, cfg):
     base = T_DEFAULT if kind == "turtle" else Q_DEFAULT
     c = {**base, **{k: v for k, v in (cfg or {}).items() if k in base}}
-    c["uni"] = c["uni"] if c["uni"] in UNIS else "both"
+    c["uni"] = c["uni"] if c["uni"] in UNIS else ("fut" if kind == "turtle" else "both")
+    if kind == "qulla" and c["uni"] == "fut":
+        c["uni"] = "both"                                  # percentages on back-adjusted futures prices mean nothing
     for k in ("stake", "costBps", "borrowPct"):
         c[k] = max(0.0, float(c[k]))
     c["stake"] = max(10.0, c["stake"])
@@ -54,8 +56,15 @@ def clean(kind, cfg):
         c["entryN"] = int(c["entryN"]) if int(c["entryN"]) in (20, 55) else 20
         c["exitN"] = 10 if c["entryN"] == 20 else 20
         c["stopN"] = max(0.5, min(6.0, float(c["stopN"])))
-        for k in ("pyramid", "shorts", "skipWin", "mkt"):
+        for k in ("pyramid", "shorts", "skipWin", "mkt", "whole"):
             c[k] = bool(c[k])
+        c["risk"] = max(10.0, float(c["risk"]))
+        c["comm"], c["slip"] = max(0.0, float(c["comm"])), max(0.0, float(c["slip"]))
+        import futdaily
+        g = [x for x in (c["groups"] or []) if x in futdaily.GROUPS]
+        c["groups"] = g or None
+        if c["uni"] == "fut":
+            c["mkt"] = False
     else:
         c["minAdr"] = max(0.0, min(0.3, float(c["minAdr"])))
         c["prior"] = max(0.0, min(5.0, float(c["prior"])))
@@ -76,6 +85,12 @@ def universe(sub, uni):
     import space
     if uni == "etf":
         return etf.settings(sub)["syms"], "SPY"
+    if uni == "fut":
+        import futdaily
+        out = [r for r in futdaily.SPEC if futdaily.bars(r)]
+        if not out:
+            raise BadRequest("No futures daily bars yet: press “Download futures daily bars” (Databento).")
+        return out, None
     out = []
     for sp in (("spy", "qqq") if uni == "both" else (uni,)):
         prev = space.get()
@@ -87,6 +102,13 @@ def universe(sub, uni):
     if not out:
         raise BadRequest("The universe is empty: load the S&P 500 / Nasdaq-100 on the Earnings pages first.")
     return out, "QQQ" if uni == "qqq" else "SPY"
+
+
+def sym_data(sub, sym, fut):
+    if fut:
+        import futdaily
+        return futdaily.bars(sym), futdaily.SPEC[sym]
+    return bars_of(sub, sym), None
 
 
 def bars_of(sub, sym):
@@ -112,6 +134,8 @@ def _sma(xs, n):
 
 
 def market(sub, sym):
+    if not sym:
+        return {}
     b = bars_of(sub, sym) or []
     c = [x[4] for x in b]
     s20, s200 = _sma(c, 20), _sma(c, 200)
@@ -124,7 +148,7 @@ def _cost(c, units, short, days):
     return c["stake"] * units * (c["costBps"] / 1e4 + (c["borrowPct"] / 100 * days / 365 if short else 0))
 
 
-def turtle(sym, b, c, mkt):
+def turtle(sym, b, c, mkt, spec=None):
     """Turtle trades of one symbol (open = still open at the last bar)."""
     n = len(b)
     if n < 80:
@@ -153,7 +177,15 @@ def turtle(sym, b, c, mkt):
                 last_win = False                       # System 1: skip the breakout after a winner (once)
                 continue
             n0 = N[t - 1]
-            pos = {"side": side, "e": t, "units": [px], "n0": n0, "stop": px - side * SN * n0}
+            if spec:
+                q = c["risk"] / (n0 * spec[2]) if n0 > 0 else 0   # contracts per unit: 1 N move = the $ risk per unit
+                if c["whole"]:
+                    q = float(int(q))
+                if q <= 0:
+                    continue
+            else:
+                q = None
+            pos = {"q": q,"side": side, "e": t, "units": [px], "n0": n0, "stop": px - side * SN * n0}
             # pyramid on the entry day itself (a strong breakout day)
         side, n0 = pos["side"], pos["n0"]
         if t > pos["e"]:                                # exits (from the day after the entry)
@@ -161,7 +193,7 @@ def turtle(sym, b, c, mkt):
             lvl = max(pos["stop"], ch) if side == 1 else min(pos["stop"], ch)
             if (side == 1 and l[t] <= lvl) or (side == -1 and h[t] >= lvl):
                 fill = min(o[t], lvl) if side == 1 else max(o[t], lvl)
-                tr_ = _turtle_trade(sym, ds, pos, t, fill, "stop" if lvl == pos["stop"] else f"{X}-day {'low' if side == 1 else 'high'}", c)
+                tr_ = _turtle_trade(sym, ds, pos, t, fill, "stop" if lvl == pos["stop"] else f"{X}-day {'low' if side == 1 else 'high'}", c, spec)
                 out.append(tr_)
                 last_win = tr_["pnl"] > 0
                 pos = None
@@ -178,15 +210,23 @@ def turtle(sym, b, c, mkt):
                 else:
                     break
     if pos is not None:
-        tr_ = _turtle_trade(sym, ds, pos, n - 1, cl[-1], "open", c)
+        tr_ = _turtle_trade(sym, ds, pos, n - 1, cl[-1], "open", c, spec)
         tr_["open"] = True
         out.append(tr_)
     return out
 
 
-def _turtle_trade(sym, ds, pos, x, fill, why, c):
+def _turtle_trade(sym, ds, pos, x, fill, why, c, spec=None):
     side, us = pos["side"], pos["units"]
     days = (_d(ds[x]) - _d(ds[pos["e"]])).days
+    if spec:
+        q, pv, tick = pos["q"], spec[2], spec[3]
+        gross = sum(q * side * (fill - u) * pv for u in us)
+        pnl = gross - len(us) * q * (c["comm"] + 2 * c["slip"] * tick * pv)
+        risk = c["stopN"] * pos["n0"] * q * pv
+        return {"sym": sym, "side": "long" if side == 1 else "short", "entry": ds[pos["e"]], "exit": ds[x], "in": round(us[0], 6), "out": round(fill, 6),
+                "units": len(us), "contracts": round(q * len(us), 2), "days": days, "why": why, "ret": None,
+                "pts": round(side * (fill - us[0]), 6), "pnl": round(pnl, 2), "R": round(pnl / risk, 2) if risk > 0 else None, "group": spec[1]}
     gross = sum(c["stake"] * side * (fill / u - 1) for u in us)
     pnl = gross - _cost(c, len(us), side == -1, days)
     risk = c["stake"] * c["stopN"] * pos["n0"] / us[0]          # the first unit's risk in $
@@ -323,15 +363,19 @@ def run_job(sub, kind, prog=None):
     mkt = market(sub, bench)
     allt, watch, t_last, last = [], [], 0.0, FROM
     fn = turtle if kind == "turtle" else qulla
+    fut = c["uni"] == "fut"
+    if fut and c["groups"]:
+        import futdaily
+        syms = [x for x in syms if futdaily.SPEC[x][1] in c["groups"]]
     for i, s in enumerate(syms):
         if prog and time.time() - t_last > 3:
             prog(f"{'Turtle' if kind == 'turtle' else 'Qullamaggie'}: {i + 1}/{len(syms)} {s}")
             t_last = time.time()
-        b = bars_of(sub, s)
+        b, spec = sym_data(sub, s, fut)
         if not b:
             continue
         last = max(last, b[-1][0])
-        allt.extend(fn(s, b, c, mkt))
+        allt.extend(fn(s, b, c, mkt, spec) if spec else fn(s, b, c, mkt))
         w = setups(s, b, c, kind)
         if w and b[-1][0] >= last:
             watch.append(w)
@@ -359,7 +403,11 @@ def run_job(sub, kind, prog=None):
     why = {}
     for t in ts:
         why.setdefault(t["why"].split(" ")[0] if t["why"].startswith(("10-", "20-")) else t["why"], []).append(t)
-    res = {"kind": kind, "cfg": c, "at": iso(now_ny()), "nSyms": len(syms), "bench": bench, "n": len(ts), "all": _stats(ts),
+    grp = {}
+    for t in ts:
+        if t.get("group"):
+            grp.setdefault(t["group"], []).append(t)
+    res = {"kind": kind, "cfg": c, "groups": [{"group": g, **_stats(v)} for g, v in sorted(grp.items(), key=lambda z: -sum(t["pnl"] for t in z[1]))], "at": iso(now_ny()), "nSyms": len(syms), "bench": bench, "n": len(ts), "all": _stats(ts),
            "split": {"date": sd, "train": _stats(tr), "test": _stats(te)}, "years": [{"year": y, **_stats(v)} for y, v in sorted(years.items())],
            "best": ss[:12], "worst": ss[-12:][::-1], "why": [{"why": w, **_stats(v)} for w, v in sorted(why.items(), key=lambda z: -len(z[1]))],
            "equity": eq, "peak": peak, "trades": ts[-400:], "open": sorted(opens, key=lambda t: t["entry"])[-60:], "watch": watch[:80], "last": last}
@@ -383,13 +431,18 @@ def view(sub, kind):
     if o:
         rk = sorted(o.get("res") or [], key=lambda x: ((x["train"].get("n") or 0) >= MIN_TRADES, x["train"].get("t") or -1e9), reverse=True)
         opt = {k: v for k, v in o.items() if k not in ("res", "acc")} | {"top": rk[:15], "done": len(o.get("res") or []), "minTrades": MIN_TRADES}
-    return {"cfg": st.get("cfg") or clean(kind, {}), "res": st.get("res"), "opt": opt, "job": jobs.status(sub, "swing")}
+    import futdaily
+    fut = futdaily.status() if kind == "turtle" else None
+    return {"cfg": st.get("cfg") or clean(kind, {}), "res": st.get("res"), "opt": opt, "job": jobs.status(sub, "swing"), "fut": fut,
+            "groups": futdaily.GROUPS}
 
 
 # ---------------------------------------------------------------- the optimizer: symbols outside, settings inside
 
-def grid(kind):
+def grid(kind, uni=None):
     g = T_GRID if kind == "turtle" else Q_GRID
+    if uni == "fut":
+        g = {k: v for k, v in g.items() if k != "mkt"}
     keys = list(g)
     return [dict(zip(keys, v)) for v in itertools.product(*[g[k] for k in keys])]
 
@@ -427,8 +480,12 @@ def opt_job(sub, kind, prog=None, deadline=None):
     base = clean(kind, st.get("cfg") or {})
     syms, bench = universe(sub, base["uni"])
     mkt = market(sub, bench)
-    combos = grid(kind)
-    sd = split_date(max(mkt) if mkt else now_ny().date().isoformat())
+    fut = base["uni"] == "fut"
+    if fut and base["groups"]:
+        import futdaily
+        syms = [x for x in syms if futdaily.SPEC[x][1] in base["groups"]]
+    combos = grid(kind, base["uni"])
+    sd = split_date(max(mkt) if mkt else (max((sym_data(sub, x, fut)[0] or [[FROM]])[-1][0] for x in syms) if fut else now_ny().date().isoformat()))
     acc = st.get("acc") or [{"train": [0] * 9, "test": [0] * 9} for _ in combos]
     fn = turtle if kind == "turtle" else qulla
     cfgs = [clean(kind, {**base, **p}) for p in combos]
@@ -440,11 +497,11 @@ def opt_job(sub, kind, prog=None, deadline=None):
         if prog and time.time() - t_last > 3:
             prog(f"Optimizer ({'Turtle' if kind == 'turtle' else 'Qullamaggie'}): {i + 1}/{len(syms)} symbols × {len(combos)} settings")
             t_last = time.time()
-        b = bars_of(sub, syms[i])
+        b, spec = sym_data(sub, syms[i], fut)
         if not b:
             continue
         for j, c in enumerate(cfgs):
-            for t in fn(syms[i], b, c, mkt):
+            for t in (fn(syms[i], b, c, mkt, spec) if spec else fn(syms[i], b, c, mkt)):
                 if not t.get("open"):
                     _acc_add(acc[j]["train" if t["entry"] < sd else "test"], t["pnl"], t.get("R"))
     res = [{"p": p, "train": _acc_stats(a["train"]), "test": _acc_stats(a["test"])} for p, a in zip(combos, acc)]

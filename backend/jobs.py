@@ -154,6 +154,14 @@ def handler(event, ctx=None):
                 _invoke(event)
                 return {"continued": True}
             set_status(sub, name, status="done", msg="Real option prices: done.")
+        elif job == "futdaily":                         # futures daily bars (Databento), back-adjusted
+            import futdaily
+            nxt = futdaily.download(sub, prog, dl, p.get("cont"))
+            if nxt is not None:
+                event["params"] = {**p, "cont": nxt}
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="Futures daily bars downloaded.")
         elif job == "swingrun":                         # Turtle / Qullamaggie backtest over the universe
             import swing
             swing.run_job(sub, p["kind"], prog)

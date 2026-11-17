@@ -129,8 +129,28 @@ def fake_open(key, method, path, params, timeout=60):
     if path == "metadata.get_cost":
         s, e = datetime.fromisoformat(p["start"][:19]), datetime.fromisoformat(p["end"][:19])
         days = max(0.0, (e - s).total_seconds() / 86400)
-        per = 0.002 if p["schema"].startswith("ohlcv") else 0.6
+        per = 0.00002 if p["schema"] == "ohlcv-1d" else 0.002 if p["schema"].startswith("ohlcv") else 0.6
         return _Resp(json.dumps(round(days * per * len(p["symbols"].split(",")), 4)).encode())
+    if path == "timeseries.get_range" and p["schema"] == "ohlcv-1d":
+        root, rank = p["symbols"].split(".v.")
+        rank = int(rank)
+        s, e = datetime.fromisoformat(p["start"][:19]), min(datetime.fromisoformat(p["end"][:19]), _end_avail())
+        rnd = random.Random(sum(map(ord, root)))
+        out = io.StringIO()
+        out.write("ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume\n")
+        t, px, k = s, 100.0, 0
+        while t < e:
+            if t.weekday() < 5:
+                k += 1
+                px *= 1 + rnd.gauss(0.0004 if (k // 250) % 2 == 0 else -0.0004, 0.012)
+                q = k // 63 + rank                         # the contract: rolls every quarter; v.1 is the next one
+                carry = 1.5 * q                            # each later contract 1.5 points higher (contango)
+                c = px + carry
+                o = c * (1 + rnd.gauss(0, 0.004))
+                h, l = max(o, c) * (1 + abs(rnd.gauss(0, 0.005))), min(o, c) * (1 - abs(rnd.gauss(0, 0.005)))
+                out.write(f"{t.strftime('%Y-%m-%dT00:00:00')}.000000000Z,35,1,{1000 + q},{o:.4f},{h:.4f},{l:.4f},{c:.4f},{rnd.randint(1000, 90000)}\n")
+            t += timedelta(days=1)
+        return _Resp(out.getvalue().encode())
     if path == "timeseries.get_range":
         sym = next(k for k, v in databento.CONT.items() if v == p["symbols"])
         s, e = datetime.fromisoformat(p["start"][:19]), min(datetime.fromisoformat(p["end"][:19]), _end_avail())

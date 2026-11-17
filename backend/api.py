@@ -647,6 +647,12 @@ def swing_run(sub, claims, body, q, kind=None):
     return swing.start(sub, kind, body.get("cfg") or {})
 
 
+@route("POST", "/swing/futdaily")
+def swing_futdaily(sub, claims, body, q):
+    import futdaily
+    return futdaily.start(sub)
+
+
 @route("POST", "/swing/(?P<kind>turtle|qulla)/opt")
 def swing_opt(sub, claims, body, q, kind=None):
     import swing
