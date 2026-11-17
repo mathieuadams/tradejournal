@@ -131,6 +131,29 @@ def fake_open(key, method, path, params, timeout=60):
         days = max(0.0, (e - s).total_seconds() / 86400)
         per = 0.00002 if p["schema"] == "ohlcv-1d" else 0.002 if p["schema"].startswith("ohlcv") else 0.6
         return _Resp(json.dumps(round(days * per * len(p["symbols"].split(",")), 4)).encode())
+    if path == "timeseries.get_range" and p["schema"] == "ohlcv-1d" and p.get("stype_in") == "parent":
+        root = p["symbols"].split(".FUT")[0]
+        s_, e = datetime.fromisoformat(p["start"][:19]), min(datetime.fromisoformat(p["end"][:19]), _end_avail())
+        rnd = random.Random(sum(map(ord, root)))
+        out = io.StringIO()
+        out.write("ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume,symbol\n")
+        t, px, k = s_, 100.0, 0
+        while t < e:
+            if t.weekday() < 5:
+                k += 1
+                px *= 1 + rnd.gauss(0.0004 if (k // 250) % 2 == 0 else -0.0004, 0.012)
+                q = k // 63                                # the front: a new quarter every 63 sessions; volume moves 50 sessions in
+                for j, rank in ((q, 0), (q + 1, 1), (q + 2, 2)):
+                    yy, mm = 2010 + (j * 3 + 5) // 12, (j * 3 + 5) % 12 + 1
+                    sym = f"{root}{'FGHJKMNQUVXZ'[mm - 1]}{yy % 10}"
+                    c = px + 1.5 * j
+                    o = c * (1 + rnd.gauss(0, 0.004))
+                    h, l = max(o, c) * 1.004, min(o, c) * 0.996
+                    vol = (90000 if k % 63 < 50 else 20000) if rank == 0 else (30000 if k % 63 < 50 else 95000) if rank == 1 else 500
+                    out.write(f"{t.strftime('%Y-%m-%dT00:00:00')}.000000000Z,35,1,{5000 + j},{o:.4f},{h:.4f},{l:.4f},{c:.4f},{vol},{sym}\n")
+                out.write(f"{t.strftime('%Y-%m-%dT00:00:00')}.000000000Z,35,1,9999,0.5,0.6,0.4,0.5,99999,{root}Z6-{root}H7\n")    # a spread
+            t += timedelta(days=1)
+        return _Resp(out.getvalue().encode())
     if path == "timeseries.get_range" and p["schema"] == "ohlcv-1d":
         root, rank = p["symbols"].split(".v.")
         rank = int(rank)

@@ -692,6 +692,7 @@ def test_swing_futures():
     assert st == 400                                      # Databento not connected
     st, r = call("PUT", "/databento", {"key": "db-" + "A" * 29})
     assert st == 200, r
+    call("PUT", "/databento", {"maxCost": 1})
     st, r = call("POST", "/swing/futdaily")
     assert st == 400 and "cost limit" in r["error"], r
     call("PUT", "/databento", {"maxCost": 20})
@@ -709,12 +710,34 @@ def test_swing_futures():
     # a market whose request stalls is noted and skipped; the others go on; a resumed download skips what's done today
     import store
     store.put_json("fut/d/NQ", {})
-    real = futdaily._rows
-    futdaily._rows = lambda key, sym, end, *a: (_ for _ in ()).throw(TimeoutError("timed out")) if sym.startswith("NQ.") else real(key, sym, end, *a)
+    real = futdaily._parent
+    futdaily._parent = lambda key, root, end: (_ for _ in ()).throw(TimeoutError("timed out")) if root == "NQ" else real(key, root, end)
     try:
         assert futdaily.download(SUB) is None
     finally:
-        futdaily._rows = real
+        futdaily._parent = real
+    # the front month: the spread is dropped, rolls follow the volume forward, no jump at a roll
+    by = futdaily._parent(databento.key(SUB), "GC", "2012-01-01T00:00:00")
+    assert all("-" not in s for d in by.values() for s in d)
+    b, rolls, miss = futdaily.front("GC", by)
+    assert rolls >= 5 and miss == 0 and max(abs(b[i][4] - b[i - 1][4]) for i in range(1, len(b))) < 15
+    assert futdaily._expiry("ES", "ESZ6", "2026-11-16") == (2026, 12) and futdaily._expiry("ES", "ESH0", "2029-12-01") == (2030, 3)
+    # an answer without symbols: the continuous way
+    real_open = databento._open
+    def no_sym(key, method, path, params, timeout=60):
+        if params.get("stype_in") == "parent":
+            import io as _io
+            class R(_io.BytesIO):
+                pass
+            return R(b"ts_event,open,high,low,close,volume\n")
+        return real_open(key, method, path, params, timeout)
+    databento._open = no_sym
+    try:
+        b2, rolls2, _ = futdaily._market(databento.key(SUB), "ES", futdaily._end(databento.key(SUB)))
+    finally:
+        databento._open = real_open
+    assert len(b2) > 1000 and rolls2 > 20
+    import databento
     nq = [x for x in futdaily.status() if x["root"] == "NQ"][0]
     assert nq["error"] == "timed out" and nq["n"] == 0, nq
     assert futdaily.download(SUB) is None and [x for x in futdaily.status() if x["root"] == "NQ"][0]["n"] > 1000
