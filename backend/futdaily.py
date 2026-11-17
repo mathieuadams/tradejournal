@@ -131,4 +131,4 @@ def start(sub):
     cap = databento.status(sub)["maxCost"]
     if c > cap:
         raise BadRequest(f"Databento would bill ${c:.2f} for {len(SPEC)} markets' daily bars since {START}: above your cost limit (${cap:.2f}, Data page).")
-    return jobs.start(sub, "swing", "futdaily", {})
+    return jobs.start(sub, "swingfut", "futdaily", {})

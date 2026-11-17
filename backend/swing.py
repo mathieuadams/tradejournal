@@ -33,7 +33,7 @@ MIN_TRADES = 30
 UNIS = ("fut", "spy", "qqq", "both", "etf")
 T_DEFAULT = {"uni": "fut", "entryN": 20, "exitN": 10, "stopN": 2.0, "pyramid": False, "shorts": True, "skipWin": False, "mkt": False,
              "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "risk": 1000.0, "whole": False, "comm": 5.0, "slip": 1.0, "groups": None}
-Q_DEFAULT = {"uni": "both", "minAdr": 0.04, "prior": 0.3, "priorDays": 60, "minDv": 10e6, "base": 10, "tight": 0.15, "partialDay": 3, "partial": 1 / 3, "trail": 10, "mkt": False,
+Q_DEFAULT = {"uni": "both", "minAdr": 0.04, "prior": 0.3, "priorDays": 60, "minDv": 10e6, "sizing": "account", "acct": 10000.0, "riskPct": 1.0, "maxPos": 25.0, "base": 10, "tight": 0.15, "partialDay": 3, "partial": 1 / 3, "trail": 10, "mkt": False,
              "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0}
 T_GRID = {"entryN": [20, 55], "stopN": [2.0, 3.0], "pyramid": [False, True], "shorts": [False, True], "mkt": [False, True]}
 Q_GRID = {"minAdr": [0.03, 0.05], "prior": [0.3, 0.5], "priorDays": [30, 60], "tight": [0.10, 0.20], "trail": [10, 20], "partialDay": [0, 3], "mkt": [False, True]}
@@ -69,6 +69,10 @@ def clean(kind, cfg):
         c["minAdr"] = max(0.0, min(0.3, float(c["minAdr"])))
         c["prior"] = max(0.0, min(5.0, float(c["prior"])))
         c["priorDays"] = 30 if int(c["priorDays"]) == 30 else 60
+        c["sizing"] = "fixed" if c["sizing"] == "fixed" else "account"
+        c["acct"] = max(500.0, float(c["acct"]))
+        c["riskPct"] = max(0.05, min(10.0, float(c["riskPct"])))
+        c["maxPos"] = max(1.0, min(100.0, float(c["maxPos"])))
         c["minDv"] = max(0.0, float(c["minDv"]))
         c["base"] = int(c["base"]) if int(c["base"]) in (5, 10, 15, 20) else 10
         c["tight"] = max(0.02, min(0.6, float(c["tight"])))
@@ -304,7 +308,7 @@ def _q_trade(sym, ds, pos, x, why, c):
     days = (_d(ds[x]) - _d(ds[pos["e"]])).days
     pnl = c["stake"] * ret - _cost(c, 1, False, days)
     return {"sym": sym, "side": "long", "entry": ds[pos["e"]], "exit": ds[x], "in": round(pos["px"], 4), "out": round(pos["parts"][-1][1], 4),
-            "units": 1, "days": days, "why": why, "ret": round(ret, 5), "pnl": round(pnl, 2),
+            "units": 1, "days": days, "why": why, "ret": round(ret, 5), "pnl": round(pnl, 2), "risk": round(pos["risk"], 5),
             "R": round(ret / pos["risk"], 2) if pos["risk"] > 0 else None}
 
 
@@ -350,6 +354,60 @@ def _stats(ts):
         s["avgR"] = round(sum(rs) / len(rs), 2)
         s["big"] = sum(1 for r in rs if r >= 3) / len(rs)
     return s
+
+
+def account(ts, c, start=None):
+    """Compounding account: each trade sized at riskPct of the equity ÷ its stop distance, capped at maxPos of the
+    equity and at the cash left (no margin); taken in entry order, exits of a day before its entries. Equity for the
+    sizing = cash + open positions at cost. Returns the curve and the stats."""
+    ev = []
+    for i, t in enumerate(ts):
+        if start and t["entry"] < start:
+            continue
+        ev.append((t["entry"], 1, i))
+        ev.append((t["exit"], 0, i))
+    ev.sort()
+    cash = eq = c["acct"]
+    held, out, curve, taken, skipped, peak, mdd = {}, {}, [], 0, 0, c["acct"], 0.0
+    for d, kind, i in ev:
+        t = ts[i]
+        if kind == 1:
+            eq_now = cash + sum(held.values())
+            r = t.get("risk") or 0
+            size = eq_now * c["riskPct"] / 100 / r if r > 0 else eq_now * c["maxPos"] / 100
+            size = min(size, eq_now * c["maxPos"] / 100, cash)
+            if size < 50:
+                skipped += 1
+                continue
+            held[i] = size
+            cash -= size
+            taken += 1
+        elif i in held:
+            size = held.pop(i)
+            pnl = size * t["ret"] - size * c["costBps"] / 1e4
+            cash += size + pnl
+            out[i] = (size, pnl)
+            eq = cash + sum(held.values())
+            peak = max(peak, eq)
+            mdd = min(mdd, eq / peak - 1)
+            if curve and curve[-1][0] == d:
+                curve[-1][1] = round(eq, 2)
+            else:
+                curve.append([d, round(eq, 2)])
+    final = cash + sum(held.values())
+    years = {}
+    prev = c["acct"]
+    for d, v in curve:
+        years[d[:4]] = v
+    yr = []
+    for y in sorted(years):
+        yr.append({"year": y, "end": years[y], "ret": round(years[y] / prev - 1, 4)})
+        prev = years[y]
+    span = (_d(curve[-1][0]) - _d(curve[0][0])).days / 365.25 if len(curve) > 1 else 0
+    return {"start": c["acct"], "from": start or (curve[0][0] if curve else None), "final": round(final, 2), "ret": round(final / c["acct"] - 1, 4),
+            "cagr": round((final / c["acct"]) ** (1 / span) - 1, 4) if span > 0.5 and final > 0 else None, "maxDD": round(mdd, 4),
+            "taken": taken, "skipped": skipped, "years": yr, "curve": curve[-1500:],
+            "sizes": {i: round(v[0], 2) for i, v in out.items()}}
 
 
 def split_date(last):
@@ -409,7 +467,15 @@ def run_job(sub, kind, prog=None):
     for t in ts:
         if t.get("group"):
             grp.setdefault(t["group"], []).append(t)
-    res = {"kind": kind, "cfg": c, "groups": [{"group": g, **_stats(v)} for g, v in sorted(grp.items(), key=lambda z: -sum(t["pnl"] for t in z[1]))], "at": iso(now_ny()), "nSyms": len(syms), "bench": bench, "n": len(ts), "all": _stats(ts),
+    acct = None
+    if kind == "qulla" and c["sizing"] == "account":
+        a_all, a_test = account(ts, c), account(ts, c, sd)
+        for i, t in enumerate(ts):
+            if i in a_all["sizes"]:
+                t["size"] = a_all["sizes"][i]
+        a_all.pop("sizes"); a_test.pop("sizes")
+        acct = {"all": a_all, "test": a_test}
+    res = {"kind": kind, "cfg": c, "acct": acct, "groups": [{"group": g, **_stats(v)} for g, v in sorted(grp.items(), key=lambda z: -sum(t["pnl"] for t in z[1]))], "at": iso(now_ny()), "nSyms": len(syms), "bench": bench, "n": len(ts), "all": _stats(ts),
            "split": {"date": sd, "train": _stats(tr), "test": _stats(te)}, "years": [{"year": y, **_stats(v)} for y, v in sorted(years.items())],
            "best": ss[:12], "worst": ss[-12:][::-1], "why": [{"why": w, **_stats(v)} for w, v in sorted(why.items(), key=lambda z: -len(z[1]))],
            "equity": eq, "peak": peak, "trades": ts[-400:], "open": sorted(opens, key=lambda t: t["entry"])[-60:], "watch": watch[:80], "last": last}
@@ -421,8 +487,11 @@ def start(sub, kind, cfg):
     import jobs
     if kind not in ("turtle", "qulla"):
         raise BadRequest("Unknown strategy.")
-    store.put_json(f"swing/u/{sub}/{kind}", {"cfg": clean(kind, cfg)})
-    return jobs.start(sub, "swing", "swingrun", {"kind": kind})
+    c = clean(kind, cfg)
+    universe(sub, c["uni"])                            # an empty universe fails here, on the page, not in the job
+    st = store.get_json(f"swing/u/{sub}/{kind}") or {}
+    store.put_json(f"swing/u/{sub}/{kind}", {**st, "cfg": c})
+    return jobs.start(sub, "swing" + kind, "swingrun", {"kind": kind})
 
 
 def view(sub, kind):
@@ -435,7 +504,8 @@ def view(sub, kind):
         opt = {k: v for k, v in o.items() if k not in ("res", "acc")} | {"top": rk[:15], "done": len(o.get("res") or []), "minTrades": MIN_TRADES}
     import futdaily
     fut = futdaily.status() if kind == "turtle" else None
-    return {"cfg": st.get("cfg") or clean(kind, {}), "res": st.get("res"), "opt": opt, "job": jobs.status(sub, "swing"), "fut": fut,
+    return {"cfg": st.get("cfg") or clean(kind, {}), "res": st.get("res"), "opt": opt, "job": jobs.status(sub, "swing" + kind), "fut": fut,
+            "futJob": jobs.status(sub, "swingfut") if kind == "turtle" else None,
             "groups": futdaily.GROUPS}
 
 
@@ -451,8 +521,10 @@ def grid(kind, uni=None):
 
 def opt_start(sub, kind, cfg):
     import jobs
-    store.put_json(f"swing/u/{sub}/{kind}opt", {"cfg": clean(kind, cfg), "i": 0, "acc": None})
-    return jobs.start(sub, "swing", "swingopt", {"kind": kind})
+    c = clean(kind, cfg)
+    universe(sub, c["uni"])
+    store.put_json(f"swing/u/{sub}/{kind}opt", {"cfg": c, "i": 0, "acc": None})
+    return jobs.start(sub, "swing" + kind, "swingopt", {"kind": kind})
 
 
 def _acc_add(a, pnl, r):

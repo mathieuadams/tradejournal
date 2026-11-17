@@ -643,6 +643,18 @@ def test_swing():
         assert st == 200, o
         st, v = call("GET", f"/swing/{kind}")
         assert v["opt"] and v["opt"]["done"] == len(SW.grid(kind)), v.get("job")
+    for kind in ("turtle", "qulla"):                       # the stock universes (both: S&P 500 + Nasdaq-100)
+        st, r = call("POST", f"/swing/{kind}", {"cfg": {"uni": "both", "minAdr": 0.0, "prior": 0.0, "tight": 0.5, "minDv": 0}})
+        assert st == 200, r
+        st, v = call("GET", f"/swing/{kind}")
+        assert v["job"]["status"] == "done" and v["res"] and v["res"]["nSyms"] >= 2, (v["res"] or {}).get("nSyms")
+    st, v = call("GET", "/swing/qulla")
+    A = v["res"]["acct"]
+    assert A and A["all"]["start"] == 10000 and A["all"]["taken"] > 0 and A["test"]["from"] == v["res"]["split"]["date"], A and A["all"]
+    assert any("size" in t for t in v["res"]["trades"])
+    acc = SW.account([{"entry": "2020-01-02", "exit": "2020-01-10", "ret": 0.1, "risk": 0.05}, {"entry": "2020-01-03", "exit": "2020-01-06", "ret": -0.05, "risk": 0.05},
+                      {"entry": "2020-01-06", "exit": "2020-02-01", "ret": 0.2, "risk": 0.02}], SW.clean("qulla", {"costBps": 0}))
+    assert acc["final"] == 10595 and acc["sizes"][2] == 2475                # 1% of 9,900 ÷ 2% = 4,950, capped at 25% of the account
     # the mechanics: a flat base, a breakout, a run, then a close under the 10-day average
     from datetime import date, timedelta
     b, d, px = [], date(2020, 1, 2), 10.0
@@ -674,6 +686,8 @@ def test_swing_futures():
     import swing as SW
     st, r = call("GET", "/swing/turtle")
     assert st == 200 and SW.clean("turtle", {})["uni"] == "fut" and len(r["fut"]) == len(futdaily.SPEC)
+    st, r = call("POST", "/swing/turtle", {"cfg": {"uni": "fut"}})
+    assert st == 400 and "Download futures daily bars" in r["error"], r     # said on the page, not lost in the job
     st, r = call("POST", "/swing/futdaily")
     assert st == 400                                      # Databento not connected
     st, r = call("PUT", "/databento", {"key": "db-" + "A" * 29})

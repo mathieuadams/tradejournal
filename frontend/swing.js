@@ -7,7 +7,7 @@ const SW_UNI_T = [['fut', 'Futures (30 CME markets)'], ...SW_UNI];
 async function vSwing() {
   const W = S.sw;
   const tabs = ['qulla', 'turtle'].map(k => `<button class="btn${W.kind === k ? ' primary' : ''}" data-sw-kind="${k}">${SW_LABEL[k]}</button>`).join(' ');
-  view(`${head('Swing', 'Daily breakout strategies on the S&P 500 / Nasdaq-100 (removed companies included) or the ETF list. Since 2016; the last 5 years are the test period.')}<div style="margin-bottom:12px">${tabs}</div><div id="sw-body"><div class="panel"><div class="empty">Loading…</div></div></div>`);
+  view(`${head('Swing', 'Daily breakout strategies: Turtle on 30 CME futures (or stocks / ETFs), Qullamaggie on the S&P 500 / Nasdaq-100 (removed companies included) or the ETF list. The last 5 years are the test period.')}<div style="margin-bottom:12px">${tabs}</div><div id="sw-body"><div class="panel"><div class="empty">Loading…</div></div></div>`);
   await swLoad();
 }
 
@@ -18,7 +18,7 @@ async function swLoad() {
   W.r = r;
   if (!W.cfg[W.kind]) W.cfg[W.kind] = { ...r.cfg };
   el.innerHTML = swShell(r);
-  if (r.job && r.job.status === 'running' && /^swing/.test(r.job.job || '')) setTimeout(swLoad, 4000);
+  if ((r.job && r.job.status === 'running') || (r.futJob && r.futJob.status === 'running')) { clearTimeout(swLoad.h); swLoad.h = setTimeout(swLoad, 4000); }
 }
 
 function swShell(r) {
@@ -45,7 +45,9 @@ function swShell(r) {
   const rules = k === 'turtle'
     ? 'N = 20-day average true range. Long on a break of the highest high of the last 20 (55) days, filled at that level (or the open on a gap). Stop 2 N under the entry; exit on a break of the 10 (20)-day low. Pyramid: one more unit every ½ N, up to 4, the stop raised to 2 N under the last add. R = P/L ÷ the first unit\'s risk.'
     : 'Setup at a close: ADR ≥ the minimum, up ≥ the minimum over 30 or 60 days, above the 50-day with the 10 above the 20, the last N days\' range tight, price ≥ $5, average $ volume (20 days) ≥ the minimum (default $10M). Entry the next day on a break of the base high (or the open on a gap). Stop: that day\'s low, skipped if wider than one ADR — with daily bars the order of the day\'s moves is unknown, so this flatters the entry day. Partial sale at that day\'s close, then the stop to breakeven; the rest on the first close below the trailing average. R = return ÷ the entry-to-stop distance.';
-  const o = r.opt, run = r.job && r.job.status === 'running' && /^swing/.test(r.job.job || '');
+  const o = r.opt, run = r.job && r.job.status === 'running', fj = r.futJob || {}, frun = fj.status === 'running';
+  const jerr = r.job && r.job.status === 'error' ? `<div class="bd loss" style="border-top:1px solid var(--line)">Last run failed: ${esc(r.job.msg || '')}</div>` : '';
+  const jdone = fj.status === 'error' ? `<div class="bd loss">Futures download failed: ${esc(fj.msg || '')}</div>` : frun || fj.status === 'done' ? `<div class="bd dim">${esc(fj.msg || '')}</div>` : '';
   const m = x => x == null ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: 0 });
   const st = x => `${(x.n || 0).toLocaleString('en-US')} · ${m(x.total)} · ${x.win == null ? '—' : (x.win * 100).toFixed(0) + '%'} · ${x.avgR == null ? '—' : x.avgR + ' R'} · t ${x.t ?? '—'}`;
   const optHtml = !o || !o.top || !o.top.length ? `<div class="bd dim">${o && o.i ? `Running: ${o.i} symbols done…` : 'Not run yet.'}</div>`
@@ -58,10 +60,13 @@ function swShell(r) {
       ${fut ? `<label class="f">$ risk per unit (1 N)${num('risk', 100)}</label><label class="f">Whole contracts${yn('whole')}</label>
         <label class="f">Commission $ / contract, round trip${num('comm', 0.5)}</label><label class="f">Slippage (ticks per side)${num('slip', 0.5)}</label>
         <div class="f" style="display:flex;gap:8px;flex-wrap:wrap">${(r.groups || []).map(g => `<label style="font-size:13px"><input type="checkbox" data-sw-grp="${esc(g)}"${!c.groups || c.groups.includes(g) ? ' checked' : ''}> ${esc(g)}</label>`).join('')}</div>`
+      : k === 'qulla' ? `<label class="f">Position size${sel('sizing', [['account', 'From the account'], ['fixed', 'Fixed $']])}</label>
+        ${c.sizing === 'fixed' ? `<label class="f">$ per trade${num('stake', 100)}</label>` : `<label class="f">Account start ($)${num('acct', 1000)}</label><label class="f">Risk per trade (% of account)${num('riskPct', 0.25)}</label><label class="f">Max position (% of account)${num('maxPos', 5)}</label>`}
+        <label class="f">Costs, round trip (bps)${num('costBps', 1)}</label>`
       : `<label class="f">$ per unit${num('stake', 100)}</label><label class="f">Costs, round trip (bps)${num('costBps', 1)}</label><label class="f">Short borrow (%/year)${num('borrowPct', 0.5)}</label>`}
       <button class="btn primary" data-sw="run" ${run ? 'disabled' : ''}>Run backtest</button></div>
     <p class="note" style="padding:0 16px 14px">${rules} ${fut ? 'Futures: unit = $ risk ÷ (N × $ per point) contracts, as the Turtles sized (1% of equity per N); P/L in points × $ per point, minus commission and slippage on every contract. Prices back-adjusted at each roll, so P/L is exact but old prices can be negative (no % returns). No portfolio unit limits (the Turtles capped 12 units per direction).' : 'Costs on every unit; shorts pay borrow. Runs in the background (a minute or two for ~600 stocks).'}</p>
-    ${fut ? swFutHtml(r.fut, run) : ''}</section>
+    ${fut ? swFutHtml(r.fut, frun) : ''}${jerr}${jdone}</section>
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">every combination of the main settings on every symbol, ranked on the years before the test period</span><div class="grow"></div><button class="btn" data-sw="opt" ${run ? 'disabled' : ''}>Run optimizer</button></div>${optHtml}</section>
     <div style="margin-top:12px">${r.res ? swResHtml(r.res) : ''}</div>`;
 }
@@ -92,7 +97,24 @@ function swResHtml(r) {
   }
   const symRow = x => `<tr><td class="mono">${esc(x.sym)}</td><td class="r">${x.n}</td><td class="r ${cls(x.total)}">${m(x.total)}</td><td class="r">${pcw(x.win)}</td><td class="r">${x.avgR ?? '—'}</td></tr>`;
   const sh = '<thead><tr><th>Symbol</th><th class="r">Trades</th><th class="r">P/L</th><th class="r">Win</th><th class="r">Avg R</th></tr></thead>';
-  return `<section class="panel"><div class="hd"><h2>Results</h2><span class="dim" style="font-size:13px">${r.nSyms} symbols vs ${esc(r.bench)} · ${esc(r.at.replace('T', ' ').slice(0, 16))} · at most ${r.peak} positions at once</span></div>
+  const A = r.acct, acctPanel = !A ? '' : (() => {
+    const pc = x => x == null ? '—' : (x * 100).toFixed(1) + '%';
+    const card = (lab, a) => `<div><div class="dim" style="font-size:12px">${lab}</div><div style="font-size:20px" class="${cls(a.final - a.start)}">${m(a.final)}</div>
+      <div class="dim" style="font-size:12px">${m(a.start)} from ${esc(a.from || '—')} · ${pc(a.ret)} · CAGR ${pc(a.cagr)} · max drawdown ${pc(a.maxDD)} · ${a.taken} trades taken, ${a.skipped} skipped (no cash left)</div></div>`;
+    const cv = A.all.curve; let sv = '';
+    if (cv.length > 1) {
+      const W = 900, H = 200, P = 70, lo = Math.min(...cv.map(e => e[1])), hi = Math.max(...cv.map(e => e[1]));
+      const L = v => Math.log(Math.max(1, v)), t0 = new Date(cv[0][0]).getTime(), t1 = new Date(cv[cv.length - 1][0]).getTime();
+      const X = d => P + (new Date(d).getTime() - t0) / Math.max(1, t1 - t0) * (W - P - 10), Y = v => 10 + (L(hi) - L(v)) / Math.max(1e-9, L(hi) - L(lo)) * (H - 30);
+      sv = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto"><polyline fill="none" stroke="#22c55e" stroke-width="1.6" points="${cv.map(e => X(e[0]).toFixed(1) + ',' + Y(e[1]).toFixed(1)).join(' ')}"/>
+        <text x="4" y="${Y(hi) + 4}" font-size="11" fill="currentColor">${m(hi)}</text><text x="4" y="${Y(lo)}" font-size="11" fill="currentColor">${m(lo)}</text></svg>`;
+    }
+    return `<section class="panel" style="margin-bottom:12px"><div class="hd"><h2>Account</h2><span class="dim" style="font-size:13px">risk ${r.cfg.riskPct}% of the account per trade ÷ the stop distance, at most ${r.cfg.maxPos}% of the account in one position, no margin; compounding</span></div>
+      <div class="bd" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">${card('Whole period', A.all)}${card('Test period only (fresh account)', A.test)}</div>
+      <div class="bd">${sv}<div class="dim" style="font-size:12px">Account value at each exit (log scale).</div></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Year</th><th class="r">Account at year end</th><th class="r">Return</th></tr></thead><tbody>${A.all.years.map(y => `<tr><td>${y.year}</td><td class="r">${m(y.end)}</td><td class="r ${cls(y.ret)}">${pc(y.ret)}</td></tr>`).join('')}</tbody></table></div></section>`;
+  })();
+  return `${acctPanel}<section class="panel"><div class="hd"><h2>${A ? 'Per trade (at a fixed $' + r.cfg.stake + ' each)' : 'Results'}</h2><span class="dim" style="font-size:13px">${r.nSyms} symbols vs ${esc(r.bench)} · ${esc(r.at.replace('T', ' ').slice(0, 16))} · at most ${r.peak} positions at once</span></div>
     <div class="tbl-wrap"><table class="tbl">${head}<tbody>${row(`Train (before ${esc(r.split.date)})`, r.split.train)}${row(`<b>Test (from ${esc(r.split.date)})</b>`, r.split.test)}${row('All', r.all)}</tbody></table></div>
     <div class="bd">${svg}<div class="dim" style="font-size:12px">Cumulative P/L by exit date, after costs.</div></div></section>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
@@ -110,7 +132,7 @@ function swResHtml(r) {
       ${r.open.length ? r.open.slice().reverse().map(t => `<tr><td class="mono">${esc(t.sym)}</td><td>${t.side}</td><td class="mono">${esc(t.entry)}</td><td class="r">${t.in}</td><td class="r">${t.out}</td><td class="r">${t.units}</td><td class="r ${cls(t.pnl)}">${m2(t.pnl)}</td><td class="r">${t.R ?? '—'}</td></tr>`).join('') : '<tr><td colspan="8" class="dim">None.</td></tr>'}</tbody></table></div></section>
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Trades</h2><span class="dim" style="font-size:13px">the latest ${r.trades.length} of ${r.n.toLocaleString('en-US')}</span><div class="grow"></div><button class="btn sm" data-sw="csv">Export trades (CSV)</button></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th class="r">In</th><th class="r">Out</th><th class="r">Units</th><th>Exit</th><th class="r">Return</th><th class="r">P/L</th><th class="r">R</th></tr></thead><tbody>
-      ${r.trades.slice().reverse().map(t => `<tr><td class="mono">${esc(t.sym)}</td><td>${t.side}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td class="r">${t.in}</td><td class="r">${t.out}</td><td class="r">${t.units}${t.contracts != null ? ' · ' + t.contracts + ' ct' : ''}</td><td class="dim">${esc(t.why)}</td><td class="r ${cls(t.ret ?? t.pts)}">${t.ret == null && t.pts != null ? t.pts + ' pts' : pcw(t.ret)}</td><td class="r ${cls(t.pnl)}">${m2(t.pnl)}</td><td class="r">${t.R ?? '—'}</td></tr>`).join('')}</tbody></table></div></section>`;
+      ${r.trades.slice().reverse().map(t => `<tr><td class="mono">${esc(t.sym)}</td><td>${t.side}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td class="r">${t.in}</td><td class="r">${t.out}</td><td class="r">${t.size != null ? m(t.size) : t.units}${t.contracts != null ? ' · ' + t.contracts + ' ct' : ''}</td><td class="dim">${esc(t.why)}</td><td class="r ${cls(t.ret ?? t.pts)}">${t.ret == null && t.pts != null ? t.pts + ' pts' : pcw(t.ret)}</td><td class="r ${cls(t.pnl)}">${m2(t.pnl)}</td><td class="r">${t.R ?? '—'}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 document.addEventListener('change', ev => {
@@ -125,7 +147,7 @@ document.addEventListener('change', ev => {
   if (!t.dataset.swv) return;
   const k = t.dataset.swv;
   c[k] = t.value === 'true' ? true : t.value === 'false' ? false : k === 'uni' ? t.value : +t.value;
-  if (k === 'uni') $('#sw-body').innerHTML = swShell(S.sw.r);
+  if (k === 'uni' || k === 'sizing') { c[k] = t.value; $('#sw-body').innerHTML = swShell(S.sw.r); }
 });
 
 document.addEventListener('click', async ev => {
@@ -140,7 +162,7 @@ document.addEventListener('click', async ev => {
     if (ds.sw === 'opt') { el.disabled = true; await api('/swing/' + W.kind + '/opt', { method: 'POST', body: { cfg: W.cfg[W.kind] } }); toast('Optimizer started.'); setTimeout(swLoad, 1500); return; }
     if (ds.sw === 'csv') {
       const r = W.r && W.r.res; if (!r) return;
-      const keys = ['sym', 'side', 'entry', 'exit', 'in', 'out', 'units', 'contracts', 'pts', 'days', 'why', 'ret', 'pnl', 'R'];
+      const keys = ['sym', 'side', 'entry', 'exit', 'in', 'out', 'units', 'size', 'contracts', 'pts', 'days', 'why', 'ret', 'pnl', 'R'];
       const q = x => x == null ? '' : /[",\n]/.test(String(x)) ? '"' + String(x).replace(/"/g, '""') + '"' : String(x);
       const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(r.trades.map(t => keys.map(k => q(t[k])).join(','))).join('\n')], { type: 'text/csv' }));
       a.download = `swing_${W.kind}_trades.csv`; a.click(); URL.revokeObjectURL(a.href); return;
