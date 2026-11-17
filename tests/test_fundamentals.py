@@ -819,6 +819,10 @@ def test_intramom():
     daily, tr = IM.simulate(ctx_days, ctx, c, keep_trades=True)
     # 10:00: 101.5 > 101 → long; out at the first 30-minute check back inside the band (13:30; 13:15 is not a check)
     assert tr[0][1] == "10:00" and tr[0][3] == 1 and tr[0][2] == "13:30" and abs(tr[0][7] - 100 * (100.5 - 101.5)) < 1e-6, tr
+    # a partial day (session in progress / half day): no entry at the mark that only holds the last bar's price
+    part = ctx_days[:14] + [[ "2024-01-20", 100.0, 101.5, [100.5] * 10 + [101.5] + [None] * 15, [100.2] * 26, 152]]
+    _, tr = IM.simulate(part, IM.context(part, []), IM.clean({"sizing": "full", "comm": 0, "slip": 0, "acct": 10000, "stop": "band", "step": 15}), keep_trades=True)
+    assert not tr and all(t[1] < t[2] for t in tr), tr
     st, o = call("POST", "/intramom/opt", {"cfg": {}})
     assert st == 200, o
     st, v = call("GET", "/intramom")

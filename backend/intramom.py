@@ -189,6 +189,8 @@ def simulate(days, ctx, c, keep_trades=False):
         cost = c["comm"] + c["slip"]
         every = c["step"] // 15
         for j in range(every - 1, MARKS - 1, every):  # the checkpoints before 16:00
+            if 15 * (j + 1) - 1 >= lastk:                # at or past the session's last minute (half day, session in progress): the close below exits
+                break
             p = cl[j]
             if p is None or s[j] is None:
                 continue
