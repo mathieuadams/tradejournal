@@ -761,7 +761,23 @@ def test_swing_futures():
     st, o = call("POST", "/swing/turtle/opt", {"cfg": {"uni": "fut"}})
     assert st == 200, o
     st, v = call("GET", "/swing/turtle")
-    assert v["opt"]["done"] == len(SW.grid("turtle", "fut")) == 16
+    assert v["opt"]["done"] == len(SW.grid("turtle", "fut")) == 24
+    top = v["opt"]["top"][0]
+    assert top["groups"] and set(top["groups"]) <= set(futdaily.GROUPS) and "train" in next(iter(top["groups"].values()))
+    # the account: compounding, unit limits, whole contracts
+    st, r = call("POST", "/swing/turtle", {"cfg": {"uni": "fut", "sizing": "account", "acct": 1000000, "riskPct": 1, "maxDir": 12, "pyramid": True, "groups": None}})
+    assert st == 200, r
+    st, v = call("GET", "/swing/turtle")
+    A = v["res"]["acct"]
+    assert A and A["kind"] == "turtle" and A["all"]["taken"] > 0 and A["test"]["from"] == v["res"]["split"]["date"], A and A["all"]
+    assert "ul" not in v["res"]["trades"][0]
+    ts = [{"side": "long", "entry": "2020-01-02", "exit": "2020-01-10", "n0": 10.0, "pv": 50, "costC": 0, "ul": [["2020-01-02", 1000.0], ["2020-01-03", 500.0]]},
+          {"side": "long", "entry": "2020-01-03", "exit": "2020-01-06", "n0": 10.0, "pv": 50, "costC": 0, "ul": [["2020-01-03", -500.0]]},
+          {"side": "long", "entry": "2020-01-07", "exit": "2020-01-08", "n0": 10.0, "pv": 50, "costC": 0, "ul": [["2020-01-07", 100.0]]}]
+    a = SW.account_turtle(ts, SW.clean("turtle", {"uni": "fut", "acct": 100000, "riskPct": 1, "maxDir": 2, "whole": True}))
+    # trade 0: 1% of 100k ÷ (10 × 50) = 2 contracts; its add on 01-03 and trade 1 compete for the 2-unit limit: add taken first? entries before adds
+    assert a["sizes"][0][0] == 2 and a["taken"] == 3 and a["cut"] == 1, a
+
     st, r = call("POST", "/swing/qulla", {"cfg": {"uni": "fut"}})
     st, v = call("GET", "/swing/qulla")
     assert v["cfg"]["uni"] == "both"

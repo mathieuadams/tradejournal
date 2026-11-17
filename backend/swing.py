@@ -32,10 +32,11 @@ FROM = "2016-01-01"
 MIN_TRADES = 30
 UNIS = ("fut", "all", "spy", "qqq", "both", "etf")
 T_DEFAULT = {"uni": "fut", "entryN": 20, "exitN": 10, "stopN": 2.0, "pyramid": False, "shorts": True, "skipWin": False, "mkt": False,
-             "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "risk": 1000.0, "whole": False, "comm": 5.0, "slip": 1.0, "groups": None}
+             "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "risk": 1000.0, "whole": False, "comm": 5.0, "slip": 1.0, "groups": None,
+             "sizing": "account", "acct": 1000000.0, "riskPct": 1.0, "maxDir": 12}
 Q_DEFAULT = {"uni": "all", "minAdr": 0.04, "prior": 0.3, "priorDays": 60, "minDv": 10e6, "sizing": "account", "acct": 10000.0, "riskPct": 1.0, "maxPos": 25.0, "base": 10, "tight": 0.15, "partialDay": 3, "partial": 1 / 3, "trail": 10, "mkt": False,
              "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0}
-T_GRID = {"entryN": [20, 55], "stopN": [2.0, 3.0], "pyramid": [False, True], "shorts": [False, True], "mkt": [False, True]}
+T_GRID = {"entryN": [20, 55], "stopN": [2.0, 3.0, 4.0], "pyramid": [False, True], "shorts": [False, True], "mkt": [False, True]}
 Q_GRID = {"minAdr": [0.03, 0.05], "prior": [0.3, 0.5], "priorDays": [30, 60], "tight": [0.10, 0.20], "trail": [10, 20], "partialDay": [0, 3], "mkt": [False, True]}
 
 
@@ -59,6 +60,10 @@ def clean(kind, cfg):
         for k in ("pyramid", "shorts", "skipWin", "mkt", "whole"):
             c[k] = bool(c[k])
         c["risk"] = max(10.0, float(c["risk"]))
+        c["sizing"] = "fixed" if c["sizing"] == "fixed" else "account"
+        c["acct"] = max(10000.0, float(c["acct"]))
+        c["riskPct"] = max(0.05, min(5.0, float(c["riskPct"])))
+        c["maxDir"] = max(1, min(100, int(c["maxDir"])))
         c["comm"], c["slip"] = max(0.0, float(c["comm"])), max(0.0, float(c["slip"]))
         import futdaily
         g = [x for x in (c["groups"] or []) if x in futdaily.GROUPS]
@@ -193,13 +198,13 @@ def turtle(sym, b, c, mkt, spec=None):
             n0 = N[t - 1]
             if spec:
                 q = c["risk"] / (n0 * spec[2]) if n0 > 0 else 0   # contracts per unit: 1 N move = the $ risk per unit
-                if c["whole"]:
-                    q = float(int(q))
+                if c["whole"] and c["sizing"] == "fixed":
+                    q = float(int(q))                  # (account sizing rounds later, on the equity of the day)
                 if q <= 0:
                     continue
             else:
                 q = None
-            pos = {"q": q,"side": side, "e": t, "units": [px], "n0": n0, "stop": px - side * SN * n0}
+            pos = {"q": q, "side": side, "e": t, "units": [px], "ud": [t], "n0": n0, "stop": px - side * SN * n0}
             # pyramid on the entry day itself (a strong breakout day)
         side, n0 = pos["side"], pos["n0"]
         if t > pos["e"]:                                # exits (from the day after the entry)
@@ -220,6 +225,7 @@ def turtle(sym, b, c, mkt, spec=None):
                     if t == pos["e"] and len(pos["units"]) == 1 and ((side == 1 and fillp < pos["units"][0]) or (side == -1 and fillp > pos["units"][0])):
                         break
                     pos["units"].append(fillp)
+                    pos["ud"].append(t)
                     pos["stop"] = fillp - side * SN * n0
                 else:
                     break
@@ -240,7 +246,9 @@ def _turtle_trade(sym, ds, pos, x, fill, why, c, spec=None):
         risk = c["stopN"] * pos["n0"] * q * pv
         return {"sym": sym, "side": "long" if side == 1 else "short", "entry": ds[pos["e"]], "exit": ds[x], "in": round(us[0], 6), "out": round(fill, 6),
                 "units": len(us), "contracts": round(q * len(us), 2), "days": days, "why": why, "ret": None,
-                "pts": round(side * (fill - us[0]), 6), "pnl": round(pnl, 2), "R": round(pnl / risk, 2) if risk > 0 else None, "group": spec[1]}
+                "pts": round(side * (fill - us[0]), 6), "pnl": round(pnl, 2), "R": round(pnl / risk, 2) if risk > 0 else None, "group": spec[1],
+                "n0": pos["n0"], "pv": pv, "costC": round(c["comm"] + 2 * c["slip"] * tick * pv, 4),
+                "ul": [[ds[d], round(side * (fill - u) * pv, 4)] for u, d in zip(us, pos["ud"])]}
     gross = sum(c["stake"] * side * (fill / u - 1) for u in us)
     pnl = gross - _cost(c, len(us), side == -1, days)
     risk = c["stake"] * c["stopN"] * pos["n0"] / us[0]          # the first unit's risk in $
@@ -418,6 +426,69 @@ def account(ts, c, start=None):
             "sizes": {i: round(v[0], 2) for i, v in out.items()}}
 
 
+def account_turtle(ts, c, start=None):
+    """Turtle account (futures): every unit sized on the equity of its entry day — riskPct of the equity per 1 N move
+    (contracts = equity × riskPct ÷ (N × $ per point), whole contracts if asked; a trade too small for one contract is
+    skipped) — compounding on closed trades; at most maxDir units long and maxDir short at once (an add beyond it is
+    not taken). Pyramided units keep the first unit's contract count. Drawdown on closed trades only."""
+    ev = []
+    for i, t in enumerate(ts):
+        if start and t["entry"] < start or not t.get("ul"):
+            continue
+        for k, (d, _) in enumerate(t["ul"]):
+            ev.append((d, 1 if k == 0 else 2, i, k))
+        ev.append((t["exit"], 0, i, -1))
+    ev.sort()
+    eq = c["acct"]
+    held, units = {}, {1: 0, -1: 0}                   # i → [contracts, [unit indices taken]]
+    curve, taken, skipped, cut, peak, mdd, sizes = [], 0, 0, 0, eq, 0.0, {}
+    for d, kind, i, k in ev:
+        t = ts[i]
+        side = 1 if t["side"] == "long" else -1
+        if kind == 1:
+            q = eq * c["riskPct"] / 100 / (t["n0"] * t["pv"]) if t["n0"] > 0 else 0
+            if c["whole"]:
+                q = float(int(q))
+            if q <= 0 or units[side] >= c["maxDir"]:
+                skipped += 1
+                continue
+            held[i] = [q, [0]]
+            units[side] += 1
+            taken += 1
+        elif kind == 2:
+            if i in held:
+                if units[side] < c["maxDir"]:
+                    held[i][1].append(k)
+                    units[side] += 1
+                else:
+                    cut += 1
+        elif i in held:
+            q, ks = held.pop(i)
+            units[side] -= len(ks)
+            pnl = q * sum(t["ul"][j][1] for j in ks) - q * t["costC"] * len(ks)
+            eq += pnl
+            sizes[i] = (round(q, 2), len(ks), round(pnl, 2))
+            peak = max(peak, eq)
+            mdd = min(mdd, eq / peak - 1) if peak > 0 else mdd
+            if curve and curve[-1][0] == d:
+                curve[-1][1] = round(eq, 2)
+            else:
+                curve.append([d, round(eq, 2)])
+            if eq <= 0:
+                break
+    years, prev = {}, c["acct"]
+    for d, v in curve:
+        years[d[:4]] = v
+    yr = []
+    for y in sorted(years):
+        yr.append({"year": y, "end": years[y], "ret": round(years[y] / prev - 1, 4) if prev > 0 else None})
+        prev = years[y]
+    span = (_d(curve[-1][0]) - _d(curve[0][0])).days / 365.25 if len(curve) > 1 else 0
+    return {"start": c["acct"], "from": start or (curve[0][0] if curve else None), "final": round(eq, 2), "ret": round(eq / c["acct"] - 1, 4),
+            "cagr": round((eq / c["acct"]) ** (1 / span) - 1, 4) if span > 0.5 and eq > 0 else None, "maxDD": round(mdd, 4),
+            "taken": taken, "skipped": skipped, "cut": cut, "years": yr, "curve": curve[-1500:], "sizes": sizes}
+
+
 def split_date(last):
     d = _d(last)
     return d.replace(year=d.year - TEST_YEARS).isoformat()
@@ -483,10 +554,17 @@ def run_job(sub, kind, prog=None):
                 t["size"] = a_all["sizes"][i]
         a_all.pop("sizes"); a_test.pop("sizes")
         acct = {"all": a_all, "test": a_test}
+    if kind == "turtle" and c["uni"] == "fut" and c["sizing"] == "account":
+        a_all, a_test = account_turtle(ts, c), account_turtle(ts, c, sd)
+        for i, t in enumerate(ts):
+            if i in a_all["sizes"]:
+                t["acctQ"], t["acctUnits"], t["acctPnl"] = a_all["sizes"][i]
+        a_all.pop("sizes"); a_test.pop("sizes")
+        acct = {"all": a_all, "test": a_test, "kind": "turtle"}
     res = {"kind": kind, "cfg": c, "acct": acct, "groups": [{"group": g, **_stats(v)} for g, v in sorted(grp.items(), key=lambda z: -sum(t["pnl"] for t in z[1]))], "at": iso(now_ny()), "nSyms": len(syms), "bench": bench, "n": len(ts), "all": _stats(ts),
            "split": {"date": sd, "train": _stats(tr), "test": _stats(te)}, "years": [{"year": y, **_stats(v)} for y, v in sorted(years.items())],
            "best": ss[:12], "worst": ss[-12:][::-1], "why": [{"why": w, **_stats(v)} for w, v in sorted(why.items(), key=lambda z: -len(z[1]))],
-           "equity": eq, "peak": peak, "trades": ts[-400:], "open": sorted(opens, key=lambda t: t["entry"])[-60:], "watch": watch[:80], "last": last}
+           "equity": eq, "peak": peak, "trades": [{k: v for k, v in t.items() if k != "ul"} for t in ts[-400:]], "open": sorted(opens, key=lambda t: t["entry"])[-60:], "watch": watch[:80], "last": last}
     store.put_json(key, {"cfg": c, "res": res})
     return res
 
@@ -593,7 +671,13 @@ def opt_job(sub, kind, prog=None, deadline=None):
         for j, c in enumerate(cfgs):
             for t in (fn(syms[i], b, c, mkt, spec) if spec else fn(syms[i], b, c, mkt)):
                 if not t.get("open"):
-                    _acc_add(acc[j]["train" if t["entry"] < sd else "test"], t["pnl"], t.get("R"))
-    res = [{"p": p, "train": _acc_stats(a["train"]), "test": _acc_stats(a["test"])} for p, a in zip(combos, acc)]
+                    half = "train" if t["entry"] < sd else "test"
+                    _acc_add(acc[j][half], t["pnl"], t.get("R"))
+                    if t.get("group"):                 # futures: each market group on its own, to pick groups on train only
+                        g = acc[j].setdefault("g", {}).setdefault(t["group"], {"train": [0] * 9, "test": [0] * 9})
+                        _acc_add(g[half], t["pnl"], t.get("R"))
+    res = [{"p": p, "train": _acc_stats(a["train"]), "test": _acc_stats(a["test"]),
+            **({"groups": {g: {"train": _acc_stats(v["train"]), "test": _acc_stats(v["test"])} for g, v in a["g"].items()}} if a.get("g") else {})}
+           for p, a in zip(combos, acc)]
     store.put_json(key, {"cfg": base, "res": res, "split": sd, "total": len(combos), "at": iso(now_ny()), "complete": True})
     return True

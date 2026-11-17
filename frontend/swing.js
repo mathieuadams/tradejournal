@@ -55,12 +55,16 @@ function swShell(r) {
   const st = x => `${(x.n || 0).toLocaleString('en-US')} · ${m(x.total)} · ${x.win == null ? '—' : (x.win * 100).toFixed(0) + '%'} · ${x.avgR == null ? '—' : x.avgR + ' R'} · t ${x.t ?? '—'}`;
   const optHtml = !o || !o.top || !o.top.length ? `<div class="bd dim">${o && o.i ? `Running: ${o.i} symbols done…` : 'Not run yet.'}</div>`
     : `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Setting</th><th class="r">Train (before ${esc(o.split || '')}): trades · P/L · win · avg R · t</th><th class="r">Test</th><th></th></tr></thead><tbody>
-      ${o.top.map((x, i) => `<tr><td>${esc(Object.entries(x.p).map(([a, b]) => `${a} ${b === true ? 'on' : b === false ? 'off' : b}`).join(' · '))}</td><td class="r">${st(x.train)}</td><td class="r ${cls(x.test.total)}">${st(x.test)}</td><td><button class="btn sm" data-sw-use="${i}">Use</button></td></tr>`).join('')}</tbody></table></div>
+      ${o.top.map((x, i) => `<tr><td>${esc(Object.entries(x.p).map(([a, b]) => `${a} ${b === true ? 'on' : b === false ? 'off' : b}`).join(' · '))}</td><td class="r">${st(x.train)}</td><td class="r ${cls(x.test.total)}">${st(x.test)}</td><td style="white-space:nowrap">${x.groups ? `<button class="btn sm" data-sw-grps="${i}">Groups</button> ` : ''}<button class="btn sm" data-sw-use="${i}">Use</button></td></tr>
+        ${x.groups && S.sw.grpOpen === i ? `<tr><td colspan="4"><table class="tbl"><thead><tr><th>Group</th><th class="r">Train: trades · P/L · win · avg R · t</th><th class="r">Test</th></tr></thead><tbody>${Object.entries(x.groups).sort((a, b) => (b[1].train.t ?? -99) - (a[1].train.t ?? -99)).map(([g, v]) => `<tr><td>${esc(g)}</td><td class="r ${cls(v.train.total)}">${st(v.train)}</td><td class="r ${cls(v.test.total)}">${st(v.test)}</td></tr>`).join('')}</tbody></table>
+        <div class="note" style="padding:4px 0">Pick groups by the train column (t ≥ 2 is a good sign); the test column checks the choice.</div></td></tr>` : ''}`).join('')}</tbody></table></div>
       <div class="note" style="padding:6px 16px 12px">${o.done} of ${o.total} settings. Ranked on train only (at least ${o.minTrades} train trades).</div>`;
   return `<section class="panel"><div class="hd"><h2>${SW_LABEL[k]}</h2><div class="grow"></div>${run ? `<span class="dim">${esc(r.job.msg || 'Running…')}</span>` : ''}</div>
     <div class="bd" style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
       <label class="f">Universe${sel('uni', k === 'turtle' ? SW_UNI_T : SW_UNI)}</label>${form}
-      ${fut ? `<label class="f">$ risk per unit (1 N)${num('risk', 100)}</label><label class="f">Whole contracts${yn('whole')}</label>
+      ${fut ? `<label class="f">Position size${sel('sizing', [['account', 'From the account'], ['fixed', 'Fixed $ per N']])}</label>
+        ${c.sizing === 'fixed' ? `<label class="f">$ risk per unit (1 N)${num('risk', 100)}</label>` : `<label class="f">Account start ($)${num('acct', 100000)}</label><label class="f">Risk per unit (% of account per 1 N)${num('riskPct', 0.25)}</label><label class="f">Max units per direction${num('maxDir', 1)}</label>`}
+        <label class="f">Whole contracts${yn('whole')}</label>
         <label class="f">Commission $ / contract, round trip${num('comm', 0.5)}</label><label class="f">Slippage (ticks per side)${num('slip', 0.5)}</label>
         <div class="f" style="display:flex;gap:8px;flex-wrap:wrap">${(r.groups || []).map(g => `<label style="font-size:13px"><input type="checkbox" data-sw-grp="${esc(g)}"${!c.groups || c.groups.includes(g) ? ' checked' : ''}> ${esc(g)}</label>`).join('')}</div>`
       : k === 'qulla' ? `<label class="f">Position size${sel('sizing', [['account', 'From the account'], ['fixed', 'Fixed $']])}</label>
@@ -110,7 +114,7 @@ function swResHtml(r) {
   const A = r.acct, acctPanel = !A ? '' : (() => {
     const pc = x => x == null ? '—' : (x * 100).toFixed(1) + '%';
     const card = (lab, a) => `<div><div class="dim" style="font-size:12px">${lab}</div><div style="font-size:20px" class="${cls(a.final - a.start)}">${m(a.final)}</div>
-      <div class="dim" style="font-size:12px">${m(a.start)} from ${esc(a.from || '—')} · ${pc(a.ret)} · CAGR ${pc(a.cagr)} · max drawdown ${pc(a.maxDD)} · ${a.taken} trades taken, ${a.skipped} skipped (no cash left)</div></div>`;
+      <div class="dim" style="font-size:12px">${m(a.start)} from ${esc(a.from || '—')} · ${pc(a.ret)} · CAGR ${pc(a.cagr)} · max drawdown ${pc(a.maxDD)} · ${a.taken} trades taken, ${a.skipped} skipped ${A.kind === 'turtle' ? `(under 1 contract or the unit limit)${a.cut ? `, ${a.cut} adds cut by the unit limit` : ''}` : '(no cash left)'}</div></div>`;
     const cv = A.all.curve; let sv = '';
     if (cv.length > 1) {
       const W = 900, H = 200, P = 70, lo = Math.min(...cv.map(e => e[1])), hi = Math.max(...cv.map(e => e[1]));
@@ -119,12 +123,12 @@ function swResHtml(r) {
       sv = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto"><polyline fill="none" stroke="#22c55e" stroke-width="1.6" points="${cv.map(e => X(e[0]).toFixed(1) + ',' + Y(e[1]).toFixed(1)).join(' ')}"/>
         <text x="4" y="${Y(hi) + 4}" font-size="11" fill="currentColor">${m(hi)}</text><text x="4" y="${Y(lo)}" font-size="11" fill="currentColor">${m(lo)}</text></svg>`;
     }
-    return `<section class="panel" style="margin-bottom:12px"><div class="hd"><h2>Account</h2><span class="dim" style="font-size:13px">risk ${r.cfg.riskPct}% of the account per trade ÷ the stop distance, at most ${r.cfg.maxPos}% of the account in one position, no margin; compounding</span></div>
+    return `<section class="panel" style="margin-bottom:12px"><div class="hd"><h2>Account</h2><span class="dim" style="font-size:13px">${A.kind === 'turtle' ? `each unit = ${r.cfg.riskPct}% of the equity per 1 N move (${r.cfg.whole ? 'whole contracts' : 'fractional contracts'}), at most ${r.cfg.maxDir} units long and ${r.cfg.maxDir} short at once; compounding on closed trades; drawdown on closed trades (open swings not marked)` : `risk ${r.cfg.riskPct}% of the account per trade ÷ the stop distance, at most ${r.cfg.maxPos}% of the account in one position, no margin; compounding`}</span></div>
       <div class="bd" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">${card('Whole period', A.all)}${card('Test period only (fresh account)', A.test)}</div>
       <div class="bd">${sv}<div class="dim" style="font-size:12px">Account value at each exit (log scale).</div></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Year</th><th class="r">Account at year end</th><th class="r">Return</th></tr></thead><tbody>${A.all.years.map(y => `<tr><td>${y.year}</td><td class="r">${m(y.end)}</td><td class="r ${cls(y.ret)}">${pc(y.ret)}</td></tr>`).join('')}</tbody></table></div></section>`;
   })();
-  return `${acctPanel}<section class="panel"><div class="hd"><h2>${A ? 'Per trade (at a fixed $' + r.cfg.stake + ' each)' : 'Results'}</h2><span class="dim" style="font-size:13px">${r.nSyms} symbols vs ${esc(r.bench)} · ${esc(r.at.replace('T', ' ').slice(0, 16))} · at most ${r.peak} positions at once</span></div>
+  return `${acctPanel}<section class="panel"><div class="hd"><h2>${A ? (A.kind === 'turtle' ? 'Per trade (at a fixed $' + r.cfg.risk + ' per N)' : 'Per trade (at a fixed $' + r.cfg.stake + ' each)') : 'Results'}</h2><span class="dim" style="font-size:13px">${r.nSyms} symbols vs ${esc(r.bench)} · ${esc(r.at.replace('T', ' ').slice(0, 16))} · at most ${r.peak} positions at once</span></div>
     <div class="tbl-wrap"><table class="tbl">${head}<tbody>${row(`Train (before ${esc(r.split.date)})`, r.split.train)}${row(`<b>Test (from ${esc(r.split.date)})</b>`, r.split.test)}${row('All', r.all)}</tbody></table></div>
     <div class="bd">${svg}<div class="dim" style="font-size:12px">Cumulative P/L by exit date, after costs.</div></div></section>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
@@ -161,11 +165,12 @@ document.addEventListener('change', ev => {
 });
 
 document.addEventListener('click', async ev => {
-  const el = ev.target.closest('[data-sw-kind],[data-sw],[data-sw-use]');
+  const el = ev.target.closest('[data-sw-kind],[data-sw],[data-sw-use],[data-sw-grps]');
   if (!el || !$('#sw-body')) return;
   const ds = el.dataset, W = S.sw;
   try {
     if (ds.swKind) { W.kind = ds.swKind; return vSwing(); }
+    if (ds.swGrps) { S.sw.grpOpen = S.sw.grpOpen === +ds.swGrps ? null : +ds.swGrps; $('#sw-body').innerHTML = swShell(W.r); return; }
     if (ds.swUse) { Object.assign(W.cfg[W.kind], W.r.opt.top[+ds.swUse].p); $('#sw-body').innerHTML = swShell(W.r); toast('Setting applied: run the backtest.'); return; }
     if (ds.sw === 'run') { el.disabled = true; await api('/swing/' + W.kind, { method: 'POST', body: { cfg: W.cfg[W.kind] } }); toast('Backtest started.'); setTimeout(swLoad, 1500); return; }
     if (ds.sw === 'alldl') { el.disabled = true; await api('/swing/all', { method: 'POST', body: {} }); toast('Download started: it runs in the background.'); setTimeout(swLoad, 1500); return; }
