@@ -786,6 +786,37 @@ def test_intramom():
     assert v["opt"]["complete"] and len(v["opt"]["top"]) == 20, v["job"]
 
 
+
+def test_swing_whole_market():
+    import allstocks as AL
+    import store
+    call("PUT", "/alpaca", {"keyId": "PK" + "A" * 18, "secret": "s" * 30})
+    call("PUT", "/fmp", {"key": "k" * 32})
+    syms = dict(AL.symbols(SUB))
+    assert "MOMO" in syms and "GONE" in syms and syms["GONE"] == "2022-06-30" and "OLDY" not in syms and "ETFX" not in syms
+    st, r = call("POST", "/swing/qulla", {"cfg": {"uni": "all"}})
+    assert st == 400 and "whole market" in r["error"]
+    AL.MIN_DV, AL.SHARD = 1e5, 2                          # every fake stock counts; 2 per shard to test the shards
+    st, r = call("POST", "/swing/all")
+    assert st == 200, r
+    st, v = call("GET", "/swing/qulla")
+    assert v["allJob"]["status"] == "done", v["allJob"]
+    ix = AL.index()
+    assert set(ix["syms"]) == {"MOMO", "RUNR", "SLOW", "GONE"} and ix["shards"] == 2, ix
+    gone = AL.bars("GONE")
+    assert gone[-1][0] <= "2022-06-30"
+    st, r = call("POST", "/swing/qulla", {"cfg": {"uni": "all", "minAdr": 0.0, "prior": 0.0, "tight": 0.5, "minDv": 0}})
+    assert st == 200, r
+    st, v = call("GET", "/swing/qulla")
+    assert v["res"]["nSyms"] == 4 and v["res"]["n"] > 0, v["job"]
+    assert SW_clean_default()["uni"] == "all"
+
+
+def SW_clean_default():
+    import swing
+    return swing.clean("qulla", {})
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

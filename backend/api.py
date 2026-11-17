@@ -671,6 +671,12 @@ def im_opt(sub, claims, body, q):
     return intramom.opt_start(sub, body.get("cfg") or {})
 
 
+@route("POST", "/swing/all")
+def swing_all(sub, claims, body, q):
+    import allstocks
+    return allstocks.start(sub)
+
+
 @route("POST", "/swing/futdaily")
 def swing_futdaily(sub, claims, body, q):
     import futdaily

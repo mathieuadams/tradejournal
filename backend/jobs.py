@@ -166,6 +166,12 @@ def handler(event, ctx=None):
                 _invoke(event)
                 return {"continued": True}
             set_status(sub, name, status="done", msg="Optimizer done (ranked on the years before the test period).")
+        elif job == "alldl":                            # the whole US market's daily bars (swing scans)
+            import allstocks
+            if not allstocks.download(sub, prog, dl):
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="Whole market downloaded.")
         elif job == "futdaily":                         # futures daily bars (Databento), back-adjusted
             import futdaily
             nxt = futdaily.download(sub, prog, dl, p.get("cont"))

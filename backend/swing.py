@@ -30,10 +30,10 @@ from util import BadRequest, iso, now_ny
 TEST_YEARS = 5
 FROM = "2016-01-01"
 MIN_TRADES = 30
-UNIS = ("fut", "spy", "qqq", "both", "etf")
+UNIS = ("fut", "all", "spy", "qqq", "both", "etf")
 T_DEFAULT = {"uni": "fut", "entryN": 20, "exitN": 10, "stopN": 2.0, "pyramid": False, "shorts": True, "skipWin": False, "mkt": False,
              "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0, "risk": 1000.0, "whole": False, "comm": 5.0, "slip": 1.0, "groups": None}
-Q_DEFAULT = {"uni": "both", "minAdr": 0.04, "prior": 0.3, "priorDays": 60, "minDv": 10e6, "sizing": "account", "acct": 10000.0, "riskPct": 1.0, "maxPos": 25.0, "base": 10, "tight": 0.15, "partialDay": 3, "partial": 1 / 3, "trail": 10, "mkt": False,
+Q_DEFAULT = {"uni": "all", "minAdr": 0.04, "prior": 0.3, "priorDays": 60, "minDv": 10e6, "sizing": "account", "acct": 10000.0, "riskPct": 1.0, "maxPos": 25.0, "base": 10, "tight": 0.15, "partialDay": 3, "partial": 1 / 3, "trail": 10, "mkt": False,
              "stake": 1000.0, "costBps": 10.0, "borrowPct": 1.0}
 T_GRID = {"entryN": [20, 55], "stopN": [2.0, 3.0], "pyramid": [False, True], "shorts": [False, True], "mkt": [False, True]}
 Q_GRID = {"minAdr": [0.03, 0.05], "prior": [0.3, 0.5], "priorDays": [30, 60], "tight": [0.10, 0.20], "trail": [10, 20], "partialDay": [0, 3], "mkt": [False, True]}
@@ -46,7 +46,7 @@ def _d(s):
 def clean(kind, cfg):
     base = T_DEFAULT if kind == "turtle" else Q_DEFAULT
     c = {**base, **{k: v for k, v in (cfg or {}).items() if k in base}}
-    c["uni"] = c["uni"] if c["uni"] in UNIS else ("fut" if kind == "turtle" else "both")
+    c["uni"] = c["uni"] if c["uni"] in UNIS else ("fut" if kind == "turtle" else "all")
     if kind == "qulla" and c["uni"] == "fut":
         c["uni"] = "both"                                  # percentages on back-adjusted futures prices mean nothing
     for k in ("stake", "costBps", "borrowPct"):
@@ -91,6 +91,10 @@ def universe(sub, uni):
     import space
     if uni == "etf":
         return etf.settings(sub)["syms"], "SPY"
+    if uni == "all":
+        import allstocks
+        allstocks.reset_cache()
+        return allstocks.universe(), "SPY"
     if uni == "fut":
         import futdaily
         out = [r for r in futdaily.SPEC if futdaily.bars(r)]
@@ -110,7 +114,11 @@ def universe(sub, uni):
     return out, "QQQ" if uni == "qqq" else "SPY"
 
 
-def sym_data(sub, sym, fut):
+def sym_data(sub, sym, fut, uni=None):
+    if uni == "all":
+        import allstocks
+        b = allstocks.bars(sym)
+        return ([x for x in b if x[0] >= FROM] if b else None), None
     if fut:
         import futdaily
         return futdaily.bars(sym), futdaily.SPEC[sym]
@@ -431,7 +439,7 @@ def run_job(sub, kind, prog=None):
         if prog and time.time() - t_last > 3:
             prog(f"{'Turtle' if kind == 'turtle' else 'Qullamaggie'}: {i + 1}/{len(syms)} {s}")
             t_last = time.time()
-        b, spec = sym_data(sub, s, fut)
+        b, spec = sym_data(sub, s, fut, c["uni"])
         if not b:
             continue
         last = max(last, b[-1][0])
@@ -510,9 +518,10 @@ def view(sub, kind):
         if j.get("status") == "running" and j.get("at", "") < iso(now_ny() - timedelta(minutes=20)):
             j["stale"] = True                          # silent for 20 minutes: the run died (it can be started again)
         return j
+    import allstocks
     fut = futdaily.status() if kind == "turtle" else None
     return {"cfg": st.get("cfg") or clean(kind, {}), "res": st.get("res"), "opt": opt, "job": js("swing" + kind), "fut": fut,
-            "futJob": js("swingfut") if kind == "turtle" else None,
+            "futJob": js("swingfut") if kind == "turtle" else None, "all": allstocks.status(), "allJob": js("swingall"),
             "groups": futdaily.GROUPS}
 
 
@@ -578,7 +587,7 @@ def opt_job(sub, kind, prog=None, deadline=None):
         if prog and time.time() - t_last > 3:
             prog(f"Optimizer ({'Turtle' if kind == 'turtle' else 'Qullamaggie'}): {i + 1}/{len(syms)} symbols × {len(combos)} settings")
             t_last = time.time()
-        b, spec = sym_data(sub, syms[i], fut)
+        b, spec = sym_data(sub, syms[i], fut, base["uni"])
         if not b:
             continue
         for j, c in enumerate(cfgs):

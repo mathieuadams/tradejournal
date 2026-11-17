@@ -1,13 +1,13 @@
 // Swing: the Turtle breakout and Qullamaggie's breakout, backtested on daily bars over the earnings universes / ETFs.
 S.sw = S.sw || { kind: 'qulla', cfg: {} };
 const SW_LABEL = { turtle: 'Turtle', qulla: 'Qullamaggie breakout', btm: 'Beat the Market (SPY intraday)' };
-const SW_UNI = [['both', 'S&P 500 + Nasdaq-100'], ['spy', 'S&P 500'], ['qqq', 'Nasdaq-100'], ['etf', 'ETF list']];
+const SW_UNI = [['all', 'Whole US market'], ['both', 'S&P 500 + Nasdaq-100'], ['spy', 'S&P 500'], ['qqq', 'Nasdaq-100'], ['etf', 'ETF list']];
 const SW_UNI_T = [['fut', 'Futures (30 CME markets)'], ...SW_UNI];
 
 async function vSwing() {
   const W = S.sw;
   const tabs = ['qulla', 'turtle', 'btm'].map(k => `<button class="btn${W.kind === k ? ' primary' : ''}" data-sw-kind="${k}">${SW_LABEL[k]}</button>`).join(' ');
-  view(`${head('Swing', 'Daily breakout strategies: Turtle on 30 CME futures (or stocks / ETFs), Qullamaggie on the S&P 500 / Nasdaq-100 (removed companies included) or the ETF list. The last 5 years are the test period.')}<div style="margin-bottom:12px">${tabs}</div><div id="sw-body"><div class="panel"><div class="empty">Loading…</div></div></div>`);
+  view(`${head('Swing', 'Daily breakout strategies: Turtle on 30 CME futures (or stocks / ETFs), Qullamaggie on the whole US market (delisted stocks included), the S&P 500 / Nasdaq-100 or the ETF list. The last 5 years are the test period.')}<div style="margin-bottom:12px">${tabs}</div><div id="sw-body"><div class="panel"><div class="empty">Loading…</div></div></div>`);
   if (W.kind === 'btm') return imLoad();
   await swLoad();
 }
@@ -20,7 +20,7 @@ async function swLoad() {
   if (!W.cfg[W.kind]) W.cfg[W.kind] = { ...r.cfg };
   el.innerHTML = swShell(r);
   const live = j => j && j.status === 'running' && !j.stale;
-  if (live(r.job) || live(r.futJob)) { clearTimeout(swLoad.h); swLoad.h = setTimeout(swLoad, 4000); }
+  if (live(r.job) || live(r.futJob) || live(r.allJob)) { clearTimeout(swLoad.h); swLoad.h = setTimeout(swLoad, 4000); }
 }
 
 function swShell(r) {
@@ -69,9 +69,16 @@ function swShell(r) {
       : `<label class="f">$ per unit${num('stake', 100)}</label><label class="f">Costs, round trip (bps)${num('costBps', 1)}</label><label class="f">Short borrow (%/year)${num('borrowPct', 0.5)}</label>`}
       <button class="btn primary" data-sw="run" ${run ? 'disabled' : ''}>Run backtest</button></div>
     <p class="note" style="padding:0 16px 14px">${rules} ${fut ? 'Futures: unit = $ risk ÷ (N × $ per point) contracts, as the Turtles sized (1% of equity per N); P/L in points × $ per point, minus commission and slippage on every contract. Prices back-adjusted at each roll, so P/L is exact but old prices can be negative (no % returns). No portfolio unit limits (the Turtles capped 12 units per direction).' : 'Costs on every unit; shorts pay borrow. Runs in the background (a minute or two for ~600 stocks).'}</p>
-    ${fut ? swFutHtml(r.fut, frun) : ''}${jerr}${jdone}</section>
+    ${fut ? swFutHtml(r.fut, frun) : ''}${c.uni === 'all' ? swAllHtml(r) : ''}${jerr}${jdone}</section>
     <section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">every combination of the main settings on every symbol, ranked on the years before the test period</span><div class="grow"></div><button class="btn" data-sw="opt" ${run ? 'disabled' : ''}>Run optimizer</button></div>${optHtml}</section>
     <div style="margin-top:12px">${r.res ? swResHtml(r.res) : ''}</div>`;
+}
+
+function swAllHtml(r) {
+  const a = r.all || {}, j = r.allJob || {}, run = j.status === 'running' && !j.stale;
+  const msg = j.status === 'error' ? `<div class="loss">Failed: ${esc(j.msg || '')}</div>` : j.stale ? `<div class="loss">The download stopped answering (${esc(j.msg || '')}): press the button to resume.</div>` : run ? `<div class="dim">${esc(j.msg || '')}</div>` : '';
+  return `<div class="bd" style="border-top:1px solid var(--line)"><div style="display:flex;align-items:center;gap:12px"><b>Whole market</b><span class="dim">${a.n ? `${a.n.toLocaleString('en-US')} stocks ever liquid ($5M+ a day at $3+) out of ${(a.listed || 0).toLocaleString('en-US')} listed / delisted since 2016 · ${esc((a.at || '').slice(0, 10))}` : 'not downloaded'}${a.partial ? ` · in progress: ${a.partial.i} / ${a.partial.of}` : ''} · symbols from FMP (NYSE, NASDAQ, AMEX, no ETF / fund, delisted included), daily bars from Alpaca · takes ~30–60 minutes the first time</span><div class="grow"></div>
+    <button class="btn" data-sw="alldl" ${run ? 'disabled' : ''}>${a.n ? 'Update' : 'Download'} the whole market</button></div>${msg}</div>`;
 }
 
 function swFutHtml(f, run) {
@@ -161,6 +168,7 @@ document.addEventListener('click', async ev => {
     if (ds.swKind) { W.kind = ds.swKind; return vSwing(); }
     if (ds.swUse) { Object.assign(W.cfg[W.kind], W.r.opt.top[+ds.swUse].p); $('#sw-body').innerHTML = swShell(W.r); toast('Setting applied: run the backtest.'); return; }
     if (ds.sw === 'run') { el.disabled = true; await api('/swing/' + W.kind, { method: 'POST', body: { cfg: W.cfg[W.kind] } }); toast('Backtest started.'); setTimeout(swLoad, 1500); return; }
+    if (ds.sw === 'alldl') { el.disabled = true; await api('/swing/all', { method: 'POST', body: {} }); toast('Download started: it runs in the background.'); setTimeout(swLoad, 1500); return; }
     if (ds.sw === 'futdl') { el.disabled = true; await api('/swing/futdaily', { method: 'POST', body: {} }); toast('Download started.'); setTimeout(swLoad, 1500); return; }
     if (ds.sw === 'opt') { el.disabled = true; await api('/swing/' + W.kind + '/opt', { method: 'POST', body: { cfg: W.cfg[W.kind] } }); toast('Optimizer started.'); setTimeout(swLoad, 1500); return; }
     if (ds.sw === 'csv') {
