@@ -54,23 +54,69 @@ def cost(sub, roots=None):
         return float((r or {}).get("cost") or 0) if isinstance(r, dict) else 0.0
 
 
-def _rows(key, sym, end):
+def _windows(end):
+    """3-year request windows from START to end: a short request answers fast and a stalled one costs little."""
+    y0, y1 = int(START[:4]), int(end[:4])
+    out, a = [], START
+    for y in range(y0 + 3, y1 + 4, 3):
+        b = min(f"{y}-01-01T00:00:00", end)
+        if b > a:
+            out.append((a if "T" in a else a + "T00:00:00", b))
+        a = b
+    return out
+
+
+def _read_all(r, t0):
+    """The whole body, but never longer than TIMEOUT in total (a trickling answer must not hold the job)."""
+    buf = bytearray()
+    while True:
+        if time.time() - t0 > TIMEOUT:
+            raise TimeoutError(f"Databento took more than {TIMEOUT} s")
+        chunk = r.read(1 << 16)
+        if not chunk:
+            return bytes(buf)
+        buf += chunk
+
+
+class OutOfTime(Exception):
+    pass
+
+
+def _rows(key, sym, end, prog=None, deadline=None):
     import csv
     import io
-    params = {"dataset": databento.DATASET, "symbols": sym, "schema": "ohlcv-1d", "start": START, "end": end, "stype_in": "continuous",
-              "encoding": "csv", "compression": "none", "pretty_px": "true", "pretty_ts": "true"}
-    r = databento._retry_end(lambda e: databento._open(key, "POST", "timeseries.get_range", {**params, "end": e}, timeout=TIMEOUT), end)
     out = []
-    try:
-        for x in csv.DictReader(io.TextIOWrapper(r, encoding="utf-8", newline="")):
+    for a, b in _windows(end):
+        if deadline and time.time() > deadline - 2 * TIMEOUT:
+            raise OutOfTime()
+        params = {"dataset": databento.DATASET, "symbols": sym, "schema": "ohlcv-1d", "start": a, "end": b, "stype_in": "continuous",
+                  "encoding": "csv", "compression": "none", "pretty_px": "true", "pretty_ts": "true"}
+        for attempt in (1, 2):
+            if prog:
+                prog(f"Futures daily bars: {sym} {a[:10]} → {b[:10]}{' (retry)' if attempt == 2 else ''}")
+            t0 = time.time()
+            try:
+                r = databento._retry_end(lambda e: databento._open(key, "POST", "timeseries.get_range", {**params, "end": e}, timeout=TIMEOUT), b)
+                try:
+                    body = _read_all(r, t0)
+                finally:
+                    r.close()
+                break
+            except (TimeoutError, OSError) as e:
+                if attempt == 2:
+                    raise TimeoutError(f"{sym} {a[:10]} → {b[:10]}: {e}")
+        for x in csv.DictReader(io.StringIO(body.decode("utf-8"))):
             try:
                 out.append([x["ts_event"][:10], float(x["open"]), float(x["high"]), float(x["low"]), float(x["close"]), int(float(x["volume"])),
                             int(x["instrument_id"])])
             except (KeyError, ValueError):
                 continue
-    finally:
-        r.close()
-    return out
+    seen, uniq = set(), []
+    for x in out:
+        if x[0] not in seen:
+            seen.add(x[0])
+            uniq.append(x)
+    return uniq
 
 
 def adjust(v0, v1):
@@ -98,16 +144,18 @@ def download(sub, prog=None, deadline=None, cont=None):
     end = _end(key)
     roots = list(SPEC)
     for i in range((cont or 0), len(roots)):
-        if deadline and time.time() > deadline - 4 * TIMEOUT:     # room for this market's two requests (and a retry each)
+        if deadline and time.time() > deadline - 3 * TIMEOUT:     # room for a stalled request and its retry
             return i
         r = roots[i]
         old = store.get_json(f"fut/d/{r}") or {}
         if old.get("bars") and not old.get("error") and (old.get("at") or "")[:10] == iso(now_ny())[:10]:
             continue                                   # already fetched today (a resumed download skips it)
-        if prog:
-            prog(f"Futures daily bars: {r} ({i + 1}/{len(roots)})")
         try:
-            v0, v1 = _rows(key, f"{r}.v.0", end), _rows(key, f"{r}.v.1", end)
+            p_ = (lambda m: prog(f"{m} ({i + 1}/{len(roots)})")) if prog else None
+            v0 = _rows(key, f"{r}.v.0", end, p_, deadline)
+            v1 = _rows(key, f"{r}.v.1", end, p_, deadline)
+        except OutOfTime:
+            return i                                   # this market again, in a new run
         except Exception as e:                         # refused, timed out, cut off: note it on the market, go on with the next
             old = store.get_json(f"fut/d/{r}") or {}
             store.put_json(f"fut/d/{r}", {**old, "bars": old.get("bars") or [], "error": (str(e) or type(e).__name__)[:300], "at": iso(now_ny())})

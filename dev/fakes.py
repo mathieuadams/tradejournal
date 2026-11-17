@@ -138,7 +138,7 @@ def fake_open(key, method, path, params, timeout=60):
         rnd = random.Random(sum(map(ord, root)))
         out = io.StringIO()
         out.write("ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume\n")
-        t, px, k = s, 100.0, 0
+        t, px, k = datetime(2010, 6, 7), 100.0, 0           # the same series whatever window is asked
         while t < e:
             if t.weekday() < 5:
                 k += 1
@@ -148,7 +148,9 @@ def fake_open(key, method, path, params, timeout=60):
                 c = px + carry
                 o = c * (1 + rnd.gauss(0, 0.004))
                 h, l = max(o, c) * (1 + abs(rnd.gauss(0, 0.005))), min(o, c) * (1 - abs(rnd.gauss(0, 0.005)))
-                out.write(f"{t.strftime('%Y-%m-%dT00:00:00')}.000000000Z,35,1,{1000 + q},{o:.4f},{h:.4f},{l:.4f},{c:.4f},{rnd.randint(1000, 90000)}\n")
+                vol = rnd.randint(1000, 90000)
+                if t >= s:
+                    out.write(f"{t.strftime('%Y-%m-%dT00:00:00')}.000000000Z,35,1,{1000 + q},{o:.4f},{h:.4f},{l:.4f},{c:.4f},{vol}\n")
             t += timedelta(days=1)
         return _Resp(out.getvalue().encode())
     if path == "timeseries.get_range":

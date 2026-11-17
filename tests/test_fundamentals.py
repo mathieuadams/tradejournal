@@ -710,7 +710,7 @@ def test_swing_futures():
     import store
     store.put_json("fut/d/NQ", {})
     real = futdaily._rows
-    futdaily._rows = lambda key, sym, end: (_ for _ in ()).throw(TimeoutError("timed out")) if sym.startswith("NQ.") else real(key, sym, end)
+    futdaily._rows = lambda key, sym, end, *a: (_ for _ in ()).throw(TimeoutError("timed out")) if sym.startswith("NQ.") else real(key, sym, end, *a)
     try:
         assert futdaily.download(SUB) is None
     finally:
