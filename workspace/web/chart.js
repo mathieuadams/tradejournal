@@ -246,6 +246,27 @@ export class Chart {
     for (const l of o.lines) this.drawPineLine(g, sp, l);
     for (const s of o.shapes) this.drawShapes(g, sp, s, i0, i1);
     for (const l of o.labels) this.drawLabel(g, sp, l);
+    if (o.strategy && pane.id === 'main') this.drawTrades(g, pane, o.strategy);
+  }
+  drawTrades(g, pane, st) {
+    const D = this.data(), n = this.count(), a = Math.floor(this.view.a) - 1, b = Math.ceil(this.view.b) + 1;
+    const idx = t => this.tToIdx(t), mark = (i, px, dir, label, col, entry) => {
+      const k = Math.round(i); if (k < a || k > b) return; const bar = D[k]; const x = this.idxToX(i), y = this.pY(pane, px);
+      g.fillStyle = col; g.beginPath(); const s = 5;
+      if (dir > 0) { g.moveTo(x, y + 2); g.lineTo(x - s, y + 2 + s * 1.6); g.lineTo(x + s, y + 2 + s * 1.6); } else { g.moveTo(x, y - 2); g.lineTo(x - s, y - 2 - s * 1.6); g.lineTo(x + s, y - 2 - s * 1.6); }
+      g.fill(); g.font = '600 10px Inter, sans-serif'; g.textAlign = 'center'; g.textBaseline = dir > 0 ? 'top' : 'bottom';
+      const ly = dir > 0 ? Math.max(y + 14, bar ? this.pY(pane, bar.l) + 6 : y + 14) : Math.min(y - 14, bar ? this.pY(pane, bar.h) - 6 : y - 14);
+      g.fillText(label, x, ly);
+    };
+    for (const t of st.trades) {
+      const i0 = idx(t.entryTime), i1 = idx(t.exitTime); if (i1 < a || i0 > b) continue;
+      const col = t.pnl >= 0 ? '#089981' : '#f23645';
+      g.strokeStyle = col; g.setLineDash([2, 3]); g.lineWidth = 1; g.beginPath(); g.moveTo(this.idxToX(i0), this.pY(pane, t.entryPx)); g.lineTo(this.idxToX(i1), this.pY(pane, t.exitPx)); g.stroke(); g.setLineDash([]);
+      mark(i0, t.entryPx, t.dir, `${t.dir > 0 ? 'L' : 'S'} ${t.qty}`, t.dir > 0 ? '#2962ff' : '#e040fb');
+      mark(i1, t.exitPx, -t.dir, `${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(0)}`, col);
+    }
+    for (const l of st.open) { const i0 = idx(l.t); mark(i0, l.px, l.dir, `${l.dir > 0 ? 'L' : 'S'} ${l.qty}`, l.dir > 0 ? '#2962ff' : '#e040fb'); }
+    void n;
   }
   drawPlot(g, pane, p, i0, i1, Y) {
     const off = p.offset || 0, bw = this.barW(), V = p.values, cols = p.colors;
@@ -481,7 +502,7 @@ export class Chart {
     const row = (d, host) => {
       const r = document.createElement('div'); r.className = 'lg-row lg-ind' + (d.visible === false ? ' off' : '') + (d.out && d.out.error ? ' err' : ''); r.dataset.id = d.id;
       r.innerHTML = `<span class="lg-name">${esc(d.out ? (d.out.meta.shorttitle || d.out.meta.title) : d.title)}</span><span class="lg-args dim">${esc(argsText(d))}</span><span class="lg-vals"></span>
-        <span class="lg-btns"><button data-a="toggle" title="Show / hide">${d.visible === false ? '◌' : '◉'}</button><button data-a="settings" title="Settings">⚙</button><button data-a="source" title="Source code">{ }</button><button data-a="remove" title="Remove">✕</button></span>
+        <span class="lg-btns"><button data-a="toggle" title="Show / hide">${d.visible === false ? '◌' : '◉'}</button><button data-a="settings" title="Settings">⚙</button><button data-a="source" title="Source code">{ }</button>${d.out && d.out.strategy ? '<button data-a="research" title="Backtest / optimize in Research">⚗</button>' : ''}<button data-a="remove" title="Remove">✕</button></span>
         ${d.out && d.out.error ? `<span class="lg-err">⚠ ${esc(d.out.error.message)}</span>` : ''}`;
       r.addEventListener('click', e => { const b = e.target.closest('button'); if (b) { e.stopPropagation(); this.opts.onLegend && this.opts.onLegend(d.id, b.dataset.a); } });
       host.appendChild(r);
@@ -504,7 +525,8 @@ export class Chart {
     for (const d of this.ind) {
       const r = this.legendEl.querySelector(`.lg-ind[data-id="${d.id}"] .lg-vals`); if (!r || !d.out) continue;
       const fmt = d.out.meta.format === 'volume' ? fmtVol : v => fmtPrice(v, d.out.meta.overlay ? this.prec : (Number.isFinite(d.out.meta.precision) ? d.out.meta.precision : 2));
-      r.innerHTML = d.out.plots.filter(p => p.display !== 'none').slice(0, 5).map(p => { const v = p.values[i - (p.offset || 0)], c = p.colors ? p.colors[i - (p.offset || 0)] : p.color; return `<i style="color:${solid(c || p.color)}">${finite(v) ? fmt(v) : '∅'}</i>`; }).join('');
+      const sm = d.out.strategy ? `<i class="${d.out.strategy.net >= 0 ? 'up' : 'dn'}">net ${d.out.strategy.net >= 0 ? '+' : ''}${d.out.strategy.net.toFixed(0)} · ${d.out.strategy.trades.length} trades</i>` : '';
+      r.innerHTML = sm + d.out.plots.filter(p => p.display !== 'none').slice(0, 5).map(p => { const v = p.values[i - (p.offset || 0)], c = p.colors ? p.colors[i - (p.offset || 0)] : p.color; return `<i style="color:${solid(c || p.color)}">${finite(v) ? fmt(v) : '∅'}</i>`; }).join('');
     }
   }
 

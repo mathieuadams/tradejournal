@@ -3,9 +3,76 @@
 const V = '//@version=6\n';
 const S = (id, name, cat, desc, src, extra = {}) => ({ id, name, cat, desc, src: V + src.trim() + '\n', builtin: true, ...extra });
 
-export const CATEGORIES = ['Trend', 'Momentum', 'Volatility', 'Volume', 'Levels', 'Structure', 'SMC / ICT', 'Signals'];
+export const CATEGORIES = ['Strategies', 'Trend', 'Momentum', 'Volatility', 'Volume', 'Levels', 'Structure', 'SMC / ICT', 'Signals'];
 
 export const LIBRARY = [
+S('onmid', 'Overnight range midpoint → overnight high / low', 'Strategies', 'Research #5 as a backtestable strategy: the 09:30 open in the top half of the overnight range buys toward the overnight high, in the bottom half sells toward the low; stop 0.5× the range, out at 11:30. Open it in Research to study and optimize it.', `
+strategy("Overnight range midpoint → ON high / low", "ON mid", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 100)
+onStart  = input.int(1600, "Overnight starts at (HHMM, 1800 for futures)")
+stopPart = input.float(0.5, "Stop: part of the overnight range", step = 0.05)
+deadPct  = input.float(0, "No trade within ±% of the range around the mid", step = 1)
+minRR    = input.float(0, "Target at least × the risk (0 = any)", step = 0.25)
+exitAt   = input.int(1130, "Out at (HHMM)")
+atTarget = input.string("Take profit on touch", "At the target", options = ["Take profit on touch", "Hold if a candle closes beyond"])
+holdStop = input.string("Overnight extreme", "Stop once held", options = ["Overnight extreme", "Entry", "Leave it"])
+side     = input.string("Both", "Side", options = ["Both", "Long", "Short"])
+
+t = hour * 100 + minute
+tc = hour(time_close) * 100 + minute(time_close)
+inON = t >= onStart or t < 930
+startON = inON and not inON[1]
+var float onh = na
+var float onl = na
+if startON
+    onh := high
+    onl := low
+else if inON
+    onh := math.max(nz(onh, high), high)
+    onl := math.min(nz(onl, low), low)
+
+var float tgt = na
+var float stp = na
+var bool held = false
+
+// decided on the candle that closes at 09:30 (its close = the open); the market order fills at the 09:30 open
+if inON and tc >= 930 and t < 930 and strategy.position_size == 0 and onh > onl
+    rng = onh - onl
+    mid = (onh + onl) / 2
+    o = close
+    pos = (o - onl) / rng
+    if pos > 0 and pos < 1 and math.abs(pos - 0.5) * 100 >= deadPct
+        d = o > mid ? 1 : -1
+        tg = d > 0 ? onh : onl
+        st = o - d * stopPart * rng
+        risk = (o - st) * d
+        ok = (side == "Both" or (side == "Long" and d > 0) or (side == "Short" and d < 0)) and risk > 0 and (minRR == 0 or (tg - o) * d >= minRR * risk)
+        if ok
+            tgt := tg
+            stp := st
+            held := false
+            strategy.entry("ON", d > 0 ? strategy.long : strategy.short)
+            if atTarget == "Take profit on touch"
+                strategy.exit("x", "ON", stop = st, limit = tg, comment_loss = "Stop", comment_profit = "Target")
+            else
+                strategy.exit("x", "ON", stop = st, comment = "Stop")
+
+if strategy.position_size != 0
+    d = strategy.position_size > 0 ? 1 : -1
+    if atTarget == "Hold if a candle closes beyond" and not held and (d > 0 ? high >= tgt : low <= tgt)
+        if (close - tgt) * d > 0
+            held := true
+            ns = holdStop == "Overnight extreme" ? tgt : holdStop == "Entry" ? strategy.position_avg_price : stp
+            stp := d > 0 ? math.max(ns, stp) : math.min(ns, stp)
+            strategy.exit("x", "ON", stop = stp, comment = "Stop (held)")
+        else
+            strategy.close("ON", comment = "Target (close)", immediately = true)
+    if strategy.position_size != 0 and t >= (held ? 1555 : exitAt)
+        strategy.close("ON", comment = held ? "15:55" : "Time", immediately = true)
+
+plot(strategy.position_size != 0 ? tgt : na, "Target", #089981, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? stp : na, "Stop", #f23645, 1, plot.style_linebr)
+`, { aliases: 'overnight midpoint onmid onh onl strategy backtest' }),
+
 S('volume', 'Volume', 'Volume', 'Volume columns at the bottom of the price pane, colored by candle direction.', `
 indicator("Volume", "Vol", overlay = true, format = format.volume, scale = scale.none)
 upColor = input.color(color.new(#089981, 50), "Up color")

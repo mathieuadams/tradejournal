@@ -208,7 +208,7 @@ class FakeMarket(Market):
             self.cur[sym] = bars[-1]
             self.rng[sym] = random.Random(_seed(sym) + 2)
 
-    def bars(self, sym, tf, limit=1500, before=None):
+    def bars(self, sym, tf, limit=1500, before=None, feed=None):
         n, unit = parse_tf(tf)
         if unit == "s":
             raise ValueError("Second timeframes are not available")
@@ -356,9 +356,13 @@ class AlpacaMarket(Market):
             return (f"{n}Month", None) if n in (1, 2, 3, 4, 6, 12) else ("1Month", (n, "M"))
         return "1Min", (n, unit)
 
-    def bars(self, sym, tf, limit=1500, before=None):
+    def bars(self, sym, tf, limit=1500, before=None, feed=None):
+        """feed='sip' (research): every exchange, complete pre / post market; on the free plan SIP stops 15 minutes ago."""
         n, unit = parse_tf(tf)
         tfa, agg = self._plan(n, unit)
+        feed = feed if feed in ("iex", "sip") else self.feed
+        if feed == "sip" and not before:
+            before = int(time.time()) - 16 * 60
         sec = n * UNIT_SEC[unit]
         crypto = is_crypto(sym)
         factor = 1.15 if crypto else (3.2 if sec < 86400 else 1.6)
@@ -372,11 +376,11 @@ class AlpacaMarket(Market):
                 d = self._get("/v1beta3/crypto/us/bars", {**params, "symbols": sym, "page_token": token})
                 chunk = (d.get("bars") or {}).get(sym) or []
             else:
-                d = self._get(f"/v2/stocks/{urllib.parse.quote(sym)}/bars", {**params, "adjustment": "split", "feed": self.feed, "page_token": token})
+                d = self._get(f"/v2/stocks/{urllib.parse.quote(sym)}/bars", {**params, "adjustment": "split", "feed": feed, "page_token": token})
                 chunk = d.get("bars") or []
             rows += chunk
             token, pages = d.get("next_page_token"), pages + 1
-            if not token or pages > 30:
+            if not token or pages > 80:
                 break
         out = []
         for b in rows:

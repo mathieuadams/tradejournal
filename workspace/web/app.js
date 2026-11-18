@@ -453,6 +453,7 @@ async function boot() {
       if (a === 'remove') W.removeIndicator(id);
       if (a === 'settings') indicatorSettings(id);
       if (a === 'source') openInEditor({ indicatorId: id });
+      if (a === 'research') import('./research.js').then(m => m.openResearch({ indicatorId: id }));
     },
     onDrawingAdd: d => { W.pushUndo(); W.setDrawings([...W.drawings(), d]); },
     onDrawingsChange: () => { W.save(); W.emit('drawings'); },

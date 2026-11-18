@@ -596,14 +596,171 @@ const header = strat => (c, a) => {
   m.title = a[0] ?? n.title ?? 'Script'; m.shorttitle = a[1] ?? n.shorttitle ?? m.title; m.overlay = truthy(a[2] ?? n.overlay ?? false);
   m.format = n.format; m.precision = n.precision; m.scale = n.scale; m.strategy = strat;
   for (const k of ['line', 'label', 'box']) if (n[`max_${k}s_count`] !== undefined) c.max[k] = Math.min(500, n[`max_${k}s_count`]);
-  if (strat) c.warn('strategy(): orders are ignored for now; the script runs as an indicator.');
+  if (strat) c.strat = new Strat(c, n);
   return NaN;
 };
 def('indicator', 'title,shorttitle,overlay', header(false));
 def('study', 'title,shorttitle,overlay', header(false));
 def('strategy', 'title,shorttitle,overlay', header(true));
 def('library', 'title', (c, a) => { c.out.meta.title = a[0]; return NaN; });
-for (const n of ['strategy.entry', 'strategy.exit', 'strategy.close', 'strategy.close_all', 'strategy.order', 'strategy.cancel', 'strategy.cancel_all']) def(n, '', () => NaN);
+
+// ------------------------------------------------------------------ strategies (backtester)
+// Orders placed on a bar fill from the next bar (market at its open; stop / limit when the bar's path reaches them),
+// or at this bar's close with process_orders_on_close = true. Intrabar path: open -> nearer extreme -> other extreme -> close.
+// Stops and limits that the open gaps through fill at the open. Slippage (ticks) applies to market and stop fills.
+const SC = { 'strategy.fixed': 'fixed', 'strategy.cash': 'cash', 'strategy.percent_of_equity': 'percent_of_equity',
+  'strategy.commission.percent': 'percent', 'strategy.commission.cash_per_contract': 'cash_per_contract', 'strategy.commission.cash_per_order': 'cash_per_order',
+  'strategy.direction.long': 'long', 'strategy.direction.short': 'short', 'strategy.direction.all': 'all', 'strategy.oca.none': 'none', 'strategy.oca.cancel': 'cancel', 'strategy.oca.reduce': 'reduce' };
+Object.assign(CONST, SC);
+class Strat {
+  constructor(c, n) {
+    this.c = c; this.B = c.B; this.tick = c.mintick;
+    this.cap = n.initial_capital ?? 100000; this.qtyType = n.default_qty_type ?? 'fixed'; this.qtyVal = n.default_qty_value ?? 1;
+    this.pyr = n.pyramiding ?? 0; this.comType = n.commission_type ?? 'percent'; this.comVal = n.commission_value ?? 0;
+    this.slip = n.slippage ?? 0; this.poc = !!n.process_orders_on_close; this.dirAllowed = 'all';
+    if (c.stratOverrides) Object.assign(this, c.stratOverrides);
+    this.lots = []; this.orders = []; this.trades = []; this.net = 0; this.eq = new Array(c.n).fill(NaN); this.fills = [];
+  }
+  size() { return this.lots.reduce((s, l) => s + l.qty * l.dir, 0); }
+  avg() { const q = this.lots.reduce((s, l) => s + l.qty, 0); return q ? this.lots.reduce((s, l) => s + l.qty * l.px, 0) / q : NaN; }
+  openPnl(px) { return this.lots.reduce((s, l) => s + (px - l.px) * l.qty * l.dir, 0); }
+  equity(px) { return this.cap + this.net + this.openPnl(px); }
+  com(qty, px) { return this.comType === 'percent' ? Math.abs(qty * px) * this.comVal / 100 : this.comType === 'cash_per_contract' ? qty * this.comVal : this.comVal; }
+  qtyFor(q, px) {
+    if (!isna(q) && q !== undefined) return q;
+    if (this.qtyType === 'cash') return Math.floor(this.qtyVal / px);
+    if (this.qtyType === 'percent_of_equity') return Math.floor(this.equity(px) * this.qtyVal / 100 / px);
+    return this.qtyVal;
+  }
+  place(o) {
+    o.placed = this.c.i;
+    if (o.kind === 'exit') { this.orders = this.orders.filter(x => !(x.kind === 'exit' && x.id === o.id && x.from === o.from)); }
+    else if (o.id !== undefined) this.orders = this.orders.filter(x => !(x.kind === o.kind && x.id === o.id));
+    this.orders.push(o);
+    if (o.immediately) this.process(this.c.i, 'close');
+  }
+  // levels on the bar's path: when (0..3) the price first reaches `lvl` going `up` (true: price >= lvl)
+  when(path, lvl, up, from) {
+    for (let k = 0; k < 3; k++) {
+      const a = path[k], b = path[k + 1], t0 = k, t1 = k + 1; if (t1 <= from) continue;
+      const startT = Math.max(t0, from), sa = a + (b - a) * (startT - t0);
+      if (up ? sa >= lvl : sa <= lvl) return { t: startT, px: startT === 0 ? sa : lvl, gap: startT === 0 };
+      if (up ? b >= lvl : b <= lvl) return { t: t0 + (lvl - a) / ((b - a) || 1), px: lvl, gap: false };
+    }
+    return null;
+  }
+  exitLevels(x) {
+    const lots = this.lots.filter(l => x.from === undefined || isna(x.from) || l.id === x.from); if (!lots.length) return null;
+    const dir = lots[0].dir, px = lots.reduce((s, l) => s + l.px * l.qty, 0) / lots.reduce((s, l) => s + l.qty, 0);
+    let lim = x.limit, st = x.stop;
+    if (isna(lim) && !isna(x.profit)) lim = px + dir * x.profit * this.tick;
+    if (isna(st) && !isna(x.loss)) st = px - dir * x.loss * this.tick;
+    return { lots, dir, lim, st };
+  }
+  process(i, at) {
+    const B = this.B, o = B.o[i], h = B.h[i], l = B.l[i], cl = B.c[i];
+    const path = at === 'close' ? [cl, cl, cl, cl] : (h - o < o - l ? [o, h, l, cl] : [o, l, h, cl]);
+    let tNow = 0;
+    for (let guard = 0; guard < 50; guard++) {
+      let best = null;
+      for (const x of this.orders) {
+        if (at !== 'close' && x.placed >= i) continue;               // placed on this bar: fills from the next one
+        if (at === 'close' && !(x.placed === i && (this.poc || x.immediately))) continue;
+        let ev = null;
+        if (x.kind === 'entry' || x.kind === 'order') {
+          const up = x.dir > 0;
+          if (isna(x.limit) && isna(x.stop)) ev = tNow === 0 ? { t: 0, px: path[0] + (at === 'close' ? 0 : x.dir * this.slip * this.tick), market: true } : null;
+          else {
+            const s = !isna(x.stop) ? this.when(path, x.stop, up, tNow) : null, li = !isna(x.limit) ? this.when(path, x.limit, !up, tNow) : null;
+            if (s && li) ev = s.t <= li.t ? s : li; else ev = s || li;
+            if (ev && s === ev) ev = { ...ev, px: ev.px + x.dir * this.slip * this.tick };
+          }
+        } else if (x.kind === 'close') ev = tNow === 0 || at === 'close' ? { t: tNow, px: path[0] - (this.size() > 0 ? 1 : -1) * (at === 'close' ? 0 : this.slip * this.tick), market: true } : null;
+        else if (x.kind === 'exit') {
+          const L = this.exitLevels(x); if (!L) continue;
+          const s = !isna(L.st) ? this.when(path, L.st, L.dir < 0, tNow) : null, li = !isna(L.lim) ? this.when(path, L.lim, L.dir > 0, tNow) : null;
+          ev = s && li ? (s.t <= li.t ? s : li) : (s || li);
+          if (ev && ev === s) ev = { ...ev, px: ev.px - L.dir * this.slip * this.tick, why: x.comment_loss || x.comment || x.id };
+          else if (ev) ev = { ...ev, why: x.comment_profit || x.comment || x.id };
+        }
+        if (ev && (!best || ev.t < best.ev.t)) best = { x, ev };
+      }
+      if (!best) break;
+      tNow = best.ev.t; this.exec(best.x, best.ev.px, i, best.ev.why);
+    }
+  }
+  exec(x, px, i, why) {
+    const t = this.B.t[i];
+    this.orders = this.orders.filter(y => y !== x);
+    if (x.kind === 'entry' || x.kind === 'order') {
+      if (this.dirAllowed !== 'all' && this.dirAllowed !== (x.dir > 0 ? 'long' : 'short') && x.kind === 'entry') { if (this.size() * x.dir < 0) this.closeLots(this.lots.slice(), px, i, 'Direction filter'); return; }
+      const sz = this.size();
+      if (x.kind === 'entry' && sz * x.dir < 0) this.closeLots(this.lots.slice(), px, i, x.comment || x.id);   // reverse
+      else if (x.kind === 'entry' && sz * x.dir > 0 && this.lots.length > this.pyr) return;                  // pyramiding limit
+      let q = this.qtyFor(x.qty, px); if (!(q > 0)) return;
+      if (x.kind === 'order' && sz * x.dir < 0) { const rest = this.reduce(q, px, i, x.comment || x.id); q = rest; if (!(q > 0)) return; }
+      this.lots.push({ id: x.id, dir: x.dir, qty: q, px, bar: i, t, com: this.com(q, px), comment: x.comment });
+      this.fills.push({ bar: i, t, px, qty: q, dir: x.dir, id: x.id, kind: 'entry' });
+    } else if (x.kind === 'close') {
+      const lots = this.lots.filter(l => x.id === undefined || l.id === x.id); this.closeLots(lots, px, i, x.comment || 'Close', x.qty);
+    } else if (x.kind === 'exit') {
+      const L = this.exitLevels(x); if (!L) return; this.closeLots(L.lots, px, i, why || x.id, isna(x.qty) ? (isna(x.qtyPct) ? undefined : L.lots.reduce((s, l) => s + l.qty, 0) * x.qtyPct / 100) : x.qty);
+    }
+    if (!this.lots.length) this.orders = this.orders.filter(y => y.kind !== 'exit');
+  }
+  reduce(q, px, i, why) { let rest = q; for (const l of this.lots.slice()) { if (rest <= 0) break; const k = Math.min(rest, l.qty); this.closeLots([l], px, i, why, k); rest -= k; } return rest; }
+  closeLots(lots, px, i, why, qty) {
+    let left = qty === undefined ? Infinity : qty;
+    for (const l of lots) {
+      if (left <= 0) break; const k = Math.min(l.qty, left); left -= k;
+      const comIn = l.com * k / l.qty, comOut = this.com(k, px), pnl = (px - l.px) * k * l.dir - comIn - comOut;
+      this.net += pnl;
+      this.trades.push({ id: l.id, dir: l.dir, qty: k, entryBar: l.bar, entryTime: l.t, entryPx: l.px, exitBar: i, exitTime: this.B.t[i], exitPx: px, pnl, pct: (px / l.px - 1) * 100 * l.dir, why, comment: l.comment });
+      this.fills.push({ bar: i, t: this.B.t[i], px, qty: k, dir: -l.dir, id: why, kind: 'exit' });
+      l.com -= comIn; l.qty -= k;
+      if (l.qty <= 1e-12) this.lots.splice(this.lots.indexOf(l), 1);
+    }
+  }
+}
+const dirOf = d => d === 'long' || d === 1 || d === true ? 1 : -1;
+def('strategy.entry', 'id,direction,qty,limit,stop,oca_name,oca_type,comment,alert_message,disable_alert', (c, a) => { if (c.strat) c.strat.place({ kind: 'entry', id: a[0], dir: dirOf(a[1]), qty: a[2], limit: num(a[3] ?? NaN), stop: num(a[4] ?? NaN), comment: a[7] }); return NaN; });
+def('strategy.order', 'id,direction,qty,limit,stop,oca_name,oca_type,comment', (c, a) => { if (c.strat) c.strat.place({ kind: 'order', id: a[0], dir: dirOf(a[1]), qty: a[2], limit: num(a[3] ?? NaN), stop: num(a[4] ?? NaN), comment: a[7] }); return NaN; });
+def('strategy.exit', 'id,from_entry,qty,qty_percent,profit,limit,loss,stop,trail_price,trail_points,trail_offset,oca_name,comment,comment_profit,comment_loss', (c, a) => {
+  if (c.strat) c.strat.place({ kind: 'exit', id: a[0], from: a[1], qty: a[2] ?? NaN, qtyPct: a[3] ?? NaN, profit: num(a[4] ?? NaN), limit: num(a[5] ?? NaN), loss: num(a[6] ?? NaN), stop: num(a[7] ?? NaN), comment: a[12], comment_profit: a[13], comment_loss: a[14] });
+  return NaN;
+});
+def('strategy.close', 'id,comment,qty,qty_percent,alert_message,immediately', (c, a) => { if (c.strat && c.strat.lots.some(l => l.id === a[0])) c.strat.place({ kind: 'close', id: a[0], comment: a[1], qty: a[2], immediately: !!a[5] }); return NaN; });
+def('strategy.close_all', 'comment,alert_message,immediately', (c, a) => { if (c.strat && c.strat.lots.length) c.strat.place({ kind: 'close', id: undefined, comment: a[0] || 'Close all', immediately: !!a[2] }); return NaN; });
+def('strategy.cancel', 'id', (c, a) => { if (c.strat) c.strat.orders = c.strat.orders.filter(x => x.id !== a[0]); return NaN; });
+def('strategy.cancel_all', '', c => { if (c.strat) c.strat.orders = []; return NaN; });
+def('strategy.risk.allow_entry_in', 'value', (c, a) => { if (c.strat) c.strat.dirAllowed = a[0]; return NaN; });
+for (const [k, f] of Object.entries({
+  'strategy.position_size': s => s.size(), 'strategy.position_avg_price': s => s.avg(), 'strategy.netprofit': s => s.net, 'strategy.openprofit': (s, c) => s.openPnl(c.B.c[c.i]),
+  'strategy.equity': (s, c) => s.equity(c.B.c[c.i]), 'strategy.initial_capital': s => s.cap, 'strategy.closedtrades': s => s.trades.length, 'strategy.opentrades': s => s.lots.length,
+  'strategy.wintrades': s => s.trades.filter(t => t.pnl > 0).length, 'strategy.losstrades': s => s.trades.filter(t => t.pnl < 0).length, 'strategy.eventrades': s => s.trades.filter(t => t.pnl === 0).length,
+  'strategy.grossprofit': s => s.trades.reduce((x, t) => x + Math.max(0, t.pnl), 0), 'strategy.grossloss': s => s.trades.reduce((x, t) => x + Math.max(0, -t.pnl), 0),
+  'strategy.position_entry_name': s => s.lots.length ? s.lots[0].id : '',
+})) BV[k] = S((c) => c.strat ? f(c.strat, c) : (k === 'strategy.position_entry_name' ? '' : 0));
+def('strategy.closedtrades.profit', 'trade_num', (c, a) => c.strat && c.strat.trades[a[0]] ? c.strat.trades[a[0]].pnl : NaN);
+def('strategy.closedtrades.entry_price', 'trade_num', (c, a) => c.strat && c.strat.trades[a[0]] ? c.strat.trades[a[0]].entryPx : NaN);
+def('strategy.closedtrades.exit_price', 'trade_num', (c, a) => c.strat && c.strat.trades[a[0]] ? c.strat.trades[a[0]].exitPx : NaN);
+def('strategy.opentrades.entry_price', 'trade_num', (c, a) => c.strat && c.strat.lots[a[0]] ? c.strat.lots[a[0]].px : NaN);
+
+// performance of a list of closed trades (also used by the study / optimizer)
+export function metrics(trades, opts = {}) {
+  const n = trades.length, pnl = trades.map(t => t.pnl), wins = pnl.filter(x => x > 0), losses = pnl.filter(x => x < 0);
+  const gp = wins.reduce((a, b) => a + b, 0), gl = -losses.reduce((a, b) => a + b, 0), net = gp - gl;
+  let eq = 0, peak = 0, dd = 0; for (const x of pnl) { eq += x; peak = Math.max(peak, eq); dd = Math.max(dd, peak - eq); }
+  const days = new Map(); for (const t of trades) { const d = Math.floor((t.exitTime - 5 * 3600) / 86400); days.set(d, (days.get(d) || 0) + t.pnl); }
+  const dv = [...days.values()], dm = dv.length ? dv.reduce((a, b) => a + b, 0) / dv.length : 0, dsd = dv.length > 1 ? Math.sqrt(dv.reduce((a, b) => a + (b - dm) ** 2, 0) / (dv.length - 1)) : 0;
+  const longs = trades.filter(t => t.dir > 0), shorts = trades.filter(t => t.dir < 0);
+  const sum = a => a.reduce((x, t) => x + t.pnl, 0);
+  return { n, wins: wins.length, winRate: n ? wins.length / n * 100 : 0, net, gp, gl, pf: gl ? gp / gl : (gp ? Infinity : 0), avg: n ? net / n : 0,
+    avgWin: wins.length ? gp / wins.length : 0, avgLoss: losses.length ? -gl / losses.length : 0, maxDD: dd, sharpe: dsd ? dm / dsd * Math.sqrt(252) : 0, days: dv.length,
+    long: { n: longs.length, net: sum(longs), winRate: longs.length ? longs.filter(t => t.pnl > 0).length / longs.length * 100 : 0 },
+    short: { n: shorts.length, net: sum(shorts), winRate: shorts.length ? shorts.filter(t => t.pnl > 0).length / shorts.length * 100 : 0 },
+    avgBars: n ? trades.reduce((a, t) => a + (t.exitBar - t.entryBar), 0) / n : 0, capital: opts.capital };
+}
 def('alertcondition', 'condition,title,message', () => NaN);
 def('alert', 'message,freq', () => NaN);
 def('request.security', 'symbol,timeframe,expression,gaps,lookahead', (c, a) => { if (!c.warnedSec) { c.warnedSec = true; c.warn('request.security(): other timeframes / symbols are not fetched yet; the chart\'s own series is used.'); } return a[2]; });
@@ -969,7 +1126,7 @@ export function run(compiled, bars, opts = {}) {
   const ctx = {
     B, n, i: 0, out, gf, f: gf, frames: new Map(), depth: 0, brk: null, line: 0, live: !!opts.live,
     symbol: opts.symbol || 'SYMBOL', tf, tfSec: opts.tfSec || tfSeconds(tf), tfMult: parseInt(tf, 10) || 1, mintick: opts.mintick || 0.01,
-    inputValues: opts.inputs || null, inputOrder: new Map(), max: { ...MAXOBJ },
+    inputValues: opts.inputs || null, inputOrder: new Map(), max: { ...MAXOBJ }, strat: null, stratOverrides: opts.strategy || null,
     tp: j => tpc[j] || (tpc[j] = nyParts(B.t[j])),
     warn: msg => { if (!out.logs.some(l => l.msg === msg)) out.logs.push({ level: 'warning', bar: ctx.i, msg }); },
     pre: k => prec[k] || (prec[k] = precompute(k, B, ctx)),
@@ -977,7 +1134,10 @@ export function run(compiled, bars, opts = {}) {
   const t0 = Date.now(), budget = opts.budgetMs || 4000;
   try {
     for (let i = 0; i < n; i++) {
-      ctx.i = i; ctx.brk = null; compiled.prog(ctx);
+      ctx.i = i; ctx.brk = null;
+      if (ctx.strat && i > 0) ctx.strat.process(i, 'open');
+      compiled.prog(ctx);
+      if (ctx.strat) { ctx.strat.process(i, 'close'); ctx.strat.eq[i] = ctx.strat.equity(B.c[i]); }
       if ((i & 255) === 0 && Date.now() - t0 > budget) throw new PineError(`Script took longer than ${budget / 1000}s`, ctx.line);
     }
   } catch (e) {
@@ -990,6 +1150,11 @@ export function run(compiled, bars, opts = {}) {
     bgcolors: [...out._bg.values()], barcolors: [...out._bar.values()],
     lines: out.lines.filter(x => !x.del), labels: out.labels.filter(x => !x.del), boxes: out.boxes.filter(x => !x.del), ms: Date.now() - t0,
   };
+  if (ctx.strat) {
+    const st = ctx.strat, last = B.c[n - 1];
+    res.strategy = { trades: st.trades, open: st.lots.map(l => ({ ...l, pnl: (last - l.px) * l.qty * l.dir })), equity: st.eq, fills: st.fills, net: st.net, capital: st.cap,
+      settings: { qtyType: st.qtyType, qtyVal: st.qtyVal, comType: st.comType, comVal: st.comVal, slip: st.slip, pyr: st.pyr, poc: st.poc }, metrics: metrics(st.trades, { capital: st.cap }) };
+  }
   return res;
 }
 

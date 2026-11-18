@@ -7,8 +7,9 @@ import { compile } from './pine.js';
 import { newId, fmtPrice, nyParts } from './chart.js';
 import { $, h, esc, api, toast, marketStatus, money, priceDigits, nyNow, BASE, authHeaders } from './util.js';
 import { openInEditor, runOnChart, editorState } from './editor.js';
+import { quantStudy, quantApply } from './research.js';
 
-const C = { messages: [], busy: false, abort: null, ui: [], trace: [] };
+const C = { messages: [], busy: false, abort: null, ui: [], trace: [], att: [], id: null, title: '' };
 let body, input, sendBtn;
 
 const SUGGEST = [
@@ -20,16 +21,26 @@ const SUGGEST = [
 
 export function initChat() {
   const pane = $('#chatpane');
-  pane.innerHTML = `<div class="ch-head"><div class="seg"><button class="on">✦ Chat</button><button id="chNew" title="Start a new conversation">＋ New chat</button></div><button class="icon-btn" id="chClose" title="Hide chat">✕</button></div>
+  pane.innerHTML = `<div class="ch-head"><div class="seg"><button class="on" id="chTab">✦ Chat</button><button id="chHist" title="Previous conversations">History</button><button id="chNew" title="Start a new conversation">＋ New</button></div><button class="icon-btn" id="chClose" title="Hide chat">✕</button></div>
     <div class="ch-body" id="chBody"></div>
-    <div class="ch-foot"><div class="ch-input"><textarea id="chIn" rows="2" placeholder="Ask Quant about this chart…"></textarea>
+    <div class="ch-foot"><div class="ch-input"><div class="ch-thumbs" id="chThumbs"></div><textarea id="chIn" rows="2" placeholder="Ask Quant about this chart… (paste or drop screenshots)"></textarea>
       <div class="bar"><span class="sees ${W.state.sees ? 'on' : ''}" id="chSees" title="Send a screenshot of the chart with each message"><svg viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>Sees chart</span>
+      <button class="att" id="chAtt" title="Attach screenshots / images"><svg viewBox="0 0 24 24"><path d="M21 12l-8.5 8.5a5 5 0 01-7-7L14 5a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L15 8"/></svg></button><input type="file" id="chFile" accept="image/*" multiple hidden>
       <span class="dim" style="font-size:11px" id="chModel"></span><button class="send" id="chSend" title="Send (Enter)"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></div>
       <div class="ch-disc">Quant can make mistakes. Paper trading only; not financial advice.</div></div>`;
   body = $('#chBody'); input = $('#chIn'); sendBtn = $('#chSend');
   $('#chModel').textContent = W.cfg.llm === 'anthropic' ? W.cfg.model : 'demo';
   $('#chClose').onclick = () => W.toggleChat(false);
-  $('#chNew').onclick = () => { if (C.busy) stop(); C.messages = []; C.ui = []; saveChat(); renderEmpty(); };
+  $('#chNew').onclick = () => { if (C.busy) stop(); newChat(); };
+  $('#chHist').onclick = () => showHistory();
+  $('#chTab').onclick = () => { $('#chTab').classList.add('on'); $('#chHist').classList.remove('on'); rerender(); };
+  $('#chAtt').onclick = () => $('#chFile').click();
+  $('#chFile').onchange = e => { addFiles([...e.target.files]); e.target.value = ''; };
+  input.addEventListener('paste', e => { const f = [...(e.clipboardData || {}).items || []].filter(i => i.type.startsWith('image/')).map(i => i.getAsFile()); if (f.length) { e.preventDefault(); addFiles(f); } });
+  const pane2 = $('#chatpane');
+  pane2.addEventListener('dragover', e => { if ([...e.dataTransfer.items].some(i => i.type.startsWith('image/'))) { e.preventDefault(); pane2.classList.add('drop'); } });
+  pane2.addEventListener('dragleave', () => pane2.classList.remove('drop'));
+  pane2.addEventListener('drop', e => { pane2.classList.remove('drop'); const f = [...e.dataTransfer.files].filter(x => x.type.startsWith('image/')); if (f.length) { e.preventDefault(); addFiles(f); } });
   $('#chSees').onclick = () => { W.state.sees = !W.state.sees; $('#chSees').classList.toggle('on', W.state.sees); W.save(); };
   W.on('settings', () => $('#chSees').classList.toggle('on', W.state.sees));
   input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
@@ -46,15 +57,67 @@ function renderEmpty() {
   e.querySelectorAll('.chips button').forEach(b => { b.onclick = () => { input.value = b.textContent; submit(); }; });
   body.appendChild(e);
 }
-function saveChat() { try { localStorage.setItem('ws-chat', JSON.stringify({ messages: C.messages.slice(-60).map(stripImages), ui: C.ui.slice(-80) })); } catch { /* quota */ } }
-function loadChat() {
-  try { const s = JSON.parse(localStorage.getItem('ws-chat') || 'null'); if (s && s.ui && s.ui.length) { C.messages = s.messages || []; C.ui = s.ui; body.innerHTML = ''; for (const u of C.ui) renderUi(u); scroll(); return; } } catch { /* ignore */ }
+// conversations are saved on the server (workspace/.data/chats), so they follow you between devices
+const newId2 = () => 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+function newChat() { C.messages = []; C.ui = []; C.id = null; C.title = ''; C.att = []; renderThumbs(); try { localStorage.removeItem('ws-chat-id'); } catch { /* */ } $('#chTab').classList.add('on'); $('#chHist').classList.remove('on'); renderEmpty(); }
+let saveT = null;
+function saveChat() {
+  if (!C.ui.length) return;
+  if (!C.id) { C.id = newId2(); C.title = (C.ui.find(u => u.k === 'user') || {}).text?.slice(0, 80) || 'Chat'; }
+  try { localStorage.setItem('ws-chat-id', C.id); } catch { /* */ }
+  clearTimeout(saveT);
+  saveT = setTimeout(() => api('chats/' + C.id, { title: C.title, symbol: W.tab().symbol, messages: C.messages.slice(-80).map(stripImages), ui: C.ui.slice(-120) }, 'PUT').catch(e => console.warn('chat save', e)), 400);
+}
+async function loadChat() {
+  let id = null; try { id = localStorage.getItem('ws-chat-id'); } catch { /* */ }
+  if (id) { try { const c = await api('chats/' + id); return openChat(c); } catch { /* gone */ } }
+  try { const s = JSON.parse(localStorage.getItem('ws-chat') || 'null'); if (s && s.ui && s.ui.length) { C.messages = s.messages || []; C.ui = s.ui; localStorage.removeItem('ws-chat'); saveChat(); rerender(); return; } } catch { /* ignore */ }
   renderEmpty();
+}
+function openChat(c) { C.id = c.id; C.title = c.title; C.messages = c.messages || []; C.ui = c.ui || []; try { localStorage.setItem('ws-chat-id', C.id); } catch { /* */ } $('#chTab').classList.add('on'); $('#chHist').classList.remove('on'); rerender(); }
+function rerender() { body.innerHTML = ''; if (!C.ui.length) return renderEmpty(); for (const u of C.ui) renderUi(u); scroll(); }
+async function showHistory() {
+  $('#chHist').classList.add('on'); $('#chTab').classList.remove('on');
+  body.innerHTML = '<div class="dim" style="padding:8px">Loading…</div>';
+  let list = []; try { list = (await api('chats')).chats; } catch (e) { body.innerHTML = `<div class="dn">${esc(e.message)}</div>`; return; }
+  body.innerHTML = list.length ? '' : '<div class="empty">No saved conversations yet.</div>';
+  for (const c of list) {
+    const r = h(`<div class="hist ${c.id === C.id ? 'on' : ''}"><div><b>${esc(c.title || 'Chat')}</b><small>${esc(c.symbol || '')} · ${new Date(c.updated * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · ${c.n} messages</small></div><button class="del" title="Delete">✕</button></div>`);
+    r.onclick = async e => {
+      if (e.target.closest('.del')) { e.stopPropagation(); await api('chats/' + c.id, undefined, 'DELETE').catch(() => {}); if (c.id === C.id) newChat(); r.remove(); return; }
+      try { openChat(await api('chats/' + c.id)); } catch (err) { toast(err.message, 'err'); }
+    };
+    body.appendChild(r);
+  }
+}
+// screenshots / images attached to the next message
+async function addFiles(files) {
+  for (const f of files.slice(0, 6)) {
+    if (C.att.length >= 6) { toast('Up to 6 images per message'); break; }
+    try { C.att.push(await shrink(f)); } catch { toast('Could not read ' + f.name, 'err'); }
+  }
+  renderThumbs(); input.focus();
+}
+function shrink(file) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 1568 / Math.max(img.width, img.height)), cv = document.createElement('canvas'); cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); const data = cv.toDataURL('image/jpeg', 0.86).split(',')[1];
+      const t = document.createElement('canvas'), tk = 96 / Math.max(img.width, img.height); t.width = Math.round(img.width * tk); t.height = Math.round(img.height * tk); t.getContext('2d').drawImage(img, 0, 0, t.width, t.height);
+      URL.revokeObjectURL(url); res({ data, thumb: t.toDataURL('image/jpeg', 0.7), name: file.name || 'image' });
+    };
+    img.onerror = rej; img.src = url;
+  });
+}
+function renderThumbs() {
+  const el = $('#chThumbs'); if (!el) return; el.innerHTML = '';
+  C.att.forEach((a, k) => { const t = h(`<span class="th"><img src="${a.thumb}" alt=""><button title="Remove">✕</button></span>`); t.querySelector('button').onclick = () => { C.att.splice(k, 1); renderThumbs(); }; el.appendChild(t); });
 }
 function stripImages(m) { if (!Array.isArray(m.content)) return m; return { ...m, content: m.content.map(c => c.type === 'image' ? { type: 'text', text: '[chart screenshot]' } : c.type === 'tool_result' && Array.isArray(c.content) ? { ...c, content: c.content.map(x => x.type === 'image' ? { type: 'text', text: '[screenshot]' } : x) } : c) }; }
 function scroll() { body.scrollTop = body.scrollHeight; }
 function renderUi(u) {
-  if (u.k === 'user') body.appendChild(h(`<div class="msg user">${esc(u.text)}${u.shot ? '<span class="shot">📷 chart attached</span>' : ''}</div>`));
+  if (u.k === 'user') body.appendChild(h(`<div class="msg user">${(u.imgs || []).map(t => `<img class="uimg" src="${t}" alt="">`).join('')}${esc(u.text)}${u.shot ? '<span class="shot">📷 chart attached</span>' : ''}</div>`));
   if (u.k === 'ai') { const d = h('<div class="msg ai"></div>'); d.innerHTML = md(u.text); wireCode(d); body.appendChild(d); }
   if (u.k === 'think') { const d = h(`<details class="think"><summary><span class="tl">Thought for ${u.secs || 1}s</span></summary><div class="tb"></div></details>`); d.querySelector('.tb').textContent = u.text || '(Claude kept its thinking private for this step.)'; body.appendChild(d); }
   if (u.k === 'tool') body.appendChild(h(`<div class="tool ${u.err ? 'err' : 'done'}"><span class="spin"></span>${esc(u.text)}</div>`));
@@ -62,18 +125,20 @@ function renderUi(u) {
 
 // ------------------------------------------------------------------------------------------------ agent loop
 async function submit() {
-  const text = input.value.trim(); if (!text || C.busy) return;
+  let text = input.value.trim(); if ((!text && !C.att.length) || C.busy) return;
+  if (!text) text = 'What do you see in this screenshot?';
   input.value = ''; autosize();
   if (!C.messages.length) body.innerHTML = '';
-  const content = [];
+  const content = [], att = C.att; C.att = []; renderThumbs();
+  for (const a of att) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: a.data } });
   let shot = false;
   if (W.state.sees && W.chart && W.activeBars().length) { try { const url = W.chart.snapshot(1400); content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: url.split(',')[1] } }); shot = true; } catch { /* tainted */ } }
   let ctxText = `<chart_context>\n${contextText()}\n</chart_context>`;
   if (C.attachScript) { const es = editorState(); ctxText += `\n<editor_script name="${es.name}">\n${es.src}\n</editor_script>${es.error ? `\n<compile_error line="${es.error.line}">${es.error.message}</compile_error>` : ''}`; C.attachScript = false; }
-  content.push({ type: 'text', text: ctxText + '\n\n' + text });
+  content.push({ type: 'text', text: ctxText + (att.length ? `\n(The user attached ${att.length} image${att.length > 1 ? 's' : ''} above${shot ? '; the last image is the current chart' : ''}.)` : '') + '\n\n' + text });
   const prevM = C.messages[C.messages.length - 1];
   if (prevM && prevM.role === 'user' && Array.isArray(prevM.content)) prevM.content.push(...content); else C.messages.push({ role: 'user', content });
-  const u = { k: 'user', text, shot }; C.ui.push(u); renderUi(u); scroll();
+  const u = { k: 'user', text, shot, imgs: att.map(a => a.thumb) }; C.ui.push(u); renderUi(u); scroll(); saveChat();
   C.busy = true; sendBtn.innerHTML = '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>'; sendBtn.title = 'Stop';
   try {
     for (let step = 0; step < 12; step++) {
@@ -197,7 +262,7 @@ function contextText() {
 function systemPrompt() {
   return `You are Quant, the trading assistant inside a charting workspace (TradingView-style). The user sees a chart in the middle of the screen; you see a screenshot of it with each message (when "Sees chart" is on) and a <chart_context> block.
 
-What you can do with tools: read the bars and indicator values (get_chart_state, get_bars for any symbol / timeframe), mark up the chart (draw_levels, draw_zones, draw_trendlines, clear_ai_drawings), change symbol / timeframe / chart type (set_chart), add or remove library indicators (add_indicator, remove_indicator), write Pine Script that runs on the chart (write_pine_script), read the paper account (get_account) and place simulated paper orders (place_paper_order). take_screenshot shows you the chart after changes.
+What you can do with tools: backtest and optimize strategies in Research (run_study, apply_study_inputs), read the bars and indicator values (get_chart_state, get_bars for any symbol / timeframe), mark up the chart (draw_levels, draw_zones, draw_trendlines, clear_ai_drawings), change symbol / timeframe / chart type (set_chart), add or remove library indicators (add_indicator, remove_indicator), write Pine Script that runs on the chart (write_pine_script), read the paper account (get_account) and place simulated paper orders (place_paper_order). take_screenshot shows you the chart after changes.
 
 Rules:
 - Base levels and numbers on the bars you read (get_chart_state), not on guesses from the image. Prices in the screenshot can be imprecise.
@@ -207,7 +272,7 @@ Rules:
 - Data may be SIMULATED (the context says so): then say the analysis is on simulated data.
 - Use markdown sparingly: short paragraphs, bullets for levels, no big headers.
 
-Pine Script: write v6 (//@version=6, indicator(...)). The interpreter supports: var/varip, typed declarations, tuples, :=, += etc., if / else if / else, for (to / by / in), while, switch, user functions (single line and block), history [], ta.* (sma ema rma wma vwma hma alma stdev dev variance highest lowest highestbars lowestbars change mom roc rsi tr atr crossover crossunder cross cum vwap macd bb bbw kc stoch cci mfi wpr supertrend sar pivothigh pivotlow valuewhen barssince rising falling dmi linreg correlation median percentrank obv accdist), math.*, str.*, color.new/rgb/from_gradient, input.int/float/bool/string/color/source, plot (styles line linebr stepline histogram columns circles cross area), plotshape, plotchar, hline, fill (plots or hlines), bgcolor, barcolor, line.new / label.new / box.new with their set_*/get_*/delete and method syntax, array.* with method syntax, time / hour / minute / dayofweek / timeframe.*, syminfo.*, barstate.*. Not supported yet: request.security on other timeframes (returns the chart's own series), tables, user-defined types, strategy orders (strategy() runs as an indicator). Overlay scripts use overlay = true. If write_pine_script returns an error, fix the script and call it again.
+Pine Script: write v6 (//@version=6, indicator(...)). The interpreter supports: var/varip, typed declarations, tuples, :=, += etc., if / else if / else, for (to / by / in), while, switch, user functions (single line and block), history [], ta.* (sma ema rma wma vwma hma alma stdev dev variance highest lowest highestbars lowestbars change mom roc rsi tr atr crossover crossunder cross cum vwap macd bb bbw kc stoch cci mfi wpr supertrend sar pivothigh pivotlow valuewhen barssince rising falling dmi linreg correlation median percentrank obv accdist), math.*, str.*, color.new/rgb/from_gradient, input.int/float/bool/string/color/source, plot (styles line linebr stepline histogram columns circles cross area), plotshape, plotchar, hline, fill (plots or hlines), bgcolor, barcolor, line.new / label.new / box.new with their set_*/get_*/delete and method syntax, array.* with method syntax, time / hour / minute / dayofweek / timeframe.*, syminfo.*, barstate.*. Strategies are supported: strategy(title, overlay = true, initial_capital, default_qty_type = strategy.fixed / strategy.cash / strategy.percent_of_equity, default_qty_value, pyramiding, commission_type, commission_value, slippage, process_orders_on_close), strategy.entry / order / exit (stop, limit, profit, loss in ticks, from_entry, qty_percent, comment_profit / comment_loss) / close / close_all / cancel, strategy.position_size, position_avg_price, netprofit, equity, opentrades, closedtrades. Market orders fill at the next bar's open (or the bar's close with process_orders_on_close = true); stops / limits fill when the bar reaches them, stop checked before target when both are in the same bar. For a backtest or optimization write a strategy, then call run_study (it backtests on 500 days of complete history with a train / test split and can optimize inputs), report train AND test results, and use apply_study_inputs to send the chosen inputs to the chart. Not supported yet: request.security on other timeframes (returns the chart's own series), tables, user-defined types. Overlay scripts use overlay = true. If write_pine_script returns an error, fix the script and call it again.
 
 Library indicators you can add by name: ${LIBRARY.map(s => s.name).join('; ')}.`;
 }
@@ -227,10 +292,12 @@ const TOOLS = [
   { name: 'write_pine_script', description: 'Compile Pine Script v6 and add it to the chart (and / or open it in the editor). Returns compile / runtime errors or a summary of the output.', input_schema: { type: 'object', properties: { name: { type: 'string' }, source: { type: 'string' }, add_to_chart: { type: 'boolean', description: 'default true' }, open_in_editor: { type: 'boolean', description: 'default true' } }, required: ['source'] } },
   { name: 'get_account', description: 'Paper account: equity, positions, working orders, recent closed trades.', input_schema: { type: 'object', properties: {} } },
   { name: 'place_paper_order', description: 'Place a simulated paper order. Only when the user asks to trade.', input_schema: { type: 'object', properties: { symbol: { type: 'string' }, side: { type: 'string', enum: ['buy', 'sell'] }, qty: { type: 'number' }, type: { type: 'string', enum: ['market', 'limit', 'stop'] }, price: { type: 'number' }, stop_loss: { type: 'number' }, take_profit: { type: 'number' }, reason: { type: 'string' } }, required: ['side', 'qty'] } },
+  { name: 'run_study', description: 'Backtest a Pine strategy (strategy() with strategy.entry / strategy.exit) in Research on N days of history (default 500, complete SIP data for stocks), split 60% train / 40% test; optionally optimize inputs on the train part. Returns metrics for all / train / test and the top optimization rows. Uses `source` if given, else the strategy in the editor or on the chart.', input_schema: { type: 'object', properties: { source: { type: 'string', description: 'Pine strategy source (optional)' }, name: { type: 'string' }, symbol: { type: 'string' }, timeframe: { type: 'string' }, days: { type: 'integer' }, commission: { type: 'number', description: '$ per share per side, default 0.005' }, slippage_ticks: { type: 'number', description: 'default 1' }, optimize: { type: 'array', items: { type: 'object', properties: { input: { type: 'string', description: 'input title' }, from: { type: 'number' }, to: { type: 'number' }, step: { type: 'number' } }, required: ['input', 'from', 'to'] } }, objective: { type: 'string', enum: ['net', 'pf', 'sharpe', 'netdd', 'avg'] } } } },
+  { name: 'apply_study_inputs', description: 'Send input values (by input title) from the last Research study / optimization back to the strategy on the chart.', input_schema: { type: 'object', properties: { inputs: { type: 'object' } }, required: ['inputs'] } },
   { name: 'take_screenshot', description: 'A fresh screenshot of the chart (after drawing or changing it).', input_schema: { type: 'object', properties: {} } },
 ];
 function toolLabel(n, i = {}) {
-  return { get_chart_state: 'Reading the chart', get_bars: `Reading ${i.symbol || W.tab().symbol} ${i.timeframe || ''} bars`, draw_levels: 'Drawing levels', draw_zones: 'Drawing zones', draw_trendlines: 'Drawing trend lines', clear_ai_drawings: 'Clearing drawings', set_chart: 'Changing the chart', add_indicator: `Adding ${i.name || 'indicator'}`, remove_indicator: `Removing ${i.name || 'indicator'}`, write_pine_script: `Writing Pine: ${i.name || 'script'}`, get_account: 'Reading the paper account', place_paper_order: 'Preparing a paper order', take_screenshot: 'Looking at the chart' }[n] || n;
+  return { get_chart_state: 'Reading the chart', get_bars: `Reading ${i.symbol || W.tab().symbol} ${i.timeframe || ''} bars`, draw_levels: 'Drawing levels', draw_zones: 'Drawing zones', draw_trendlines: 'Drawing trend lines', clear_ai_drawings: 'Clearing drawings', set_chart: 'Changing the chart', add_indicator: `Adding ${i.name || 'indicator'}`, remove_indicator: `Removing ${i.name || 'indicator'}`, write_pine_script: `Writing Pine: ${i.name || 'script'}`, get_account: 'Reading the paper account', place_paper_order: 'Preparing a paper order', take_screenshot: 'Looking at the chart', run_study: `Backtesting in Research${i.optimize ? ' + optimizing' : ''}`, apply_study_inputs: 'Sending inputs to the chart' }[n] || n;
 }
 const COLORS = { support: '#089981', demand: '#089981', resistance: '#f23645', supply: '#f23645', pivot: '#f5a623', target: '#2962ff', entry: '#2962ff', stop: '#e040fb', range: '#787b86', gap: '#00bcd4', other: '#f5a623' };
 function parseT(s) {
@@ -328,6 +395,8 @@ async function runTool(name, i) {
     try { const o = await api('paper/order', req); W.account = o.account; W.emit('account', o.account); W.orderLines(); return { ...txt({ status: o.order.status, fill_price: o.order.fill_price, order: o.order }), summary: `Paper order ${o.order.status}: ${req.side} ${req.qty} ${req.symbol}` }; }
     catch (e) { return { error: true, ...txt('Rejected: ' + e.message), summary: 'Order rejected: ' + e.message }; }
   }
+  if (name === 'run_study') { const r = await quantStudy(i); return r.error ? { error: true, ...txt(r.error), summary: 'Study failed: ' + r.error } : { ...txt(r), summary: `Studied ${r.symbol} ${r.timeframe}: ${r.all.trades} trades, net ${money(r.all.net, 0)}${r.optimization ? ` · ${r.optimization.length} best of the optimization` : ''}` }; }
+  if (name === 'apply_study_inputs') { const r = await quantApply(i.inputs); return r.error ? { error: true, ...txt(r.error) } : { ...txt('Inputs applied on the chart.'), summary: 'Sent the inputs to the chart' }; }
   if (name === 'take_screenshot') { const url = W.chart.snapshot(1400); return { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: url.split(',')[1] } }], summary: 'Looked at the chart' }; }
   return { error: true, ...txt('Unknown tool ' + name) };
 }

@@ -14,6 +14,7 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -175,6 +176,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         self._route()
 
+    def do_DELETE(self):
+        self._route()
+
     def _route(self):
         if ORIGIN_SECRET and not hmac.compare_digest(self.headers.get("X-Origin-Secret", ""), ORIGIN_SECRET):
             return self._send(403, b"Forbidden", "text/plain")
@@ -230,9 +234,15 @@ class Handler(BaseHTTPRequestHandler):
             sym = (q.get("symbol") or "").upper()
             if not sym:
                 raise BadRequest("symbol is required")
-            limit = max(10, min(5000, int(q.get("limit", 1500))))
+            tf = q.get("tf", "1h")
+            if q.get("days"):        # research: N trading days of history (extended hours included for stocks)
+                days, sec = max(1, min(2000, int(q["days"]))), market.tf_seconds(tf)
+                per_day = (86400 if market.is_crypto(sym) else 57600) if sec < 86400 else 86400
+                limit = max(10, min(150000, -(-days * per_day // sec)))
+            else:
+                limit = max(10, min(5000, int(q.get("limit", 1500))))
             before = int(q["before"]) if q.get("before") else None
-            bars, more = MKT.bars(sym, q.get("tf", "1h"), limit, before)
+            bars, more = MKT.bars(sym, tf, limit, before, feed=q.get("feed"))
             return self._json({"symbol": sym, "tf": q.get("tf", "1h"), "bars": bars, "more": more and len(bars) > 0, "name": market.NAMES.get(sym, sym)})
         if p == "quotes":
             syms = [s for s in (q.get("symbols") or "").upper().split(",") if s][:60]
@@ -258,6 +268,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if p.startswith("paper"):
             return self._paper(p[5:].strip("/"), m)
+        if p == "chats" or p.startswith("chats/"):
+            return self._chats(p[6:], m)
         return self._json({"error": "Not found"}, 404)
 
     def _paper(self, action, m):
@@ -285,6 +297,42 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return self._json({"error": "Not found"}, 404)
         return self._json({"order": o, "account": P.snapshot()})
+
+    def _chats(self, cid, m):
+        """Saved Quant conversations: one JSON file each under DATA_DIR/chats."""
+        d = os.path.join(DATA_DIR, "chats")
+        os.makedirs(d, exist_ok=True)
+        if not cid:
+            out = []
+            for f in os.listdir(d):
+                if f.endswith(".json"):
+                    try:
+                        with open(os.path.join(d, f)) as fh:
+                            c = json.load(fh)
+                        out.append({"id": c["id"], "title": c.get("title"), "symbol": c.get("symbol"), "updated": c.get("updated", 0), "n": len(c.get("ui", []))})
+                    except Exception:
+                        pass
+            return self._json({"chats": sorted(out, key=lambda c: -c["updated"])[:200]})
+        if not re.fullmatch(r"c[a-z0-9]{6,40}", cid):
+            raise BadRequest("Bad conversation id")
+        path = os.path.join(d, cid + ".json")
+        if m == "GET":
+            if not os.path.isfile(path):
+                return self._json({"error": "Not found"}, 404)
+            with open(path, "rb") as fh:
+                return self._send(200, fh.read())
+        if m == "DELETE":
+            if os.path.isfile(path):
+                os.remove(path)
+            return self._json({"ok": True})
+        b = self._body()
+        c = {"id": cid, "title": str(b.get("title") or "Chat")[:120], "symbol": str(b.get("symbol") or "")[:20], "updated": int(time.time()),
+             "messages": b.get("messages") or [], "ui": b.get("ui") or []}
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(c, fh)
+        os.replace(tmp, path)
+        return self._json({"ok": True, "id": cid})
 
     def _stream(self, symbols):
         self.send_response(200)

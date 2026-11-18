@@ -245,3 +245,24 @@ except urllib.error.HTTPError as e:
 server.ORIGIN_SECRET = ""
 httpd.shutdown()
 print(f"all {ok} server checks passed (with sign-in)")
+
+# ---- saved conversations
+server.COGNITO = None
+httpd = server.Server(("127.0.0.1", 0), server.Handler)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+base = f"http://127.0.0.1:{httpd.server_address[1]}"
+req = urllib.request.Request(base + "/api/chats/cabc12345", data=json.dumps({"title": "QQQ study", "symbol": "QQQ", "messages": [{"role": "user", "content": "hi"}], "ui": [{"k": "user", "text": "hi"}]}).encode(), method="PUT", headers={"Content-Type": "application/json"})
+urllib.request.urlopen(req, timeout=10).read()
+lst = get("/api/chats") if False else json.loads(urllib.request.urlopen(base + "/api/chats", timeout=10).read())
+check(lst["chats"][0]["title"] == "QQQ study" and lst["chats"][0]["n"] == 1, "chat saved and listed")
+check(json.loads(urllib.request.urlopen(base + "/api/chats/cabc12345", timeout=10).read())["messages"][0]["content"] == "hi", "chat loaded")
+urllib.request.urlopen(urllib.request.Request(base + "/api/chats/cabc12345", method="DELETE"), timeout=10).read()
+check(not json.loads(urllib.request.urlopen(base + "/api/chats", timeout=10).read())["chats"], "chat deleted")
+try:
+    urllib.request.urlopen(base + "/api/chats/..%2Fpaper", timeout=10); check(False, "bad id")
+except urllib.error.HTTPError as e:
+    check(e.code in (400, 404), "bad conversation id refused")
+b = json.loads(urllib.request.urlopen(base + "/api/bars?symbol=QQQ&tf=5m&days=30&feed=sip", timeout=30).read())
+check(len(b["bars"]) > 2000, f"days-based history ({len(b['bars'])} bars)")
+httpd.shutdown()
+print(f"all {ok} server checks passed (chats, research history)")

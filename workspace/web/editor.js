@@ -40,7 +40,7 @@ export function mountEditor(el) {
   root = el; el.innerHTML = '';
   const bar = h(`<div class="ed-bar"><button class="ed-name" id="edName" title="Scripts">${esc(E.name)}${E.dirty ? ' •' : ''}<svg viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M7 10l5 5 5-5"/></svg></button>
     <button class="btn sm primary" id="edRun" title="Ctrl+Enter">▶ ${E.indicatorId && W.tab().indicators.some(i => i.id === E.indicatorId) ? 'Update on chart' : 'Add to chart'}</button>
-    <button class="btn sm" id="edSave" title="Ctrl+S">Save</button><button class="btn sm ghost" id="edAsk" title="Ask Quant to explain or fix">✦ Ask Quant</button>
+    <button class="btn sm" id="edSave" title="Ctrl+S">Save</button><button class="btn sm" id="edStudy" title="Backtest and optimize this strategy">⚗ Research</button><button class="btn sm ghost" id="edAsk" title="Ask Quant to explain or fix">✦ Ask Quant</button>
     <span class="grow"></span><span class="dim" style="font-size:11px">Pine v6</span><button class="icon-btn" id="edClose" title="Close">✕</button></div>`);
   const wrap = h(`<div class="ed-wrap"><div class="ed-gutter" id="edGut"></div><div class="ed-area"><div id="edErr"></div><pre id="edPre"></pre><textarea id="edTa" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div></div>`);
   const log = h(`<div class="ed-log" id="edLog"></div>`);
@@ -51,7 +51,7 @@ export function mountEditor(el) {
   ta.addEventListener('input', () => { E.src = ta.value; E.dirty = true; $('#edName', el).firstChild.nodeValue = E.name + ' •'; sync(); persistLater(); checkLater(); });
   ta.addEventListener('scroll', () => { pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; gut.scrollTop = ta.scrollTop; placeErr(); });
   ta.addEventListener('keydown', e => keys(e, ta, sync));
-  $('#edRun', el).onclick = runOnChart; $('#edSave', el).onclick = save; $('#edClose', el).onclick = () => W.openSide('editor');
+  $('#edRun', el).onclick = runOnChart; $('#edSave', el).onclick = () => save(); $('#edStudy', el).onclick = () => import('./research.js').then(m => m.openResearch({ src: E.src, name: E.name, indicatorId: E.indicatorId })); $('#edClose', el).onclick = () => W.openSide('editor');
   $('#edAsk', el).onclick = () => { if (!W.state.chatOpen) W.toggleChat(true); focusChat(E.err ? `My Pine script fails with "${E.err.message}" on line ${E.err.line}. Fix it and add it to the chart.` : 'Explain what my Pine script in the editor does and suggest improvements.', { script: true }); };
   $('#edName', el).onclick = () => scriptsMenu($('#edName', el));
   sync(); check(); renderLog();
