@@ -98,13 +98,18 @@ async function submit() {
   }
 }
 function stop() { if (C.abort) C.abort.abort(); }
+// The API refuses empty text blocks and thinking blocks without their text or signature.
+function cleanBlocks(list) {
+  const out = list.filter(b => !(b.type === 'text' && !String(b.text || '').trim()) && !(b.type === 'thinking' && (!b.thinking || !b.signature)) && !(b.type === 'redacted_thinking' && !b.data));
+  return out.length ? out : [{ type: 'text', text: '…' }];
+}
 
 function trimmed() {
   // keep the latest screenshot only; drop the oldest turns (at a user text turn, so tool pairs stay intact)
   let msgs = C.messages;
   if (msgs.length > 40) { let cut = msgs.length - 40; while (cut < msgs.length && !(msgs[cut].role === 'user' && Array.isArray(msgs[cut].content) && msgs[cut].content.some(c => c.type === 'text'))) cut++; msgs = msgs.slice(cut); }
   let lastImg = -1; msgs.forEach((m, i) => { if (Array.isArray(m.content) && m.content.some(c => c.type === 'image' || (c.type === 'tool_result' && Array.isArray(c.content) && c.content.some(x => x.type === 'image')))) lastImg = i; });
-  return msgs.map((m, i) => i === lastImg ? m : stripImages(m));
+  return msgs.map((m, i) => i === lastImg ? m : stripImages(m)).map(m => m.role === 'assistant' && Array.isArray(m.content) ? { ...m, content: cleanBlocks(m.content) } : m);
 }
 
 async function callClaude() {
@@ -125,6 +130,8 @@ async function callClaude() {
       const d = data.delta, b = blocks[data.index];
       if (d.type === 'text_delta') { b.text += d.text; txt = b.text; el.innerHTML = md(txt); scroll(); }
       if (d.type === 'input_json_delta') b._json += d.partial_json;
+      if (d.type === 'thinking_delta') b.thinking = (b.thinking || '') + d.thinking;   // Claude's thinking: kept, sent back as-is (not shown)
+      if (d.type === 'signature_delta') b.signature = (b.signature || '') + d.signature;
     }
     if (data.type === 'content_block_stop') {
       const b = blocks[data.index];
@@ -145,7 +152,7 @@ async function callClaude() {
     }
   }
   if (el) el.classList.remove('caret');
-  const content = blocks.filter(Boolean).map(b => b.type === 'text' ? { type: 'text', text: b.text } : b.type === 'tool_use' ? { type: 'tool_use', id: b.id, name: b.name, input: b.input || {} } : b).filter(b => !(b.type === 'text' && !b.text.trim()));
+  const content = cleanBlocks(blocks.filter(Boolean).map(b => b.type === 'text' ? { type: 'text', text: b.text } : b.type === 'tool_use' ? { type: 'tool_use', id: b.id, name: b.name, input: b.input || {} } : b.type === 'thinking' ? { type: 'thinking', thinking: b.thinking || '', signature: b.signature || '' } : b.type === 'redacted_thinking' ? { type: 'redacted_thinking', data: b.data } : b));
   if (!content.length) content.push({ type: 'text', text: '…' });
   return { content, stop: stopReason };
 }
