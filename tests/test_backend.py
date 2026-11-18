@@ -148,6 +148,11 @@ def test_05_strategy_protocol():
     assert st == 200 and [m["sym"] for m in run["markets"]] == ["NQ", "ES"] and run["strategies"][0]["id"] == sid
     st, ch = call("GET", "/chart", q={"sym": "NQ", "tf": "1", "days": "5", "strat": sid})
     assert st == 200 and isinstance(ch["marks"], list)
+    s = strategy.get(SUB, sid)
+    if not s["paper"]["on"]:   # the drift guard can stop it on the day's fake candles (z < -2 or 2x the test's drawdown)
+        assert s["paper"].get("kill"), s["paper"]
+        s["paper"]["on"], s["stage"] = True, "paper"
+        db.put(s)
     assert call("DELETE", f"/strategies/{sid}")[0] == 400
     call("POST", f"/strategies/{sid}/action", {"action": "stop"})
     assert call("DELETE", f"/strategies/{sid}")[0] == 200
