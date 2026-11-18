@@ -8,7 +8,7 @@ import { newId, fmtPrice, nyParts } from './chart.js';
 import { $, h, esc, api, toast, marketStatus, money, priceDigits, nyNow, BASE, authHeaders } from './util.js';
 import { openInEditor, runOnChart, editorState } from './editor.js';
 
-const C = { messages: [], busy: false, abort: null, ui: [] };
+const C = { messages: [], busy: false, abort: null, ui: [], trace: [] };
 let body, input, sendBtn;
 
 const SUGGEST = [
@@ -56,6 +56,7 @@ function scroll() { body.scrollTop = body.scrollHeight; }
 function renderUi(u) {
   if (u.k === 'user') body.appendChild(h(`<div class="msg user">${esc(u.text)}${u.shot ? '<span class="shot">📷 chart attached</span>' : ''}</div>`));
   if (u.k === 'ai') { const d = h('<div class="msg ai"></div>'); d.innerHTML = md(u.text); wireCode(d); body.appendChild(d); }
+  if (u.k === 'think') { const d = h(`<details class="think"><summary><span class="tl">Thought for ${u.secs || 1}s</span></summary><div class="tb"></div></details>`); d.querySelector('.tb').textContent = u.text || '(Claude kept its thinking private for this step.)'; body.appendChild(d); }
   if (u.k === 'tool') body.appendChild(h(`<div class="tool ${u.err ? 'err' : 'done'}"><span class="spin"></span>${esc(u.text)}</div>`));
 }
 
@@ -79,6 +80,7 @@ async function submit() {
       const res = await callClaude();
       if (!res) break;
       C.messages.push({ role: 'assistant', content: res.content });
+      if (res.stop === 'pause_turn') continue;
       if (res.stop !== 'tool_use') break;
       const results = [];
       for (const b of res.content.filter(x => x.type === 'tool_use')) {
@@ -100,7 +102,7 @@ async function submit() {
 function stop() { if (C.abort) C.abort.abort(); }
 // The API refuses empty text blocks and thinking blocks without their text or signature.
 function cleanBlocks(list) {
-  const out = list.filter(b => !(b.type === 'text' && !String(b.text || '').trim()) && !(b.type === 'thinking' && (!b.thinking || !b.signature)) && !(b.type === 'redacted_thinking' && !b.data));
+  const out = list.filter(b => !(b.type === 'text' && !String(b.text || '').trim()) && !(b.type === 'thinking' && !b.signature) && !(b.type === 'redacted_thinking' && !b.data));
   return out.length ? out : [{ type: 'text', text: '…' }];
 }
 
@@ -114,14 +116,19 @@ function trimmed() {
 
 async function callClaude() {
   C.abort = new AbortController();
-  const r = await fetch(BASE + '/api/chat', { method: 'POST', headers: { ...(await authHeaders()), 'Content-Type': 'application/json' }, signal: C.abort.signal, body: JSON.stringify({ system: systemPrompt(), messages: trimmed(), tools: TOOLS, max_tokens: 8000 }) });
+  const r = await fetch(BASE + '/api/chat', { method: 'POST', headers: { ...(await authHeaders()), 'Content-Type': 'application/json' }, signal: C.abort.signal, body: JSON.stringify({ system: systemPrompt(), messages: trimmed(), tools: TOOLS, max_tokens: 16000 }) });
   if (!r.ok || !r.body) throw new Error(`Chat failed (${r.status})`);
   const reader = r.body.getReader(), dec = new TextDecoder();
-  let buf = '', stopReason = null; const blocks = []; let cur = null, el = null, txt = '';
+  let buf = '', stopReason = null; const blocks = []; let cur = null, el = null, txt = ''; C.trace = [];
   const handle = (ev, data) => {
     if (ev === 'error' || data.type === 'error') throw new Error((data.error && data.error.message) || 'Claude error');
+    if (data.type !== 'ping') C.trace.push(data.type + (data.content_block ? ':' + data.content_block.type : data.delta && data.delta.type ? ':' + data.delta.type : ''));
     if (data.type === 'content_block_start') {
       const b = data.content_block; cur = { ...b };
+      if (b.type === 'thinking' || b.type === 'redacted_thinking') {
+        cur._el = h('<details class="think" open><summary><span class="spin"></span><span class="tl">Thinking…</span></summary><div class="tb"></div></details>');
+        cur._t0 = Date.now(); body.appendChild(cur._el); scroll();
+      }
       if (b.type === 'text') { cur.text = ''; el = h('<div class="msg ai caret"></div>'); body.appendChild(el); txt = ''; }
       if (b.type === 'tool_use') cur._json = '';
       blocks[data.index] = cur;
@@ -130,12 +137,21 @@ async function callClaude() {
       const d = data.delta, b = blocks[data.index];
       if (d.type === 'text_delta') { b.text += d.text; txt = b.text; el.innerHTML = md(txt); scroll(); }
       if (d.type === 'input_json_delta') b._json += d.partial_json;
-      if (d.type === 'thinking_delta') b.thinking = (b.thinking || '') + d.thinking;   // Claude's thinking: kept, sent back as-is (not shown)
+      if (d.type === 'thinking_delta') {   // Claude's thinking: shown as it streams, sent back unchanged
+        b.thinking = (b.thinking || '') + d.thinking;
+        if (b._el) { const tb = b._el.querySelector('.tb'); tb.textContent = b.thinking; tb.scrollTop = tb.scrollHeight; scroll(); }
+      }
       if (d.type === 'signature_delta') b.signature = (b.signature || '') + d.signature;
     }
     if (data.type === 'content_block_stop') {
       const b = blocks[data.index];
-      if (b && b.type === 'tool_use') { try { b.input = b._json ? JSON.parse(b._json) : {}; } catch { b.input = {}; } delete b._json; }
+      if (b && b._el) {
+        const secs = Math.max(1, Math.round((Date.now() - b._t0) / 1000)), txt2 = b.type === 'redacted_thinking' ? '' : (b.thinking || '');
+        b._el.open = false; b._el.querySelector('.spin').remove(); b._el.querySelector('.tl').textContent = `Thought for ${secs}s`;
+        if (!txt2.trim()) b._el.querySelector('.tb').textContent = '(Claude kept its thinking private for this step.)';
+        C.ui.push({ k: 'think', text: txt2, secs }); delete b._el; delete b._t0;
+      }
+      if (b && b.type === 'tool_use') { try { b.input = b._json ? JSON.parse(b._json) : {}; } catch { b.input = {}; b.broken = true; } delete b._json; }
       if (b && b.type === 'text' && el) { el.classList.remove('caret'); wireCode(el); if (b.text.trim()) C.ui.push({ k: 'ai', text: b.text }); else el.remove(); el = null; }
     }
     if (data.type === 'message_delta' && data.delta) stopReason = data.delta.stop_reason || stopReason;
@@ -152,6 +168,12 @@ async function callClaude() {
     }
   }
   if (el) el.classList.remove('caret');
+  console.debug('claude stream', stopReason, C.trace.join(' '));
+  const visible = blocks.some(b => b && ((b.type === 'text' && b.text.trim()) || b.type === 'tool_use'));
+  if (stopReason === 'max_tokens') body.appendChild(h('<div class="msg ai dn">⚠ The answer was cut off at the length limit. Ask for a shorter script, or say “continue”.</div>'));
+  else if (!stopReason) body.appendChild(h(`<div class="msg ai dn">⚠ The connection to Claude dropped before the answer finished (${esc(C.trace.slice(-3).join(', ') || 'nothing received')}). Try again.</div>`));
+  else if (!visible && stopReason !== 'pause_turn') body.appendChild(h(`<div class="msg ai dn">⚠ Claude returned no answer (stop: ${esc(stopReason)}). Try again.</div>`));
+  scroll();
   const content = cleanBlocks(blocks.filter(Boolean).map(b => b.type === 'text' ? { type: 'text', text: b.text } : b.type === 'tool_use' ? { type: 'tool_use', id: b.id, name: b.name, input: b.input || {} } : b.type === 'thinking' ? { type: 'thinking', thinking: b.thinking || '', signature: b.signature || '' } : b.type === 'redacted_thinking' ? { type: 'redacted_thinking', data: b.data } : b));
   if (!content.length) content.push({ type: 'text', text: '…' });
   return { content, stop: stopReason };

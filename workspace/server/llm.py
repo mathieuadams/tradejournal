@@ -22,7 +22,7 @@ def stream(body, write):
     """body: {system, messages, tools, max_tokens}; write(bytes) sends to the browser."""
     if not configured():
         return demo(body, write)
-    payload = {"model": body.get("model") or MODEL, "max_tokens": min(int(body.get("max_tokens") or 4096), 16000), "stream": True,
+    payload = {"model": body.get("model") or MODEL, "max_tokens": min(int(body.get("max_tokens") or 4096), 32000), "stream": True,
                "system": body.get("system") or "", "messages": body.get("messages") or [], "tools": body.get("tools") or []}
     if not payload["tools"]:
         payload.pop("tools")
