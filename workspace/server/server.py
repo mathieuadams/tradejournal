@@ -30,6 +30,7 @@ import llm  # noqa: E402
 import market  # noqa: E402
 from paper import Paper, PaperError  # noqa: E402
 from frozen import Frozen, FrozenError  # noqa: E402
+import alpaca_paper  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8765"))
 HOST = os.environ.get("HOST", "127.0.0.1")
@@ -121,7 +122,8 @@ class Hub:
 
 MKT = make_market()
 HUB = Hub(MKT)
-FROZEN = Frozen(os.path.join(DATA_DIR, "frozen.json"), MKT, HUB.paper, interval=0 if os.environ.get("FROZEN_OFF") else 20)
+ALPACA = alpaca_paper.AlpacaPaper(os.environ.get("ALPACA_KEY_ID", ""), os.environ.get("ALPACA_SECRET_KEY", ""))
+FROZEN = Frozen(os.path.join(DATA_DIR, "frozen.json"), MKT, HUB.paper, interval=0 if os.environ.get("FROZEN_OFF") else 20, alpaca=ALPACA)
 STATE_PATH = os.path.join(DATA_DIR, "workspace.json")
 STATE_LOCK = threading.Lock()
 
@@ -208,7 +210,7 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/"):
                 return self._api(path[5:], q)
             return self._static(path)
-        except (BadRequest, PaperError, FrozenError, ValueError) as e:
+        except (BadRequest, PaperError, FrozenError, alpaca_paper.AlpacaError, ValueError) as e:
             return self._json({"error": str(e)}, 400)
         except market.AlpacaError as e:
             return self._json({"error": str(e)}, 502)
@@ -279,6 +281,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if p.startswith("paper"):
             return self._paper(p[5:].strip("/"), m)
+        if p == "alpaca" and m == "GET":
+            # the Alpaca paper account the frozen strategies trade in
+            if not ALPACA.configured():
+                return self._json({"configured": False})
+            orders = [o for o in ALPACA.orders("all", 30) if (o.get("client_order_id") or "").startswith("fz-")]
+            names = {f["id"]: f["name"] for f in FROZEN.s["items"].values()}
+            return self._json({"configured": True, "account": ALPACA.account(), "positions": ALPACA.positions(),
+                               "orders": [{"symbol": o["symbol"], "side": o["side"], "qty": o.get("qty"), "type": o.get("type"), "status": o.get("status"),
+                                           "filled_avg_price": o.get("filled_avg_price"), "stop": o.get("stop_price"), "limit": o.get("limit_price"),
+                                           "at": o.get("filled_at") or o.get("submitted_at"), "strategy": names.get((o.get("client_order_id") or "")[3:14], "")} for o in orders[:20]]})
         if p == "frozen" or p.startswith("frozen/"):
             return self._frozen(p[7:], m)
         if p == "chats" or p.startswith("chats/"):

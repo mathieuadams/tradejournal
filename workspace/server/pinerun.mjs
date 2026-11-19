@@ -23,7 +23,7 @@ try {
   else {
     const S = r.strategy;
     out = { trades: S.trades.map(t => ({ dir: t.dir, qty: t.qty, entryTime: t.entryTime, entryPx: t.entryPx, exitTime: t.exitTime, exitPx: t.exitPx, pnl: t.pnl, why: t.why, id: t.id })),
-      open: S.open.map(l => ({ dir: l.dir, qty: l.qty, entryTime: l.t, entryPx: l.px, pnl: l.pnl, id: l.id })), logs: r.logs.map(l => l.msg) };
+      open: S.open.map(l => ({ dir: l.dir, qty: l.qty, entryTime: l.t, entryPx: l.px, pnl: l.pnl, id: l.id })), logs: r.logs.map(l => l.msg), exits: S.exits || [] };
   }
 } catch (e) { out = { error: (e.line ? `line ${e.line}: ` : '') + e.message }; }
 process.stdout.write(JSON.stringify(out));

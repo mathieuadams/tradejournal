@@ -22,10 +22,12 @@ export function freezeDialog(o) {
     ${lab ? `<div class="fz-chips">${lab}</div>` : ''}
     ${rs ? `<div class="note">Backtest snapshot kept with it: ${money(rs.net, 0)} · ${rs.trades} trades${rs.profit_factor != null ? ' · PF ' + rs.profit_factor : ''}</div>` : ''}
     <div class="row"><label class="field" style="flex:2"><span>Name</span><input id="fzName" value="${esc(o.name)} · ${esc(o.symbol)} ${esc(o.tf)}"></label></div>
-    <div class="row"><label class="field" style="flex:2"><span>Account</span><select id="fzAcct"><option value="paper">Paper account: mirror its positions</option><option value="ledger">Its own ledger only</option></select></label>
+    <div class="row"><label class="field" style="flex:2"><span>Account</span><select id="fzAcct"><option value="alpaca">Alpaca paper account (your key)</option><option value="paper">Workspace simulated account</option><option value="ledger">Its own ledger only</option></select></label>
       <label class="field"><span>Commission $ / unit / side</span><input id="fzCom" type="number" step="0.001" value="${o.com ?? 0.005}"></label><label class="field"><span>Slippage (ticks)</span><input id="fzSlip" type="number" step="1" value="${o.slip ?? 1}"></label></div>
   </div><div class="foot"><button class="btn ghost" data-a="no">Cancel</button><button class="btn primary" data-a="yes">❄ Freeze and start</button></div></div>`);
   el.querySelector('[data-a=no]').onclick = () => closeModal();
+  api('alpaca').then(a => { const o = el.querySelector('#fzAcct option[value=alpaca]'); if (!o) return;
+    if (a.configured) o.textContent = `Alpaca paper account ${a.account.number || ''} (real paper orders)`; else { o.textContent = 'Alpaca paper account: no key loaded'; o.disabled = true; el.querySelector('#fzAcct').value = 'paper'; } }).catch(() => {});
   el.querySelector('[data-a=yes]').onclick = async () => {
     let sec = o.sec;
     if (!sec) { try { sec = securityRequests(compile(o.src), W.activeBars(), { symbol: o.symbol, tf: o.tf }); } catch (e) { sec = []; } }
@@ -70,19 +72,23 @@ async function refresh() {
   try { list = (await api('frozen')).frozen; } catch (e) { el.innerHTML = `<div class="note warn-box">${esc(e.message)}</div>`; return; }
   const strats = W.indOut.filter(d => d.out && d.out.strategy);
   el.innerHTML = `<div class="row" style="margin-bottom:10px;flex-wrap:wrap">${strats.map(d => `<button class="btn sm primary" data-fz="${d.id}" data-act="freeze-ind">❄ Freeze “${esc(d.out.meta.title || d.title)}” (${esc(W.tab().symbol)} ${esc(W.tab().tf)})</button>`).join('') || '<span class="note">Put a strategy on the chart (library → Strategies, or the Pine editor) to freeze it, or use ❄ in its legend.</span>'}</div>
+    <div id="fzAlp"></div>
     ${list.length ? list.map(card).join('') : '<p class="note">Nothing frozen yet.</p>'}`;
+  el.querySelectorAll('[data-fzacct]').forEach(x => { x.onchange = () => act(x.dataset.fzacct, x.value); });
+  alpacaCard();
 }
 function card(f) {
   const m = f.metrics || {}, tst = f.research && f.research.test;
   return `<div class="fz-card ${f.status}"><div class="fz-hd"><b>${esc(f.name)}</b><span class="fz-st">${f.status === 'on' ? '● running' : '○ stopped'}</span><span class="grow"></span>
     <button class="btn sm" data-fz="${f.id}" data-act="${f.status === 'on' ? 'stop' : 'start'}">${f.status === 'on' ? 'Stop' : 'Start'}</button>
-    <button class="btn sm" data-fz="${f.id}" data-act="${f.account === 'paper' ? 'ledger' : 'paper'}" title="${f.account === 'paper' ? 'Stop mirroring into the paper account' : 'Mirror its positions into the paper account'}">${f.account === 'paper' ? 'Paper acct ✓' : 'Ledger only'}</button>
+    <select class="fz-acct" data-fzacct="${f.id}" title="Where its positions are placed">${[['alpaca', 'Alpaca paper'], ['paper', 'Simulated'], ['ledger', 'Ledger only']].map(([v, t]) => `<option value="${v}" ${f.account === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
     <button class="btn sm" data-fz="${f.id}" data-act="chart" title="Load the frozen script and inputs on the chart">Chart</button>
     <button class="icon-btn" data-fz="${f.id}" data-act="delete" title="Delete">✕</button></div>
     <div class="fz-sub dim">${esc(f.symbol)} ${esc(f.tf)} · frozen ${fmtD(f.frozenAt)} · last run ${ago(f.lastRun)}${(f.sec || []).length ? ' · data ' + f.sec.map(x => esc(x.sym)).join(', ') : ''}</div>
     <div class="fz-kv"><div><span>Paper trades</span><b>${m.n || 0}</b></div><div><span>Net</span><b class="${cls(m.net)}">${money(m.net || 0, 0)}</b></div><div><span>Win</span><b>${m.n ? m.winRate + '%' : '—'}</b></div>
       <div><span>Open</span><b class="${cls(f.openPnl)}">${(f.open || []).length ? `${f.open.map(o => (o.dir > 0 ? '+' : '−') + o.qty).join(' ')} · ${money(f.openPnl, 0)}` : 'flat'}</b></div>
       <div><span>${f.research && f.research.chart ? 'Backtest (chart)' : 'Research test'}</span><b class="${tst ? cls(tst.net) : ''}">${tst ? `${money(tst.net, 0)} · ${tst.trades} tr` : '—'}</b></div></div>
+    ${f.account === 'alpaca' ? `<div class="fz-sub">Alpaca: ${f.broker ? `${esc(f.broker)} · ${ago(f.brokerAt)}` : 'no orders yet (it mirrors the position at the next bar close)'}</div>` : ''}
     ${f.error ? `<div class="note warn-box">${esc(f.error)}</div>` : ''}
     ${(f.recent || []).length ? `<table class="tbl rs-res"><tr><th class="t">Entry</th><th>Side</th><th>In</th><th>Out</th><th>P&L</th></tr>${f.recent.slice().reverse().map(t => `<tr><td class="t">${fmtDT(t.entryTime)}</td><td class="${t.dir > 0 ? 'up' : 'dn'}">${t.dir > 0 ? 'Long' : 'Short'}</td><td>${fmtPrice(t.entryPx)}</td><td>${fmtPrice(t.exitPx)}</td><td class="${cls(t.pnl)}">${money(t.pnl)}</td></tr>`).join('')}</table>` : ''}</div>`;
 }
@@ -96,4 +102,15 @@ async function act(id, a) {
   }
   if (a === 'delete' && !confirm('Delete this frozen strategy and its paper record?')) return;
   try { await api('frozen/' + id, { action: a }); refresh(); } catch (e) { toast(e.message, 'err'); }
+}
+
+async function alpacaCard() {
+  const el = root && root.querySelector('#fzAlp'); if (!el) return;
+  let a; try { a = await api('alpaca'); } catch (e) { el.innerHTML = `<div class="note warn-box">Alpaca: ${esc(e.message)}</div>`; return; }
+  if (!a.configured) { el.innerHTML = `<div class="note warn-box">No Alpaca key on the workspace server: save it on the journal's Data page, then it loads at the next deploy / restart.</div>`; return; }
+  const A = a.account, chg = A.equity - A.last_equity;
+  el.innerHTML = `<div class="fz-card alp"><div class="fz-hd"><b>Alpaca paper account ${esc(A.number || '')}</b><span class="fz-st">${esc(A.status || '')}</span></div>
+    <div class="fz-kv" style="margin-top:8px"><div><span>Equity</span><b>${money(A.equity, 2)}</b></div><div><span>Today</span><b class="${cls(chg)}">${money(chg, 2)}</b></div><div><span>Cash</span><b>${money(A.cash, 0)}</b></div><div><span>Buying power</span><b>${money(A.buying_power, 0)}</b></div></div>
+    ${a.positions.length ? `<table class="tbl rs-res"><tr><th class="t">Position</th><th>Qty</th><th>Avg</th><th>Last</th><th>P&L</th></tr>${a.positions.map(p => `<tr><td class="t">${esc(p.symbol)}</td><td class="${p.qty > 0 ? 'up' : 'dn'}">${p.qty}</td><td>${fmtPrice(p.avg)}</td><td>${fmtPrice(p.price)}</td><td class="${cls(p.upl)}">${money(p.upl)}</td></tr>`).join('')}</table>` : '<div class="dim" style="font-size:12px">No open positions.</div>'}
+    ${a.orders.length ? `<div class="tree-sec" style="margin-top:8px">Orders from frozen strategies</div><table class="tbl rs-res"><tr><th class="t">Time</th><th class="t">Strategy</th><th>Side</th><th>Qty</th><th>Type</th><th>Fill</th><th class="t">Status</th></tr>${a.orders.map(o => `<tr><td class="t">${o.at ? fmtDT(Date.parse(o.at) / 1000) : ''}</td><td class="t">${esc(o.strategy || '')}</td><td class="${o.side === 'buy' ? 'up' : 'dn'}">${o.side}</td><td>${esc(o.qty || '')}</td><td>${esc(o.type || '')}${o.stop ? ' ' + o.stop : ''}${o.limit ? ' ' + o.limit : ''}</td><td>${o.filled_avg_price ? fmtPrice(+o.filled_avg_price) : '—'}</td><td class="t">${esc(o.status)}</td></tr>`).join('')}</table>` : ''}</div>`;
 }

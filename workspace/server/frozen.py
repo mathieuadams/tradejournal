@@ -56,8 +56,8 @@ def metrics(trades, capital=0):
 
 
 class Frozen:
-    def __init__(self, path, mkt, paper=None, runner=run_pine, interval=20):
-        self.path, self.mkt, self.paper, self.runner = path, mkt, paper, runner
+    def __init__(self, path, mkt, paper=None, runner=run_pine, interval=20, alpaca=None):
+        self.path, self.mkt, self.paper, self.runner, self.alpaca = path, mkt, paper, runner, alpaca
         self.lock = threading.RLock()
         self.s = self._load()
         self.busy = set()
@@ -81,7 +81,7 @@ class Frozen:
     @staticmethod
     def view(f, full=False):
         v = {k: f.get(k) for k in ("id", "name", "symbol", "tf", "inputs", "inputLabels", "strategy", "sec", "account", "status", "frozenAt", "lastRun",
-                                     "lastBar", "error", "research", "open", "mirror", "logs", "capital")}
+                                     "lastBar", "error", "research", "open", "mirror", "logs", "capital", "broker", "brokerAt")}
         v["metrics"] = metrics(f.get("trades") or [])
         v["openPnl"] = round(sum(o.get("pnl") or 0 for o in f.get("open") or []), 2)
         if full:
@@ -109,7 +109,7 @@ class Frozen:
         sym, tf = str(b.get("symbol") or "").upper(), str(b.get("tf") or "")
         if not sym or not tf:
             raise FrozenError("symbol and tf are required.")
-        acct = b.get("account") if b.get("account") in ("ledger", "paper") else "ledger"
+        acct = b.get("account") if b.get("account") in ("ledger", "paper", "alpaca") else "ledger"
         sec = [{"sym": str(x.get("sym", "")).upper(), "tf": str(x.get("tf", "")), "key": f"{str(x.get('sym', '')).upper()}|{x.get('tf', '')}"}
                for x in (b.get("sec") or [])[:4] if x.get("sym") and x.get("tf")]
         fid = "f" + secrets.token_hex(5)
@@ -138,20 +138,27 @@ class Frozen:
                 del self.s["items"][fid]
                 self._save()
                 return None
-            elif act in ("ledger", "paper"):
-                if act == "ledger":
+            elif act in ("ledger", "paper", "alpaca"):
+                if act != f["account"]:
                     self._flat(f)
                 f["account"] = act
             else:
                 raise FrozenError("Unknown action.")
             self._save()
             out = self.view(f)
-        if act == "start":
+        if act in ("start", "alpaca", "paper"):
             threading.Thread(target=self.run_one, args=(fid,), daemon=True).start()
         return out
 
     def _flat(self, f):
-        """Close what this strategy holds in the paper account."""
+        """Close what this strategy holds in the paper account / the Alpaca paper account."""
+        if f.get("account") == "alpaca" and self.alpaca and self.alpaca.configured():
+            try:
+                import alpaca_paper
+                f["broker"] = alpaca_paper.sync(self.alpaca, f, [], []) or "flat"
+                f["brokerAt"] = int(time.time())
+            except Exception as e:
+                f["error"] = f"Alpaca: {e}"
         if f.get("mirror") and self.paper:
             try:
                 q = f["mirror"]
@@ -182,6 +189,28 @@ class Frozen:
                     due.append(f["id"])
         for fid in due:
             self.run_one(fid, now)
+
+    def _alpaca(self, fid, opn, exits, last, now):
+        import alpaca_paper
+        with self.lock:
+            f = json.loads(json.dumps(self.s["items"].get(fid) or {}))
+        if not f:
+            return
+        try:
+            if not (self.alpaca and self.alpaca.configured()):
+                raise alpaca_paper.AlpacaError("no Alpaca key loaded on the workspace server")
+            msg, err = alpaca_paper.sync(self.alpaca, f, opn, exits, last), None
+        except Exception as e:
+            msg, err = None, f"Alpaca: {e}"
+        with self.lock:
+            cur = self.s["items"].get(fid)
+            if cur:
+                if msg:
+                    cur["broker"], cur["brokerAt"] = msg, int(now)
+                    cur.setdefault("blog", []).append([int(now), msg])
+                    cur["blog"] = cur["blog"][-50:]
+                cur["error"] = err
+                self._save()
 
     def run_one(self, fid, now=None):
         with self.lock:
@@ -228,6 +257,9 @@ class Frozen:
                         except Exception as e:
                             cur["error"] = f"Paper account: {e}"
                 self._save()
+                go_alpaca = cur["account"] == "alpaca" and cur["status"] == "on"
+            if go_alpaca:
+                self._alpaca(fid, opn, r.get("exits") or [], bars[-1][4], now)
         except Exception as e:
             with self.lock:
                 cur = self.s["items"].get(fid)

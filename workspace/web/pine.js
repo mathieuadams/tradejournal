@@ -1197,7 +1197,9 @@ export function run(compiled, bars, opts = {}) {
   if (ctx.strat) {
     const st = ctx.strat, last = B.c[n - 1];
     res.strategy = { trades: st.trades, open: st.lots.map(l => ({ ...l, pnl: (last - l.px) * l.qty * l.dir })), equity: st.eq, fills: st.fills, net: st.net, capital: st.cap,
-      settings: { qtyType: st.qtyType, qtyVal: st.qtyVal, comType: st.comType, comVal: st.comVal, slip: st.slip, pyr: st.pyr, poc: st.poc }, metrics: metrics(st.trades, { capital: st.cap }) };
+      settings: { qtyType: st.qtyType, qtyVal: st.qtyVal, comType: st.comType, comVal: st.comVal, slip: st.slip, pyr: st.pyr, poc: st.poc }, metrics: metrics(st.trades, { capital: st.cap }),
+      // working exits of the open position (a broker mirror places them as stop / limit orders)
+      exits: st.orders.filter(o => o.kind === 'exit').map(o => { const L = st.exitLevels(o); return L && { id: o.id, from: o.from, dir: L.dir, stop: isna(L.st) ? null : L.st, limit: isna(L.lim) ? null : L.lim }; }).filter(Boolean) };
   }
   return res;
 }

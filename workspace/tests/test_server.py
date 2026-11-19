@@ -317,4 +317,56 @@ if frozen.node_bin():
         check(True, "only strategies freeze")
 else:
     print("(node not found: frozen strategy checks skipped)")
-print(f"all {ok} server checks passed (chats, research history, futures, frozen)")
+
+# ---- Alpaca paper mirror (a fake Alpaca: positions, orders, OCO)
+import alpaca_paper  # noqa: E402
+
+
+class FakeAlp(alpaca_paper.AlpacaPaper):
+    def __init__(self):
+        super().__init__("k", "s")
+        self.pos, self.ords, self.n, self.sent = {}, [], 0, []
+
+    def req(self, method, path, body=None, timeout=20):
+        if method == "GET" and path.startswith("positions/"):
+            q = self.pos.get(path.split("/")[1], 0)
+            return {"qty": str(q)} if q else None
+        if method == "GET" and path.startswith("orders?"):
+            return [o for o in self.ords if o["status"] == "new"]
+        if method == "GET" and path.startswith("orders/"):
+            return next(o for o in self.ords if o["id"] == path.split("/")[1])
+        if method == "DELETE":
+            for o in self.ords:
+                if o["id"] == path.split("/")[1]:
+                    o["status"] = "canceled"
+            return None
+        if method == "POST":
+            self.n += 1
+            self.sent.append(body)
+            o = dict(body, id=str(self.n), status="new")
+            if body.get("order_class") == "oco":
+                o["legs"] = [{"type": "stop", "stop_price": body["stop_loss"]["stop_price"]}]
+                o["limit_price"] = body["take_profit"]["limit_price"]
+            if body["type"] == "market":
+                o["status"] = "filled"
+                self.pos[body["symbol"]] = self.pos.get(body["symbol"], 0) + float(body["qty"]) * (1 if body["side"] == "buy" else -1)
+            self.ords.append(o)
+            return o
+        raise AssertionError(path)
+
+
+alp = FakeAlp()
+fx = {"id": "fabc1234567", "symbol": "QQQ"}
+alpaca_paper.AlpacaPaper.rth = staticmethod(lambda now=None: True)
+log = alpaca_paper.sync(alp, fx, [{"qty": 100, "dir": 1}], [{"dir": 1, "stop": 600.123, "limit": 612.5}], 605)
+check(alp.pos["QQQ"] == 100 and alp.sent[0]["type"] == "market" and alp.sent[0]["client_order_id"].startswith("fz-fabc1234567"), f"entry mirrored on Alpaca ({log})")
+check(alp.sent[1]["order_class"] == "oco" and alp.sent[1]["stop_loss"]["stop_price"] == "600.12" and alp.sent[1]["take_profit"]["limit_price"] == "612.50" and alp.sent[1]["side"] == "sell", "stop + target placed as an OCO")
+check(alpaca_paper.sync(alp, fx, [{"qty": 100, "dir": 1}], [{"dir": 1, "stop": 600.12, "limit": 612.5}], 606) is None and len(alp.sent) == 2, "nothing resent when unchanged")
+alpaca_paper.sync(alp, fx, [{"qty": 100, "dir": 1}], [{"dir": 1, "stop": 605, "limit": 612.5}], 607)
+check(alp.sent[-1]["stop_loss"]["stop_price"] == "605.00" and sum(o["status"] == "new" for o in alp.ords) == 1, "moved stop: old OCO canceled, new one placed")
+alpaca_paper.sync(alp, fx, [], [], 608)
+check(alp.pos["QQQ"] == 0 and not [o for o in alp.ords if o["status"] == "new"], "strategy flat: exits canceled, position sold")
+alpaca_paper.AlpacaPaper.rth = staticmethod(lambda now=None: False)
+alpaca_paper.sync(alp, fx, [{"qty": 10, "dir": -1}], [], 600)
+check(alp.sent[-1]["type"] == "limit" and alp.sent[-1]["extended_hours"] and alp.sent[-1]["limit_price"] == "598.80", "outside regular hours: marketable limit, extended hours")
+print(f"all {ok} server checks passed (chats, research history, futures, frozen, alpaca)")

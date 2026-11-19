@@ -371,3 +371,4 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .ch-head .seg button { font-size: 11.5px; }
 
 .fz-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; } .fz-chip { font-size: 11.5px; padding: 3px 8px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line2); }
+.fz-card.alp { border-color: rgba(252, 211, 77, .5); } .fz-acct { width: auto; padding: 3px 6px; font-size: 12px; }
