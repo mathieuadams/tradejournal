@@ -56,3 +56,7 @@ Plain Python 3.12, no third-party packages.
 
 ## Deploy
 Push to `main`: GitHub Actions runs the tests and `deploy.sh`.
+
+### Workspace: NQ / ES, request.security, frozen strategies
+- NQ and ES come from the journal's Databento candles (S3 `NQ/1m/...`, a few minutes behind) and can be charted or pulled into any script with `request.security("NQ", timeframe.period, expr)`.
+- Research → ❄ Freeze → paper locks a strategy's script and inputs; the workspace server re-runs it (Node, same Pine interpreter) after every bar close and records the trades from the freeze on. "Paper account" mirrors its position in the workspace paper account. Frozen strategies also show on the journal's Running page.

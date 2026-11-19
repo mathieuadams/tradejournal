@@ -6,6 +6,93 @@ const S = (id, name, cat, desc, src, extra = {}) => ({ id, name, cat, desc, src:
 export const CATEGORIES = ['Strategies', 'Trend', 'Momentum', 'Volatility', 'Volume', 'Levels', 'Structure', 'SMC / ICT', 'Signals'];
 
 export const LIBRARY = [
+S('onmidnq', 'Overnight Mid → ONH/ONL (range from NQ)', 'Strategies', 'The overnight-midpoint strategy with the overnight range taken from NQ futures (they trade all night, QQQ / SPY do not): the open in the top half of the NQ overnight range buys toward the overnight high, the bottom half sells toward the low. On a QQQ / SPY chart the NQ levels are scaled to the ETF by the price ratio at 09:30. Modes: take profit at the target, or hold to the end of the day. Freeze it in Research to paper trade it.', `
+strategy("Overnight Mid → ONH/ONL (NQ range)", "ON mid NQ", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 100)
+rangeFrom = input.string("NQ", "Overnight range from", options = ["NQ", "ES", "Chart"])
+onStart   = input.int(1600, "Overnight starts at (HHMM)")
+mode      = input.string("Take profit at target", "Mode", options = ["Take profit at target", "Hold to end of day"])
+stopMult  = input.float(0.5, "Stop: × the overnight range from the open", step = 0.05)
+tightenIn = input.float(0, "Stop to entry once this % of the way to the target (0 = off)", step = 5)
+pctMid    = input.float(0, "No trade within ±% of the range around the mid", step = 1)
+minRR     = input.float(0, "Target at least × the risk (0 = any)", step = 0.25)
+tradeOut  = input.bool(false, "Also trade opens outside the range (fade to the mid)")
+exitAt    = input.int(1130, "Out at (HHMM, target mode)")
+eodAt     = input.int(1555, "Out at (HHMM, hold mode)")
+side      = input.string("Both", "Side", options = ["Both", "Long", "Short"])
+qty       = input.float(100, "Quantity (shares / contracts)")
+
+// the overnight high / low on the range symbol (runs on its own bars through request.security)
+onRange(st) =>
+    tt = hour * 100 + minute
+    inON = tt >= st or tt < 930
+    var float h = na
+    var float l = na
+    if inON and not inON[1]
+        h := high
+        l := low
+    else if inON
+        h := math.max(nz(h, high), high)
+        l := math.min(nz(l, low), low)
+    [h, l, close]
+
+[rh, rl, rc] = request.security(rangeFrom == "Chart" ? syminfo.ticker : rangeFrom, timeframe.period, onRange(onStart))
+
+t = hour * 100 + minute
+tc = hour(time_close) * 100 + minute(time_close)
+var float tgt = na
+var float stp = na
+var float ent = na
+var float lvH = na
+var float lvL = na
+var bool tight = false
+
+// decided on the candle that closes at 09:30 (its close = the open); the market order fills at the 09:30 open
+if t < 930 and tc >= 930 and strategy.position_size == 0 and rh > rl and rc > 0
+    k = close / rc
+    onh = rh * k
+    onl = rl * k
+    rng = onh - onl
+    mid = (onh + onl) / 2
+    o = close
+    pos = (o - onl) / rng
+    inside = pos > 0 and pos < 1
+    d = inside ? (o > mid ? 1 : -1) : tradeOut ? (pos >= 1 ? -1 : 1) : 0
+    tg = inside ? (d > 0 ? onh : onl) : mid
+    st = o - d * stopMult * rng
+    risk = (o - st) * d
+    sideOk = side == "Both" or (side == "Long" and d > 0) or (side == "Short" and d < 0)
+    lvH := onh
+    lvL := onl
+    if d != 0 and sideOk and (not inside or math.abs(pos - 0.5) * 100 >= pctMid) and risk > 0 and (tg - o) * d > 0 and (minRR == 0 or (tg - o) * d >= minRR * risk)
+        tgt := tg
+        stp := st
+        ent := o
+        tight := false
+        strategy.entry("ON", d > 0 ? strategy.long : strategy.short, qty)
+        if mode == "Take profit at target"
+            strategy.exit("x", "ON", stop = st, limit = tg, comment_loss = "Stop", comment_profit = "Target")
+        else
+            strategy.exit("x", "ON", stop = st, comment = "Stop")
+
+if strategy.position_size != 0
+    d = strategy.position_size > 0 ? 1 : -1
+    if tightenIn > 0 and not tight and (d > 0 ? high - ent : ent - low) >= tightenIn / 100 * math.abs(tgt - ent)
+        tight := true
+        stp := ent
+        if mode == "Take profit at target"
+            strategy.exit("x", "ON", stop = stp, limit = tgt, comment_loss = "Break-even", comment_profit = "Target")
+        else
+            strategy.exit("x", "ON", stop = stp, comment = "Break-even")
+    if t >= (mode == "Take profit at target" ? exitAt : eodAt)
+        strategy.close("ON", comment = "Time", immediately = true)
+
+rth = t >= 930 and t < 1600
+plot(rth ? lvH : na, "Overnight high", #8a8f9c, 1, plot.style_linebr)
+plot(rth ? lvL : na, "Overnight low", #8a8f9c, 1, plot.style_linebr)
+plot(rth ? (lvH + lvL) / 2 : na, "Overnight mid", #FFB86B, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? tgt : na, "Target", #089981, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? stp : na, "Stop", #f23645, 1, plot.style_linebr)
+`, { aliases: 'overnight midpoint onmid onh onl nq futures range strategy backtest freeze paper' }),
 S('onmid', 'Overnight range midpoint → overnight high / low', 'Strategies', 'Research #5 as a backtestable strategy: the 09:30 open in the top half of the overnight range buys toward the overnight high, in the bottom half sells toward the low; stop 0.5× the range, out at 11:30. Open it in Research to study and optimize it.', `
 strategy("Overnight range midpoint → ON high / low", "ON mid", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 100)
 onStart  = input.int(1600, "Overnight starts at (HHMM, 1800 for futures)")

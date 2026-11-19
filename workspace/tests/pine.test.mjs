@@ -1,5 +1,5 @@
 // node workspace/tests/pine.test.mjs — runs every library script and a few language checks.
-import { compile, run } from '../web/pine.js';
+import { compile, run, securityRequests } from '../web/pine.js';
 import { LIBRARY } from '../web/library.js';
 import assert from 'node:assert/strict';
 
@@ -38,5 +38,19 @@ assert.equal(last(R('m = input.int(5, "M")\nplot(m)')), 5);
 assert.equal(last(R('s = "a" + str.tostring(1.5)\nplot(str.length(s))')), 4);
 assert.equal(last(R('plot(nz(na, 7))')), 7);
 assert.equal(last(R('[a, b] = ta.macd(close, 12, 26, 9)\nplot(na(a) ? 0 : 1)', 100)), 1);
+// request.security on another symbol / timeframe: a second pass on its bars, aligned on the bar closes
+{
+  const mk = (n, f, step = 300) => Array.from({ length: n }, (_, i) => { const c = f(i); return { t: 1700000100 + i * step, o: c, h: c + 1, l: c - 1, c, v: 1 }; });
+  const c = compile('//@version=6\nindicator("s")\nf() =>\n    var float s = 0\n    s += close\n    [s, close * 2]\n[a, b] = request.security("CME_MINI:NQ1!", timeframe.period, f())\nplot(a)\nplot(b)\nd = request.security("NQ", "15", close)\nplot(d)');
+  const main = mk(12, i => 100 + i);
+  assert.deepEqual(securityRequests(c, main, { symbol: 'QQQ', tf: '5m' }).map(r => r.key), ['NQ|5m', 'NQ|15m']);
+  const r = run(c, main, { symbol: 'QQQ', tf: '5m', securities: { 'NQ|5m': mk(12, i => 1000 + i), 'NQ|15m': mk(4, i => 5000 + i, 900) } });
+  assert.ok(!r.error, r.error && r.error.message);
+  assert.deepEqual(r.plots[0].values.slice(0, 4), [1000, 2001, 3003, 4006]);
+  assert.deepEqual(r.plots[1].values.slice(0, 2), [2000, 2002]);
+  assert.deepEqual(r.plots[2].values.slice(0, 7).map(v => Number.isNaN(v) ? null : v), [null, null, 5000, 5000, 5000, 5001, 5001]);
+  const r2 = run(c, main, { symbol: 'QQQ', tf: '5m' });             // no data: the chart's own series + a warning
+  assert.equal(r2.plots[2].values[0], 100); assert.ok(r2.logs.some(l => /request.security/.test(l.msg)));
+}
 console.log(fails ? `${fails} library script(s) failed` : 'all pine tests passed');
 process.exit(fails ? 1 : 0);

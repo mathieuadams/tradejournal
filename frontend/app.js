@@ -454,9 +454,38 @@ function drawConf(cv, c) {
   if (c.price) { const y = Math.round(Y(c.price)) + 0.5; g.strokeStyle = '#4FA3FF'; g.lineWidth = 2; g.beginPath(); g.moveTo(60, y); g.lineTo(W, y); g.stroke(); g.lineWidth = 1; g.fillStyle = '#4FA3FF'; g.textAlign = 'right'; g.fillText('now ' + fmt(c.price), W - 4, y - 5); }
 }
 
+/* ---------- Workspace (frozen Pine strategies, paper traded by the workspace server at /ws) ---------- */
+async function wsApi(path, body) {
+  if (!(C.workspace || C.local)) return null;
+  const token = await Auth.token();
+  const r = await fetch('/ws/api/' + path, { method: body ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `Workspace: ${r.status}`);
+  return d;
+}
+const dt = t => t ? new Date(t * 1000).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
+function frozenHtml(L, err) {
+  if (err) return `<section class="panel" style="display:block;margin-top:16px"><div class="hd"><h2>Workspace strategies (Pine)</h2></div><div class="empty muted">${esc(err)}</div></section>`;
+  if (!L) return '';
+  return `<section class="panel" style="display:block;margin-top:16px"><div class="hd"><h2>Workspace strategies (Pine)</h2><span class="dim" style="font-size:13px">Frozen in the workspace's Research panel: script and inputs locked, run after every bar close, paper record from the freeze.</span><div class="grow"></div><a class="btn sm" href="/ws/">Open the workspace</a></div>
+    ${L.length ? `<div class="tbl-wrap"><table class="tbl" style="min-width:880px"><thead><tr><th>Strategy</th><th>Account</th><th>Position</th><th class="r">Trades</th><th class="r">Win</th><th class="r">Net since freeze</th><th class="r">Research test</th><th>Status</th><th></th></tr></thead><tbody>
+      ${L.map(f => { const m = f.metrics || {}, ts = f.research && f.research.test; return `<tr><td><span class="name">${esc(f.name)}</span><div class="sub">${esc(f.symbol)} ${esc(f.tf)} · frozen ${dt(f.frozenAt)}${(f.sec || []).length ? ' · range data ' + f.sec.map(x => esc(x.sym)).join(', ') : ''} · last run ${dt(f.lastRun)}</div>${f.inputLabels ? `<div class="sub">${Object.entries(f.inputLabels).slice(0, 8).map(([k, v]) => `${esc(k)}: ${esc(String(v))}`).join(' · ')}</div>` : ''}</td>
+        <td><span class="stage st-paper">${f.account === 'paper' ? 'Paper account' : 'Ledger'}</span></td>
+        <td class="mono">${(f.open || []).length ? f.open.map(o => `${o.dir > 0 ? 'Long' : 'Short'} ${o.qty} @ ${fmt(o.entryPx)}`).join('<br>') + `<div class="sub ${cls(f.openPnl)}">${money(f.openPnl)}</div>` : 'Flat'}</td>
+        <td class="r">${m.n || 0}</td><td class="r">${m.n ? m.winRate + '%' : '—'}</td><td class="r ${cls(m.net)}">${money(m.net || 0)}</td>
+        <td class="r ${ts ? cls(ts.net) : ''}">${ts ? `${money(ts.net)} <span class="muted">· ${ts.trades} tr · PF ${ts.profit_factor ?? '—'}</span>` : '—'}</td>
+        <td style="color:${f.error ? 'var(--sellT)' : 'var(--muted)'}">${f.error ? esc(f.error) : f.status === 'on' ? 'Running' : 'Stopped'}</td>
+        <td><button class="btn sm" data-fzact="${f.status === 'on' ? 'stop' : 'start'}" data-fz="${f.id}">${f.status === 'on' ? 'Stop' : 'Start'}</button></td></tr>`; }).join('')}
+    </tbody></table></div>` : `<div class="empty">Nothing frozen yet. In the workspace, run a strategy in Research, then ❄ Freeze → paper.</div>`}</section>`;
+}
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-fzact]'); if (!b) return;
+  try { await wsApi('frozen/' + b.dataset.fz, { action: b.dataset.fzact }); vRunning(); } catch (err) { toast(err.message); }
+});
+
 /* ---------- Running ---------- */
 async function vRunning() {
-  const r = await api('/running');
+  const [r, fz] = await Promise.all([api('/running'), wsApi('frozen').then(d => d && { L: d.frozen }).catch(e => C.workspace ? { err: e.message } : null)]);
   S.run = r;
   const any = Object.values(r.coverage).some(c => c.days);
   const tile = m => m.empty ? `<div class="panel tile"><div><b>${m.sym}</b> <span class="dim">${esc(m.name)}</span></div><div class="dim">No candles yet. <a href="#data">Download them</a>.</div></div>` : `
@@ -499,7 +528,8 @@ async function vRunning() {
         ${r.fills.length ? r.fills.map(f => `<div class="fill"><span class="t">${esc(f.t)}</span><span class="s ${f.side === 'BUY' ? 'gain' : 'loss'}">${f.side}</span><span class="w">${esc(f.what)}</span><span class="mono">${fmt(f.px)}</span></div>`).join('') : '<div class="empty">No fills today.</div>'}
         <div class="bd note" style="border-top:1px solid var(--line)">${any ? `Candles stored: ${Object.entries(r.coverage).map(([s, c]) => `${s} ${c.from || '—'} → ${(c.to || '').replace('T', ' ')}`).join(' · ')}` : 'No market data yet: <a href="#data">connect Databento and download the candles</a>.'}</div>
       </aside>
-    </div>`);
+    </div>
+    ${fz ? frozenHtml(fz.L, fz.err) : ''}`);
   S.timers.push(setInterval(() => { if (S.page === 'running' && !document.hidden) vRunning().catch(() => {}); }, 60000));
 }
 function spark(xs) { if (!xs || !xs.length) return ''; const lo = Math.min(...xs), hi = Math.max(...xs); return xs.map((v, i) => `<i style="height:${6 + (v - lo) / (hi - lo || 1) * 38}px;${i === xs.length - 1 ? 'background:#E7EAF0' : ''}"></i>`).join(''); }

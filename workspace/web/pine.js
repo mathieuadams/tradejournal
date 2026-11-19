@@ -763,7 +763,32 @@ export function metrics(trades, opts = {}) {
 }
 def('alertcondition', 'condition,title,message', () => NaN);
 def('alert', 'message,freq', () => NaN);
-def('request.security', 'symbol,timeframe,expression,gaps,lookahead', (c, a) => { if (!c.warnedSec) { c.warnedSec = true; c.warn('request.security(): other timeframes / symbols are not fetched yet; the chart\'s own series is used.'); } return a[2]; });
+// request.security: the script runs a second time on the other symbol / timeframe (opts.securities[key] = its bars) and
+// each call site records its expression per bar there; here the value of the last of those bars that has closed by the
+// end of this bar is returned (no lookahead). Without the bars (or for the chart's own symbol and timeframe) the
+// expression on the chart's own series is returned.
+export function secKey(sym, tf, ctx) {
+  let s = String(sym == null ? '' : sym).trim(); if (s.includes(':')) s = s.slice(s.indexOf(':') + 1);
+  s = s.replace(/[0-9]*!$/, '').toUpperCase(); if (!s || s === String(ctx.symbol).toUpperCase()) s = String(ctx.symbol).toUpperCase();
+  let t = String(tf == null ? '' : tf).trim(); if (!t) t = ctx.tf;
+  if (/^\d+$/.test(t)) t = t + 'm'; if (/^[DWM]$/.test(t)) t = '1' + t;
+  const tfs = tfSeconds(t), same = s === String(ctx.symbol).toUpperCase() && tfs === ctx.tfSec;
+  return { sym: s, tf: t, tfSec: tfs, key: s + '|' + t, same };
+}
+def('request.security', 'symbol,timeframe,expression,gaps,lookahead', (c, a, st, id) => {
+  const k = secKey(a[0], a[1], c), site = c.f.path + '/' + id;
+  if (c.probe) { if (!k.same) c.probe.set(k.key, { sym: k.sym, tf: k.tf }); return a[2]; }
+  if (c.secRec) { if (k.key === c.secRec.key) (c.secRec.vals[site] || (c.secRec.vals[site] = []))[c.i] = a[2]; return a[2]; }
+  if (k.same) return a[2];
+  const S = c.sec && c.sec[k.key];
+  if (!S) { const m = `request.security(): no ${k.sym} ${k.tf} data loaded yet; the chart's own series is used.`; c.warn(m); return a[2]; }
+  const vals = S.vals[site]; if (!vals) return NaN;
+  const end = c.B.t[c.i] + c.tfSec; let j = st.j == null ? -1 : st.j;
+  if (j >= 0 && S.t[j] + S.dur > end) j = -1;                    // (replay / a jump back in time)
+  while (j + 1 < S.t.length && S.t[j + 1] + S.dur <= end) j++;
+  st.j = j; if (j < 0) return NaN;
+  const v = vals[j]; return v === undefined ? NaN : v;
+});
 def('runtime.error', 'message', (c, a) => { throw new PineError(String(a[0]), c.line); });
 for (const lv of ['info', 'warning', 'error']) def('log.' + lv, 'message', (c, a) => { if (c.out.logs.length < 200) c.out.logs.push({ level: lv, bar: c.i, msg: F['str.format'][1](c, a) }); return NaN; });
 
@@ -1115,7 +1140,25 @@ export function compile(src) {
   return { prog, src };
 }
 
+// The other symbols / timeframes a script asks for with request.security: [{ sym, tf, key }] (run on a few bars)
+export function securityRequests(compiled, bars, opts = {}) {
+  if (!/request\.security\s*\(/.test(compiled.src || '')) return [];
+  const probe = new Map();
+  try { run(compiled, bars.slice(0, Math.min(bars.length, 3)), { ...opts, securities: null, _probe: probe }); } catch (e) { /* the requests seen so far */ }
+  return [...probe.entries()].map(([key, v]) => ({ ...v, key }));
+}
+
 export function run(compiled, bars, opts = {}) {
+  let sec = null;
+  if (opts.securities && !opts._probe && !opts._secRec) {
+    sec = {};
+    for (const [key, sb] of Object.entries(opts.securities)) {
+      if (!sb || !sb.length) continue;
+      const [sym, tf] = key.split('|'), rec = { key, vals: {} };
+      run(compiled, sb, { ...opts, symbol: sym, tf, tfSec: tfSeconds(tf), securities: null, _secRec: rec, live: false });
+      sec[key] = { t: sb.map(b => b.t), dur: tfSeconds(tf), vals: rec.vals };
+    }
+  }
   const n = bars.length;
   const B = { t: new Array(n), o: new Array(n), h: new Array(n), l: new Array(n), c: new Array(n), v: new Array(n) };
   for (let i = 0; i < n; i++) { const b = bars[i]; B.t[i] = b.t; B.o[i] = b.o; B.h[i] = b.h; B.l[i] = b.l; B.c[i] = b.c; B.v[i] = b.v || 0; }
@@ -1130,6 +1173,7 @@ export function run(compiled, bars, opts = {}) {
     tp: j => tpc[j] || (tpc[j] = nyParts(B.t[j])),
     warn: msg => { if (!out.logs.some(l => l.msg === msg)) out.logs.push({ level: 'warning', bar: ctx.i, msg }); },
     pre: k => prec[k] || (prec[k] = precompute(k, B, ctx)),
+    probe: opts._probe || null, secRec: opts._secRec || null, sec,
   };
   const t0 = Date.now(), budget = opts.budgetMs || 4000;
   try {

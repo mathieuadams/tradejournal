@@ -15,6 +15,13 @@ else
 fi
 [ -f /opt/workspace/server/server.py ] || { log "no code yet"; exit 1; }
 
+# Node.js runs the frozen Pine strategies (server/pinerun.mjs)
+if ! command -v node >/dev/null 2>&1; then
+  # in its own transient unit: a start may only take 90 seconds, the install can take longer
+  systemd-run --unit=ws-node-install --no-block /usr/bin/dnf install -y -q nodejs >/dev/null 2>&1 && log "installing nodejs in the background" \
+    || log "nodejs install could not start (frozen strategies can't run)"
+fi
+
 ENV=/etc/workspace.env.new
 : > "$ENV"; chmod 600 "$ENV"
 aws ssm get-parameters-by-path --path "$PARAM_PATH" --with-decryption --region "$REGION" --query 'Parameters[].[Name,Value]' --output text 2>/tmp/ws-err \

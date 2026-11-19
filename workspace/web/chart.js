@@ -502,7 +502,7 @@ export class Chart {
     const row = (d, host) => {
       const r = document.createElement('div'); r.className = 'lg-row lg-ind' + (d.visible === false ? ' off' : '') + (d.out && d.out.error ? ' err' : ''); r.dataset.id = d.id;
       r.innerHTML = `<span class="lg-name">${esc(d.out ? (d.out.meta.shorttitle || d.out.meta.title) : d.title)}</span><span class="lg-args dim">${esc(argsText(d))}</span><span class="lg-vals"></span>
-        <span class="lg-btns"><button data-a="toggle" title="Show / hide">${d.visible === false ? '◌' : '◉'}</button><button data-a="settings" title="Settings">⚙</button><button data-a="source" title="Source code">{ }</button>${d.out && d.out.strategy ? '<button data-a="research" title="Backtest / optimize in Research">⚗</button>' : ''}<button data-a="remove" title="Remove">✕</button></span>
+        <span class="lg-btns"><button data-a="toggle" title="Show / hide">${d.visible === false ? '◌' : '◉'}</button><button data-a="settings" title="Settings">⚙</button><button data-a="source" title="Source code">{ }</button>${d.out && d.out.strategy ? '<button data-a="research" title="Backtest / optimize in Research">⚗</button><button data-a="freeze" title="Freeze → paper trade it on the server with these inputs">❄</button>' : ''}<button data-a="remove" title="Remove">✕</button></span>
         ${d.out && d.out.error ? `<span class="lg-err">⚠ ${esc(d.out.error.message)}</span>` : ''}`;
       r.addEventListener('click', e => { const b = e.target.closest('button'); if (b) { e.stopPropagation(); this.opts.onLegend && this.opts.onLegend(d.id, b.dataset.a); } });
       host.appendChild(r);

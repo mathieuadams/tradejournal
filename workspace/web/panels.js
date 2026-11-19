@@ -5,9 +5,10 @@ import { fmtPrice, fmtVol } from './chart.js';
 import { openSymbolSearch } from './dialogs.js';
 import { mountEditor } from './editor.js';
 import { mountResearch } from './research.js';
+import { mountFrozen } from './frozen.js';
 
 let current = null;
-const RENDER = { watchlist: renderWatchlist, order: renderOrder, tree: renderTree, settings: renderSettings, editor: el => mountEditor(el), research: el => mountResearch(el) };
+const RENDER = { watchlist: renderWatchlist, order: renderOrder, tree: renderTree, settings: renderSettings, editor: el => mountEditor(el), research: el => mountResearch(el), frozen: el => mountFrozen(el) };
 
 export function initPanels() {
   $$('#rail [data-p]').forEach(b => { b.onclick = () => b.dataset.p === 'positions' ? toggleBottom() : openSide(b.dataset.p); });
@@ -30,7 +31,7 @@ export function initPanels() {
 export function openSide(name, force) {
   const panel = $('#sidepanel');
   if (current === name && !force) { panel.hidden = true; current = null; W.state.side = null; }
-  else { current = name; W.state.side = name; panel.hidden = false; panel.classList.toggle('wide', name === 'editor' || name === 'research'); panel.style.width = ''; RENDER[name]($('#sidebody')); }
+  else { current = name; W.state.side = name; panel.hidden = false; panel.classList.toggle('wide', name === 'editor' || name === 'research' || name === 'frozen'); panel.style.width = ''; RENDER[name]($('#sidebody')); }
   $$('#rail [data-p]').forEach(b => b.classList.toggle('on', b.dataset.p === current || (b.dataset.p === 'positions' && !$('#bottompanel').hidden)));
   W.save(); requestAnimationFrame(() => W.chart.req());
 }

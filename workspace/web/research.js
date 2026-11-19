@@ -3,11 +3,13 @@
 import { W } from './ctx.js';
 import { h, esc, api, toast, money, pct } from './util.js';
 import { nyParts, fmtPrice } from './chart.js';
+import { compile, securityRequests } from './pine.js';
+import { freezeDialog } from './frozen.js';
 import { editorState } from './editor.js';
 import { focusChat } from './chat.js';
 
 const R = { name: '', src: '', indicatorId: null, symbol: '', tf: '', days: 500, com: 0.005, slip: 1, split: 60, objective: 'net', minTrades: 20,
-  sel: {}, study: null, opt: null, running: false, cancel: false, progress: '', cache: new Map() };
+  sel: {}, study: null, opt: null, running: false, cancel: false, progress: '', cache: new Map(), frozen: null, freezeAt: null };
 let root = null, pool = [];
 
 const OBJ = { net: ['Net profit', m => m.net], pf: ['Profit factor', m => (Number.isFinite(m.pf) ? m.pf : 99)], sharpe: ['Sharpe', m => m.sharpe], netdd: ['Net ÷ max drawdown', m => m.maxDD ? m.net / m.maxDD : m.net], avg: ['Avg trade', m => m.avg] };
@@ -56,6 +58,7 @@ export function mountResearch(el) {
   bind('#rsSym', 'symbol', v => v.trim().toUpperCase()); bind('#rsTf', 'tf', v => W.normTfStrict(v) || R.tf); bind('#rsDays', 'days', v => Math.max(5, Math.min(2000, +v || 500)));
   bind('#rsCom', 'com', v => Math.max(0, +v || 0)); bind('#rsSlip', 'slip', v => Math.max(0, +v || 0)); bind('#rsSplit', 'split', v => Math.max(10, Math.min(95, +v || 60)));
   body.onclick = e => {
+    const fz0 = e.target.closest('[data-freeze]'); if (fz0) { freezeForm(+fz0.dataset.freeze); return; }
     const a = e.target.closest('[data-a]'); if (!a) return;
     if (a.dataset.a === 'study') runStudy();
     if (a.dataset.a === 'stop') R.cancel = true;
@@ -63,6 +66,7 @@ export function mountResearch(el) {
     if (a.dataset.a === 'optimize') runOptimize();
     if (a.dataset.a === 'apply') applyInputs(R.study.inputs.reduce((o, i) => (o[i.idx] = i.value, o), {}));
     const ap = e.target.closest('[data-apply]'); if (ap) applyInputs(R.opt.rows[+ap.dataset.apply].values);
+    if (a.dataset.a === 'freeze') freezeForm(null);
     const tr = e.target.closest('[data-trade]'); if (tr) gotoTrade(R.study.trades[+tr.dataset.trade]);
   };
   renderStudy(); renderOpt();
@@ -71,22 +75,29 @@ const setProg = t => { R.progress = t; const p = root && root.querySelector('#rs
 
 // ------------------------------------------------------------------------------------------------ data & workers
 async function loadBars() {
-  const k = `${R.symbol}|${R.tf}|${R.days}`;
+  const k = `${R.symbol}|${R.tf}|${R.days}|${R.src.length}`;
   if (!R.cache.has(k)) {
     setProg(`Loading ${R.days} days of ${R.symbol} ${R.tf}…`);
-    const j = await api(`bars?symbol=${encodeURIComponent(R.symbol)}&tf=${encodeURIComponent(R.tf)}&days=${R.days}&feed=sip`);
-    const bars = j.bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
+    const get = async (sym, tf) => (await api(`bars?symbol=${encodeURIComponent(sym)}&tf=${encodeURIComponent(tf)}&days=${R.days}&feed=sip`)).bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
+    const bars = await get(R.symbol, R.tf);
     if (bars.length < 50) throw new Error(`Only ${bars.length} bars of ${R.symbol} ${R.tf}`);
-    R.cache.clear(); R.cache.set(k, bars);
+    let sec = [], securities = null;
+    try { sec = securityRequests(compile(R.src), bars, { symbol: R.symbol, tf: R.tf }); } catch (e) { sec = []; }
+    if (sec.length) {
+      securities = {};
+      for (const r of sec) { setProg(`Loading ${R.days} days of ${r.sym} ${r.tf} (request.security)…`); securities[r.key] = await get(r.sym, r.tf); }
+    }
+    R.cache.clear(); R.cache.set(k, { bars, securities, sec });
   }
-  return { key: k, bars: R.cache.get(k) };
+  const d = R.cache.get(k);
+  return { key: k, bars: d.bars, securities: d.securities, sec: d.sec };
 }
 function workers(n) {
   while (pool.length < n) { const w = new Worker(new URL('./research-worker.js', import.meta.url), { type: 'module' }); w.key = null; pool.push(w); }
   return pool.slice(0, n);
 }
 async function prime(ws, data) {
-  await Promise.all(ws.map(w => w.key === data.key ? null : new Promise(res => { const f = e => { if (e.data.type === 'ready') { w.removeEventListener('message', f); w.key = data.key; res(); } }; w.addEventListener('message', f); w.postMessage({ type: 'bars', key: data.key, bars: data.bars }); })));
+  await Promise.all(ws.map(w => w.key === data.key ? null : new Promise(res => { const f = e => { if (e.data.type === 'ready') { w.removeEventListener('message', f); w.key = data.key; res(); } }; w.addEventListener('message', f); w.postMessage({ type: 'bars', key: data.key, bars: data.bars, securities: data.securities }); })));
 }
 function job(w, msg) { return new Promise(res => { const f = e => { if (e.data.type === 'result' && e.data.id === msg.id) { w.removeEventListener('message', f); res(e.data); } }; w.addEventListener('message', f); w.postMessage({ type: 'run', ...msg }); }); }
 function baseMsg(data) {
@@ -126,7 +137,7 @@ function renderStudy() {
     ${row('Long', m => `${m.long.n} · <span class="${cls(m.long.net)}">${money(m.long.net, 0)}</span>`)}${row('Short', m => `${m.short.n} · <span class="${cls(m.short.net)}">${money(m.short.net, 0)}</span>`)}</table>
     <canvas id="rsEq" width="900" height="200" style="width:100%;height:150px;margin:10px 0;border-radius:8px;background:var(--bg2)"></canvas>
     ${breakdown(S.trades)}
-    <div class="row" style="margin:8px 0"><button class="btn sm" data-a="apply" title="Put these inputs on the chart">Send to the chart</button></div>
+    <div class="row" style="margin:8px 0;flex-wrap:wrap"><button class="btn sm" data-a="apply" title="Put these inputs on the chart">Send to the chart</button><button class="btn sm primary" data-a="freeze" title="Lock this script and these inputs and paper trade it from now on">❄ Freeze → paper</button></div>
     ${optForm(S.inputs)}
     <div class="tree-sec">Trades (${S.trades.length}) · click to see it on the chart</div>
     <div class="rs-trades"><table class="tbl"><tr><th>Entry</th><th>Side</th><th>Qty</th><th>In</th><th>Out</th><th>P&L</th><th>Exit</th></tr>
@@ -160,11 +171,12 @@ function gotoTrade(t) {
 function optForm(inputs) {
   const num = inputs.filter(i => ['int', 'float', 'price'].includes(i.type) && !i.options), other = inputs.filter(i => i.type === 'bool' || i.options);
   if (!num.length && !other.length) return '';
-  const rowN = i => { const s = R.sel[i.idx] || defRange(i); return `<tr><td class="t"><label><input type="checkbox" data-sel="${i.idx}" ${R.sel[i.idx] ? 'checked' : ''}> ${esc(i.title)}</label></td><td>${i.value}</td><td><input class="rs-in" data-f="${i.idx}" value="${s.from}"></td><td><input class="rs-in" data-t="${i.idx}" value="${s.to}"></td><td><input class="rs-in" data-s="${i.idx}" value="${s.step}"></td></tr>`; };
-  const rowO = i => `<tr><td class="t"><label><input type="checkbox" data-sel="${i.idx}" ${R.sel[i.idx] ? 'checked' : ''}> ${esc(i.title)}</label></td><td>${esc(String(i.value))}</td><td colspan="3" class="t dim">try ${i.type === 'bool' ? 'on and off' : 'every option'}</td></tr>`;
+  const rowN = i => { const on = !!R.sel[i.idx], s = R.sel[i.idx] || defRange(i), d = on ? '' : 'disabled';
+    return `<tr class="${on ? 'on' : ''}" data-row="${i.idx}"><td class="nm"><label><input type="checkbox" data-sel="${i.idx}" ${on ? 'checked' : ''}><span>${esc(i.title)}</span></label></td><td class="now">${esc(String(i.value))}</td><td><input class="rs-in" type="number" data-f="${i.idx}" value="${s.from}" ${d}></td><td><input class="rs-in" type="number" data-t="${i.idx}" value="${s.to}" ${d}></td><td><input class="rs-in" type="number" data-s="${i.idx}" value="${s.step}" ${d}></td></tr>`; };
+  const rowO = i => `<tr class="${R.sel[i.idx] ? 'on' : ''}" data-row="${i.idx}"><td class="nm"><label><input type="checkbox" data-sel="${i.idx}" ${R.sel[i.idx] ? 'checked' : ''}><span>${esc(i.title)}</span></label></td><td class="now">${esc(String(i.value))}</td><td colspan="3" class="dim">tries ${i.type === 'bool' ? 'on and off' : `all ${i.options.length} options`}</td></tr>`;
   setTimeout(wireOpt);
   return `<div class="tree-sec">Optimize on the train part, check on the test part</div>
-    <table class="tbl rs-opt"><tr><th>Input</th><th>Now</th><th>From</th><th>To</th><th>Step</th></tr>${num.map(rowN).join('')}${other.map(rowO).join('')}</table>
+    <table class="rs-opt"><colgroup><col class="c-nm"><col class="c-now"><col><col><col></colgroup><tr><th>Input</th><th>Now</th><th>From</th><th>To</th><th>Step</th></tr>${num.map(rowN).join('')}${other.map(rowO).join('')}</table>
     <div class="row" style="margin:8px 0"><label class="field"><span>Rank by (train)</span><select id="rsObj">${Object.entries(OBJ).map(([k, [n]]) => `<option value="${k}" ${R.objective === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <label class="field"><span>Min trades (train)</span><input id="rsMin" type="number" value="${R.minTrades}"></label>
       <button class="btn primary" data-a="optimize" style="align-self:flex-end;margin-bottom:10px" ${R.running ? 'disabled' : ''}>Optimize <span id="rsCombos" class="dim"></span></button></div>`;
@@ -180,7 +192,10 @@ function wireOpt() {
   const ins = R.study.inputs;
   el.onchange = e => {
     const t = e.target, k = t.dataset.sel ?? t.dataset.f ?? t.dataset.t ?? t.dataset.s, i = ins.find(x => String(x.idx) === String(k)); if (!i) return;
-    if (t.dataset.sel !== undefined) { if (t.checked) R.sel[k] = { ...defRange(i), ...(readRow(k) || {}) }; else delete R.sel[k]; }
+    if (t.dataset.sel !== undefined) {
+      if (t.checked) R.sel[k] = { ...defRange(i), ...(readRow(k) || {}) }; else delete R.sel[k];
+      const tr = el.querySelector(`tr[data-row="${k}"]`); if (tr) { tr.classList.toggle('on', t.checked); tr.querySelectorAll('.rs-in').forEach(x => { x.disabled = !t.checked; }); }
+    }
     else if (R.sel[k]) Object.assign(R.sel[k], readRow(k));
     combos();
   };
@@ -229,9 +244,9 @@ function renderOpt() {
   const ins = R.study.inputs, keys = Object.keys(R.opt.rows[0].changed), f = OBJ[R.objective];
   const name = k => esc((ins.find(i => String(i.idx) === String(k)) || {}).title || k);
   el.innerHTML = `<div class="tree-sec">Optimization · ranked by ${f[0].toLowerCase()} on train · check that test holds up</div>
-    <div class="rs-trades"><table class="tbl"><tr>${keys.map(k => `<th>${name(k)}</th>`).join('')}<th>Train net</th><th>PF</th><th>N</th><th>Test net</th><th>PF</th><th>N</th><th>Max DD</th><th></th></tr>
-    ${R.opt.rows.slice(0, 40).map((r, k) => `<tr>${keys.map(x => `<td>${esc(String(r.changed[x]))}</td>`).join('')}<td class="${cls(r.train.net)}">${money(r.train.net, 0)}</td><td>${pf(r.train.pf)}</td><td class="${r.train.n < R.minTrades ? 'dn' : ''}">${r.train.n}</td>
-      <td class="${cls(r.test.net)}"><b>${money(r.test.net, 0)}</b></td><td>${pf(r.test.pf)}</td><td>${r.test.n}</td><td>${money(r.all.maxDD, 0)}</td><td><button class="btn sm" data-apply="${k}" title="Put these inputs on the chart">To chart</button></td></tr>`).join('')}</table></div>
+    <div class="rs-trades"><table class="tbl rs-res"><tr>${keys.map(k => `<th class="t">${name(k)}</th>`).join('')}<th>Train net</th><th>PF</th><th>N</th><th>Test net</th><th>PF</th><th>N</th><th>Max DD</th><th></th></tr>
+    ${R.opt.rows.slice(0, 40).map((r, k) => `<tr>${keys.map(x => `<td class="t">${esc(String(r.changed[x]))}</td>`).join('')}<td class="${cls(r.train.net)}">${money(r.train.net, 0)}</td><td>${pf(r.train.pf)}</td><td class="${r.train.n < R.minTrades ? 'dn' : ''}">${r.train.n}</td>
+      <td class="${cls(r.test.net)}"><b>${money(r.test.net, 0)}</b></td><td>${pf(r.test.pf)}</td><td>${r.test.n}</td><td>${money(r.all.maxDD, 0)}</td><td class="act"><button class="btn sm" data-apply="${k}" title="Put these inputs on the chart">To chart</button><button class="btn sm" data-freeze="${k}" title="Freeze with these inputs and paper trade it">❄</button></td></tr>`).join('')}</table></div>
     <p class="note">The best train result is usually too good: prefer a row whose test result is also positive and whose neighbours (nearby values) are profitable too.</p>`;
 }
 const pf = v => Number.isFinite(v) ? v.toFixed(2) : '∞';
@@ -273,5 +288,17 @@ export async function quantApply(values) {
   const v = { ...R.study.inputs.reduce((o, i) => (o[i.idx] = i.value, o), {}) };
   for (const [t, x] of Object.entries(values || {})) { const i = R.study.inputs.find(z => z.title.toLowerCase() === t.toLowerCase()); if (i) v[i.idx] = x; }
   await applyInputs(v); return { ok: true };
+}
+
+// ------------------------------------------------------------------------------------------------ freeze → paper
+function freezeForm(row) {
+  if (!R.study) return;
+  const st = R.study, ins = st.inputs;
+  const values = row == null ? ins.reduce((o, i) => (o[i.idx] = i.value, o), {}) : R.opt.rows[row].values;
+  const res = row == null ? st : R.opt.rows[row];
+  const d = R.cache.values().next().value || {};
+  freezeDialog({ src: R.src, name: R.name, inputs: values, symbol: R.symbol, tf: R.tf, com: R.com, slip: R.slip, sec: d.sec,
+    labels: Object.fromEntries(ins.map(i => [i.title, values[i.idx]])),
+    research: { days: R.days, from: st.from, to: st.to, split: R.split, train: slim(res.train), test: slim(res.test) } });
 }
 void pct;

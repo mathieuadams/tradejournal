@@ -265,4 +265,56 @@ except urllib.error.HTTPError as e:
 b = json.loads(urllib.request.urlopen(base + "/api/bars?symbol=QQQ&tf=5m&days=30&feed=sip", timeout=30).read())
 check(len(b["bars"]) > 2000, f"days-based history ({len(b['bars'])} bars)")
 httpd.shutdown()
-print(f"all {ok} server checks passed (chats, research history)")
+
+# ---- NQ / ES from the journal's Databento month files, frozen strategies (Node runs the Pine strategy)
+import gzip  # noqa: E402
+from datetime import datetime as _dt, timedelta as _td  # noqa: E402
+fdir = tempfile.mkdtemp()
+now_ny = _dt.now(market.NY).replace(second=0, microsecond=0, tzinfo=None)
+rows, t, px = {}, now_ny - _td(days=4), 20000.0
+while t <= now_ny:
+    rows.setdefault(t.strftime("%Y-%m"), []).append([t.strftime("%Y-%m-%dT%H:%M"), px, px + 2, px - 2, px + 0.5, 10])
+    px += 0.5 if t.minute % 7 else -1.5
+    t += _td(minutes=1)
+os.makedirs(os.path.join(fdir, "NQ", "1m"))
+for ym, b in rows.items():
+    with open(os.path.join(fdir, "NQ", "1m", ym + ".json.gz"), "wb") as fh:
+        fh.write(gzip.compress(json.dumps({"b": b}).encode()))
+fut = market.FuturesData("", fdir)
+check(fut._epoch("2026-11-02T09:30") == 1793629800 and fut._epoch("2026-07-01T09:30") == 1782912600, "NY time -> epoch (EST / EDT)")
+nb, _ = fut.bars("NQ", "5m", 300)
+check(len(nb) == 300 and all(b[0] % 300 == 0 for b in nb) and nb[-1][0] > time.time() - 600, f"NQ 5m from the month files ({len(nb)})")
+wf = market.WithFutures(market.FakeMarket(), fut)
+check(wf.search("nq")[0]["symbol"] == "NQ" and wf.bars("QQQ", "5m", 50)[0], "futures merged with the base market")
+check(wf.quotes(["NQ"])["NQ"]["last"] == nb[-1][4], "futures quote")
+
+import frozen  # noqa: E402
+SRC = '//@version=6\nstrategy("every 6", overlay = true)\nn = request.security("NQ", timeframe.period, close)\nif bar_index % 6 == 0 and strategy.position_size == 0 and n > 0\n    strategy.entry("L", strategy.long, 2)\nif bar_index % 6 == 3\n    strategy.close_all()'
+if frozen.node_bin():
+    pp = Paper(os.path.join(tempfile.mkdtemp(), "p.json"), wf.last)
+    wf.cur["QQQ"] = [0, 600, 600, 600, 600, 1]
+    fz = frozen.Frozen(os.path.join(tempfile.mkdtemp(), "fz.json"), wf, pp, interval=0)
+    v = fz.create({"name": "t", "src": SRC, "symbol": "QQQ", "tf": "5m", "sec": [{"sym": "NQ", "tf": "5m"}], "account": "paper"})
+    time.sleep(0.2)
+    while v["id"] in fz.busy:
+        time.sleep(0.2)
+    fz.s["items"][v["id"]]["frozenAt"] = int(time.time()) - 86400 * 2      # as if frozen two days ago
+    fz.run_one(v["id"])
+    g = fz.get(v["id"])
+    check(not g["error"], f"frozen run: {g['error']}")
+    check(g["metrics"]["n"] > 10 and all(t["entryTime"] >= g["frozenAt"] for t in g["trades"]), f"forward trades only ({g['metrics']['n']})")
+    want = sum(o["qty"] * o["dir"] for o in g["open"])
+    check(g["mirror"] == want and (pp.s["positions"].get("QQQ", {}).get("qty", 0) == want), "position mirrored in the paper account")
+    fz.action(v["id"], "stop")
+    check(not pp.s["positions"].get("QQQ") and fz.get(v["id"])["status"] == "off", "stop flattens the paper position")
+    bad = fz.create({"name": "x", "src": '//@version=6\nstrategy("x")\nplot(nope)', "symbol": "QQQ", "tf": "5m"})
+    while bad["id"] in fz.busy or not fz.get(bad["id"])["lastRun"]:
+        time.sleep(0.2)
+    check("nope" in (fz.get(bad["id"])["error"] or ""), "a script error is shown")
+    try:
+        fz.create({"src": '//@version=6\nindicator("x")', "symbol": "QQQ", "tf": "5m"}); check(False, "indicator frozen")
+    except frozen.FrozenError:
+        check(True, "only strategies freeze")
+else:
+    print("(node not found: frozen strategy checks skipped)")
+print(f"all {ok} server checks passed (chats, research history, futures, frozen)")

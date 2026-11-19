@@ -20,6 +20,10 @@ Parameters:
   KeyArn:
     Type: String
     Description: The journal app's KMS key for data-vendor keys (main stack output BrokerKeyArn)
+  DataBucket:
+    Type: String
+    Default: none
+    Description: The journal app's data bucket (main stack output DataBucketName); the workspace reads its NQ / ES candles
   AlpacaFeed:
     Type: String
     Default: iex
@@ -64,6 +68,11 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ParamPath}"
                   - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ParamPath}/*"
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${DataBucket}/NQ/*"
+                  - !Sub "arn:aws:s3:::${DataBucket}/ES/*"
               - Effect: Allow
                 Action: dynamodb:Scan
                 Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}"

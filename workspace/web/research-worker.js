@@ -1,16 +1,16 @@
 // Runs one backtest of a Pine strategy per message, off the main thread (the research panel uses several of these).
 import { compile, run, metrics } from './pine.js';
 
-let bars = null, key = null;
+let bars = null, key = null, securities = null;
 const compiled = new Map();
 
 self.onmessage = e => {
   const m = e.data;
-  if (m.type === 'bars') { bars = m.bars; key = m.key; self.postMessage({ type: 'ready', key }); return; }
+  if (m.type === 'bars') { bars = m.bars; key = m.key; securities = m.securities || null; self.postMessage({ type: 'ready', key }); return; }
   if (m.type !== 'run') return;
   try {
     let c = compiled.get(m.src); if (!c) { c = compile(m.src); compiled.set(m.src, c); }
-    const r = run(c, bars, { inputs: m.inputs, symbol: m.symbol, tf: m.tf, tfSec: m.tfSec, strategy: m.strategy, budgetMs: 120000 });
+    const r = run(c, bars, { inputs: m.inputs, symbol: m.symbol, tf: m.tf, tfSec: m.tfSec, strategy: m.strategy, securities, budgetMs: 120000 });
     if (r.error) { self.postMessage({ type: 'result', id: m.id, error: `line ${r.error.line}: ${r.error.message}` }); return; }
     if (!r.strategy) { self.postMessage({ type: 'result', id: m.id, error: 'not a strategy' }); return; }
     const T = r.strategy.trades, cut = m.splitTime;

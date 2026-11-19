@@ -46,8 +46,9 @@ done
 setp COGNITO_USER_POOL_ID "$(out UserPoolId)"
 setp COGNITO_CLIENT_ID "$(out UserPoolClientId)"
 setp COGNITO_REGION "$REGION"
+setp FUT_BUCKET "$(out DataBucketName)"
 aws cloudformation deploy --stack-name "$WS_STACK" --template-file workspace/infra/workspace.yaml --region "$REGION" \
-  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides "OriginSecret=$SECRET" "ParamPath=$P" "TableName=$(out TableName)" "KeyArn=$(out BrokerKeyArn)"
+  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides "OriginSecret=$SECRET" "ParamPath=$P" "TableName=$(out TableName)" "KeyArn=$(out BrokerKeyArn)" "DataBucket=$(out DataBucketName)"
 [ -n "$(param ANTHROPIC_API_KEY)" ] || echo "Workspace AI is in demo mode: pass ANTHROPIC_API_KEY to deploy.sh in the workflow (env: ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }})."
 REL="$(mktemp -d)/workspace.zip"
 (cd workspace && zip -qr "$REL" server web infra/ws-update.sh -x '*/__pycache__/*')

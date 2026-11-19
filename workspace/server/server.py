@@ -29,6 +29,7 @@ import cognito  # noqa: E402
 import llm  # noqa: E402
 import market  # noqa: E402
 from paper import Paper, PaperError  # noqa: E402
+from frozen import Frozen, FrozenError  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8765"))
 HOST = os.environ.get("HOST", "127.0.0.1")
@@ -47,9 +48,15 @@ def make_market():
     if mode == "alpaca" or (mode is None and key and secret):
         if not (key and secret):
             print("DATA=alpaca needs ALPACA_KEY_ID and ALPACA_SECRET_KEY; using fake data")
-            return market.FakeMarket()
-        return market.AlpacaMarket(key, secret, os.environ.get("ALPACA_FEED", "iex"))
-    return market.FakeMarket()
+            return with_futures(market.FakeMarket())
+        return with_futures(market.AlpacaMarket(key, secret, os.environ.get("ALPACA_FEED", "iex")))
+    return with_futures(market.FakeMarket())
+
+
+def with_futures(base):
+    """NQ / ES from the journal's Databento candles (FUT_BUCKET on the server, FUT_DIR locally) when configured."""
+    fut = market.FuturesData(os.environ.get("FUT_BUCKET", ""), os.environ.get("FUT_DIR", ""))
+    return market.WithFutures(base, fut) if fut.available() else base
 
 
 class Hub:
@@ -78,6 +85,9 @@ class Hub:
             want |= syms
         want |= set(self.paper.s["positions"].keys())
         want |= {o["symbol"] for o in self.paper.s["orders"] if o["status"] == "working"}
+        fz = globals().get("FROZEN")
+        if fz:
+            want |= {f["symbol"] for f in fz.s["items"].values() if f["status"] == "on" and f["account"] == "paper"}
         self.mkt.subscribe(want)
 
     def on_bar(self, sym, bar):
@@ -111,6 +121,7 @@ class Hub:
 
 MKT = make_market()
 HUB = Hub(MKT)
+FROZEN = Frozen(os.path.join(DATA_DIR, "frozen.json"), MKT, HUB.paper, interval=0 if os.environ.get("FROZEN_OFF") else 20)
 STATE_PATH = os.path.join(DATA_DIR, "workspace.json")
 STATE_LOCK = threading.Lock()
 
@@ -197,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/"):
                 return self._api(path[5:], q)
             return self._static(path)
-        except (BadRequest, PaperError, ValueError) as e:
+        except (BadRequest, PaperError, FrozenError, ValueError) as e:
             return self._json({"error": str(e)}, 400)
         except market.AlpacaError as e:
             return self._json({"error": str(e)}, 502)
@@ -237,13 +248,13 @@ class Handler(BaseHTTPRequestHandler):
             tf = q.get("tf", "1h")
             if q.get("days"):        # research: N trading days of history (extended hours included for stocks)
                 days, sec = max(1, min(2000, int(q["days"]))), market.tf_seconds(tf)
-                per_day = (86400 if market.is_crypto(sym) else 57600) if sec < 86400 else 86400
+                per_day = (86400 if market.is_crypto(sym) else 82800 if sym in market.FUTURES else 57600) if sec < 86400 else 86400
                 limit = max(10, min(150000, -(-days * per_day // sec)))
             else:
                 limit = max(10, min(5000, int(q.get("limit", 1500))))
             before = int(q["before"]) if q.get("before") else None
             bars, more = MKT.bars(sym, tf, limit, before, feed=q.get("feed"))
-            return self._json({"symbol": sym, "tf": q.get("tf", "1h"), "bars": bars, "more": more and len(bars) > 0, "name": market.NAMES.get(sym, sym)})
+            return self._json({"symbol": sym, "tf": q.get("tf", "1h"), "bars": bars, "more": more and len(bars) > 0, "name": market.NAMES.get(sym) or market.FUTURES.get(sym, sym)})
         if p == "quotes":
             syms = [s for s in (q.get("symbols") or "").upper().split(",") if s][:60]
             return self._json({"quotes": MKT.quotes(syms) if syms else {}})
@@ -268,6 +279,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if p.startswith("paper"):
             return self._paper(p[5:].strip("/"), m)
+        if p == "frozen" or p.startswith("frozen/"):
+            return self._frozen(p[7:], m)
         if p == "chats" or p.startswith("chats/"):
             return self._chats(p[6:], m)
         return self._json({"error": "Not found"}, 404)
@@ -297,6 +310,28 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return self._json({"error": "Not found"}, 404)
         return self._json({"order": o, "account": P.snapshot()})
+
+    def _frozen(self, fid, m):
+        """Frozen strategies (paper traded forward from the freeze): GET list · POST create · GET <id> · POST <id> {action}."""
+        if not fid:
+            if m == "GET":
+                return self._json({"frozen": FROZEN.list()})
+            if m == "POST":
+                b = self._body()
+                if b.get("account") == "paper":
+                    HUB.mkt.subscribe(HUB.mkt.subs | {str(b.get("symbol", "")).upper()})
+                return self._json({"frozen": FROZEN.create(b)})
+            return self._json({"error": "Use GET or POST"}, 405)
+        if not re.fullmatch(r"f[a-f0-9]{10}", fid):
+            raise BadRequest("Bad id")
+        if m == "GET":
+            return self._json({"frozen": FROZEN.get(fid)})
+        if m == "POST":
+            return self._json({"frozen": FROZEN.action(fid, self._body().get("action"))})
+        if m == "DELETE":
+            FROZEN.action(fid, "delete")
+            return self._json({"ok": True})
+        return self._json({"error": "Use GET or POST"}, 405)
 
     def _chats(self, cid, m):
         """Saved Quant conversations: one JSON file each under DATA_DIR/chats."""

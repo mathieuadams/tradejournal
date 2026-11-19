@@ -1,6 +1,6 @@
 // Workspace shell: tabs, data feed (history + live stream), chart wiring, toolbar, drawing tools, replay, paper trading glue.
 import { Chart, newId, nyParts, fmtPrice } from './chart.js';
-import { compile, run, tfSeconds } from './pine.js';
+import { compile, run, tfSeconds, securityRequests } from './pine.js';
 import { LIBRARY } from './library.js';
 import { W } from './ctx.js';
 import { $, $$, h, esc, api, toast, debounce, throttle, popover, closePopover, popAt, confirmDialog, money, priceDigits, nyNow, modal, closeModal, BASE, LOCAL, authToken, toSignIn } from './util.js';
@@ -103,7 +103,17 @@ function getCompiled(src) {
 W.runScript = (src, bars, inputs, tab = W.tab()) => {
   const c = getCompiled(src);
   if (c.err) return { meta: { title: 'Script', overlay: true }, inputs: [], plots: [], shapes: [], hlines: [], fills: [], bgcolors: [], barcolors: [], lines: [], labels: [], boxes: [], logs: [], error: c.err };
-  return run(c.ok, bars, { inputs, symbol: tab.symbol, tf: tab.tf, tfSec: tfSeconds(tab.tf), live: W.replay == null });
+  const opts = { inputs, symbol: tab.symbol, tf: tab.tf, tfSec: tfSeconds(tab.tf), live: W.replay == null };
+  const reqs = c.ok.src.includes('request.security') && bars.length ? securityRequests(c.ok, bars, opts) : [];
+  if (reqs.length) {                     // other symbols / timeframes: their series (loaded on first use, then the scripts re-run)
+    opts.securities = {};
+    for (const r of reqs) {
+      const S = W.getSeries(r.sym, r.tf);
+      if (S.bars.length) opts.securities[r.key] = S.bars;
+      else if (!S.err && !S.promise) W.loadSeries(r.sym, r.tf).then(() => recompute()).catch(e => toast(`request.security ${r.sym} ${r.tf}: ${e.message}`, 'err'));
+    }
+  }
+  return run(c.ok, bars, opts);
 };
 function activeBars() { const t = W.tab(), S = W.getSeries(t.symbol, t.tf); return W.replay != null ? S.bars.slice(0, W.replay + 1) : S.bars; }
 W.activeBars = activeBars;
@@ -454,6 +464,7 @@ async function boot() {
       if (a === 'settings') indicatorSettings(id);
       if (a === 'source') openInEditor({ indicatorId: id });
       if (a === 'research') import('./research.js').then(m => m.openResearch({ indicatorId: id }));
+      if (a === 'freeze') import('./frozen.js').then(m => m.freezeIndicator(id));
     },
     onDrawingAdd: d => { W.pushUndo(); W.setDrawings([...W.drawings(), d]); },
     onDrawingsChange: () => { W.save(); W.emit('drawings'); },

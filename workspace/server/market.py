@@ -517,3 +517,191 @@ class AlpacaMarket(Market):
             finally:
                 if ws:
                     ws.close()
+
+
+# ---------------------------------------------------------------------------------------------------- futures
+FUTURES = {"NQ": "E-mini Nasdaq-100 futures (Databento)", "ES": "E-mini S&P 500 futures (Databento)"}
+
+
+class FuturesData:
+    """NQ / ES from the journal's Databento candle store: 1-minute bars in month files "<SYM>/1m/<YYYY-MM>.json.gz",
+    each {"b": [["YYYY-MM-DDTHH:MM" (New York), o, h, l, c, v], ...]}. Read from S3 (FUT_BUCKET, through the aws cli)
+    or a folder (FUT_DIR). The journal refreshes them every 5 minutes, so the newest bar lags a few minutes."""
+    MONTH_CACHE = 8
+
+    def __init__(self, bucket="", folder=""):
+        self.bucket, self.folder = bucket, folder
+        self.raw = {}          # (sym, ym) -> (loaded at, bars in epoch seconds)
+        self.aggc = {}         # (sym, tf, ym) -> (loaded at, aggregated bars)
+        self.lock = threading.RLock()
+        self._off = {}
+
+    def available(self):
+        return bool(self.bucket or self.folder)
+
+    def _read(self, key):
+        import gzip
+        import os
+        import subprocess
+        try:
+            if self.folder:
+                path = os.path.join(self.folder, key + ".json.gz")
+                if not os.path.isfile(path):
+                    return None
+                with open(path, "rb") as f:
+                    data = f.read()
+            else:
+                r = subprocess.run(["aws", "s3", "cp", f"s3://{self.bucket}/{key}.json.gz", "-", "--only-show-errors"], capture_output=True, timeout=60)
+                if r.returncode != 0 or not r.stdout:
+                    return None
+                data = r.stdout
+            return json.loads(gzip.decompress(data))
+        except Exception as e:  # pragma: no cover
+            print("futures read failed", key, e)
+            return None
+
+    def _epoch(self, s):
+        """'YYYY-MM-DDTHH:MM' in New York -> epoch seconds (the UTC offset looked up once per day)."""
+        d = s[:10]
+        off = self._off.get(d)
+        if off is None:
+            noon = datetime(int(d[:4]), int(d[5:7]), int(d[8:10]), 12, tzinfo=NY)
+            off = self._off[d] = int(noon.utcoffset().total_seconds())
+        naive = datetime(int(d[:4]), int(d[5:7]), int(d[8:10]), tzinfo=timezone.utc).timestamp()
+        return int(naive) + int(s[11:13]) * 3600 + int(s[14:16]) * 60 - off
+
+    def month(self, sym, ym, fresh=False):
+        cur = datetime.now(NY).strftime("%Y-%m")
+        ttl = 50 if ym >= cur else 6 * 3600
+        with self.lock:
+            hit = self.raw.get((sym, ym))
+            if hit and (time.time() - hit[0] < ttl) and not fresh:
+                return hit[1]
+        j = self._read(f"{sym}/1m/{ym}") or {}
+        bars = [[self._epoch(b[0]), float(b[1]), float(b[2]), float(b[3]), float(b[4]), float(b[5] or 0)] for b in j.get("b") or []]
+        with self.lock:
+            self.raw[(sym, ym)] = (time.time(), bars)
+            while len(self.raw) > self.MONTH_CACHE:
+                self.raw.pop(min(self.raw, key=lambda k: self.raw[k][0]))
+        return bars
+
+    def _month_agg(self, sym, tf, ym):
+        n, unit = parse_tf(tf)
+        cur = datetime.now(NY).strftime("%Y-%m")
+        with self.lock:
+            hit = self.aggc.get((sym, tf, ym))
+            if hit and (ym < cur or time.time() - hit[0] < 50):
+                return hit[1]
+        raw = self.month(sym, ym)
+        out = raw if (n, unit) == (1, "m") else aggregate(raw, n, unit)
+        with self.lock:
+            self.aggc[(sym, tf, ym)] = (time.time(), out)
+            if len(self.aggc) > 400:
+                self.aggc.pop(min(self.aggc, key=lambda k: self.aggc[k][0]))
+        return out
+
+    @staticmethod
+    def _prev_ym(ym):
+        y, m = int(ym[:4]), int(ym[5:7]) - 1
+        return f"{y - 1}-12" if m == 0 else f"{y}-{m:02d}"
+
+    def bars(self, sym, tf, limit=1500, before=None):
+        n, unit = parse_tf(tf)
+        ym = datetime.fromtimestamp(before or time.time(), NY).strftime("%Y-%m")
+        chunks, count, empty = [], 0, 0
+        for _ in range(40):                                  # at most 40 months back
+            xs = self._month_agg(sym, tf, ym)
+            if before:
+                xs = [b for b in xs if b[0] < before]
+            if xs:
+                chunks.append(xs)
+                count += len(xs)
+                empty = 0
+            else:
+                empty += 1
+                if empty >= 2 and chunks or empty >= 3:
+                    break
+            if count >= limit:
+                break
+            ym = self._prev_ym(ym)
+        out = []
+        for xs in reversed(chunks):
+            out.extend(list(b) for b in xs)
+        if unit in ("D", "W", "M") or (n, unit) != (1, "m"):
+            out = aggregate(out, n, unit)                    # (buckets across the month boundaries)
+        return out[-limit:], count > limit
+
+    def latest(self, sym):
+        ym = datetime.now(NY).strftime("%Y-%m")
+        xs = self.month(sym, ym)
+        return xs[-1] if xs else None
+
+
+class WithFutures(Market):
+    """A market plus NQ / ES from the journal's futures data. Everything else goes to the base market."""
+
+    def __init__(self, base, fut):
+        super().__init__()
+        self.base, self.fut, self.name = base, fut, base.name
+        self.cur = base.cur
+        self.fsubs, self.sent = set(), {}
+        self._cb = None
+        threading.Thread(target=self._poll, daemon=True).start()
+
+    @property
+    def on_bar(self):
+        return self._cb
+
+    @on_bar.setter
+    def on_bar(self, f):
+        self._cb = f
+        if hasattr(self, "base"):
+            self.base.on_bar = f
+
+    def is_fut(self, sym):
+        return sym in FUTURES
+
+    def last(self, sym):
+        if self.is_fut(sym):
+            b = self.fut.latest(sym)
+            return b[4] if b else None
+        return self.base.last(sym)
+
+    def search(self, q):
+        qq = (q or "").strip().upper()
+        fut = [{"symbol": s, "name": n, "type": "futures"} for s, n in FUTURES.items() if not qq or qq in s or qq in n.upper()]
+        return (fut + self.base.search(q))[:30]
+
+    def bars(self, sym, tf, limit=1500, before=None, feed=None):
+        if self.is_fut(sym):
+            return self.fut.bars(sym, tf, limit, before)
+        return self.base.bars(sym, tf, limit, before, feed=feed)
+
+    def quotes(self, symbols):
+        out = self.base.quotes([s for s in symbols if not self.is_fut(s)]) if any(not self.is_fut(s) for s in symbols) else {}
+        for s in symbols:
+            if self.is_fut(s):
+                xs = self.fut.bars(s, "1D", 2)[0]
+                if xs:
+                    d, prev = xs[-1], (xs[-2][4] if len(xs) > 1 else xs[-1][1])
+                    out[s] = {"last": d[4], "prev": prev, "open": d[1], "high": d[2], "low": d[3], "volume": d[5], "name": FUTURES[s]}
+        return out
+
+    def subscribe(self, symbols):
+        self.fsubs = {s for s in symbols if self.is_fut(s)}
+        self.subs = set(symbols)
+        self.base.subscribe([s for s in symbols if not self.is_fut(s)])
+
+    def _poll(self):
+        while True:
+            time.sleep(30)
+            for s in list(self.fsubs):
+                try:
+                    b = self.fut.latest(s)
+                    if b and self.sent.get(s) != (b[0], b[4], b[5]):
+                        self.sent[s] = (b[0], b[4], b[5])
+                        self.cur[s] = list(b)
+                        if self._cb:
+                            self._cb(s, list(b))
+                except Exception as e:  # pragma: no cover
+                    print("futures poll failed", s, e)
