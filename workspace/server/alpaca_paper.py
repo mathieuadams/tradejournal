@@ -27,11 +27,11 @@ class AlpacaPaper:
     def configured(self):
         return bool(self.key and self.secret)
 
-    def req(self, method, path, body=None, timeout=20):
+    def req(self, method, path, body=None, timeout=20, base=None):
         if not self.configured():
             raise AlpacaError("No Alpaca key: save one on the journal's Data page (the workspace loads it at its next restart).")
         data = json.dumps(body).encode() if body is not None else None
-        r = urllib.request.Request(self.base + path, data=data, method=method, headers={
+        r = urllib.request.Request((base or self.base) + path, data=data, method=method, headers={
             "APCA-API-KEY-ID": self.key, "APCA-API-SECRET-KEY": self.secret, "Accept": "application/json", "Content-Type": "application/json"})
         try:
             with self.opener(r, timeout=timeout) as resp:

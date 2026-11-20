@@ -9,6 +9,26 @@ import { focusChat } from './chat.js';
 const E = { name: 'My script', src: DEFAULT_SCRIPT, scriptId: null, indicatorId: null, dirty: false, err: null, logs: [] };
 let root = null;
 
+const STRATEGY_TEMPLATE = `//@version=6
+strategy("My strategy", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 100)
+fastLen = input.int(9, "Fast EMA")
+slowLen = input.int(21, "Slow EMA")
+stopPct = input.float(1.0, "Stop %", step = 0.1)
+tgtPct  = input.float(2.0, "Target %", step = 0.1)
+
+fast = ta.ema(close, fastLen)
+slow = ta.ema(close, slowLen)
+plot(fast, "Fast", color.new(color.teal, 0))
+plot(slow, "Slow", color.new(color.orange, 0))
+
+if ta.crossover(fast, slow) and strategy.position_size == 0
+    strategy.entry("L", strategy.long)
+    strategy.exit("x", "L", stop = close * (1 - stopPct / 100), limit = close * (1 + tgtPct / 100))
+if ta.crossunder(fast, slow) and strategy.position_size == 0
+    strategy.entry("S", strategy.short)
+    strategy.exit("x", "S", stop = close * (1 + stopPct / 100), limit = close * (1 - tgtPct / 100))
+`;
+
 export function initEditor() {
   const s = W.state.editor; if (s && s.src) Object.assign(E, s, { dirty: !!s.dirty });
 }
@@ -29,7 +49,8 @@ export function openInEditor(o = {}) {
   } else if (o.src) {
     Object.assign(E, { name: o.name || 'AI script', src: o.src, scriptId: null, indicatorId: o.indicatorId || null, dirty: true, err: null, logs: [] });
   } else if (o.fresh) {
-    Object.assign(E, { name: 'My script', src: DEFAULT_SCRIPT, scriptId: null, indicatorId: null, dirty: true, err: null, logs: [] });
+    const n = (W.state.scripts || []).length + 1;
+    Object.assign(E, o.fresh === 'strategy' ? { name: `My strategy ${n}`, src: STRATEGY_TEMPLATE } : { name: `My script ${n}`, src: DEFAULT_SCRIPT }, { scriptId: null, indicatorId: null, dirty: true, err: null, logs: [] });
   }
   persist();
   if (W.currentSide() !== 'editor') W.openSide('editor', true); else mountEditor($('#sidebody'));
@@ -40,7 +61,7 @@ export function mountEditor(el) {
   root = el; el.innerHTML = '';
   const bar = h(`<div class="ed-bar"><button class="ed-name" id="edName" title="Scripts">${esc(E.name)}${E.dirty ? ' •' : ''}<svg viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M7 10l5 5 5-5"/></svg></button>
     <button class="btn sm primary" id="edRun" title="Ctrl+Enter">▶ ${E.indicatorId && W.tab().indicators.some(i => i.id === E.indicatorId) ? 'Update on chart' : 'Add to chart'}</button>
-    <button class="btn sm" id="edSave" title="Ctrl+S">Save</button><button class="btn sm" id="edStudy" title="Backtest and optimize this strategy">⚗ Research</button><button class="btn sm" id="edFreeze" title="Freeze this strategy (script + inputs) and paper trade it on the server">❄ Freeze</button><button class="btn sm ghost" id="edAsk" title="Ask Quant to explain or fix">✦ Ask Quant</button>
+    <button class="btn sm primary" id="edNew" title="Start a new script (indicator or strategy)">＋ New</button><button class="btn sm" id="edSave" title="Ctrl+S">Save</button><button class="btn sm" id="edStudy" title="Backtest and optimize this strategy">⚗ Research</button><button class="btn sm" id="edFreeze" title="Freeze this strategy (script + inputs) and paper trade it on the server">❄ Freeze</button><button class="btn sm ghost" id="edAsk" title="Ask Quant to explain or fix">✦ Ask Quant</button>
     <span class="grow"></span><span class="dim" style="font-size:11px">Pine v6</span><button class="icon-btn" id="edClose" title="Close">✕</button></div>`);
   const wrap = h(`<div class="ed-wrap"><div class="ed-gutter" id="edGut"></div><div class="ed-area"><div id="edErr"></div><pre id="edPre"></pre><textarea id="edTa" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div></div>`);
   const log = h(`<div class="ed-log" id="edLog"></div>`);
@@ -51,6 +72,7 @@ export function mountEditor(el) {
   ta.addEventListener('input', () => { E.src = ta.value; E.dirty = true; $('#edName', el).firstChild.nodeValue = E.name + ' •'; sync(); persistLater(); checkLater(); });
   ta.addEventListener('scroll', () => { pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; gut.scrollTop = ta.scrollTop; placeErr(); });
   ta.addEventListener('keydown', e => keys(e, ta, sync));
+  $('#edNew', el).onclick = e => newMenu(e.currentTarget);
   $('#edRun', el).onclick = runOnChart; $('#edSave', el).onclick = () => save(); $('#edStudy', el).onclick = () => import('./research.js').then(m => m.openResearch({ src: E.src, name: E.name, indicatorId: E.indicatorId })); $('#edClose', el).onclick = () => W.openSide('editor');
   $('#edFreeze', el).onclick = () => import('./frozen.js').then(m => {
     const ind = E.indicatorId && W.tab().indicators.find(i => i.id === E.indicatorId);
@@ -186,3 +208,17 @@ function highlight(src) {
   }).join('\n');
 }
 export function editorState() { return { name: E.name, src: E.src, error: E.err, scriptId: E.scriptId, indicatorId: E.indicatorId }; }
+
+// ＋ New: a blank indicator or strategy (the current script stays saved in My scripts if it was saved)
+export function newMenu(anchor, before) {
+  document.querySelectorAll('.new-menu').forEach(x => x.remove());
+  const r = anchor.getBoundingClientRect(), m = document.createElement('div');
+  m.className = 'new-menu';
+  m.style.cssText = `position:fixed;left:${Math.min(r.left, innerWidth - 230)}px;top:${r.bottom + 4}px;z-index:3000;min-width:240px`;
+  m.innerHTML = '<button data-k="indicator">＋ New indicator<span class="dim"> · plots, levels</span></button><button data-k="strategy">＋ New strategy<span class="dim"> · entries, exits, backtest</span></button>';
+  m.onclick = e => { const b = e.target.closest('[data-k]'); if (!b) return; m.remove();
+    if (E.dirty && E.src && !confirm('Start a new script? Unsaved changes to the current one are lost (Save first to keep them in My scripts).')) return;
+    if (before) before(); openInEditor({ fresh: b.dataset.k }); };
+  document.body.appendChild(m);
+  setTimeout(() => document.addEventListener('mousedown', function off(e) { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('mousedown', off); } }), 0);
+}

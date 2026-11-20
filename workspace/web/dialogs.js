@@ -9,11 +9,12 @@ import { focusChat } from './chat.js';
 export function openLibrary(initial = '') {
   let nav = W.state.favorites.length ? 'fav' : 'all', q = initial, sel = 0, items = [];
   const el = h(`<div class="lib" style="display:flex;flex-direction:column">
-    <div class="lib-top"><h3>Indicators</h3><input placeholder="Search indicators, concepts or aliases" value="${esc(q)}"><button class="icon-btn" data-x>✕</button></div>
+    <div class="lib-top"><h3>Indicators</h3><input placeholder="Search indicators, concepts or aliases" value="${esc(q)}"><button class="btn sm primary" data-newscript title="Write your own indicator or strategy in the Pine editor">＋ New script</button><button class="icon-btn" data-x>✕</button></div>
     <div class="lib-main"><div class="lib-nav"></div><div class="lib-grid"></div><div class="lib-det"></div></div>
     <div class="lib-foot"><span><kbd>↑↓</kbd>Browse</span><span><kbd>↵</kbd>Add</span><span><kbd>⇧↵</kbd>Add, keep open</span><span><kbd>F</kbd>Favorite</span><span><kbd>Esc</kbd>Close</span><span class="grow"></span><span>${LIBRARY.length} built-in · ${W.state.scripts.length} yours</span></div></div>`);
   const input = el.querySelector('input'), navEl = el.querySelector('.lib-nav'), grid = el.querySelector('.lib-grid'), det = el.querySelector('.lib-det');
   el.querySelector('[data-x]').onclick = closeModal;
+  el.querySelector('[data-newscript]').onclick = e => { const b = e.currentTarget; import('./editor.js').then(m => m.newMenu(b, closeModal)); };
   const mine = () => W.state.scripts.map(s => ({ id: s.id, name: s.name, cat: 'My scripts', desc: 'Your script · edited ' + new Date(s.updated || Date.now()).toLocaleDateString(), src: s.src, mine: true }));
   function list() {
     let L = nav === 'fav' ? [...LIBRARY, ...mine()].filter(s => W.state.favorites.includes(s.id)) : nav === 'mine' ? mine() : nav === 'all' ? [...LIBRARY, ...mine()] : LIBRARY.filter(s => s.cat === nav);

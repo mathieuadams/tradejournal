@@ -31,6 +31,7 @@ import market  # noqa: E402
 from paper import Paper, PaperError  # noqa: E402
 from frozen import Frozen, FrozenError  # noqa: E402
 import alpaca_paper  # noqa: E402
+import options  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8765"))
 HOST = os.environ.get("HOST", "127.0.0.1")
@@ -123,6 +124,7 @@ class Hub:
 MKT = make_market()
 HUB = Hub(MKT)
 ALPACA = alpaca_paper.AlpacaPaper(os.environ.get("ALPACA_KEY_ID", ""), os.environ.get("ALPACA_SECRET_KEY", ""))
+OPTIONS = options.Options(ALPACA, MKT.last)
 FROZEN = Frozen(os.path.join(DATA_DIR, "frozen.json"), MKT, HUB.paper, interval=0 if os.environ.get("FROZEN_OFF") else 20, alpaca=ALPACA)
 STATE_PATH = os.path.join(DATA_DIR, "workspace.json")
 STATE_LOCK = threading.Lock()
@@ -281,6 +283,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if p.startswith("paper"):
             return self._paper(p[5:].strip("/"), m)
+        if p.startswith("options/"):
+            return self._options(p[8:], q, m)
         if p == "alpaca" and m == "GET":
             # the Alpaca paper account the frozen strategies trade in
             if not ALPACA.configured():
@@ -322,6 +326,45 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return self._json({"error": "Not found"}, 404)
         return self._json({"order": o, "account": P.snapshot()})
+
+    def _options(self, what, q, m):
+        """Option chains (Alpaca, or Black-Scholes on simulated data) and option orders on the Alpaca paper account."""
+        sym = re.sub(r"[^A-Z.]", "", (q.get("symbol") or "").upper())[:10]
+        if what == "expirations" and m == "GET":
+            return self._json({"symbol": sym, "expirations": OPTIONS.expirations(sym), "source": "alpaca" if OPTIONS.live() else "simulated",
+                               "spot": MKT.last(sym)})
+        if what == "chain" and m == "GET":
+            exp = q.get("exp") or ""
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", exp):
+                raise BadRequest("exp=YYYY-MM-DD")
+            return self._json(OPTIONS.chain(sym, exp))
+        if what == "positions" and m == "GET":
+            if not ALPACA.configured():
+                return self._json({"configured": False, "positions": []})
+            ps = [p for p in ALPACA.req("GET", "positions") or [] if p.get("asset_class") == "us_option"]
+            return self._json({"configured": True, "positions": [{"symbol": p["symbol"], "qty": float(p["qty"]), "avg": float(p["avg_entry_price"]),
+                               "price": float(p.get("current_price") or 0), "upl": float(p.get("unrealized_pl") or 0), "value": float(p.get("market_value") or 0)} for p in ps]})
+        if what == "order" and m == "POST":
+            b = self._body()
+            osym = str(b.get("symbol") or "").upper()
+            if not re.fullmatch(r"[A-Z.]{1,6}\d{6}[CP]\d{8}", osym):
+                raise BadRequest("Bad option symbol")
+            if not ALPACA.configured():
+                raise BadRequest("Option orders go to your Alpaca paper account: no Alpaca key is loaded on the workspace server.")
+            qty, side = int(b.get("qty") or 0), b.get("side")
+            if qty < 1 or side not in ("buy", "sell"):
+                raise BadRequest("qty >= 1 and side buy / sell")
+            body = {"symbol": osym, "qty": str(qty), "side": side, "time_in_force": "day"}
+            if b.get("type") == "market":
+                body["type"] = "market"
+            else:
+                lp = float(b.get("limit") or 0)
+                if lp <= 0:
+                    raise BadRequest("limit price required")
+                body.update(type="limit", limit_price=f"{lp:.2f}")
+            o = ALPACA.req("POST", "orders", body)
+            return self._json({"order": {"id": o.get("id"), "status": o.get("status"), "symbol": osym, "side": side, "qty": qty, "type": body["type"], "limit": body.get("limit_price")}})
+        return self._json({"error": "Unknown"}, 404)
 
     def _frozen(self, fid, m):
         """Frozen strategies (paper traded forward from the freeze): GET list · POST create · GET <id> · POST <id> {action}."""

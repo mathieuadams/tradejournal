@@ -1,3 +1,4 @@
+import math
 """python -I workspace/tests/test_server.py — market aggregation, fake data, paper broker, websocket client, HTTP API."""
 import base64
 import hashlib
@@ -369,4 +370,39 @@ check(alp.pos["QQQ"] == 0 and not [o for o in alp.ords if o["status"] == "new"],
 alpaca_paper.AlpacaPaper.rth = staticmethod(lambda now=None: False)
 alpaca_paper.sync(alp, fx, [{"qty": 10, "dir": -1}], [], 600)
 check(alp.sent[-1]["type"] == "limit" and alp.sent[-1]["extended_hours"] and alp.sent[-1]["limit_price"] == "598.80", "outside regular hours: marketable limit, extended hours")
-print(f"all {ok} server checks passed (chats, research history, futures, frozen, alpaca)")
+
+# ---- options: Black-Scholes, OCC symbols, simulated and Alpaca chains, the API
+import options  # noqa: E402
+EXP = (_dt.now(market.NY) + _td(days=30)).strftime('%Y-%m-%d')
+YY = EXP[2:4] + EXP[5:7] + EXP[8:10]
+pc = options.bs(100, 100, 0.25, 0.2, True)[0]
+pp = options.bs(100, 100, 0.25, 0.2, False)[0]
+check(abs(pc - pp - (100 - 100 * math.exp(-options.R * 0.25))) < 1e-9 and abs(pc - 4.4793) < 0.01, f"Black-Scholes + put-call parity ({pc:.4f})")
+check(abs(options.implied_vol(pc, 100, 100, 0.25, True) - 0.2) < 1e-4, "implied volatility")
+check(options.parse_occ("QQQ261120C00650000") == ("QQQ", "2026-11-20", True, 650.0) and options.occ("QQQ", "2026-11-20", False, 647.5) == "QQQ261120P00647500", "OCC symbols")
+
+
+class FakeOptAlp:
+    def configured(self):
+        return True
+
+    def req(self, method, path, body=None, timeout=20, base=None):
+        if path.startswith("options/contracts"):
+            return {"option_contracts": [{"symbol": f"QQQ{YY}C00600000", "expiration_date": EXP, "strike_price": "600", "type": "call", "open_interest": "1200"},
+                                         {"symbol": f"QQQ{YY}P00600000", "expiration_date": EXP, "strike_price": "600", "type": "put", "open_interest": "800"}]}
+        if path.startswith("options/snapshots/QQQ"):
+            assert base == options.DATA
+            return {"snapshots": {f"QQQ{YY}C00600000": {"latestQuote": {"bp": 300, "ap": 302}, "greeks": {"delta": 0.7}, "impliedVolatility": 0.25},
+                                  f"QQQ{YY}P00600000": {"latestQuote": {"bp": 60, "ap": 62}}}}
+        raise AssertionError(path)
+
+
+op = options.Options(FakeOptAlp(), lambda s: 650.0)
+check(op.expirations("QQQ") == [EXP], "expirations from the contracts")
+ch = op.chain("QQQ", EXP)
+r0 = ch["rows"][0]
+check(r0["strike"] == 600 and r0["call"]["delta"] == 0.7 and r0["call"]["oi"] == 1200 and r0["put"]["model"] and -1 < r0["put"]["delta"] < 0, "Alpaca chain: greeks kept, missing ones filled")
+fo = options.Options(None, lambda s: 600.0)
+fc = fo.chain("QQQ", fo.expirations("QQQ")[0])
+check(fc["source"] == "simulated" and len(fc["rows"]) > 40 and all(0 <= r["call"]["delta"] <= 1 for r in fc["rows"]), "simulated chain")
+print(f"all {ok} server checks passed (chats, research history, futures, frozen, alpaca, options)")
