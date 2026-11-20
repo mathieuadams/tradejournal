@@ -60,6 +60,20 @@ W.loadSeries = (sym, tf) => {
   }).catch(e => { S.err = e.message; S.promise = null; throw e; });
   return S.promise;
 };
+// older history of a series down to time t (request.security series must cover the chart's bars)
+W.extendSeries = async (S, t) => {
+  if (!S.more || S.extending || !S.bars.length || S.bars[0].t <= t) return;
+  S.extending = true;
+  try {
+    const limit = Math.min(60000, Math.ceil((S.bars[0].t - t) / S.tfSec * 1.15) + 100);
+    const j = await api(`bars?symbol=${encodeURIComponent(S.sym)}&tf=${encodeURIComponent(S.tf)}&limit=${limit}&before=${S.bars[0].t}`);
+    const older = j.bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] })).filter(b => b.t < S.bars[0].t);
+    S.more = j.more && older.length > 0;
+    if (older.length) { S.bars = older.concat(S.bars); recompute(); }
+  } catch (e) { S.more = false; toast(`History ${S.sym} ${S.tf}: ${e.message}`, 'err'); }
+  finally { S.extending = false; }
+};
+
 async function loadMore() {
   const tab = W.tab(), S = W.getSeries(tab.symbol, tab.tf);
   if (!S.more || S.loading || !S.bars.length || W.replay != null) return;
@@ -109,7 +123,7 @@ W.runScript = (src, bars, inputs, tab = W.tab()) => {
     opts.securities = {};
     for (const r of reqs) {
       const S = W.getSeries(r.sym, r.tf);
-      if (S.bars.length) opts.securities[r.key] = S.bars;
+      if (S.bars.length) { opts.securities[r.key] = S.bars; if (S.bars[0].t > bars[0].t + S.tfSec && S.more && !S.extending && W.replay == null) W.extendSeries(S, bars[0].t); }
       else if (!S.err && !S.promise) W.loadSeries(r.sym, r.tf).then(() => recompute()).catch(e => toast(`request.security ${r.sym} ${r.tf}: ${e.message}`, 'err'));
     }
   }

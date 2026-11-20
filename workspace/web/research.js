@@ -242,12 +242,22 @@ function sortOpt() { const f = OBJ[R.objective][1]; R.opt.rows.sort((a, b) => (b
 function renderOpt() {
   const el = root && root.querySelector('#rsOpt'); if (!el || !R.opt || !R.opt.rows.length) return;
   const ins = R.study.inputs, keys = Object.keys(R.opt.rows[0].changed), f = OBJ[R.objective];
-  const name = k => esc((ins.find(i => String(i.idx) === String(k)) || {}).title || k);
-  el.innerHTML = `<div class="tree-sec">Optimization · ranked by ${f[0].toLowerCase()} on train · check that test holds up</div>
-    <div class="rs-trades"><table class="tbl rs-res"><tr>${keys.map(k => `<th class="t">${name(k)}</th>`).join('')}<th>Train net</th><th>PF</th><th>N</th><th>Test net</th><th>PF</th><th>N</th><th>Max DD</th><th></th></tr>
-    ${R.opt.rows.slice(0, 40).map((r, k) => `<tr>${keys.map(x => `<td class="t">${esc(String(r.changed[x]))}</td>`).join('')}<td class="${cls(r.train.net)}">${money(r.train.net, 0)}</td><td>${pf(r.train.pf)}</td><td class="${r.train.n < R.minTrades ? 'dn' : ''}">${r.train.n}</td>
-      <td class="${cls(r.test.net)}"><b>${money(r.test.net, 0)}</b></td><td>${pf(r.test.pf)}</td><td>${r.test.n}</td><td>${money(r.all.maxDD, 0)}</td><td class="act"><button class="btn sm" data-apply="${k}" title="Put these inputs on the chart">To chart</button><button class="btn sm" data-freeze="${k}" title="Freeze with these inputs and paper trade it">❄</button></td></tr>`).join('')}</table></div>
-    <p class="note">The best train result is usually too good: prefer a row whose test result is also positive and whose neighbours (nearby values) are profitable too.</p>`;
+  const title = k => (ins.find(i => String(i.idx) === String(k)) || {}).title || String(k);
+  const short = k => { const t = title(k).split(/[:(]/)[0].trim(); return t.length > 18 ? t.slice(0, 17) + '…' : t; };
+  const best = Math.max(...R.opt.rows.slice(0, 40).map(r => r.test.net));
+  el.innerHTML = `<div class="tree-sec">Optimization · ${R.opt.rows.length} combinations · ranked by ${f[0].toLowerCase()} on train</div>
+    <div class="rs-optres"><table class="rs-or">
+      <thead><tr><th rowspan="2" class="c">#</th>${keys.map(k => `<th rowspan="2" class="in" title="${esc(title(k))}">${esc(short(k))}</th>`).join('')}
+        <th colspan="3" class="grp">Train ${R.split}%</th><th colspan="3" class="grp tst">Test ${100 - R.split}%</th><th rowspan="2">Max DD</th><th rowspan="2"></th></tr>
+        <tr><th>Net</th><th>PF</th><th>Trades</th><th class="tst">Net</th><th class="tst">PF</th><th class="tst">Trades</th></tr></thead>
+      <tbody>${R.opt.rows.slice(0, 40).map((r, k) => `<tr class="${r.test.net > 0 && r.train.net > 0 ? 'both' : ''}">
+        <td class="c dim">${k + 1}</td>${keys.map(x => `<td class="in">${esc(String(r.changed[x]))}</td>`).join('')}
+        <td class="${cls(r.train.net)}">${money(r.train.net, 0)}</td><td>${pf(r.train.pf)}</td><td class="${r.train.n < R.minTrades ? 'dn' : ''}">${r.train.n}</td>
+        <td class="tst ${cls(r.test.net)}"><b>${money(r.test.net, 0)}</b>${r.test.net === best && best > 0 ? ' ★' : ''}</td><td class="tst">${pf(r.test.pf)}</td><td class="tst">${r.test.n}</td>
+        <td>${money(r.all.maxDD, 0)}</td>
+        <td class="act"><button class="btn sm" data-apply="${k}" title="Put these inputs on the chart">To chart</button><button class="btn sm" data-freeze="${k}" title="Freeze with these inputs and paper trade it">❄</button></td></tr>`).join('')}</tbody></table></div>
+    ${keys.some(k => short(k) !== title(k)) ? `<div class="rs-legend">${keys.filter(k => short(k) !== title(k)).map(k => `<span><b>${esc(short(k))}</b> ${esc(title(k))}</span>`).join('')}</div>` : ''}
+    <p class="note">Rows profitable on both train and test are highlighted; ★ = best test. Prefer a row whose neighbours (nearby values) are profitable too.</p>`;
 }
 const pf = v => Number.isFinite(v) ? v.toFixed(2) : '∞';
 

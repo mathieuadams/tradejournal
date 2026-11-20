@@ -98,7 +98,15 @@ class Parser {
   is(t, v, o = 0) { const k = this.peek(o); return k && k.t === t && (v === undefined || k.v === v); }
   op(v, o = 0) { return this.is('op', v, o); }
   kw(v, o = 0) { return this.is('id', v, o); }
-  expect(t, v) { const k = this.next(); if (!k || k.t !== t || (v !== undefined && k.v !== v)) throw new PineError(`Expected ${v || t} but found ${k ? (k.v ?? k.t) : 'end'}`, k ? k.line : 0); return k; }
+  expect(t, v) {
+    const k = this.next();
+    if (!k || k.t !== t || (v !== undefined && k.v !== v)) {
+      if (t === 'nl' && k && k.v === '=') throw new PineError("Unexpected '=' here: use == to compare (if / while conditions) or := to change an existing variable", k.line);
+      if (t === 'nl' && k) throw new PineError(`Expected the end of the line but found '${k.v ?? k.t}' (one statement per line; a long line continues on the next only when indented by a non-multiple of 4 spaces)`, k.line);
+      throw new PineError(`Expected ${v || t} but found ${k ? (k.v ?? k.t) : 'end'}`, k ? k.line : 0);
+    }
+    return k;
+  }
   skipNl() { while (this.is('nl')) this.p++; }
 
   program() { const out = []; this.skipNl(); while (!this.is('eof')) { if (this.is('dedent') || this.is('indent')) { this.p++; continue; } out.push(this.statement()); this.skipNl(); } return out; }

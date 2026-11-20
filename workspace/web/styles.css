@@ -405,3 +405,19 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .new-menu button { text-align: left; padding: 8px 10px; border: 0; background: transparent; color: var(--text); border-radius: 6px; cursor: pointer; font-size: 13px; }
 .new-menu button:hover { background: var(--panel2); } .new-menu .dim { font-size: 11.5px; }
 .lib-top .btn.primary { flex: none; white-space: nowrap; }
+
+/* optimization results */
+.rs-optres { overflow: auto; max-height: 420px; border: 1px solid var(--line); border-radius: 8px; }
+.rs-or { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.rs-or thead { position: sticky; top: 0; z-index: 2; background: var(--panel); }
+.rs-or th { background: var(--panel); font-weight: 500; color: var(--dim); font-size: 11px; padding: 5px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.rs-or th.grp { text-align: center; color: var(--text); border-bottom: 0; padding-bottom: 0; }
+.rs-or th.in, .rs-or td.in { text-align: center; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+.rs-or th.in { color: var(--text); cursor: help; }
+.rs-or td { padding: 5px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.rs-or .c { text-align: center; width: 28px; }
+.rs-or .tst { background: rgba(41, 98, 255, .06); }
+.rs-or tr.both td.c { box-shadow: inset 3px 0 0 #089981; }
+.rs-or tbody tr:hover td { background: var(--hover); }
+.rs-or td.act { display: flex; gap: 4px; justify-content: flex-end; }
+.rs-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--dim); margin: 6px 2px; } .rs-legend b { color: var(--text); font-weight: 600; margin-right: 4px; }
