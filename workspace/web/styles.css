@@ -435,3 +435,5 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .cal-res .grp { text-align: center; } .cal-res tr.hl td { background: rgba(41, 98, 255, .08); font-weight: 600; } .cal-res .tst { background: rgba(41, 98, 255, .05); }
 .cal-verdict { margin: 8px 0 12px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.45; }
 .cal-verdict.ok { background: rgba(8, 153, 129, .12); border: 1px solid rgba(8, 153, 129, .4); } .cal-verdict.bad { background: rgba(242, 54, 69, .1); border: 1px solid rgba(242, 54, 69, .35); }
+.cal-verdict.meh { background: rgba(231, 195, 90, .1); border: 1px solid rgba(231, 195, 90, .4); }
+.lg-skip { font-size: 10.5px; color: #E7C35A; margin-left: 6px; cursor: help; }

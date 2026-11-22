@@ -114,10 +114,10 @@ function getCompiled(src) {
   if (!c) { try { c = { ok: compile(src) }; } catch (e) { c = { err: { message: e.message, line: e.line || 0 } }; } compiled.set(src, c); if (compiled.size > 80) compiled.delete(compiled.keys().next().value); }
   return c;
 }
-W.runScript = (src, bars, inputs, tab = W.tab()) => {
+W.runScript = (src, bars, inputs, tab = W.tab(), skip = null) => {
   const c = getCompiled(src);
   if (c.err) return { meta: { title: 'Script', overlay: true }, inputs: [], plots: [], shapes: [], hlines: [], fills: [], bgcolors: [], barcolors: [], lines: [], labels: [], boxes: [], logs: [], error: c.err };
-  const opts = { inputs, symbol: tab.symbol, tf: tab.tf, tfSec: tfSeconds(tab.tf), live: W.replay == null };
+  const opts = { inputs, symbol: tab.symbol, tf: tab.tf, tfSec: tfSeconds(tab.tf), live: W.replay == null, strategy: skip && skip.length ? { skip } : null };
   const reqs = c.ok.src.includes('request.security') && bars.length ? securityRequests(c.ok, bars, opts) : [];
   if (reqs.length) {                     // other symbols / timeframes: their series (loaded on first use, then the scripts re-run)
     opts.securities = {};
@@ -135,10 +135,10 @@ function recompute() {
   const tab = W.tab(), bars = activeBars(); if (!bars.length) { W.indOut = []; W.chart.setIndicators([]); return; }
   W.indOut = tab.indicators.map(ind => {
     const sc = W.scriptFor(ind); let out;
-    try { out = W.runScript(sc.src, bars, ind.inputs || null, tab); } catch (e) { out = { meta: { title: sc.name, overlay: true }, inputs: [], plots: [], shapes: [], hlines: [], fills: [], bgcolors: [], barcolors: [], lines: [], labels: [], boxes: [], logs: [], error: { message: e.message } }; }
+    try { out = W.runScript(sc.src, bars, ind.inputs || null, tab, ind.skip); } catch (e) { out = { meta: { title: sc.name, overlay: true }, inputs: [], plots: [], shapes: [], hlines: [], fills: [], bgcolors: [], barcolors: [], lines: [], labels: [], boxes: [], logs: [], error: { message: e.message } }; }
     if (out.error && !out.meta.title) out.meta.title = sc.name;
     if (out.error && out.meta.title === 'Script') out.meta.title = sc.name;
-    return { id: ind.id, title: sc.name, visible: ind.visible !== false, out };
+    return { id: ind.id, title: sc.name, visible: ind.visible !== false, out, skip: ind.skip || null };
   });
   W.chart.setIndicators(W.indOut); W.emit('indicators');
 }

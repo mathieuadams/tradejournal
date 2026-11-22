@@ -17,4 +17,12 @@ assert.deepEqual(st.trades.map(t => [t.dir, t.entryPx, t.exitPx]), [[1, 10, 11],
 // percent of equity sizing
 st = S('if bar_index == 0\n    strategy.entry("L", strategy.long)', mk([[100,100,100,100],[100,100,100,100]]), ', default_qty_type = strategy.percent_of_equity, default_qty_value = 50, initial_capital = 10000');
 assert.equal(st.open[0].qty, 50);
+// day / hour filter (Research): no entries on the left-out weekdays / hours (New York)
+{
+  const days = Array.from({ length: 10 }, (_, i) => ({ t: Date.UTC(2026, 10, 2 + i, 15) / 1000, o: 100, h: 101, l: 99, c: 100, v: 1 }));  // 10:00 NY, Mon Nov 2 ..
+  const c = compile('//@version=6\nstrategy("d", process_orders_on_close = true)\nstrategy.entry("L", strategy.long)\nstrategy.close("L", immediately = false)');
+  const all = run(c, days, { symbol: 'X', tf: '1D' }).strategy, f = run(c, days, { symbol: 'X', tf: '1D', strategy: { skip: ['Wed|*', '*|11'] } }).strategy;
+  const wd = t => new Date(t * 1000).getUTCDay();
+  assert.ok(all.trades.some(t => wd(t.entryTime) === 3) && !f.trades.some(t => wd(t.entryTime) === 3) && f.trades.length < all.trades.length, 'weekday filter');
+}
 console.log('strategy tests passed; metrics sample', JSON.stringify(st.metrics).slice(0, 80));

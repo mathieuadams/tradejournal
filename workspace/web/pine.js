@@ -631,6 +631,12 @@ class Strat {
     if (c.stratOverrides) Object.assign(this, c.stratOverrides);
     this.lots = []; this.orders = []; this.trades = []; this.net = 0; this.eq = new Array(c.n).fill(NaN); this.fills = [];
   }
+  // entries are not taken on the weekdays / hours (New York) in skip: ['Wed|*', '*|19', 'Mon|7']
+  skipAt(t) {
+    if (!this._skip) this._skip = new Set(this.skip);
+    const p = nyParts(t), d = ['', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][p.wd];
+    return this._skip.has(d + '|*') || this._skip.has('*|' + p.h) || this._skip.has(d + '|' + p.h);
+  }
   size() { return this.lots.reduce((s, l) => s + l.qty * l.dir, 0); }
   avg() { const q = this.lots.reduce((s, l) => s + l.qty, 0); return q ? this.lots.reduce((s, l) => s + l.qty * l.px, 0) / q : NaN; }
   openPnl(px) { return this.lots.reduce((s, l) => s + (px - l.px) * l.qty * l.dir, 0) * (this.c.pv || 1); }
@@ -703,6 +709,7 @@ class Strat {
     const t = this.B.t[i];
     this.orders = this.orders.filter(y => y !== x);
     if (x.kind === 'entry' || x.kind === 'order') {
+      if (x.kind === 'entry' && this.skip && this.skip.length && this.skipAt(t)) return;      // day / hour filter (Research)
       if (this.dirAllowed !== 'all' && this.dirAllowed !== (x.dir > 0 ? 'long' : 'short') && x.kind === 'entry') { if (this.size() * x.dir < 0) this.closeLots(this.lots.slice(), px, i, 'Direction filter'); return; }
       const sz = this.size();
       if (x.kind === 'entry' && sz * x.dir < 0) this.closeLots(this.lots.slice(), px, i, x.comment || x.id);   // reverse

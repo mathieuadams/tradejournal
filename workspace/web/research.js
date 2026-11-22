@@ -9,14 +9,14 @@ import { editorState } from './editor.js';
 import { focusChat } from './chat.js';
 
 const R = { name: '', src: '', indicatorId: null, symbol: '', tf: '', days: 500, com: 0.005, slip: 1, split: 60, objective: 'net', minTrades: 20,
-  sel: {}, study: null, opt: null, running: false, cancel: false, progress: '', cache: new Map(), frozen: null, freezeAt: null };
+  sel: {}, study: null, opt: null, running: false, cancel: false, progress: '', cache: new Map(), frozen: null, freezeAt: null, skip: [], budget: 3000, tryDays: false };
 let root = null, pool = [];
 
 const OBJ = { net: ['Net profit', m => m.net], pf: ['Profit factor', m => (Number.isFinite(m.pf) ? m.pf : 99)], sharpe: ['Sharpe', m => m.sharpe], netdd: ['Net ÷ max drawdown', m => m.maxDD ? m.net / m.maxDD : m.net], avg: ['Avg trade', m => m.avg] };
 
 export function openResearch(o = {}) {
   const tab = W.tab();
-  if (o.indicatorId) { const ind = tab.indicators.find(i => i.id === o.indicatorId); const sc = W.scriptFor(ind); Object.assign(R, { src: sc.src, name: sc.name, indicatorId: ind.id }); }
+  if (o.indicatorId) { const ind = tab.indicators.find(i => i.id === o.indicatorId); const sc = W.scriptFor(ind); Object.assign(R, { src: sc.src, name: sc.name, indicatorId: ind.id, skip: [...(ind.skip || [])] }); CAL.off = new Set(R.skip); }
   else if (o.src) Object.assign(R, { src: o.src, name: o.name || 'Script', indicatorId: o.indicatorId || null });
   else if (!R.src) pickDefault();
   R.symbol = o.symbol || tab.symbol; R.tf = o.tf || tab.tf; if (o.days) R.days = o.days;
@@ -59,13 +59,13 @@ export function mountResearch(el) {
   bind('#rsCom', 'com', v => Math.max(0, +v || 0)); bind('#rsSlip', 'slip', v => Math.max(0, +v || 0)); bind('#rsSplit', 'split', v => Math.max(10, Math.min(95, +v || 60)));
   body.onclick = e => {
     const fz0 = e.target.closest('[data-freeze]'); if (fz0) { freezeForm(+fz0.dataset.freeze); return; }
+    const ap = e.target.closest('[data-apply]'); if (ap) { applyInputs(R.opt.rows[+ap.dataset.apply].values); return; }
     const a = e.target.closest('[data-a]'); if (!a) return;
     if (a.dataset.a === 'study') runStudy();
     if (a.dataset.a === 'stop') R.cancel = true;
     if (a.dataset.a === 'convert') { if (!W.state.chatOpen) W.toggleChat(true); focusChat(`Convert my "${R.name}" script into a Pine strategy (strategy() with strategy.entry / strategy.exit, same rules and inputs) so I can backtest and optimize it in Research. Add it to the chart.`, { script: true }); }
     if (a.dataset.a === 'optimize') runOptimize();
     if (a.dataset.a === 'apply') applyInputs(R.study.inputs.reduce((o, i) => (o[i.idx] = i.value, o), {}));
-    const ap = e.target.closest('[data-apply]'); if (ap) applyInputs(R.opt.rows[+ap.dataset.apply].values);
     if (a.dataset.a === 'freeze') freezeForm(null);
     const tr = e.target.closest('[data-trade]'); if (tr) gotoTrade(R.study.trades[+tr.dataset.trade]);
   };
@@ -102,7 +102,7 @@ async function prime(ws, data) {
 function job(w, msg) { return new Promise(res => { const f = e => { if (e.data.type === 'result' && e.data.id === msg.id) { w.removeEventListener('message', f); res(e.data); } }; w.addEventListener('message', f); w.postMessage({ type: 'run', ...msg }); }); }
 function baseMsg(data) {
   const bars = data.bars, cut = bars[Math.floor(bars.length * R.split / 100)].t;
-  return { src: R.src, symbol: R.symbol, tf: R.tf, tfSec: null, splitTime: cut, strategy: { comType: 'cash_per_contract', comVal: R.com, slip: R.slip } };
+  return { src: R.src, symbol: R.symbol, tf: R.tf, tfSec: null, splitTime: cut, strategy: { comType: 'cash_per_contract', comVal: R.com, slip: R.slip, skip: R.skip.length ? R.skip : undefined } };
 }
 
 // ------------------------------------------------------------------------------------------------ study
@@ -176,7 +176,9 @@ function renderCal() {
     const [rTr, rTe] = rem, [kTr, kTe] = kept, [bTr, bTe] = base;
     const held = rTe.net < 0, better = kTe.n && kTe.avg > bTe.avg;
     const t = (() => { const xs = drop.filter(x => x.entryTime >= cut).map(x => x.pnl); if (xs.length < 3) return NaN; const mu = xs.reduce((a, b) => a + b, 0) / xs.length, sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / (xs.length - 1)); return sd ? mu / (sd / Math.sqrt(xs.length)) : NaN; })();
-    verdict = `<div class="cal-verdict ${held && better ? 'ok' : 'bad'}"><b>${held && better ? 'The filter holds up in the test part' : 'The filter does not hold up in the test part'}</b>:
+    const strong = held && better && Number.isFinite(t) && t <= -2;
+    const st = strong ? ['ok', 'The filter holds up in the test part'] : held && better ? ['meh', 'Inconclusive: the removed trades also lost in test, but not by more than chance'] : ['bad', 'The filter does not hold up in the test part'];
+    verdict = `<div class="cal-verdict ${st[0]}"><b>${st[1]}</b>:
       the removed trades made ${money(rTr.net, 0)} in train and ${money(rTe.net, 0)} in test (${rTe.n} trades${Number.isFinite(t) ? `, t = ${t.toFixed(2)}` : ''}).
       Avg trade in test ${money(bTe.avg, 0)} → ${money(kTe.avg, 0)}. ${Number.isFinite(t) && Math.abs(t) < 2 ? 'With |t| under 2 the removed trades are not clearly worse than zero: likely noise.' : ''}
       Choose the cells on the train numbers (top of each cell) and judge by the test ones.</div>`;
@@ -190,12 +192,22 @@ function renderCal() {
     <table class="tbl rs-res cal-res"><tr><th class="t"></th><th colspan="4" class="grp">Train ${R.split}%</th><th colspan="4" class="grp tst">Test ${100 - R.split}%</th></tr>
       <tr><th class="t"></th><th>N</th><th>Net</th><th>PF</th><th>Avg</th><th class="tst">N</th><th class="tst">Net</th><th class="tst">PF</th><th class="tst">Avg</th></tr>
       ${line('All trades', base)}${drop.length ? line('Kept (filtered)', kept, 'hl') + line('Removed', rem) : ''}</table>
-    ${verdict}`;
+    ${verdict}
+    <div class="row" style="margin:6px 0 12px;flex-wrap:wrap;align-items:center;gap:8px">
+      <button class="btn sm primary" data-cal-apply ${CAL.off.size || R.skip.length ? '' : 'disabled'} title="Re-run the backtest with no entries in the left-out cells (exact: freed-up time can take other trades), then Send to the chart / Optimize / Freeze use it too">Apply the filter in the backtest</button>
+      ${R.skip.length ? `<span class="note" style="margin:0">Backtest filter on: no entries ${esc(skipText(R.skip))} · <a href="#" data-cal-clear>remove</a></span>` : ''}</div>`;
+  const ap = el.querySelector('[data-cal-apply]'); if (ap) ap.onclick = () => { R.skip = [...CAL.off]; runStudy(); };
+  const cl = el.querySelector('[data-cal-clear]'); if (cl) cl.onclick = e => { e.preventDefault(); R.skip = []; CAL.off.clear(); runStudy(); };
   el.querySelector('.cal').onclick = e => {
     const c = e.target.closest('[data-cal]'); if (!c) return; const k = c.dataset.cal;
     if (k === 'reset') CAL.off.clear(); else if (CAL.off.has(k)) CAL.off.delete(k); else CAL.off.add(k);
     renderCal();
   };
+}
+
+export function skipText(skip) {
+  const days = skip.filter(k => k.endsWith('|*')).map(k => k.split('|')[0]), hrs = skip.filter(k => k.startsWith('*|')).map(k => k.split('|')[1] + ':00'), cells = skip.filter(k => !k.includes('*')).map(k => k.replace('|', ' ') + ':00');
+  return [days.length ? 'on ' + days.join(', ') : '', hrs.length ? 'at ' + hrs.join(', ') : '', cells.length ? 'on ' + cells.join(', ') : ''].filter(Boolean).join('; ');
 }
 
 const fmtDT = t => { const p = nyParts(t); return `${p.mon} ${p.d} '${String(p.y).slice(2)} ${String(p.h).padStart(2, '0')}:${String(p.mi).padStart(2, '0')}`; };
@@ -233,6 +245,8 @@ function optForm(inputs) {
     <table class="rs-opt"><colgroup><col class="c-nm"><col class="c-now"><col><col><col></colgroup><tr><th>Input</th><th>Now</th><th>From</th><th>To</th><th>Step</th></tr>${num.map(rowN).join('')}${other.map(rowO).join('')}</table>
     <div class="row" style="margin:8px 0"><label class="field"><span>Rank by (train)</span><select id="rsObj">${Object.entries(OBJ).map(([k, [n]]) => `<option value="${k}" ${R.objective === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <label class="field"><span>Min trades (train)</span><input id="rsMin" type="number" value="${R.minTrades}"></label>
+      <label class="field"><span>Max runs</span><input id="rsBudget" type="number" min="10" max="50000" step="500" value="${R.budget}" title="Up to this many: every combination; more combinations: a random search, then around the best ones"></label>
+      <label class="field" style="flex:none;align-self:flex-end;margin-bottom:12px;flex-direction:row;align-items:center;gap:6px;display:flex"><input type="checkbox" id="rsDays" ${R.tryDays ? 'checked' : ''}><span style="margin:0">Also try leaving out each weekday</span></label>
       <button class="btn primary" data-a="optimize" style="align-self:flex-end;margin-bottom:10px" ${R.running ? 'disabled' : ''}>Optimize <span id="rsCombos" class="dim"></span></button></div>`;
 }
 function defRange(i) {
@@ -254,40 +268,73 @@ function wireOpt() {
     combos();
   };
   const o = root.querySelector('#rsObj'); if (o) o.onchange = () => { R.objective = o.value; if (R.opt) { sortOpt(); renderOpt(); } };
+  const bu = root.querySelector('#rsBudget'); if (bu) bu.onchange = () => { R.budget = Math.max(10, Math.min(50000, Math.round(+bu.value || 3000))); combos(); };
+  const dy = root.querySelector('#rsDays'); if (dy) dy.onchange = () => { R.tryDays = dy.checked; combos(); };
   const mn = root.querySelector('#rsMin'); if (mn) mn.onchange = () => { R.minTrades = Math.max(0, +mn.value || 0); if (R.opt) { sortOpt(); renderOpt(); } };
   combos();
 }
 function readRow(k) { const g = s => root.querySelector(`[data-${s}="${k}"]`); if (!g('f')) return null; return { from: +g('f').value, to: +g('t').value, step: Math.abs(+g('s').value) || 1 }; }
-function grid() {
+// the search space: one axis per ticked input (+ the weekday axis); combinations are numbered (mixed radix), never all built
+function axesOf() {
   const ins = R.study.inputs, axes = [];
   for (const [k, s] of Object.entries(R.sel)) {
     const i = ins.find(x => String(x.idx) === String(k)); if (!i) continue;
-    if (i.type === 'bool') axes.push([+k, [true, false]]);
-    else if (i.options) axes.push([+k, i.options]);
-    else { const vals = []; for (let v = s.from; v <= s.to + 1e-9 && vals.length < 200; v += s.step) vals.push(i.type === 'int' ? Math.round(v) : +v.toPrecision(10)); axes.push([+k, [...new Set(vals)]]); }
+    if (i.type === 'bool') axes.push([k, [true, false]]);
+    else if (i.options) axes.push([k, i.options]);
+    else { const vals = []; for (let v = s.from; v <= s.to + 1e-9 && vals.length < 500; v += s.step) vals.push(i.type === 'int' ? Math.round(v) : +v.toPrecision(10)); axes.push([k, [...new Set(vals)]]); }
   }
-  let out = [{}]; for (const [k, vals] of axes) out = out.flatMap(o => vals.map(v => ({ ...o, [k]: v })));
-  return axes.length ? out : [];
+  if (R.tryDays) axes.push(['__skip', ['all days', 'no Sun', 'no Mon', 'no Tue', 'no Wed', 'no Thu', 'no Fri']]);
+  return axes;
 }
-function combos() { const n = grid().length, el = root && root.querySelector('#rsCombos'); if (el) el.textContent = n ? `(${n} runs)` : ''; }
+const total = axes => axes.length ? axes.reduce((n, [, v]) => n * v.length, 1) : 0;
+function decode(axes, idx) { const o = {}; for (let a = axes.length - 1; a >= 0; a--) { const [k, v] = axes[a]; o[k] = v[idx % v.length]; idx = Math.floor(idx / v.length); } return o; }
+function digits(axes, idx) { const d = new Array(axes.length); for (let a = axes.length - 1; a >= 0; a--) { const L = axes[a][1].length; d[a] = idx % L; idx = Math.floor(idx / L); } return d; }
+function encode(axes, d) { let i = 0; for (let a = 0; a < axes.length; a++) i = i * axes[a][1].length + d[a]; return i; }
+const skipFor = c => c.__skip && c.__skip !== 'all days' ? [...new Set([...R.skip, c.__skip.slice(3) + '|*'])] : R.skip;
+function combos() {
+  const el = root && root.querySelector('#rsCombos'); if (!el) return; const n = total(axesOf());
+  el.textContent = !n ? '' : n <= R.budget ? `(${n.toLocaleString()} runs, all)` : `(${n.toLocaleString()} combinations: searches ${R.budget.toLocaleString()})`;
+}
 async function runOptimize() {
-  const G = grid(); if (!G.length) { toast('Tick at least one input to optimize'); return; }
-  if (G.length > 2000) { toast(`${G.length} runs is too many: widen the steps (max 2,000)`, 'err'); return; }
+  const axes = axesOf(), N = total(axes); if (!N) { toast('Tick at least one input to optimize'); return; }
+  const budget = Math.min(N, Math.max(10, R.budget)), full = N <= budget;
   const base = R.study.inputs.reduce((o, i) => (o[i.idx] = i.value, o), {});
-  R.running = true; R.cancel = false; R.opt = { rows: [], total: G.length, done: 0 }; mountResearch(root);
+  R.running = true; R.cancel = false; R.opt = { rows: [], total: budget, done: 0, space: N, mode: full ? 'grid' : 'search' }; mountResearch(root);
   try {
     const data = await loadBars(), n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1)), ws = workers(n); await prime(ws, data);
-    const msg = baseMsg(data), t0 = Date.now(); let next = 0;
+    const msg = baseMsg(data), t0 = Date.now(), seen = new Set(), queue = [], f = OBJ[R.objective][1];
+    // full grid: every combination. Otherwise: a random 60% of the budget, then the neighbours (one step on one input)
+    // of the best ones on train, repeatedly, until the budget is spent.
+    if (full) for (let i = 0; i < N; i++) queue.push(i);
+    else { const first = Math.ceil(budget * 0.6); let guard = 0; while (queue.length < first && guard++ < first * 20) { const i = Math.floor(Math.random() * N); if (!seen.has(i)) { seen.add(i); queue.push(i); } } }
+    for (const i of queue) seen.add(i);
+    const refill = () => {
+      if (full || R.opt.done + queue.length >= budget) return;
+      const ok = R.opt.rows.filter(r => r.train.n >= R.minTrades).sort((a, b) => f(b.train) - f(a.train)).slice(0, 10);
+      for (const r of ok) {
+        const d = digits(axes, r.idx);
+        for (let a = 0; a < axes.length; a++) for (const s of [-1, 1, -2, 2]) {
+          const e = d.slice(); e[a] += s; if (e[a] < 0 || e[a] >= axes[a][1].length) continue;
+          const i = encode(axes, e); if (!seen.has(i)) { seen.add(i); queue.push(i); if (R.opt.done + queue.length >= budget) return; }
+        }
+      }
+      if (!queue.length) { let guard = 0; while (queue.length < 20 && guard++ < 2000) { const i = Math.floor(Math.random() * N); if (!seen.has(i)) { seen.add(i); queue.push(i); } } }
+    };
+    let started = 0;
     await Promise.all(ws.map(async (w, wi) => {
-      while (next < G.length && !R.cancel) {
-        const k = next++, values = { ...base, ...G[k] };
-        const r = await job(w, { ...msg, id: `o${wi}_${k}`, inputs: values });
+      while (!R.cancel && started < budget) {
+        if (!queue.length) refill();
+        if (!queue.length) { if (started > R.opt.done) { await new Promise(r => setTimeout(r, 30)); continue; } break; }
+        const idx = queue.shift(); started++;
+        const changed = decode(axes, idx), values = { ...base, ...changed }; delete values.__skip;
+        const skip = skipFor(changed);
+        const r = await job(w, { ...msg, id: `o${wi}_${idx}`, inputs: values, strategy: { ...msg.strategy, skip: skip.length ? skip : undefined } });
         R.opt.done++;
-        if (!r.error) R.opt.rows.push({ values, changed: G[k], train: r.train, test: r.test, all: r.all });
-        if (R.opt.done % 5 === 0 || R.opt.done === G.length) { const el = (Date.now() - t0) / R.opt.done; setProg(`Optimizing ${R.opt.done} / ${G.length} · ~${Math.ceil(el * (G.length - R.opt.done) / n / 1000)}s left`); }
+        if (!r.error) R.opt.rows.push({ idx, values: { ...values, __skip: skip }, changed, train: r.train, test: r.test, all: r.all });
+        if (R.opt.done % 5 === 0 || R.opt.done === budget) { const el = (Date.now() - t0) / R.opt.done; setProg(`Optimizing ${R.opt.done.toLocaleString()} / ${budget.toLocaleString()}${full ? '' : ` (searching ${N.toLocaleString()} combinations)`} · ~${Math.ceil(el * (budget - R.opt.done) / n / 1000)}s left`); }
       }
     }));
-    sortOpt(); setProg(`${R.cancel ? 'Stopped' : 'Done'}: ${R.opt.done} runs in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+    sortOpt(); setProg(`${R.cancel ? 'Stopped' : 'Done'}: ${R.opt.done.toLocaleString()} runs in ${((Date.now() - t0) / 1000).toFixed(0)}s${full ? '' : ` · searched ${N.toLocaleString()} combinations`}`);
   } catch (e) { setProg('⚠ ' + e.message); }
   finally { R.running = false; mountResearch(root); }
   return R.opt;
@@ -296,10 +343,10 @@ function sortOpt() { const f = OBJ[R.objective][1]; R.opt.rows.sort((a, b) => (b
 function renderOpt() {
   const el = root && root.querySelector('#rsOpt'); if (!el || !R.opt || !R.opt.rows.length) return;
   const ins = R.study.inputs, keys = Object.keys(R.opt.rows[0].changed), f = OBJ[R.objective];
-  const title = k => (ins.find(i => String(i.idx) === String(k)) || {}).title || String(k);
+  const title = k => k === '__skip' ? 'Weekday' : (ins.find(i => String(i.idx) === String(k)) || {}).title || String(k);
   const short = k => { const t = title(k).split(/[:(]/)[0].trim(); return t.length > 18 ? t.slice(0, 17) + '…' : t; };
   const best = Math.max(...R.opt.rows.slice(0, 40).map(r => r.test.net));
-  el.innerHTML = `<div class="tree-sec">Optimization · ${R.opt.rows.length} combinations · ranked by ${f[0].toLowerCase()} on train</div>
+  el.innerHTML = `<div class="tree-sec">Optimization · ${R.opt.rows.length.toLocaleString()} runs${R.opt.mode === 'search' ? ` (search of ${R.opt.space.toLocaleString()} combinations)` : ''} · ranked by ${f[0].toLowerCase()} on train</div>
     <div class="rs-optres"><table class="rs-or">
       <thead><tr><th rowspan="2" class="c">#</th>${keys.map(k => `<th rowspan="2" class="in" title="${esc(title(k))}">${esc(short(k))}</th>`).join('')}
         <th colspan="3" class="grp">Train ${R.split}%</th><th colspan="3" class="grp tst">Test ${100 - R.split}%</th><th rowspan="2">Max DD</th><th rowspan="2"></th></tr>
@@ -322,8 +369,10 @@ async function applyInputs(values) {
   if (W.tab().tf !== R.tf) await W.setTf(R.tf);
   let ind = R.indicatorId && W.tab().indicators.find(i => i.id === R.indicatorId);
   if (!ind || W.scriptFor(ind).src !== R.src) { ind = W.addIndicator({ src: R.src, name: R.name }); R.indicatorId = ind.id; }
-  W.updateIndicator(ind.id, { inputs: { ...values } });
-  toast(`Inputs sent to the chart (${R.symbol} ${R.tf})`, 'ok');
+  const skip = values.__skip !== undefined ? values.__skip : R.skip;
+  const ins = { ...values }; delete ins.__skip;
+  W.updateIndicator(ind.id, { inputs: ins, skip: skip && skip.length ? [...skip] : null });
+  toast(`Sent to the chart (${R.symbol} ${R.tf})${skip && skip.length ? ` with the filter: no entries ${skipText(skip)}` : ''}`, 'ok');
 }
 
 // for Quant: run a study / optimization and return a compact summary
@@ -358,10 +407,11 @@ export async function quantApply(values) {
 function freezeForm(row) {
   if (!R.study) return;
   const st = R.study, ins = st.inputs;
-  const values = row == null ? ins.reduce((o, i) => (o[i.idx] = i.value, o), {}) : R.opt.rows[row].values;
+  const v0 = row == null ? ins.reduce((o, i) => (o[i.idx] = i.value, o), {}) : R.opt.rows[row].values;
+  const values = { ...v0 }, skip = values.__skip !== undefined ? values.__skip : R.skip; delete values.__skip;
   const res = row == null ? st : R.opt.rows[row];
   const d = R.cache.values().next().value || {};
-  freezeDialog({ src: R.src, name: R.name, inputs: values, symbol: R.symbol, tf: R.tf, com: R.com, slip: R.slip, sec: d.sec,
+  freezeDialog({ src: R.src, name: R.name, inputs: values, symbol: R.symbol, tf: R.tf, com: R.com, slip: R.slip, sec: d.sec, skip,
     labels: Object.fromEntries(ins.map(i => [i.title, values[i.idx]])),
     research: { days: R.days, from: st.from, to: st.to, split: R.split, train: slim(res.train), test: slim(res.test) } });
 }

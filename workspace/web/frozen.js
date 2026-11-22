@@ -20,6 +20,7 @@ export function freezeDialog(o) {
   const el = h(`<div class="dialog" style="width:min(560px,94vw)"><div class="ph"><h3>❄ Freeze → paper trading</h3></div><div class="pbody rs">
     <p class="note" style="margin-top:0">“${esc(o.name)}” on <b>${esc(o.symbol)} ${esc(o.tf)}</b> is locked with the inputs below. From now on the server runs it after every ${esc(o.tf)} bar close; the trades it takes from this moment are its paper record (also on the journal's Running page). Later edits to the script don't change it.</p>
     ${lab ? `<div class="fz-chips">${lab}</div>` : ''}
+    ${o.skip && o.skip.length ? `<div class="note">Day / hour filter: no entries ${esc(o.skip.join(', '))}</div>` : ''}
     ${rs ? `<div class="note">Backtest snapshot kept with it: ${money(rs.net, 0)} · ${rs.trades} trades${rs.profit_factor != null ? ' · PF ' + rs.profit_factor : ''}</div>` : ''}
     <div class="row"><label class="field" style="flex:2"><span>Name</span><input id="fzName" value="${esc(o.name)} · ${esc(o.symbol)} ${esc(o.tf)}"></label></div>
     <div class="row"><label class="field" style="flex:2"><span>Account</span><select id="fzAcct"><option value="alpaca">Alpaca paper account (your key)</option><option value="paper">Workspace simulated account</option><option value="ledger">Its own ledger only</option></select></label>
@@ -32,7 +33,7 @@ export function freezeDialog(o) {
     let sec = o.sec;
     if (!sec) { try { sec = securityRequests(compile(o.src), W.activeBars(), { symbol: o.symbol, tf: o.tf }); } catch (e) { sec = []; } }
     const body = { name: el.querySelector('#fzName').value || o.name, account: el.querySelector('#fzAcct').value, src: o.src, inputs: o.inputs || null, inputLabels: o.labels || null,
-      symbol: o.symbol, tf: o.tf, strategy: { comType: 'cash_per_contract', comVal: Math.max(0, +el.querySelector('#fzCom').value || 0), slip: Math.max(0, +el.querySelector('#fzSlip').value || 0) },
+      symbol: o.symbol, tf: o.tf, strategy: { comType: 'cash_per_contract', comVal: Math.max(0, +el.querySelector('#fzCom').value || 0), slip: Math.max(0, +el.querySelector('#fzSlip').value || 0), ...(o.skip && o.skip.length ? { skip: o.skip } : {}) },
       sec: (sec || []).map(r => ({ sym: r.sym, tf: r.tf })), research: o.research || null };
     try { await api('frozen', body); closeModal(); toast('Frozen: paper trading from the next bar close', 'ok'); if (W.currentSide() === 'frozen') refresh(); else W.openSide('frozen'); }
     catch (e) { toast(e.message, 'err'); }
@@ -47,7 +48,7 @@ export function freezeIndicator(id) {
   if (!out || !out.strategy) { toast('Only strategies can be frozen: the script needs strategy(...)', 'err'); return; }
   const ins = (out.inputs || []).filter(Boolean), inputs = Object.fromEntries(ins.map(i => [i.idx, i.value]));
   const b = W.activeBars(), m = out.strategy.metrics;
-  freezeDialog({ src: sc.src, name: sc.name, inputs, symbol: tab.symbol, tf: tab.tf, labels: Object.fromEntries(ins.map(i => [i.title, i.value])),
+  freezeDialog({ src: sc.src, name: sc.name, inputs, symbol: tab.symbol, tf: tab.tf, skip: ind.skip || null, labels: Object.fromEntries(ins.map(i => [i.title, i.value])),
     research: b.length ? { from: b[0].t, to: b[b.length - 1].t, chart: true, test: slim(m), train: null } : null });
 }
 
