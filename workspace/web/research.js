@@ -42,7 +42,7 @@ export function mountResearch(el) {
     <div class="row"><label class="field"><span>Commission $ / share / side</span><input id="rsCom" type="number" step="0.001" value="${R.com}"></label><label class="field"><span>Slippage (ticks)</span><input id="rsSlip" type="number" step="1" value="${R.slip}"></label><label class="field"><span>Train %</span><input id="rsSplit" type="number" value="${R.split}"></label></div>
     ${isStrat ? '' : `<div class="note warn-box">“${esc(R.name)}” is an indicator: it draws, it doesn't trade. A backtest needs <code>strategy()</code> with <code>strategy.entry</code> / <code>strategy.exit</code>. <button class="btn sm" data-a="convert">Ask Quant to convert it</button></div>`}
     <div class="row" style="margin:6px 0 4px"><button class="btn primary" data-a="study" ${isStrat && !R.running ? '' : 'disabled'}>▶ Run study</button><button class="btn" data-a="stop" ${R.running ? '' : 'hidden'}>Stop</button><span class="dim" id="rsProg" style="flex:2">${esc(R.progress)}</span></div>
-    <div id="rsStudy"></div><div id="rsOpt"></div>
+    <div id="rsStudy"></div><div id="rsStg"></div><div id="rsOpt"></div>
   </div>`);
   el.appendChild(body);
   el.querySelector('.ph .x').onclick = () => W.openSide('research');
@@ -65,11 +65,12 @@ export function mountResearch(el) {
     if (a.dataset.a === 'stop') R.cancel = true;
     if (a.dataset.a === 'convert') { if (!W.state.chatOpen) W.toggleChat(true); focusChat(`Convert my "${R.name}" script into a Pine strategy (strategy() with strategy.entry / strategy.exit, same rules and inputs) so I can backtest and optimize it in Research. Add it to the chart.`, { script: true }); }
     if (a.dataset.a === 'optimize') runOptimize();
+    if (a.dataset.a === 'staged') runStaged();
     if (a.dataset.a === 'apply') applyInputs(R.study.inputs.reduce((o, i) => (o[i.idx] = i.value, o), {}));
     if (a.dataset.a === 'freeze') freezeForm(null);
     const tr = e.target.closest('[data-trade]'); if (tr) gotoTrade(R.study.trades[+tr.dataset.trade]);
   };
-  renderStudy(); renderOpt();
+  renderStudy(); renderStaged(); renderOpt();
 }
 const setProg = t => { R.progress = t; const p = root && root.querySelector('#rsProg'); if (p) p.textContent = t; };
 
@@ -252,7 +253,8 @@ function optForm(inputs) {
       <label class="field"><span>No month over (% of profit)</span><input id="rsMonth" type="number" min="10" max="100" step="5" value="${R.maxMonth}"></label></div>
     <div class="row rs-checks"><label><input type="checkbox" id="rsDays" ${R.tryDays ? 'checked' : ''}> Also try leaving out each weekday</label>
       <label><input type="checkbox" id="rsForever" ${R.forever ? 'checked' : ''}> Keep searching until Stop</label>
-      <button class="btn primary" data-a="optimize" style="align-self:flex-end;margin-bottom:10px" ${R.running ? 'disabled' : ''}>Optimize <span id="rsCombos" class="dim"></span></button></div>`;
+      <button class="btn primary" data-a="staged" style="align-self:flex-end;margin-bottom:10px" ${R.running ? 'disabled' : ''} title="Measure each input alone first, then optimize the most influential ones together, then the next tier, then fine-tune the rest">▶ Staged: most influential first</button>
+      <button class="btn" data-a="optimize" style="align-self:flex-end;margin-bottom:10px" ${R.running ? 'disabled' : ''}>Full search <span id="rsCombos" class="dim"></span></button></div>`;
 }
 function defRange(i) {
   const v = +i.value, st = i.step || (i.type === 'int' ? Math.max(1, Math.round(Math.abs(v) / 5)) : +(Math.abs(v) / 5 || 0.1).toPrecision(2));
@@ -291,12 +293,127 @@ function axesOf() {
     const i = ins.find(x => String(x.idx) === String(k)); if (!i) continue;
     if (i.type === 'bool') axes.push([k, [true, false]]);
     else if (i.options) axes.push([k, i.options]);
+    else if (/HHMM/i.test(i.title) && i.type === 'int' && !R.sel[k]) {         // a clock time: every 15 minutes, 2 hours either side
+      const m0 = Math.floor(+i.value / 100) * 60 + (+i.value % 100), vals = [];
+      for (let m = m0 - 120; m <= m0 + 120; m += 15) { const mm = ((m % 1440) + 1440) % 1440; vals.push(Math.floor(mm / 60) * 100 + mm % 60); }
+      axes.push([k, vals]);
+    }
     else { const vals = []; for (let v = s.from; v <= s.to + 1e-9 && vals.length < 500; v += s.step) vals.push(i.type === 'int' ? Math.round(v) : +v.toPrecision(10)); axes.push([k, [...new Set(vals)]]); }
+    const ax = axes[axes.length - 1], cur = i.value;                          // the current value is always one of the values
+    if (ax && ax[0] === k && !ax[1].includes(cur)) { ax[1].push(cur); if (ax[1].every(x => typeof x === 'number')) ax[1].sort((x, y) => x - y); }
   }
   if (R.tryDays) axes.push(['__skip', ['all days', 'no Sun', 'no Mon', 'no Tue', 'no Wed', 'no Thu', 'no Fri']]);
   if (R.tryRegime) { axes.push(['__vol', ['all', 'low', 'mid', 'high']]); axes.push(['__trend', ['any', 'up', 'down']]); }
   return axes;
 }
+// ------------------------------------------------------------------------------------------------ staged optimizer
+// 1. influence: every input alone, the others at the current setting -> how much the train score moves with it
+// 2. tier 1 (the most influential) optimized together  3. tier 2 together, from that best  4. the rest one at a time,
+// kept only when they improve the train score. A few hundred backtests instead of the whole space.
+async function runStaged() {
+  const axes = axesOf(); if (!axes.length) { toast('This strategy has no inputs to optimize'); return; }
+  const f = OBJ[R.objective][1], base0 = R.study.inputs.reduce((o, i) => (o[i.idx] = i.value, o), {});
+  const raw = m => (m && m.n ? f(m) : -Infinity);
+  // settings that meet the trade / month rules first, then the score
+  const gt = (a, b) => { const pa = !!(a && passes(a)), pb = !!(b && passes(b)); return pa !== pb ? pa : raw(a) > raw(b) + 1e-9; };
+  R.running = true; R.cancel = false; R.opt = null;
+  R.staged = { stage: 'Influence of each input', infl: [], stages: [], runs: 0 }; mountResearch(root);
+  const out = [];
+  try {
+    const data = await loadBars(), n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1)), ws = workers(n); await prime(ws, data);
+    const msg = baseMsg(data), t0 = Date.now(), cache = new Map();
+    const runAll = async settings => {                     // settings: [{ k: v }] over the base -> results (cached)
+      const todo = settings.map(st => ({ st, key: JSON.stringify(st) })), res = new Array(todo.length); let next = 0;
+      await Promise.all(ws.map(async (w, wi) => {
+        while (!R.cancel && next < todo.length) {
+          const j = next++, { st, key } = todo[j];
+          if (cache.has(key)) { res[j] = cache.get(key); continue; }
+          const values = { ...base0, ...st };
+          const r = await job(w, { ...msg, id: `s${wi}_${R.staged.runs}`, inputs: values });
+          R.staged.runs++; const row = r.error ? null : { values, st, train: r.train, test: r.test, all: r.all }; cache.set(key, row); res[j] = row;
+          if (R.staged.runs % 5 === 0) setProg(`Staged optimizer · ${R.staged.stage} · ${R.staged.runs} backtests · ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+        }
+      }));
+      return res;
+    };
+    const cur0 = Object.fromEntries(axes.map(([k]) => [k, base0[k]]));
+    const [b0] = await runAll([{}]); if (!b0) throw new Error('The current setting fails to run');
+    const stageRow = (name, st, r) => { R.staged.stages.push({ name, st: { ...st }, r }); out.push(r); renderStaged(); };
+    stageRow('Current setting', {}, b0);
+    // 1. influence, one input at a time
+    for (const [k, vals] of axes) {
+      if (R.cancel) break;
+      const rs = await runAll(vals.map(v => ({ [k]: v })));
+      const pts = vals.map((v, j) => ({ v, r: rs[j] })).filter(x => x.r);
+      const sc = pts.map(x => raw(x.r.train)).filter(Number.isFinite), te = pts.map(x => raw(x.r.test)).filter(Number.isFinite);
+      const ord = pts.filter(x => Number.isFinite(raw(x.r.train))).sort((a, b) => gt(b.r.train, a.r.train) ? 1 : gt(a.r.train, b.r.train) ? -1 : 0), best = ord[0];
+      R.staged.infl.push({ k, title: titleOf(k), cur: cur0[k], spread: sc.length ? Math.max(...sc) - Math.min(...sc) : 0, testSpread: te.length ? Math.max(...te) - Math.min(...te) : 0,
+        best: best ? best.v : cur0[k], ranked: ord.map(x => x.v), n: vals.length });
+      renderStaged();
+    }
+    if (R.cancel) throw new Error('stopped');
+    // tiers
+    const I = R.staged.infl.slice().sort((a, b) => b.spread - a.spread), top = I[0] ? I[0].spread : 0;
+    I.forEach((x, j) => { x.tier = x.spread <= 1e-9 ? 0 : j < 3 ? 1 : j < 8 ? 2 : 3; });      // top 3, next 5, the rest; no effect: skipped
+    renderStaged();
+    let cur = {}, curR = b0;
+    const better = r => r && gt(r.train, curR.train);
+    // 2. / 3. a tier together: the best few values of each (from step 1), all combinations, around the current best
+    const together = async (tier, label, keep) => {
+      const T = I.filter(x => x.tier === tier); if (!T.length) return;
+      R.staged.stage = label;
+      let lists = T.map(x => [x.k, [...new Set([cur[x.k] ?? x.cur, ...x.ranked.slice(0, keep)])]]);
+      while (lists.reduce((p, [, v]) => p * v.length, 1) > 2500 && lists.some(([, v]) => v.length > 2)) lists = lists.map(([k, v]) => [k, v.length > 2 ? v.slice(0, v.length - 1) : v]);
+      const combos = lists.reduce((acc, [k, v]) => acc.flatMap(c => v.map(x => ({ ...c, [k]: x }))), [{}]);
+      const rs = await runAll(combos.map(c => ({ ...cur, ...c })));
+      let bi = -1; rs.forEach((r, j) => { if (better(r) && (bi < 0 || gt(r.train, rs[bi].train))) bi = j; });
+      if (bi >= 0) { cur = { ...cur, ...combos[bi] }; curR = rs[bi]; }
+      stageRow(`${label} (${T.map(x => short(x.title)).join(', ')}): ${combos.length} combinations`, cur, curR);
+    };
+    await together(1, 'Tier 1 together', 6); if (R.cancel) throw new Error('stopped');
+    await together(2, 'Tier 2 together', 4); if (R.cancel) throw new Error('stopped');
+    // 4. the rest, one at a time from the best so far (kept only if the train score improves)
+    R.staged.stage = 'Tier 3, one at a time';
+    for (const x of I.filter(y => y.tier === 3)) {
+      if (R.cancel) break;
+      const vals = (axes.find(a => a[0] === x.k) || [, []])[1];
+      const rs = await runAll(vals.map(v => ({ ...cur, [x.k]: v })));
+      let bi = -1; rs.forEach((r, j) => { if (better(r) && (bi < 0 || gt(r.train, rs[bi].train))) bi = j; });
+      if (bi >= 0) { cur = { ...cur, [x.k]: vals[bi] }; curR = rs[bi]; }
+    }
+    stageRow('Tier 3, one at a time', cur, curR);
+    // one more pass over tier 1 from the final setting (the tiers can interact)
+    R.staged.stage = 'Tier 1 check from the final setting';
+    for (const x of I.filter(y => y.tier === 1)) {
+      const vals = (axes.find(a => a[0] === x.k) || [, []])[1];
+      const rs = await runAll(vals.map(v => ({ ...cur, [x.k]: v })));
+      let bi = -1; rs.forEach((r, j) => { if (better(r) && (bi < 0 || gt(r.train, rs[bi].train))) bi = j; });
+      if (bi >= 0) { cur = { ...cur, [x.k]: vals[bi] }; curR = rs[bi]; }
+    }
+    stageRow('Final', cur, curR);
+    setProg(`Staged optimizer done: ${R.staged.runs} backtests in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  } catch (e) { setProg(e.message === 'stopped' ? `Stopped after ${R.staged.runs} backtests` : '⚠ ' + e.message); }
+  finally {
+    // the stage results as optimizer rows (To chart / ❄), best first
+    const keys = axes.map(([k]) => k);
+    R.opt = { rows: R.staged.stages.slice().reverse().map(sg => ({ values: { ...base0, ...sg.st }, changed: Object.fromEntries(keys.map(k => [k, sg.st[k] ?? base0[k]])), train: sg.r.train, test: sg.r.test, all: sg.r.all, stage: sg.name })), done: R.staged.runs, space: R.staged.runs, mode: 'staged' };
+    R.running = false; mountResearch(root);
+  }
+}
+const titleOf = k => (R.study.inputs.find(i => String(i.idx) === String(k)) || {}).title || String(k);
+const short = t => { const x = String(t).split(/[:(]/)[0].trim(); return x.length > 22 ? x.slice(0, 21) + '…' : x; };
+function renderStaged() {
+  const el = root && root.querySelector('#rsStg'), S = R.staged; if (!el || !S) return;
+  const I = S.infl.slice().sort((a, b) => b.spread - a.spread), top = I[0] ? I[0].spread || 1 : 1, t2 = v => Number.isFinite(v) ? v.toFixed(2) : '—';
+  const tierName = t => t === 1 ? 'Tier 1' : t === 2 ? 'Tier 2' : t === 3 ? 'Tier 3' : t === 0 ? 'no effect' : '…';
+  el.innerHTML = `<div class="tree-sec">Staged optimizer · ${S.runs} backtests${R.running ? ' · ' + esc(S.stage) : ''}</div>
+    <p class="note" style="margin-top:0">Influence = how far the train score (${esc(OBJ[R.objective][0])}) moves when only that input changes, the others at the current setting. The most influential are optimized together first, then the next tier, then the rest one at a time. Judge the result by the test columns: they are never used to choose.</p>
+    ${I.length ? `<div class="rs-optres" style="max-height:300px"><table class="rs-or stg"><thead><tr><th class="t">Input</th><th class="t">Influence (train)</th><th>Test moves</th><th>Now</th><th>Best alone</th><th class="t">Tier</th></tr></thead><tbody>
+      ${I.map(x => `<tr><td class="t" title="${esc(x.title)}">${esc(short(x.title))}</td><td class="t"><span class="bar" style="width:${Math.max(2, x.spread / top * 140)}px"></span> ${t2(x.spread)}</td><td>${t2(x.testSpread)}</td><td>${esc(String(x.cur))}</td><td>${esc(String(x.best))}</td><td class="t"><span class="tier t${x.tier ?? 'x'}">${tierName(x.tier)}</span></td></tr>`).join('')}</tbody></table></div>` : ''}
+    ${S.stages.length ? `<table class="tbl rs-res" style="margin-top:8px"><tr><th class="t">Stage</th><th>Train trades</th><th>Train t</th><th class="t">Test trades</th><th>Test net</th><th>Test t</th></tr>
+      ${S.stages.map(sg => `<tr><td class="t">${esc(sg.name)}</td><td>${sg.r.train.n}</td><td>${t2(sg.r.train.tDay)}</td><td class="t">${sg.r.test.n}</td><td class="${cls(sg.r.test.net)}">${money(sg.r.test.net, 0)}</td><td>${t2(sg.r.test.tDay)}</td></tr>`).join('')}</table>` : ''}`;
+}
+
 const total = axes => axes.length ? axes.reduce((n, [, v]) => n * v.length, 1) : 0;
 function decode(axes, idx) { const o = {}; for (let a = axes.length - 1; a >= 0; a--) { const [k, v] = axes[a]; o[k] = v[idx % v.length]; idx = Math.floor(idx / v.length); } return o; }
 function digits(axes, idx) { const d = new Array(axes.length); for (let a = axes.length - 1; a >= 0; a--) { const L = axes[a][1].length; d[a] = idx % L; idx = Math.floor(idx / L); } return d; }
