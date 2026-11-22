@@ -299,6 +299,12 @@ Resources:
             ScheduleExpression: cron(25 17 ? * MON-FRI *)
             ScheduleExpressionTimezone: America/New_York
             Input: '{"job": "scheduled"}'
+        WeekendCatchUp:     # Databento's history lags the market by hours: Friday's last session arrives over the weekend
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(40 0/2 ? * SAT,SUN *)
+            ScheduleExpressionTimezone: America/New_York
+            Input: '{"job": "scheduled"}'
 
 Outputs:
   SiteUrl:

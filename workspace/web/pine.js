@@ -1,3 +1,5 @@
+// futures: point value ($ per point per contract) and tick
+const FUT = { NQ: { pv: 20, tick: 0.25 }, ES: { pv: 50, tick: 0.25 }, MNQ: { pv: 2, tick: 0.25 }, MES: { pv: 5, tick: 0.25 } };
 // Pine Script (v5 / v6 subset) interpreter. No DOM: runs in the browser and in node (tests).
 //   const prog = compile(source)            -> throws PineError {message, line}
 //   const out  = run(prog, bars, opts)      -> {meta, inputs, plots, hlines, fills, shapes, bgcolors, barcolors, lines, labels, boxes, logs}
@@ -394,7 +396,7 @@ const BV = {
   'barstate.isrealtime': S((c, j) => c.live && j === c.n - 1), 'barstate.ishistory': S((c, j) => !(c.live && j === c.n - 1)), 'barstate.isnew': S(() => true), 'barstate.islastconfirmedhistory': S((c, j) => j === c.n - (c.live ? 2 : 1)),
   'timeframe.period': S(c => c.tf), 'timeframe.multiplier': S(c => c.tfMult), 'timeframe.isintraday': S(c => c.tfSec < 86400), 'timeframe.isdaily': S(c => c.tfSec === 86400 * (c.tfMult || 1) && /D$/.test(c.tf)),
   'timeframe.isweekly': S(c => /W$/.test(c.tf)), 'timeframe.ismonthly': S(c => /M$/.test(c.tf)), 'timeframe.isminutes': S(c => c.tfSec < 3600 || (c.tfSec < 86400 && !/h$/.test(c.tf))), 'timeframe.isseconds': S(() => false), 'timeframe.isdwm': S(c => c.tfSec >= 86400),
-  'syminfo.ticker': S(c => c.symbol), 'syminfo.tickerid': S(c => c.symbol), 'syminfo.mintick': S(c => c.mintick), 'syminfo.pointvalue': S(() => 1), 'syminfo.currency': S(() => 'USD'), 'syminfo.timezone': S(() => 'America/New_York'), 'syminfo.type': S(c => c.symbol.includes('/') ? 'crypto' : 'stock'), 'syminfo.description': S(c => c.symbol),
+  'syminfo.ticker': S(c => c.symbol), 'syminfo.tickerid': S(c => c.symbol), 'syminfo.mintick': S(c => c.mintick), 'syminfo.pointvalue': S(c => c.pv), 'syminfo.currency': S(() => 'USD'), 'syminfo.timezone': S(() => 'America/New_York'), 'syminfo.type': S(c => FUT[String(c.symbol).toUpperCase()] ? 'futures' : c.symbol.includes('/') ? 'crypto' : 'stock'), 'syminfo.description': S(c => c.symbol),
   'math.pi': S(() => Math.PI), 'math.e': S(() => Math.E), 'math.phi': S(() => 1.618033988749895), 'math.rphi': S(() => 0.618033988749895),
 };
 const CONST = {
@@ -631,7 +633,7 @@ class Strat {
   }
   size() { return this.lots.reduce((s, l) => s + l.qty * l.dir, 0); }
   avg() { const q = this.lots.reduce((s, l) => s + l.qty, 0); return q ? this.lots.reduce((s, l) => s + l.qty * l.px, 0) / q : NaN; }
-  openPnl(px) { return this.lots.reduce((s, l) => s + (px - l.px) * l.qty * l.dir, 0); }
+  openPnl(px) { return this.lots.reduce((s, l) => s + (px - l.px) * l.qty * l.dir, 0) * (this.c.pv || 1); }
   equity(px) { return this.cap + this.net + this.openPnl(px); }
   com(qty, px) { return this.comType === 'percent' ? Math.abs(qty * px) * this.comVal / 100 : this.comType === 'cash_per_contract' ? qty * this.comVal : this.comVal; }
   qtyFor(q, px) {
@@ -721,7 +723,7 @@ class Strat {
     let left = qty === undefined ? Infinity : qty;
     for (const l of lots) {
       if (left <= 0) break; const k = Math.min(l.qty, left); left -= k;
-      const comIn = l.com * k / l.qty, comOut = this.com(k, px), pnl = (px - l.px) * k * l.dir - comIn - comOut;
+      const comIn = l.com * k / l.qty, comOut = this.com(k, px), pnl = (px - l.px) * k * l.dir * (this.c.pv || 1) - comIn - comOut;
       this.net += pnl;
       this.trades.push({ id: l.id, dir: l.dir, qty: k, entryBar: l.bar, entryTime: l.t, entryPx: l.px, exitBar: i, exitTime: this.B.t[i], exitPx: px, pnl, pct: (px / l.px - 1) * 100 * l.dir, why, comment: l.comment });
       this.fills.push({ bar: i, t: this.B.t[i], px, qty: k, dir: -l.dir, id: why, kind: 'exit' });
@@ -1176,7 +1178,8 @@ export function run(compiled, bars, opts = {}) {
   const tf = opts.tf || '1D';
   const ctx = {
     B, n, i: 0, out, gf, f: gf, frames: new Map(), depth: 0, brk: null, line: 0, live: !!opts.live,
-    symbol: opts.symbol || 'SYMBOL', tf, tfSec: opts.tfSec || tfSeconds(tf), tfMult: parseInt(tf, 10) || 1, mintick: opts.mintick || 0.01,
+    symbol: opts.symbol || 'SYMBOL', tf, tfSec: opts.tfSec || tfSeconds(tf), tfMult: parseInt(tf, 10) || 1, mintick: opts.mintick || (FUT[String(opts.symbol || '').toUpperCase()] || {}).tick || 0.01,
+    pv: (FUT[String(opts.symbol || '').toUpperCase()] || {}).pv || 1,
     inputValues: opts.inputs || null, inputOrder: new Map(), max: { ...MAXOBJ }, strat: null, stratOverrides: opts.strategy || null,
     tp: j => tpc[j] || (tpc[j] = nyParts(B.t[j])),
     warn: msg => { if (!out.logs.some(l => l.msg === msg)) out.logs.push({ level: 'warning', bar: ctx.i, msg }); },
@@ -1204,7 +1207,7 @@ export function run(compiled, bars, opts = {}) {
   };
   if (ctx.strat) {
     const st = ctx.strat, last = B.c[n - 1];
-    res.strategy = { trades: st.trades, open: st.lots.map(l => ({ ...l, pnl: (last - l.px) * l.qty * l.dir })), equity: st.eq, fills: st.fills, net: st.net, capital: st.cap,
+    res.strategy = { trades: st.trades, open: st.lots.map(l => ({ ...l, pnl: (last - l.px) * l.qty * l.dir * (ctx.pv || 1) })), equity: st.eq, fills: st.fills, net: st.net, capital: st.cap,
       settings: { qtyType: st.qtyType, qtyVal: st.qtyVal, comType: st.comType, comVal: st.comVal, slip: st.slip, pyr: st.pyr, poc: st.poc }, metrics: metrics(st.trades, { capital: st.cap }),
       // working exits of the open position (a broker mirror places them as stop / limit orders)
       exits: st.orders.filter(o => o.kind === 'exit').map(o => { const L = st.exitLevels(o); return L && { id: o.id, from: o.from, dir: L.dir, stop: isna(L.st) ? null : L.st, limit: isna(L.lim) ? null : L.lim }; }).filter(Boolean) };

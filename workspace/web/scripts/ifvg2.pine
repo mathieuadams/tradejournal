@@ -1,0 +1,262 @@
+//@version=6
+// FVG inversion with the EMA bias (#2) — NQ 5-minute, overnight + NYSE session.
+// Same rules as the journal's Research strategy "FVG inversion EMA bias #2":
+//   bias = hourly 20 EMA (price on its side, EMA sloping that way), confirmed by the Asian session's direction;
+//   a fair value gap against the bias (the pullback), then a close through it within 12 candles: enter at that close;
+//   stop at the pullback extreme, target the previous liquidity (at least 2R), skip under 1R;
+//   at most 3 a session, entries until 10:30 (overnight from 18:00 included), flat at 15:55;
+//   trigger candle range at most 2.5x the average candle range (last 50), body at least 40% of its range.
+strategy("FVG inversion EMA bias #2", "iFVG bias #2", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 1,
+     process_orders_on_close = true, commission_type = strategy.commission.cash_per_contract, commission_value = 2.25, slippage = 1)
+
+biasMode  = input.string("Hourly 20 EMA only", "Bias", options = ["Hourly 20 EMA only", "15 / 30 / 60-minute 20 EMAs"])
+asiaMode  = input.string("It closed in the bias direction", "Asian session (18:00-02:00) check", options = ["It closed in the bias direction", "Price on the bias side of its middle", "None"])
+minGap    = input.int(2, "Gap at least (ticks)", minval = 0)
+fvgMax    = input.int(12, "Inversion within (candles)", minval = 1)
+stopMode  = input.string("Pullback extreme", "Stop", options = ["Pullback extreme", "Far end of the gap"])
+bufTicks  = input.int(0, "Stop buffer (ticks)", minval = 0)
+tgtMode   = input.string("Previous liquidity, at least 2R", "Target", options = ["Previous liquidity, at least 2R", "Previous liquidity", "Fixed R"])
+tgtR      = input.float(1.5, "Fixed target (R)", step = 0.25)
+minRR     = input.float(1.0, "Skip when the target is under (R, 0 = off)", step = 0.25)
+pivLen    = input.int(2, "Liquidity: swing length (candles each side)", minval = 1)
+liqLook   = input.int(150, "Liquidity: look back (candles)", minval = 10)
+lastEntry = input.int(1030, "Last entry (HHMM, New York)")
+maxDay    = input.int(3, "At most per session", minval = 1)
+allHours  = input.bool(true, "Overnight entries too (from 18:00)")
+gapFrom   = input.int(800, "Gaps from (HHMM) when overnight entries are off")
+side      = input.string("Both", "Side", options = ["Both", "Long", "Short"])
+trigBody  = input.bool(false, "Measure the trigger candle by its body (off = range, wicks included)")
+trigMin   = input.float(0, "Trigger candle at least (x average range, 0 = off)", step = 0.1)
+trigMax   = input.float(2.5, "Trigger candle at most (x average range, 0 = off)", step = 0.1)
+avgN      = input.int(50, "Average range over (candles)", minval = 3)
+trigN     = input.int(0, "Compare with the previous N candles (0 = off)", minval = 0)
+trigPrevMult = input.float(1.0, "Trigger at least (x the largest of those N)", step = 0.1)
+trigPrevMax  = input.float(0, "Trigger at most (x the largest of those N, 0 = off)", step = 0.1)
+trigEngulf   = input.bool(true, "Trigger closes past those N candles' high / low")
+bodyPct   = input.int(40, "Trigger body at least (% of its range, 0 = off)", minval = 0, maxval = 100)
+showEma   = input.bool(true, "Show the 20 EMAs")
+
+tick = syminfo.mintick
+hm = hour * 100 + minute
+tfMin = timeframe.multiplier
+
+// ---- the 20 EMA of the forming 15 / 30 / 60-minute candle (its live value at this candle's close), and its slope
+emaTrack(n) =>
+    var float done = na
+    var float last = na
+    var float key = na
+    k = math.floor(time / (n * 60000))
+    if na(key) or k != key
+        if not na(last)
+            done := na(done) ? last : 2.0 / 21 * last + (1 - 2.0 / 21) * done
+        key := k
+    last := close
+    now = na(done) ? close : 2.0 / 21 * close + (1 - 2.0 / 21) * done
+    [now, not na(done) and now > done, not na(done) and now < done]
+
+[e15, up15, dn15] = emaTrack(15)
+[e30, up30, dn30] = emaTrack(30)
+[e60, up60, dn60] = emaTrack(60)
+h1only = biasMode == "Hourly 20 EMA only"
+biasL = close > e60 and up60 and (h1only or (close > e15 and up15 and close > e30 and up30))
+biasS = close < e60 and dn60 and (h1only or (close < e15 and dn15 and close < e30 and dn30))
+bias = biasL ? 1 : biasS ? -1 : 0
+
+// ---- the previous liquidity: the nearest untaken swing high (d > 0) above e / swing low under e
+liquidity(d, e) =>
+    float best = na
+    float runHi = na
+    float runLo = na
+    for off = 1 to liqLook
+        if off > pivLen and bar_index >= off + pivLen
+            lv = d > 0 ? high[off] : low[off]
+            isPiv = true
+            for j = off - pivLen to off + pivLen
+                if d > 0 and high[j] > lv
+                    isPiv := false
+                if d < 0 and low[j] < lv
+                    isPiv := false
+            untaken = d > 0 ? (na(runHi) or runHi <= lv) : (na(runLo) or runLo >= lv)
+            if isPiv and untaken and (d > 0 ? lv > e : lv < e)
+                best := na(best) ? lv : d > 0 ? math.min(best, lv) : math.max(best, lv)
+        runHi := na(runHi) ? high[off] : math.max(runHi, high[off])
+        runLo := na(runLo) ? low[off] : math.min(runLo, low[off])
+    best
+
+// ---- the session (18:00 the evening before to 17:00): its candles, trades and Asian session (18:00-02:00)
+newSes = hm >= 1800 and (bar_index == 0 or hm[1] < 1800)
+var int sesBars = 0
+var int sesTrades = 0
+var bool sesDone = false
+var float aO = na
+var float aC = na
+var float aH = na
+var float aL = na
+var gD = array.new_int()
+var gTop = array.new_float()
+var gBot = array.new_float()
+var gK = array.new_int()
+if newSes
+    sesBars := 0
+    sesTrades := 0
+    sesDone := false
+    aO := na
+    aC := na
+    aH := na
+    aL := na
+    array.clear(gD)
+    array.clear(gTop)
+    array.clear(gBot)
+    array.clear(gK)
+sesBars += 1
+if hm >= 1800 or hm < 200
+    aO := na(aO) ? open : aO
+    aC := close
+    aH := na(aH) ? high : math.max(aH, high)
+    aL := na(aL) ? low : math.min(aL, low)
+
+today = hm < 1800
+endMin = hour * 60 + minute + tfMin
+endHM = math.floor(endMin / 60) * 100 + endMin % 60
+if today and endHM > lastEntry
+    sesDone := true
+if sesTrades >= maxDay
+    sesDone := true
+
+var float prevPos = 0
+inTrade = strategy.position_size != 0 or prevPos != 0      // one at a time; the exit candle is skipped too
+var float tStop = na
+var float tTgt = na
+
+if not sesDone and not inTrade and sesBars >= 3
+    // a gap forms (candle 1 and 3 don't overlap)
+    if allHours or (today and hm >= gapFrom)
+        if low[2] - high >= minGap * tick
+            array.push(gD, 1)
+            array.push(gTop, low[2])
+            array.push(gBot, high)
+            array.push(gK, bar_index)
+        if low - high[2] >= minGap * tick
+            array.push(gD, -1)
+            array.push(gTop, low)
+            array.push(gBot, high[2])
+            array.push(gK, bar_index)
+    // gaps older than fvgMax candles are gone
+    if array.size(gK) > 0
+        for i = array.size(gK) - 1 to 0
+            if bar_index - array.get(gK, i) > fvgMax
+                array.remove(gD, i)
+                array.remove(gTop, i)
+                array.remove(gBot, i)
+                array.remove(gK, i)
+    // the first gap closed through (inverted) on this candle
+    hit = -1
+    if array.size(gK) > 0
+        for i = 0 to array.size(gK) - 1
+            if hit < 0 and array.get(gK, i) != bar_index
+                dd = array.get(gD, i)
+                if (dd > 0 and close > array.get(gTop, i)) or (dd < 0 and close < array.get(gBot, i))
+                    hit := i
+    if hit >= 0
+        d = array.get(gD, hit)
+        top = array.get(gTop, hit)
+        bot = array.get(gBot, hit)
+        gk = array.get(gK, hit)
+        array.remove(gD, hit)
+        array.remove(gTop, hit)
+        array.remove(gBot, hit)
+        array.remove(gK, hit)
+        ok = true
+        if not allHours and not (today and hm >= 930)
+            ok := false
+        if allHours and hm >= 1600 and hm < 1800
+            ok := false
+        if (side == "Long" and d < 0) or (side == "Short" and d > 0)
+            ok := false
+        if bias != d
+            ok := false
+        ad = na(aO) ? 0 : aC > aO ? 1 : aC < aO ? -1 : 0
+        am = na(aH) ? 0 : close > (aH + aL) / 2 ? 1 : -1
+        if asiaMode == "It closed in the bias direction" and ad != d
+            ok := false
+        if asiaMode == "Price on the bias side of its middle" and am != d
+            ok := false
+        // the trigger candle against the session's average candle range (the candles before it)
+        n = math.min(avgN, sesBars - 1)
+        float sumR = 0
+        if n > 0
+            for j = 1 to n
+                sumR += high[j] - low[j]
+        avg = n > 0 ? sumR / n : 0
+        body = math.abs(close - open)
+        rng = high - low
+        size = avg > 0 ? (trigBody ? body : rng) / avg : 0
+        if trigMin > 0 and size < trigMin
+            ok := false
+        if trigMax > 0 and size > trigMax
+            ok := false
+        if bodyPct > 0 and rng > 0 and body / rng * 100 < bodyPct
+            ok := false
+        // against the previous N candles of the session
+        pn = math.min(trigN, sesBars - 1)
+        if trigN > 0 and pn > 0
+            float bigN = 0
+            float hiN = high[1]
+            float loN = low[1]
+            for j = 1 to pn
+                bigN := math.max(bigN, trigBody ? math.abs(close[j] - open[j]) : high[j] - low[j])
+                hiN := math.max(hiN, high[j])
+                loN := math.min(loN, low[j])
+            me = trigBody ? body : rng
+            if me < trigPrevMult * bigN
+                ok := false
+            if trigPrevMax > 0 and me > trigPrevMax * bigN
+                ok := false
+            if trigEngulf and not (d > 0 ? close > hiN : close < loN)
+                ok := false
+        e = close
+        buf = bufTicks * tick
+        float stop = na
+        if stopMode == "Far end of the gap"
+            stop := d > 0 ? bot - buf : top + buf
+        else
+            back = bar_index - (gk - 2)
+            float ext = d > 0 ? low : high
+            for j = 0 to back
+                ext := d > 0 ? math.min(ext, low[j]) : math.max(ext, high[j])
+            stop := d > 0 ? ext - buf : ext + buf
+        risk = (e - stop) * d
+        if risk <= 0
+            ok := false
+        float tgt = na
+        if ok
+            two = e + d * 2 * risk
+            if tgtMode == "Fixed R"
+                tgt := e + d * tgtR * risk
+            else
+                lq = liquidity(d, e)
+                if tgtMode == "Previous liquidity"
+                    tgt := lq
+                else
+                    tgt := not na(lq) and (lq - two) * d > 0 ? lq : two
+            if na(tgt) or (tgt - e) * d <= 0 or (minRR > 0 and math.abs(tgt - e) < minRR * risk)
+                ok := false
+        if ok
+            sesTrades += 1
+            tStop := stop
+            tTgt := tgt
+            strategy.entry(d > 0 ? "Long" : "Short", d > 0 ? strategy.long : strategy.short)
+            strategy.exit("x", d > 0 ? "Long" : "Short", stop = stop, limit = tgt, comment_loss = "Stop", comment_profit = "Target")
+
+prevPos := strategy.position_size
+
+// flat at 15:55 (the close of the 15:55 candle)
+if strategy.position_size != 0 and hm == 1555
+    strategy.close_all(comment = "15:55")
+
+plot(showEma ? e60 : na, "EMA 20 (60m)", #E07AE0, 2)
+plot(showEma and not h1only ? e30 : na, "EMA 20 (30m)", #E7C35A, 1)
+plot(showEma and not h1only ? e15 : na, "EMA 20 (15m)", #5FD4C4, 1)
+plot(strategy.position_size != 0 ? tStop : na, "Stop", #f23645, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? tTgt : na, "Target", #089981, 1, plot.style_linebr)
+bgcolor(bias > 0 ? color.new(#089981, 94) : bias < 0 ? color.new(#f23645, 94) : na, title = "Bias")

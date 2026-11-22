@@ -6,6 +6,579 @@ const S = (id, name, cat, desc, src, extra = {}) => ({ id, name, cat, desc, src:
 export const CATEGORIES = ['Strategies', 'Trend', 'Momentum', 'Volatility', 'Volume', 'Levels', 'Structure', 'SMC / ICT', 'Signals'];
 
 export const LIBRARY = [
+S('asiacrt', 'Asian Range CRT (sweep + MSS + FVG)', 'Strategies', 'Asian range 20:00-00:00 (high, low, midnight open, 50%), bias from the hourly 20 EMA, London 02:00-05:00 sweep of the side against the bias, proof = close back inside + break of the previous swing (MSS), entry at the fair value gap the displacement leaves (size optimizable), stop beyond the sweep wick, TP1 the other side of the box, TP2 +1x range. For the 15-minute chart.', `
+// Asian Range CRT — 15-minute chart (NQ / ES / QQQ / SPY / forex), New York time.
+//  1. Range: the Asian session 20:00-00:00 (candle 1). At midnight: Asian high, Asian low, the midnight open and the 50%.
+//  2. Bias: bullish / bearish day from the hourly 20 EMA (price on its side, sloping that way), the 4-hour 20 EMA,
+//     the previous day's candle, or none.
+//  3. Sweep (candle 2): in London (02:00-05:00) price trades through one side of the box and takes its stops.
+//     Bullish bias: the Asian low is swept -> look for longs. Bearish bias: the Asian high -> shorts.
+//  4. Proof: price snaps back - a candle closes back inside the box AND breaks the previous swing high (MSS,
+//     displacement); optionally its body must be at least x the average candle.
+//  5. Entry: the fair value gap the displacement leaves behind (size optimizable): a limit order at the gap
+//     (its near edge, middle or far edge). Stop below the sweep wick. TP1 the other side of the box (Asian high),
+//     TP2 one more range beyond (+1x range). Break-even after TP1 (optional). Flat at the time exit.
+strategy("Asian Range CRT", "Asia CRT", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 2,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 2.25, slippage = 1, max_boxes_count = 300, max_lines_count = 500)
+
+grpR = "Range"
+rStart   = input.int(2000, "Asian range from (HHMM)", group = grpR)
+rEnd     = input.int(0, "to (HHMM, 0 = midnight)", group = grpR)
+grpB = "Bias"
+biasMode = input.string("Hourly 20 EMA", "Bias", options = ["Hourly 20 EMA", "4-hour 20 EMA", "Previous day candle", "Midnight open vs 50%", "None"], group = grpB)
+emaLen   = input.int(20, "EMA length", minval = 2, group = grpB)
+needSlope = input.bool(true, "EMA must slope the bias way", group = grpB)
+side     = input.string("Both", "Side", options = ["Both", "Long", "Short"], group = grpB)
+grpS = "Sweep (London)"
+sStart   = input.int(200, "Sweep window from (HHMM)", group = grpS)
+sEnd     = input.int(500, "to (HHMM)", group = grpS)
+minSweep = input.int(0, "Sweep at least (ticks beyond the box)", minval = 0, group = grpS)
+maxSweep = input.float(0, "Sweep at most (x the range, 0 = off)", step = 0.1, group = grpS)
+grpP = "Proof (displacement + MSS)"
+needInside = input.bool(true, "Close back inside the box", group = grpP)
+needMss  = input.bool(true, "Break the previous swing high / low (MSS)", group = grpP)
+swingLen = input.int(2, "Swing length (candles each side)", minval = 1, group = grpP)
+dispMult = input.float(0, "Displacement candle body at least (x avg candle, 0 = off)", step = 0.1, group = grpP)
+avgLen   = input.int(20, "Average candle over", minval = 3, group = grpP)
+proofBy  = input.int(700, "Proof by (HHMM)", group = grpP)
+grpF = "Fair value gap entry"
+minGap   = input.int(4, "Gap at least (ticks)", minval = 0, group = grpF)
+maxGapR  = input.float(0, "Gap at most (x the range, 0 = off)", step = 0.05, group = grpF)
+fvgWait  = input.int(4, "Gap must form within (candles after the proof)", minval = 0, group = grpF)
+entryAt  = input.string("Near edge", "Limit at the gap's", options = ["Near edge", "Middle", "Far edge"], group = grpF)
+cancelAt = input.int(800, "Cancel the unfilled order at (HHMM)", group = grpF)
+grpX = "Stop / targets"
+bufTicks = input.int(2, "Stop beyond the sweep wick (ticks)", minval = 0, group = grpX)
+tp2Mult  = input.float(1.0, "TP2: the other side + x the range", step = 0.25, group = grpX)
+tp1Pct   = input.int(50, "TP1 closes (% of the position, 0 = TP2 only)", minval = 0, maxval = 100, group = grpX)
+beAfter  = input.bool(true, "Stop to entry after TP1", group = grpX)
+minRR    = input.float(1.0, "Skip when TP1 is under (R, 0 = off)", step = 0.25, group = grpX)
+exitAt   = input.int(1130, "Flat at (HHMM)", group = grpX)
+maxDay   = input.int(1, "Trades per day", minval = 1, group = grpX)
+showBox  = input.bool(true, "Draw the box, midnight open and 50%")
+
+tick = syminfo.mintick
+hm = hour * 100 + minute
+inWin(a, b) => a <= b ? (hm >= a and hm < b) : (hm >= a or hm < b)
+
+// ---- higher-timeframe EMA (its live value at this candle's close) and slope, from this chart's candles
+emaTrack(n) =>
+    var float done = na
+    var float last = na
+    var float key = na
+    k = math.floor(time / (n * 60000))
+    a = 2.0 / (emaLen + 1)
+    if na(key) or k != key
+        if not na(last)
+            done := na(done) ? last : a * last + (1 - a) * done
+        key := k
+    last := close
+    now = na(done) ? close : a * close + (1 - a) * done
+    [now, not na(done) and now > done, not na(done) and now < done]
+[e60, up60, dn60] = emaTrack(60)
+[e240, up240, dn240] = emaTrack(240)
+
+// ---- previous calendar day's candle (New York), for the "previous day" bias
+var float dO = na
+var float dC = na
+var float pdO = na
+var float pdC = na
+newDay = dayofmonth != dayofmonth[1]
+if newDay
+    pdO := dO
+    pdC := dC
+    dO := open
+dC := close
+
+// ---- the Asian box
+inRange = inWin(rStart, rEnd)
+rangeStart = inRange and not inRange[1]
+rangeDone = not inRange and inRange[1]
+var float bH = na
+var float bL = na
+var float aH = na
+var float aL = na
+var float mOpen = na
+var bool ready = false
+var int trades = 0
+// setup state, per side
+var bool sweptL = false
+var bool sweptS = false
+var float extL = na              // the sweep wick (lowest low after the low was swept)
+var float extS = na
+var float mssL = na              // the swing high to break (the last one before the sweep wick)
+var float mssS = na
+var int proofL = na              // bar of the proof
+var int proofS = na
+var int extBarL = na
+var int extBarS = na
+var bool doneL = false
+var bool doneS = false
+var float lastSH = na
+var float lastSL = na
+var box bx = na
+var line lnMo = na
+var line ln50 = na
+
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low, swingLen, swingLen)
+if not na(ph)
+    lastSH := ph
+if not na(pl)
+    lastSL := pl
+
+if rangeStart
+    bH := high
+    bL := low
+    ready := false
+    trades := 0
+    sweptL := false
+    sweptS := false
+    doneL := false
+    doneS := false
+    extL := na
+    extS := na
+    proofL := na
+    proofS := na
+    strategy.cancel("L")
+    strategy.cancel("S")
+else if inRange
+    bH := math.max(bH, high)
+    bL := math.min(bL, low)
+if rangeDone and not na(bH)
+    aH := bH
+    aL := bL
+    mOpen := open
+    ready := true
+    if showBox
+        bx := box.new(bar_index, aH, bar_index + 1, aL, border_color = color.new(#5B8DEF, 20), bgcolor = color.new(#5B8DEF, 90))
+        lnMo := line.new(bar_index, mOpen, bar_index + 1, mOpen, color = color.new(color.white, 40), style = line.style_dashed)
+        ln50 := line.new(bar_index, (aH + aL) / 2, bar_index + 1, (aH + aL) / 2, color = color.new(#8a8f9c, 30), style = line.style_dotted)
+if ready and showBox and not inRange and hm < exitAt
+    box.set_right(bx, bar_index)
+    line.set_x2(lnMo, bar_index)
+    line.set_x2(ln50, bar_index)
+
+rng = aH - aL
+mid = (aH + aL) / 2
+avgC = ta.sma(math.abs(close - open), avgLen)[1]
+
+// ---- bias
+bias = 0
+if biasMode == "Hourly 20 EMA"
+    bias := close > e60 and (not needSlope or up60) ? 1 : close < e60 and (not needSlope or dn60) ? -1 : 0
+else if biasMode == "4-hour 20 EMA"
+    bias := close > e240 and (not needSlope or up240) ? 1 : close < e240 and (not needSlope or dn240) ? -1 : 0
+else if biasMode == "Previous day candle"
+    bias := na(pdO) ? 0 : pdC > pdO ? 1 : pdC < pdO ? -1 : 0
+else if biasMode == "Midnight open vs 50%"
+    bias := na(mOpen) ? 0 : mOpen > mid ? 1 : mOpen < mid ? -1 : 0
+else
+    bias := 2                    // none: both ways
+
+canTrade = ready and trades < maxDay and strategy.position_size == 0 and rng > 0
+sweepWin = inWin(sStart, sEnd)
+beforeProof = hm < proofBy and not inRange
+
+// ---- long side: the Asian low swept, back inside, MSS up, then the bullish gap
+if canTrade and not doneL and side != "Short" and (bias == 1 or bias == 2)
+    if not sweptL and sweepWin and low < aL - minSweep * tick
+        sweptL := true
+        extL := low
+        extBarL := bar_index
+        mssL := lastSH
+    else if sweptL and na(proofL) and low < extL
+        extL := low
+        extBarL := bar_index
+        mssL := lastSH
+    if sweptL and maxSweep > 0 and aL - extL > maxSweep * rng
+        doneL := true
+    if sweptL and na(proofL) and not doneL and beforeProof
+        okIn = not needInside or close > aL
+        okMss = not needMss or (not na(mssL) and close > mssL)
+        okDisp = dispMult <= 0 or math.abs(close - open) >= dispMult * avgC
+        if okIn and okMss and okDisp and close > open
+            proofL := bar_index
+    if sweptL and not na(proofL) and not doneL and strategy.opentrades == 0
+        // the first bullish gap of the leg up from the sweep wick (the displacement's gap), within fvgWait candles after the proof
+        if bar_index - proofL <= fvgWait
+            float gTop = na
+            float gBot = na
+            back = math.min(bar_index - extBarL, 50)
+            if back >= 2
+                for i = back - 2 to 0
+                    if na(gTop) and low[i] - high[i + 2] >= math.max(minGap, 1) * tick and (maxGapR <= 0 or low[i] - high[i + 2] <= maxGapR * rng)
+                        gTop := low[i]
+                        gBot := high[i + 2]
+            if not na(gTop)
+                px = entryAt == "Near edge" ? gTop : entryAt == "Middle" ? (gTop + gBot) / 2 : gBot
+                stp = extL - bufTicks * tick
+                tp1 = aH
+                tp2 = aH + tp2Mult * rng
+                risk = px - stp
+                if risk > 0 and tp1 > px and (minRR <= 0 or (tp1 - px) >= minRR * risk)
+                    strategy.entry("L", strategy.long, limit = px)
+                    if tp1Pct > 0 and tp1Pct < 100
+                        strategy.exit("L TP1", "L", qty_percent = tp1Pct, limit = tp1, stop = stp, comment_profit = "TP1 Asian high", comment_loss = "Stop")
+                        strategy.exit("L TP2", "L", limit = tp2, stop = stp, comment_profit = "TP2", comment_loss = "Stop")
+                    else
+                        strategy.exit("L TP2", "L", limit = tp1Pct >= 100 ? tp1 : tp2, stop = stp, comment_profit = "Target", comment_loss = "Stop")
+                    doneL := true
+                else
+                    doneL := true
+        else
+            doneL := true
+
+// ---- short side: the Asian high swept, back inside, MSS down, then the bearish gap
+if canTrade and not doneS and side != "Long" and (bias == -1 or bias == 2)
+    if not sweptS and sweepWin and high > aH + minSweep * tick
+        sweptS := true
+        extS := high
+        extBarS := bar_index
+        mssS := lastSL
+    else if sweptS and na(proofS) and high > extS
+        extS := high
+        extBarS := bar_index
+        mssS := lastSL
+    if sweptS and maxSweep > 0 and extS - aH > maxSweep * rng
+        doneS := true
+    if sweptS and na(proofS) and not doneS and beforeProof
+        okIn = not needInside or close < aH
+        okMss = not needMss or (not na(mssS) and close < mssS)
+        okDisp = dispMult <= 0 or math.abs(close - open) >= dispMult * avgC
+        if okIn and okMss and okDisp and close < open
+            proofS := bar_index
+    if sweptS and not na(proofS) and not doneS and strategy.opentrades == 0
+        if bar_index - proofS <= fvgWait
+            float gTop = na
+            float gBot = na
+            back = math.min(bar_index - extBarS, 50)
+            if back >= 2
+                for i = back - 2 to 0
+                    if na(gTop) and low[i + 2] - high[i] >= math.max(minGap, 1) * tick and (maxGapR <= 0 or low[i + 2] - high[i] <= maxGapR * rng)
+                        gTop := low[i + 2]
+                        gBot := high[i]
+            if not na(gTop)
+                px = entryAt == "Near edge" ? gBot : entryAt == "Middle" ? (gTop + gBot) / 2 : gTop
+                stp = extS + bufTicks * tick
+                tp1 = aL
+                tp2 = aL - tp2Mult * rng
+                risk = stp - px
+                if risk > 0 and tp1 < px and (minRR <= 0 or (px - tp1) >= minRR * risk)
+                    strategy.entry("S", strategy.short, limit = px)
+                    if tp1Pct > 0 and tp1Pct < 100
+                        strategy.exit("S TP1", "S", qty_percent = tp1Pct, limit = tp1, stop = stp, comment_profit = "TP1 Asian low", comment_loss = "Stop")
+                        strategy.exit("S TP2", "S", limit = tp2, stop = stp, comment_profit = "TP2", comment_loss = "Stop")
+                    else
+                        strategy.exit("S TP2", "S", limit = tp1Pct >= 100 ? tp1 : tp2, stop = stp, comment_profit = "Target", comment_loss = "Stop")
+                    doneS := true
+                else
+                    doneS := true
+        else
+            doneS := true
+
+// ---- the working order: cancel it at cancelAt, or when price reaches TP1 or the stop before it fills
+var float wStop = na
+if strategy.position_size == 0
+    if hm >= cancelAt and hm < rStart
+        strategy.cancel("L")
+        strategy.cancel("S")
+    if not na(aH) and (high >= aH)
+        strategy.cancel("L")
+    if not na(aL) and (low <= aL)
+        strategy.cancel("S")
+    if sweptL and low < extL - bufTicks * tick
+        strategy.cancel("L")
+    if sweptS and high > extS + bufTicks * tick
+        strategy.cancel("S")
+
+// ---- in the trade: count it, break-even after TP1, flat at exitAt
+var float entryPx = na
+var float fullQty = na
+if strategy.position_size != 0 and nz(fullQty) == 0
+    trades += 1
+    entryPx := strategy.position_avg_price
+    fullQty := math.abs(strategy.position_size)
+if strategy.position_size == 0
+    fullQty := na
+if beAfter and strategy.position_size != 0 and math.abs(strategy.position_size) < nz(fullQty)
+    if strategy.position_size > 0
+        strategy.exit("L TP2", "L", limit = aH + tp2Mult * rng, stop = entryPx, comment_profit = "TP2", comment_loss = "Break-even")
+    else
+        strategy.exit("S TP2", "S", limit = aL - tp2Mult * rng, stop = entryPx, comment_profit = "TP2", comment_loss = "Break-even")
+endHM = hour(time_close) * 100 + minute(time_close)
+if strategy.position_size != 0 and ((endHM >= exitAt and hm < rStart) or (hm < exitAt and endHM > exitAt))
+    strategy.close_all(comment = "Time", immediately = true)
+
+plotshape(sweptL and sweptL != sweptL[1], "Sweep low", shape.triangleup, location.belowbar, #f23645, size = size.tiny, text = "sweep")
+plotshape(sweptS and sweptS != sweptS[1], "Sweep high", shape.triangledown, location.abovebar, #f23645, size = size.tiny, text = "sweep")
+plotshape(not na(proofL) and proofL == bar_index, "MSS up", shape.labelup, location.belowbar, #E7C35A, size = size.tiny, text = "MSS")
+plotshape(not na(proofS) and proofS == bar_index, "MSS down", shape.labeldown, location.abovebar, #E7C35A, size = size.tiny, text = "MSS")
+plot(biasMode == "Hourly 20 EMA" ? e60 : biasMode == "4-hour 20 EMA" ? e240 : na, "Bias EMA", #E07AE0, 1)
+`, { aliases: 'crt candle range theory asia asian range london sweep liquidity mss displacement fvg midnight open strategy' }),
+S('ifvg2', 'FVG inversion EMA bias #2 (NQ)', 'Strategies', 'The journal Research strategy “FVG inversion EMA bias #2” as Pine: hourly 20 EMA bias + Asian session direction, a fair value gap against the bias inverted within 12 candles, stop at the pullback extreme, target the previous liquidity (at least 2R), 3 a session until 10:30, flat 15:55. Run it on NQ 5m.', `
+// FVG inversion with the EMA bias (#2) — NQ 5-minute, overnight + NYSE session.
+// Same rules as the journal's Research strategy "FVG inversion EMA bias #2":
+//   bias = hourly 20 EMA (price on its side, EMA sloping that way), confirmed by the Asian session's direction;
+//   a fair value gap against the bias (the pullback), then a close through it within 12 candles: enter at that close;
+//   stop at the pullback extreme, target the previous liquidity (at least 2R), skip under 1R;
+//   at most 3 a session, entries until 10:30 (overnight from 18:00 included), flat at 15:55;
+//   trigger candle range at most 2.5x the average candle range (last 50), body at least 40% of its range.
+strategy("FVG inversion EMA bias #2", "iFVG bias #2", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 1,
+     process_orders_on_close = true, commission_type = strategy.commission.cash_per_contract, commission_value = 2.25, slippage = 1)
+
+biasMode  = input.string("Hourly 20 EMA only", "Bias", options = ["Hourly 20 EMA only", "15 / 30 / 60-minute 20 EMAs"])
+asiaMode  = input.string("It closed in the bias direction", "Asian session (18:00-02:00) check", options = ["It closed in the bias direction", "Price on the bias side of its middle", "None"])
+minGap    = input.int(2, "Gap at least (ticks)", minval = 0)
+fvgMax    = input.int(12, "Inversion within (candles)", minval = 1)
+stopMode  = input.string("Pullback extreme", "Stop", options = ["Pullback extreme", "Far end of the gap"])
+bufTicks  = input.int(0, "Stop buffer (ticks)", minval = 0)
+tgtMode   = input.string("Previous liquidity, at least 2R", "Target", options = ["Previous liquidity, at least 2R", "Previous liquidity", "Fixed R"])
+tgtR      = input.float(1.5, "Fixed target (R)", step = 0.25)
+minRR     = input.float(1.0, "Skip when the target is under (R, 0 = off)", step = 0.25)
+pivLen    = input.int(2, "Liquidity: swing length (candles each side)", minval = 1)
+liqLook   = input.int(150, "Liquidity: look back (candles)", minval = 10)
+lastEntry = input.int(1030, "Last entry (HHMM, New York)")
+maxDay    = input.int(3, "At most per session", minval = 1)
+allHours  = input.bool(true, "Overnight entries too (from 18:00)")
+gapFrom   = input.int(800, "Gaps from (HHMM) when overnight entries are off")
+side      = input.string("Both", "Side", options = ["Both", "Long", "Short"])
+trigBody  = input.bool(false, "Measure the trigger candle by its body (off = range, wicks included)")
+trigMin   = input.float(0, "Trigger candle at least (x average range, 0 = off)", step = 0.1)
+trigMax   = input.float(2.5, "Trigger candle at most (x average range, 0 = off)", step = 0.1)
+avgN      = input.int(50, "Average range over (candles)", minval = 3)
+trigN     = input.int(0, "Compare with the previous N candles (0 = off)", minval = 0)
+trigPrevMult = input.float(1.0, "Trigger at least (x the largest of those N)", step = 0.1)
+trigPrevMax  = input.float(0, "Trigger at most (x the largest of those N, 0 = off)", step = 0.1)
+trigEngulf   = input.bool(true, "Trigger closes past those N candles' high / low")
+bodyPct   = input.int(40, "Trigger body at least (% of its range, 0 = off)", minval = 0, maxval = 100)
+showEma   = input.bool(true, "Show the 20 EMAs")
+
+tick = syminfo.mintick
+hm = hour * 100 + minute
+tfMin = timeframe.multiplier
+
+// ---- the 20 EMA of the forming 15 / 30 / 60-minute candle (its live value at this candle's close), and its slope
+emaTrack(n) =>
+    var float done = na
+    var float last = na
+    var float key = na
+    k = math.floor(time / (n * 60000))
+    if na(key) or k != key
+        if not na(last)
+            done := na(done) ? last : 2.0 / 21 * last + (1 - 2.0 / 21) * done
+        key := k
+    last := close
+    now = na(done) ? close : 2.0 / 21 * close + (1 - 2.0 / 21) * done
+    [now, not na(done) and now > done, not na(done) and now < done]
+
+[e15, up15, dn15] = emaTrack(15)
+[e30, up30, dn30] = emaTrack(30)
+[e60, up60, dn60] = emaTrack(60)
+h1only = biasMode == "Hourly 20 EMA only"
+biasL = close > e60 and up60 and (h1only or (close > e15 and up15 and close > e30 and up30))
+biasS = close < e60 and dn60 and (h1only or (close < e15 and dn15 and close < e30 and dn30))
+bias = biasL ? 1 : biasS ? -1 : 0
+
+// ---- the previous liquidity: the nearest untaken swing high (d > 0) above e / swing low under e
+liquidity(d, e) =>
+    float best = na
+    float runHi = na
+    float runLo = na
+    for off = 1 to liqLook
+        if off > pivLen and bar_index >= off + pivLen
+            lv = d > 0 ? high[off] : low[off]
+            isPiv = true
+            for j = off - pivLen to off + pivLen
+                if d > 0 and high[j] > lv
+                    isPiv := false
+                if d < 0 and low[j] < lv
+                    isPiv := false
+            untaken = d > 0 ? (na(runHi) or runHi <= lv) : (na(runLo) or runLo >= lv)
+            if isPiv and untaken and (d > 0 ? lv > e : lv < e)
+                best := na(best) ? lv : d > 0 ? math.min(best, lv) : math.max(best, lv)
+        runHi := na(runHi) ? high[off] : math.max(runHi, high[off])
+        runLo := na(runLo) ? low[off] : math.min(runLo, low[off])
+    best
+
+// ---- the session (18:00 the evening before to 17:00): its candles, trades and Asian session (18:00-02:00)
+newSes = hm >= 1800 and (bar_index == 0 or hm[1] < 1800)
+var int sesBars = 0
+var int sesTrades = 0
+var bool sesDone = false
+var float aO = na
+var float aC = na
+var float aH = na
+var float aL = na
+var gD = array.new_int()
+var gTop = array.new_float()
+var gBot = array.new_float()
+var gK = array.new_int()
+if newSes
+    sesBars := 0
+    sesTrades := 0
+    sesDone := false
+    aO := na
+    aC := na
+    aH := na
+    aL := na
+    array.clear(gD)
+    array.clear(gTop)
+    array.clear(gBot)
+    array.clear(gK)
+sesBars += 1
+if hm >= 1800 or hm < 200
+    aO := na(aO) ? open : aO
+    aC := close
+    aH := na(aH) ? high : math.max(aH, high)
+    aL := na(aL) ? low : math.min(aL, low)
+
+today = hm < 1800
+endMin = hour * 60 + minute + tfMin
+endHM = math.floor(endMin / 60) * 100 + endMin % 60
+if today and endHM > lastEntry
+    sesDone := true
+if sesTrades >= maxDay
+    sesDone := true
+
+var float prevPos = 0
+inTrade = strategy.position_size != 0 or prevPos != 0      // one at a time; the exit candle is skipped too
+var float tStop = na
+var float tTgt = na
+
+if not sesDone and not inTrade and sesBars >= 3
+    // a gap forms (candle 1 and 3 don't overlap)
+    if allHours or (today and hm >= gapFrom)
+        if low[2] - high >= minGap * tick
+            array.push(gD, 1)
+            array.push(gTop, low[2])
+            array.push(gBot, high)
+            array.push(gK, bar_index)
+        if low - high[2] >= minGap * tick
+            array.push(gD, -1)
+            array.push(gTop, low)
+            array.push(gBot, high[2])
+            array.push(gK, bar_index)
+    // gaps older than fvgMax candles are gone
+    if array.size(gK) > 0
+        for i = array.size(gK) - 1 to 0
+            if bar_index - array.get(gK, i) > fvgMax
+                array.remove(gD, i)
+                array.remove(gTop, i)
+                array.remove(gBot, i)
+                array.remove(gK, i)
+    // the first gap closed through (inverted) on this candle
+    hit = -1
+    if array.size(gK) > 0
+        for i = 0 to array.size(gK) - 1
+            if hit < 0 and array.get(gK, i) != bar_index
+                dd = array.get(gD, i)
+                if (dd > 0 and close > array.get(gTop, i)) or (dd < 0 and close < array.get(gBot, i))
+                    hit := i
+    if hit >= 0
+        d = array.get(gD, hit)
+        top = array.get(gTop, hit)
+        bot = array.get(gBot, hit)
+        gk = array.get(gK, hit)
+        array.remove(gD, hit)
+        array.remove(gTop, hit)
+        array.remove(gBot, hit)
+        array.remove(gK, hit)
+        ok = true
+        if not allHours and not (today and hm >= 930)
+            ok := false
+        if allHours and hm >= 1600 and hm < 1800
+            ok := false
+        if (side == "Long" and d < 0) or (side == "Short" and d > 0)
+            ok := false
+        if bias != d
+            ok := false
+        ad = na(aO) ? 0 : aC > aO ? 1 : aC < aO ? -1 : 0
+        am = na(aH) ? 0 : close > (aH + aL) / 2 ? 1 : -1
+        if asiaMode == "It closed in the bias direction" and ad != d
+            ok := false
+        if asiaMode == "Price on the bias side of its middle" and am != d
+            ok := false
+        // the trigger candle against the session's average candle range (the candles before it)
+        n = math.min(avgN, sesBars - 1)
+        float sumR = 0
+        if n > 0
+            for j = 1 to n
+                sumR += high[j] - low[j]
+        avg = n > 0 ? sumR / n : 0
+        body = math.abs(close - open)
+        rng = high - low
+        size = avg > 0 ? (trigBody ? body : rng) / avg : 0
+        if trigMin > 0 and size < trigMin
+            ok := false
+        if trigMax > 0 and size > trigMax
+            ok := false
+        if bodyPct > 0 and rng > 0 and body / rng * 100 < bodyPct
+            ok := false
+        // against the previous N candles of the session
+        pn = math.min(trigN, sesBars - 1)
+        if trigN > 0 and pn > 0
+            float bigN = 0
+            float hiN = high[1]
+            float loN = low[1]
+            for j = 1 to pn
+                bigN := math.max(bigN, trigBody ? math.abs(close[j] - open[j]) : high[j] - low[j])
+                hiN := math.max(hiN, high[j])
+                loN := math.min(loN, low[j])
+            me = trigBody ? body : rng
+            if me < trigPrevMult * bigN
+                ok := false
+            if trigPrevMax > 0 and me > trigPrevMax * bigN
+                ok := false
+            if trigEngulf and not (d > 0 ? close > hiN : close < loN)
+                ok := false
+        e = close
+        buf = bufTicks * tick
+        float stop = na
+        if stopMode == "Far end of the gap"
+            stop := d > 0 ? bot - buf : top + buf
+        else
+            back = bar_index - (gk - 2)
+            float ext = d > 0 ? low : high
+            for j = 0 to back
+                ext := d > 0 ? math.min(ext, low[j]) : math.max(ext, high[j])
+            stop := d > 0 ? ext - buf : ext + buf
+        risk = (e - stop) * d
+        if risk <= 0
+            ok := false
+        float tgt = na
+        if ok
+            two = e + d * 2 * risk
+            if tgtMode == "Fixed R"
+                tgt := e + d * tgtR * risk
+            else
+                lq = liquidity(d, e)
+                if tgtMode == "Previous liquidity"
+                    tgt := lq
+                else
+                    tgt := not na(lq) and (lq - two) * d > 0 ? lq : two
+            if na(tgt) or (tgt - e) * d <= 0 or (minRR > 0 and math.abs(tgt - e) < minRR * risk)
+                ok := false
+        if ok
+            sesTrades += 1
+            tStop := stop
+            tTgt := tgt
+            strategy.entry(d > 0 ? "Long" : "Short", d > 0 ? strategy.long : strategy.short)
+            strategy.exit("x", d > 0 ? "Long" : "Short", stop = stop, limit = tgt, comment_loss = "Stop", comment_profit = "Target")
+
+prevPos := strategy.position_size
+
+// flat at 15:55 (the close of the 15:55 candle)
+if strategy.position_size != 0 and hm == 1555
+    strategy.close_all(comment = "15:55")
+
+plot(showEma ? e60 : na, "EMA 20 (60m)", #E07AE0, 2)
+plot(showEma and not h1only ? e30 : na, "EMA 20 (30m)", #E7C35A, 1)
+plot(showEma and not h1only ? e15 : na, "EMA 20 (15m)", #5FD4C4, 1)
+plot(strategy.position_size != 0 ? tStop : na, "Stop", #f23645, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? tTgt : na, "Target", #089981, 1, plot.style_linebr)
+bgcolor(bias > 0 ? color.new(#089981, 94) : bias < 0 ? color.new(#f23645, 94) : na, title = "Bias")
+`, { aliases: 'ifvg inverse fair value gap inversion ema bias nq futures research strategy' }),
 S('onmidnq', 'Overnight Mid → ONH/ONL (range from NQ)', 'Strategies', 'The overnight-midpoint strategy with the overnight range taken from NQ futures (they trade all night, QQQ / SPY do not): the open in the top half of the NQ overnight range buys toward the overnight high, the bottom half sells toward the low. On a QQQ / SPY chart the NQ levels are scaled to the ETF by the price ratio at 09:30. Modes: take profit at the target, or hold to the end of the day. Freeze it in Research to paper trade it.', `
 strategy("Overnight Mid → ONH/ONL (NQ range)", "ON mid NQ", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 100)
 rangeFrom = input.string("NQ", "Overnight range from", options = ["NQ", "ES", "Chart"])
