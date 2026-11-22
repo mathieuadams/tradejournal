@@ -3,7 +3,7 @@
 import { W } from './ctx.js';
 import { h, esc, api, toast, money, pct } from './util.js';
 import { nyParts, fmtPrice } from './chart.js';
-import { compile, securityRequests } from './pine.js';
+import { compile, securityRequests, metrics } from './pine.js';
 import { freezeDialog } from './frozen.js';
 import { editorState } from './editor.js';
 import { focusChat } from './chat.js';
@@ -137,13 +137,67 @@ function renderStudy() {
     ${row('Long', m => `${m.long.n} · <span class="${cls(m.long.net)}">${money(m.long.net, 0)}</span>`)}${row('Short', m => `${m.short.n} · <span class="${cls(m.short.net)}">${money(m.short.net, 0)}</span>`)}</table>
     <canvas id="rsEq" width="900" height="200" style="width:100%;height:150px;margin:10px 0;border-radius:8px;background:var(--bg2)"></canvas>
     ${breakdown(S.trades)}
+    <div id="rsCal"></div>
     <div class="row" style="margin:8px 0;flex-wrap:wrap"><button class="btn sm" data-a="apply" title="Put these inputs on the chart">Send to the chart</button><button class="btn sm primary" data-a="freeze" title="Lock this script and these inputs and paper trade it from now on">❄ Freeze → paper</button></div>
     ${optForm(S.inputs)}
     <div class="tree-sec">Trades (${S.trades.length}) · click to see it on the chart</div>
     <div class="rs-trades"><table class="tbl"><tr><th>Entry</th><th>Side</th><th>Qty</th><th>In</th><th>Out</th><th>P&L</th><th>Exit</th></tr>
     ${S.trades.slice(-300).reverse().map(t => { const k = S.trades.indexOf(t); return `<tr data-trade="${k}" style="cursor:pointer"><td class="t">${fmtDT(t.entryTime)}</td><td class="${t.dir > 0 ? 'up' : 'dn'}">${t.dir > 0 ? 'Long' : 'Short'}</td><td>${t.qty}</td><td>${fmtPrice(t.entryPx)}</td><td>${fmtPrice(t.exitPx)}</td><td class="${cls(t.pnl)}">${money(t.pnl)}</td><td class="t dim">${esc(t.why || '')}</td></tr>`; }).join('')}</table></div>`;
   drawEquity(el.querySelector('#rsEq'), S);
+  renderCal();
 }
+// ------------------------------------------------------------------------------------------------ day / hour filter calendar
+// Each cell: the trades entered that weekday and hour (NY), train net over test net. Click a cell, a day or an hour to
+// leave it out; the table under it shows train and test with and without them. A filter only holds up if what it removes
+// also loses in the test part, which was not used to choose it.
+const CAL = { off: new Set() };
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+function renderCal() {
+  const el = root && root.querySelector('#rsCal'); if (!el || !R.study) return;
+  const S = R.study, T = S.trades, cut = S.cut;
+  const key = t => { const p = nyParts(t.entryTime); return `${p.wd}|${p.h}`; };
+  const hrs = [...new Set(T.map(t => nyParts(t.entryTime).h))].sort((a, b) => ((a + 6) % 24) - ((b + 6) % 24));      // the session order: 18:00 first
+  const days = DAYS.filter(d => T.some(t => nyParts(t.entryTime).wd === d));
+  const cell = {};
+  for (const t of T) { const k = key(t), c = cell[k] || (cell[k] = { tr: 0, te: 0, ntr: 0, nte: 0 }); if (t.entryTime < cut) { c.tr += t.pnl; c.ntr++; } else { c.te += t.pnl; c.nte++; } }
+  const maxAbs = Math.max(1, ...Object.values(cell).flatMap(c => [Math.abs(c.tr), Math.abs(c.te)]));
+  const shade = v => { const a = Math.min(0.85, 0.12 + Math.abs(v) / maxAbs * 0.73); return v > 0 ? `rgba(8,153,129,${a})` : v < 0 ? `rgba(242,54,69,${a})` : 'transparent'; };
+  const k0 = v => Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + 'k' : Math.round(v);
+  const sum = (f) => { const x = { tr: 0, te: 0 }; for (const [k, c] of Object.entries(cell)) if (f(k)) { x.tr += c.tr; x.te += c.te; } return x; };
+  const isOff = k => CAL.off.has(k) || CAL.off.has(k.split('|')[0] + '|*') || CAL.off.has('*|' + k.split('|')[1]);
+  const keep = T.filter(t => !isOff(key(t))), drop = T.filter(t => isOff(key(t)));
+  const m = (xs, a, b) => metrics(xs.filter(t => t.entryTime >= a && t.entryTime < b));
+  const cols = [['Train', -Infinity, cut], ['Test', cut, Infinity]];
+  const base = cols.map(([, a, b]) => m(T, a, b)), kept = cols.map(([, a, b]) => m(keep, a, b)), rem = cols.map(([, a, b]) => m(drop, a, b));
+  const pfx = x => Number.isFinite(x.pf) ? x.pf.toFixed(2) : x.n ? '∞' : '—';
+  const line = (name, ms, cls2 = '') => `<tr class="${cls2}"><td class="t">${name}</td>${ms.map(x => `<td>${x.n}</td><td class="${cls(x.net)}">${money(x.net, 0)}</td><td>${pfx(x)}</td><td>${x.n ? money(x.avg, 0) : '—'}</td>`).join('')}</tr>`;
+  let verdict = '';
+  if (drop.length) {
+    const [rTr, rTe] = rem, [kTr, kTe] = kept, [bTr, bTe] = base;
+    const held = rTe.net < 0, better = kTe.n && kTe.avg > bTe.avg;
+    const t = (() => { const xs = drop.filter(x => x.entryTime >= cut).map(x => x.pnl); if (xs.length < 3) return NaN; const mu = xs.reduce((a, b) => a + b, 0) / xs.length, sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / (xs.length - 1)); return sd ? mu / (sd / Math.sqrt(xs.length)) : NaN; })();
+    verdict = `<div class="cal-verdict ${held && better ? 'ok' : 'bad'}"><b>${held && better ? 'The filter holds up in the test part' : 'The filter does not hold up in the test part'}</b>:
+      the removed trades made ${money(rTr.net, 0)} in train and ${money(rTe.net, 0)} in test (${rTe.n} trades${Number.isFinite(t) ? `, t = ${t.toFixed(2)}` : ''}).
+      Avg trade in test ${money(bTe.avg, 0)} → ${money(kTe.avg, 0)}. ${Number.isFinite(t) && Math.abs(t) < 2 ? 'With |t| under 2 the removed trades are not clearly worse than zero: likely noise.' : ''}
+      Choose the cells on the train numbers (top of each cell) and judge by the test ones.</div>`;
+  }
+  el.innerHTML = `<div class="tree-sec">Day / hour filter · click a cell, a day or an hour to leave it out · top: train, bottom: test</div>
+    <div class="cal-wrap"><table class="cal"><tr><th class="cal-c" data-cal="reset" title="Clear the filter">↺</th>${hrs.map(hh => `<th data-cal="*|${hh}" class="${CAL.off.has('*|' + hh) ? 'off' : ''}">${hh}</th>`).join('')}<th>Day</th></tr>
+    ${days.map(d => `<tr><th data-cal="${d}|*" class="${CAL.off.has(d + '|*') ? 'off' : ''}">${d}</th>${hrs.map(hh => { const k = `${d}|${hh}`, c = cell[k]; if (!c) return '<td class="nil"></td>';
+        return `<td data-cal="${k}" class="${isOff(k) ? 'off' : ''}" title="${d} ${hh}:00 — train ${c.ntr} trades ${money(c.tr, 0)} · test ${c.nte} trades ${money(c.te, 0)}"><span style="background:${shade(c.tr)}">${k0(c.tr)}</span><span style="background:${shade(c.te)}">${k0(c.te)}</span></td>`; }).join('')}
+      ${(() => { const x = sum(k => k.startsWith(d + '|')); return `<td class="tot"><span class="${cls(x.tr)}">${k0(x.tr)}</span><span class="${cls(x.te)}">${k0(x.te)}</span></td>`; })()}</tr>`).join('')}
+    <tr><th>Hour</th>${hrs.map(hh => { const x = sum(k => k.endsWith('|' + hh)); return `<td class="tot"><span class="${cls(x.tr)}">${k0(x.tr)}</span><span class="${cls(x.te)}">${k0(x.te)}</span></td>`; }).join('')}<td></td></tr></table></div>
+    <table class="tbl rs-res cal-res"><tr><th class="t"></th><th colspan="4" class="grp">Train ${R.split}%</th><th colspan="4" class="grp tst">Test ${100 - R.split}%</th></tr>
+      <tr><th class="t"></th><th>N</th><th>Net</th><th>PF</th><th>Avg</th><th class="tst">N</th><th class="tst">Net</th><th class="tst">PF</th><th class="tst">Avg</th></tr>
+      ${line('All trades', base)}${drop.length ? line('Kept (filtered)', kept, 'hl') + line('Removed', rem) : ''}</table>
+    ${verdict}`;
+  el.querySelector('.cal').onclick = e => {
+    const c = e.target.closest('[data-cal]'); if (!c) return; const k = c.dataset.cal;
+    if (k === 'reset') CAL.off.clear(); else if (CAL.off.has(k)) CAL.off.delete(k); else CAL.off.add(k);
+    renderCal();
+  };
+}
+
 const fmtDT = t => { const p = nyParts(t); return `${p.mon} ${p.d} '${String(p.y).slice(2)} ${String(p.h).padStart(2, '0')}:${String(p.mi).padStart(2, '0')}`; };
 function breakdown(T) {
   const by = (f, keys) => keys.map(k => { const x = T.filter(t => f(t) === k), net = x.reduce((a, t) => a + t.pnl, 0); return x.length ? `<tr><td class="t">${k}</td><td>${x.length}</td><td>${(x.filter(t => t.pnl > 0).length / x.length * 100).toFixed(0)}%</td><td class="${cls(net)}">${money(net, 0)}</td></tr>` : ''; }).join('');

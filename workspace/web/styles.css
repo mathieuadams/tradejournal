@@ -421,3 +421,17 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .rs-or tbody tr:hover td { background: var(--hover); }
 .rs-or td.act { display: flex; gap: 4px; justify-content: flex-end; }
 .rs-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--dim); margin: 6px 2px; } .rs-legend b { color: var(--text); font-weight: 600; margin-right: 4px; }
+
+/* day / hour filter calendar */
+.cal-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
+.cal { border-collapse: collapse; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.cal th { padding: 4px 5px; color: var(--dim); font-weight: 500; cursor: pointer; user-select: none; white-space: nowrap; }
+.cal th:hover { color: var(--text); } .cal th.off { color: #f23645; text-decoration: line-through; }
+.cal td { padding: 1px; cursor: pointer; min-width: 38px; }
+.cal td span { display: block; text-align: center; padding: 1px 2px; border-radius: 3px; margin: 1px 0; color: var(--text); }
+.cal td.off { opacity: .22; } .cal td.off span { background: transparent !important; text-decoration: line-through; }
+.cal td.nil { cursor: default; } .cal td.tot { cursor: default; font-weight: 600; } .cal td.tot span { padding: 0 2px; }
+.cal td:not(.nil):not(.tot):hover { outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 4px; }
+.cal-res .grp { text-align: center; } .cal-res tr.hl td { background: rgba(41, 98, 255, .08); font-weight: 600; } .cal-res .tst { background: rgba(41, 98, 255, .05); }
+.cal-verdict { margin: 8px 0 12px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.45; }
+.cal-verdict.ok { background: rgba(8, 153, 129, .12); border: 1px solid rgba(8, 153, 129, .4); } .cal-verdict.bad { background: rgba(242, 54, 69, .1); border: 1px solid rgba(242, 54, 69, .35); }
