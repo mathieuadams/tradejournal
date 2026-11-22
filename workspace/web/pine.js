@@ -1,5 +1,6 @@
 // futures: point value ($ per point per contract) and tick
-const FUT = { NQ: { pv: 20, tick: 0.25 }, ES: { pv: 50, tick: 0.25 }, MNQ: { pv: 2, tick: 0.25 }, MES: { pv: 5, tick: 0.25 } };
+export const FUT_SPEC = { NQ: { pv: 20, tick: 0.25 }, ES: { pv: 50, tick: 0.25 }, MNQ: { pv: 2, tick: 0.25 }, MES: { pv: 5, tick: 0.25 } };
+const FUT = FUT_SPEC;
 // Pine Script (v5 / v6 subset) interpreter. No DOM: runs in the browser and in node (tests).
 //   const prog = compile(source)            -> throws PineError {message, line}
 //   const out  = run(prog, bars, opts)      -> {meta, inputs, plots, hlines, fills, shapes, bgcolors, barcolors, lines, labels, boxes, logs}
@@ -637,6 +638,14 @@ class Strat {
     const p = nyParts(t), d = ['', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][p.wd];
     return this._skip.has(d + '|*') || this._skip.has('*|' + p.h) || this._skip.has(d + '|' + p.h);
   }
+  // market condition of the bar's day, from the days before it: regime = { vol: 'all'|'low'|'mid'|'high', trend: 'any'|'up'|'down' }
+  regimeOk(i) {
+    const g = this.regime, wantV = g.vol && g.vol !== 'all', wantT = g.trend && g.trend !== 'any'; if (!wantV && !wantT) return true;
+    const R = dayRegimes(this.B, (this.c.pv || 1) > 1), v = R.vol[i], tr = R.trend[i];
+    if (wantV && v !== { low: 1, mid: 2, high: 3 }[g.vol]) return false;
+    if (wantT && tr !== (g.trend === 'up' ? 1 : -1)) return false;
+    return true;
+  }
   size() { return this.lots.reduce((s, l) => s + l.qty * l.dir, 0); }
   avg() { const q = this.lots.reduce((s, l) => s + l.qty, 0); return q ? this.lots.reduce((s, l) => s + l.qty * l.px, 0) / q : NaN; }
   openPnl(px) { return this.lots.reduce((s, l) => s + (px - l.px) * l.qty * l.dir, 0) * (this.c.pv || 1); }
@@ -710,6 +719,7 @@ class Strat {
     this.orders = this.orders.filter(y => y !== x);
     if (x.kind === 'entry' || x.kind === 'order') {
       if (x.kind === 'entry' && this.skip && this.skip.length && this.skipAt(t)) return;      // day / hour filter (Research)
+      if (x.kind === 'entry' && this.regime && !this.regimeOk(i)) return;                     // market condition filter (Research)
       if (this.dirAllowed !== 'all' && this.dirAllowed !== (x.dir > 0 ? 'long' : 'short') && x.kind === 'entry') { if (this.size() * x.dir < 0) this.closeLots(this.lots.slice(), px, i, 'Direction filter'); return; }
       const sz = this.size();
       if (x.kind === 'entry' && sz * x.dir < 0) this.closeLots(this.lots.slice(), px, i, x.comment || x.id);   // reverse
@@ -738,6 +748,27 @@ class Strat {
       if (l.qty <= 1e-12) this.lots.splice(this.lots.indexOf(l), 1);
     }
   }
+}
+// per bar: the volatility band (1 low / 2 mid / 3 high: the previous day's range against the 100 days before it, by
+// thirds; 0 = not enough history) and the trend (1 / -1: the previous day's close above / below the 20-day average of
+// closes). Days are New York calendar days, futures sessions roll at 18:00. Cached per bar series.
+const REGIME_CACHE = new Map();
+export function dayRegimes(B, fut) {
+  const n = B.t.length, ck = `${B.t[0]}|${B.t[n - 1]}|${n}|${fut}`;
+  if (REGIME_CACHE.has(ck)) return REGIME_CACHE.get(ck);
+  const offs = new Map(), dayOf = t => { const blk = Math.floor(t / 21600); let o = offs.get(blk); if (o === undefined) { const p = nyParts(t); o = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) / 1000 - t; offs.set(blk, o); } return Math.floor((t + o + (fut ? 6 * 3600 : 0)) / 86400); };
+  const dk = new Int32Array(n), hi = [], lo = [], cl = []; let cur = null, j = -1;
+  for (let i = 0; i < n; i++) { const d = dayOf(B.t[i]); if (d !== cur) { cur = d; j++; hi.push(B.h[i]); lo.push(B.l[i]); cl.push(B.c[i]); } else { if (B.h[i] > hi[j]) hi[j] = B.h[i]; if (B.l[i] < lo[j]) lo[j] = B.l[i]; cl[j] = B.c[i]; } dk[i] = j; }
+  const D = hi.length, vb = new Int8Array(D), td = new Int8Array(D);
+  for (let k = 1; k < D; k++) {
+    const r = hi[k - 1] - lo[k - 1], from = Math.max(0, k - 101);
+    if (k - 1 - from >= 20) { let le = 0; for (let m = from; m < k - 1; m++) if (hi[m] - lo[m] <= r) le++; const pct = le / (k - 1 - from) * 100; vb[k] = pct < 100 / 3 ? 1 : pct < 200 / 3 ? 2 : 3; }
+    if (k >= 20) { let sm = 0; for (let m = k - 20; m < k; m++) sm += cl[m]; td[k] = cl[k - 1] > sm / 20 ? 1 : -1; }
+  }
+  const out = { vol: new Int8Array(n), trend: new Int8Array(n) };
+  for (let i = 0; i < n; i++) { out.vol[i] = vb[dk[i]]; out.trend[i] = td[dk[i]]; }
+  if (REGIME_CACHE.size > 8) REGIME_CACHE.clear();
+  REGIME_CACHE.set(ck, out); return out;
 }
 const dirOf = d => d === 'long' || d === 1 || d === true ? 1 : -1;
 def('strategy.entry', 'id,direction,qty,limit,stop,oca_name,oca_type,comment,alert_message,disable_alert', (c, a) => { if (c.strat) c.strat.place({ kind: 'entry', id: a[0], dir: dirOf(a[1]), qty: a[2], limit: num(a[3] ?? NaN), stop: num(a[4] ?? NaN), comment: a[7] }); return NaN; });
@@ -770,10 +801,13 @@ export function metrics(trades, opts = {}) {
   let eq = 0, peak = 0, dd = 0; for (const x of pnl) { eq += x; peak = Math.max(peak, eq); dd = Math.max(dd, peak - eq); }
   const days = new Map(); for (const t of trades) { const d = Math.floor((t.exitTime - 5 * 3600) / 86400); days.set(d, (days.get(d) || 0) + t.pnl); }
   const dv = [...days.values()], dm = dv.length ? dv.reduce((a, b) => a + b, 0) / dv.length : 0, dsd = dv.length > 1 ? Math.sqrt(dv.reduce((a, b) => a + (b - dm) ** 2, 0) / (dv.length - 1)) : 0;
+  const months = new Map(); for (const t of trades) { const k = Math.floor((t.exitTime - 5 * 3600) / 86400 / 30.44); months.set(k, (months.get(k) || 0) + t.pnl); }
+  const bestMonth = months.size ? Math.max(...months.values()) : 0;
   const longs = trades.filter(t => t.dir > 0), shorts = trades.filter(t => t.dir < 0);
   const sum = a => a.reduce((x, t) => x + t.pnl, 0);
   return { n, wins: wins.length, winRate: n ? wins.length / n * 100 : 0, net, gp, gl, pf: gl ? gp / gl : (gp ? Infinity : 0), avg: n ? net / n : 0,
     avgWin: wins.length ? gp / wins.length : 0, avgLoss: losses.length ? -gl / losses.length : 0, maxDD: dd, sharpe: dsd ? dm / dsd * Math.sqrt(252) : 0, days: dv.length,
+    tDay: dsd ? dm / dsd * Math.sqrt(dv.length) : 0, monthShare: net > 0 ? bestMonth / net * 100 : 100,
     long: { n: longs.length, net: sum(longs), winRate: longs.length ? longs.filter(t => t.pnl > 0).length / longs.length * 100 : 0 },
     short: { n: shorts.length, net: sum(shorts), winRate: shorts.length ? shorts.filter(t => t.pnl > 0).length / shorts.length * 100 : 0 },
     avgBars: n ? trades.reduce((a, t) => a + (t.exitBar - t.entryBar), 0) / n : 0, capital: opts.capital };

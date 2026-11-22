@@ -25,4 +25,11 @@ assert.equal(st.open[0].qty, 50);
   const wd = t => new Date(t * 1000).getUTCDay();
   assert.ok(all.trades.some(t => wd(t.entryTime) === 3) && !f.trades.some(t => wd(t.entryTime) === 3) && f.trades.length < all.trades.length, 'weekday filter');
 }
+// market condition filter: high-volatility days only -> fewer trades, all on days after a wide day
+{
+  const bars = []; for (let d = 0; d < 80; d++) { const w = d % 3 === 0 ? 10 : 1; bars.push({ t: Date.UTC(2026, 0, 1 + d, 15) / 1000, o: 100, h: 100 + w, l: 100 - w, c: 100, v: 1 }); }
+  const c = compile('//@version=6\nstrategy("r")\nstrategy.entry("L", strategy.long)\nstrategy.close("L")');
+  const a = run(c, bars, { symbol: 'X', tf: '1D' }).strategy, h = run(c, bars, { symbol: 'X', tf: '1D', strategy: { regime: { vol: 'high', trend: 'any' } } }).strategy;
+  assert.ok(h.trades.length > 0 && h.trades.length < a.trades.length / 2, `regime filter ${h.trades.length} / ${a.trades.length}`);
+}
 console.log('strategy tests passed; metrics sample', JSON.stringify(st.metrics).slice(0, 80));

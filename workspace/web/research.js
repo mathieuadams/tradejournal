@@ -3,20 +3,20 @@
 import { W } from './ctx.js';
 import { h, esc, api, toast, money, pct } from './util.js';
 import { nyParts, fmtPrice } from './chart.js';
-import { compile, securityRequests, metrics } from './pine.js';
+import { compile, securityRequests, metrics, dayRegimes, FUT_SPEC } from './pine.js';
 import { freezeDialog } from './frozen.js';
 import { editorState } from './editor.js';
 import { focusChat } from './chat.js';
 
-const R = { name: '', src: '', indicatorId: null, symbol: '', tf: '', days: 500, com: 0.005, slip: 1, split: 60, objective: 'net', minTrades: 20,
+const R = { name: '', src: '', indicatorId: null, symbol: '', tf: '', days: 500, com: 0.005, slip: 1, split: 60, objective: 'tday', minTrades: 60, maxMonth: 35, regime: { vol: 'all', trend: 'any' }, tryRegime: false, forever: true,
   sel: {}, study: null, opt: null, running: false, cancel: false, progress: '', cache: new Map(), frozen: null, freezeAt: null, skip: [], budget: 3000, tryDays: false };
 let root = null, pool = [];
 
-const OBJ = { net: ['Net profit', m => m.net], pf: ['Profit factor', m => (Number.isFinite(m.pf) ? m.pf : 99)], sharpe: ['Sharpe', m => m.sharpe], netdd: ['Net ÷ max drawdown', m => m.maxDD ? m.net / m.maxDD : m.net], avg: ['Avg trade', m => m.avg] };
+const OBJ = { tday: ['t of the daily P&L (Research tab)', m => m.tDay], net: ['Net profit', m => m.net], pf: ['Profit factor', m => (Number.isFinite(m.pf) ? m.pf : 99)], sharpe: ['Sharpe', m => m.sharpe], netdd: ['Net ÷ max drawdown', m => m.maxDD ? m.net / m.maxDD : m.net], avg: ['Avg trade', m => m.avg] };
 
 export function openResearch(o = {}) {
   const tab = W.tab();
-  if (o.indicatorId) { const ind = tab.indicators.find(i => i.id === o.indicatorId); const sc = W.scriptFor(ind); Object.assign(R, { src: sc.src, name: sc.name, indicatorId: ind.id, skip: [...(ind.skip || [])] }); CAL.off = new Set(R.skip); }
+  if (o.indicatorId) { const ind = tab.indicators.find(i => i.id === o.indicatorId); const sc = W.scriptFor(ind); Object.assign(R, { src: sc.src, name: sc.name, indicatorId: ind.id, skip: [...(ind.skip || [])], regime: { vol: 'all', trend: 'any', ...(ind.regime || {}) } }); CAL.off = new Set(R.skip); }
   else if (o.src) Object.assign(R, { src: o.src, name: o.name || 'Script', indicatorId: o.indicatorId || null });
   else if (!R.src) pickDefault();
   R.symbol = o.symbol || tab.symbol; R.tf = o.tf || tab.tf; if (o.days) R.days = o.days;
@@ -102,7 +102,7 @@ async function prime(ws, data) {
 function job(w, msg) { return new Promise(res => { const f = e => { if (e.data.type === 'result' && e.data.id === msg.id) { w.removeEventListener('message', f); res(e.data); } }; w.addEventListener('message', f); w.postMessage({ type: 'run', ...msg }); }); }
 function baseMsg(data) {
   const bars = data.bars, cut = bars[Math.floor(bars.length * R.split / 100)].t;
-  return { src: R.src, symbol: R.symbol, tf: R.tf, tfSec: null, splitTime: cut, strategy: { comType: 'cash_per_contract', comVal: R.com, slip: R.slip, skip: R.skip.length ? R.skip : undefined } };
+  return { src: R.src, symbol: R.symbol, tf: R.tf, tfSec: null, splitTime: cut, strategy: { comType: 'cash_per_contract', comVal: R.com, slip: R.slip, skip: R.skip.length ? R.skip : undefined, regime: regimeOn(R.regime) ? R.regime : undefined } };
 }
 
 // ------------------------------------------------------------------------------------------------ study
@@ -205,6 +205,8 @@ function renderCal() {
   };
 }
 
+const regimeOn = g => g && ((g.vol && g.vol !== 'all') || (g.trend && g.trend !== 'any'));
+export function regimeText(g) { return regimeOn(g) ? [g.vol !== 'all' ? `${g.vol} volatility` : '', g.trend !== 'any' ? `${g.trend}trend` : ''].filter(Boolean).join(', ') : 'all conditions'; }
 export function skipText(skip) {
   const days = skip.filter(k => k.endsWith('|*')).map(k => k.split('|')[0]), hrs = skip.filter(k => k.startsWith('*|')).map(k => k.split('|')[1] + ':00'), cells = skip.filter(k => !k.includes('*')).map(k => k.replace('|', ' ') + ':00');
   return [days.length ? 'on ' + days.join(', ') : '', hrs.length ? 'at ' + hrs.join(', ') : '', cells.length ? 'on ' + cells.join(', ') : ''].filter(Boolean).join('; ');
@@ -241,12 +243,15 @@ function optForm(inputs) {
     return `<tr class="${on ? 'on' : ''}" data-row="${i.idx}"><td class="nm"><label><input type="checkbox" data-sel="${i.idx}" ${on ? 'checked' : ''}><span>${esc(i.title)}</span></label></td><td class="now">${esc(String(i.value))}</td><td><input class="rs-in" type="number" data-f="${i.idx}" value="${s.from}" ${d}></td><td><input class="rs-in" type="number" data-t="${i.idx}" value="${s.to}" ${d}></td><td><input class="rs-in" type="number" data-s="${i.idx}" value="${s.step}" ${d}></td></tr>`; };
   const rowO = i => `<tr class="${R.sel[i.idx] ? 'on' : ''}" data-row="${i.idx}"><td class="nm"><label><input type="checkbox" data-sel="${i.idx}" ${R.sel[i.idx] ? 'checked' : ''}><span>${esc(i.title)}</span></label></td><td class="now">${esc(String(i.value))}</td><td colspan="3" class="dim">tries ${i.type === 'bool' ? 'on and off' : `all ${i.options.length} options`}</td></tr>`;
   setTimeout(wireOpt);
-  return `<div class="tree-sec">Optimize on the train part, check on the test part</div>
+  return `<div class="tree-sec">Optimizer · like the journal's Research tab</div>
+    <p class="note" style="margin-top:0">Each setting is a full backtest of this strategy, net of costs, starting from the current inputs. Settings are chosen on the <b>train</b> days only, ranked by the t of the daily P&L, with at least ${R.minTrades} trades and no month over ${R.maxMonth}% of the profit. The <b>test</b> days are never used to choose. With no box ticked it searches every input; tick inputs to search only those, in your ranges.</p>
     <table class="rs-opt"><colgroup><col class="c-nm"><col class="c-now"><col><col><col></colgroup><tr><th>Input</th><th>Now</th><th>From</th><th>To</th><th>Step</th></tr>${num.map(rowN).join('')}${other.map(rowO).join('')}</table>
     <div class="row" style="margin:8px 0"><label class="field"><span>Rank by (train)</span><select id="rsObj">${Object.entries(OBJ).map(([k, [n]]) => `<option value="${k}" ${R.objective === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <label class="field"><span>Min trades (train)</span><input id="rsMin" type="number" value="${R.minTrades}"></label>
       <label class="field"><span>Max runs</span><input id="rsBudget" type="number" min="10" max="50000" step="500" value="${R.budget}" title="Up to this many: every combination; more combinations: a random search, then around the best ones"></label>
-      <label class="field" style="flex:none;align-self:flex-end;margin-bottom:12px;flex-direction:row;align-items:center;gap:6px;display:flex"><input type="checkbox" id="rsDays" ${R.tryDays ? 'checked' : ''}><span style="margin:0">Also try leaving out each weekday</span></label>
+      <label class="field"><span>No month over (% of profit)</span><input id="rsMonth" type="number" min="10" max="100" step="5" value="${R.maxMonth}"></label></div>
+    <div class="row rs-checks"><label><input type="checkbox" id="rsDays" ${R.tryDays ? 'checked' : ''}> Also try leaving out each weekday</label>
+      <label><input type="checkbox" id="rsForever" ${R.forever ? 'checked' : ''}> Keep searching until Stop</label>
       <button class="btn primary" data-a="optimize" style="align-self:flex-end;margin-bottom:10px" ${R.running ? 'disabled' : ''}>Optimize <span id="rsCombos" class="dim"></span></button></div>`;
 }
 function defRange(i) {
@@ -270,6 +275,9 @@ function wireOpt() {
   const o = root.querySelector('#rsObj'); if (o) o.onchange = () => { R.objective = o.value; if (R.opt) { sortOpt(); renderOpt(); } };
   const bu = root.querySelector('#rsBudget'); if (bu) bu.onchange = () => { R.budget = Math.max(10, Math.min(50000, Math.round(+bu.value || 3000))); combos(); };
   const dy = root.querySelector('#rsDays'); if (dy) dy.onchange = () => { R.tryDays = dy.checked; combos(); };
+  const rg = root.querySelector('#rsRegime'); if (rg) rg.onchange = () => { R.tryRegime = rg.checked; combos(); };
+  const fv = root.querySelector('#rsForever'); if (fv) fv.onchange = () => { R.forever = fv.checked; combos(); };
+  const mo = root.querySelector('#rsMonth'); if (mo) mo.onchange = () => { R.maxMonth = Math.max(10, Math.min(100, +mo.value || 35)); if (R.opt) { sortOpt(); renderOpt(); } };
   const mn = root.querySelector('#rsMin'); if (mn) mn.onchange = () => { R.minTrades = Math.max(0, +mn.value || 0); if (R.opt) { sortOpt(); renderOpt(); } };
   combos();
 }
@@ -277,88 +285,110 @@ function readRow(k) { const g = s => root.querySelector(`[data-${s}="${k}"]`); i
 // the search space: one axis per ticked input (+ the weekday axis); combinations are numbered (mixed radix), never all built
 function axesOf() {
   const ins = R.study.inputs, axes = [];
-  for (const [k, s] of Object.entries(R.sel)) {
+  const sel = Object.keys(R.sel).length ? R.sel : Object.fromEntries(ins.filter(i => !(i.type === 'bool' && /^(show|draw|plot|display)/i.test(i.title)) && i.type !== 'string' || i.options)
+    .filter(i => ['int', 'float', 'price', 'bool'].includes(i.type) || i.options).map(i => [i.idx, defRange(i)]));
+  for (const [k, s] of Object.entries(sel)) {
     const i = ins.find(x => String(x.idx) === String(k)); if (!i) continue;
     if (i.type === 'bool') axes.push([k, [true, false]]);
     else if (i.options) axes.push([k, i.options]);
     else { const vals = []; for (let v = s.from; v <= s.to + 1e-9 && vals.length < 500; v += s.step) vals.push(i.type === 'int' ? Math.round(v) : +v.toPrecision(10)); axes.push([k, [...new Set(vals)]]); }
   }
   if (R.tryDays) axes.push(['__skip', ['all days', 'no Sun', 'no Mon', 'no Tue', 'no Wed', 'no Thu', 'no Fri']]);
+  if (R.tryRegime) { axes.push(['__vol', ['all', 'low', 'mid', 'high']]); axes.push(['__trend', ['any', 'up', 'down']]); }
   return axes;
 }
 const total = axes => axes.length ? axes.reduce((n, [, v]) => n * v.length, 1) : 0;
 function decode(axes, idx) { const o = {}; for (let a = axes.length - 1; a >= 0; a--) { const [k, v] = axes[a]; o[k] = v[idx % v.length]; idx = Math.floor(idx / v.length); } return o; }
 function digits(axes, idx) { const d = new Array(axes.length); for (let a = axes.length - 1; a >= 0; a--) { const L = axes[a][1].length; d[a] = idx % L; idx = Math.floor(idx / L); } return d; }
 function encode(axes, d) { let i = 0; for (let a = 0; a < axes.length; a++) i = i * axes[a][1].length + d[a]; return i; }
+const regimeFor = c => ({ vol: c.__vol || R.regime.vol, trend: c.__trend || R.regime.trend });
 const skipFor = c => c.__skip && c.__skip !== 'all days' ? [...new Set([...R.skip, c.__skip.slice(3) + '|*'])] : R.skip;
 function combos() {
   const el = root && root.querySelector('#rsCombos'); if (!el) return; const n = total(axesOf());
-  el.textContent = !n ? '' : n <= R.budget ? `(${n.toLocaleString()} runs, all)` : `(${n.toLocaleString()} combinations: searches ${R.budget.toLocaleString()})`;
+  if (!Object.keys(R.sel).length && n) { el.textContent = `(all inputs: ${R.forever ? 'searches until stopped' : 'searches ' + R.budget.toLocaleString()})`; return; }
+  el.textContent = !n ? '' : n <= R.budget && !R.forever ? `(${n.toLocaleString()} runs, all)` : `(${n.toLocaleString()} combinations: ${R.forever ? 'searches until stopped' : 'searches ' + R.budget.toLocaleString()})`;
 }
 async function runOptimize() {
-  const axes = axesOf(), N = total(axes); if (!N) { toast('Tick at least one input to optimize'); return; }
-  const budget = Math.min(N, Math.max(10, R.budget)), full = N <= budget;
+  const axes = axesOf(), N = total(axes); if (!N) { toast('This strategy has no inputs to optimize'); return; }
+  const full = N <= R.budget && !R.forever, budget = full ? N : R.forever ? Infinity : Math.max(10, R.budget);
   const base = R.study.inputs.reduce((o, i) => (o[i.idx] = i.value, o), {});
+  // a setting = one index per axis ("digits"); the current inputs are the start point
+  const startD = axes.map(([k, v]) => { const cur = k.startsWith('__') ? v[0] : base[k]; const j = v.findIndex(x => x === cur); return j >= 0 ? j : Math.floor(v.length / 2); });
   R.running = true; R.cancel = false; R.opt = { rows: [], total: budget, done: 0, space: N, mode: full ? 'grid' : 'search' }; mountResearch(root);
   try {
     const data = await loadBars(), n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1)), ws = workers(n); await prime(ws, data);
     const msg = baseMsg(data), t0 = Date.now(), seen = new Set(), queue = [], f = OBJ[R.objective][1];
-    // full grid: every combination. Otherwise: a random 60% of the budget, then the neighbours (one step on one input)
-    // of the best ones on train, repeatedly, until the budget is spent.
-    if (full) for (let i = 0; i < N; i++) queue.push(i);
-    else { const first = Math.ceil(budget * 0.6); let guard = 0; while (queue.length < first && guard++ < first * 20) { const i = Math.floor(Math.random() * N); if (!seen.has(i)) { seen.add(i); queue.push(i); } } }
-    for (const i of queue) seen.add(i);
+    const push = d => { const k = d.join(','); if (seen.has(k)) return false; seen.add(k); queue.push(d); return true; };
+    const rand = () => axes.map(([, v]) => Math.floor(Math.random() * v.length));
+    // every combination when they fit; otherwise the current setting, its neighbours, random settings, then (repeatedly)
+    // the neighbours of the best ones on train - the same search as the journal's Research tab
+    if (full) { for (let i = 0; i < N; i++) push(digits(axes, i)); }
+    else { push(startD); for (let a = 0; a < axes.length; a++) for (const s of [-1, 1]) { const e = startD.slice(); e[a] += s; if (e[a] >= 0 && e[a] < axes[a][1].length) push(e); } for (let g = 0; g < 400 && queue.length < 120; g++) push(rand()); }
     const refill = () => {
       if (full || R.opt.done + queue.length >= budget) return;
-      const ok = R.opt.rows.filter(r => r.train.n >= R.minTrades).sort((a, b) => f(b.train) - f(a.train)).slice(0, 10);
-      for (const r of ok) {
-        const d = digits(axes, r.idx);
-        for (let a = 0; a < axes.length; a++) for (const s of [-1, 1, -2, 2]) {
-          const e = d.slice(); e[a] += s; if (e[a] < 0 || e[a] >= axes[a][1].length) continue;
-          const i = encode(axes, e); if (!seen.has(i)) { seen.add(i); queue.push(i); if (R.opt.done + queue.length >= budget) return; }
-        }
+      const ok = R.opt.rows.filter(r => passes(r.train)).sort((a, b) => f(b.train) - f(a.train)).slice(0, 10);
+      const top = ok.length ? ok : R.opt.rows.slice().sort((a, b) => f(b.train) - f(a.train)).slice(0, 5);
+      for (const r of top) for (let a = 0; a < axes.length; a++) for (const s of [-1, 1, -2, 2]) {
+        const e = r.d.slice(); e[a] += s; if (e[a] < 0 || e[a] >= axes[a][1].length) continue;
+        push(e); if (R.opt.done + queue.length >= budget) return;
       }
-      if (!queue.length) { let guard = 0; while (queue.length < 20 && guard++ < 2000) { const i = Math.floor(Math.random() * N); if (!seen.has(i)) { seen.add(i); queue.push(i); } } }
+      for (let g = 0; g < 200 && queue.length < 30; g++) push(rand());                      // keep exploring
+      if (!queue.length && seen.size >= N) R.cancel = true;                                  // every combination tried
     };
+    const decodeD = d => Object.fromEntries(axes.map(([k, v], a) => [k, v[d[a]]]));
     let started = 0;
     await Promise.all(ws.map(async (w, wi) => {
       while (!R.cancel && started < budget) {
         if (!queue.length) refill();
         if (!queue.length) { if (started > R.opt.done) { await new Promise(r => setTimeout(r, 30)); continue; } break; }
-        const idx = queue.shift(); started++;
-        const changed = decode(axes, idx), values = { ...base, ...changed }; delete values.__skip;
-        const skip = skipFor(changed);
-        const r = await job(w, { ...msg, id: `o${wi}_${idx}`, inputs: values, strategy: { ...msg.strategy, skip: skip.length ? skip : undefined } });
+        const d = queue.shift(); started++;
+        const changed = decodeD(d), values = { ...base, ...changed }; delete values.__skip; delete values.__vol; delete values.__trend;
+        const skip = skipFor(changed), regime = regimeFor(changed);
+        const r = await job(w, { ...msg, id: `o${wi}_${started}`, inputs: values, strategy: { ...msg.strategy, skip: skip.length ? skip : undefined, regime: regimeOn(regime) ? regime : undefined } });
         R.opt.done++;
-        if (!r.error) R.opt.rows.push({ idx, values: { ...values, __skip: skip }, changed, train: r.train, test: r.test, all: r.all });
-        if (R.opt.done % 5 === 0 || R.opt.done === budget) { const el = (Date.now() - t0) / R.opt.done; setProg(`Optimizing ${R.opt.done.toLocaleString()} / ${budget.toLocaleString()}${full ? '' : ` (searching ${N.toLocaleString()} combinations)`} · ~${Math.ceil(el * (budget - R.opt.done) / n / 1000)}s left`); }
+        if (r.error) { R.opt.errors = (R.opt.errors || 0) + 1; R.opt.lastError = r.error; }
+        if (!r.error) R.opt.rows.push({ d, values: { ...values, __skip: skip, __regime: regime }, changed, train: r.train, test: r.test, all: r.all });
+        if (R.opt.done % 5 === 0) {
+          const el = (Date.now() - t0) / R.opt.done;
+          setProg(Number.isFinite(budget) ? `Optimizing ${R.opt.done.toLocaleString()} / ${budget.toLocaleString()}${full ? '' : ' (searching)'} · ~${Math.ceil(el * (budget - R.opt.done) / 1000)}s left`
+            : `${R.opt.done.toLocaleString()} settings tried · ${(el * n / 1000).toFixed(2)}s each · running · searching`);
+        }
+        if (R.opt.done % 25 === 0) { sortOpt(); renderOpt(); }
       }
     }));
-    sortOpt(); setProg(`${R.cancel ? 'Stopped' : 'Done'}: ${R.opt.done.toLocaleString()} runs in ${((Date.now() - t0) / 1000).toFixed(0)}s${full ? '' : ` · searched ${N.toLocaleString()} combinations`}`);
+    sortOpt(); setProg(`${R.cancel ? 'Stopped' : 'Done'}: ${R.opt.done.toLocaleString()} settings tried in ${((Date.now() - t0) / 1000).toFixed(0)}s${R.opt.errors ? ` · ${R.opt.errors} failed (${R.opt.lastError})` : ''}`);
   } catch (e) { setProg('⚠ ' + e.message); }
   finally { R.running = false; mountResearch(root); }
   return R.opt;
 }
-function sortOpt() { const f = OBJ[R.objective][1]; R.opt.rows.sort((a, b) => (b.train.n >= R.minTrades) - (a.train.n >= R.minTrades) || f(b.train) - f(a.train)); }
+const passes = m => m.n >= R.minTrades && m.monthShare <= R.maxMonth;
+function sortOpt() { const f = OBJ[R.objective][1]; R.opt.rows.sort((a, b) => passes(b.train) - passes(a.train) || f(b.train) - f(a.train)); }
 function renderOpt() {
   const el = root && root.querySelector('#rsOpt'); if (!el || !R.opt || !R.opt.rows.length) return;
   const ins = R.study.inputs, keys = Object.keys(R.opt.rows[0].changed), f = OBJ[R.objective];
-  const title = k => k === '__skip' ? 'Weekday' : (ins.find(i => String(i.idx) === String(k)) || {}).title || String(k);
+  const title = k => ({ __skip: 'Weekday', __vol: 'Volatility', __trend: 'Trend' })[k] || (ins.find(i => String(i.idx) === String(k)) || {}).title || String(k);
   const short = k => { const t = title(k).split(/[:(]/)[0].trim(); return t.length > 18 ? t.slice(0, 17) + '…' : t; };
-  const best = Math.max(...R.opt.rows.slice(0, 40).map(r => r.test.net));
-  el.innerHTML = `<div class="tree-sec">Optimization · ${R.opt.rows.length.toLocaleString()} runs${R.opt.mode === 'search' ? ` (search of ${R.opt.space.toLocaleString()} combinations)` : ''} · ranked by ${f[0].toLowerCase()} on train</div>
+  const t2 = v => Number.isFinite(v) ? v.toFixed(2) : '—';
+  // many inputs: one "Settings" column listing what differs from the current inputs (like the Research tab's "show")
+  const wide = keys.length > 4, cur = R.study.inputs.reduce((o, i) => (o[i.idx] = i.value, o), {});
+  const diffs = r => { const ch = keys.filter(k => !k.startsWith('__') ? r.changed[k] !== cur[k] : !['all days', 'all', 'any'].includes(r.changed[k]));
+    return ch.length ? `<details><summary>${ch.length} changed</summary>${ch.map(k => `<div><span class="dim">${esc(title(k))}</span> <b>${esc(String(r.changed[k]))}</b>${k.startsWith('__') ? '' : ` <span class="dim">(was ${esc(String(cur[k]))})</span>`}</div>`).join('')}</details>` : '<span class="dim">current settings</span>'; };
+  el.innerHTML = `<div class="tree-sec">Optimization · ${R.opt.rows.length.toLocaleString()} runs${R.opt.mode === 'search' ? ` (search of ${R.opt.space.toLocaleString()} combinations)` : ''}</div>
+    <p class="note" style="margin-top:0">Each run is a full backtest. Ranked by <b>${esc(f[0])}</b> on the <b>train</b> part only, ${R.minTrades}+ trades, no month over ${R.maxMonth}% of the profit (rows that miss these are greyed, at the bottom). The <b>test</b> part is never used to choose: a row good on both is the one to try.</p>
     <div class="rs-optres"><table class="rs-or">
-      <thead><tr><th rowspan="2" class="c">#</th>${keys.map(k => `<th rowspan="2" class="in" title="${esc(title(k))}">${esc(short(k))}</th>`).join('')}
-        <th colspan="3" class="grp">Train ${R.split}%</th><th colspan="3" class="grp tst">Test ${100 - R.split}%</th><th rowspan="2">Max DD</th><th rowspan="2"></th></tr>
-        <tr><th>Net</th><th>PF</th><th>Trades</th><th class="tst">Net</th><th class="tst">PF</th><th class="tst">Trades</th></tr></thead>
-      <tbody>${R.opt.rows.slice(0, 40).map((r, k) => `<tr class="${r.test.net > 0 && r.train.net > 0 ? 'both' : ''}">
-        <td class="c dim">${k + 1}</td>${keys.map(x => `<td class="in">${esc(String(r.changed[x]))}</td>`).join('')}
-        <td class="${cls(r.train.net)}">${money(r.train.net, 0)}</td><td>${pf(r.train.pf)}</td><td class="${r.train.n < R.minTrades ? 'dn' : ''}">${r.train.n}</td>
-        <td class="tst ${cls(r.test.net)}"><b>${money(r.test.net, 0)}</b>${r.test.net === best && best > 0 ? ' ★' : ''}</td><td class="tst">${pf(r.test.pf)}</td><td class="tst">${r.test.n}</td>
-        <td>${money(r.all.maxDD, 0)}</td>
-        <td class="act"><button class="btn sm" data-apply="${k}" title="Put these inputs on the chart">To chart</button><button class="btn sm" data-freeze="${k}" title="Freeze with these inputs and paper trade it">❄</button></td></tr>`).join('')}</tbody></table></div>
-    ${keys.some(k => short(k) !== title(k)) ? `<div class="rs-legend">${keys.filter(k => short(k) !== title(k)).map(k => `<span><b>${esc(short(k))}</b> ${esc(title(k))}</span>`).join('')}</div>` : ''}
-    <p class="note">Rows profitable on both train and test are highlighted; ★ = best test. Prefer a row whose neighbours (nearby values) are profitable too.</p>`;
+      <thead><tr><th rowspan="2" class="c">#</th><th rowspan="2">Score</th><th colspan="4" class="grp">Train ${R.split}%</th><th colspan="5" class="grp tst">Test ${100 - R.split}%</th><th rowspan="2">Max DD</th>
+        ${wide ? '<th rowspan="2" class="t">Settings</th>' : keys.map(k => `<th rowspan="2" class="in" title="${esc(title(k))}">${esc(short(k))}</th>`).join('')}<th rowspan="2"></th></tr>
+        <tr><th>Trades</th><th>Win</th><th>Avg</th><th>t</th><th class="tst">Trades</th><th class="tst">Win</th><th class="tst">Avg</th><th class="tst">Net</th><th class="tst">t</th></tr></thead>
+      <tbody>${R.opt.rows.slice(0, 60).map((r, k) => { const ok = passes(r.train), good = ok && r.test.net > 0 && r.test.tDay > 1;
+        return `<tr class="${ok ? '' : 'miss'} ${good ? 'both' : ''}">
+        <td class="c dim">${k + 1}</td><td><b>${t2(f[1](r.train))}</b></td>
+        <td class="${r.train.n < R.minTrades ? 'dn' : ''}">${r.train.n}</td><td>${r.train.winRate.toFixed(0)}%</td><td class="${cls(r.train.avg)}">${money(r.train.avg, 0)}</td><td>${t2(r.train.tDay)}</td>
+        <td class="tst">${r.test.n}</td><td class="tst">${r.test.winRate.toFixed(0)}%</td><td class="tst ${cls(r.test.avg)}">${money(r.test.avg, 0)}</td><td class="tst ${cls(r.test.net)}"><b>${money(r.test.net, 0)}</b></td><td class="tst ${r.test.tDay >= 2 ? 'up' : r.test.tDay < 0 ? 'dn' : ''}">${t2(r.test.tDay)}</td>
+        <td class="dn">${money(-r.all.maxDD, 0)}</td>
+        ${wide ? `<td class="t set">${diffs(r)}</td>` : keys.map(x => `<td class="in">${esc(String(r.changed[x]))}</td>`).join('')}
+        <td class="act"><button class="btn sm" data-apply="${k}" title="Put these settings on the chart">To chart</button><button class="btn sm" data-freeze="${k}" title="Freeze with these settings and paper trade it">❄</button></td></tr>`; }).join('')}</tbody></table></div>
+    ${!wide && keys.some(k => short(k) !== title(k)) ? `<div class="rs-legend">${keys.filter(k => short(k) !== title(k)).map(k => `<span><b>${esc(short(k))}</b> ${esc(title(k))}</span>`).join('')}</div>` : ''}
+    <p class="note">t = the t-statistic of the daily P&L (2+ is unlikely to be luck). Green edge: passes on train and the test t is above 1.</p>`;
 }
 const pf = v => Number.isFinite(v) ? v.toFixed(2) : '∞';
 
@@ -369,10 +399,10 @@ async function applyInputs(values) {
   if (W.tab().tf !== R.tf) await W.setTf(R.tf);
   let ind = R.indicatorId && W.tab().indicators.find(i => i.id === R.indicatorId);
   if (!ind || W.scriptFor(ind).src !== R.src) { ind = W.addIndicator({ src: R.src, name: R.name }); R.indicatorId = ind.id; }
-  const skip = values.__skip !== undefined ? values.__skip : R.skip;
-  const ins = { ...values }; delete ins.__skip;
-  W.updateIndicator(ind.id, { inputs: ins, skip: skip && skip.length ? [...skip] : null });
-  toast(`Sent to the chart (${R.symbol} ${R.tf})${skip && skip.length ? ` with the filter: no entries ${skipText(skip)}` : ''}`, 'ok');
+  const skip = values.__skip !== undefined ? values.__skip : R.skip, regime = values.__regime || R.regime;
+  const ins = { ...values }; delete ins.__skip; delete ins.__regime;
+  W.updateIndicator(ind.id, { inputs: ins, skip: skip && skip.length ? [...skip] : null, regime: regimeOn(regime) ? { ...regime } : null });
+  toast(`Sent to the chart (${R.symbol} ${R.tf})${skip && skip.length ? ` · no entries ${skipText(skip)}` : ''}${regimeOn(regime) ? ` · only ${regimeText(regime)}` : ''}`, 'ok');
 }
 
 // for Quant: run a study / optimization and return a compact summary
@@ -408,10 +438,10 @@ function freezeForm(row) {
   if (!R.study) return;
   const st = R.study, ins = st.inputs;
   const v0 = row == null ? ins.reduce((o, i) => (o[i.idx] = i.value, o), {}) : R.opt.rows[row].values;
-  const values = { ...v0 }, skip = values.__skip !== undefined ? values.__skip : R.skip; delete values.__skip;
+  const values = { ...v0 }, skip = values.__skip !== undefined ? values.__skip : R.skip, regime = values.__regime || R.regime; delete values.__skip; delete values.__regime;
   const res = row == null ? st : R.opt.rows[row];
   const d = R.cache.values().next().value || {};
-  freezeDialog({ src: R.src, name: R.name, inputs: values, symbol: R.symbol, tf: R.tf, com: R.com, slip: R.slip, sec: d.sec, skip,
+  freezeDialog({ src: R.src, name: R.name, inputs: values, symbol: R.symbol, tf: R.tf, com: R.com, slip: R.slip, sec: d.sec, skip, regime: regimeOn(regime) ? regime : null,
     labels: Object.fromEntries(ins.map(i => [i.title, values[i.idx]])),
     research: { days: R.days, from: st.from, to: st.to, split: R.split, train: slim(res.train), test: slim(res.test) } });
 }
