@@ -299,7 +299,8 @@ if frozen.node_bin():
     time.sleep(0.2)
     while v["id"] in fz.busy:
         time.sleep(0.2)
-    fz.s["items"][v["id"]]["frozenAt"] = int(time.time()) - 86400 * 2      # as if frozen two days ago
+    qb, _ = wf.bars("QQQ", "5m", 120)                 # frozen 120 candles ago (wall-clock days break on weekends)
+    fz.s["items"][v["id"]]["frozenAt"] = int(qb[0][0])
     fz.run_one(v["id"])
     g = fz.get(v["id"])
     check(not g["error"], f"frozen run: {g['error']}")
