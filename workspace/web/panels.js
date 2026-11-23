@@ -222,7 +222,7 @@ function renderTree(el) {
     <div class="tree-sec">Main chart</div>
     <div class="tree-row"><span class="swatch" style="background:#089981"></span><b>${esc(tab.symbol)}</b><span class="dim">${esc(tab.tf)}</span></div>
     ${W.indOut.map(d => `<div class="tree-row" data-i="${d.id}"><span class="swatch" style="background:${(d.out && d.out.plots[0] && d.out.plots[0].color || '#787b86').slice(0, 7)}"></span><span style="${d.visible ? '' : 'opacity:.5'}">${esc(d.out ? d.out.meta.title : d.title)}</span>${d.out && d.out.error ? '<span class="dn" title="Error">⚠</span>' : ''}
-      <span class="acts"><button data-a="toggle" title="Show / hide">${d.visible ? '◉' : '◌'}</button><button data-a="settings" title="Settings">⚙</button><button data-a="remove" title="Remove">✕</button></span></div>`).join('')}
+      <span class="acts"><button data-a="source" title="Open the script in the editor">{ }</button><button data-a="toggle" title="Show / hide">${d.visible ? '◉' : '◌'}</button><button data-a="settings" title="Settings">⚙</button><button data-a="remove" title="Remove">✕</button></span></div>`).join('')}
     <div class="tree-sec">Drawings · ${esc(tab.symbol)} (${dr.length})</div>
     ${dr.length ? dr.map((d, k) => `<div class="tree-row" data-d="${k}"><span class="swatch" style="background:${d.color || (d.source === 'ai' ? '#f5a623' : '#2962ff')}"></span><span style="${d.hidden ? 'opacity:.5' : ''}">${esc(d.text || d.type)}${d.points[0] && d.type !== 'vline' ? ` <i class="dim mono">${fmtPrice(d.points[0].p, W.chart.prec)}</i>` : ''}</span>${d.source === 'ai' ? '<span class="tag" style="background:rgba(245,166,35,.15);color:#f5a623">AI</span>' : ''}
       <span class="acts"><button data-a="dtoggle">${d.hidden ? '◌' : '◉'}</button><button data-a="dremove">✕</button></span></div>`).join('') : '<div class="note">No drawings. Use the tools on the left of the chart, or ask Quant to mark up the chart.</div>'}
@@ -232,7 +232,7 @@ function renderTree(el) {
   el.querySelector('.ph .x').onclick = () => openSide('tree');
   body.onclick = e => {
     const a = e.target.closest('[data-a]'); if (!a) return; const ir = e.target.closest('[data-i]'), dr2 = e.target.closest('[data-d]');
-    if (ir) { const id = ir.dataset.i, ind = tab.indicators.find(i => i.id === id); if (a.dataset.a === 'toggle') W.updateIndicator(id, { visible: ind.visible === false }); if (a.dataset.a === 'settings') indicatorSettings(id); if (a.dataset.a === 'remove') W.removeIndicator(id); }
+    if (ir) { const id = ir.dataset.i, ind = tab.indicators.find(i => i.id === id); if (a.dataset.a === 'toggle') W.updateIndicator(id, { visible: ind.visible === false }); if (a.dataset.a === 'settings') indicatorSettings(id); if (a.dataset.a === 'remove') W.removeIndicator(id); if (a.dataset.a === 'source') import('./editor.js').then(m => m.openInEditor({ indicatorId: id })); }
     if (dr2) { const d = W.drawings()[+dr2.dataset.d]; W.pushUndo(); if (a.dataset.a === 'dtoggle') { d.hidden = !d.hidden; W.setDrawings(W.drawings()); } if (a.dataset.a === 'dremove') W.setDrawings(W.drawings().filter(x => x !== d)); }
     if (a.dataset.a === 'clearai') { W.pushUndo(); W.setDrawings(W.drawings().filter(x => x.source !== 'ai')); }
     if (a.dataset.a === 'clearall') { W.pushUndo(); W.setDrawings([]); }

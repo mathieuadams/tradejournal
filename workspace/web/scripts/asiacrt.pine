@@ -47,7 +47,8 @@ beAfter  = input.bool(true, "Stop to entry after TP1", group = grpX)
 minRR    = input.float(1.0, "Skip when TP1 is under (R, 0 = off)", step = 0.25, group = grpX)
 exitAt   = input.int(1130, "Flat at (HHMM)", group = grpX)
 maxDay   = input.int(1, "Trades per day", minval = 1, group = grpX)
-showBox  = input.bool(true, "Draw the box, midnight open and 50%")
+showBox  = input.bool(true, "Draw the Asian range, its high / low, the midnight open and 50%")
+rangeOnly = input.bool(false, "Show the range only (no trades)")
 
 tick = syminfo.mintick
 hm = hour * 100 + minute
@@ -108,9 +109,15 @@ var bool doneL = false
 var bool doneS = false
 var float lastSH = na
 var float lastSL = na
-var box bx = na
+var box bx = na                  // the Asian range itself (20:00-00:00 candles)
+var line lnH = na                // after midnight: Asian high, low, midnight open, 50%
+var line lnL = na
 var line lnMo = na
 var line ln50 = na
+var label lbH = na
+var label lbL = na
+var label lbMo = na
+var label lb50 = na
 
 ph = ta.pivothigh(high, swingLen, swingLen)
 pl = ta.pivotlow(low, swingLen, swingLen)
@@ -134,22 +141,36 @@ if rangeStart
     proofS := na
     strategy.cancel("L")
     strategy.cancel("S")
+    if showBox
+        bx := box.new(bar_index, bH, bar_index, bL, border_color = color.new(#5B8DEF, 10), bgcolor = color.new(#5B8DEF, 82), text = "ASIA", text_color = color.new(#5B8DEF, 30), text_size = size.small)
 else if inRange
     bH := math.max(bH, high)
     bL := math.min(bL, low)
+    if showBox and not na(bx)
+        box.set_top(bx, bH)
+        box.set_bottom(bx, bL)
+        box.set_right(bx, bar_index)
 if rangeDone and not na(bH)
     aH := bH
     aL := bL
     mOpen := open
     ready := true
     if showBox
-        bx := box.new(bar_index, aH, bar_index + 1, aL, border_color = color.new(#5B8DEF, 20), bgcolor = color.new(#5B8DEF, 90))
-        lnMo := line.new(bar_index, mOpen, bar_index + 1, mOpen, color = color.new(color.white, 40), style = line.style_dashed)
-        ln50 := line.new(bar_index, (aH + aL) / 2, bar_index + 1, (aH + aL) / 2, color = color.new(#8a8f9c, 30), style = line.style_dotted)
+        lnH := line.new(bar_index, aH, bar_index + 1, aH, color = color.new(#5B8DEF, 0), width = 1)
+        lnL := line.new(bar_index, aL, bar_index + 1, aL, color = color.new(#5B8DEF, 0), width = 1)
+        lnMo := line.new(bar_index, mOpen, bar_index + 1, mOpen, color = color.new(color.white, 30), style = line.style_dashed)
+        ln50 := line.new(bar_index, (aH + aL) / 2, bar_index + 1, (aH + aL) / 2, color = color.new(#8a8f9c, 20), style = line.style_dotted)
+        lbH := label.new(bar_index, aH, "Asian high " + str.tostring(aH, format.mintick), style = label.style_label_down, color = color.new(#5B8DEF, 70), textcolor = color.white, size = size.tiny)
+        lbL := label.new(bar_index, aL, "Asian low " + str.tostring(aL, format.mintick), style = label.style_label_up, color = color.new(#5B8DEF, 70), textcolor = color.white, size = size.tiny)
+        lbMo := label.new(bar_index + 1, mOpen, "Midnight open", style = label.style_label_left, color = color.new(color.white, 85), textcolor = color.white, size = size.tiny)
+        lb50 := label.new(bar_index + 1, (aH + aL) / 2, "50%", style = label.style_label_left, color = color.new(#8a8f9c, 80), textcolor = color.white, size = size.tiny)
 if ready and showBox and not inRange and hm < exitAt
-    box.set_right(bx, bar_index)
+    line.set_x2(lnH, bar_index)
+    line.set_x2(lnL, bar_index)
     line.set_x2(lnMo, bar_index)
     line.set_x2(ln50, bar_index)
+    label.set_x(lbMo, bar_index)
+    label.set_x(lb50, bar_index)
 
 rng = aH - aL
 mid = (aH + aL) / 2
@@ -168,7 +189,7 @@ else if biasMode == "Midnight open vs 50%"
 else
     bias := 2                    // none: both ways
 
-canTrade = ready and trades < maxDay and strategy.position_size == 0 and rng > 0
+canTrade = ready and not rangeOnly and trades < maxDay and strategy.position_size == 0 and rng > 0
 sweepWin = inWin(sStart, sEnd)
 beforeProof = hm < proofBy and not inRange
 

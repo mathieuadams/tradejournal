@@ -606,7 +606,7 @@ const header = strat => (c, a) => {
   if (c.i !== 0) return NaN; const n = a.__named || {}, m = c.out.meta;
   m.title = a[0] ?? n.title ?? 'Script'; m.shorttitle = a[1] ?? n.shorttitle ?? m.title; m.overlay = truthy(a[2] ?? n.overlay ?? false);
   m.format = n.format; m.precision = n.precision; m.scale = n.scale; m.strategy = strat;
-  for (const k of ['line', 'label', 'box']) if (n[`max_${k}s_count`] !== undefined) c.max[k] = Math.min(500, n[`max_${k}s_count`]);
+  for (const [k, nm] of [['line', 'max_lines_count'], ['label', 'max_labels_count'], ['box', 'max_boxes_count']]) if (n[nm] !== undefined) c.max[k] = Math.min(500, n[nm]);
   if (strat) c.strat = new Strat(c, n);
   return NaN;
 };

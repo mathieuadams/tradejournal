@@ -55,7 +55,8 @@ beAfter  = input.bool(true, "Stop to entry after TP1", group = grpX)
 minRR    = input.float(1.0, "Skip when TP1 is under (R, 0 = off)", step = 0.25, group = grpX)
 exitAt   = input.int(1130, "Flat at (HHMM)", group = grpX)
 maxDay   = input.int(1, "Trades per day", minval = 1, group = grpX)
-showBox  = input.bool(true, "Draw the box, midnight open and 50%")
+showBox  = input.bool(true, "Draw the Asian range, its high / low, the midnight open and 50%")
+rangeOnly = input.bool(false, "Show the range only (no trades)")
 
 tick = syminfo.mintick
 hm = hour * 100 + minute
@@ -116,9 +117,15 @@ var bool doneL = false
 var bool doneS = false
 var float lastSH = na
 var float lastSL = na
-var box bx = na
+var box bx = na                  // the Asian range itself (20:00-00:00 candles)
+var line lnH = na                // after midnight: Asian high, low, midnight open, 50%
+var line lnL = na
 var line lnMo = na
 var line ln50 = na
+var label lbH = na
+var label lbL = na
+var label lbMo = na
+var label lb50 = na
 
 ph = ta.pivothigh(high, swingLen, swingLen)
 pl = ta.pivotlow(low, swingLen, swingLen)
@@ -142,22 +149,36 @@ if rangeStart
     proofS := na
     strategy.cancel("L")
     strategy.cancel("S")
+    if showBox
+        bx := box.new(bar_index, bH, bar_index, bL, border_color = color.new(#5B8DEF, 10), bgcolor = color.new(#5B8DEF, 82), text = "ASIA", text_color = color.new(#5B8DEF, 30), text_size = size.small)
 else if inRange
     bH := math.max(bH, high)
     bL := math.min(bL, low)
+    if showBox and not na(bx)
+        box.set_top(bx, bH)
+        box.set_bottom(bx, bL)
+        box.set_right(bx, bar_index)
 if rangeDone and not na(bH)
     aH := bH
     aL := bL
     mOpen := open
     ready := true
     if showBox
-        bx := box.new(bar_index, aH, bar_index + 1, aL, border_color = color.new(#5B8DEF, 20), bgcolor = color.new(#5B8DEF, 90))
-        lnMo := line.new(bar_index, mOpen, bar_index + 1, mOpen, color = color.new(color.white, 40), style = line.style_dashed)
-        ln50 := line.new(bar_index, (aH + aL) / 2, bar_index + 1, (aH + aL) / 2, color = color.new(#8a8f9c, 30), style = line.style_dotted)
+        lnH := line.new(bar_index, aH, bar_index + 1, aH, color = color.new(#5B8DEF, 0), width = 1)
+        lnL := line.new(bar_index, aL, bar_index + 1, aL, color = color.new(#5B8DEF, 0), width = 1)
+        lnMo := line.new(bar_index, mOpen, bar_index + 1, mOpen, color = color.new(color.white, 30), style = line.style_dashed)
+        ln50 := line.new(bar_index, (aH + aL) / 2, bar_index + 1, (aH + aL) / 2, color = color.new(#8a8f9c, 20), style = line.style_dotted)
+        lbH := label.new(bar_index, aH, "Asian high " + str.tostring(aH, format.mintick), style = label.style_label_down, color = color.new(#5B8DEF, 70), textcolor = color.white, size = size.tiny)
+        lbL := label.new(bar_index, aL, "Asian low " + str.tostring(aL, format.mintick), style = label.style_label_up, color = color.new(#5B8DEF, 70), textcolor = color.white, size = size.tiny)
+        lbMo := label.new(bar_index + 1, mOpen, "Midnight open", style = label.style_label_left, color = color.new(color.white, 85), textcolor = color.white, size = size.tiny)
+        lb50 := label.new(bar_index + 1, (aH + aL) / 2, "50%", style = label.style_label_left, color = color.new(#8a8f9c, 80), textcolor = color.white, size = size.tiny)
 if ready and showBox and not inRange and hm < exitAt
-    box.set_right(bx, bar_index)
+    line.set_x2(lnH, bar_index)
+    line.set_x2(lnL, bar_index)
     line.set_x2(lnMo, bar_index)
     line.set_x2(ln50, bar_index)
+    label.set_x(lbMo, bar_index)
+    label.set_x(lb50, bar_index)
 
 rng = aH - aL
 mid = (aH + aL) / 2
@@ -176,7 +197,7 @@ else if biasMode == "Midnight open vs 50%"
 else
     bias := 2                    // none: both ways
 
-canTrade = ready and trades < maxDay and strategy.position_size == 0 and rng > 0
+canTrade = ready and not rangeOnly and trades < maxDay and strategy.position_size == 0 and rng > 0
 sweepWin = inWin(sStart, sEnd)
 beforeProof = hm < proofBy and not inRange
 
@@ -316,10 +337,1062 @@ plotshape(not na(proofL) and proofL == bar_index, "MSS up", shape.labelup, locat
 plotshape(not na(proofS) and proofS == bar_index, "MSS down", shape.labeldown, location.abovebar, #E7C35A, size = size.tiny, text = "MSS")
 plot(biasMode == "Hourly 20 EMA" ? e60 : biasMode == "4-hour 20 EMA" ? e240 : na, "Bias EMA", #E07AE0, 1)
 `, { aliases: 'crt candle range theory asia asian range london sweep liquidity mss displacement fvg midnight open strategy' }),
+S('asiavwap', 'Asian rejection + VWAP (iFVG #2 bias)', 'Strategies', 'Asian range 20:00-00:00 high / low / 50% rejected as support or resistance (both sides), bias from the hourly 20 EMA as iFVG #2 (or VWAP / 15m EMA), entry on the bias side of the VWAP, stop at the range edge or other choices, trailing stop, hold to the close, bias flip reverses. 15-minute chart.', `
+// Asian rejection + VWAP.
+//   Levels: the Asian range high, low and 50% (20:00-00:00), used from both sides:
+//     held as support (rejected from above) -> long setup; held as resistance (rejected from below) -> short setup.
+//   Long: a support rejection first, then bias up and the entry filter (close above the VWAP / 15m EMA).
+//   Short: mirror. Stop, trailing stop, target and the bias are inputs (all can be optimized).
+//   A bias flip closes the trade and takes the other side right away if its conditions are met.
+strategy("Asian rejection + VWAP (iFVG #2 bias)", "Asia rej VWAP", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 1,
+     process_orders_on_close = true, commission_type = strategy.commission.cash_per_contract, commission_value = 2.25, slippage = 1, max_boxes_count = 500, max_labels_count = 500)
+
+grpT = "Times (New York)"
+rStart    = input.int(2000, "Asian range from", group = grpT)
+rEnd      = input.int(0, "to (0 = midnight)", group = grpT)
+lastEntry = input.int(1200, "Last entry", group = grpT)
+flatAt    = input.int(1600, "Flat at (the close of the candle ending then)", group = grpT)
+
+grpB = "Bias"
+biasSrc  = input.string("Hourly 20 EMA (as iFVG #2)", "Bias from", options = ["Hourly 20 EMA (as iFVG #2)", "15 / 30 / 60-minute 20 EMAs (as iFVG #2)", "VWAP", "15m 21 EMA"], group = grpB)
+asiaMode = input.string("It closed in the bias direction", "Asian session (18:00-02:00) check", options = ["It closed in the bias direction", "Price on the bias side of its middle", "None"], group = grpB)
+asiaLift = input.bool(true, "A bias change during the day lifts the Asian check (for the new side)", group = grpB)
+flipExit = input.bool(true, "Bias flip: close the trade (and reverse if the other side is ready)", group = grpB)
+
+grpR = "Rejection"
+levels   = input.string("Asian high, low and 50%", "Levels", options = ["Asian high, low and 50%", "Asian high and low only", "50% only"], group = grpR)
+bothWays = input.bool(true, "Use each level from both sides (a broken level retested from the other side)", group = grpR)
+rejMode  = input.string("Wick: high/low reaches the level, closes back", "Rejection", options = ["Wick: high/low reaches the level, closes back", "Close: closes through, then closes back", "None (bias + entry filter only)"], group = grpR)
+tolTk    = input.int(4, "Wick: within (ticks of the level)", minval = 0, group = grpR)
+
+grpE = "Entry and exits"
+entryRef = input.string("VWAP", "Entry: close on the bias side of", options = ["VWAP", "15m 21 EMA", "VWAP and 15m 21 EMA", "Off"], group = grpE)
+side     = input.string("Both", "Side", options = ["Both", "Long", "Short"], group = grpE)
+maxDay   = input.int(0, "At most per day (0 = no limit)", minval = 0, group = grpE)
+stopMode = input.string("Asian range edge", "Stop", options = ["Asian range edge", "The rejected level", "Rejection wick", "Asian 50%", "Fixed (ticks)"], group = grpE)
+bufTk    = input.int(4, "Stop buffer (ticks)", minval = 0, group = grpE)
+stopTk   = input.int(80, "Fixed stop (ticks)", minval = 1, group = grpE)
+trail    = input.string("Off", "Trailing stop", options = ["Off", "VWAP", "15m 21 EMA", "Previous candle", "Fixed (ticks)"], group = grpE)
+trailTk  = input.int(80, "Trailing: fixed distance (ticks)", minval = 1, group = grpE)
+trailAt  = input.float(0, "Trailing: start after (R in profit, 0 = at once)", step = 0.5, group = grpE)
+tgtR     = input.float(0, "Target (R, 0 = hold to the close)", step = 0.5, group = grpE)
+showLv   = input.bool(true, "Show the Asian box, levels and VWAP")
+showWhy  = input.bool(true, "Show why a rejection did not trade")
+
+tick = syminfo.mintick
+hm = hour * 100 + minute
+
+// ---- EMAs of the forming 15 / 30 / 60-minute candle (their live value at this candle's close) and slope
+emaTrack(n, len) =>
+    var float done = na
+    var float last = na
+    var float key = na
+    a = 2.0 / (len + 1)
+    k = math.floor(time / (n * 60000))
+    if na(key) or k != key
+        if not na(last)
+            done := na(done) ? last : a * last + (1 - a) * done
+        key := k
+    last := close
+    now = na(done) ? close : a * close + (1 - a) * done
+    [now, not na(done) and now > done, not na(done) and now < done]
+[e15, up15, dn15] = emaTrack(15, 20)
+[e30, up30, dn30] = emaTrack(30, 20)
+[e60, up60, dn60] = emaTrack(60, 20)
+[m21, mUp, mDn] = emaTrack(15, 21)
+
+// ---- Asian range (rStart-rEnd): box, then its high / low / 50% until the flat time
+inWin(a, b) => a <= b ? (hm >= a and hm < b) : (hm >= a or hm < b)
+inRange = inWin(rStart, rEnd)
+rangeStart = inRange and not inRange[1]
+rangeDone = not inRange and inRange[1]
+
+// VWAP from the Asian range start
+var float vPV = 0
+var float vV = 0
+if rangeStart
+    vPV := 0
+    vV := 0
+vPV += hlc3 * nz(volume)
+vV += nz(volume)
+vwap = vV > 0 ? vPV / vV : close
+
+// bias
+biasL = switch biasSrc
+    "VWAP" => close > vwap
+    "15m 21 EMA" => close > m21 and mUp
+    "Hourly 20 EMA (as iFVG #2)" => close > e60 and up60
+    => close > e60 and up60 and close > e15 and up15 and close > e30 and up30
+biasS = switch biasSrc
+    "VWAP" => close < vwap
+    "15m 21 EMA" => close < m21 and mDn
+    "Hourly 20 EMA (as iFVG #2)" => close < e60 and dn60
+    => close < e60 and dn60 and close < e15 and dn15 and close < e30 and dn30
+
+// Asian check of iFVG #2 (18:00-02:00)
+newSes = hm >= 1800 and (bar_index == 0 or hm[1] < 1800)
+var float xO = na
+var float xC = na
+var float xH = na
+var float xL = na
+if newSes
+    xO := na
+    xC := na
+    xH := na
+    xL := na
+if hm >= 1800 or hm < 200
+    xO := na(xO) ? open : xO
+    xC := close
+    xH := na(xH) ? high : math.max(xH, high)
+    xL := na(xL) ? low : math.min(xL, low)
+var int dayBias = 0          // the last non-zero bias of the day
+var bool liftL = false       // the bias turned up during the day
+var bool liftS = false       // the bias turned down during the day
+asiaOk(d) =>
+    ad = na(xO) ? 0 : xC > xO ? 1 : xC < xO ? -1 : 0
+    am = na(xH) ? 0 : close > (xH + xL) / 2 ? 1 : -1
+    (asiaLift and (d > 0 ? liftL : liftS)) or asiaMode == "None" or (asiaMode == "It closed in the bias direction" and ad == d) or (asiaMode == "Price on the bias side of its middle" and am == d)
+
+var float bH = na
+var float bL = na
+var float aH = na
+var float aL = na
+var int aStart = na
+var box aBox = na
+var bool live = false
+var int nDay = 0
+var float prevPos = 0
+var float rejL = na          // long setup: wick low of the support rejection
+var float lvlL = na          // ... and the level it held
+var float rejS = na          // short setup: wick high of the resistance rejection
+var float lvlS = na
+var bool cbH = false         // closed below the high / 50% / low (for the close rejection back above)
+var bool cbM = false
+var bool cbL = false
+var bool caH = false         // closed above the high / 50% / low (for the close rejection back below)
+var bool caM = false
+var bool caL = false
+if rangeStart
+    bH := high
+    bL := low
+    aStart := bar_index
+    live := false
+    if showLv
+        aBox := box.new(bar_index, high, bar_index + 1, low, border_color = #5B8DEF, bgcolor = color.new(#5B8DEF, 85))
+else if inRange
+    bH := math.max(bH, high)
+    bL := math.min(bL, low)
+    if showLv and not na(aBox)
+        box.set_top(aBox, bH)
+        box.set_bottom(aBox, bL)
+        box.set_right(aBox, bar_index + 1)
+if rangeDone and not na(bH)
+    aH := bH
+    aL := bL
+    live := true
+    nDay := 0
+    rejL := na
+    rejS := na
+    cbH := false
+    cbM := false
+    cbL := false
+    caH := false
+    caM := false
+    caL := false
+    if showLv and not na(aStart)
+        box.delete(aBox)
+        aBox := box.new(aStart, bH, bar_index, bL, border_color = #5B8DEF, bgcolor = color.new(#5B8DEF, 85))
+dayOn = live and not inRange and hm < flatAt
+bNow = biasL ? 1 : biasS ? -1 : 0
+if rangeDone
+    dayBias := bNow
+    liftL := false
+    liftS := false
+else if dayOn and bNow != 0
+    if dayBias == -1 and bNow == 1
+        liftL := true
+        liftS := false
+    if dayBias == 1 and bNow == -1
+        liftS := true
+        liftL := false
+    dayBias := bNow
+mid = (aH + aL) / 2
+tol = tolTk * tick
+useH = levels != "50% only"
+useL = levels != "50% only"
+useM = levels != "Asian high and low only"
+
+// ---- rejections. Support (long): wick to the level from above and close back above it, or a close under it then a
+// close back above. Resistance (short): mirror. Without "both sides" the low and 50% are only support and the high and
+// 50% only resistance.
+supWick(lv) => low <= lv + tol and close > lv
+resWick(lv) => high >= lv - tol and close < lv
+float supLv = na
+float resLv = na
+if dayOn and rejMode != "None (bias + entry filter only)"
+    wick = rejMode == "Wick: high/low reaches the level, closes back"
+    // support candidates: low, 50%, and (both sides) the high
+    if useL and (wick ? supWick(aL) : cbL and close > aL)
+        supLv := aL
+    if useM and (wick ? supWick(mid) : cbM and close > mid)
+        supLv := na(supLv) ? mid : math.max(supLv, mid)
+    if useH and bothWays and (wick ? supWick(aH) : cbH and close > aH)
+        supLv := na(supLv) ? aH : math.max(supLv, aH)
+    // resistance candidates: high, 50%, and (both sides) the low
+    if useH and (wick ? resWick(aH) : caH and close < aH)
+        resLv := aH
+    if useM and (wick ? resWick(mid) : caM and close < mid)
+        resLv := na(resLv) ? mid : math.min(resLv, mid)
+    if useL and bothWays and (wick ? resWick(aL) : caL and close < aL)
+        resLv := na(resLv) ? aL : math.min(resLv, aL)
+if dayOn
+    // what the close did against each level (for the close rejection)
+    cbH := close < aH ? true : close > aH ? false : cbH
+    cbM := close < mid ? true : close > mid ? false : cbM
+    cbL := close < aL ? true : close > aL ? false : cbL
+    caH := close > aH ? true : close < aH ? false : caH
+    caM := close > mid ? true : close < mid ? false : caM
+    caL := close > aL ? true : close < aL ? false : caL
+lo3 = ta.lowest(low, 3)
+hi3 = ta.highest(high, 3)
+if not na(supLv)
+    lvlL := supLv
+    rejL := rejMode == "Close: closes through, then closes back" ? lo3 : low
+if not na(resLv)
+    lvlS := resLv
+    rejS := rejMode == "Close: closes through, then closes back" ? hi3 : high
+// a rejection is void once price closes beyond its wick
+if not na(rejL) and close < rejL
+    rejL := na
+if not na(rejS) and close > rejS
+    rejS := na
+noRej = rejMode == "None (bias + entry filter only)"
+plotshape(not na(supLv), "Support rejection", shape.triangleup, location.belowbar, #089981, size = size.tiny)
+plotshape(not na(resLv), "Resistance rejection", shape.triangledown, location.abovebar, #f23645, size = size.tiny)
+
+// ---- entry filter
+refL = switch entryRef
+    "VWAP" => close > vwap
+    "15m 21 EMA" => close > m21
+    "VWAP and 15m 21 EMA" => close > vwap and close > m21
+    => true
+refS = switch entryRef
+    "VWAP" => close < vwap
+    "15m 21 EMA" => close < m21
+    "VWAP and 15m 21 EMA" => close < vwap and close < m21
+    => true
+
+// ---- stop for a new trade (d = 1 long, -1 short)
+stopFor(d) =>
+    buf = bufTk * tick
+    switch stopMode
+        "Asian range edge" => d > 0 ? aL - buf : aH + buf
+        "The rejected level" => noRej ? (d > 0 ? aL - buf : aH + buf) : d > 0 ? lvlL - buf : lvlS + buf
+        "Rejection wick" => noRej ? (d > 0 ? low - buf : high + buf) : d > 0 ? rejL - buf : rejS + buf
+        "Asian 50%" => d > 0 ? mid - buf : mid + buf
+        => close - d * stopTk * tick
+
+// ---- entries: a bias flip closes the trade and takes the other side if its conditions are met
+flipToS = flipExit and strategy.position_size > 0 and biasS
+flipToL = flipExit and strategy.position_size < 0 and biasL
+flat = strategy.position_size == 0 and prevPos == 0
+canTrade = dayOn and (maxDay == 0 or nDay < maxDay) and hm < lastEntry
+sL = stopFor(1)
+sS = stopFor(-1)
+condL = canTrade and side != "Short" and (noRej or not na(rejL)) and biasL and asiaOk(1) and refL and sL < close
+condS = canTrade and side != "Long" and (noRej or not na(rejS)) and biasS and asiaOk(-1) and refS and sS > close
+if flipToS
+    strategy.close("Long", comment = "Bias flip")
+if flipToL
+    strategy.close("Short", comment = "Bias flip")
+// why a pending rejection is not trading (one label each time the reason changes)
+whyNot(d) =>
+    string r = ""
+    if not dayOn
+        r := ""
+    else if hm >= lastEntry
+        r := ""
+    else if maxDay > 0 and nDay >= maxDay
+        r := "max trades today"
+    else if (d > 0 and side == "Short") or (d < 0 and side == "Long")
+        r := ""
+    else if strategy.position_size * d > 0
+        r := ""
+    else if d > 0 ? not biasL : not biasS
+        r := ""                                        // the bias bar shows it
+    else if not asiaOk(d)
+        r := "Asian session check"
+    else if d > 0 ? not refL : not refS
+        r := entryRef + " side"
+    else if d > 0 ? sL >= close : sS <= close
+        r := "stop on the wrong side"
+    r
+var string lastWhyL = ""
+var string lastWhyS = ""
+wL = not na(rejL) and not condL ? whyNot(1) : ""
+wS = not na(rejS) and not condS ? whyNot(-1) : ""
+if showWhy and wL != "" and wL != lastWhyL
+    label.new(bar_index, low, "no long: " + wL, style = label.style_label_up, color = color.new(#089981, 75), textcolor = color.white, size = size.tiny)
+if showWhy and wS != "" and wS != lastWhyS
+    label.new(bar_index, high, "no short: " + wS, style = label.style_label_down, color = color.new(#f23645, 75), textcolor = color.white, size = size.tiny)
+lastWhyL := na(rejL) ? "" : wL
+lastWhyS := na(rejS) ? "" : wS
+goL = condL and (flat or flipToL)
+goS = condS and (flat or flipToS)
+var float tStop = na
+var float tEntry = na
+var float tRisk = na
+var float tTgt = na
+if goL or goS
+    d = goL ? 1 : -1
+    nDay += 1
+    tStop := goL ? sL : sS
+    tEntry := close
+    tRisk := math.abs(close - tStop)
+    tTgt := tgtR > 0 ? close + d * tgtR * tRisk : na
+    if goL
+        rejL := na                                     // the next trade needs a new rejection
+    else
+        rejS := na
+    strategy.entry(goL ? "Long" : "Short", goL ? strategy.long : strategy.short)
+else if strategy.position_size != 0 and trail != "Off"
+    // trailing stop: only tightens, from the next candle on
+    d = strategy.position_size > 0 ? 1 : -1
+    if trailAt <= 0 or (close - tEntry) * d >= trailAt * tRisk
+        buf = bufTk * tick
+        lvl = switch trail
+            "VWAP" => vwap - d * buf
+            "15m 21 EMA" => m21 - d * buf
+            "Previous candle" => d > 0 ? low[1] - buf : high[1] + buf
+            => close - d * trailTk * tick
+        if (lvl - tStop) * d > 0 and (close - lvl) * d > 0
+            tStop := lvl
+if strategy.position_size > 0 or goL
+    strategy.exit("xL", "Long", stop = tStop, limit = tTgt, comment_loss = "Stop", comment_profit = "Target")
+if strategy.position_size < 0 or goS
+    strategy.exit("xS", "Short", stop = tStop, limit = tTgt, comment_loss = "Stop", comment_profit = "Target")
+
+endHM = hour(time_close) * 100 + minute(time_close)
+if strategy.position_size != 0 and endHM >= flatAt and endHM < 1800
+    strategy.close_all(comment = "End of day")
+if hm >= 1600 and hm < 1800
+    live := false
+
+plot(showLv and dayOn ? aH : na, "Asian high", #5B8DEF, 1, plot.style_linebr)
+plot(showLv and dayOn ? aL : na, "Asian low", #5B8DEF, 1, plot.style_linebr)
+plot(showLv and dayOn ? mid : na, "Asian 50%", color.new(#8a8f9c, 20), 1, plot.style_linebr)
+plot(showLv ? vwap : na, "VWAP (from 20:00)", color.new(#F5F5F5, 0), 2)
+plot(strategy.position_size != 0 ? tStop : na, "Stop", #f23645, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? tTgt : na, "Target", #089981, 1, plot.style_linebr)
+plotshape(true, "Bias", shape.square, location.bottom, biasL ? #089981 : biasS ? #f23645 : color.new(#8a8f9c, 50), size = size.tiny)
+prevPos := strategy.position_size
+`, { aliases: 'asia asian rejection vwap range nq es futures strategy' }),
+S('asiafail', 'Asian range fake breakout (daily 21 EMA bias)', 'Strategies', 'Fake breakout of the Asian range: rip beyond its high / low, first close back inside, daily 21 EMA bias, targets the 50%, far side and a range projection. 15-minute chart.', `
+// Asian range failed breakout — NQ / ES 15-minute (5-minute works too), New York time.
+//  1. Asian range 20:00-00:00 (high, low, 50%).
+//  2. From London (02:00) one side is taken first (sweep), then price rips through the OTHER side (the breakout).
+//  3. Trigger: the FIRST candle that closes back inside the range after the breakout (the breakout failed).
+//     Bias: the daily 21 EMA. Above it (bullish): only fake breakdowns below the Asian low -> long.
+//     Below it (bearish): only fake breakouts above the Asian high -> short.
+//  4. Entry at that close (or a limit back at the broken level). Stop beyond the rip's extreme.
+//     TP1 the 50% (part), TP2 the far side of the range (the first sweep's side), or hold the rest to the close.
+//  Mirror: high taken first, dump through the low, close back above the low -> long.
+strategy("Asian range fake breakout (daily 21 EMA bias)", "Asia fake BO", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 3,
+     process_orders_on_close = true, commission_type = strategy.commission.cash_per_contract, commission_value = 2.25, slippage = 1, max_boxes_count = 500, max_lines_count = 500)
+
+grpT = "Sessions (HHMM, New York)"
+rStart   = input.int(2000, "Asian range from", group = grpT)
+rEnd     = input.int(0, "to (0 = midnight)", group = grpT)
+seqFrom  = input.int(200, "Sweeps count from (London)", group = grpT)
+trigBy   = input.int(1530, "Trigger by", group = grpT)
+flatAt   = input.int(1600, "Flat at (the close of the candle ending then)", group = grpT)
+grpS = "Setup"
+needSweep = input.bool(false, "The other side must be taken first (sweep, then rip)", group = grpS)
+sweepLon = input.bool(false, "The first sweep must be in London (02:00-05:00)", group = grpS)
+minExtTk = input.int(4, "Rip: at least (ticks beyond the range)", minval = 0, group = grpS)
+maxExt   = input.float(0, "Rip: at most (x the range beyond it, 0 = off)", step = 0.1, group = grpS)
+backTk   = input.int(0, "Trigger: the first close back inside, by at least (ticks)", minval = 0, group = grpS)
+trigColor = input.bool(false, "Trigger candle must close in the trade direction (red for shorts, green for longs)", group = grpS)
+trigBody = input.int(0, "Trigger body at least (% of its range, 0 = off)", minval = 0, maxval = 100, group = grpS)
+side     = input.string("Both", "Side", options = ["Both", "Short (failed upside breakout)", "Long (failed downside breakout)"], group = grpS)
+grpE = "Entry / exits"
+entryMode = input.string("At the trigger close", "Entry", options = ["At the trigger close", "Limit back at the broken level"], group = grpE)
+cancelBars = input.int(8, "Limit entry: cancel after (candles)", minval = 1, group = grpE)
+bufTk    = input.int(4, "Stop beyond the rip's extreme (ticks)", minval = 0, group = grpE)
+contracts = input.int(3, "Contracts", minval = 1, group = grpE)
+tp1Qty   = input.int(1, "TP1 at the 50%: contracts", minval = 0, group = grpE)
+tp2Qty   = input.int(1, "TP2 at the far side of the range: contracts", minval = 0, group = grpE)
+tp3Mode  = input.string("Range projection", "TP3 (the rest)", options = ["Range projection", "Hold to the close"], group = grpE)
+tp3Mult  = input.float(1.0, "TP3: the far side + x the Asian range", step = 0.25, group = grpE)
+beAfter  = input.bool(true, "Stop to entry after TP1", group = grpE)
+minRR    = input.float(0, "Skip when the 50% is under (R, 0 = off)", step = 0.25, group = grpE)
+grpD = "Daily 21 EMA"
+dLen     = input.int(21, "Daily EMA length", minval = 2, group = grpD)
+dFilter  = input.string("With it: shorts below, longs above", "Daily EMA bias (above: bullish, longs only; below: bearish, shorts only)", options = ["Off", "With it: shorts below, longs above", "Against it: shorts above, longs below"], group = grpD)
+showD    = input.bool(true, "Show the daily EMA", group = grpD)
+grpM = "15-minute 21 EMA"
+mLen     = input.int(21, "15-minute EMA length", minval = 2, group = grpM)
+mFilter  = input.bool(false, "Also require the trigger close on the trade side of it (below for shorts, above for longs)", group = grpM)
+showM    = input.bool(true, "Show the 15-minute EMA", group = grpM)
+grpV = "VWAP and volume profile (from the Asian session start, 20:00 to 20:00)"
+showVwap = input.bool(true, "VWAP", group = grpV)
+vwapBand = input.float(0, "VWAP bands (x standard deviation, 0 = off)", step = 0.5, group = grpV)
+showVp   = input.bool(true, "Volume profile of every session", group = grpV)
+vpRows   = input.int(24, "Profile rows", minval = 6, maxval = 100, group = grpV)
+vaPct    = input.int(70, "Value area (% of the volume)", minval = 10, maxval = 99, group = grpV)
+histW    = input.int(30, "Profile width (candles)", minval = 5, group = grpV)
+showBox  = input.bool(true, "Draw the Asian range and levels")
+showWhy  = input.bool(true, "Label the first close back inside (entry, or why it was skipped)")
+
+tick = syminfo.mintick
+hm = hour * 100 + minute
+endHM = hour(time_close) * 100 + minute(time_close)
+inWin(a, b) => a <= b ? (hm >= a and hm < b) : (hm >= a or hm < b)
+inRange = inWin(rStart, rEnd)
+rangeStart = inRange and not inRange[1]
+rangeDone = not inRange and inRange[1]
+dayOn = hm < flatAt and not inRange
+
+// ---- daily EMA from this chart's candles (days roll at 18:00 for futures, at midnight otherwise); live value = today's close so far
+var float dDone = na
+var float dLast = na
+newSess = syminfo.type == "futures" ? (hm >= 1800 and (bar_index == 0 or hm[1] < 1800)) : (bar_index == 0 or dayofmonth != dayofmonth[1])
+dA = 2.0 / (dLen + 1)
+if newSess and not na(dLast)
+    dDone := na(dDone) ? dLast : dA * dLast + (1 - dA) * dDone
+dLast := close
+dEma = na(dDone) ? na : dA * close + (1 - dA) * dDone
+emaShortOk = dFilter == "Off" or na(dEma) ? dFilter == "Off" : dFilter == "With it: shorts below, longs above" ? close < dEma : close > dEma
+emaLongOk = dFilter == "Off" or na(dEma) ? dFilter == "Off" : dFilter == "With it: shorts below, longs above" ? close > dEma : close < dEma
+plot(showD ? dEma : na, "Daily EMA", color.new(#FF9F1C, 0), 2)
+
+// ---- 15-minute EMA from this chart's candles (the live value of the forming 15-minute candle; on a 15m chart = ta.ema)
+var float mDone = na
+var float mLast = na
+var float mKey = na
+mA = 2.0 / (mLen + 1)
+mk = math.floor(time / 900000)
+if na(mKey) or mk != mKey
+    if not na(mLast)
+        mDone := na(mDone) ? mLast : mA * mLast + (1 - mA) * mDone
+    mKey := mk
+mLast := close
+mEma = na(mDone) ? close : mA * close + (1 - mA) * mDone
+plot(showM ? mEma : na, "15m EMA", color.new(#E07AE0, 0), 1)
+
+var float bH = na
+var float bL = na
+var float aH = na
+var float aL = na
+var bool live = false
+var int first = 0             // 1 low taken first, -1 high taken first
+var bool ripUp = false        // the high taken after the low
+var bool ripDn = false
+var float ripHi = na          // the rip's extreme
+var float ripLo = na
+var bool traded = false
+var bool usedUp = false       // the first close back inside after each breakout is the only trigger
+var bool usedDn = false
+var int limBar = na
+var int entryBar = na
+var float fullQty = na
+var float ePx = na
+var float vT3 = na
+var float vQ2 = 0
+var float vQ1 = 0
+
+if rangeStart
+    bH := high
+    bL := low
+    live := false
+    strategy.cancel("S")
+    strategy.cancel("L")
+else if inRange
+    bH := math.max(bH, high)
+    bL := math.min(bL, low)
+if rangeDone and not na(bH)
+    aH := bH
+    aL := bL
+    live := true
+    first := 0
+    ripUp := false
+    ripDn := false
+    ripHi := na
+    ripLo := na
+    traded := false
+    usedUp := false
+    usedDn := false
+    limBar := na
+
+// ---- VWAP and volume profile, both from the start of the Asian session (rStart) to the next one
+var float vPV = 0
+var float vV = 0
+var float vPV2 = 0
+var sesH = array.new_float()
+var sesL = array.new_float()
+var sesV = array.new_float()
+var int sesBar = na
+var curBoxes = array.new_box()
+
+// the profile of one session drawn at its first candle: rows from its low to its high, each candle's volume shared
+// by the rows its range covers; value area rows brighter, the POC row brightest
+drawProfile(x0, keep) =>
+    n = array.size(sesH)
+    if n > 0
+        lo = array.min(sesL)
+        hi = array.max(sesH)
+        stp = (hi - lo) / vpRows
+        if stp > 0
+            bins = array.new_float(vpRows, 0.0)
+            for i = 0 to n - 1
+                bh = array.get(sesH, i)
+                bl = array.get(sesL, i)
+                v = array.get(sesV, i)
+                r0 = math.max(0, math.min(vpRows - 1, math.floor((bl - lo) / stp)))
+                r1 = math.max(0, math.min(vpRows - 1, math.floor((bh - lo) / stp)))
+                for r = r0 to r1
+                    ov = bh > bl ? (math.min(bh, lo + (r + 1) * stp) - math.max(bl, lo + r * stp)) / (bh - bl) : 1.0 / (r1 - r0 + 1)
+                    array.set(bins, r, array.get(bins, r) + v * math.max(0, ov))
+            mx = array.max(bins)
+            pi = array.indexof(bins, mx)
+            tot = array.sum(bins)
+            acc = mx
+            up = pi
+            dn = pi
+            while acc < tot * vaPct / 100 and (up < vpRows - 1 or dn > 0)
+                vu = up < vpRows - 1 ? array.get(bins, up + 1) : -1.0
+                vd = dn > 0 ? array.get(bins, dn - 1) : -1.0
+                if vu >= vd
+                    up += 1
+                    acc += vu
+                else
+                    dn -= 1
+                    acc += vd
+            for r = 0 to vpRows - 1
+                v = array.get(bins, r)
+                if v > 0 and mx > 0
+                    w = math.max(1, math.round(v / mx * histW))
+                    tr = r == pi ? 25 : r >= dn and r <= up ? 55 : 80
+                    bxx = box.new(x0, lo + (r + 1) * stp, x0 + w, lo + r * stp, border_color = color.new(#FF5D8F, 100), bgcolor = color.new(#FF5D8F, tr))
+                    if keep
+                        array.push(curBoxes, bxx)
+    0
+
+if showVp and rangeStart
+    for b in curBoxes
+        box.delete(b)
+    array.clear(curBoxes)
+    if not na(sesBar)
+        drawProfile(sesBar, false)                      // the session that just ended
+    array.clear(sesH)
+    array.clear(sesL)
+    array.clear(sesV)
+    sesBar := bar_index
+if rangeStart
+    vPV := 0
+    vV := 0
+    vPV2 := 0
+if not na(sesBar)
+    array.push(sesH, high)
+    array.push(sesL, low)
+    array.push(sesV, nz(volume))
+if showVp and barstate.islast and not na(sesBar)
+    for b in curBoxes
+        box.delete(b)
+    array.clear(curBoxes)
+    drawProfile(sesBar, true)                           // the session in progress
+vol = nz(volume)
+vPV += hlc3 * vol
+vV += vol
+vPV2 += hlc3 * hlc3 * vol
+vwap = vV > 0 ? vPV / vV : na
+vsd = vV > 0 ? math.sqrt(math.max(0, vPV2 / vV - vwap * vwap)) : na
+plot(showVwap ? vwap : na, "VWAP (from 20:00)", color.new(#F5F5F5, 0), 2)
+plot(showVwap and vwapBand > 0 ? vwap + vwapBand * vsd : na, "VWAP upper", color.new(#F5F5F5, 60), 1)
+plot(showVwap and vwapBand > 0 ? vwap - vwapBand * vsd : na, "VWAP lower", color.new(#F5F5F5, 60), 1)
+
+// the range as plots (every day of the history, no drawing limit): forming 20:00-00:00, then its levels and projections
+pRH = plot(showBox and inRange ? bH : na, "Asian range high (forming)", color.new(#5B8DEF, 20), 1, plot.style_linebr)
+pRL = plot(showBox and inRange ? bL : na, "Asian range low (forming)", color.new(#5B8DEF, 20), 1, plot.style_linebr)
+fill(pRH, pRL, color.new(#5B8DEF, 82), "Asian range")
+plot(showBox and live and dayOn ? aH : na, "Asian high", #5B8DEF, 1, plot.style_linebr)
+plot(showBox and live and dayOn ? aL : na, "Asian low", #5B8DEF, 1, plot.style_linebr)
+plot(showBox and live and dayOn ? (aH + aL) / 2 : na, "Asian 50%", color.new(#8a8f9c, 20), 1, plot.style_linebr)
+plot(showBox and live and dayOn ? aH + tp3Mult * (aH - aL) : na, "Projection up", color.new(#5B8DEF, 60), 1, plot.style_linebr)
+plot(showBox and live and dayOn ? aL - tp3Mult * (aH - aL) : na, "Projection down", color.new(#5B8DEF, 60), 1, plot.style_linebr)
+
+rng = aH - aL
+mid = (aH + aL) / 2
+canShort = side != "Long (failed downside breakout)"
+canLong = side != "Short (failed upside breakout)"
+
+if live and dayOn and rng > 0 and hm >= seqFrom and not traded and strategy.position_size == 0
+    tl = low < aL
+    th = high > aH
+    // the first side taken
+    if first == 0 and (tl or th) and not (tl and th)
+        if not sweepLon or (hm >= 200 and hm < 500)
+            first := tl ? 1 : -1
+    // the rip through the other side (or any break when no sweep is needed)
+    if not ripUp and th and (not needSweep ? true : first == 1) and high >= aH + minExtTk * tick
+        ripUp := true
+        ripHi := high
+    else if ripUp
+        ripHi := math.max(ripHi, high)
+    if not ripDn and tl and (not needSweep ? true : first == -1) and low <= aL - minExtTk * tick
+        ripDn := true
+        ripLo := low
+    else if ripDn
+        ripLo := math.min(ripLo, low)
+    if ripUp and maxExt > 0 and ripHi - aH > maxExt * rng
+        ripUp := false
+        first := needSweep ? 2 : first           // too far: no fade today on that side
+    if ripDn and maxExt > 0 and aL - ripLo > maxExt * rng
+        ripDn := false
+        first := needSweep ? 2 : first
+    bodyOk = trigBody <= 0 or (high > low and math.abs(close - open) / (high - low) * 100 >= trigBody)
+    // the failed upside breakout: back below the Asian high -> short
+    firstBackUp = ripUp and not usedUp and close < aH - backTk * tick
+    firstBackDn = ripDn and not usedDn and close > aL + backTk * tick
+    if firstBackUp
+        usedUp := true
+    if firstBackDn
+        usedDn := true
+    whyUp = not canShort ? "side" : not emaShortOk ? "above the daily EMA" : mFilter and close >= mEma ? "above the 15m EMA" : hm >= trigBy ? "after " + str.tostring(trigBy) : trigColor and close >= open ? "not red" : not bodyOk ? "small body" : ""
+    whyDn = not canLong ? "side" : not emaLongOk ? "below the daily EMA" : mFilter and close <= mEma ? "below the 15m EMA" : hm >= trigBy ? "after " + str.tostring(trigBy) : trigColor and close <= open ? "not green" : not bodyOk ? "small body" : ""
+    if showWhy and firstBackUp and whyUp != ""
+        label.new(bar_index, high, "no short: " + whyUp, style = label.style_label_down, color = color.new(#8a8f9c, 60), textcolor = color.white, size = size.tiny)
+    if showWhy and firstBackDn and whyDn != ""
+        label.new(bar_index, low, "no long: " + whyDn, style = label.style_label_up, color = color.new(#8a8f9c, 60), textcolor = color.white, size = size.tiny)
+    if firstBackUp and canShort and emaShortOk and (not mFilter or close < mEma) and hm < trigBy and (not trigColor or close < open) and bodyOk
+        stp = ripHi + bufTk * tick
+        e = entryMode == "At the trigger close" ? close : aH
+        risk = stp - e
+        t1ok = e > mid                                   // a close already past the 50%: the far side is the only target
+        okS = risk > 0 and e > aL and (minRR <= 0 or ((t1ok ? e - mid : e - aL) >= minRR * risk))
+        if showWhy and not okS
+            label.new(bar_index, high, "no short: " + (e <= aL ? "closed past the range" : "target under " + str.tostring(minRR) + "R"), style = label.style_label_down, color = color.new(#8a8f9c, 60), textcolor = color.white, size = size.tiny)
+        if okS
+            strategy.entry("S", strategy.short, qty = contracts, limit = entryMode == "At the trigger close" ? na : aH, comment = "Fake BO short")
+            if entryMode != "At the trigger close"
+                limBar := bar_index
+            q1 = t1ok ? math.min(tp1Qty, contracts) : 0
+            q2 = math.min(tp2Qty + (t1ok ? 0 : tp1Qty), contracts - q1)
+            if q1 > 0
+                strategy.exit("S1", "S", qty = q1, limit = mid, stop = stp, comment_profit = "TP1 50%", comment_loss = "Stop")
+            if q2 > 0
+                strategy.exit("S2", "S", qty = q2, limit = aL, stop = stp, comment_profit = "TP2 Asian low", comment_loss = "Stop")
+            if contracts - q1 - q2 > 0
+                strategy.exit("S3", "S", limit = tp3Mode == "Range projection" ? aL - tp3Mult * rng : na, stop = stp, comment_profit = "TP3 projection", comment_loss = "Stop")
+            vT3 := aL - tp3Mult * rng
+            vQ2 := q2
+            vQ1 := q1
+            fullQty := contracts
+            ePx := e
+            entryBar := bar_index
+        traded := true
+    // the failed downside breakout: back above the Asian low -> long
+    else if firstBackDn and canLong and emaLongOk and (not mFilter or close > mEma) and hm < trigBy and (not trigColor or close > open) and bodyOk
+        stp = ripLo - bufTk * tick
+        e = entryMode == "At the trigger close" ? close : aL
+        risk = e - stp
+        t1ok = e < mid
+        okL = risk > 0 and e < aH and (minRR <= 0 or ((t1ok ? mid - e : aH - e) >= minRR * risk))
+        if showWhy and not okL
+            label.new(bar_index, low, "no long: " + (e >= aH ? "closed past the range" : "target under " + str.tostring(minRR) + "R"), style = label.style_label_up, color = color.new(#8a8f9c, 60), textcolor = color.white, size = size.tiny)
+        if okL
+            strategy.entry("L", strategy.long, qty = contracts, limit = entryMode == "At the trigger close" ? na : aL, comment = "Fake BO long")
+            if entryMode != "At the trigger close"
+                limBar := bar_index
+            q1 = t1ok ? math.min(tp1Qty, contracts) : 0
+            q2 = math.min(tp2Qty + (t1ok ? 0 : tp1Qty), contracts - q1)
+            if q1 > 0
+                strategy.exit("L1", "L", qty = q1, limit = mid, stop = stp, comment_profit = "TP1 50%", comment_loss = "Stop")
+            if q2 > 0
+                strategy.exit("L2", "L", qty = q2, limit = aH, stop = stp, comment_profit = "TP2 Asian high", comment_loss = "Stop")
+            if contracts - q1 - q2 > 0
+                strategy.exit("L3", "L", limit = tp3Mode == "Range projection" ? aH + tp3Mult * rng : na, stop = stp, comment_profit = "TP3 projection", comment_loss = "Stop")
+            vT3 := aH + tp3Mult * rng
+            vQ2 := q2
+            vQ1 := q1
+            fullQty := contracts
+            ePx := e
+            entryBar := bar_index
+        traded := true
+
+// the limit entry waits cancelBars candles
+if not na(limBar) and strategy.position_size == 0 and bar_index - limBar >= cancelBars
+    strategy.cancel("S")
+    strategy.cancel("L")
+    limBar := na
+
+// break-even after TP1, flat at flatAt
+if strategy.position_size == 0 and bar_index > nz(entryBar) + 1 and strategy.opentrades == 0
+    fullQty := na
+if beAfter and strategy.position_size != 0 and not na(fullQty) and math.abs(strategy.position_size) < fullQty
+    hold = tp3Mode == "Range projection" ? vT3 : na
+    if strategy.position_size < 0
+        if vQ2 > 0 and math.abs(strategy.position_size) > contracts - vQ1 - vQ2         // TP2 not filled yet
+            strategy.exit("S2", "S", qty = vQ2, limit = aL, stop = ePx, comment_profit = "TP2 Asian low", comment_loss = "Break-even")
+        strategy.exit("S3", "S", limit = hold, stop = ePx, comment_profit = "TP3 projection", comment_loss = "Break-even")
+    else
+        if vQ2 > 0 and math.abs(strategy.position_size) > contracts - vQ1 - vQ2
+            strategy.exit("L2", "L", qty = vQ2, limit = aH, stop = ePx, comment_profit = "TP2 Asian high", comment_loss = "Break-even")
+        strategy.exit("L3", "L", limit = hold, stop = ePx, comment_profit = "TP3 projection", comment_loss = "Break-even")
+if strategy.position_size != 0 and endHM >= flatAt and hm < flatAt
+    strategy.close_all(comment = "Close", immediately = true)
+
+plotshape(ripUp and not ripUp[1], "Rip up", shape.triangledown, location.abovebar, #f23645, size = size.tiny, text = "rip")
+plotshape(ripDn and not ripDn[1], "Rip down", shape.triangleup, location.belowbar, #089981, size = size.tiny, text = "rip")
+`, { aliases: 'asia asian fake breakout failed rip ema strategy' }),
+S('asiaclean', 'Asian session: VWAP, 15m 21 EMA', 'Levels', 'Asian session box 20:00-00:00 with its high, low and 50% carried through the day, VWAP from 20:00 and the 15-minute 21 EMA.', `
+indicator("Asian session: VWAP, 15m 21 EMA", "Asia clean", overlay = true, max_boxes_count = 500)
+
+rStart  = input.int(2000, "Asian session from")
+rEnd    = input.int(0, "to (0 = midnight)")
+showBox = input.bool(true, "Asian session box and its levels")
+flatAt  = input.int(1600, "Carry the Asian high/low/50% until")
+mLen    = input.int(21, "15-minute EMA length", minval = 2)
+showVwap = input.bool(true, "VWAP (from the Asian session start)")
+
+hm = hour * 100 + minute
+inWin(a, b) => a <= b ? (hm >= a and hm < b) : (hm >= a or hm < b)
+inRange = inWin(rStart, rEnd)
+rangeStart = inRange and not inRange[1]
+
+// Asian session: a box from its high to its low, then its high, low and 50% carried through London and the US session
+var float bH = na
+var float bL = na
+var float aH = na
+var float aL = na
+var box aBox = na
+if rangeStart
+    bH := high
+    bL := low
+    if showBox
+        aBox := box.new(bar_index, high, bar_index + 1, low, border_color = color.new(#5B8DEF, 0), bgcolor = color.new(#5B8DEF, 85))
+else if inRange
+    bH := math.max(bH, high)
+    bL := math.min(bL, low)
+    if showBox and not na(aBox)
+        box.set_top(aBox, bH)
+        box.set_bottom(aBox, bL)
+        box.set_right(aBox, bar_index + 1)
+var int aStart = na
+if rangeStart
+    aStart := bar_index
+if not inRange and inRange[1]
+    aH := bH
+    aL := bL
+    if showBox and not na(aStart)
+        box.delete(aBox)
+        aBox := box.new(aStart, bH, bar_index, bL, border_color = color.new(#5B8DEF, 0), bgcolor = color.new(#5B8DEF, 85))
+dayOn = not inRange and not na(aH) and hm < flatAt
+plot(showBox and dayOn ? aH : na, "Asian high", #5B8DEF, 1, plot.style_linebr)
+plot(showBox and dayOn ? aL : na, "Asian low", #5B8DEF, 1, plot.style_linebr)
+plot(showBox and dayOn ? (aH + aL) / 2 : na, "Asian 50%", color.new(#8a8f9c, 20), 1, plot.style_linebr)
+
+// 15-minute 21 EMA (live value of the forming 15m candle on lower timeframes)
+var float mDone = na
+var float mLast = na
+var float mKey = na
+mA = 2.0 / (mLen + 1)
+mk = math.floor(time / 900000)
+if na(mKey) or mk != mKey
+    if not na(mLast)
+        mDone := na(mDone) ? mLast : mA * mLast + (1 - mA) * mDone
+    mKey := mk
+mLast := close
+plot(na(mDone) ? close : mA * close + (1 - mA) * mDone, "15m EMA", color.new(#E07AE0, 0), 1)
+
+// VWAP from the Asian session start
+var float vPV = 0
+var float vV = 0
+if rangeStart
+    vPV := 0
+    vV := 0
+vol = nz(volume)
+vPV += hlc3 * vol
+vV += vol
+plot(showVwap and vV > 0 ? vPV / vV : na, "VWAP (from the Asian start)", color.new(#F5F5F5, 0), 2)
+`, { aliases: 'asia asian session box vwap ema levels' }),
+S('asiastats', 'Asian range statistics', 'Levels', 'How often the Asian high / low hold or break in London and the US session, sweep then reverse sequences and fake-outs, with a stats table.', `
+// Asian range statistics (New York time) — run it on NQ / ES 15-minute (or 5-minute) with as much history as possible.
+//  1. Floor / ceiling: in London and in the US session, how often price comes back to the Asian low (high), and of those
+//     touches how often it HELD as support (resistance: price then moved away by the bounce distance before a candle
+//     closed beyond the level by the break distance) or BROKE (a candle closed beyond first).
+//  2. Sweep -> rip -> reverse: which side of the Asian range is taken first (and in which session), how often the other
+//     side is then taken the same day (new low, then rip to a new high), and how often that run then fails: a close
+//     back inside the range and a trade back to the 50% (and to the far side).
+indicator("Asian range statistics", "Asia stats", overlay = true, max_labels_count = 500, max_boxes_count = 500)
+
+grpT = "Sessions (HHMM, New York)"
+rStart = input.int(2000, "Asian range from", group = grpT)
+rEnd   = input.int(0, "to (0 = midnight)", group = grpT)
+lonS   = input.int(200, "London from", group = grpT)
+lonE   = input.int(500, "London to", group = grpT)
+usS    = input.int(930, "US from", group = grpT)
+usE    = input.int(1600, "US to (end of the day)", group = grpT)
+grpD = "Definitions"
+tolTk  = input.int(4, "Touch: within (ticks of the level)", minval = 0, group = grpD)
+brkTk  = input.int(8, "Break: a candle closes beyond the level by (ticks)", minval = 0, group = grpD)
+bncMul = input.float(0.5, "Hold: then moves away by (x the Asian range)", step = 0.05, group = grpD)
+bncMin = input.float(20, "Hold: at least (points)", step = 1, group = grpD)
+showBox = input.bool(true, "Draw the Asian range")
+showMk  = input.bool(true, "Mark the sweeps and the rips")
+
+tick = syminfo.mintick
+hm = hour * 100 + minute
+inWin(a, b) => a <= b ? (hm >= a and hm < b) : (hm >= a or hm < b)
+inRange = inWin(rStart, rEnd)
+rangeStart = inRange and not inRange[1]
+rangeDone = not inRange and inRange[1]
+inLon = inWin(lonS, lonE)
+inUs = inWin(usS, usE)
+dayOn = hm < usE and not inRange            // midnight to the US close
+
+// ---- totals (all days)
+var int days = 0
+// floor / ceiling: [touched, held, broke] per session
+var int fLonT = 0
+var int fLonH = 0
+var int fLonB = 0
+var int fUsT = 0
+var int fUsH = 0
+var int fUsB = 0
+var int cLonT = 0
+var int cLonH = 0
+var int cLonB = 0
+var int cUsT = 0
+var int cUsH = 0
+var int cUsB = 0
+// sequences
+var int lowFirst = 0
+var int lowFirstLon = 0
+var int lowFirstPre = 0
+var int lowFirstUs = 0
+var int lowThenHigh = 0
+var int lowThenHighBack = 0
+var int lowThenHighMid = 0
+var int lowThenHighFar = 0
+var int highFirst = 0
+var int highFirstLon = 0
+var int highFirstPre = 0
+var int highFirstUs = 0
+var int highThenLow = 0
+var int highThenLowBack = 0
+var int highThenLowMid = 0
+var int highThenLowFar = 0
+var int sameBar = 0
+var int neither = 0
+// breakouts judged at the US close: above / back inside / through the other side (fake-out)
+var int boH = 0
+var int boHUp = 0
+var int boHIn = 0
+var int boHDn = 0
+var int boL = 0
+var int boLDn = 0
+var int boLIn = 0
+var int boLUp = 0
+
+// ---- the day being measured
+var float bH = na
+var float bL = na
+var float aH = na
+var float aL = na
+var bool live = false
+// floor (Asian low) and ceiling (Asian high) per session: 0 untouched, 1 touched (open), 2 held, 3 broke
+var int fLon = 0
+var int fUs = 0
+var int cLon = 0
+var int cUs = 0
+// sequence: which side first (1 low, -1 high, 2 same candle), where, other side taken, back inside, 50%, far side
+var int first = 0
+var int firstWhere = 0
+var bool other = false
+var bool back = false
+var bool toMid = false
+var bool toFar = false
+var bool brokeH = false
+var bool brokeL = false
+var float dayClose = na
+var box bx = na
+
+// one level in one session: touch, then held or broke
+step(st, lvl, isFloor, rng) =>
+    s = st
+    away = math.max(bncMul * rng, bncMin)
+    if s == 0 and (isFloor ? low <= lvl + tolTk * tick : high >= lvl - tolTk * tick)
+        s := 1
+    if s == 1
+        if isFloor ? close < lvl - brkTk * tick : close > lvl + brkTk * tick
+            s := 3
+        else if isFloor ? high >= lvl + away : low <= lvl - away
+            s := 2
+    s
+
+if rangeStart
+    // the previous day goes into the totals
+    if live
+        days += 1
+        fLonT += fLon > 0 ? 1 : 0
+        fLonH += fLon == 2 ? 1 : 0
+        fLonB += fLon == 3 ? 1 : 0
+        fUsT += fUs > 0 ? 1 : 0
+        fUsH += fUs == 2 ? 1 : 0
+        fUsB += fUs == 3 ? 1 : 0
+        cLonT += cLon > 0 ? 1 : 0
+        cLonH += cLon == 2 ? 1 : 0
+        cLonB += cLon == 3 ? 1 : 0
+        cUsT += cUs > 0 ? 1 : 0
+        cUsH += cUs == 2 ? 1 : 0
+        cUsB += cUs == 3 ? 1 : 0
+        if first == 1
+            lowFirst += 1
+            lowFirstLon += firstWhere == 1 ? 1 : 0
+            lowFirstPre += firstWhere == 2 ? 1 : 0
+            lowFirstUs += firstWhere == 3 ? 1 : 0
+            lowThenHigh += other ? 1 : 0
+            lowThenHighBack += other and back ? 1 : 0
+            lowThenHighMid += other and toMid ? 1 : 0
+            lowThenHighFar += other and toFar ? 1 : 0
+        else if first == -1
+            highFirst += 1
+            highFirstLon += firstWhere == 1 ? 1 : 0
+            highFirstPre += firstWhere == 2 ? 1 : 0
+            highFirstUs += firstWhere == 3 ? 1 : 0
+            highThenLow += other ? 1 : 0
+            highThenLowBack += other and back ? 1 : 0
+            highThenLowMid += other and toMid ? 1 : 0
+            highThenLowFar += other and toFar ? 1 : 0
+        else if first == 2
+            sameBar += 1
+        else
+            neither += 1
+        if brokeH and not na(dayClose)
+            boH += 1
+            boHUp += dayClose > aH ? 1 : 0
+            boHIn += dayClose <= aH and dayClose >= aL ? 1 : 0
+            boHDn += dayClose < aL ? 1 : 0
+        if brokeL and not na(dayClose)
+            boL += 1
+            boLDn += dayClose < aL ? 1 : 0
+            boLIn += dayClose >= aL and dayClose <= aH ? 1 : 0
+            boLUp += dayClose > aH ? 1 : 0
+    live := false
+    bH := high
+    bL := low
+    if showBox
+        bx := box.new(bar_index, high, bar_index, low, border_color = color.new(#5B8DEF, 20), bgcolor = color.new(#5B8DEF, 85))
+else if inRange
+    bH := math.max(bH, high)
+    bL := math.min(bL, low)
+    if showBox and not na(bx)
+        box.set_top(bx, bH)
+        box.set_bottom(bx, bL)
+        box.set_right(bx, bar_index)
+
+if rangeDone and not na(bH)
+    aH := bH
+    aL := bL
+    live := true
+    fLon := 0
+    fUs := 0
+    cLon := 0
+    cUs := 0
+    first := 0
+    firstWhere := 0
+    other := false
+    back := false
+    toMid := false
+    toFar := false
+    brokeH := false
+    brokeL := false
+    dayClose := na
+
+rng = aH - aL
+mid = (aH + aL) / 2
+if live and dayOn and rng > 0
+    // 1. floor / ceiling per session
+    if inLon
+        fLon := step(fLon, aL, true, rng)
+        cLon := step(cLon, aH, false, rng)
+    if inUs
+        fUs := step(fUs, aL, true, rng)
+        cUs := step(cUs, aH, false, rng)
+    dayClose := close
+    // 2. the sequence, from London on
+    if hm >= lonS
+        brokeH := brokeH or high > aH
+        brokeL := brokeL or low < aL
+        tl = low < aL
+        th = high > aH
+        where = inLon ? 1 : hm < usS ? 2 : 3
+        if first == 0 and (tl or th)
+            first := tl and th ? 2 : tl ? 1 : -1
+            firstWhere := where
+            if showMk and first == 1
+                label.new(bar_index, low, "low taken", style = label.style_label_up, color = color.new(#f23645, 60), textcolor = color.white, size = size.tiny)
+            if showMk and first == -1
+                label.new(bar_index, high, "high taken", style = label.style_label_down, color = color.new(#f23645, 60), textcolor = color.white, size = size.tiny)
+        else if first == 1
+            if not other and th
+                other := true
+                if showMk
+                    label.new(bar_index, high, "rip: high taken", style = label.style_label_down, color = color.new(#089981, 50), textcolor = color.white, size = size.tiny)
+            else if other
+                if not back and close < aH
+                    back := true
+                if back and not toMid and low <= mid
+                    toMid := true
+                    if showMk
+                        label.new(bar_index, low, "back to 50%", style = label.style_label_up, color = color.new(#E7C35A, 50), textcolor = color.black, size = size.tiny)
+                if back and not toFar and low <= aL
+                    toFar := true
+        else if first == -1
+            if not other and tl
+                other := true
+                if showMk
+                    label.new(bar_index, low, "dump: low taken", style = label.style_label_up, color = color.new(#089981, 50), textcolor = color.white, size = size.tiny)
+            else if other
+                if not back and close > aL
+                    back := true
+                if back and not toMid and high >= mid
+                    toMid := true
+                    if showMk
+                        label.new(bar_index, high, "back to 50%", style = label.style_label_down, color = color.new(#E7C35A, 50), textcolor = color.black, size = size.tiny)
+                if back and not toFar and high >= aH
+                    toFar := true
+
+plot(live and dayOn ? aH : na, "Asian high", #5B8DEF, 1, plot.style_linebr)
+plot(live and dayOn ? aL : na, "Asian low", #5B8DEF, 1, plot.style_linebr)
+plot(live and dayOn ? mid : na, "Asian 50%", color.new(#8a8f9c, 30), 1, plot.style_linebr)
+
+// ---- the results (last candle)
+pc(a, b) => b > 0 ? str.tostring(math.round(a / b * 100)) + "%" : "-"
+held(t, h, b) => str.tostring(t) + " touched · held " + pc(h, t) + " · broke " + pc(b, t) + " · undecided " + pc(t - h - b, t)
+var label res = na
+if barstate.islast
+    txt = "ASIAN RANGE · " + str.tostring(days) + " days (completed)\\n\\n" +
+         "ASIAN LOW as support\\n  London: " + pc(fLonT, days) + " of days, " + held(fLonT, fLonH, fLonB) + "\\n  US: " + pc(fUsT, days) + " of days, " + held(fUsT, fUsH, fUsB) + "\\n\\n" +
+         "ASIAN HIGH as resistance\\n  London: " + pc(cLonT, days) + " of days, " + held(cLonT, cLonH, cLonB) + "\\n  US: " + pc(cUsT, days) + " of days, " + held(cUsT, cUsH, cUsB) + "\\n\\n" +
+         "LOW TAKEN FIRST: " + str.tostring(lowFirst) + " days (" + pc(lowFirst, days) + ") · London " + pc(lowFirstLon, lowFirst) + " · 05:00-09:30 " + pc(lowFirstPre, lowFirst) + " · US " + pc(lowFirstUs, lowFirst) +
+         "\\n  then rip to a new high: " + str.tostring(lowThenHigh) + " (" + pc(lowThenHigh, lowFirst) + ")" +
+         "\\n    then back below the high: " + pc(lowThenHighBack, lowThenHigh) + " · to the 50%: " + pc(lowThenHighMid, lowThenHigh) + " · to the Asian low: " + pc(lowThenHighFar, lowThenHigh) + "\\n\\n" +
+         "HIGH TAKEN FIRST: " + str.tostring(highFirst) + " days (" + pc(highFirst, days) + ") · London " + pc(highFirstLon, highFirst) + " · 05:00-09:30 " + pc(highFirstPre, highFirst) + " · US " + pc(highFirstUs, highFirst) +
+         "\\n  then dump to a new low: " + str.tostring(highThenLow) + " (" + pc(highThenLow, highFirst) + ")" +
+         "\\n    then back above the low: " + pc(highThenLowBack, highThenLow) + " · to the 50%: " + pc(highThenLowMid, highThenLow) + " · to the Asian high: " + pc(highThenLowFar, highThenLow) + "\\n\\n" +
+         "BREAKOUTS, where the day closed (US close)\\n  Above the Asian high: " + str.tostring(boH) + " days · closed above " + pc(boHUp, boH) + " · back inside " + pc(boHIn, boH) + " · below the Asian low (fake-out) " + pc(boHDn, boH) +
+         "\\n  Below the Asian low: " + str.tostring(boL) + " days · closed below " + pc(boLDn, boL) + " · back inside " + pc(boLIn, boL) + " · above the Asian high (fake-out) " + pc(boLUp, boL) + "\\n\\n" +
+         "Both sides in the same candle: " + str.tostring(sameBar) + " · neither side taken: " + str.tostring(neither) + " (" + pc(neither, days) + ")"
+    label.delete(res)
+    res := label.new(bar_index + 3, high, txt, style = label.style_label_left, color = color.new(#131722, 5), textcolor = color.white, size = size.small, textalign = text.align_left)
+`, { aliases: 'asia asian range statistics stats support resistance fakeout' }),
 S('ifvg2', 'FVG inversion EMA bias #2 (NQ)', 'Strategies', 'The journal Research strategy “FVG inversion EMA bias #2” as Pine: hourly 20 EMA bias + Asian session direction, a fair value gap against the bias inverted within 12 candles, stop at the pullback extreme, target the previous liquidity (at least 2R), 3 a session until 10:30, flat 15:55. Run it on NQ 5m.', `
 // FVG inversion with the EMA bias (#2) — NQ 5-minute, overnight + NYSE session.
 // Same rules as the journal's Research strategy "FVG inversion EMA bias #2":
-//   bias = hourly 20 EMA (price on its side, EMA sloping that way), confirmed by the Asian session's direction;
+//   bias = hourly 20 EMA (price on its side, EMA sloping that way), confirmed by the Asian session's direction
+//   (a bias change after 02:00 lifts the Asian check for the new side);
 //   a fair value gap against the bias (the pullback), then a close through it within 12 candles: enter at that close;
 //   stop at the pullback extreme, target the previous liquidity (at least 2R), skip under 1R;
 //   at most 3 a session, entries until 10:30 (overnight from 18:00 included), flat at 15:55;
@@ -329,6 +1402,7 @@ strategy("FVG inversion EMA bias #2", "iFVG bias #2", overlay = true, initial_ca
 
 biasMode  = input.string("Hourly 20 EMA only", "Bias", options = ["Hourly 20 EMA only", "15 / 30 / 60-minute 20 EMAs"])
 asiaMode  = input.string("It closed in the bias direction", "Asian session (18:00-02:00) check", options = ["It closed in the bias direction", "Price on the bias side of its middle", "None"])
+asiaLift  = input.bool(true, "A bias change after the Asian session lifts its check (for the new side)")
 minGap    = input.int(2, "Gap at least (ticks)", minval = 0)
 fvgMax    = input.int(12, "Inversion within (candles)", minval = 1)
 stopMode  = input.string("Pullback extreme", "Stop", options = ["Pullback extreme", "Far end of the gap"])
@@ -434,6 +1508,24 @@ if hm >= 1800 or hm < 200
     aL := na(aL) ? low : math.min(aL, low)
 
 today = hm < 1800
+
+// a bias change after the Asian session (02:00 to 17:00) lifts the Asian check for the new side
+var int dayBias = 0
+var bool liftL = false
+var bool liftS = false
+afterAsia = today and hm >= 200
+if newSes
+    dayBias := 0
+    liftL := false
+    liftS := false
+if afterAsia and bias != 0
+    if dayBias == -1 and bias == 1
+        liftL := true
+        liftS := false
+    if dayBias == 1 and bias == -1
+        liftS := true
+        liftL := false
+    dayBias := bias
 endMin = hour * 60 + minute + tfMin
 endHM = math.floor(endMin / 60) * 100 + endMin % 60
 if today and endHM > lastEntry
@@ -495,9 +1587,10 @@ if not sesDone and not inTrade and sesBars >= 3
             ok := false
         ad = na(aO) ? 0 : aC > aO ? 1 : aC < aO ? -1 : 0
         am = na(aH) ? 0 : close > (aH + aL) / 2 ? 1 : -1
-        if asiaMode == "It closed in the bias direction" and ad != d
+        lifted = asiaLift and (d > 0 ? liftL : liftS)
+        if not lifted and asiaMode == "It closed in the bias direction" and ad != d
             ok := false
-        if asiaMode == "Price on the bias side of its middle" and am != d
+        if not lifted and asiaMode == "Price on the bias side of its middle" and am != d
             ok := false
         // the trigger candle against the session's average candle range (the candles before it)
         n = math.min(avgN, sesBars - 1)

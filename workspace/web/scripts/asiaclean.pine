@@ -1,0 +1,70 @@
+//@version=6
+indicator("Asian session: VWAP, 15m 21 EMA", "Asia clean", overlay = true, max_boxes_count = 500)
+
+rStart  = input.int(2000, "Asian session from")
+rEnd    = input.int(0, "to (0 = midnight)")
+showBox = input.bool(true, "Asian session box and its levels")
+flatAt  = input.int(1600, "Carry the Asian high/low/50% until")
+mLen    = input.int(21, "15-minute EMA length", minval = 2)
+showVwap = input.bool(true, "VWAP (from the Asian session start)")
+
+hm = hour * 100 + minute
+inWin(a, b) => a <= b ? (hm >= a and hm < b) : (hm >= a or hm < b)
+inRange = inWin(rStart, rEnd)
+rangeStart = inRange and not inRange[1]
+
+// Asian session: a box from its high to its low, then its high, low and 50% carried through London and the US session
+var float bH = na
+var float bL = na
+var float aH = na
+var float aL = na
+var box aBox = na
+if rangeStart
+    bH := high
+    bL := low
+    if showBox
+        aBox := box.new(bar_index, high, bar_index + 1, low, border_color = color.new(#5B8DEF, 0), bgcolor = color.new(#5B8DEF, 85))
+else if inRange
+    bH := math.max(bH, high)
+    bL := math.min(bL, low)
+    if showBox and not na(aBox)
+        box.set_top(aBox, bH)
+        box.set_bottom(aBox, bL)
+        box.set_right(aBox, bar_index + 1)
+var int aStart = na
+if rangeStart
+    aStart := bar_index
+if not inRange and inRange[1]
+    aH := bH
+    aL := bL
+    if showBox and not na(aStart)
+        box.delete(aBox)
+        aBox := box.new(aStart, bH, bar_index, bL, border_color = color.new(#5B8DEF, 0), bgcolor = color.new(#5B8DEF, 85))
+dayOn = not inRange and not na(aH) and hm < flatAt
+plot(showBox and dayOn ? aH : na, "Asian high", #5B8DEF, 1, plot.style_linebr)
+plot(showBox and dayOn ? aL : na, "Asian low", #5B8DEF, 1, plot.style_linebr)
+plot(showBox and dayOn ? (aH + aL) / 2 : na, "Asian 50%", color.new(#8a8f9c, 20), 1, plot.style_linebr)
+
+// 15-minute 21 EMA (live value of the forming 15m candle on lower timeframes)
+var float mDone = na
+var float mLast = na
+var float mKey = na
+mA = 2.0 / (mLen + 1)
+mk = math.floor(time / 900000)
+if na(mKey) or mk != mKey
+    if not na(mLast)
+        mDone := na(mDone) ? mLast : mA * mLast + (1 - mA) * mDone
+    mKey := mk
+mLast := close
+plot(na(mDone) ? close : mA * close + (1 - mA) * mDone, "15m EMA", color.new(#E07AE0, 0), 1)
+
+// VWAP from the Asian session start
+var float vPV = 0
+var float vV = 0
+if rangeStart
+    vPV := 0
+    vV := 0
+vol = nz(volume)
+vPV += hlc3 * vol
+vV += vol
+plot(showVwap and vV > 0 ? vPV / vV : na, "VWAP (from the Asian start)", color.new(#F5F5F5, 0), 2)

@@ -1,7 +1,8 @@
 //@version=6
 // FVG inversion with the EMA bias (#2) — NQ 5-minute, overnight + NYSE session.
 // Same rules as the journal's Research strategy "FVG inversion EMA bias #2":
-//   bias = hourly 20 EMA (price on its side, EMA sloping that way), confirmed by the Asian session's direction;
+//   bias = hourly 20 EMA (price on its side, EMA sloping that way), confirmed by the Asian session's direction
+//   (a bias change after 02:00 lifts the Asian check for the new side);
 //   a fair value gap against the bias (the pullback), then a close through it within 12 candles: enter at that close;
 //   stop at the pullback extreme, target the previous liquidity (at least 2R), skip under 1R;
 //   at most 3 a session, entries until 10:30 (overnight from 18:00 included), flat at 15:55;
@@ -11,6 +12,7 @@ strategy("FVG inversion EMA bias #2", "iFVG bias #2", overlay = true, initial_ca
 
 biasMode  = input.string("Hourly 20 EMA only", "Bias", options = ["Hourly 20 EMA only", "15 / 30 / 60-minute 20 EMAs"])
 asiaMode  = input.string("It closed in the bias direction", "Asian session (18:00-02:00) check", options = ["It closed in the bias direction", "Price on the bias side of its middle", "None"])
+asiaLift  = input.bool(true, "A bias change after the Asian session lifts its check (for the new side)")
 minGap    = input.int(2, "Gap at least (ticks)", minval = 0)
 fvgMax    = input.int(12, "Inversion within (candles)", minval = 1)
 stopMode  = input.string("Pullback extreme", "Stop", options = ["Pullback extreme", "Far end of the gap"])
@@ -116,6 +118,24 @@ if hm >= 1800 or hm < 200
     aL := na(aL) ? low : math.min(aL, low)
 
 today = hm < 1800
+
+// a bias change after the Asian session (02:00 to 17:00) lifts the Asian check for the new side
+var int dayBias = 0
+var bool liftL = false
+var bool liftS = false
+afterAsia = today and hm >= 200
+if newSes
+    dayBias := 0
+    liftL := false
+    liftS := false
+if afterAsia and bias != 0
+    if dayBias == -1 and bias == 1
+        liftL := true
+        liftS := false
+    if dayBias == 1 and bias == -1
+        liftS := true
+        liftL := false
+    dayBias := bias
 endMin = hour * 60 + minute + tfMin
 endHM = math.floor(endMin / 60) * 100 + endMin % 60
 if today and endHM > lastEntry
@@ -177,9 +197,10 @@ if not sesDone and not inTrade and sesBars >= 3
             ok := false
         ad = na(aO) ? 0 : aC > aO ? 1 : aC < aO ? -1 : 0
         am = na(aH) ? 0 : close > (aH + aL) / 2 ? 1 : -1
-        if asiaMode == "It closed in the bias direction" and ad != d
+        lifted = asiaLift and (d > 0 ? liftL : liftS)
+        if not lifted and asiaMode == "It closed in the bias direction" and ad != d
             ok := false
-        if asiaMode == "Price on the bias side of its middle" and am != d
+        if not lifted and asiaMode == "Price on the bias side of its middle" and am != d
             ok := false
         // the trigger candle against the session's average candle range (the candles before it)
         n = math.min(avgN, sesBars - 1)

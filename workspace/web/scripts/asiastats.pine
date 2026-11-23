@@ -1,0 +1,271 @@
+//@version=6
+// Asian range statistics (New York time) — run it on NQ / ES 15-minute (or 5-minute) with as much history as possible.
+//  1. Floor / ceiling: in London and in the US session, how often price comes back to the Asian low (high), and of those
+//     touches how often it HELD as support (resistance: price then moved away by the bounce distance before a candle
+//     closed beyond the level by the break distance) or BROKE (a candle closed beyond first).
+//  2. Sweep -> rip -> reverse: which side of the Asian range is taken first (and in which session), how often the other
+//     side is then taken the same day (new low, then rip to a new high), and how often that run then fails: a close
+//     back inside the range and a trade back to the 50% (and to the far side).
+indicator("Asian range statistics", "Asia stats", overlay = true, max_labels_count = 500, max_boxes_count = 500)
+
+grpT = "Sessions (HHMM, New York)"
+rStart = input.int(2000, "Asian range from", group = grpT)
+rEnd   = input.int(0, "to (0 = midnight)", group = grpT)
+lonS   = input.int(200, "London from", group = grpT)
+lonE   = input.int(500, "London to", group = grpT)
+usS    = input.int(930, "US from", group = grpT)
+usE    = input.int(1600, "US to (end of the day)", group = grpT)
+grpD = "Definitions"
+tolTk  = input.int(4, "Touch: within (ticks of the level)", minval = 0, group = grpD)
+brkTk  = input.int(8, "Break: a candle closes beyond the level by (ticks)", minval = 0, group = grpD)
+bncMul = input.float(0.5, "Hold: then moves away by (x the Asian range)", step = 0.05, group = grpD)
+bncMin = input.float(20, "Hold: at least (points)", step = 1, group = grpD)
+showBox = input.bool(true, "Draw the Asian range")
+showMk  = input.bool(true, "Mark the sweeps and the rips")
+
+tick = syminfo.mintick
+hm = hour * 100 + minute
+inWin(a, b) => a <= b ? (hm >= a and hm < b) : (hm >= a or hm < b)
+inRange = inWin(rStart, rEnd)
+rangeStart = inRange and not inRange[1]
+rangeDone = not inRange and inRange[1]
+inLon = inWin(lonS, lonE)
+inUs = inWin(usS, usE)
+dayOn = hm < usE and not inRange            // midnight to the US close
+
+// ---- totals (all days)
+var int days = 0
+// floor / ceiling: [touched, held, broke] per session
+var int fLonT = 0
+var int fLonH = 0
+var int fLonB = 0
+var int fUsT = 0
+var int fUsH = 0
+var int fUsB = 0
+var int cLonT = 0
+var int cLonH = 0
+var int cLonB = 0
+var int cUsT = 0
+var int cUsH = 0
+var int cUsB = 0
+// sequences
+var int lowFirst = 0
+var int lowFirstLon = 0
+var int lowFirstPre = 0
+var int lowFirstUs = 0
+var int lowThenHigh = 0
+var int lowThenHighBack = 0
+var int lowThenHighMid = 0
+var int lowThenHighFar = 0
+var int highFirst = 0
+var int highFirstLon = 0
+var int highFirstPre = 0
+var int highFirstUs = 0
+var int highThenLow = 0
+var int highThenLowBack = 0
+var int highThenLowMid = 0
+var int highThenLowFar = 0
+var int sameBar = 0
+var int neither = 0
+// breakouts judged at the US close: above / back inside / through the other side (fake-out)
+var int boH = 0
+var int boHUp = 0
+var int boHIn = 0
+var int boHDn = 0
+var int boL = 0
+var int boLDn = 0
+var int boLIn = 0
+var int boLUp = 0
+
+// ---- the day being measured
+var float bH = na
+var float bL = na
+var float aH = na
+var float aL = na
+var bool live = false
+// floor (Asian low) and ceiling (Asian high) per session: 0 untouched, 1 touched (open), 2 held, 3 broke
+var int fLon = 0
+var int fUs = 0
+var int cLon = 0
+var int cUs = 0
+// sequence: which side first (1 low, -1 high, 2 same candle), where, other side taken, back inside, 50%, far side
+var int first = 0
+var int firstWhere = 0
+var bool other = false
+var bool back = false
+var bool toMid = false
+var bool toFar = false
+var bool brokeH = false
+var bool brokeL = false
+var float dayClose = na
+var box bx = na
+
+// one level in one session: touch, then held or broke
+step(st, lvl, isFloor, rng) =>
+    s = st
+    away = math.max(bncMul * rng, bncMin)
+    if s == 0 and (isFloor ? low <= lvl + tolTk * tick : high >= lvl - tolTk * tick)
+        s := 1
+    if s == 1
+        if isFloor ? close < lvl - brkTk * tick : close > lvl + brkTk * tick
+            s := 3
+        else if isFloor ? high >= lvl + away : low <= lvl - away
+            s := 2
+    s
+
+if rangeStart
+    // the previous day goes into the totals
+    if live
+        days += 1
+        fLonT += fLon > 0 ? 1 : 0
+        fLonH += fLon == 2 ? 1 : 0
+        fLonB += fLon == 3 ? 1 : 0
+        fUsT += fUs > 0 ? 1 : 0
+        fUsH += fUs == 2 ? 1 : 0
+        fUsB += fUs == 3 ? 1 : 0
+        cLonT += cLon > 0 ? 1 : 0
+        cLonH += cLon == 2 ? 1 : 0
+        cLonB += cLon == 3 ? 1 : 0
+        cUsT += cUs > 0 ? 1 : 0
+        cUsH += cUs == 2 ? 1 : 0
+        cUsB += cUs == 3 ? 1 : 0
+        if first == 1
+            lowFirst += 1
+            lowFirstLon += firstWhere == 1 ? 1 : 0
+            lowFirstPre += firstWhere == 2 ? 1 : 0
+            lowFirstUs += firstWhere == 3 ? 1 : 0
+            lowThenHigh += other ? 1 : 0
+            lowThenHighBack += other and back ? 1 : 0
+            lowThenHighMid += other and toMid ? 1 : 0
+            lowThenHighFar += other and toFar ? 1 : 0
+        else if first == -1
+            highFirst += 1
+            highFirstLon += firstWhere == 1 ? 1 : 0
+            highFirstPre += firstWhere == 2 ? 1 : 0
+            highFirstUs += firstWhere == 3 ? 1 : 0
+            highThenLow += other ? 1 : 0
+            highThenLowBack += other and back ? 1 : 0
+            highThenLowMid += other and toMid ? 1 : 0
+            highThenLowFar += other and toFar ? 1 : 0
+        else if first == 2
+            sameBar += 1
+        else
+            neither += 1
+        if brokeH and not na(dayClose)
+            boH += 1
+            boHUp += dayClose > aH ? 1 : 0
+            boHIn += dayClose <= aH and dayClose >= aL ? 1 : 0
+            boHDn += dayClose < aL ? 1 : 0
+        if brokeL and not na(dayClose)
+            boL += 1
+            boLDn += dayClose < aL ? 1 : 0
+            boLIn += dayClose >= aL and dayClose <= aH ? 1 : 0
+            boLUp += dayClose > aH ? 1 : 0
+    live := false
+    bH := high
+    bL := low
+    if showBox
+        bx := box.new(bar_index, high, bar_index, low, border_color = color.new(#5B8DEF, 20), bgcolor = color.new(#5B8DEF, 85))
+else if inRange
+    bH := math.max(bH, high)
+    bL := math.min(bL, low)
+    if showBox and not na(bx)
+        box.set_top(bx, bH)
+        box.set_bottom(bx, bL)
+        box.set_right(bx, bar_index)
+
+if rangeDone and not na(bH)
+    aH := bH
+    aL := bL
+    live := true
+    fLon := 0
+    fUs := 0
+    cLon := 0
+    cUs := 0
+    first := 0
+    firstWhere := 0
+    other := false
+    back := false
+    toMid := false
+    toFar := false
+    brokeH := false
+    brokeL := false
+    dayClose := na
+
+rng = aH - aL
+mid = (aH + aL) / 2
+if live and dayOn and rng > 0
+    // 1. floor / ceiling per session
+    if inLon
+        fLon := step(fLon, aL, true, rng)
+        cLon := step(cLon, aH, false, rng)
+    if inUs
+        fUs := step(fUs, aL, true, rng)
+        cUs := step(cUs, aH, false, rng)
+    dayClose := close
+    // 2. the sequence, from London on
+    if hm >= lonS
+        brokeH := brokeH or high > aH
+        brokeL := brokeL or low < aL
+        tl = low < aL
+        th = high > aH
+        where = inLon ? 1 : hm < usS ? 2 : 3
+        if first == 0 and (tl or th)
+            first := tl and th ? 2 : tl ? 1 : -1
+            firstWhere := where
+            if showMk and first == 1
+                label.new(bar_index, low, "low taken", style = label.style_label_up, color = color.new(#f23645, 60), textcolor = color.white, size = size.tiny)
+            if showMk and first == -1
+                label.new(bar_index, high, "high taken", style = label.style_label_down, color = color.new(#f23645, 60), textcolor = color.white, size = size.tiny)
+        else if first == 1
+            if not other and th
+                other := true
+                if showMk
+                    label.new(bar_index, high, "rip: high taken", style = label.style_label_down, color = color.new(#089981, 50), textcolor = color.white, size = size.tiny)
+            else if other
+                if not back and close < aH
+                    back := true
+                if back and not toMid and low <= mid
+                    toMid := true
+                    if showMk
+                        label.new(bar_index, low, "back to 50%", style = label.style_label_up, color = color.new(#E7C35A, 50), textcolor = color.black, size = size.tiny)
+                if back and not toFar and low <= aL
+                    toFar := true
+        else if first == -1
+            if not other and tl
+                other := true
+                if showMk
+                    label.new(bar_index, low, "dump: low taken", style = label.style_label_up, color = color.new(#089981, 50), textcolor = color.white, size = size.tiny)
+            else if other
+                if not back and close > aL
+                    back := true
+                if back and not toMid and high >= mid
+                    toMid := true
+                    if showMk
+                        label.new(bar_index, high, "back to 50%", style = label.style_label_down, color = color.new(#E7C35A, 50), textcolor = color.black, size = size.tiny)
+                if back and not toFar and high >= aH
+                    toFar := true
+
+plot(live and dayOn ? aH : na, "Asian high", #5B8DEF, 1, plot.style_linebr)
+plot(live and dayOn ? aL : na, "Asian low", #5B8DEF, 1, plot.style_linebr)
+plot(live and dayOn ? mid : na, "Asian 50%", color.new(#8a8f9c, 30), 1, plot.style_linebr)
+
+// ---- the results (last candle)
+pc(a, b) => b > 0 ? str.tostring(math.round(a / b * 100)) + "%" : "-"
+held(t, h, b) => str.tostring(t) + " touched · held " + pc(h, t) + " · broke " + pc(b, t) + " · undecided " + pc(t - h - b, t)
+var label res = na
+if barstate.islast
+    txt = "ASIAN RANGE · " + str.tostring(days) + " days (completed)\n\n" +
+         "ASIAN LOW as support\n  London: " + pc(fLonT, days) + " of days, " + held(fLonT, fLonH, fLonB) + "\n  US: " + pc(fUsT, days) + " of days, " + held(fUsT, fUsH, fUsB) + "\n\n" +
+         "ASIAN HIGH as resistance\n  London: " + pc(cLonT, days) + " of days, " + held(cLonT, cLonH, cLonB) + "\n  US: " + pc(cUsT, days) + " of days, " + held(cUsT, cUsH, cUsB) + "\n\n" +
+         "LOW TAKEN FIRST: " + str.tostring(lowFirst) + " days (" + pc(lowFirst, days) + ") · London " + pc(lowFirstLon, lowFirst) + " · 05:00-09:30 " + pc(lowFirstPre, lowFirst) + " · US " + pc(lowFirstUs, lowFirst) +
+         "\n  then rip to a new high: " + str.tostring(lowThenHigh) + " (" + pc(lowThenHigh, lowFirst) + ")" +
+         "\n    then back below the high: " + pc(lowThenHighBack, lowThenHigh) + " · to the 50%: " + pc(lowThenHighMid, lowThenHigh) + " · to the Asian low: " + pc(lowThenHighFar, lowThenHigh) + "\n\n" +
+         "HIGH TAKEN FIRST: " + str.tostring(highFirst) + " days (" + pc(highFirst, days) + ") · London " + pc(highFirstLon, highFirst) + " · 05:00-09:30 " + pc(highFirstPre, highFirst) + " · US " + pc(highFirstUs, highFirst) +
+         "\n  then dump to a new low: " + str.tostring(highThenLow) + " (" + pc(highThenLow, highFirst) + ")" +
+         "\n    then back above the low: " + pc(highThenLowBack, highThenLow) + " · to the 50%: " + pc(highThenLowMid, highThenLow) + " · to the Asian high: " + pc(highThenLowFar, highThenLow) + "\n\n" +
+         "BREAKOUTS, where the day closed (US close)\n  Above the Asian high: " + str.tostring(boH) + " days · closed above " + pc(boHUp, boH) + " · back inside " + pc(boHIn, boH) + " · below the Asian low (fake-out) " + pc(boHDn, boH) +
+         "\n  Below the Asian low: " + str.tostring(boL) + " days · closed below " + pc(boLDn, boL) + " · back inside " + pc(boLIn, boL) + " · above the Asian high (fake-out) " + pc(boLUp, boL) + "\n\n" +
+         "Both sides in the same candle: " + str.tostring(sameBar) + " · neither side taken: " + str.tostring(neither) + " (" + pc(neither, days) + ")"
+    label.delete(res)
+    res := label.new(bar_index + 3, high, txt, style = label.style_label_left, color = color.new(#131722, 5), textcolor = color.white, size = size.small, textalign = text.align_left)
