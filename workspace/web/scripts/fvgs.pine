@@ -1,0 +1,61 @@
+//@version=6
+indicator("Fair value gaps (until filled)", "FVG", overlay = true, max_boxes_count = 500)
+
+minTk    = input.int(4, "Gap at least (ticks)", minval = 0)
+maxAge   = input.int(100, "Drop a gap after (candles, 0 = never)", minval = 0)
+fillMode = input.string("Close through it (inverted)", "A gap is done when", options = ["Close through it (inverted)", "Price fills it completely", "Price touches it"])
+showDone = input.bool(false, "Keep done gaps on the chart (faded)")
+colUp    = input.color(#089981, "Bullish gap")
+colDn    = input.color(#f23645, "Bearish gap")
+
+tick = syminfo.mintick
+var bx = array.new_box()
+var dir = array.new_int()
+var top = array.new_float()
+var bot = array.new_float()
+var born = array.new_int()
+
+// a gap: candle 1 and candle 3 don't overlap (drawn from candle 1)
+if bar_index >= 2
+    if low - high[2] >= minTk * tick
+        array.push(bx, box.new(bar_index - 2, low, bar_index + 1, high[2], border_color = color.new(colUp, 60), bgcolor = color.new(colUp, 80)))
+        array.push(dir, 1)
+        array.push(top, low)
+        array.push(bot, high[2])
+        array.push(born, bar_index)
+    if low[2] - high >= minTk * tick
+        array.push(bx, box.new(bar_index - 2, low[2], bar_index + 1, high, border_color = color.new(colDn, 60), bgcolor = color.new(colDn, 80)))
+        array.push(dir, -1)
+        array.push(top, low[2])
+        array.push(bot, high)
+        array.push(born, bar_index)
+
+// extend live gaps; finish the filled / old ones
+if array.size(bx) > 0
+    for i = array.size(bx) - 1 to 0
+        b = array.get(bx, i)
+        d = array.get(dir, i)
+        t = array.get(top, i)
+        u = array.get(bot, i)
+        done = false
+        if array.get(born, i) != bar_index
+            done := switch fillMode
+                "Close through it (inverted)" => d > 0 ? close < u : close > t
+                "Price fills it completely" => d > 0 ? low <= u : high >= t
+                => d > 0 ? low <= t : high >= u
+        if maxAge > 0 and bar_index - array.get(born, i) > maxAge
+            done := true
+        if done
+            if showDone
+                box.set_right(b, bar_index)
+                box.set_bgcolor(b, color.new(d > 0 ? colUp : colDn, 93))
+                box.set_border_color(b, color.new(d > 0 ? colUp : colDn, 85))
+            else
+                box.delete(b)
+            array.remove(bx, i)
+            array.remove(dir, i)
+            array.remove(top, i)
+            array.remove(bot, i)
+            array.remove(born, i)
+        else
+            box.set_right(b, bar_index + 1)

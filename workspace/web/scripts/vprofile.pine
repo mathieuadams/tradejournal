@@ -1,0 +1,101 @@
+//@version=6
+indicator("Session volume profile (from the Asian session)", "Volume profile", overlay = true, max_boxes_count = 500, max_lines_count = 500)
+
+at      = input.int(2000, "Each profile starts at (HHMM, New York; 2000 = Asian session)")
+rows    = input.int(24, "Rows", minval = 6, maxval = 100)
+vaPct   = input.int(70, "Value area (% of the volume)", minval = 10, maxval = 99)
+width   = input.int(30, "Width (candles)", minval = 5)
+keepN   = input.int(15, "Sessions to keep on the chart", minval = 1, maxval = 40)
+showPoc = input.bool(true, "POC line across the session")
+colV    = input.color(#FF5D8F, "Color")
+
+hm = hour * 100 + minute
+newSes = hm >= at and (bar_index == 0 or hm[1] < at or hm[1] > hm)
+
+var sH = array.new_float()
+var sL = array.new_float()
+var sV = array.new_float()
+var int sBar = na
+var curBoxes = array.new_box()
+var line curPoc = na
+var allBoxes = array.new_box()
+var allLines = array.new_line()
+var int nDone = 0
+
+// draw one session: rows from its low to its high; each candle's volume shared over the rows its range covers
+drawProfile(x0, x1, live) =>
+    n = array.size(sH)
+    if n > 0
+        lo = array.min(sL)
+        hi = array.max(sH)
+        stp = (hi - lo) / rows
+        if stp > 0
+            bins = array.new_float(rows, 0.0)
+            for i = 0 to n - 1
+                bh = array.get(sH, i)
+                bl = array.get(sL, i)
+                v = array.get(sV, i)
+                r0 = math.max(0, math.min(rows - 1, math.floor((bl - lo) / stp)))
+                r1 = math.max(0, math.min(rows - 1, math.floor((bh - lo) / stp)))
+                for r = r0 to r1
+                    ov = bh > bl ? (math.min(bh, lo + (r + 1) * stp) - math.max(bl, lo + r * stp)) / (bh - bl) : 1.0 / (r1 - r0 + 1)
+                    array.set(bins, r, array.get(bins, r) + v * math.max(0, ov))
+            mx = array.max(bins)
+            pi = array.indexof(bins, mx)
+            tot = array.sum(bins)
+            acc = mx
+            up = pi
+            dn = pi
+            while acc < tot * vaPct / 100 and (up < rows - 1 or dn > 0)
+                vu = up < rows - 1 ? array.get(bins, up + 1) : -1.0
+                vd = dn > 0 ? array.get(bins, dn - 1) : -1.0
+                if vu >= vd
+                    up += 1
+                    acc += vu
+                else
+                    dn -= 1
+                    acc += vd
+            for r = 0 to rows - 1
+                v = array.get(bins, r)
+                if v > 0 and mx > 0
+                    w = math.max(1, math.round(v / mx * width))
+                    tr = r == pi ? 15 : r >= dn and r <= up ? 55 : 80
+                    b = box.new(x0, lo + (r + 1) * stp, x0 + w, lo + r * stp, border_color = color.new(colV, 100), bgcolor = color.new(colV, tr))
+                    array.push(live ? curBoxes : allBoxes, b)
+            if showPoc
+                pp = lo + (pi + 0.5) * stp
+                ln = line.new(x0, pp, x1, pp, color = color.new(colV, 20), width = 1, style = line.style_dashed)
+                if live
+                    curPoc := ln
+                else
+                    array.push(allLines, ln)
+    0
+
+clearLive() =>
+    for b in curBoxes
+        box.delete(b)
+    array.clear(curBoxes)
+    if not na(curPoc)
+        line.delete(curPoc)
+
+if newSes
+    clearLive()
+    if not na(sBar)
+        drawProfile(sBar, bar_index - 1, false)       // the session that just ended
+        nDone += 1
+        // keep the last keepN sessions (each one is up to rows boxes)
+        while array.size(allBoxes) > keepN * rows
+            box.delete(array.shift(allBoxes))
+        while array.size(allLines) > keepN
+            line.delete(array.shift(allLines))
+    array.clear(sH)
+    array.clear(sL)
+    array.clear(sV)
+    sBar := bar_index
+if not na(sBar)
+    array.push(sH, high)
+    array.push(sL, low)
+    array.push(sV, nz(volume))
+if barstate.islast and not na(sBar)
+    clearLive()
+    drawProfile(sBar, bar_index, true)                // the session in progress

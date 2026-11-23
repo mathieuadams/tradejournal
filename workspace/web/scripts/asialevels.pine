@@ -1,0 +1,50 @@
+//@version=6
+indicator("Asian session high / low / 50%", "Asia levels", overlay = true, max_boxes_count = 500)
+
+rStart  = input.int(2000, "Asian session from (HHMM, New York)")
+rEnd    = input.int(0, "to (0 = midnight)")
+carryTo = input.int(1600, "Carry the levels until (HHMM)")
+showBox = input.bool(true, "Box the session")
+showMid = input.bool(true, "50% line")
+colBox  = input.color(#5B8DEF, "Color")
+
+hm = hour * 100 + minute
+inWin(a, b) => a <= b ? (hm >= a and hm < b) : (hm >= a or hm < b)
+inRange = inWin(rStart, rEnd)
+rangeStart = inRange and not inRange[1]
+rangeDone = not inRange and inRange[1]
+
+var float bH = na
+var float bL = na
+var float aH = na
+var float aL = na
+var int aStart = na
+var box aBox = na
+var bool on = false
+if rangeStart
+    bH := high
+    bL := low
+    aStart := bar_index
+    on := false
+    if showBox
+        aBox := box.new(bar_index, high, bar_index + 1, low, border_color = colBox, bgcolor = color.new(colBox, 85))
+else if inRange
+    bH := math.max(bH, high)
+    bL := math.min(bL, low)
+    if showBox and not na(aBox)
+        box.set_top(aBox, bH)
+        box.set_bottom(aBox, bL)
+        box.set_right(aBox, bar_index + 1)
+if rangeDone and not na(bH)
+    aH := bH
+    aL := bL
+    on := true
+    if showBox and not na(aStart)
+        box.delete(aBox)
+        aBox := box.new(aStart, bH, bar_index, bL, border_color = colBox, bgcolor = color.new(colBox, 85))
+if hm >= carryTo and not inRange
+    on := false
+show = on and not inRange
+plot(show ? aH : na, "Asian high", colBox, 1, plot.style_linebr)
+plot(show ? aL : na, "Asian low", colBox, 1, plot.style_linebr)
+plot(show and showMid ? (aH + aL) / 2 : na, "Asian 50%", color.new(#8a8f9c, 20), 1, plot.style_linebr)

@@ -1,0 +1,31 @@
+//@version=6
+indicator("Anchored VWAP (session start)", "VWAP", overlay = true)
+
+anchor = input.string("Asian session (20:00)", "Start each day at", options = ["Asian session (20:00)", "Globex open (18:00)", "New York open (09:30)", "Custom"])
+custom = input.int(2000, "Custom start (HHMM, New York)")
+b1     = input.float(1.0, "Band 1 (x standard deviation, 0 = off)", step = 0.5)
+b2     = input.float(2.0, "Band 2 (x standard deviation, 0 = off)", step = 0.5)
+src    = input.source(hlc3, "Source")
+
+hm = hour * 100 + minute
+at = anchor == "Asian session (20:00)" ? 2000 : anchor == "Globex open (18:00)" ? 1800 : anchor == "New York open (09:30)" ? 930 : custom
+// the first candle at or after the start time (works on any timeframe)
+reset = hm >= at and (bar_index == 0 or hm[1] < at or hm[1] > hm)
+var float sPV = 0
+var float sV = 0
+var float sPV2 = 0
+if reset
+    sPV := 0
+    sV := 0
+    sPV2 := 0
+v = nz(volume)
+sPV += src * v
+sV += v
+sPV2 += src * src * v
+vw = sV > 0 ? sPV / sV : na
+sd = sV > 0 ? math.sqrt(math.max(0, sPV2 / sV - vw * vw)) : na
+plot(vw, "VWAP", color.new(#F5F5F5, 0), 2, plot.style_linebr)
+plot(b1 > 0 ? vw + b1 * sd : na, "Band 1 up", color.new(#5B8DEF, 30), 1)
+plot(b1 > 0 ? vw - b1 * sd : na, "Band 1 down", color.new(#5B8DEF, 30), 1)
+plot(b2 > 0 ? vw + b2 * sd : na, "Band 2 up", color.new(#E07AE0, 40), 1)
+plot(b2 > 0 ? vw - b2 * sd : na, "Band 2 down", color.new(#E07AE0, 40), 1)
