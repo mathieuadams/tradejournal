@@ -251,7 +251,7 @@ function optForm(inputs) {
       <label class="field"><span>Min trades (train)</span><input id="rsMin" type="number" value="${R.minTrades}"></label>
       <label class="field"><span>Max runs</span><input id="rsBudget" type="number" min="10" max="50000" step="500" value="${R.budget}" title="Up to this many: every combination; more combinations: a random search, then around the best ones"></label>
       <label class="field"><span>No month over (% of profit)</span><input id="rsMonth" type="number" min="10" max="100" step="5" value="${R.maxMonth}"></label></div>
-    <div class="row rs-checks"><label><input type="checkbox" id="rsDays" ${R.tryDays ? 'checked' : ''}> Also try leaving out each weekday</label>
+    <div class="row rs-checks"><label><input type="checkbox" id="rsTryDays" ${R.tryDays ? 'checked' : ''}> Also try leaving out each weekday</label>
       <label><input type="checkbox" id="rsForever" ${R.forever ? 'checked' : ''}> Keep searching until Stop</label>
       <button class="btn primary" data-a="staged" style="align-self:flex-end;margin-bottom:10px" ${R.running ? 'disabled' : ''} title="Measure each input alone first, then optimize the most influential ones together, then the next tier, then fine-tune the rest">▶ Staged: most influential first</button>
       <button class="btn" data-a="optimize" style="align-self:flex-end;margin-bottom:10px" ${R.running ? 'disabled' : ''}>Full search <span id="rsCombos" class="dim"></span></button></div>`;
@@ -276,7 +276,7 @@ function wireOpt() {
   };
   const o = root.querySelector('#rsObj'); if (o) o.onchange = () => { R.objective = o.value; if (R.opt) { sortOpt(); renderOpt(); } };
   const bu = root.querySelector('#rsBudget'); if (bu) bu.onchange = () => { R.budget = Math.max(10, Math.min(50000, Math.round(+bu.value || 3000))); combos(); };
-  const dy = root.querySelector('#rsDays'); if (dy) dy.onchange = () => { R.tryDays = dy.checked; combos(); };
+  const dy = root.querySelector('#rsTryDays'); if (dy) dy.onchange = () => { R.tryDays = dy.checked; combos(); };
   const rg = root.querySelector('#rsRegime'); if (rg) rg.onchange = () => { R.tryRegime = rg.checked; combos(); };
   const fv = root.querySelector('#rsForever'); if (fv) fv.onchange = () => { R.forever = fv.checked; combos(); };
   const mo = root.querySelector('#rsMonth'); if (mo) mo.onchange = () => { R.maxMonth = Math.max(10, Math.min(100, +mo.value || 35)); if (R.opt) { sortOpt(); renderOpt(); } };
