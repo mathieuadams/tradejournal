@@ -599,7 +599,7 @@ const inp = (type) => (c, a, st, id, node) => {
   spec.value = v; st.has = true; st.v = v; return v;
 };
 for (const t of ['int', 'float', 'bool', 'string', 'color', 'source', 'timeframe', 'session', 'symbol', 'price', 'text_area', 'time', 'enum']) def('input.' + t, 'defval,title', inp(t));
-def('input', 'defval,title', (c, a, st, id, node) => inp(typeof a[0] === 'boolean' ? 'bool' : typeof a[0] === 'string' && a[0][0] === '#' ? 'color' : typeof a[0] === 'string' ? 'string' : Number.isInteger(a[0]) ? 'int' : 'float')(c, a, st, id, node));
+def('input', 'defval,title', (c, a, st, id, node) => inp(node && node.srcName ? 'source' : typeof a[0] === 'boolean' ? 'bool' : typeof a[0] === 'string' && a[0][0] === '#' ? 'color' : typeof a[0] === 'string' ? 'string' : Number.isInteger(a[0]) ? 'int' : 'float')(c, a, st, id, node));
 
 // declaration
 const header = strat => (c, a) => {
@@ -963,6 +963,13 @@ A1('some', '', x => x.some(truthy));
 let NODE = 0;
 class Scope { constructor(parent, global) { this.parent = parent; this.vars = new Map(); this.global = global; } find(n) { for (let s = this; s; s = s.parent) if (s.vars.has(n)) return s.vars.get(n); return null; } }
 
+// Pine v4 and older: the same built-ins without their namespace (highest, sma, max, tostring, security, ...)
+for (const k of Object.keys(F)) {
+  const m = /^(ta|math|str|request)\.(.+)$/.exec(k);
+  if (m && !F[m[2]] && !m[2].includes('.')) F[m[2]] = F[k];
+}
+if (!F.iff) def('iff', 'condition,then,_else', (c, a) => (truthy(a[0]) ? a[1] : a[2]));
+
 function compileProgram(ast) {
   const funcs = new Map();
   let declN = 0;
@@ -1127,7 +1134,7 @@ function compileProgram(ast) {
       if (name === 'input.source' || name === 'input') { const a0 = e.args.pos[0] || e.args.named.defval; if (a0 && a0.k === 'id' && BV[a0.name]) node.srcName = a0.name; }
       const map = posF.slice(); const extra = {};
       for (const [k, f] of Object.entries(namedF)) { const j = params.indexOf(k); if (j >= 0) map[j] = f; else extra[k] = f; }
-      const isSource = name === 'input.source';
+      const isSource = name === 'input.source' || (name === 'input' && !!node.srcName);   // v4: input(close)
       const hasExtra = Object.keys(namedF).length > 0;
       return ctx => {
         const a = new Array(map.length); for (let k = 0; k < map.length; k++) a[k] = map[k] ? map[k](ctx) : undefined;
