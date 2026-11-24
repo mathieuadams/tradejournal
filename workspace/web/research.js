@@ -117,7 +117,8 @@ export async function runStudy(inputs) {
     if (r.error) throw new Error(r.error);
     const b = data.bars;
     R.study = { ...r, from: b[0].t, to: b[b.length - 1].t, cut: baseMsg(data).splitTime, n: b.length, symbol: R.symbol, tf: R.tf };
-    R.sel = {}; setProg(`${b.length.toLocaleString()} bars · ${fmtD(b[0].t)} → ${fmtD(b[b.length - 1].t)} · ${r.ms} ms`);
+    R.sel = {}; setProg(`${b.length.toLocaleString()} bars · ${fmtD(b[0].t)} → ${fmtD(b[b.length - 1].t)} · ${r.ms} ms` + (r.warn && r.warn.length ? ' · ⚠ ' + r.warn.join(' ') : ''));
+    if (r.warn && r.warn.length) toast(r.warn[0], 'err');
     return R.study;
   } catch (e) { setProg('⚠ ' + e.message); toast(e.message, 'err'); return { error: e.message }; }
   finally { R.running = false; mountResearch(root); }

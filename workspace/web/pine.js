@@ -724,7 +724,7 @@ class Strat {
       const sz = this.size();
       if (x.kind === 'entry' && sz * x.dir < 0) this.closeLots(this.lots.slice(), px, i, x.comment || x.id);   // reverse
       else if (x.kind === 'entry' && sz * x.dir > 0 && this.lots.length > this.pyr) return;                  // pyramiding limit
-      let q = this.qtyFor(x.qty, px); if (!(q > 0)) return;
+      let q = this.qtyFor(x.qty, px); if (!(q > 0)) { if (this.qtyType !== 'fixed' && (isna(x.qty) || x.qty === undefined)) this.c.warn(`An order was skipped: the ${this.qtyType.replace(/_/g, ' ')} size works out to 0 contracts (equity ${Math.round(this.equity(px))}). Use default_qty_type = strategy.fixed to trade a set number of contracts.`); return; }
       if (x.kind === 'order' && sz * x.dir < 0) { const rest = this.reduce(q, px, i, x.comment || x.id); q = rest; if (!(q > 0)) return; }
       this.lots.push({ id: x.id, dir: x.dir, qty: q, px, bar: i, t, com: this.com(q, px), comment: x.comment });
       this.fills.push({ bar: i, t, px, qty: q, dir: x.dir, id: x.id, kind: 'entry' });

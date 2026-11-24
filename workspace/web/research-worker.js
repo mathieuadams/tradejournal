@@ -16,7 +16,7 @@ self.onmessage = e => {
     const T = r.strategy.trades, cut = m.splitTime;
     const res = { type: 'result', id: m.id, all: metrics(T), train: metrics(T.filter(t => t.entryTime < cut)), test: metrics(T.filter(t => t.entryTime >= cut)),
       open: r.strategy.open.length, inputs: r.inputs.filter(Boolean).map(i => ({ idx: i.idx, title: i.title, type: i.type, value: i.value, defval: i.defval, options: i.options, minval: i.minval, maxval: i.maxval, step: i.step })),
-      settings: r.strategy.settings, ms: r.ms };
+      settings: r.strategy.settings, ms: r.ms, warn: (r.logs || []).filter(l => l.level === 'warning').map(l => l.msg).slice(0, 3) };
     if (m.full) res.trades = T.map(t => ({ dir: t.dir, qty: t.qty, entryTime: t.entryTime, entryPx: t.entryPx, exitTime: t.exitTime, exitPx: t.exitPx, pnl: t.pnl, pct: t.pct, why: t.why, id: t.id, bars: t.exitBar - t.entryBar, bar: t.entryBar }));
     self.postMessage(res);
   } catch (err) {
