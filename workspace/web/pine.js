@@ -142,6 +142,8 @@ class Parser {
     const e = this.exprOrBlock(); this.endStmt(e); return { k: 'expr', e, line };
   }
   skipType() {
+    // qualifiers first (const / simple / series string ...), then the type itself
+    while (this.is('id') && ['const', 'simple', 'series'].includes(this.peek().v) && this.is('id', undefined, 1) && TYPES.has(this.t[this.p + 1].v)) this.next();
     if (this.is('id') && TYPES.has(this.peek().v) && (this.is('id', undefined, 1) || this.op('<', 1))) {
       this.next(); if (this.op('<')) { while (!this.op('>')) this.next(); this.next(); }
     }
@@ -413,7 +415,7 @@ const CONST = {
   'label.style_circle': 'circle', 'label.style_triangleup': 'triangleup', 'label.style_triangledown': 'triangledown', 'label.style_xcross': 'xcross', 'label.style_cross': 'cross', 'label.style_diamond': 'diamond', 'label.style_square': 'square', 'label.style_flag': 'flag', 'label.style_arrowup': 'arrowup', 'label.style_arrowdown': 'arrowdown', 'label.style_label_lower_left': 'label_up', 'label.style_label_lower_right': 'label_up', 'label.style_label_upper_left': 'label_down', 'label.style_label_upper_right': 'label_down',
   'text.align_left': 'left', 'text.align_center': 'center', 'text.align_right': 'right', 'text.align_top': 'top', 'text.align_bottom': 'bottom',
   'format.price': 'price', 'format.volume': 'volume', 'format.percent': 'percent', 'format.mintick': 'mintick', 'format.inherit': 'inherit',
-  'scale.right': 'right', 'scale.left': 'left', 'scale.none': 'none', 'display.all': 'all', 'display.none': 'none', 'display.pane': 'pane', 'display.data_window': 'all', 'display.status_line': 'all', 'display.price_scale': 'all',
+  'scale.right': 'right', 'scale.left': 'left', 'scale.none': 'none', 'display.all': 'all', 'display.none': 'none', 'display.pane': 'pane', 'display.data_window': 'none', 'display.status_line': 'all', 'display.price_scale': 'all',
   'barmerge.gaps_off': false, 'barmerge.gaps_on': true, 'barmerge.lookahead_off': false, 'barmerge.lookahead_on': true,
   'order.ascending': 'asc', 'order.descending': 'desc', 'position.top_right': 'top_right', 'position.top_left': 'top_left', 'position.bottom_right': 'bottom_right', 'position.bottom_left': 'bottom_left',
   'dayofweek.sunday': 1, 'dayofweek.monday': 2, 'dayofweek.tuesday': 3, 'dayofweek.wednesday': 4, 'dayofweek.thursday': 5, 'dayofweek.friday': 6, 'dayofweek.saturday': 7,
@@ -421,6 +423,7 @@ const CONST = {
   'font.family_default': 'default', 'font.family_monospace': 'mono', 'adjustment.none': 'none', 'adjustment.splits': 'splits', 'session.regular': 'regular', 'session.extended': 'extended',
 };
 for (const [k, v] of Object.entries(COLORS)) CONST['color.' + k] = normColor(v);
+CONST['chart.fg_color'] = normColor('#d1d4dc'); CONST['chart.bg_color'] = normColor('#131722');   // the app's dark theme
 
 // ------------------------------------------------------------------ builtin functions
 // F[name] = [paramNames, fn(ctx, args, st, nodeId)]
@@ -573,8 +576,19 @@ def('color.from_gradient', 'value,bottom_value,top_value,bottom_color,top_color'
 });
 
 // time
-def('time', 'timeframe,session', (c) => c.B.t[c.i] * 1000);
-def('time_close', 'timeframe,session', (c) => (c.B.t[c.i] + c.tfSec) * 1000);
+// time(tf) / time_close(tf): the start / end of the higher-timeframe bar this candle belongs to
+const htfStart = (c, tf, st) => {
+  const sec = tfSeconds(tf);
+  if (!(sec > c.tfSec)) return c.B.t[c.i];
+  if (sec < 86400) return Math.floor(c.B.t[c.i] / sec) * sec;
+  if (st.i !== c.i) { st.i = c.i; if (st.start == null || F['timeframe.change'][1](c, [tf])) st.start = c.B.t[c.i]; }
+  return st.start;
+};
+def('time', 'timeframe,session', (c, a, st) => (a[0] ? htfStart(c, a[0], st) : c.B.t[c.i]) * 1000);
+def('time_close', 'timeframe,session', (c, a, st) => {
+  if (!a[0]) return (c.B.t[c.i] + c.tfSec) * 1000;
+  const sec = tfSeconds(a[0]); return sec > c.tfSec ? (htfStart(c, a[0], st) + sec) * 1000 : (c.B.t[c.i] + c.tfSec) * 1000;
+});
 for (const [k, f] of Object.entries({ hour: 'h', minute: 'mi', second: 's', dayofmonth: 'd', dayofweek: 'wd', month: 'mo', year: 'y' })) def(k, 'time,timezone', (c, a) => nyParts(num(a[0]) / 1000)[f]);
 def('timestamp', '', (c, a) => {
   const v = a.filter(x => typeof x === 'number'); if (v.length >= 3) { const [y, mo, d, h = 0, mi = 0, s = 0] = v; const guess = Date.UTC(y, mo - 1, d, h, mi, s) / 1000; const p = nyParts(guess); const off = (Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) / 1000) - guess; return (guess - off) * 1000; }
@@ -848,13 +862,16 @@ def('request.security', 'symbol,timeframe,expression,gaps,lookahead', (c, a, st,
   const S = c.sec && c.sec[k.key];
   if (!S) { const m = `request.security(): no ${k.sym} ${k.tf} data loaded yet; the chart's own series is used.`; c.warn(m); return a[2]; }
   const vals = S.vals[site]; if (!vals) return NaN;
-  const end = c.B.t[c.i] + c.tfSec; let j = st.j == null ? -1 : st.j;
-  if (j >= 0 && S.t[j] + S.dur > end) j = -1;                    // (replay / a jump back in time)
-  while (j + 1 < S.t.length && S.t[j + 1] + S.dur <= end) j++;
+  // lookahead_on: the higher-timeframe bar this candle belongs to (used as expr[1] it is the last closed one, no repainting);
+  // otherwise the last one that has closed by the end of this candle
+  const look = a[4] === true, end = look ? c.B.t[c.i] : c.B.t[c.i] + c.tfSec; let j = st.j == null ? -1 : st.j;
+  const ok = x => look ? S.t[x] <= end : S.t[x] + S.dur <= end;
+  if (j >= 0 && !ok(j)) j = -1;                                   // (replay / a jump back in time)
+  while (j + 1 < S.t.length && ok(j + 1)) j++;
   st.j = j; if (j < 0) return NaN;
   const v = vals[j]; return v === undefined ? NaN : v;
 });
-def('runtime.error', 'message', (c, a) => { throw new PineError(String(a[0]), c.line); });
+def('runtime.error', 'message', (c, a) => { if (c.secRec || c.probe) return NaN; throw new PineError(String(a[0]), c.line); });   // (not inside request.security's own run)
 for (const lv of ['info', 'warning', 'error']) def('log.' + lv, 'message', (c, a) => { if (c.out.logs.length < 200) c.out.logs.push({ level: lv, bar: c.i, msg: F['str.format'][1](c, a) }); return NaN; });
 
 // plots
@@ -881,14 +898,27 @@ def('plotchar', 'series,title,char,location,color,offset,text,textcolor,editable
   return NaN;
 });
 def('plotarrow', 'series,title,colorup,colordown,offset', (c, a, st, id) => NaN);
-def('plotcandle', 'open,high,low,close,title,color', () => NaN);
+// plotcandle on the chart's own candles: drawn as a candle color (bar color)
+def('plotcandle', 'open,high,low,close,title,color,wickcolor,editable,show_last,bordercolor,display', (c, a, st, id) => {
+  if (a[10] === 'none') return NaN;
+  let p = c.out._bar.get(id); if (!p) { p = { id, offset: 0, colors: new Array(c.n).fill(null) }; c.out._bar.set(id, p); }
+  p.colors[c.i] = a[5] === undefined ? null : colorAt(a[5]); return NaN;
+});
 def('plotbar', 'open,high,low,close,title,color', () => NaN);
 def('hline', 'price,title,color,linestyle,linewidth,editable,display', (c, a, st, id) => {
   if (!c.out._hlines.has(id)) c.out._hlines.set(id, { id, price: num(a[0]), title: a[1] ?? 'Line', color: colorAt(a[2]) || '#787b86ff', linestyle: a[3] ?? 'dashed', linewidth: a[4] ?? 1 });
   return { ref: 'hline', id };
 });
+// two colors, mixed half and half (for the gradient fill)
+const mixColor = (x, y) => {
+  if (!x || !y) return x || y || null;
+  const h = (s, k) => parseInt(s.slice(1 + 2 * k, 3 + 2 * k), 16), q = k => Math.round((h(x, k) + h(y, k)) / 2).toString(16).padStart(2, '0');
+  return '#' + q(0) + q(1) + q(2) + (x.length >= 9 && y.length >= 9 ? q(3) : 'ff');
+};
 def('fill', 'hline1,hline2,color,title,editable,fillgaps,display', (c, a, st, id) => {
   if (!a[0] || !a[1] || !a[0].ref) return NaN;
+  // gradient form: fill(plot1, plot2, top_value, bottom_value, top_color, bottom_color, title): one color per candle, the mix
+  if (typeof a[2] === 'number' && a[4] !== undefined) { a = [a[0], a[1], mixColor(colorAt(a[4]), colorAt(a[5]))]; if (a[2] === null) a[2] = NaN; }
   let f = c.out._fills.get(id);
   if (!f) { f = { id, a: a[0], b: a[1], color: colorAt(a[2]) || '#2962ff33', colors: null }; c.out._fills.set(id, f); }
   if (a[2] !== undefined) { const col = colorAt(a[2]); if (col !== f.color || f.colors) { f.colors = f.colors || new Array(c.n).fill(f.color); f.colors[c.i] = col; } }
