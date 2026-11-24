@@ -819,12 +819,26 @@ def('alert', 'message,freq', () => NaN);
 // end of this bar is returned (no lookahead). Without the bars (or for the chart's own symbol and timeframe) the
 // expression on the chart's own series is returned.
 export function secKey(sym, tf, ctx) {
-  let s = String(sym == null ? '' : sym).trim(); if (s.includes(':')) s = s.slice(s.indexOf(':') + 1);
+  let s = String(sym == null ? '' : sym).trim(); const ha = s.startsWith('HA~'); if (ha) s = s.slice(3);
+  if (s.includes(':')) s = s.slice(s.indexOf(':') + 1);
   s = s.replace(/[0-9]*!$/, '').toUpperCase(); if (!s || s === String(ctx.symbol).toUpperCase()) s = String(ctx.symbol).toUpperCase();
   let t = String(tf == null ? '' : tf).trim(); if (!t) t = ctx.tf;
   if (/^\d+$/.test(t)) t = t + 'm'; if (/^[DWM]$/.test(t)) t = '1' + t;
-  const tfs = tfSeconds(t), same = s === String(ctx.symbol).toUpperCase() && tfs === ctx.tfSec;
+  const tfs = tfSeconds(t), same = !ha && s === String(ctx.symbol).toUpperCase() && tfs === ctx.tfSec;
+  if (ha) s = 'HA~' + s;                                          // Heikin Ashi candles of that symbol (ticker.heikinashi)
   return { sym: s, tf: t, tfSec: tfs, key: s + '|' + t, same };
+}
+def('ticker.heikinashi', 'symbol', (c, a) => 'HA~' + String(a[0] == null ? c.symbol : a[0]));
+def('ticker.new', 'prefix,ticker', (c, a) => String(a[1] ?? c.symbol));
+def('ticker.standard', 'symbol', (c, a) => String(a[0] ?? c.symbol).replace(/^HA~/, ''));
+// Heikin Ashi candles from normal ones
+export function heikinAshi(bars) {
+  const out = new Array(bars.length); let po = NaN, pc = NaN;
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i], c = (b.o + b.h + b.l + b.c) / 4, o = i === 0 || isNaN(po) ? (b.o + b.c) / 2 : (po + pc) / 2;
+    out[i] = { t: b.t, o, h: Math.max(b.h, o, c), l: Math.min(b.l, o, c), c, v: b.v }; po = o; pc = c;
+  }
+  return out;
 }
 def('request.security', 'symbol,timeframe,expression,gaps,lookahead', (c, a, st, id) => {
   const k = secKey(a[0], a[1], c), site = c.f.path + '/' + id;
@@ -1203,17 +1217,36 @@ export function securityRequests(compiled, bars, opts = {}) {
   if (!/request\.security\s*\(/.test(compiled.src || '')) return [];
   const probe = new Map();
   try { run(compiled, bars.slice(0, Math.min(bars.length, 3)), { ...opts, securities: null, _probe: probe }); } catch (e) { /* the requests seen so far */ }
-  return [...probe.entries()].map(([key, v]) => ({ ...v, key }));
+  // Heikin Ashi requests are built from the normal candles: fetch those (none when it is the chart's own symbol and timeframe)
+  const out = new Map(), sym0 = String(opts.symbol || '').toUpperCase(), tfs0 = opts.tfSec || tfSeconds(opts.tf || '1D');
+  for (const [key, v] of probe.entries()) {
+    if (!v.sym.startsWith('HA~')) { out.set(key, { ...v, key }); continue; }
+    const base = v.sym.slice(3);
+    if (base === sym0 && tfSeconds(v.tf) === tfs0) continue;
+    out.set(base + '|' + v.tf, { sym: base, tf: v.tf, key: base + '|' + v.tf });
+  }
+  return [...out.values()];
 }
 
 export function run(compiled, bars, opts = {}) {
-  let sec = null;
-  if (opts.securities && !opts._probe && !opts._secRec) {
+  let sec = null, secIn = opts.securities;
+  if (!opts._probe && !opts._secRec && /ticker\.heikinashi\s*\(/.test(compiled.src || '')) {
+    // Heikin Ashi series: built here from the chart's candles or the normal candles loaded for that symbol / timeframe
+    const probe = new Map();
+    try { run(compiled, bars.slice(0, Math.min(bars.length, 3)), { ...opts, securities: null, _probe: probe }); } catch (e) { /* the requests seen so far */ }
+    const sym0 = String(opts.symbol || '').toUpperCase(), tfs0 = opts.tfSec || tfSeconds(opts.tf || '1D');
+    for (const [key, v] of probe.entries()) {
+      if (!v.sym.startsWith('HA~') || (secIn && secIn[key])) continue;
+      const base = v.sym.slice(3), src = (secIn && secIn[base + '|' + v.tf]) || (base === sym0 && tfSeconds(v.tf) === tfs0 ? bars : null);
+      if (src && src.length) { secIn = { ...(secIn || {}) }; secIn[key] = heikinAshi(src); }
+    }
+  }
+  if (secIn && !opts._probe && !opts._secRec) {
     sec = {};
-    for (const [key, sb] of Object.entries(opts.securities)) {
+    for (const [key, sb] of Object.entries(secIn)) {
       if (!sb || !sb.length) continue;
       const [sym, tf] = key.split('|'), rec = { key, vals: {} };
-      run(compiled, sb, { ...opts, symbol: sym, tf, tfSec: tfSeconds(tf), securities: null, _secRec: rec, live: false });
+      run(compiled, sb, { ...opts, symbol: sym.replace(/^HA~/, ''), tf, tfSec: tfSeconds(tf), securities: null, _secRec: rec, live: false });
       sec[key] = { t: sb.map(b => b.t), dur: tfSeconds(tf), vals: rec.vals };
     }
   }

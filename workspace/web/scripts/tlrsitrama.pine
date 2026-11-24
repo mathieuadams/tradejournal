@@ -1,0 +1,101 @@
+//@version=5
+// Trendline break + RSI + TRAMA.
+// Trendlines with Breaks and TRAMA (Trend Regularity Adaptive Moving Average) logic © LuxAlgo, CC BY-NC-SA 4.0
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+//   Long:  price breaks the down trendline upward, RSI under 70, close above the TRAMA. Exit when the RSI goes above 70
+//          or price closes below the TRAMA.
+//   Short: mirror (RSI above 30, below the TRAMA; exit when the RSI goes below 30 or price closes above the TRAMA).
+strategy("Trendline break + RSI + TRAMA", "TL RSI TRAMA", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 1,
+     process_orders_on_close = true, commission_type = strategy.commission.cash_per_contract, commission_value = 2.25, slippage = 1)
+
+grpT = "Trendlines"
+length     = input.int(14, "Swing detection lookback", group = grpT)
+mult       = input.float(1., "Slope", minval = 0, step = .1, group = grpT)
+calcMethod = input.string("Atr", "Slope calculation method", options = ["Atr", "Stdev", "Linreg"], group = grpT)
+grpR = "RSI"
+rsiLen = input.int(14, "RSI length", minval = 2, group = grpR)
+obLvl  = input.float(70, "Overbought (long entry under it, long exit above it)", group = grpR)
+osLvl  = input.float(30, "Oversold (short entry above it, short exit below it)", group = grpR)
+grpA = "TRAMA"
+amaLen = input.int(99, "TRAMA length", minval = 2, group = grpA)
+grpE = "Trades"
+side    = input.string("Both", "Side", options = ["Both", "Long", "Short"], group = grpE)
+trendExit = input.bool(true, "Exit when price closes on the wrong side of the TRAMA", group = grpE)
+trendBuf  = input.int(0, "TRAMA exit: beyond it by (ticks)", minval = 0, group = grpE)
+trendBars = input.int(1, "TRAMA exit: closes in a row", minval = 1, group = grpE)
+oppMode = input.string("Close and reverse", "Opposite signal (break + RSI + TRAMA)", options = ["Close and reverse", "Close only", "Ignore"], group = grpE)
+oppExit = input.bool(false, "Also exit on any opposite trendline break (without RSI / TRAMA)", group = grpE)
+stopPct = input.float(0, "Stop loss (% from entry, 0 = off)", step = 0.25, group = grpE)
+upCss   = input.color(color.teal, "Up trendline color", group = "Style")
+dnCss   = input.color(color.red, "Down trendline color", group = "Style")
+
+// ---- trendlines with breaks (real-time values, no backpainting)
+var upper = 0.
+var lower = 0.
+var slope_ph = 0.
+var slope_pl = 0.
+n = bar_index
+src = close
+ph = ta.pivothigh(length, length)
+pl = ta.pivotlow(length, length)
+slope = switch calcMethod
+    "Atr"    => ta.atr(length) / length * mult
+    "Stdev"  => ta.stdev(src, length) / length * mult
+    "Linreg" => math.abs(ta.sma(src * n, length) - ta.sma(src, length) * ta.sma(n, length)) / ta.variance(n, length) / 2 * mult
+slope_ph := not na(ph) ? slope : slope_ph
+slope_pl := not na(pl) ? slope : slope_pl
+upper := not na(ph) ? ph : upper - slope_ph
+lower := not na(pl) ? pl : lower + slope_pl
+var upos = 0
+var dnos = 0
+upos := not na(ph) ? 0 : close > upper - slope_ph * length ? 1 : upos
+dnos := not na(pl) ? 0 : close < lower + slope_pl * length ? 1 : dnos
+upBreak = upos > upos[1]
+dnBreak = dnos > dnos[1]
+upLine = upper - slope_ph * length
+dnLine = lower + slope_pl * length
+plot(upLine, "Down trendline (break up = long)", color = not na(ph) ? na : upCss)
+plot(dnLine, "Up trendline (break down = short)", color = not na(pl) ? na : dnCss)
+
+// ---- TRAMA
+hh = math.max(math.sign(ta.change(ta.highest(amaLen))), 0)
+ll = math.max(math.sign(ta.change(ta.lowest(amaLen)) * -1), 0)
+tc = math.pow(ta.sma(hh or ll ? 1 : 0, amaLen), 2)
+ama = 0.
+ama := nz(ama[1] + tc * (src - ama[1]), src)
+plot(ama, "TRAMA", #ff1100, 2)
+
+// ---- RSI
+rsi = ta.rsi(close, rsiLen)
+
+// ---- trades
+longSig  = upBreak and rsi < obLvl and close > ama
+shortSig = dnBreak and rsi > osLvl and close < ama
+// the opposite signal closes the open trade (and reverses it when allowed)
+if oppMode != "Ignore" and strategy.position_size > 0 and shortSig
+    strategy.close("Long", comment = "Opposite signal")
+if oppMode != "Ignore" and strategy.position_size < 0 and longSig
+    strategy.close("Short", comment = "Opposite signal")
+canRev = oppMode == "Close and reverse"
+if side != "Short" and longSig and (strategy.position_size == 0 or (strategy.position_size < 0 and canRev))
+    strategy.entry("Long", strategy.long)
+if side != "Long" and shortSig and (strategy.position_size == 0 or (strategy.position_size > 0 and canRev))
+    strategy.entry("Short", strategy.short)
+// closes in a row beyond the TRAMA (by trendBuf ticks)
+belowN = math.sum(close < ama - trendBuf * syminfo.mintick ? 1 : 0, trendBars) == trendBars
+aboveN = math.sum(close > ama + trendBuf * syminfo.mintick ? 1 : 0, trendBars) == trendBars
+if trendExit and strategy.position_size > 0 and belowN
+    strategy.close("Long", comment = "Below the TRAMA")
+if trendExit and strategy.position_size < 0 and aboveN
+    strategy.close("Short", comment = "Above the TRAMA")
+if strategy.position_size > 0 and (rsi > obLvl or (oppExit and dnBreak))
+    strategy.close("Long", comment = rsi > obLvl ? "RSI > " + str.tostring(obLvl) : "Break down")
+if strategy.position_size < 0 and (rsi < osLvl or (oppExit and upBreak))
+    strategy.close("Short", comment = rsi < osLvl ? "RSI < " + str.tostring(osLvl) : "Break up")
+if stopPct > 0 and strategy.position_size > 0
+    strategy.exit("sL", "Long", stop = strategy.position_avg_price * (1 - stopPct / 100), comment_loss = "Stop")
+if stopPct > 0 and strategy.position_size < 0
+    strategy.exit("sS", "Short", stop = strategy.position_avg_price * (1 + stopPct / 100), comment_loss = "Stop")
+
+plotshape(upBreak, "Upper break", shape.labelup, location.belowbar, upCss, text = "B", textcolor = color.white, size = size.tiny)
+plotshape(dnBreak, "Lower break", shape.labeldown, location.abovebar, dnCss, text = "B", textcolor = color.white, size = size.tiny)
