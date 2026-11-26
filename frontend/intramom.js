@@ -65,6 +65,7 @@ function imResHtml(r) {
     <div class="tbl-wrap"><table class="tbl">${head}<tbody>${row(`Train (before ${esc(r.split)})`, r.train)}${row(`<b>Test (from ${esc(r.split)})</b>`, r.test)}${row('All', r.all)}
       ${row('<span class="dim">SPY buy &amp; hold, test</span>', r.spy.test)}${row('<span class="dim">SPY buy &amp; hold, all</span>', r.spy.all)}</tbody></table></div>
     <div class="bd">${svg}<div class="dim" style="font-size:12px">Account (blue) vs SPY buy &amp; hold (grey), log scale.</div></div></section>
+    ${imCalHtml(r)}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
       <section class="panel"><div class="hd"><h2>By year</h2></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Year</th><th class="r">Return</th><th class="r">Sharpe</th><th class="r">Max DD</th><th class="r">SPY</th></tr></thead><tbody>${ys}</tbody></table></div></section>
       ${r.vix.length ? simple('Days when the VIX opens ≥', r.vix, 'vix') : '<section class="panel"><div class="bd dim">No VIX data (connect FMP, then update the data).</div></section>'}</div>
@@ -76,6 +77,27 @@ function imResHtml(r) {
       ${r.trades.slice().reverse().map(t => `<tr><td class="mono">${esc(t.day)}</td><td class="mono">${t.in}</td><td class="mono">${t.out}</td><td>${t.side > 0 ? 'long' : 'short'}</td><td class="r">${t.entry}</td><td class="r">${t.exit}</td><td class="r">${t.shares.toLocaleString('en-US')}</td><td class="r ${cls(t.pnl)}">${m(t.pnl)}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
+// the day x entry-hour grid: click a cell, a day or an hour to leave it out (the backtest runs again)
+function imCalHtml(r) {
+  if (!r.cal) return '';
+  const skip = new Set((S.im.cfg && S.im.cfg.skip) || r.cfg.skip || []);
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], hours = [10, 11, 12, 13, 14, 15];
+  const k = v => (Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + 'k' : Math.round(v)).toString().replace('-', '−');
+  const bg = v => v > 0 ? 'rgba(8,153,129,.28)' : v < 0 ? 'rgba(242,54,69,.28)' : 'transparent';
+  const sum = (f, part) => Object.entries(r.cal).filter(([key]) => f(key)).reduce((a, [, x]) => a + x[part][1], 0);
+  const off = (d, h) => skip.has(d + '|*') || skip.has('*|' + h) || skip.has(d + '|' + h);
+  const cell = (key, tr, te, dim) => `<td data-im-cal="${key}" style="cursor:pointer;text-align:center;padding:3px 6px;${dim ? 'opacity:.3;text-decoration:line-through' : ''}">
+    <div style="background:${bg(tr)};border-radius:3px;padding:1px 4px">${k(tr)}</div><div style="background:${bg(te)};border-radius:3px;padding:1px 4px;margin-top:2px">${k(te)}</div></td>`;
+  const rows = days.map(d => `<tr><th data-im-cal="${d}|*" style="cursor:pointer;text-align:left;${skip.has(d + '|*') ? 'opacity:.3;text-decoration:line-through' : ''}">${d}</th>
+    ${hours.map(h => { const x = r.cal[d + '|' + h] || { tr: [0, 0], te: [0, 0] }; return cell(d + '|' + h, x.tr[1], x.te[1], off(d, h)); }).join('')}
+    ${cell(d + '|*', sum(key => key.startsWith(d + '|'), 'tr'), sum(key => key.startsWith(d + '|'), 'te'), skip.has(d + '|*'))}</tr>`).join('');
+  const foot = `<tr><th>Hour</th>${hours.map(h => cell('*|' + h, sum(key => key.endsWith('|' + h), 'tr'), sum(key => key.endsWith('|' + h), 'te'), skip.has('*|' + h))).join('')}<td></td></tr>`;
+  return `<section class="panel" style="margin-top:12px"><div class="hd"><h2>Day / hour filter</h2><span class="dim" style="font-size:13px">P/L by entry day and hour · top: train, bottom: test · click a cell, a day or an hour to leave it out (runs again)</span><div class="grow"></div>
+      ${skip.size ? `<span class="dim" style="font-size:13px">Left out: ${[...skip].map(esc).join(', ')}</span><button class="btn sm" data-im-cal="reset">Clear</button>` : ''}</div>
+    <div class="tbl-wrap"><table class="tbl" style="width:auto"><thead><tr><th></th>${hours.map(h => `<th data-im-cal="*|${h}" style="cursor:pointer;text-align:center">${h}:00</th>`).join('')}<th style="text-align:center">Day</th></tr></thead><tbody>${rows}${foot}</tbody></table></div>
+    <p class="note" style="padding:0 16px 12px">The cells show every trade (without the filter), so a left-out cell keeps its value. A left-out day is not traded at all; a left-out hour opens no new position at its checks (an open one can still close). Judge a filter on the test row, not on the train row.</p></section>`;
+}
+
 document.addEventListener('change', ev => {
   const t = ev.target; if (!t.dataset || !t.dataset.imv || !S.im.cfg) return;
   const k = t.dataset.imv;
@@ -83,10 +105,17 @@ document.addEventListener('change', ev => {
 });
 
 document.addEventListener('click', async ev => {
-  const el = ev.target.closest('[data-im],[data-im-use]');
+  const el = ev.target.closest('[data-im],[data-im-use],[data-im-cal]');
   if (!el || !$('#sw-body')) return;
   const ds = el.dataset;
   try {
+    if (ds.imCal) {
+      const sk = new Set(S.im.cfg.skip || []);
+      if (ds.imCal === 'reset') sk.clear(); else if (sk.has(ds.imCal)) sk.delete(ds.imCal); else sk.add(ds.imCal);
+      S.im.cfg.skip = [...sk];
+      const btn = $('[data-im="run"]'); if (btn) btn.click();
+      return;
+    }
     if (ds.imUse) { Object.assign(S.im.cfg, S.im.v.opt.top[+ds.imUse].p); $('#sw-body').innerHTML = imShell(S.im.v); toast('Setting applied: run the backtest.'); return; }
     if (ds.im === 'data') { el.disabled = true; await api('/intramom/data', { method: 'POST', body: {} }); toast('Download started.'); setTimeout(imLoad, 1500); return; }
     if (ds.im === 'opt') { el.disabled = true; await api('/intramom/opt', { method: 'POST', body: { cfg: S.im.cfg } }); toast('Optimizer started.'); setTimeout(imLoad, 1500); return; }

@@ -25,7 +25,9 @@ LOOK = 14
 MARKS = 26                                  # 15-minute marks: 9:45 … 16:00
 TEST_YEARS = 5
 DEFAULT = {"vm": 1.0, "stop": "vwap", "sizing": "dyn", "target": 0.02, "maxLev": 4.0, "step": 30, "vixMin": 0.0, "vixMax": 0.0,
-           "acct": 100000.0, "comm": 0.0035, "slip": 0.001, "sides": "both"}
+           "acct": 100000.0, "comm": 0.0035, "slip": 0.001, "sides": "both", "skip": []}
+WD = ("Mon", "Tue", "Wed", "Thu", "Fri")
+HOURS = (10, 11, 12, 13, 14, 15)
 GRID = {"vm": [1.0, 1.25, 1.5, 2.0], "stop": ["opp", "band", "vwap"], "sizing": ["full", "dyn"], "step": [15, 30, 60], "vixMin": [0.0, 15.0, 20.0]}
 
 
@@ -41,7 +43,14 @@ def clean(cfg):
     c["acct"] = max(1000.0, float(c["acct"]))
     c["comm"], c["slip"] = max(0.0, float(c["comm"])), max(0.0, float(c["slip"]))
     c["sides"] = c["sides"] if c["sides"] in ("both", "long", "short") else "both"
+    # day / hour filter: "Wed|*" (the whole day), "*|10" (the 10:00-10:59 checks), "Mon|14" (one cell)
+    ok = {f"{d}|*" for d in WD} | {f"*|{h}" for h in HOURS} | {f"{d}|{h}" for d in WD for h in HOURS}
+    c["skip"] = sorted({str(x) for x in (c.get("skip") or []) if str(x) in ok})[:60]
     return c
+
+
+def _skipped(skip, dn, h):
+    return f"{dn}|*" in skip or f"*|{h}" in skip or f"{dn}|{h}" in skip
 
 
 # ---------------------------------------------------------------- data
@@ -179,7 +188,9 @@ def simulate(days, ctx, c, keep_trades=False):
     for i in range(LOOK, len(days)):
         day, o, last, cl, vw, lastk = days[i]
         prev, s, vx = days[i - 1][2], ctx["sig"][i], ctx["vix"][i]
-        if (c["vixMin"] and (vx is None or vx < c["vixMin"])) or (c["vixMax"] and (vx is None or vx > c["vixMax"])):
+        dn = WD[date.fromisoformat(day).weekday()] if date.fromisoformat(day).weekday() < 5 else "Sat"
+        skip = c["skip"]
+        if (c["vixMin"] and (vx is None or vx < c["vixMin"])) or (c["vixMax"] and (vx is None or vx > c["vixMax"])) or f"{dn}|*" in skip:
             daily.append([day, 0.0, aum, 0, vx])
             continue
         lev = 1.0 if c["sizing"] == "full" else (min(c["maxLev"], c["target"] / ctx["vol"][i]) if ctx["vol"][i] else 1.0)
@@ -206,6 +217,9 @@ def simulate(days, ctx, c, keep_trades=False):
                 elif pos == -1 and p > ub:
                     want = 1
             if (want == 1 and c["sides"] == "short") or (want == -1 and c["sides"] == "long"):
+                want = 0
+            # a left-out day / hour: no new position then (an open one can still be closed)
+            if want and want != pos and skip and _skipped(skip, dn, (9 * 60 + 30 + 15 * (j + 1)) // 60):
                 want = 0
             if want != pos:
                 if pos:
@@ -316,7 +330,16 @@ def run(sub, cfg):
     curve = [[d[0], d[2]] for d in daily]
     step = max(1, len(curve) // 1200)
     spy = [[days[i][0], round(c["acct"] * days[i][2] / days[LOOK - 1][2], 2)] for i in range(LOOK, len(days))]
-    res = {"cfg": c, "at": iso(now_ny()), "split": sd, "all": stats(daily), "train": stats(daily, end=sd), "test": stats(daily, sd),
+    # the day x entry-hour grid, train / test, from the run WITHOUT the filter (so a left-out cell still shows its value)
+    base_trades = trades if not c["skip"] else simulate(days, ctx, {**c, "skip": []}, keep_trades=True)[1]
+    cal = {}
+    for t in base_trades:
+        h = int(t[1][:2])
+        dn = WD[date.fromisoformat(t[0]).weekday()]
+        k = cal.setdefault(f"{dn}|{h}", {"tr": [0, 0.0], "te": [0, 0.0]})["te" if t[0] >= sd else "tr"]
+        k[0] += 1
+        k[1] = round(k[1] + t[7], 2)
+    res = {"cfg": c, "at": iso(now_ny()), "cal": cal, "split": sd, "all": stats(daily), "train": stats(daily, end=sd), "test": stats(daily, sd),
            "spy": {"all": buy_hold(days), "train": buy_hold(days, end=sd), "test": buy_hold(days, sd)}, "years": by_year, "vix": vix_tab, "dow": dow,
            "rsi": rsi_tab, "sides": side, "curve": curve[::step] + ([curve[-1]] if (len(curve) - 1) % step else []),
            "spyCurve": spy[::step] + ([spy[-1]] if (len(spy) - 1) % step else []), "final": daily[-1][2] if daily else None,
