@@ -121,7 +121,7 @@ def fake_open(key, method, path, params, timeout=60):
         raise BadRequest("Databento refused the API key (401).")
     p = dict(params or {})
     if path == "metadata.list_datasets":
-        return _Resp(json.dumps(["GLBX.MDP3", "XNAS.ITCH"]).encode())
+        return _Resp(json.dumps(["GLBX.MDP3", "XNAS.ITCH", "OPRA.PILLAR"]).encode())
     if path == "metadata.get_dataset_range":
         return _Resp(json.dumps({"start": "2017-05-21T00:00:00.000000000Z", "end": _end_avail().strftime("%Y-%m-%dT%H:%M:%S.000000000Z")}).encode())
     if path in ("metadata.get_cost", "timeseries.get_range") and p.get("end", "")[:19] > _end_avail().strftime("%Y-%m-%dT%H:%M:%S"):
@@ -131,6 +131,8 @@ def fake_open(key, method, path, params, timeout=60):
         days = max(0.0, (e - s).total_seconds() / 86400)
         per = 0.00002 if p["schema"] == "ohlcv-1d" else 0.002 if p["schema"].startswith("ohlcv") else 0.6
         return _Resp(json.dumps(round(days * per * len(p["symbols"].split(",")), 4)).encode())
+    if path == "timeseries.get_range" and p.get("dataset") == "OPRA.PILLAR":
+        return _Resp(_fake_opra(p).encode())
     if path == "timeseries.get_range" and p["schema"] == "ohlcv-1d" and p.get("stype_in") == "parent":
         root = p["symbols"].split(".FUT")[0]
         s_, e = datetime.fromisoformat(p["start"][:19]), min(datetime.fromisoformat(p["end"][:19]), _end_avail())
@@ -234,6 +236,47 @@ def fake_open(key, method, path, params, timeout=60):
 # ---------------------------------------------------------------- fake Alpaca
 
 ALP_PX = {"QQQ": 660.0, "SPY": 680.0}
+
+
+def _fake_opra(p):
+    """OPRA ohlcv-1d of every option of the asked roots: the fake Alpaca daily closes (from 2015-12-01, as ivcrush asks),
+    Black-Scholes prices with a volatility that swings between 15% and 55% (period ~ 8 months), strikes 70-105% of the
+    price and around the money, the next 3 monthly expiries plus the Friday weekly."""
+    import ivcrush
+    from datetime import date as _date
+    s0, e0 = p["start"][:10], min(p["end"][:10], _end_avail().strftime("%Y-%m-%d"))
+    out = io.StringIO()
+    out.write("ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume,symbol\n")
+    for sym in [x.split(".OPT")[0] for x in p["symbols"].split(",")]:
+        bars = fake_alpaca_get(("PKFAKE",), f"stocks/{sym}/bars", {"timeframe": "1Day", "start": "2015-12-01T05:00:00Z",
+                                                                  "end": e0 + "T23:00:00Z", "limit": 10 ** 9})["bars"]
+        rnd = random.Random(sym + s0)
+        for k, b in enumerate(bars):
+            day = b["t"][:10]
+            if not (s0 <= day < e0):
+                continue
+            S = b["c"]
+            d0 = _date.fromisoformat(day)
+            vol = 0.35 + 0.20 * math.sin(k / 40 + len(sym))
+            exps, d = [], d0
+            while len(exps) < 3:
+                d += timedelta(days=1)
+                if d.weekday() == 4 and 15 <= d.day <= 21:
+                    exps.append(d)
+            wk = d0 + timedelta(days=(4 - d0.weekday()) % 7 or 7)
+            ks = sorted({round(S * m) for m in (0.70, 0.75, 0.80, 0.84, 0.88, 0.91, 0.94, 0.96, 0.98, 0.99, 1.0, 1.01, 1.02, 1.04)})
+            for ex in exps + [wk]:
+                T = (ex - d0).days / 365
+                for K in ks:
+                    for cp in ("P", "C"):
+                        if cp == "C" and K < S * 0.97:
+                            continue
+                        px = round(ivcrush.bs(S, K, T, vol * (1 + 0.3 * (1 - K / S)), ivcrush.rate(day), cp == "C"), 2)
+                        if px < 0.01:
+                            continue
+                        occ = f"{sym:<6}{ex.strftime('%y%m%d')}{cp}{int(K * 1000):08d}"
+                        out.write(f"{day}T00:00:00.000000000Z,35,30,1,{px},{px},{px},{px},{rnd.randint(1, 500)},{occ}\n")
+    return out.getvalue()
 
 
 def fake_alpaca_get(creds, path, params, timeout=60):

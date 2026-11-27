@@ -665,6 +665,30 @@ def im_data(sub, claims, body, q):
     return intramom.data_start(sub)
 
 
+@route("GET", "/ivcrush")
+def ivc_view(sub, claims, body, q):
+    import ivcrush
+    return ivcrush.view(sub)
+
+
+@route("POST", "/ivcrush/cost")
+def ivc_cost(sub, claims, body, q):
+    import ivcrush
+    return ivcrush.cost(sub, int(body.get("from") or 2016))
+
+
+@route("POST", "/ivcrush/data")
+def ivc_data(sub, claims, body, q):
+    import ivcrush
+    return ivcrush.data_start(sub, body.get("from") or 2016, body.get("maxCost") or 0)
+
+
+@route("POST", "/ivcrush")
+def ivc_run(sub, claims, body, q):
+    import ivcrush
+    return ivcrush.run_start(sub, body.get("cfg") or {})
+
+
 @route("GET", "/holidays")
 def holidays_study(sub, claims, body, q):
     import holistudy

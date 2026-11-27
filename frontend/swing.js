@@ -1,20 +1,21 @@
 // Swing: the Turtle breakout and Qullamaggie's breakout, backtested on daily bars over the earnings universes / ETFs.
 S.sw = S.sw || { kind: 'qulla', cfg: {} };
-const SW_LABEL = { turtle: 'Turtle', qulla: 'Qullamaggie breakout', btm: 'Beat the Market (SPY intraday)', hol: 'Holidays & half days' };
+const SW_LABEL = { turtle: 'Turtle', qulla: 'Qullamaggie breakout', btm: 'Beat the Market (SPY intraday)', hol: 'Holidays & half days', ivc: 'IV crush (S&P 500 puts)' };
 const SW_UNI = [['all', 'Whole US market'], ['both', 'S&P 500 + Nasdaq-100'], ['spy', 'S&P 500'], ['qqq', 'Nasdaq-100'], ['etf', 'ETF list']];
 const SW_UNI_T = [['fut', 'Futures (30 CME markets)'], ...SW_UNI];
 
 async function vSwing() {
   const W = S.sw;
-  const tabs = ['qulla', 'turtle', 'btm', 'hol'].map(k => `<button class="btn${W.kind === k ? ' primary' : ''}" data-sw-kind="${k}">${SW_LABEL[k]}</button>`).join(' ');
+  const tabs = ['qulla', 'turtle', 'btm', 'hol', 'ivc'].map(k => `<button class="btn${W.kind === k ? ' primary' : ''}" data-sw-kind="${k}">${SW_LABEL[k]}</button>`).join(' ');
   view(`${head('Swing', 'Daily breakout strategies: Turtle on 30 CME futures (or stocks / ETFs), Qullamaggie on the whole US market (delisted stocks included), the S&P 500 / Nasdaq-100 or the ETF list. The last 5 years are the test period.')}<div style="margin-bottom:12px">${tabs}</div><div id="sw-body"><div class="panel"><div class="empty">Loading…</div></div></div>`);
   if (W.kind === 'btm') return imLoad();
   if (W.kind === 'hol') return hoLoad();
+  if (W.kind === 'ivc') return ivLoad();
   await swLoad();
 }
 
 async function swLoad() {
-  const W = S.sw, el = $('#sw-body'); if (!el || W.kind === 'btm' || W.kind === 'hol') return;
+  const W = S.sw, el = $('#sw-body'); if (!el || W.kind === 'btm' || W.kind === 'hol' || W.kind === 'ivc') return;
   let r;
   try { r = await api('/swing/' + W.kind); } catch (e) { el.innerHTML = `<div class="panel"><div class="bd loss">${esc(e.message)}</div></div>`; return; }
   W.r = r;
