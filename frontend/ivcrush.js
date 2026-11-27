@@ -22,7 +22,7 @@ function ivShell(r) {
   return `<section class="panel"><div class="hd"><h2>IV crush — sell S&amp;P 500 puts when IV is high</h2><div class="grow"></div>${run ? `<span class="dim">${esc(j.msg || 'Running…')}</span>` : ''}</div>
     <div class="bd" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>Data</b>
       <span class="dim">${d.syms ? `S&P 500: ${d.syms} stocks (FMP, ${esc((d.uniAt || '').slice(0, 10))}) · IV rank history: ${d.have} stocks${d.first ? ', ' + esc(d.first) + ' → ' + esc(d.last) : ''}` : 'none yet'} · Unusual Whales (IV rank, option chains and daily option prices, from 2022)</span><div class="grow"></div>
-      <button class="btn" data-iv="data" ${run ? 'disabled' : ''}>${d.have ? 'Update' : 'Download'} IV history</button></div>${jmsg}
+      <button class="btn" data-iv="data" ${run ? 'disabled' : ''}>${d.have ? 'Update' : 'Download'} IV history</button></div>${d.first && d.first > '2022-06-30' ? `<div class="bd loss">Unusual Whales gave IV rank history only from ${esc(d.first)}${d.ways ? ' (tried: ' + Object.entries(d.ways).map(([k, v]) => `${esc(k)} → ${v[0] ? esc(v[0]) + ', ' + v[1] + ' days' : 'nothing'}`).join(' · ') + ')' : ''}: click Update IV history${d.ways ? ' again, or check what history your Unusual Whales plan includes' : ''}.</div>` : ''}${jmsg}
     <div class="bd" style="display:flex;gap:12px;flex-wrap:wrap;align-items:end;border-top:1px solid var(--line)">
       <label class="f">IV rank ≥${num('rank', 5)}</label>
       <label class="f">Put delta${sel('delta', [[0.1, '0.10'], [0.15, '0.15'], [0.2, '0.20'], [0.25, '0.25'], [0.3, '0.30'], [0.4, '0.40']])}</label>

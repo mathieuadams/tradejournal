@@ -131,11 +131,16 @@ def status():
     ix, u = _ixd(), universe()
     have = [ix["s"][s] for s in u["syms"] if s in ix["s"]]
     return {"syms": len(u["syms"]), "uniAt": u["at"], "have": len(have), "first": min((h["first"] for h in have if h.get("first")), default=None),
-            "last": max((h["last"] for h in have if h.get("last")), default=None), "at": ix.get("at"), "cache": ix.get("cache", 0)}
+            "last": max((h["last"] for h in have if h.get("last")), default=None), "at": ix.get("at"), "way": ix.get("way"), "ways": ix.get("ways")}
 
 
-def iv_series(tok, sym):
-    """[[date, close, IV rank 0-100, IV or None], ...] from 2022 (Unusual Whales iv-rank)."""
+IV_WAYS = ("date+1y", "start", "date", "1y")
+
+
+def iv_series(tok, sym, way="date+1y"):
+    """[[date, close, IV rank 0-100, IV or None], ...] from 2022 (Unusual Whales iv-rank). `way`: how the history is asked
+    for: "date+1y" a year up to `date` per call, walking back; "start" timespan=2022-01-01 in one call; "date" the
+    default span up to `date` per call, walking back; "1y" the last year in one call."""
     import uwhales
     rows = {}
 
@@ -147,26 +152,47 @@ def iv_series(tok, sym):
             rk, c = _n(x.get("iv_rank_1y")), _n(x.get("close"))
             if d and rk is not None and c:
                 rows[d] = [d, c, rk, _n(x.get("volatility") or x.get("iv") or x.get("implied_volatility"))]
-    d = now_ny().date()                                 # a year up to `date` per call, walking back to 2022
-    miss = 0
-    for _ in range(80):
-        n0 = len(rows)
-        try:
-            take(uwhales._get_retry(tok, f"stock/{uw_sym(sym)}/iv-rank", {"date": d.isoformat(), "timespan": "1y"}))
-        except BadRequest:                              # not a trading day / nothing that day: a day earlier
-            miss += 1
-            if miss > 4:
+    path = f"stock/{uw_sym(sym)}/iv-rank"
+    if way in ("start", "1y"):
+        take(uwhales._get_retry(tok, path, {"timespan": START if way == "start" else "1y"}))
+    else:
+        d = now_ny().date()
+        miss = 0
+        for _ in range(80):
+            n0 = len(rows)
+            try:
+                take(uwhales._get_retry(tok, path, {"date": d.isoformat(), **({"timespan": "1y"} if way == "date+1y" else {})}))
+            except BadRequest:                          # not a trading day / nothing that day: a day earlier
+                miss += 1
+                if miss > 4:
+                    break
+                d -= timedelta(days=1)
+                continue
+            if len(rows) == n0 or min(rows) <= START:
                 break
-            d -= timedelta(days=1)
-            continue
-        if len(rows) == n0 or min(rows) <= START:
-            break
-        d = date.fromisoformat(min(rows)) - timedelta(days=1)
+            d = date.fromisoformat(min(rows)) - timedelta(days=1)
     out = sorted(rows.values())
     if out and max(r[2] for r in out) <= 1.5:          # a 0-1 scale
         for r in out:
             r[2] = round(r[2] * 100, 2)
     return out
+
+
+def best_way(tok, sym="AAPL"):
+    """Each way of asking on one stock: the one reaching furthest back (then the most days). ({way: (first, n)}, best)."""
+    seen = {}
+    for w in IV_WAYS:
+        try:
+            r = iv_series(tok, sym, w)
+        except Exception as e:
+            print("ivcrush way", w, e)
+            r = []
+        seen[w] = (r[0][0] if r else None, len(r))
+        if r and r[0][0] <= "2022-02-01":
+            break
+    ok = [w for w in seen if seen[w][0]]
+    best = min(ok, key=lambda w: (seen[w][0], -seen[w][1])) if ok else IV_WAYS[0]
+    return seen, best
 
 
 def download(sub, p, prog, deadline):
@@ -177,6 +203,12 @@ def download(sub, p, prog, deadline):
     p = {**p, "uni": True}
     done = set(p.get("done") or [])
     ix = _ixd()
+    if not p.get("way"):
+        prog("IV rank history: finding how far back Unusual Whales goes…")
+        seen, way = best_way(tok, "AAPL" if "AAPL" in syms else syms[0])
+        p["way"] = way
+        ix["way"], ix["ways"] = way, {k: list(v) for k, v in seen.items()}
+        store.put_json("ivc/uwix", ix)
     for k, s in enumerate(syms):
         if s in done:
             continue
@@ -185,7 +217,7 @@ def download(sub, p, prog, deadline):
             return {**p, "done": sorted(done)}
         prog(f"IV rank history {len(done) + 1} / {len(syms)}: {s}")
         try:
-            rows = iv_series(tok, s)
+            rows = iv_series(tok, s, p["way"])
         except Exception as e:                         # a ticker Unusual Whales doesn't know: noted, go on
             print("ivcrush iv", s, e)
             rows = []
@@ -237,6 +269,23 @@ def _hist(tok, occ):
     if k not in _MEMO:
         _MEMO[k] = optreal.history(tok, occ)
     return _MEMO[k]
+
+
+CALLS = [0]
+
+
+def _count_calls():
+    """Count the Unusual Whales requests made from here (what isn't in the cache yet)."""
+    import uwhales
+    if getattr(uwhales._get_retry, "counted", False):
+        return
+    f = uwhales._get_retry
+
+    def g(*a, **k):
+        CALLS[0] += 1
+        return f(*a, **k)
+    g.counted = True
+    uwhales._get_retry = g
 
 
 def _entry(tok, sym, day, S, iv, c):
@@ -449,6 +498,8 @@ def run_job(sub, prog, deadline):
     """The backtest over every stock with IV history; partial candidates kept between invocations. True when done."""
     import uwhales
     tok = uwhales.token(sub)
+    _count_calls()
+    CALLS[0] = 0
     st = store.get_json(f"ivc/run/{sub}") or {}
     c = clean(st.get("cfg"))
     ix = _ixd()
@@ -470,7 +521,7 @@ def run_job(sub, prog, deadline):
             continue
         if time.time() > deadline:
             break
-        prog(f"Backtest {len(done) + 1} / {len(syms)}: {s} (option prices from Unusual Whales, cached)")
+        prog(f"Backtest {len(done) + 1} / {len(syms)}: {s} · {CALLS[0]:,} option downloads in this pass (the rest from the cache)")
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
         try:
@@ -600,6 +651,8 @@ def opt_job(sub, prog, deadline):
     settings), then the portfolio of each; ranked on the train period only. True when done."""
     import uwhales
     tok = uwhales.token(sub)
+    _count_calls()
+    CALLS[0] = 0
     st = store.get_json(f"ivc/opt/{sub}") or {}
     base = clean(st.get("cfg"))
     g = grid(base, st.get("wide"))
@@ -622,7 +675,7 @@ def opt_job(sub, prog, deadline):
             continue
         if time.time() > deadline:
             break
-        prog(f"Optimizer {len(done) + 1} / {len(syms)}: {s} · {len(g)} settings")
+        prog(f"Optimizer {len(done) + 1} / {len(syms)}: {s} · {len(g)} settings · {CALLS[0]:,} option downloads in this pass (the rest from the cache)")
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
         for k, p in enumerate(g):
