@@ -253,7 +253,8 @@ class Handler(BaseHTTPRequestHandler):
             stock = not market.is_crypto(sym) and sym not in market.FUTURES
             rth = q.get("rth") == "1" and stock and market.tf_seconds(tf) < 86400
             if q.get("days"):        # research: N trading days of history (extended hours included for stocks, unless rth)
-                days, sec = max(1, min(2000, int(q["days"]))), market.tf_seconds(tf)
+                sec = market.tf_seconds(tf)
+                days = max(1, min(10000 if sec >= 86400 else 2000, int(q["days"])))   # daily bars: up to ~40 years
                 per_day = (86400 if market.is_crypto(sym) else 82800 if sym in market.FUTURES else 23400 if rth else 57600) if sec < 86400 else 86400
                 # regular hours only: up to 800,000 bars (about 8 years of 1-minute); the extended hours come in and are dropped
                 limit = max(10, min(800000 if rth or sym in market.FUTURES else 150000, -(-days * per_day // sec)))   # futures: years of 5 / 15-minute bars

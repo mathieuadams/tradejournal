@@ -3,7 +3,7 @@
 import { W } from './ctx.js';
 import { h, esc, api, toast, money, pct } from './util.js';
 import { nyParts, fmtPrice } from './chart.js';
-import { compile, securityRequests, metrics, dayRegimes, FUT_SPEC } from './pine.js';
+import { compile, securityRequests, metrics, dayRegimes, FUT_SPEC, tfSeconds } from './pine.js';
 import { freezeDialog } from './frozen.js';
 import { editorState } from './editor.js';
 import { focusChat } from './chat.js';
@@ -56,7 +56,7 @@ export function mountResearch(el) {
     R.study = null; R.opt = null; R.sel = {}; mountResearch(el);
   };
   const bind = (id, k, f = v => v) => { body.querySelector(id).onchange = e => { R[k] = f(e.target.value); }; };
-  bind('#rsSym', 'symbol', v => v.trim().toUpperCase()); bind('#rsTf', 'tf', v => W.normTfStrict(v) || R.tf); bind('#rsDays', 'days', v => Math.max(5, Math.min(2000, +v || 500)));
+  bind('#rsSym', 'symbol', v => v.trim().toUpperCase()); bind('#rsTf', 'tf', v => W.normTfStrict(v) || R.tf); bind('#rsDays', 'days', v => Math.max(5, Math.min(tfSeconds(R.tf) >= 86400 ? 10000 : 2000, +v || 500)));   // daily: up to 10,000 days
   { const x = body.querySelector('#rsRth'); if (x) x.onchange = () => { R.rth = x.checked; }; }
   bind('#rsCom', 'com', v => v === '' ? '' : Math.max(0, +v || 0)); bind('#rsSlip', 'slip', v => v === '' ? '' : Math.max(0, +v || 0));   // empty: the script's own strategy() costs bind('#rsSplit', 'split', v => Math.max(10, Math.min(95, +v || 60)));
   body.onclick = e => {

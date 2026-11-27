@@ -349,7 +349,7 @@ function histMenu(anchor) {
 // N trading days of history, fetched in pieces of about 6 months going back (each request stays short; the server keeps
 // finished months, so a second load is quick). Used by the History button and the Research panel.
 W.fetchHistory = async (sym, tf, days, rth, prog) => {
-  const CH = 126, out = [], want = days;
+  const CH = tfSeconds(tf) >= 86400 ? 10000 : 126, out = [], want = days;   // daily bars: one request
   let before = null, got = 0;
   for (let k = 0; got < want && k < 40; k++) {
     const n = Math.min(CH, want - got);
