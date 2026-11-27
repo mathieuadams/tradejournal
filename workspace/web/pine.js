@@ -561,7 +561,15 @@ def('str.tonumber', 'string', (c, a) => parseFloat(a[0]));
 def('str.split', 'string,separator', (c, a) => ({ kind: 'array', a: String(a[0]).split(a[1]) }));
 def('str.trim', 'source', (c, a) => String(a[0]).trim());
 def('str.repeat', 'source,repeat,separator', (c, a) => Array(Math.max(0, a[1] | 0)).fill(a[0]).join(a[2] || ''));
-def('str.format_time', 'time,format,timezone', (c, a) => { const p = nyParts(a[0] / 1000); return `${p.y}-${String(p.mo).padStart(2, '0')}-${String(p.d).padStart(2, '0')} ${String(p.h).padStart(2, '0')}:${String(p.mi).padStart(2, '0')}`; });
+// str.format_time(time, format, timezone): the usual tokens yyyy yy MMM MM M dd d HH H hh h mm ss a EEE
+def('str.format_time', 'time,format,timezone', (c, a) => {
+  const p = tzParts(num(a[0]) / 1000, a[2]), z = (x, n = 2) => String(x).padStart(n, '0');
+  const fmt = typeof a[1] === 'string' && a[1] ? a[1] : "yyyy-MM-dd'T'HH:mm:ssZ";
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const tok = { yyyy: z(p.y, 4), yy: z(p.y % 100), MMM: MON[p.mo - 1], MM: z(p.mo), M: p.mo, dd: z(p.d), d: p.d, HH: z(p.h), H: p.h, hh: z((p.h % 12) || 12), h: (p.h % 12) || 12,
+    mm: z(p.mi), ss: z(p.s), a: p.h < 12 ? 'AM' : 'PM', EEE: DAYS[p.wd - 1], Z: '' };
+  return fmt.replace(/'([^']*)'|yyyy|yy|MMM|MM|M|dd|d|HH|H|hh|h|mm|ss|a|EEE|Z/g, (m, lit) => lit !== undefined ? lit : tok[m]);
+});
 
 // color
 def('color.new', 'color,transp', (c, a) => { const r = rgba(a[0]); if (!r) return a[0]; return mkColor(r[0], r[1], r[2], 255 * (1 - nz(a[1]) / 100)); });
@@ -589,9 +597,27 @@ def('time_close', 'timeframe,session', (c, a, st) => {
   if (!a[0]) return (c.B.t[c.i] + c.tfSec) * 1000;
   const sec = tfSeconds(a[0]); return sec > c.tfSec ? (htfStart(c, a[0], st) + sec) * 1000 : (c.B.t[c.i] + c.tfSec) * 1000;
 });
-for (const [k, f] of Object.entries({ hour: 'h', minute: 'mi', second: 's', dayofmonth: 'd', dayofweek: 'wd', month: 'mo', year: 'y' })) def(k, 'time,timezone', (c, a) => nyParts(num(a[0]) / 1000)[f]);
+// a time zone argument ("UTC", "GMT+2", "UTC-5", "America/Chicago"...): the parts of a time there (no argument: New York)
+const TZF = new Map();
+function tzName(tz) {
+  const t = String(tz).trim(); if (/^(utc|gmt|etc\/utc|z)$/i.test(t)) return 'UTC';
+  const m = /^(?:utc|gmt)\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?$/i.exec(t);
+  if (m) { if (m[3] && m[3] !== '00') return null; const h = +m[2]; return h === 0 ? 'UTC' : `Etc/GMT${m[1] === '+' ? '-' : '+'}${h}`; }
+  return t;
+}
+function tzParts(sec, tz) {
+  if (tz === undefined || tz === null || tz === '' || (typeof tz === 'number' && isNaN(tz))) return nyParts(sec);
+  const name = tzName(tz); if (!name || /new.york/i.test(name)) return nyParts(sec);
+  let f = TZF.get(name);
+  if (!f) { try { f = new Intl.DateTimeFormat('en-US', { timeZone: name, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', weekday: 'short' }); } catch (e) { f = null; } TZF.set(name, f); }
+  if (!f) return nyParts(sec);
+  const o = {}; for (const x of f.formatToParts(new Date(sec * 1000))) o[x.type] = x.value;
+  return { y: +o.year, mo: +o.month, d: +o.day, h: +o.hour % 24, mi: +o.minute, s: +o.second, wd: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(o.weekday) + 1 };
+}
+for (const [k, f] of Object.entries({ hour: 'h', minute: 'mi', second: 's', dayofmonth: 'd', dayofweek: 'wd', month: 'mo', year: 'y' })) def(k, 'time,timezone', (c, a) => tzParts(num(a[0]) / 1000, a[1])[f]);
 def('timestamp', '', (c, a) => {
-  const v = a.filter(x => typeof x === 'number'); if (v.length >= 3) { const [y, mo, d, h = 0, mi = 0, s = 0] = v; const guess = Date.UTC(y, mo - 1, d, h, mi, s) / 1000; const p = nyParts(guess); const off = (Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) / 1000) - guess; return (guess - off) * 1000; }
+  const tz = typeof a[0] === 'string' ? a[0] : undefined;   // timestamp("UTC", y, m, d...) / timestamp(y, m, d...) = New York
+  const v = a.filter(x => typeof x === 'number'); if (v.length >= 3) { const [y, mo, d, h = 0, mi = 0, s = 0] = v; const guess = Date.UTC(y, mo - 1, d, h, mi, s) / 1000; const p = tzParts(guess, tz); const off = (Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) / 1000) - guess; return (guess - off) * 1000; }
   return Date.parse(a[a.length - 1]) || NaN;
 });
 def('timeframe.in_seconds', 'timeframe', (c, a) => a[0] === undefined ? c.tfSec : tfSeconds(a[0]));
