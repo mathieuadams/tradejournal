@@ -121,7 +121,7 @@ def fake_open(key, method, path, params, timeout=60):
         raise BadRequest("Databento refused the API key (401).")
     p = dict(params or {})
     if path == "metadata.list_datasets":
-        return _Resp(json.dumps(["GLBX.MDP3", "XNAS.ITCH", "OPRA.PILLAR"]).encode())
+        return _Resp(json.dumps(["GLBX.MDP3", "XNAS.ITCH"]).encode())
     if path == "metadata.get_dataset_range":
         return _Resp(json.dumps({"start": "2017-05-21T00:00:00.000000000Z", "end": _end_avail().strftime("%Y-%m-%dT%H:%M:%S.000000000Z")}).encode())
     if path in ("metadata.get_cost", "timeseries.get_range") and p.get("end", "")[:19] > _end_avail().strftime("%Y-%m-%dT%H:%M:%S"):
@@ -131,8 +131,6 @@ def fake_open(key, method, path, params, timeout=60):
         days = max(0.0, (e - s).total_seconds() / 86400)
         per = 0.00002 if p["schema"] == "ohlcv-1d" else 0.002 if p["schema"].startswith("ohlcv") else 0.6
         return _Resp(json.dumps(round(days * per * len(p["symbols"].split(",")), 4)).encode())
-    if path == "timeseries.get_range" and p.get("dataset") == "OPRA.PILLAR":
-        return _Resp(_fake_opra(p).encode())
     if path == "timeseries.get_range" and p["schema"] == "ohlcv-1d" and p.get("stype_in") == "parent":
         root = p["symbols"].split(".FUT")[0]
         s_, e = datetime.fromisoformat(p["start"][:19]), min(datetime.fromisoformat(p["end"][:19]), _end_avail())
@@ -238,45 +236,21 @@ def fake_open(key, method, path, params, timeout=60):
 ALP_PX = {"QQQ": 660.0, "SPY": 680.0}
 
 
-def _fake_opra(p):
-    """OPRA ohlcv-1d of every option of the asked roots: the fake Alpaca daily closes (from 2015-12-01, as ivcrush asks),
-    Black-Scholes prices with a volatility that swings between 15% and 55% (period ~ 8 months), strikes 70-105% of the
-    price and around the money, the next 3 monthly expiries plus the Friday weekly."""
-    import ivcrush
-    from datetime import date as _date
-    s0, e0 = p["start"][:10], min(p["end"][:10], _end_avail().strftime("%Y-%m-%d"))
-    out = io.StringIO()
-    out.write("ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume,symbol\n")
-    for sym in [x.split(".OPT")[0] for x in p["symbols"].split(",")]:
-        bars = fake_alpaca_get(("PKFAKE",), f"stocks/{sym}/bars", {"timeframe": "1Day", "start": "2015-12-01T05:00:00Z",
-                                                                  "end": e0 + "T23:00:00Z", "limit": 10 ** 9})["bars"]
-        rnd = random.Random(sym + s0)
-        for k, b in enumerate(bars):
-            day = b["t"][:10]
-            if not (s0 <= day < e0):
-                continue
-            S = b["c"]
-            d0 = _date.fromisoformat(day)
-            vol = 0.35 + 0.20 * math.sin(k / 40 + len(sym))
-            exps, d = [], d0
-            while len(exps) < 3:
-                d += timedelta(days=1)
-                if d.weekday() == 4 and 15 <= d.day <= 21:
-                    exps.append(d)
-            wk = d0 + timedelta(days=(4 - d0.weekday()) % 7 or 7)
-            ks = sorted({round(S * m) for m in (0.70, 0.75, 0.80, 0.84, 0.88, 0.91, 0.94, 0.96, 0.98, 0.99, 1.0, 1.01, 1.02, 1.04)})
-            for ex in exps + [wk]:
-                T = (ex - d0).days / 365
-                for K in ks:
-                    for cp in ("P", "C"):
-                        if cp == "C" and K < S * 0.97:
-                            continue
-                        px = round(ivcrush.bs(S, K, T, vol * (1 + 0.3 * (1 - K / S)), ivcrush.rate(day), cp == "C"), 2)
-                        if px < 0.01:
-                            continue
-                        occ = f"{sym:<6}{ex.strftime('%y%m%d')}{cp}{int(K * 1000):08d}"
-                        out.write(f"{day}T00:00:00.000000000Z,35,30,1,{px},{px},{px},{px},{rnd.randint(1, 500)},{occ}\n")
-    return out.getvalue()
+UW_BS = False                                          # True: option history priced with Black-Scholes on _ivc_series (IV crush test)
+
+
+def _ivc_series(sym):
+    """{date: (close, IV)} since 2021: a random walk and an IV swinging between 15% and 55% (period ~ 8 months)."""
+    rnd = random.Random("ivc" + sym)
+    out, d, px, k = {}, datetime(2021, 1, 4).date(), 100.0, 0
+    end = datetime.utcnow().date()
+    while d < end:
+        if d.weekday() < 5:
+            k += 1
+            px *= 1 + rnd.gauss(0.0003, 0.012)
+            out[d.isoformat()] = (round(px, 2), round(0.35 + 0.20 * math.sin(k / 40 + len(sym)), 4))
+        d += timedelta(days=1)
+    return out
 
 
 def fake_alpaca_get(creds, path, params, timeout=60):
@@ -389,6 +363,32 @@ def fake_uw_get(token, path, params=None, timeout=60):
         d0 = datetime.now().date()
         days = [d0 + timedelta(days=i) for i in range(0, 20) if (d0 + timedelta(days=i)).weekday() < 5][:6]
         return {"data": [{"expires": d.isoformat() + "T00:00:00.000Z", "open_interest": 100000 - i * 9000, "volume": 50000, "chains": 400} for i, d in enumerate(days)]}
+    if path.endswith("/iv-rank"):
+        ser = sorted(_ivc_series(sym.replace(".", "")).items())
+        start = str(params.get("timespan") or "")
+        lo = start if len(start) == 10 else ser[-252][0]
+        out = []
+        for i, (d, (c, v)) in enumerate(ser):
+            w = [x[1][1] for x in ser[max(0, i - 251):i + 1]]
+            if d >= max(lo, "2022-01-01"):
+                out.append({"date": d, "close": str(c), "iv_rank_1y": f"{(v - min(w)) / ((max(w) - min(w)) or 1):.4f}", "volatility": str(v)})
+        return {"data": out}
+    if UW_BS and path.startswith("option-contract/") and path.endswith("/historic"):
+        import ivcrush
+        osym = path.split("/")[1]
+        root, exp, k = osym[:-15], datetime.strptime("20" + osym[-15:-9], "%Y%m%d").date(), int(osym[-8:]) / 1000
+        out = []
+        for d, (c, v) in sorted(_ivc_series(root).items()):
+            dd = datetime.strptime(d, "%Y-%m-%d").date()
+            if not (exp - timedelta(days=120) <= dd <= exp):
+                continue
+            iv = v * (1 + 0.3 * (1 - k / c))
+            mid = ivcrush.bs(c, k, (exp - dd).days / 365, iv, ivcrush.rate(d), False)
+            if mid < 0.01:
+                continue
+            out.append({"date": d, "last_price": f"{mid:.2f}", "nbbo_bid": f"{max(0.01, mid * 0.97 - 0.01):.2f}", "nbbo_ask": f"{mid * 1.03 + 0.01:.2f}",
+                        "implied_volatility": f"{iv:.4f}", "underlying_close": str(c), "volume": 50, "open_interest": 500})
+        return {"chains": out}
     if path.startswith("option-contract/") and path.endswith("/historic"):
         osym = path.split("/")[1]
         exp = datetime.strptime("20" + osym[-15:-9], "%Y%m%d").date()

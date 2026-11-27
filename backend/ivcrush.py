@@ -1,60 +1,57 @@
-"""IV crush on the S&P 500: sell out-of-the-money puts when a stock's implied volatility is high (IV rank), buy them back
-at 50% of the credit.
+"""IV crush on the S&P 500: sell out-of-the-money puts when a stock's IV rank is high, buy them back at 50% of the
+credit. Data: Unusual Whales (the user's token; history from 2022).
 
-Universe: the current S&P 500 (FMP sp500-constituent), saved when the data is downloaded.
+Universe: the current S&P 500 (FMP sp500-constituent), saved when the IV history is downloaded.
 
-Data: Databento OPRA.PILLAR daily bars (ohlcv-1d: the day's trades in each option) for every option of each stock
-(stype parent "AAPL.OPT"), 10 stocks and one year per request, the cost checked first against an amount the user
-accepts. The stocks' prices: Alpaca daily closes, unadjusted (strikes are in unadjusted dollars). Kept per stock and day:
-  - the close,
-  - an IV index: the median implied volatility of the out-of-the-money options within 3% of the money, 20-60 days to
-    expiry, that traded that day,
-  - the puts of the standard monthly expiries (third Friday; Saturday before 2015) up to 75 days out, strikes 70-105% of
-    the price, that traded that day: [expiry, strike, close, volume, IV].
-IV from Black-Scholes on the option's daily close (the year's average 3-month T-bill rate, no dividends).
+Data:
+  - IV rank: GET /api/stock/{T}/iv-rank?timespan=<start date> (date, close, iv_rank_1y [, volatility]) per stock, kept
+    in store ivc/uw/<T> (job "ivcdata", ~500 calls).
+  - The puts, fetched by the backtest when it needs them (cached, so a second run is fast): the contracts listed on the
+    entry day (GET /api/stock/{T}/option-contracts?date=…&option_type=put, via optreal.chain_on), then each candidate
+    contract's daily history (GET /api/option-contract/{OCC}/historic: NBBO bid / ask, last, implied volatility).
 
 Rules (per stock, one put at a time on a stock):
-  - IV rank = today's IV index within its last `look` sessions: (IV - low) / (high - low) x 100 (none before 120 values).
-  - Entry: IV rank >= `rank` → sell the monthly put nearest `dte` days (within dteMin-dteMax) whose delta is nearest
-    `delta` (within 0.10), price >= minPx, at its close - slip.
-  - Exit: its close <= (1 - take) x the credit → buy back at close + slip; loss >= stop x the credit (0 = off); at
-    `manage` days to expiry (0 = hold); else it expires (strike - price, or 0). A day the put didn't trade: no
-    profit / stop check; the manage exit and the marks use Black-Scholes with the put's last IV.
+  - Entry: IV rank (Unusual Whales, 1 year) >= `rank` → the expiry nearest `dte` days (within dteMin-dteMax); the strike
+    for the target `delta` from the stock's IV (Black-Scholes), then of the 3 listed strikes nearest it, the one whose
+    delta that day (its own IV) is nearest the target (within 0.10), premium >= minPx. Sold at the day's NBBO bid
+    (no NBBO: last - slip).
+  - Exit, checked on each daily row of the contract: the NBBO ask (no NBBO: last + slip) <= (1 - take) x the credit →
+    bought back there; loss >= stop x the credit (0 = off); `manage` days to expiry (0 = hold); else it expires (strike
+    - the stock's close, or 0). A day the contract has no row is skipped.
   - Commission `comm` a contract each side (none when it expires worthless).
 Portfolio: at most `maxPos` puts open; the day's candidates taken in IV-rank order while there's room. Each position:
 `n` contracts = (equity x alloc / maxPos) / collateral (cash-secured: strike x 100; margin: Reg T ≈ max(20% of the price
-- the OTM amount, 10% of the strike) x 100); fewer than 1: skipped. Equity marked to market every day. The same rules
-without the IV-rank filter are the baseline."""
-import csv
-import io
-import json
+- the OTM amount, 10% of the strike) x 100); fewer than 1: skipped. Equity marked to market every day (mid)."""
 import math
 import time
 from datetime import date, timedelta
+from statistics import NormalDist
 
 import store
 from util import BadRequest, iso, now_ny
 
-DATASET = "OPRA.PILLAR"
-GROUP = 10
-DEFAULT = {"rank": 30.0, "look": 252, "dte": 45, "dteMin": 30, "dteMax": 60, "delta": 0.20, "take": 0.50, "manage": 21, "stop": 0.0,
-           "maxPos": 20, "minPx": 0.20, "slip": 0.03, "comm": 0.65, "acct": 500000.0, "alloc": 1.0, "coll": "cash", "split": 0.6, "from": 2016}
-RATES = {2013: .0006, 2014: .0003, 2015: .0005, 2016: .0032, 2017: .0093, 2018: .0194, 2019: .0206, 2020: .0037, 2021: .0005,
-         2022: .0202, 2023: .0507, 2024: .0497, 2025: .0420, 2026: .0370, 2027: .0350}
+START = "2022-01-01"
+DEFAULT = {"rank": 30.0, "dte": 45, "dteMin": 30, "dteMax": 60, "delta": 0.20, "take": 0.50, "manage": 21, "stop": 0.0,
+           "maxPos": 20, "minPx": 0.20, "slip": 0.03, "comm": 0.65, "acct": 500000.0, "alloc": 1.0, "coll": "cash", "split": 0.6,
+           "from": "2022-03-01", "fill": "nbbo"}
+RATES = {2021: .0005, 2022: .0202, 2023: .0507, 2024: .0497, 2025: .0420, 2026: .0370, 2027: .0350}
 
 
 def clean(cfg):
     c = {**DEFAULT, **{k: v for k, v in (cfg or {}).items() if k in DEFAULT}}
-    for k, lo, hi in (("rank", 0, 100), ("look", 60, 504), ("dte", 7, 75), ("dteMin", 5, 75), ("dteMax", 7, 75), ("delta", 0.03, 0.5),
+    for k, lo, hi in (("rank", 0, 100), ("dte", 7, 120), ("dteMin", 1, 120), ("dteMax", 7, 180), ("delta", 0.03, 0.5),
                       ("take", 0.1, 0.95), ("manage", 0, 60), ("stop", 0, 10), ("maxPos", 1, 200), ("minPx", 0.01, 5), ("slip", 0, 1),
-                      ("comm", 0, 5), ("acct", 1000, 1e9), ("alloc", 0.05, 5), ("split", 0.3, 0.9), ("from", 2013, 2026)):
+                      ("comm", 0, 5), ("acct", 1000, 1e9), ("alloc", 0.05, 5), ("split", 0.3, 0.9)):
         try:
             c[k] = max(lo, min(hi, float(c[k])))
         except (TypeError, ValueError):
             c[k] = DEFAULT[k]
-    for k in ("look", "dte", "dteMin", "dteMax", "manage", "maxPos", "from"):
+    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos"):
         c[k] = int(c[k])
     c["coll"] = "margin" if c["coll"] == "margin" else "cash"
+    c["fill"] = "mid" if c["fill"] == "mid" else "nbbo"
+    f = str(c["from"])[:10]
+    c["from"] = f if len(f) == 10 and f >= START else DEFAULT["from"]
     return c
 
 
@@ -75,22 +72,6 @@ def bs(S, K, T, v, r, call):
     return K * math.exp(-r * T) * _ncdf(-d2) - S * _ncdf(-d1)
 
 
-def implied_vol(price, S, K, T, r, call):
-    """Bisection between 1% and 500%; None when no volatility gives the price."""
-    if price <= 0 or T <= 0 or S <= 0:
-        return None
-    if price < bs(S, K, T, 0.01, r, call) - 1e-9 or price > bs(S, K, T, 5.0, r, call):
-        return None
-    lo, hi = 0.01, 5.0
-    for _ in range(40):
-        mid = (lo + hi) / 2
-        if bs(S, K, T, mid, r, call) > price:
-            hi = mid
-        else:
-            lo = mid
-    return (lo + hi) / 2
-
-
 def put_delta(S, K, T, v, r):
     if T <= 0 or v <= 0:
         return -1.0 if K > S else 0.0
@@ -98,46 +79,29 @@ def put_delta(S, K, T, v, r):
     return _ncdf(d1) - 1
 
 
+def strike_for(S, T, v, r, delta):
+    """The strike of a put with delta -`delta`."""
+    d1 = NormalDist().inv_cdf(1 - delta)
+    return S * math.exp(-d1 * v * math.sqrt(T) + (r + v * v / 2) * T)
+
+
 def rate(day):
     return RATES.get(int(day[:4]), 0.03)
 
 
-# ---------------------------------------------------------------- contracts
-
-def parse_occ(sym):
-    """'AAPL  250117P00200000' -> ('AAPL', '2025-01-17', 'P', 200.0); None when not an option symbol."""
-    s = (sym or "").strip()
-    if len(s) < 16:
+def _n(v):
+    try:
+        x = float(v)
+        return x if x == x else None
+    except (TypeError, ValueError):
         return None
-    t = s[-15:]
-    if t[6] not in "CP" or not t[:6].isdigit() or not t[7:].isdigit():
-        return None
-    return s[:-15].strip(), f"20{t[0:2]}-{t[2:4]}-{t[4:6]}", t[6], int(t[7:]) / 1000.0
 
 
-_MONTHLY = {}
+def uw_sym(sym):
+    return sym.replace("-", ".")
 
 
-def is_monthly(exp):
-    """The standard monthly expiry: the third Friday (the Thursday before when that Friday is a market holiday; the
-    Saturday after, the old convention, before 2015)."""
-    v = _MONTHLY.get(exp)
-    if v is None:
-        import holistudy
-        d = date.fromisoformat(exp)
-        wd = d.weekday()
-        v = (wd == 4 and 15 <= d.day <= 21) or (wd == 5 and 16 <= d.day <= 22) or \
-            (wd == 3 and 14 <= d.day <= 20 and holistudy.holiday_name(d + timedelta(days=1)) == "Good Friday")
-        _MONTHLY[exp] = v
-    return v
-
-
-def root(sym):
-    """The option root of a stock: BRK.B / BRK-B -> BRKB."""
-    return "".join(ch for ch in sym.upper() if ch.isalnum())
-
-
-# ---------------------------------------------------------------- the universe and the data index
+# ---------------------------------------------------------------- the universe and the IV history
 
 def universe(sub=None, refresh=False):
     u = store.get_json("ivc/uni")
@@ -151,235 +115,130 @@ def universe(sub=None, refresh=False):
     return u or {"syms": [], "at": None}
 
 
-def _index():
-    return store.get_json("ivc/have") or {"y": {}, "packed": {}}
+def _ixd():
+    return store.get_json("ivc/uwix") or {"s": {}}
 
 
 def status():
-    ix, u = _index(), universe()
-    syms = u["syms"]
-    years = sorted({int(y) for s in syms for y in (ix["y"].get(s) or {})})
-    full = sum(1 for s in syms if s in ix["packed"])
-    return {"syms": len(syms), "uniAt": u["at"], "years": [years[0], years[-1]] if years else None, "packed": full,
-            "at": ix.get("at")}
+    ix, u = _ixd(), universe()
+    have = [ix["s"][s] for s in u["syms"] if s in ix["s"]]
+    return {"syms": len(u["syms"]), "uniAt": u["at"], "have": len(have), "first": min((h["first"] for h in have if h.get("first")), default=None),
+            "last": max((h["last"] for h in have if h.get("last")), default=None), "at": ix.get("at"), "cache": ix.get("cache", 0)}
 
 
-def _db_key(sub):
-    import databento
-    k = databento.key(sub)
-    if DATASET not in databento.list_datasets(k):
-        raise BadRequest(f"Your Databento key has no access to {DATASET} (US equity options). Add it in the Databento portal.")
-    return k
+def iv_series(tok, sym):
+    """[[date, close, IV rank 0-100, IV or None], ...] from 2022 (Unusual Whales iv-rank)."""
+    import uwhales
+    rows = {}
 
-
-def _todo(syms, y0):
-    """(symbol, year) pairs not downloaded; the current year is always fetched again (new days)."""
-    ix = _index()
-    y1 = now_ny().year
-    return [(s, y) for y in range(y0, y1 + 1) for s in syms if y == y1 or str(y) not in (ix["y"].get(s) or {})]
-
-
-def _yesterday():
-    return (now_ny() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-
-def cost(sub, y0):
-    """US dollars Databento would bill for what is not downloaded yet: one estimate per year."""
-    import databento
-    k = _db_key(sub)
-    syms = universe(sub)["syms"]
-    todo = _todo(syms, int(y0))
-    by = {}
-    for s, y in todo:
-        by.setdefault(y, []).append(s)
-    total = 0.0
-    for y, ss in sorted(by.items()):
-        a, b = f"{y}-01-01", min(f"{y + 1}-01-01", _yesterday())
-        if b <= a:
-            continue
-        r = databento._retry_end(lambda e: databento._json(k, "metadata.get_cost", {"dataset": DATASET, "symbols": ",".join(root(s) + ".OPT" for s in ss),
-                                                                                    "schema": "ohlcv-1d", "start": a, "end": e, "stype_in": "parent"}), b + "T00:00:00")
-        try:
-            total += float(r)
-        except (TypeError, ValueError):
-            total += float((r or {}).get("cost") or 0) if isinstance(r, dict) else 0.0
-    return {"syms": len(syms), "pairs": len(todo), "from": int(y0), "cost": round(total, 2)}
-
-
-# ---------------------------------------------------------------- download
-
-def _closes(sub, sym, y0):
-    """{date: close} unadjusted (Alpaca), cached; fetched again when older than 12 hours."""
-    import alpaca
-    key = f"ivc/c/{root(sym)}"
-    c = store.get_json(key, max_age=12 * 3600)
-    if c and c.get("from", 9999) <= y0:
-        return c["d"]
-    try:
-        rows = alpaca.daily_range(sub, sym, f"{y0 - 1}-12-01", adjustment="raw")
-    except Exception as e:                              # a ticker Alpaca doesn't know
-        print("ivcrush closes", sym, e)
-        rows = []
-    d = {r[0]: float(r[4]) for r in rows}
-    store.put_json(key, {"from": y0, "d": d, "at": iso(now_ny())})
-    return d
-
-
-def _fetch(key, syms, y, closes):
-    """One year of OPRA daily bars of `syms` -> {sym: [[day, S, iv, puts], ...]}."""
-    import databento
-    a, b = f"{y}-01-01", min(f"{y + 1}-01-01", _yesterday())
-    if b <= a:
-        return {}
-    roots = {root(s): s for s in syms}
-    params = {"dataset": DATASET, "symbols": ",".join(r + ".OPT" for r in roots), "schema": "ohlcv-1d", "start": a, "stype_in": "parent",
-              "encoding": "csv", "compression": "none", "pretty_px": "true", "pretty_ts": "true", "map_symbols": "true"}
-    resp = databento._retry_end(lambda e: databento._open(key, "POST", "timeseries.get_range", {**params, "end": e}, timeout=900), b + "T00:00:00")
-    acc = {}                                            # (sym, day) -> [ivs, puts]
-    try:
-        rd = csv.reader(io.TextIOWrapper(resp, encoding="utf-8", newline=""))
-        head = next(rd, None) or []
-        try:
-            i_ts, i_c, i_v, i_s = head.index("ts_event"), head.index("close"), head.index("volume"), head.index("symbol")
-        except ValueError:
-            return {}
-        for x in rd:
-            p = parse_occ(x[i_s])
-            if not p or p[0] not in roots:
+    def take(r):
+        for x in (r.get("data") if isinstance(r, dict) else r) or []:
+            if not isinstance(x, dict):
                 continue
-            sym = roots[p[0]]
-            _, exp, cp, k = p
-            day = x[i_ts][:10]
-            S = closes[sym].get(day)
-            if not S:
-                continue
-            dte = (date.fromisoformat(exp) - date.fromisoformat(day)).days
-            if dte < 0 or dte > 75:
-                continue
-            m = k / S
-            if m < 0.70 or m > 1.05:
-                continue
-            try:
-                px, vol = float(x[i_c]), int(float(x[i_v]))
-            except ValueError:
-                continue
-            if px <= 0:
-                continue
-            T = max(dte, 0.5) / 365
-            ivs_puts = acc.get((sym, day))
-            if ivs_puts is None:
-                ivs_puts = acc[(sym, day)] = [[], []]
-            if 20 <= dte <= 60 and ((cp == "P" and 0.97 <= m <= 1.0) or (cp == "C" and 1.0 <= m <= 1.03)):
-                iv = implied_vol(px, S, k, T, rate(day), cp == "C")
-                if iv:
-                    ivs_puts[0].append(iv)
-            if cp == "P" and is_monthly(exp):
-                iv = implied_vol(px, S, k, T, rate(day), False)
-                ivs_puts[1].append([exp, k, px, vol, round(iv, 4) if iv else None])
-    finally:
-        resp.close()
-    out = {}
-    for (sym, day), (ivs, puts) in acc.items():
-        ivs.sort()
-        out.setdefault(sym, []).append([day, closes[sym][day], round(ivs[len(ivs) // 2], 4) if ivs else None, puts])
-    for v in out.values():
-        v.sort(key=lambda r: r[0])
+            d = str(x.get("date") or "")[:10]
+            rk, c = _n(x.get("iv_rank_1y")), _n(x.get("close"))
+            if d and rk is not None and c:
+                rows[d] = [d, c, rk, _n(x.get("volatility") or x.get("iv") or x.get("implied_volatility"))]
+    take(uwhales._get_retry(tok, f"stock/{uw_sym(sym)}/iv-rank", {"timespan": START}))
+    if not rows or min(rows) > "2022-03-01":            # the date may mean "a year up to": walk back a year at a time
+        d = date.fromisoformat(min(rows)) if rows else now_ny().date()
+        for _ in range(6):
+            d -= timedelta(days=1)
+            if d.isoformat() < START:
+                break
+            n0 = len(rows)
+            take(uwhales._get_retry(tok, f"stock/{uw_sym(sym)}/iv-rank", {"timespan": d.isoformat()}))
+            if len(rows) == n0 or min(rows) >= d.isoformat():
+                break
+            d = date.fromisoformat(min(rows))
+    out = sorted(rows.values())
+    if out and max(r[2] for r in out) <= 1.5:          # a 0-1 scale
+        for r in out:
+            r[2] = round(r[2] * 100, 2)
     return out
 
 
 def download(sub, p, prog, deadline):
-    """The job: the universe, then every missing (stock, year), then one file per stock. Returns the params to carry on
-    with (out of time), or None when done."""
-    y0 = int(p.get("from") or DEFAULT["from"])
-    k = _db_key(sub)
+    """The job: the universe, then every stock's IV rank history. Params to carry on with, or None when done."""
+    import uwhales
+    tok = uwhales.token(sub)
     syms = universe(sub, refresh=not p.get("uni"))["syms"]
     p = {**p, "uni": True}
     done = set(p.get("done") or [])
-    todo = [(s, y) for s, y in _todo(syms, y0) if f"{s}:{y}" not in done]
-    years = sorted({y for _, y in todo})
-    for y in years:
-        ss = [s for s, yy in todo if yy == y]
-        for i in range(0, len(ss), GROUP):
-            if time.time() > deadline - 240:
-                return {**p, "done": sorted(done)}
-            grp = ss[i:i + GROUP]
-            prog(f"Options {y}: {grp[0]}…{grp[-1]} ({len(done) + 1}–{len(done) + len(grp)} of {len(done) + len(todo) - len([1 for s, yy in todo if f'{s}:{yy}' in done])})")
-            closes = {s: _closes(sub, s, y0) for s in grp}
-            try:
-                got = _fetch(k, [s for s in grp if closes[s]], y, closes)
-            except BadRequest as e:                     # one bad symbol spoils a request: one at a time
-                print("ivcrush group", y, grp, e)
-                got = {}
-                for s in grp:
-                    try:
-                        got.update(_fetch(k, [s], y, closes) if closes[s] else {})
-                    except BadRequest as e2:
-                        print("ivcrush sym", y, s, e2)
-            ix = _index()
-            for s in grp:
-                rows = got.get(s) or []
-                store.put_json(f"ivc/y/{root(s)}/{y}", rows)
-                ix["y"].setdefault(s, {})[str(y)] = len(rows)
-                ix["packed"].pop(s, None)
-                done.add(f"{s}:{y}")
-            ix["at"] = iso(now_ny())
-            store.put_json("ivc/have", ix)
-    # one file per stock (what the backtest reads)
-    ix = _index()
-    for s in syms:
-        if s in ix["packed"]:
+    ix = _ixd()
+    for k, s in enumerate(syms):
+        if s in done:
             continue
-        if time.time() > deadline - 60:
-            store.put_json("ivc/have", ix)
+        if time.time() > deadline:
+            store.put_json("ivc/uwix", ix)
             return {**p, "done": sorted(done)}
-        prog(f"Packing {s}…")
-        rows = []
-        for y in sorted(ix["y"].get(s) or {}):
-            rows += store.get_json(f"ivc/y/{root(s)}/{y}") or []
-        store.put_json(f"ivc/s/{root(s)}", rows)
-        ix["packed"][s] = len(rows)
-    store.put_json("ivc/have", ix)
+        prog(f"IV rank history {len(done) + 1} / {len(syms)}: {s}")
+        try:
+            rows = iv_series(tok, s)
+        except Exception as e:                         # a ticker Unusual Whales doesn't know: noted, go on
+            print("ivcrush iv", s, e)
+            rows = []
+        store.put_json(f"ivc/uw/{s}", rows)
+        ix["s"][s] = {"n": len(rows), "first": rows[0][0] if rows else None, "last": rows[-1][0] if rows else None}
+        done.add(s)
+        if len(done) % 25 == 0:
+            ix["at"] = iso(now_ny())
+            store.put_json("ivc/uwix", ix)
+    ix["at"] = iso(now_ny())
+    store.put_json("ivc/uwix", ix)
     return None
 
 
-# ---------------------------------------------------------------- the backtest
+# ---------------------------------------------------------------- one stock
 
-def ranks(iv, look):
-    """IV rank (0-100) of each day within its last `look` values (today included); None until 120 values."""
-    out = []
-    for i in range(len(iv)):
-        if iv[i] is None:
-            out.append(None)
-            continue
-        w = [x for x in iv[max(0, i - look + 1):i + 1] if x is not None]
-        if len(w) < min(120, look):
-            out.append(None)
-            continue
-        lo, hi = min(w), max(w)
-        out.append(100 * (iv[i] - lo) / (hi - lo) if hi > lo else 50.0)
-    return out
+def _px(row, side, c):
+    """What we get selling (side "bid") / pay buying back ("ask") on a daily row; None without a usable price."""
+    b, a, last = row.get("nbbo_bid"), row.get("nbbo_ask"), row.get("last_price")
+    if b and a and a >= b > 0:
+        if c["fill"] == "mid":
+            m = (a + b) / 2
+            return m - c["slip"] if side == "bid" else m + c["slip"]
+        return b if side == "bid" else a
+    if last and last > 0:
+        return last - c["slip"] if side == "bid" else last + c["slip"]
+    return None
 
 
-def _pick(day, S, puts, c):
-    """The put to sell: the monthly expiry nearest `dte` days (dteMin-dteMax), the strike whose delta is nearest."""
+def _mid(row):
+    b, a, last = row.get("nbbo_bid"), row.get("nbbo_ask"), row.get("last_price")
+    return (a + b) / 2 if b and a and a >= b else last
+
+
+def _entry(tok, sym, day, S, iv, c):
+    """(occ, expiry, strike, credit, delta, its IV, history) of the put to sell on `day`, or None."""
+    import optreal
+    import uwhales
+    ch = [x for x in optreal.chain_on(tok, sym, day, False, c["dte"]) if x[2] < S]
     d0 = date.fromisoformat(day)
-    exps = {}
-    for x in puts:
-        if x[4] is None or x[2] < c["minPx"] or x[1] >= S:
-            continue
-        dte = (date.fromisoformat(x[0]) - d0).days
-        if c["dteMin"] <= dte <= c["dteMax"]:
-            exps.setdefault(x[0], []).append(x)
+    exps = sorted({x[1] for x in ch if c["dteMin"] <= (date.fromisoformat(x[1]) - d0).days <= c["dteMax"]},
+                  key=lambda e: abs((date.fromisoformat(e) - d0).days - c["dte"]))
     if not exps:
         return None
-    e = min(exps, key=lambda e: abs((date.fromisoformat(e) - d0).days - c["dte"]))
-    T = (date.fromisoformat(e) - d0).days / 365
+    ex = exps[0]
+    T = (date.fromisoformat(ex) - d0).days / 365
+    k0 = strike_for(S, T, iv or 0.35, rate(day), c["delta"])
+    near = sorted((x for x in ch if x[1] == ex), key=lambda x: abs(x[2] - k0))[:3]
     best = None
-    for x in exps[e]:
-        dl = abs(put_delta(S, x[1], T, x[4], rate(day)))
-        if best is None or abs(dl - c["delta"]) < abs(best[1] - c["delta"]):
-            best = (x, dl)
-    return best if best and abs(best[1] - c["delta"]) <= 0.10 else None
+    for occ, _, k, _ in near:
+        h = optreal.history(tok, occ)
+        row = h.get(day)
+        if not row:
+            continue
+        credit = _px(row, "bid", c)
+        v = row.get("implied_volatility")
+        if not credit or credit < c["minPx"] or not v:
+            continue
+        dl = abs(put_delta(S, k, T, v, rate(day)))
+        if best is None or abs(dl - c["delta"]) < abs(best[4] - c["delta"]):
+            best = (occ, ex, k, round(credit, 3), round(dl, 3), v, h)
+    if best and abs(best[4] - c["delta"]) <= 0.10:
+        return best
+    return None
 
 
 def _coll(c, S, K, credit):
@@ -388,61 +247,56 @@ def _coll(c, S, K, credit):
     return (max(0.2 * S - max(0.0, S - K), 0.1 * K) + credit) * 100
 
 
-def sim_symbol(sym, rows, c, cal):
-    """Candidate trades of one stock, with and without the IV-rank filter: [filtered, baseline]. Each: entry / exit,
-    the P&L of one contract, its daily marks (one contract's value to buy back) from the day after entry, indexed on
-    the calendar `cal` ({day: i})."""
-    rk = ranks([r[2] for r in rows], c["look"])
-    out = [[], []]
-    for which in (0, 1):
-        pos = None
-        for i, (day, S, iv, puts) in enumerate(rows):
-            if day not in cal:
+def sim_symbol(tok, sym, rows, c, cal):
+    """Candidate trades of one stock: entry / exit, the P&L of one contract and its daily marks (one contract's value
+    to buy back, mid) from the day after entry, indexed on the calendar `cal` ({day: i})."""
+    out, pos = [], None
+    close = {r[0]: r[1] for r in rows}
+    for day, S, rk, iv in rows:
+        if day not in cal or day < c["from"]:
+            continue
+        ci = cal[day]
+        if pos:
+            dte = (date.fromisoformat(pos["exp"]) - date.fromisoformat(day)).days
+            row = pos["h"].get(day)
+            why, px = None, None
+            if dte <= 0:
+                why, px = "expired", max(0.0, pos["K"] - (close.get(pos["exp"]) or S))
+            elif row:
+                ask = _px(row, "ask", c)
+                if ask is not None and ask <= pos["credit"] * (1 - c["take"]):
+                    why, px = "take", ask
+                elif ask is not None and c["stop"] > 0 and ask >= pos["credit"] * (1 + c["stop"]):
+                    why, px = "stop", ask
+                elif ask is not None and c["manage"] > 0 and dte <= c["manage"]:
+                    why, px = "manage", ask
+                m = _mid(row)
+                if m is not None:
+                    pos["last"] = m
+            while len(pos["marks"]) < ci - pos["i"] - 1:
+                pos["marks"].append(pos["marks"][-1] if pos["marks"] else pos["credit"])
+            if why:
+                fee = c["comm"] * (2 if (why != "expired" or px > 0) else 1)
+                pnl = (pos["credit"] - px) * 100 - fee
+                pos["marks"].append(px)
+                out.append({"sym": sym, "in": pos["in"], "out": day, "exp": pos["exp"], "K": pos["K"], "S": pos["S"], "occ": pos["occ"],
+                            "credit": pos["credit"], "exitPx": round(px, 2), "why": why, "pnl": round(pnl, 2), "rank": pos["rank"],
+                            "iv0": pos["iv0"], "delta": pos["delta"], "coll": pos["coll"], "i": pos["i"], "j": ci,
+                            "marks": [round(x, 3) for x in pos["marks"]]})
+                pos = None
+            else:
+                pos["marks"].append(pos["last"])
                 continue
-            if pos:
-                dte = (date.fromisoformat(pos["exp"]) - date.fromisoformat(day)).days
-                row = next((x for x in puts if x[0] == pos["exp"] and x[1] == pos["K"]), None)
-                if row and row[4]:
-                    pos["iv"] = row[4]
-                est = row[2] if row else bs(S, pos["K"], max(dte, 0) / 365, pos["iv"] or iv or 0.3, rate(day), False)
-                why, px = None, None
-                if dte <= 0:
-                    why, px = "expired", max(0.0, pos["K"] - S)
-                elif row and row[2] <= pos["credit"] * (1 - c["take"]):
-                    why, px = "take", row[2] + c["slip"]
-                elif row and c["stop"] > 0 and row[2] >= pos["credit"] * (1 + c["stop"]):
-                    why, px = "stop", row[2] + c["slip"]
-                elif c["manage"] > 0 and dte <= c["manage"]:
-                    why, px = "manage", est + c["slip"]
-                ci = cal[day]
-                while len(pos["marks"]) < ci - pos["i"] - 1:        # days the stock had no row: carry the last mark
-                    pos["marks"].append(pos["marks"][-1] if pos["marks"] else pos["credit"])
-                if why:
-                    fee = c["comm"] * (2 if (why != "expired" or px > 0) else 1)
-                    pnl = (pos["credit"] - px) * 100 - fee
-                    pos["marks"].append(px)
-                    out[which].append({"sym": sym, "in": pos["in"], "out": day, "exp": pos["exp"], "K": pos["K"], "S": pos["S"], "credit": pos["credit"],
-                                       "exitPx": round(px, 2), "why": why, "pnl": round(pnl, 2), "rank": pos["rank"], "iv0": pos["iv0"], "delta": pos["delta"],
-                                       "coll": pos["coll"], "i": pos["i"], "j": ci, "marks": [round(m, 3) for m in pos["marks"]]})
-                    pos = None
-                else:
-                    pos["marks"].append(est)
-                    continue
-            if pos is None and rk[i] is not None and (which == 1 or rk[i] >= c["rank"]):
-                pk = _pick(day, S, puts, c)
-                if pk:
-                    x, dl = pk
-                    credit = max(0.01, x[2] - c["slip"])
-                    pos = {"in": day, "exp": x[0], "K": x[1], "S": S, "credit": round(credit, 3), "iv": x[4], "iv0": x[4], "rank": round(rk[i], 1),
-                           "delta": round(dl, 3), "coll": round(_coll(c, S, x[1], credit), 2), "i": cal[day], "marks": []}
-    today = None
-    if rows and rk[-1] is not None:
-        day, S, iv, puts = rows[-1]
-        pk = _pick(day, S, puts, c)
-        today = {"sym": sym, "day": day, "S": S, "iv": iv, "rank": round(rk[-1], 1),
-                 "put": {"exp": pk[0][0], "K": pk[0][1], "px": pk[0][2], "iv": pk[0][4], "delta": round(pk[1], 3)} if pk else None}
-    return out, today
+        if pos is None and rk >= c["rank"]:
+            e = _entry(tok, sym, day, S, iv, c)
+            if e:
+                occ, ex, k, credit, dl, v, h = e
+                pos = {"occ": occ, "in": day, "exp": ex, "K": k, "S": S, "credit": credit, "iv0": round(v, 4), "rank": round(rk, 1),
+                       "delta": dl, "coll": round(_coll(c, S, k, credit), 2), "i": ci, "marks": [], "last": credit, "h": h}
+    return out
 
+
+# ---------------------------------------------------------------- portfolio and stats
 
 def portfolio(cands, days, c):
     """Candidates -> accepted trades and the daily equity: the day's candidates in IV-rank order while there's room."""
@@ -511,35 +365,41 @@ def _stats(trades, curve, a=None, b=None):
     return out
 
 
+# ---------------------------------------------------------------- the backtest job
+
 def run_job(sub, prog, deadline):
-    """The backtest over every packed stock; partial candidates kept between invocations. True when done."""
+    """The backtest over every stock with IV history; partial candidates kept between invocations. True when done."""
+    import uwhales
+    tok = uwhales.token(sub)
     st = store.get_json(f"ivc/run/{sub}") or {}
     c = clean(st.get("cfg"))
-    ix = _index()
-    syms = [s for s in universe()["syms"] if s in ix["packed"]]
+    ix = _ixd()
+    syms = [s for s in universe()["syms"] if (ix["s"].get(s) or {}).get("n")]
     if not syms:
-        raise BadRequest("No option data yet: download it first.")
-    import alpaca
+        raise BadRequest("No IV history yet: download it first.")
     if not st.get("cal"):
-        cal = [r[0] for r in alpaca.daily_range(sub, "SPY", f"{c['from']}-01-01", adjustment="raw")]
-        st.update(cal=cal, done=[], parts=0)
+        cal = set()
+        for s in syms[:40]:
+            cal |= {r[0] for r in store.get_json(f"ivc/uw/{s}") or []}
+        st.update(cal=sorted(d for d in cal if d >= c["from"]), done=[], parts=0)
         store.put_json(f"ivc/run/{sub}", st)
     cal = st["cal"]
     ci = {d: i for i, d in enumerate(cal)}
     done = set(st["done"])
-    part = {"f": [], "b": [], "today": []}
-    for k, s in enumerate(syms):
+    part = {"f": [], "today": []}
+    for s in syms:
         if s in done:
             continue
         if time.time() > deadline:
             break
-        prog(f"Backtest {len(done) + 1} / {len(syms)}: {s}")
-        rows = [r for r in (store.get_json(f"ivc/s/{root(s)}") or []) if r[0] >= cal[0]]
-        (f, b), today = sim_symbol(s, rows, c, ci)
-        part["f"] += f
-        part["b"] += b
-        if today:
-            part["today"].append(today)
+        prog(f"Backtest {len(done) + 1} / {len(syms)}: {s} (option prices from Unusual Whales, cached)")
+        rows = store.get_json(f"ivc/uw/{s}") or []
+        try:
+            part["f"] += sim_symbol(tok, s, rows, c, ci)
+        except BadRequest as e:                         # a ticker without option data: go on
+            print("ivcrush sim", s, e)
+        if rows:
+            part["today"].append({"sym": s, "day": rows[-1][0], "S": rows[-1][1], "rank": rows[-1][2], "iv": rows[-1][3]})
         done.add(s)
     store.put_json(f"ivc/run/{sub}/p{st['parts']}", part)
     st.update(done=sorted(done), parts=st["parts"] + 1)
@@ -547,31 +407,27 @@ def run_job(sub, prog, deadline):
     if len(done) < len(syms):
         return False
     prog("Portfolio…")
-    f, b, today = [], [], []
+    f, today = [], []
     for k in range(st["parts"]):
         p = store.get_json(f"ivc/run/{sub}/p{k}") or {}
         f += p.get("f") or []
-        b += p.get("b") or []
         today += p.get("today") or []
         store.delete(f"ivc/run/{sub}/p{k}")
-    res = _result(c, cal, f, b, today, len(syms))
-    store.put_json(f"ivc/res/{sub}", res)
+    store.put_json(f"ivc/res/{sub}", _result(c, cal, f, today, len(syms)))
     store.put_json(f"ivc/run/{sub}", {"cfg": c})
     return True
 
 
-def _result(c, cal, f, b, today, nsym):
-    first = min((t["in"] for t in b), default=cal[0])
-    days = [d for d in cal if d >= first]
-    i0 = cal.index(days[0]) if days else 0
-    shift = lambda ts: [{**t, "i": t["i"] - i0, "j": t["j"] - i0} for t in ts if t["i"] >= i0]
-    trades, curve = portfolio(shift(f), days, c)
-    btr, bcv = portfolio(shift(b), days, c)
-    split = days[int(len(days) * c["split"])] if days else None
+def _result(c, cal, f, today, nsym):
+    trades, curve = portfolio(f, cal, c)
+    split = cal[int(len(cal) * c["split"])] if cal else None
     buckets = []
-    for lo, hi in ((0, 20), (20, 30), (30, 50), (50, 70), (70, 101)):
-        ts = [dict(t, ret=t["pnl"] / t["coll"], days=(date.fromisoformat(t["out"]) - date.fromisoformat(t["in"])).days) for t in b if lo <= t["rank"] < hi]
-        buckets.append({"range": f"{lo}–{min(hi, 100)}", **_stats(ts, [])})
+    edges = sorted({c["rank"], 50.0, 70.0, 90.0, 100.01})
+    for lo, hi in zip(edges, edges[1:]):
+        if lo < c["rank"]:
+            continue
+        ts = [dict(t, ret=t["pnl"] / t["coll"], days=(date.fromisoformat(t["out"]) - date.fromisoformat(t["in"])).days) for t in f if lo <= t["rank"] < hi]
+        buckets.append({"range": f"{lo:g}–{min(hi, 100):g}", **_stats(ts, [])})
     bysym = {}
     for t in trades:
         g = bysym.setdefault(t["sym"], {"sym": t["sym"], "n": 0, "pnl": 0.0, "win": 0})
@@ -582,14 +438,12 @@ def _result(c, cal, f, b, today, nsym):
     for g in syms:
         g["pnl"] = round(g["pnl"], 2)
     step = max(1, len(curve) // 1200)
-    today.sort(key=lambda x: -x["rank"])
-    return {"cfg": c, "at": iso(now_ny()), "syms": nsym, "from": days[0] if days else None, "to": days[-1] if days else None, "split": split,
+    hot = sorted([x for x in today if x["rank"] >= c["rank"]], key=lambda x: -x["rank"])
+    return {"cfg": c, "at": iso(now_ny()), "syms": nsym, "cands": len(f), "from": cal[0] if cal else None, "to": cal[-1] if cal else None, "split": split,
             "all": _stats(trades, curve), "train": _stats(trades, curve, None, split), "test": _stats(trades, curve, split),
-            "base": {"all": _stats(btr, bcv), "train": _stats(btr, bcv, None, split), "test": _stats(btr, bcv, split)},
             "byRank": buckets, "worstSyms": syms[:15], "bestSyms": syms[-15:][::-1],
-            "curve": [x[:2] for x in curve[::step]], "baseCurve": [x[:2] for x in bcv[::step]],
-            "trades": trades[-20000:], "nTrades": len(trades),
-            "today": [x for x in today if x["rank"] >= c["rank"]][:60], "todayN": sum(1 for x in today if x["rank"] >= c["rank"])}
+            "curve": [x[:2] for x in curve[::step]], "trades": trades[-20000:], "nTrades": len(trades),
+            "today": hot[:80], "todayN": len(hot)}
 
 
 # ---------------------------------------------------------------- API
@@ -603,20 +457,19 @@ def view(sub):
     return {"cfg": clean(st.get("cfg")), "res": store.get_json(f"ivc/res/{sub}"), "data": status(), "job": j}
 
 
-def data_start(sub, y0, max_cost):
+def data_start(sub):
     import jobs
-    y0 = clean({"from": y0})["from"]
-    est = cost(sub, y0)
-    if est["cost"] > float(max_cost or 0) + 0.005:
-        raise BadRequest(f"Databento would bill about ${est['cost']:,.2f} for the S&P 500 options ({est['pairs']} stock-years from {y0}), "
-                         f"more than the ${float(max_cost or 0):,.2f} you accepted.")
-    return jobs.start(sub, "ivcrush", "ivcdata", {"from": y0})
+    import uwhales
+    uwhales.token(sub)                                  # connected?
+    return jobs.start(sub, "ivcrush", "ivcdata", {})
 
 
 def run_start(sub, cfg):
     import jobs
+    import uwhales
+    uwhales.token(sub)
     c = clean(cfg)
-    if not _index()["packed"]:
-        raise BadRequest("No option data yet: check the cost and download it first.")
+    if not status()["have"]:
+        raise BadRequest("No IV history yet: download it first.")
     store.put_json(f"ivc/run/{sub}", {"cfg": c})
     return jobs.start(sub, "ivcrush", "ivcrun", {})

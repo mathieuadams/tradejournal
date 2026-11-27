@@ -172,14 +172,14 @@ def handler(event, ctx=None):
                 _invoke(event)
                 return {"continued": True}
             set_status(sub, name, status="done", msg="Whole market downloaded.")
-        elif job == "ivcdata":                          # S&P 500 option daily bars (Databento OPRA) for IV crush
+        elif job == "ivcdata":                          # S&P 500 IV rank history (Unusual Whales) for IV crush
             import ivcrush
             nxt = ivcrush.download(sub, p, prog, dl)
             if nxt is not None:
                 event["params"] = nxt
                 _invoke(event)
                 return {"continued": True}
-            set_status(sub, name, status="done", msg="S&P 500 option data ready (IV history and monthly puts).")
+            set_status(sub, name, status="done", msg="S&P 500 IV rank history ready.")
         elif job == "ivcrun":                           # the IV crush backtest over the S&P 500
             import ivcrush
             if not ivcrush.run_job(sub, prog, dl):

@@ -884,54 +884,49 @@ def test_swing_whole_market():
 
 def test_ivcrush():
     import ivcrush as IV
-    from datetime import date as _d
-    assert IV.parse_occ("AAPL  250117P00200000") == ("AAPL", "2025-01-17", "P", 200.0) and IV.parse_occ("junk") is None
-    assert IV.is_monthly("2025-01-17") and not IV.is_monthly("2025-01-10") and IV.is_monthly("2014-01-18") and IV.is_monthly("2025-04-17")
-    assert IV.root("BRK-B") == "BRKB"
-    v = IV.implied_vol(IV.bs(100, 95, 0.1, 0.3, 0.02, False), 100, 95, 0.1, 0.02, False)
-    assert abs(v - 0.3) < 1e-3
-    assert IV.ranks([0.2, 0.3, 0.4] * 50, 252)[-1] == 100.0
-    call("PUT", "/alpaca", {"keyId": "PK" + "A" * 18, "secret": "s" * 30})
+    import fakes as F
+    import store
+    assert abs(abs(IV.put_delta(100, IV.strike_for(100, 0.12, 0.3, 0.03, 0.2), 0.12, 0.3, 0.03)) - 0.2) < 1e-6
     call("PUT", "/fmp", {"key": "k" * 32})
-    call("PUT", "/databento", {"key": "db-" + "A" * 29})
+    call("DELETE", "/uw")
+    st, r = call("POST", "/ivcrush/data")
+    assert st == 400 and "Unusual Whales" in r["error"], r
+    call("PUT", "/uw", {"token": "uw_" + "t" * 30})
     st, r = call("POST", "/ivcrush", {"cfg": {}})
     assert st == 400 and "download" in r["error"], r
-    st, est = call("POST", "/ivcrush/cost", {"from": 2022})
-    assert st == 200 and est["syms"] == 3 and est["cost"] > 0, est
-    st, r = call("POST", "/ivcrush/data", {"from": 2022, "maxCost": 0})
-    assert st == 400 and "more than" in r["error"], r
-    IV.GROUP = 2
-    st, r = call("POST", "/ivcrush/data", {"from": 2022, "maxCost": 1000})
+    st, r = call("POST", "/ivcrush/data")
     assert st == 200, r
     st, v = call("GET", "/ivcrush")
     assert v["job"]["status"] == "done", v["job"]
-    assert v["data"]["packed"] == 3 and v["data"]["years"][0] == 2022, v["data"]
-    rows = __import__("store").get_json("ivc/s/AAA")
-    assert len(rows) > 500 and rows[100][2] and rows[100][3] and all(IV.is_monthly(x[0]) for x in rows[100][3])
-    st, r = call("POST", "/ivcrush", {"cfg": {"from": 2022, "maxPos": 3, "rank": 30}})
-    assert st == 200, r
-    st, v = call("GET", "/ivcrush")
+    assert v["data"]["have"] == 3 and v["data"]["first"] == "2022-01-03", v["data"]
+    rows = store.get_json("ivc/uw/AAA")
+    assert len(rows) > 500 and 0 <= rows[100][2] <= 100 and max(r[2] for r in rows) > 90
+    F.UW_BS = True
+    try:
+        st, r = call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30}})
+        assert st == 200, r
+        st, v = call("GET", "/ivcrush")
+    finally:
+        F.UW_BS = False
     assert v["job"]["status"] == "done", v["job"]
     res = v["res"]
-    assert res["all"]["n"] > 10 and res["base"]["all"]["n"] >= res["all"]["n"] and res["all"]["n"] == res["train"]["n"] + res["test"]["n"], res["all"]
+    assert res["all"]["n"] > 10 and res["all"]["n"] == res["train"]["n"] + res["test"]["n"], res["all"]
     assert all(t["rank"] >= 30 for t in res["trades"]) and set(t["why"] for t in res["trades"]) <= {"take", "manage", "expired", "stop"}
-    assert any(t["why"] == "take" for t in res["trades"])
+    assert any(t["why"] == "take" for t in res["trades"]) and res["byRank"][0]["range"] == "30–50"
     for t in res["trades"]:
-        assert t["in"] < t["out"] and t["K"] < t["S"] and 0.1 <= t["delta"] <= 0.3 and t["n"] >= 1
+        assert t["in"] < t["out"] and t["K"] < t["S"] and 0.1 <= t["delta"] <= 0.3 and t["n"] >= 1 and t["in"] >= "2022-06-01"
         if t["why"] == "take":
-            assert t["exitPx"] <= t["credit"] * 0.5 + 0.031
-    # never more than maxPos open, one put per stock at a time
+            assert t["exitPx"] <= t["credit"] * 0.5 + 1e-9
     ev = sorted([(t["in"], 1, t["sym"]) for t in res["trades"]] + [(t["out"], 0, t["sym"]) for t in res["trades"]])
     n, held = 0, set()
-    for _, kind, sym in ev:
+    for _, kind, sym in ev:                              # never more than maxPos open, one put per stock at a time
         if kind:
             assert sym not in held
             held.add(sym); n += 1
             assert n <= 3
         else:
             held.discard(sym); n -= 1
-    assert res["curve"][0][1] == 500000.0 and res["byRank"][0]["range"] == "0–20"
-    call("DELETE", "/databento")                          # the futures test expects no Databento key
+    assert res["curve"][0][1] == 500000.0
 
 
 def SW_clean_default():

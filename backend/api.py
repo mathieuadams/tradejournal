@@ -671,16 +671,10 @@ def ivc_view(sub, claims, body, q):
     return ivcrush.view(sub)
 
 
-@route("POST", "/ivcrush/cost")
-def ivc_cost(sub, claims, body, q):
-    import ivcrush
-    return ivcrush.cost(sub, int(body.get("from") or 2016))
-
-
 @route("POST", "/ivcrush/data")
 def ivc_data(sub, claims, body, q):
     import ivcrush
-    return ivcrush.data_start(sub, body.get("from") or 2016, body.get("maxCost") or 0)
+    return ivcrush.data_start(sub)
 
 
 @route("POST", "/ivcrush")
