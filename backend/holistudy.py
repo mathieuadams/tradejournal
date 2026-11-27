@@ -176,7 +176,54 @@ def _ret(c, a, b):
     return c[b] / c[a] - 1 if 0 <= a < len(c) and 0 <= b < len(c) and c[a] else None
 
 
-def study(sub, sym="SPY", n=5, start_year=1993):
+def backtest(ds, c, hol, n, exit_mode="pre", cost_bp=1.0, split_frac=0.6):
+    """Long from the close n sessions before each US market holiday to the close of the last session before it
+    (exit_mode "pre") or of the first session after it ("post1"). Returns per trade, net of cost_bp a side.
+    Train = the first 60% of the trades, test = the rest. Baseline: every n-session window (the same holding time)."""
+    trades = []
+    for e in hol:
+        i = e["i"]
+        a, b = i - n, i + (1 if exit_mode == "post1" else 0)
+        if a < 0 or b >= len(c):
+            continue
+        r = c[b] / c[a] - 1 - 2 * cost_bp / 10000
+        trades.append({"in": ds[a].isoformat(), "out": ds[b].isoformat(), "holiday": e["name"], "date": e["date"], "ret": round(r, 6), "days": b - a})
+    trades.sort(key=lambda t: t["in"])
+    cut = int(len(trades) * split_frac)
+
+    def sts(ts):
+        if not ts:
+            return {"n": 0}
+        rs = [t["ret"] for t in ts]
+        m = sum(rs) / len(rs)
+        sd = math.sqrt(sum((x - m) ** 2 for x in rs) / (len(rs) - 1)) if len(rs) > 1 else 0.0
+        eq, pk, mdd = 1.0, 1.0, 0.0
+        for x in rs:
+            eq *= 1 + x
+            pk = max(pk, eq)
+            mdd = min(mdd, eq / pk - 1)
+        yrs = max(0.5, (date.fromisoformat(ts[-1]["out"]) - date.fromisoformat(ts[0]["in"])).days / 365.25)
+        return {"n": len(rs), "avg": round(m, 5), "win": round(sum(1 for x in rs if x > 0) / len(rs), 3), "t": round(m / (sd / math.sqrt(len(rs))), 2) if sd else None,
+                "total": round(eq - 1, 4), "cagr": round(eq ** (1 / yrs) - 1, 4), "mdd": round(mdd, 4), "best": round(max(rs), 4), "worst": round(min(rs), 4),
+                "from": ts[0]["in"], "to": ts[-1]["out"], "days": sum(t["days"] for t in ts)}
+
+    hold = n + (1 if exit_mode == "post1" else 0)
+    base = [c[t + hold] / c[t] - 1 - 2 * cost_bp / 10000 for t in range(len(c) - hold)]
+    split_date = trades[cut]["in"] if 0 < cut < len(trades) else None
+    bh = lambda a, b: round(c[b] / c[a] - 1, 4)
+    i_from = {d.isoformat(): k for k, d in enumerate(ds)}
+    eq, curve = 1.0, []
+    for t in trades:
+        eq *= 1 + t["ret"]
+        curve.append([t["out"], round(eq, 4)])
+    return {"exit": exit_mode, "n": n, "cost": cost_bp, "split": split_date, "all": sts(trades), "train": sts(trades[:cut]), "test": sts(trades[cut:]),
+            "base": _st(base), "hold": hold, "curve": curve,
+            "spy": {"total": bh(i_from[trades[0]["in"]], i_from[trades[-1]["out"]]) if trades else None,
+                    "years": round((date.fromisoformat(trades[-1]["out"]) - date.fromisoformat(trades[0]["in"])).days / 365.25, 1) if trades else None},
+            "trades": [{**t, "set": "train" if k < cut else "test"} for k, t in enumerate(trades)]}
+
+
+def study(sub, sym="SPY", n=5, start_year=1993, exit_mode="pre", cost_bp=1.0):
     sym = sym if sym in SYMS else "SPY"
     n = 10 if int(n) == 10 else 5
     rows, src = _daily(sub, sym)
@@ -262,4 +309,6 @@ def study(sub, sym="SPY", n=5, start_year=1993):
             "rhyk": _st(rhyk), "ykon": _st(ykon), "base10": base_all["p10"],
             "split": {"holidays": split(hol), "early": split(early), "jewish": split(jew)},
             "base": {"all": base_all, "down": base_dn, "up": base_up, "day": base_day},
-            "events": sorted(out, key=lambda e: e["date"], reverse=True)}   # all of them (the page shows the latest 120; CSV export has all)
+            "events": sorted(out, key=lambda e: e["date"], reverse=True),
+            "bt": backtest(ds, c, [e for e in events if e["kind"] == "holiday" and e["name"] != "Special closure" and e["i"] is not None and e["i"] >= n], n,
+                           "post1" if exit_mode == "post1" else "pre", max(0.0, min(50.0, float(cost_bp))))}   # all of them (the page shows the latest 120; CSV export has all)

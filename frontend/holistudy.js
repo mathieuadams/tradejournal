@@ -1,11 +1,11 @@
 // Swing → Holidays & half days: what SPY / QQQ / IWM / DIA does around US market holidays and 13:00 early closes.
-S.ho = S.ho || { sym: 'SPY', n: 5, from: 1993, r: null };
+S.ho = S.ho || { sym: 'SPY', n: 5, from: 1993, exit: 'pre', cost: 1, r: null };
 
 async function hoLoad() {
   const el = $('#sw-body'); if (!el) return;
   const H = S.ho;
   el.innerHTML = hoShell(H.r, true);
-  try { H.r = await api(`/holidays?sym=${H.sym}&n=${H.n}&from=${H.from}`); }
+  try { H.r = await api(`/holidays?sym=${H.sym}&n=${H.n}&from=${H.from}&exit=${H.exit}&cost=${H.cost}`); }
   catch (e) { el.innerHTML = hoShell(null) + `<div class="panel"><div class="bd loss">${esc(e.message)}</div></div>`; return; }
   if (S.sw.kind === 'hol' && $('#sw-body')) $('#sw-body').innerHTML = hoShell(H.r);
 }
@@ -18,6 +18,8 @@ function hoShell(r, loading) {
       <label class="f">Symbol${sel('sym', [['SPY', 'SPY'], ['QQQ', 'QQQ'], ['IWM', 'IWM'], ['DIA', 'DIA']])}</label>
       <label class="f">Sessions before${sel('n', [[5, '5'], [10, '10']])}</label>
       <label class="f">From${sel('from', [[1993, '1993 (all)'], [2000, '2000'], [2010, '2010'], [2016, '2016'], [2020, '2020']])}</label>
+      <label class="f">Backtest: exit at${sel('exit', [['pre', 'The close before the holiday'], ['post1', 'The close of the first session after']])}</label>
+      <label class="f">Cost (bp a side)${sel('cost', [[0, '0'], [1, '1'], [2, '2'], [5, '5']])}</label>
       <button class="btn primary" data-ho="run">Run</button></div>
     <p class="note" style="padding:0 16px 12px">Holidays are found in the data (weekdays with no session, so special closures such as 9/11 count too) and named by the NYSE rules. Half days (13:00 close): the day after Thanksgiving, and Jul 3 / Dec 24 when they fall Monday–Thursday.
     Jewish holidays (the market is open): Purim, Passover, Shavuot, Rosh Hashanah, Yom Kippur, Sukkot and Hanukkah, from the Hebrew calendar; the event is the first session on or after the holiday's first day (it begins the evening before).
@@ -33,6 +35,7 @@ function hoShell(r, loading) {
   const tbl = (title, note, body, first = '') => `<section class="panel" style="margin-top:12px"><div class="hd"><h2>${title}</h2><span class="dim" style="font-size:13px">${note}</span></div><div class="tbl-wrap"><table class="tbl">${head(first)}<tbody>${body}</tbody></table></div></section>`;
   const ev = r.events.slice(0, 120).map(e => `<tr><td class="mono">${esc(e.date)}</td><td>${esc(e.name)}${e.kind === 'early' ? ' <span class="dim">(half day)</span>' : e.kind === 'jewish' ? ' <span class="dim">(Jewish, market open)</span>' : ''}</td><td class="r ${cls(e.pre)}">${pc(e.pre)}</td><td class="r ${cls(e.day0)}">${pc(e.day0)}</td><td class="r ${cls(e.gap)}">${pc(e.gap)}</td>${[1, 3, 5, 10].map(k => `<td class="r ${cls(e.post[k])}">${pc(e.post[k])}</td>`).join('')}</tr>`).join('');
   return form + `<div class="dim" style="margin:10px 2px;font-size:13px">${esc(r.sym)} daily, ${esc(r.from)} → ${esc(r.to)} (${r.days.toLocaleString('en-US')} sessions) · ${esc(r.src)} · each cell: average return, then % of events up · ● = t ≥ 2 · hover a cell for the median and t</div>` +
+    hoBtHtml(r.bt, pc) +
     tbl('All holidays vs every day', `${r.holidays.n} holidays, ${r.early.n} half days`, row('<b>Holidays</b>', r.holidays) + row('<b>Half days</b>', r.early) + (r.jewish ? row('<b>Jewish holidays</b>', r.jewish) : '') + base('Every day (baseline)', r.base.all, r.base.day)) +
     tbl(`After a down / up ${r.n} sessions`, 'does a weak run into the holiday carry on or reverse?',
       row(`Holidays, the ${r.n} sessions before <b class="loss">down</b>`, sp.holidays.down) + row(`Holidays, before <b class="gain">up</b>`, sp.holidays.up) +
@@ -49,12 +52,12 @@ function hoShell(r, loading) {
 
 document.addEventListener('change', ev => {
   const t = ev.target; if (!t.dataset || !t.dataset.hov) return;
-  S.ho[t.dataset.hov] = t.dataset.hov === 'sym' ? t.value : +t.value;
+  S.ho[t.dataset.hov] = ['sym', 'exit'].includes(t.dataset.hov) ? t.value : +t.value;
 });
 document.addEventListener('click', ev => {
   const el = ev.target.closest('[data-ho]'); if (!el || !$('#sw-body')) return;
   if (el.dataset.ho === 'run') hoLoad();
-  if (el.dataset.ho === 'csv-events' || el.dataset.ho === 'csv-summary') hoCsv(el.dataset.ho);
+  if (el.dataset.ho === 'csv-events' || el.dataset.ho === 'csv-summary' || el.dataset.ho === 'csv-bt') hoCsv(el.dataset.ho);
 });
 
 // CSV: every event (one row each, returns in %), or every summary row of the tables
@@ -63,7 +66,9 @@ function hoCsv(which) {
   const q = x => x == null ? '' : /[",\n]/.test(String(x)) ? '"' + String(x).replace(/"/g, '""') + '"' : String(x);
   const p = x => x == null ? '' : (x * 100).toFixed(3);
   let rows;
-  if (which === 'csv-events') {
+  if (which === 'csv-bt') {
+    rows = [['set', 'holiday', 'holiday_date', 'buy_close', 'sell_close', 'sessions', 'return_pct_net']].concat(r.bt.trades.map(t => [t.set, t.holiday, t.date, t.in, t.out, t.days, p(t.ret)]));
+  } else if (which === 'csv-events') {
     rows = [['date', 'kind', 'holiday', 'session (last before the holiday / the half day or Jewish holiday itself)', `before_${r.n}_pct`, 'day_before_or_of_pct', 'gap_pct', 'post1_pct', 'post3_pct', 'post5_pct', 'post10_pct']]
       .concat(r.events.map(e => [e.date, e.kind, e.name, e.last, p(e.pre), p(e.day0), p(e.gap), p(e.post[1]), p(e.post[3]), p(e.post[5]), p(e.post[10])]));
   } else {
@@ -80,5 +85,27 @@ function hoCsv(which) {
   }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([rows.map(x => x.map(q).join(',')).join('\n')], { type: 'text/csv' }));
-  a.download = `holidays_${r.sym}_${r.n}_${which === 'csv-events' ? 'events' : 'tables'}.csv`; a.click(); URL.revokeObjectURL(a.href);
+  a.download = `holidays_${r.sym}_${r.n}_${which === 'csv-events' ? 'events' : which === 'csv-bt' ? 'backtest' : 'tables'}.csv`; a.click(); URL.revokeObjectURL(a.href);
+}
+
+// the backtest: long into each US market holiday
+function hoBtHtml(b, pc) {
+  if (!b || !b.all || !b.all.n) return '';
+  const row = (lab, x) => !x || !x.n ? '' : `<tr><td>${lab}</td><td class="r">${x.n}</td><td class="r ${cls(x.avg)}">${pc(x.avg)}</td><td class="r">${Math.round(x.win * 100)}%</td><td class="r">${x.t ?? '—'}</td>
+    <td class="r ${cls(x.total)}">${pc(x.total)}</td><td class="r">${pc(x.cagr)}</td><td class="r loss">${pc(x.mdd)}</td><td class="r">${pc(x.best)} / ${pc(x.worst)}</td><td class="r">${x.days}</td><td class="mono dim">${esc(x.from)} → ${esc(x.to)}</td></tr>`;
+  let svg = '';
+  if (b.curve.length > 2) {
+    const W = 900, H = 180, P = 50, ys = b.curve.map(c => c[1]), lo = Math.min(1, ...ys), hi = Math.max(...ys);
+    const t0 = new Date(b.curve[0][0]).getTime(), t1 = new Date(b.curve[b.curve.length - 1][0]).getTime();
+    const X = d => P + (new Date(d).getTime() - t0) / Math.max(1, t1 - t0) * (W - P - 10), Y = v => 10 + (hi - v) / Math.max(1e-9, hi - lo) * (H - 30);
+    const sx = b.split ? X(b.split) : null;
+    svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${sx ? `<line x1="${sx}" x2="${sx}" y1="10" y2="${H - 20}" stroke="var(--line)" stroke-dasharray="4 4"/><text x="${sx + 4}" y="20" font-size="11" fill="currentColor" opacity=".6">test →</text>` : ''}
+      <line x1="${P}" x2="${W - 10}" y1="${Y(1)}" y2="${Y(1)}" stroke="var(--line)"/><polyline fill="none" stroke="#3b82f6" stroke-width="1.6" points="${b.curve.map(c => X(c[0]).toFixed(1) + ',' + Y(c[1]).toFixed(1)).join(' ')}"/>
+      <text x="4" y="${Y(hi) + 4}" font-size="11" fill="currentColor">×${hi.toFixed(2)}</text><text x="4" y="${Y(lo)}" font-size="11" fill="currentColor">×${lo.toFixed(2)}</text></svg>`;
+  }
+  return `<section class="panel" style="margin-top:12px"><div class="hd"><h2>Backtest: long into US holidays</h2><span class="dim" style="font-size:13px">buy the close ${b.n} sessions before each market holiday, sell ${b.exit === 'post1' ? 'the close of the first session after it' : 'the close of the last session before it'} · ${b.cost} bp a side · special closures left out (not known in advance)</span><div class="grow"></div><button class="btn sm" data-ho="csv-bt">Export trades (CSV)</button></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th class="r">Trades</th><th class="r">Avg / trade</th><th class="r">Win</th><th class="r">t</th><th class="r">Total</th><th class="r">CAGR</th><th class="r">Max DD</th><th class="r">Best / worst</th><th class="r">Days in</th><th>Period</th></tr></thead><tbody>
+    ${row('Train (first 60% of trades)', b.train)}${row('<b>Test (last 40%)</b>', b.test)}${row('All', b.all)}
+    <tr class="dim"><td>Any ${b.hold}-session window (baseline)</td><td class="r">${b.base.n.toLocaleString('en-US')}</td><td class="r ${cls(b.base.avg)}">${pc(b.base.avg)}</td><td class="r">${Math.round(b.base.up * 100)}%</td><td class="r">—</td><td colspan="6" class="dim">${esc(S.ho.sym)} buy &amp; hold over the same ${b.spy.years} years: ${pc(b.spy.total)}</td></tr></tbody></table></div>
+    <div class="bd">${svg}<div class="dim" style="font-size:12px">Growth of $1 on the holiday trades only (out of the market the rest of the time). The edge is "Avg / trade" against the baseline row: the same holding time on any day. A strategy for a small part of the year: compare the CAGR with the days in the market, not with buy &amp; hold.</div></div></section>`;
 }
