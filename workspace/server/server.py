@@ -256,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
                 days, sec = max(1, min(2000, int(q["days"]))), market.tf_seconds(tf)
                 per_day = (86400 if market.is_crypto(sym) else 82800 if sym in market.FUTURES else 23400 if rth else 57600) if sec < 86400 else 86400
                 # regular hours only: up to 800,000 bars (about 8 years of 1-minute); the extended hours come in and are dropped
-                limit = max(10, min(800000 if rth else 150000, -(-days * per_day // sec)))
+                limit = max(10, min(800000 if rth or sym in market.FUTURES else 150000, -(-days * per_day // sec)))   # futures: years of 5 / 15-minute bars
             else:
                 limit = max(10, min(5000, int(q.get("limit", 1500))))
             before = int(q["before"]) if q.get("before") else None

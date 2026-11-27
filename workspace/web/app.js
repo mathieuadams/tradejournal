@@ -117,7 +117,8 @@ function getCompiled(src) {
 W.runScript = (src, bars, inputs, tab = W.tab(), skip = null) => {
   const c = getCompiled(src);
   if (c.err) return { meta: { title: 'Script', overlay: true }, inputs: [], plots: [], shapes: [], hlines: [], fills: [], bgcolors: [], barcolors: [], lines: [], labels: [], boxes: [], logs: [], error: c.err };
-  const opts = { inputs, symbol: tab.symbol, tf: tab.tf, tfSec: tfSeconds(tab.tf), live: W.replay == null, strategy: skip && skip.length ? { skip } : null };
+  const opts = { inputs, symbol: tab.symbol, tf: tab.tf, tfSec: tfSeconds(tab.tf), live: W.replay == null, strategy: skip && skip.length ? { skip } : null,
+    budgetMs: Math.max(4000, Math.min(120000, bars.length * 0.12)) };
   const reqs = c.ok.src.includes('request.security') && bars.length ? securityRequests(c.ok, bars, opts) : [];
   if (reqs.length) {                     // other symbols / timeframes: their series (loaded on first use, then the scripts re-run)
     opts.securities = {};
@@ -236,7 +237,7 @@ W.resubscribe = resubscribe;
 function onBar({ s, b }) {
   const tab = W.tab(); let activeChange = false;
   for (const S of W.series.values()) {
-    if (S.sym !== s || !S.bars.length) continue;
+    if (S.sym !== s || !S.bars.length || S.study) continue;            // a loaded history is a study series: no live updates
     const r = mergeLive(S, b);
     if (r && S.sym === tab.symbol && S.tf === tab.tf && W.replay == null) activeChange = r;
   }
@@ -325,6 +326,41 @@ function typeMenu(anchor) {
   for (const [k, n] of TYPES) { const b = h(`<button class="${W.tab().type === k ? 'on' : ''}">${n}</button>`); b.onclick = () => { W.setType(k); closePopover(); }; m.appendChild(b); }
   popover(anchor, m);
 }
+// years of history on the chart (all bars go into the scripts and the strategy results). A long series is a study
+// series: live prices stop updating it, so the scripts are not re-run on every tick.
+function histMenu(anchor) {
+  const tab = W.tab(), S = W.getSeries(tab.symbol, tab.tf), stock = !/^(NQ|ES|MNQ|MES|YM|RTY|CL|GC)/.test(tab.symbol) && !tab.symbol.includes('/');
+  const m = h(`<div class="menu" style="width:290px">
+    <div class="pop-sec">Load history — ${esc(tab.symbol)} ${esc(tab.tf)}</div>
+    ${[1, 2, 3, 5, 8].map(y => `<button data-y="${y}">${y} year${y > 1 ? 's' : ''}</button>`).join('')}
+    ${S.study ? '<button data-live="1">Back to live (recent bars)</button>' : ''}
+    <div class="msep"></div>
+    ${stock ? `<label style="display:flex;gap:8px;align-items:center;padding:6px 10px;font-size:12.5px"><input type="checkbox" id="histRth" ${W.state.histRth !== false ? 'checked' : ''}> Regular hours only (09:30–16:00)</label>` : ''}
+    <div class="dim" style="padding:4px 10px 8px;font-size:11.5px;line-height:1.4">Stocks: up to about 8 years of 1-minute bars with regular hours only (150,000 bars with pre / post market). Futures: up to 800,000 bars (8 years of 5-minute). The first load of a long 1-minute history takes a minute or two; finished months are kept on the server.${S.study ? '<br><b>This chart holds a study series:</b> live prices are paused on it. “Back to live” reloads the recent bars.' : ''}</div>
+  </div>`);
+  m.onclick = async e => {
+    if (e.target.closest('[data-live]')) { closePopover(); S.bars = []; S.promise = null; S.study = false; S.more = true; await W.loadSeries(tab.symbol, tab.tf); if (W.tab() === tab) { W.chart.bars = S.bars; W.chart.fit(200); } recompute(); return; }
+    const b = e.target.closest('[data-y]'); if (!b) return;
+    const rth = stock && !!(m.querySelector('#histRth') || {}).checked; W.state.histRth = rth; closePopover();
+    await W.loadHistory(+b.dataset.y, rth);
+  };
+  popover(anchor, m);
+}
+W.loadHistory = async (years, rth) => {
+  const tab = W.tab(), S = W.getSeries(tab.symbol, tab.tf), days = Math.round(years * 252);
+  toast(`Loading ${years} year${years > 1 ? 's' : ''} of ${tab.symbol} ${tab.tf}${rth ? ' (regular hours)' : ''}…`);
+  $('#histBtn').classList.add('on');
+  try {
+    const j = await api(`bars?symbol=${encodeURIComponent(tab.symbol)}&tf=${encodeURIComponent(tab.tf)}&days=${days}&feed=sip${rth ? '&rth=1' : ''}`);
+    if (!j.bars.length) throw new Error('no bars');
+    S.bars = j.bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] })); S.more = false; S.study = true; S.liveMin = null;
+    if (W.tab() === tab) { W.chart.bars = S.bars; W.chart.fit(Math.min(S.bars.length, 300)); }
+    const t0 = performance.now(); recompute();
+    const d = x => new Date(x * 1000).toISOString().slice(0, 10);
+    toast(`${S.bars.length.toLocaleString()} bars, ${d(S.bars[0].t)} → ${d(S.bars[S.bars.length - 1].t)}${rth ? ' (regular hours)' : ''} · scripts ${Math.round(performance.now() - t0)} ms`);
+  } catch (e) { toast('History: ' + e.message, 'err'); }
+  finally { $('#histBtn').classList.remove('on'); }
+};
 function tradeMenu(anchor) {
   const st = W.account ? W.account.settings : {};
   const m = h(`<div class="menu" style="width:260px">
@@ -505,6 +541,7 @@ async function boot() {
   $('#typeBtn').onclick = () => typeMenu($('#typeBtn'));
   $('#indBtn').onclick = () => openLibrary();
   $('#replayBtn').onclick = startReplayPick;
+  $('#histBtn').onclick = e => histMenu(e.currentTarget);
   $('#undoBtn').onclick = doUndo; $('#redoBtn').onclick = doRedo;
   $('#tradeBtn').onclick = () => tradeMenu($('#tradeBtn'));
   $('#snapBtn').onclick = () => { const a = document.createElement('a'); a.href = W.chart.snapshot(2400); a.download = `${W.tab().symbol}-${W.tab().tf}.jpg`; a.click(); };
