@@ -1,0 +1,57 @@
+// Swing → Holidays & half days: what SPY / QQQ / IWM / DIA does around US market holidays and 13:00 early closes.
+S.ho = S.ho || { sym: 'SPY', n: 5, from: 1993, r: null };
+
+async function hoLoad() {
+  const el = $('#sw-body'); if (!el) return;
+  const H = S.ho;
+  el.innerHTML = hoShell(H.r, true);
+  try { H.r = await api(`/holidays?sym=${H.sym}&n=${H.n}&from=${H.from}`); }
+  catch (e) { el.innerHTML = hoShell(null) + `<div class="panel"><div class="bd loss">${esc(e.message)}</div></div>`; return; }
+  if (S.sw.kind === 'hol' && $('#sw-body')) $('#sw-body').innerHTML = hoShell(H.r);
+}
+
+function hoShell(r, loading) {
+  const H = S.ho;
+  const sel = (k, opts) => `<select data-hov="${k}">${opts.map(([v, t]) => `<option value="${v}"${String(H[k]) === String(v) ? ' selected' : ''}>${t}</option>`).join('')}</select>`;
+  const form = `<section class="panel"><div class="hd"><h2>Holidays &amp; half days</h2><div class="grow"></div>${loading ? '<span class="dim">Loading…</span>' : ''}</div>
+    <div class="bd" style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+      <label class="f">Symbol${sel('sym', [['SPY', 'SPY'], ['QQQ', 'QQQ'], ['IWM', 'IWM'], ['DIA', 'DIA']])}</label>
+      <label class="f">Sessions before${sel('n', [[5, '5'], [10, '10']])}</label>
+      <label class="f">From${sel('from', [[1993, '1993 (all)'], [2000, '2000'], [2010, '2010'], [2016, '2016'], [2020, '2020']])}</label>
+      <button class="btn primary" data-ho="run">Run</button></div>
+    <p class="note" style="padding:0 16px 12px">Holidays are found in the data (weekdays with no session, so special closures such as 9/11 count too) and named by the NYSE rules. Half days (13:00 close): the day after Thanksgiving, and Jul 3 / Dec 24 when they fall Monday–Thursday.
+    Jewish holidays (the market is open): Purim, Passover, Shavuot, Rosh Hashanah, Yom Kippur, Sukkot and Hanukkah, from the Hebrew calendar; the event is the first session on or after the holiday's first day (it begins the evening before).
+    "Before" = the ${H.n} sessions up to the last close before the holiday (for a half day: up to the session before it). "Day before" = the last session before the holiday (for a half day or a Jewish holiday: that session itself). "+1 … +10" = from that close to the close 1 … 10 sessions later. "Every day" is the same measure on all days of the data, the baseline: a holiday effect is the difference from it. t ≥ 2 is roughly significant; most groups here have 10–35 events, so read them as tendencies.</p></section>`;
+  if (!r) return form;
+  const pc = x => x == null ? '—' : ((x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%');
+  const up = s => s && s.n ? Math.round(s.up * 100) + '%' : '—';
+  const cell = (s, t) => !s || !s.n ? '<td class="r dim">—</td>' : `<td class="r ${cls(s.avg)}" title="median ${pc(s.med)} · up ${up(s)} of ${s.n}${s.t != null ? ' · t ' + s.t : ''}">${pc(s.avg)}<span class="dim" style="font-size:11px"> ${up(s)}${t && s.t != null && Math.abs(s.t) >= 2 ? ' ●' : ''}</span></td>`;
+  const head = (first, extra = '') => `<thead><tr><th>${first}</th><th class="r">N</th>${extra}<th class="r">Before (${r.n})</th><th class="r">Day before</th><th class="r">Gap at reopen</th>${[1, 3, 5, 10].map(k => `<th class="r">+${k}</th>`).join('')}</tr></thead>`;
+  const row = (lab, g) => `<tr><td>${lab}</td><td class="r">${g.n}</td>${cell(g.pre)}${cell(g.day0, 1)}${cell(g.gap, 1)}${[1, 3, 5, 10].map(k => cell(g['p' + k], 1)).join('')}</tr>`;
+  const base = (lab, b, day) => `<tr class="dim"><td>${lab}</td><td class="r">${(b.p1 && b.p1.n || 0).toLocaleString('en-US')}</td><td class="r">—</td>${day ? cell(day) : '<td class="r">—</td>'}<td class="r">—</td>${[1, 3, 5, 10].map(k => cell(b['p' + k])).join('')}</tr>`;
+  const sp = r.split;
+  const tbl = (title, note, body, first = '') => `<section class="panel" style="margin-top:12px"><div class="hd"><h2>${title}</h2><span class="dim" style="font-size:13px">${note}</span></div><div class="tbl-wrap"><table class="tbl">${head(first)}<tbody>${body}</tbody></table></div></section>`;
+  const ev = r.events.map(e => `<tr><td class="mono">${esc(e.date)}</td><td>${esc(e.name)}${e.kind === 'early' ? ' <span class="dim">(half day)</span>' : e.kind === 'jewish' ? ' <span class="dim">(Jewish, market open)</span>' : ''}</td><td class="r ${cls(e.pre)}">${pc(e.pre)}</td><td class="r ${cls(e.day0)}">${pc(e.day0)}</td><td class="r ${cls(e.gap)}">${pc(e.gap)}</td>${[1, 3, 5, 10].map(k => `<td class="r ${cls(e.post[k])}">${pc(e.post[k])}</td>`).join('')}</tr>`).join('');
+  return form + `<div class="dim" style="margin:10px 2px;font-size:13px">${esc(r.sym)} daily, ${esc(r.from)} → ${esc(r.to)} (${r.days.toLocaleString('en-US')} sessions) · ${esc(r.src)} · each cell: average return, then % of events up · ● = t ≥ 2 · hover a cell for the median and t</div>` +
+    tbl('All holidays vs every day', `${r.holidays.n} holidays, ${r.early.n} half days`, row('<b>Holidays</b>', r.holidays) + row('<b>Half days</b>', r.early) + (r.jewish ? row('<b>Jewish holidays</b>', r.jewish) : '') + base('Every day (baseline)', r.base.all, r.base.day)) +
+    tbl(`After a down / up ${r.n} sessions`, 'does a weak run into the holiday carry on or reverse?',
+      row(`Holidays, the ${r.n} sessions before <b class="loss">down</b>`, sp.holidays.down) + row(`Holidays, before <b class="gain">up</b>`, sp.holidays.up) +
+      row(`Half days, before <b class="loss">down</b>`, sp.early.down) + row(`Half days, before <b class="gain">up</b>`, sp.early.up) +
+      (sp.jewish ? row(`Jewish holidays, before <b class="loss">down</b>`, sp.jewish.down) + row(`Jewish holidays, before <b class="gain">up</b>`, sp.jewish.up) : '') +
+      base(`Every day after ${r.n} sessions down`, r.base.down) + base(`Every day after ${r.n} sessions up`, r.base.up)) +
+    tbl('By holiday', 'for a half day, "Day before" is the half day itself', r.byName.map(g => row(esc(g.name), g)).join('') + r.byEarly.map(g => row(esc(g.name) + ' <span class="dim">(half day)</span>', g)).join('')) +
+    (r.byJewish && r.byJewish.length ? tbl('Jewish holidays', 'the market is open: "Day before" is the holiday session itself', r.byJewish.map(g => row(esc(g.name), g)).join('')) +
+      `<section class="panel" style="margin-top:12px"><div class="hd"><h2>“Sell Rosh Hashanah, buy Yom Kippur”</h2></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th class="r">Years</th><th class="r">Average</th><th class="r">Median</th><th class="r">Up</th><th class="r">t</th></tr></thead><tbody>
+        ${[['Close before Rosh Hashanah → close of Yom Kippur', r.rhyk], ['Close of Yom Kippur → 10 sessions later', r.ykon], ['Every day: 10 sessions (baseline)', r.base10]].map(([l, x]) => x && x.n ? `<tr><td>${l}</td><td class="r">${x.n.toLocaleString('en-US')}</td><td class="r ${cls(x.avg)}">${pc(x.avg)}</td><td class="r">${pc(x.med)}</td><td class="r">${up(x)}</td><td class="r">${x.t ?? '—'}</td></tr>` : '').join('')}</tbody></table></div>
+        <p class="note" style="padding:0 16px 12px">The 7 calendar days between them are about 5–7 sessions, so compare with a 5-session baseline in the first table (+5), not only with 10.</p></section>` : '') +
+    `<section class="panel" style="margin-top:12px"><div class="hd"><h2>Events</h2><span class="dim" style="font-size:13px">the latest ${r.events.length}</span></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Holiday</th><th class="r">Before (${r.n})</th><th class="r">Day before</th><th class="r">Gap</th>${[1, 3, 5, 10].map(k => `<th class="r">+${k}</th>`).join('')}</tr></thead><tbody>${ev}</tbody></table></div></section>`;
+}
+
+document.addEventListener('change', ev => {
+  const t = ev.target; if (!t.dataset || !t.dataset.hov) return;
+  S.ho[t.dataset.hov] = t.dataset.hov === 'sym' ? t.value : +t.value;
+});
+document.addEventListener('click', ev => {
+  const el = ev.target.closest('[data-ho]'); if (!el || !$('#sw-body')) return;
+  if (el.dataset.ho === 'run') hoLoad();
+});

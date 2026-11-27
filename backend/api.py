@@ -665,6 +665,12 @@ def im_data(sub, claims, body, q):
     return intramom.data_start(sub)
 
 
+@route("GET", "/holidays")
+def holidays_study(sub, claims, body, q):
+    import holistudy
+    return holistudy.study(sub, (q.get("sym") or "SPY").upper(), int(q.get("n") or 5), int(q.get("from") or 1993))
+
+
 @route("POST", "/intramom/opt")
 def im_opt(sub, claims, body, q):
     import intramom

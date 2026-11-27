@@ -830,6 +830,23 @@ def test_intramom():
 
 
 
+def test_holidays():
+    import holistudy as HS
+    from datetime import date as _d
+    # the calendars
+    assert HS.holiday_name(_d(2024, 3, 29)) == "Good Friday" and HS.holiday_name(_d(2022, 12, 26)) == "Christmas" and HS.holiday_name(_d(2001, 9, 11)) == "Special closure"
+    assert HS.early_close_name(_d(2025, 11, 28)) == "Day after Thanksgiving" and HS.early_close_name(_d(2026, 7, 3)) is None
+    jh = HS.jewish_holidays(2024)
+    assert jh["Rosh Hashanah"] == _d(2024, 10, 3) and jh["Yom Kippur"] == _d(2024, 10, 12) and jh["Passover"] == _d(2024, 4, 23) and jh["Hanukkah"] == _d(2024, 12, 26)
+    assert HS.jewish_holidays(2025)["Rosh Hashanah"] == _d(2025, 9, 23) and HS.jewish_holidays(2023)["Hanukkah"] == _d(2023, 12, 8)
+    st, r = call("GET", "/holidays", q={"sym": "SPY", "n": "10", "from": "2010"})
+    assert st == 200 and r["n"] == 10 and r["holidays"]["n"] > 100 and r["early"]["n"] > 20 and r["jewish"]["n"] > 80, r.get("holidays")
+    assert {g["name"] for g in r["byName"]} >= {"Thanksgiving", "Christmas", "Good Friday"} and r["rhyk"]["n"] >= 10
+    assert r["split"]["holidays"]["down"]["n"] + r["split"]["holidays"]["up"]["n"] <= r["holidays"]["n"] and r["base"]["all"]["p1"]["n"] > 3000
+    e = r["events"][0]
+    assert set(e["post"]) == {"1", "3", "5", "10"} and e["kind"] in ("holiday", "early", "jewish")
+
+
 def test_swing_whole_market():
     import allstocks as AL
     import store

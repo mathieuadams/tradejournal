@@ -538,6 +538,17 @@ def fake_fmp_get(key, path, params, timeout=40):
                 out.append({"symbol": "^VIX", "date": d.isoformat(), "open": round(v, 2), "close": round(v * (1 + rnd.gauss(0, 0.03)), 2)})
             d += timedelta(days=1)
         return out[::-1]
+    if path == "historical-price-eod/dividend-adjusted":       # daily ETF bars (holiday study): NYSE holidays left out
+        import holistudy
+        rnd, out, d, px = random.Random(str(params.get("symbol"))), [], _dt(2005, 1, 3), 100.0
+        while d <= _dt.today() - timedelta(days=1):
+            if d.weekday() < 5 and holistudy.holiday_name(d) == "Special closure" and not (d.month == 1 and d.day == 1):
+                o = px
+                px *= 1 + rnd.gauss(0.0003, 0.011)
+                out.append({"symbol": params.get("symbol"), "date": d.isoformat(), "adjOpen": round(o, 2), "adjHigh": round(max(o, px) * 1.003, 2),
+                            "adjLow": round(min(o, px) * 0.997, 2), "adjClose": round(px, 2)})
+            d += timedelta(days=1)
+        return out[::-1]
     if path == "sp500-constituent":
         return [{"symbol": k, "name": v[1]} for k, v in SEC_COS.items()]
     if path == "ratios":
