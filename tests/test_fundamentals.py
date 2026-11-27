@@ -927,6 +927,20 @@ def test_ivcrush():
         else:
             held.discard(sym); n -= 1
     assert res["curve"][0][1] == 500000.0
+    F.UW_BS = True
+    try:
+        st, r = call("POST", "/ivcrush/opt", {"cfg": {"from": "2022-06-01", "maxPos": 3}})
+        assert st == 200, r
+        st, v = call("GET", "/ivcrush")
+    finally:
+        F.UW_BS = False
+    o = v["opt"]
+    assert v["job"]["status"] == "done" and not o["running"] and o["total"] == 135 and len(o["top"]) == 25, v["job"]
+    sh = [x["train"].get("sharpe") or -99 for x in o["top"]]
+    assert sh == sorted(sh, reverse=True) and o["top"][0]["test"]["n"] > 0
+    full = store.get_json(f"ivc/opt/{SUB}")["res"]
+    same = next(x for x in full if x["p"] == {"rank": 30, "take": 0.5, "manage": 21, "stop": 0})
+    assert same["all"]["n"] == res["all"]["n"], (same["all"], res["all"]["n"])    # the run's own setting: the same trades
 
 
 def SW_clean_default():

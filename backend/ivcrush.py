@@ -209,11 +209,28 @@ def _mid(row):
     return (a + b) / 2 if b and a and a >= b else last
 
 
+_MEMO = {}                                            # one stock's chains / contract histories (cleared per stock)
+
+
+def _chain(tok, sym, day, dte):
+    import optreal
+    k = ("c", sym, day)
+    if k not in _MEMO:
+        _MEMO[k] = optreal.chain_on(tok, sym, day, False, max(dte, 42))
+    return _MEMO[k]
+
+
+def _hist(tok, occ):
+    import optreal
+    k = ("h", occ)
+    if k not in _MEMO:
+        _MEMO[k] = optreal.history(tok, occ)
+    return _MEMO[k]
+
+
 def _entry(tok, sym, day, S, iv, c):
     """(occ, expiry, strike, credit, delta, its IV, history) of the put to sell on `day`, or None."""
-    import optreal
-    import uwhales
-    ch = [x for x in optreal.chain_on(tok, sym, day, False, c["dte"]) if x[2] < S]
+    ch = [x for x in _chain(tok, sym, day, c["dte"]) if x[2] < S]
     d0 = date.fromisoformat(day)
     exps = sorted({x[1] for x in ch if c["dteMin"] <= (date.fromisoformat(x[1]) - d0).days <= c["dteMax"]},
                   key=lambda e: abs((date.fromisoformat(e) - d0).days - c["dte"]))
@@ -225,7 +242,7 @@ def _entry(tok, sym, day, S, iv, c):
     near = sorted((x for x in ch if x[1] == ex), key=lambda x: abs(x[2] - k0))[:3]
     best = None
     for occ, _, k, _ in near:
-        h = optreal.history(tok, occ)
+        h = _hist(tok, occ)
         row = h.get(day)
         if not row:
             continue
@@ -394,6 +411,7 @@ def run_job(sub, prog, deadline):
             break
         prog(f"Backtest {len(done) + 1} / {len(syms)}: {s} (option prices from Unusual Whales, cached)")
         rows = store.get_json(f"ivc/uw/{s}") or []
+        _MEMO.clear()
         try:
             part["f"] += sim_symbol(tok, s, rows, c, ci)
         except BadRequest as e:                         # a ticker without option data: go on
@@ -446,6 +464,148 @@ def _result(c, cal, f, today, nsym):
             "today": hot[:80], "todayN": len(hot)}
 
 
+# ---------------------------------------------------------------- the optimizer
+
+DTE_WIN = {30: (21, 40), 45: (35, 60)}
+
+
+def grid(base, wide=False):
+    """The settings tried: IV rank x take profit x DTE exit x stop at the current delta / DTE; `wide`: fewer of those, but
+    delta x DTE too (more option data to download)."""
+    import itertools
+    if wide:
+        g = {"rank": [30, 50, 70], "take": [0.5, 0.75], "manage": [0, 21], "stop": [0, 2], "delta": [0.15, 0.2, 0.25, 0.3], "dte": [30, 45]}
+    else:
+        g = {"rank": sorted({30, 40, 50, 60, 70, base["rank"]}), "take": [0.25, 0.5, 0.75], "manage": [0, 14, 21], "stop": [0, 1, 2]}
+    out = []
+    for v in itertools.product(*g.values()):
+        p = dict(zip(g, v))
+        if "dte" in p:
+            p["dteMin"], p["dteMax"] = DTE_WIN[p["dte"]]
+        out.append(p)
+    return out
+
+
+def _light(cands, n, c):
+    """The portfolio on closed trades only (fast): (accepted [(in, pnl, ret)], equity per day)."""
+    by_in = {}
+    for t in cands:
+        by_in.setdefault(t[0], []).append(t)
+    eq, open_, done, curve = c["acct"], [], [], []
+    for i in range(n):
+        keep = []
+        for t, k in open_:
+            if t[1] == i:
+                eq += t[2] * k
+                done.append((t[0], t[2] * k, t[2] / t[3]))
+            else:
+                keep.append((t, k))
+        open_ = keep
+        held = {t[5] for t, _ in open_}
+        for t in sorted(by_in.get(i, []), key=lambda t: -t[4]):
+            if len(open_) >= c["maxPos"]:
+                break
+            if t[5] in held:
+                continue
+            k = int(max(0.0, eq) * c["alloc"] / c["maxPos"] // t[3])
+            if k >= 1:
+                open_.append((t, k))
+                held.add(t[5])
+        curve.append(eq)
+    return done, curve
+
+
+def _ostats(done, curve, a, b, ndays):
+    ts = [x for x in done if a <= x[0] < b]
+    cv = curve[a:b]
+    if len(cv) < 2 or not ts:
+        return {"n": len(ts)}
+    peak, mdd, dr = cv[0], 0.0, []
+    for k, v in enumerate(cv):
+        peak = max(peak, v)
+        mdd = min(mdd, v / peak - 1 if peak > 0 else -1)
+        if k and cv[k - 1] > 0:
+            dr.append(v / cv[k - 1] - 1)
+    mu = sum(dr) / len(dr)
+    sd = math.sqrt(sum((x - mu) ** 2 for x in dr) / (len(dr) - 1)) if len(dr) > 1 else 0
+    tot = cv[-1] / cv[0] - 1
+    return {"n": len(ts), "win": round(sum(1 for x in ts if x[1] > 0) / len(ts), 3), "total": round(tot, 4),
+            "cagr": round((1 + tot) ** (252 / len(cv)) - 1, 4) if tot > -1 else None, "mdd": round(mdd, 4),
+            "sharpe": round(mu / sd * math.sqrt(252), 2) if sd else None, "avgRet": round(sum(x[2] for x in ts) / len(ts), 5)}
+
+
+def opt_job(sub, prog, deadline):
+    """Every setting of the grid on every stock (each stock's option data downloaded once, then reused for all the
+    settings), then the portfolio of each; ranked on the train period only. True when done."""
+    import uwhales
+    tok = uwhales.token(sub)
+    st = store.get_json(f"ivc/opt/{sub}") or {}
+    base = clean(st.get("cfg"))
+    g = grid(base, st.get("wide"))
+    ix = _ixd()
+    syms = [s for s in universe()["syms"] if (ix["s"].get(s) or {}).get("n")]
+    if not syms:
+        raise BadRequest("No IV history yet: download it first.")
+    if not st.get("cal"):
+        cal = set()
+        for s in syms[:40]:
+            cal |= {r[0] for r in store.get_json(f"ivc/uw/{s}") or []}
+        st.update(cal=sorted(d for d in cal if d >= base["from"]), done=[], parts=0, res=None)
+        store.put_json(f"ivc/opt/{sub}", st)
+    cal = st["cal"]
+    ci = {d: i for i, d in enumerate(cal)}
+    done = set(st["done"])
+    part = [[] for _ in g]
+    for s in syms:
+        if s in done:
+            continue
+        if time.time() > deadline:
+            break
+        prog(f"Optimizer {len(done) + 1} / {len(syms)}: {s} · {len(g)} settings")
+        rows = store.get_json(f"ivc/uw/{s}") or []
+        _MEMO.clear()
+        for k, p in enumerate(g):
+            try:
+                ts = sim_symbol(tok, s, rows, {**base, **p}, ci)
+            except BadRequest as e:
+                print("ivcrush opt", s, e)
+                break
+            part[k] += [[t["i"], t["j"], t["pnl"], t["coll"], t["rank"], s] for t in ts]
+        done.add(s)
+    _MEMO.clear()
+    store.put_json(f"ivc/opt/{sub}/p{st['parts']}", part)
+    st.update(done=sorted(done), parts=st["parts"] + 1)
+    store.put_json(f"ivc/opt/{sub}", st)
+    if len(done) < len(syms):
+        return False
+    prog("Optimizer: portfolios…")
+    allc = [[] for _ in g]
+    for k in range(st["parts"]):
+        for i, x in enumerate(store.get_json(f"ivc/opt/{sub}/p{k}") or []):
+            allc[i] += x
+        store.delete(f"ivc/opt/{sub}/p{k}")
+    n = len(cal)
+    sp = int(n * base["split"])
+    res = []
+    for p, cands in zip(g, allc):
+        dn, cv = _light(cands, n, {**base, **p})
+        res.append({"p": p, "train": _ostats(dn, cv, 0, sp, n), "test": _ostats(dn, cv, sp, n, n), "all": _ostats(dn, cv, 0, n, n)})
+    res.sort(key=lambda x: x["train"].get("sharpe") or -99, reverse=True)
+    store.put_json(f"ivc/opt/{sub}", {"cfg": base, "wide": st.get("wide"), "res": res, "split": cal[sp] if cal else None, "syms": len(syms),
+                                      "at": iso(now_ny()), "total": len(g)})
+    return True
+
+
+def opt_start(sub, cfg, wide=False):
+    import jobs
+    import uwhales
+    uwhales.token(sub)
+    if not status()["have"]:
+        raise BadRequest("No IV history yet: download it first.")
+    store.put_json(f"ivc/opt/{sub}", {"cfg": clean(cfg), "wide": bool(wide)})
+    return jobs.start(sub, "ivcrush", "ivcopt", {})
+
+
 # ---------------------------------------------------------------- API
 
 def view(sub):
@@ -454,7 +614,13 @@ def view(sub):
     j = jobs.status(sub, "ivcrush")
     if j.get("status") == "running" and j.get("at", "") < iso(now_ny() - timedelta(minutes=20)):
         j["stale"] = True
-    return {"cfg": clean(st.get("cfg")), "res": store.get_json(f"ivc/res/{sub}"), "data": status(), "job": j}
+    o = store.get_json(f"ivc/opt/{sub}") or {}
+    opt = {k: o.get(k) for k in ("wide", "split", "syms", "at", "total")} if o else None
+    if opt is not None:
+        opt["top"] = (o.get("res") or [])[:25]
+        opt["running"] = o.get("res") is None
+        opt["cfg"] = o.get("cfg")
+    return {"cfg": clean(st.get("cfg")), "res": store.get_json(f"ivc/res/{sub}"), "data": status(), "job": j, "opt": opt}
 
 
 def data_start(sub):

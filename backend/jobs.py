@@ -186,6 +186,12 @@ def handler(event, ctx=None):
                 _invoke(event)
                 return {"continued": True}
             set_status(sub, name, status="done", msg="IV crush backtest done.")
+        elif job == "ivcopt":                           # the IV crush optimizer
+            import ivcrush
+            if not ivcrush.opt_job(sub, prog, dl):
+                _invoke(event)
+                return {"continued": True}
+            set_status(sub, name, status="done", msg="IV crush optimizer done (ranked on the train period).")
         elif job == "futdaily":                         # futures daily bars (Databento), back-adjusted
             import futdaily
             nxt = futdaily.download(sub, prog, dl, p.get("cont"))

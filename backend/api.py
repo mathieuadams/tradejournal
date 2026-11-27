@@ -677,6 +677,12 @@ def ivc_data(sub, claims, body, q):
     return ivcrush.data_start(sub)
 
 
+@route("POST", "/ivcrush/opt")
+def ivc_opt(sub, claims, body, q):
+    import ivcrush
+    return ivcrush.opt_start(sub, body.get("cfg") or {}, bool(body.get("wide")))
+
+
 @route("POST", "/ivcrush")
 def ivc_run(sub, claims, body, q):
     import ivcrush

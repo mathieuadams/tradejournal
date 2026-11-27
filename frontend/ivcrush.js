@@ -40,7 +40,21 @@ function ivShell(r) {
       <label class="f">Backtest from<input type="date" data-ivv="from" value="${c.from}"></label>
       <button class="btn primary" data-iv="run" ${run ? 'disabled' : ''}>Run backtest</button></div>
     <p class="note" style="padding:0 16px 14px">IV rank: Unusual Whales' 1-year IV rank of each stock (0–100: where today's implied volatility sits between its low and high of the last year). Entry when IV rank ≥ the threshold: the expiry nearest the target days (within min–max); the strike for the target delta from the stock's IV, then of the 3 listed strikes nearest it, the one whose delta that day (its own IV) is nearest; sold at the day's NBBO bid. One put per stock at a time; at most "max open puts" at once, the highest IV ranks first. Exit on the contract's daily prices: its NBBO ask ≤ (1 − take profit) × the credit → bought back there; or at the DTE exit; or the stop; else expiry (strike − price). Size: equity × allocation ÷ max open puts ÷ the collateral of one contract. The first run downloads the option chains and prices it needs (cached: later runs are fast). Universe: today's S&P 500 (companies removed in the period are not in it). The first 60% of the days are the train period.</p></section>
+    ${ivOptHtml(r.opt, run)}
     <div style="margin-top:12px">${r.res ? ivResHtml(r.res) : ''}</div>`;
+}
+
+function ivOptHtml(o, run) {
+  const pc = (x, k = 0) => x == null ? '—' : (x * 100).toFixed(k) + '%';
+  const st = x => !x || !x.n ? '<span class="dim">no trades</span>' : x.total == null ? `${x.n} trades` : `${pc(x.total)} · Sharpe ${x.sharpe ?? '—'} · DD ${pc(x.mdd)} · ${x.n} trades · win ${pc(x.win)}`;
+  const lab = p => `IV rank ≥ ${p.rank} · take ${Math.round(p.take * 100)}% · ${p.manage ? 'close at ' + p.manage + ' DTE' : 'hold to expiry'} · ${p.stop ? 'stop ' + p.stop + '× credit' : 'no stop'}${p.delta != null ? ` · delta ${p.delta} · ${p.dte} DTE` : ''}`;
+  const body = !o ? '<div class="bd dim">Not run yet.</div>' : o.running ? '<div class="bd dim">Running…</div>' : !o.top || !o.top.length ? '<div class="bd dim">No results.</div>' :
+    `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Setting</th><th class="r">Train (before ${esc(o.split || '')})</th><th class="r">Test</th><th></th></tr></thead><tbody>
+    ${o.top.map((x, i) => `<tr><td>${lab(x.p)}</td><td class="r">${st(x.train)}</td><td class="r ${cls(x.test.total)}">${st(x.test)}</td><td><button class="btn sm" data-iv-use="${i}">Use</button></td></tr>`).join('')}</tbody></table></div>
+    <div class="note" style="padding:6px 16px 12px">${o.total} settings on ${o.syms} stocks, ranked on the train Sharpe only (the test column is out of sample). Equity on closed trades. ${o.wide ? 'Delta and DTE varied.' : `At delta ${o.cfg.delta} and ${o.cfg.dte} DTE (${o.cfg.dteMin}–${o.cfg.dteMax}).`} ${esc((o.at || '').slice(0, 16).replace('T', ' '))}</div>`;
+  return `<section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">IV rank × take profit × DTE exit × stop</span><div class="grow"></div>
+    <label class="dim" style="font-size:13px;margin-right:10px"><input type="checkbox" id="ivWide"${S.iv.wide ? ' checked' : ''}> also vary delta and DTE (more option data to download)</label>
+    <button class="btn" data-iv="opt" ${run ? 'disabled' : ''}>Run optimizer</button></div>${body}</section>`;
 }
 
 function ivResHtml(r) {
@@ -77,12 +91,15 @@ function ivResHtml(r) {
 
 document.addEventListener('change', ev => {
   const t = ev.target; if (!t.dataset) return;
+  if (t.id === 'ivWide') S.iv.wide = t.checked;
   if (t.dataset.ivv) S.iv.cfg[t.dataset.ivv] = ['coll', 'fill', 'from'].includes(t.dataset.ivv) ? t.value : +t.value;
 });
 document.addEventListener('click', async ev => {
-  const el = ev.target.closest('[data-iv]'); if (!el || !$('#sw-body')) return;
+  const el = ev.target.closest('[data-iv],[data-iv-use]'); if (!el || !$('#sw-body')) return;
   const a = el.dataset.iv, I = S.iv;
   try {
+    if (el.dataset.ivUse != null) { Object.assign(I.cfg, I.v.opt.top[+el.dataset.ivUse].p); $('#sw-body').innerHTML = ivShell(I.v); toast('Setting applied: run the backtest.'); return; }
+    if (a === 'opt') { el.disabled = true; await api('/ivcrush/opt', { method: 'POST', body: { cfg: I.cfg, wide: !!I.wide } }); toast('Optimizer started: it downloads the option prices it needs the first time.'); setTimeout(ivLoad, 1500); return; }
     if (a === 'data') { el.disabled = true; await api('/ivcrush/data', { method: 'POST', body: {} }); toast('Download started: it runs in the background.'); setTimeout(ivLoad, 1500); return; }
     if (a === 'run') { el.disabled = true; await api('/ivcrush', { method: 'POST', body: { cfg: I.cfg } }); toast('Backtest started: the first run fetches the option prices (can take hours).'); setTimeout(ivLoad, 1500); return; }
     if (a === 'csv') {
