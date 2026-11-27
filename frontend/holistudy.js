@@ -31,7 +31,7 @@ function hoShell(r, loading) {
   const base = (lab, b, day) => `<tr class="dim"><td>${lab}</td><td class="r">${(b.p1 && b.p1.n || 0).toLocaleString('en-US')}</td><td class="r">—</td>${day ? cell(day) : '<td class="r">—</td>'}<td class="r">—</td>${[1, 3, 5, 10].map(k => cell(b['p' + k])).join('')}</tr>`;
   const sp = r.split;
   const tbl = (title, note, body, first = '') => `<section class="panel" style="margin-top:12px"><div class="hd"><h2>${title}</h2><span class="dim" style="font-size:13px">${note}</span></div><div class="tbl-wrap"><table class="tbl">${head(first)}<tbody>${body}</tbody></table></div></section>`;
-  const ev = r.events.map(e => `<tr><td class="mono">${esc(e.date)}</td><td>${esc(e.name)}${e.kind === 'early' ? ' <span class="dim">(half day)</span>' : e.kind === 'jewish' ? ' <span class="dim">(Jewish, market open)</span>' : ''}</td><td class="r ${cls(e.pre)}">${pc(e.pre)}</td><td class="r ${cls(e.day0)}">${pc(e.day0)}</td><td class="r ${cls(e.gap)}">${pc(e.gap)}</td>${[1, 3, 5, 10].map(k => `<td class="r ${cls(e.post[k])}">${pc(e.post[k])}</td>`).join('')}</tr>`).join('');
+  const ev = r.events.slice(0, 120).map(e => `<tr><td class="mono">${esc(e.date)}</td><td>${esc(e.name)}${e.kind === 'early' ? ' <span class="dim">(half day)</span>' : e.kind === 'jewish' ? ' <span class="dim">(Jewish, market open)</span>' : ''}</td><td class="r ${cls(e.pre)}">${pc(e.pre)}</td><td class="r ${cls(e.day0)}">${pc(e.day0)}</td><td class="r ${cls(e.gap)}">${pc(e.gap)}</td>${[1, 3, 5, 10].map(k => `<td class="r ${cls(e.post[k])}">${pc(e.post[k])}</td>`).join('')}</tr>`).join('');
   return form + `<div class="dim" style="margin:10px 2px;font-size:13px">${esc(r.sym)} daily, ${esc(r.from)} → ${esc(r.to)} (${r.days.toLocaleString('en-US')} sessions) · ${esc(r.src)} · each cell: average return, then % of events up · ● = t ≥ 2 · hover a cell for the median and t</div>` +
     tbl('All holidays vs every day', `${r.holidays.n} holidays, ${r.early.n} half days`, row('<b>Holidays</b>', r.holidays) + row('<b>Half days</b>', r.early) + (r.jewish ? row('<b>Jewish holidays</b>', r.jewish) : '') + base('Every day (baseline)', r.base.all, r.base.day)) +
     tbl(`After a down / up ${r.n} sessions`, 'does a weak run into the holiday carry on or reverse?',
@@ -44,7 +44,7 @@ function hoShell(r, loading) {
       `<section class="panel" style="margin-top:12px"><div class="hd"><h2>“Sell Rosh Hashanah, buy Yom Kippur”</h2></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th class="r">Years</th><th class="r">Average</th><th class="r">Median</th><th class="r">Up</th><th class="r">t</th></tr></thead><tbody>
         ${[['Close before Rosh Hashanah → close of Yom Kippur', r.rhyk], ['Close of Yom Kippur → 10 sessions later', r.ykon], ['Every day: 10 sessions (baseline)', r.base10]].map(([l, x]) => x && x.n ? `<tr><td>${l}</td><td class="r">${x.n.toLocaleString('en-US')}</td><td class="r ${cls(x.avg)}">${pc(x.avg)}</td><td class="r">${pc(x.med)}</td><td class="r">${up(x)}</td><td class="r">${x.t ?? '—'}</td></tr>` : '').join('')}</tbody></table></div>
         <p class="note" style="padding:0 16px 12px">The 7 calendar days between them are about 5–7 sessions, so compare with a 5-session baseline in the first table (+5), not only with 10.</p></section>` : '') +
-    `<section class="panel" style="margin-top:12px"><div class="hd"><h2>Events</h2><span class="dim" style="font-size:13px">the latest ${r.events.length}</span></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Holiday</th><th class="r">Before (${r.n})</th><th class="r">Day before</th><th class="r">Gap</th>${[1, 3, 5, 10].map(k => `<th class="r">+${k}</th>`).join('')}</tr></thead><tbody>${ev}</tbody></table></div></section>`;
+    `<section class="panel" style="margin-top:12px"><div class="hd"><h2>Events</h2><span class="dim" style="font-size:13px">the latest ${Math.min(120, r.events.length)} of ${r.events.length}</span><div class="grow"></div><button class="btn sm" data-ho="csv-events">Export all events (CSV)</button> <button class="btn sm" data-ho="csv-summary">Export the tables (CSV)</button></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Holiday</th><th class="r">Before (${r.n})</th><th class="r">Day before</th><th class="r">Gap</th>${[1, 3, 5, 10].map(k => `<th class="r">+${k}</th>`).join('')}</tr></thead><tbody>${ev}</tbody></table></div></section>`;
 }
 
 document.addEventListener('change', ev => {
@@ -54,4 +54,31 @@ document.addEventListener('change', ev => {
 document.addEventListener('click', ev => {
   const el = ev.target.closest('[data-ho]'); if (!el || !$('#sw-body')) return;
   if (el.dataset.ho === 'run') hoLoad();
+  if (el.dataset.ho === 'csv-events' || el.dataset.ho === 'csv-summary') hoCsv(el.dataset.ho);
 });
+
+// CSV: every event (one row each, returns in %), or every summary row of the tables
+function hoCsv(which) {
+  const r = S.ho.r; if (!r) return;
+  const q = x => x == null ? '' : /[",\n]/.test(String(x)) ? '"' + String(x).replace(/"/g, '""') + '"' : String(x);
+  const p = x => x == null ? '' : (x * 100).toFixed(3);
+  let rows;
+  if (which === 'csv-events') {
+    rows = [['date', 'kind', 'holiday', 'session (last before the holiday / the half day or Jewish holiday itself)', `before_${r.n}_pct`, 'day_before_or_of_pct', 'gap_pct', 'post1_pct', 'post3_pct', 'post5_pct', 'post10_pct']]
+      .concat(r.events.map(e => [e.date, e.kind, e.name, e.last, p(e.pre), p(e.day0), p(e.gap), p(e.post[1]), p(e.post[3]), p(e.post[5]), p(e.post[10])]));
+  } else {
+    const cols = ['pre', 'day0', 'gap', 'p1', 'p3', 'p5', 'p10'];
+    rows = [['table', 'group', 'n'].concat(...cols.map(c => [c + '_avg_pct', c + '_median_pct', c + '_up_pct', c + '_t']))];
+    const add = (t, lab, g) => rows.push([t, lab, g.n].concat(...cols.map(c => { const x = g[c]; return x && x.n ? [p(x.avg), p(x.med), (x.up * 100).toFixed(1), x.t ?? ''] : ['', '', '', '']; })));
+    add('all', 'Holidays', r.holidays); add('all', 'Half days', r.early); if (r.jewish) add('all', 'Jewish holidays', r.jewish);
+    add('all', 'Every day (baseline)', { n: r.base.all.p1.n, day0: r.base.day, ...r.base.all });
+    for (const k of ['holidays', 'early', 'jewish']) if (r.split[k]) { add('before down', k, r.split[k].down); add('before up', k, r.split[k].up); }
+    add('before down', 'Every day', { n: r.base.down.p1.n, ...r.base.down }); add('before up', 'Every day', { n: r.base.up.p1.n, ...r.base.up });
+    for (const g of r.byName) add('by holiday', g.name, g);
+    for (const g of r.byEarly) add('by half day', g.name, g);
+    for (const g of (r.byJewish || [])) add('by Jewish holiday', g.name, g);
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([rows.map(x => x.map(q).join(',')).join('\n')], { type: 'text/csv' }));
+  a.download = `holidays_${r.sym}_${r.n}_${which === 'csv-events' ? 'events' : 'tables'}.csv`; a.click(); URL.revokeObjectURL(a.href);
+}

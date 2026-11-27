@@ -262,4 +262,4 @@ def study(sub, sym="SPY", n=5, start_year=1993):
             "rhyk": _st(rhyk), "ykon": _st(ykon), "base10": base_all["p10"],
             "split": {"holidays": split(hol), "early": split(early), "jewish": split(jew)},
             "base": {"all": base_all, "down": base_dn, "up": base_up, "day": base_day},
-            "events": sorted(out, key=lambda e: e["date"], reverse=True)[:120]}
+            "events": sorted(out, key=lambda e: e["date"], reverse=True)}   # all of them (the page shows the latest 120; CSV export has all)
