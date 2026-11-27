@@ -669,7 +669,7 @@ def im_data(sub, claims, body, q):
 def holidays_study(sub, claims, body, q):
     import holistudy
     return holistudy.study(sub, (q.get("sym") or "SPY").upper(), int(q.get("n") or 5), int(q.get("from") or 1993),
-                           q.get("exit") or "pre", float(q.get("cost") or 1))
+                           q.get("exit") or "pre", float(q.get("cost") or 1), tuple(x for x in (q.get("skip") or "").split("|") if x))
 
 
 @route("POST", "/intramom/opt")

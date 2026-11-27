@@ -1,11 +1,11 @@
 // Swing → Holidays & half days: what SPY / QQQ / IWM / DIA does around US market holidays and 13:00 early closes.
-S.ho = S.ho || { sym: 'SPY', n: 5, from: 1993, exit: 'pre', cost: 1, r: null };
+S.ho = S.ho || { sym: 'SPY', n: 5, from: 1993, exit: 'pre', cost: 1, skip: [], r: null };
 
 async function hoLoad() {
   const el = $('#sw-body'); if (!el) return;
   const H = S.ho;
   el.innerHTML = hoShell(H.r, true);
-  try { H.r = await api(`/holidays?sym=${H.sym}&n=${H.n}&from=${H.from}&exit=${H.exit}&cost=${H.cost}`); }
+  try { H.r = await api(`/holidays?sym=${H.sym}&n=${H.n}&from=${H.from}&exit=${H.exit}&cost=${H.cost}&skip=${encodeURIComponent((H.skip || []).join('|'))}`); }
   catch (e) { el.innerHTML = hoShell(null) + `<div class="panel"><div class="bd loss">${esc(e.message)}</div></div>`; return; }
   if (S.sw.kind === 'hol' && $('#sw-body')) $('#sw-body').innerHTML = hoShell(H.r);
 }
@@ -107,5 +107,23 @@ function hoBtHtml(b, pc) {
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th class="r">Trades</th><th class="r">Avg / trade</th><th class="r">Win</th><th class="r">t</th><th class="r">Total</th><th class="r">CAGR</th><th class="r">Max DD</th><th class="r">Best / worst</th><th class="r">Days in</th><th>Period</th></tr></thead><tbody>
     ${row('Train (first 60% of trades)', b.train)}${row('<b>Test (last 40%)</b>', b.test)}${row('All', b.all)}
     <tr class="dim"><td>Any ${b.hold}-session window (baseline)</td><td class="r">${b.base.n.toLocaleString('en-US')}</td><td class="r ${cls(b.base.avg)}">${pc(b.base.avg)}</td><td class="r">${Math.round(b.base.up * 100)}%</td><td class="r">—</td><td colspan="6" class="dim">${esc(S.ho.sym)} buy &amp; hold over the same ${b.spy.years} years: ${pc(b.spy.total)}</td></tr></tbody></table></div>
+    ${hoBtPick(b, pc)}
     <div class="bd">${svg}<div class="dim" style="font-size:12px">Growth of $1 on the holiday trades only (out of the market the rest of the time). The edge is "Avg / trade" against the baseline row: the same holding time on any day. A strategy for a small part of the year: compare the CAGR with the days in the market, not with buy &amp; hold.</div></div></section>`;
 }
+
+// which holidays to trade: click a row to leave it out (the backtest runs again); values are before the filter
+function hoBtPick(b, pc) {
+  if (!b.byHoliday || !b.byHoliday.length) return '';
+  const c = (x, t) => !x || !x.n ? '<td class="r dim">—</td><td class="r dim">—</td>' : `<td class="r ${cls(x.avg)}">${pc(x.avg)}${t && x.t != null && Math.abs(x.t) >= 2 ? ' ●' : ''}</td><td class="r">${x.n} · ${Math.round(x.up * 100)}%</td>`;
+  return `<div class="bd" style="border-top:1px solid var(--line)"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><b>Holidays traded</b><span class="dim" style="font-size:12.5px">click a row to leave that holiday out (runs again) · values are every trade, before the filter · judge on the test columns</span><div class="grow"></div>
+      ${b.skip.length ? `<span class="dim" style="font-size:12.5px">Left out: ${b.skip.map(esc).join(', ')}</span><button class="btn sm" data-ho="skip-clear">Clear</button>` : ''}</div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th style="width:28px"></th><th>Holiday</th><th class="r">Train avg</th><th class="r">Train n · win</th><th class="r">Test avg</th><th class="r">Test n · win</th><th class="r">All avg</th><th class="r">All n · win</th></tr></thead><tbody>
+    ${b.byHoliday.map(g => `<tr data-ho-skip="${esc(g.name)}" style="cursor:pointer;${g.off ? 'opacity:.4;text-decoration:line-through' : ''}"><td><input type="checkbox" ${g.off ? '' : 'checked'} style="pointer-events:none"></td><td>${esc(g.name)}</td>${c(g.train)}${c(g.test)}${c(g.all, 1)}</tr>`).join('')}
+    </tbody></table></div></div>`;
+}
+document.addEventListener('click', ev => {
+  const el = ev.target.closest('[data-ho-skip],[data-ho="skip-clear"]'); if (!el || !$('#sw-body')) return;
+  const sk = new Set(S.ho.skip || []);
+  if (el.dataset.ho === 'skip-clear') sk.clear(); else if (sk.has(el.dataset.hoSkip)) sk.delete(el.dataset.hoSkip); else sk.add(el.dataset.hoSkip);
+  S.ho.skip = [...sk]; hoLoad();
+});

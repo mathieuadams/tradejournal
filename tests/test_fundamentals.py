@@ -850,6 +850,9 @@ def test_holidays():
     assert all(t["days"] == 10 and t["in"] < t["out"] < t["date"] for t in b["trades"]) and not any(t["holiday"] == "Special closure" for t in b["trades"])
     st, r2 = call("GET", "/holidays", q={"sym": "SPY", "n": "5", "from": "2010", "exit": "post1", "cost": "2"})
     assert st == 200 and r2["bt"]["hold"] == 6 and all(t["out"] > t["date"] for t in r2["bt"]["trades"])
+    st, r3 = call("GET", "/holidays", q={"sym": "SPY", "n": "10", "from": "2010", "skip": "Good Friday|Labor Day"})
+    assert st == 200 and not any(t["holiday"] in ("Good Friday", "Labor Day") for t in r3["bt"]["trades"]) and r3["bt"]["split"] == b["split"]
+    assert {g["name"] for g in r3["bt"]["byHoliday"] if g["off"]} == {"Good Friday", "Labor Day"} and r3["bt"]["all"]["n"] < b["all"]["n"]
 
 
 def test_swing_whole_market():

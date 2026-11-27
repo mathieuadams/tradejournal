@@ -176,7 +176,7 @@ def _ret(c, a, b):
     return c[b] / c[a] - 1 if 0 <= a < len(c) and 0 <= b < len(c) and c[a] else None
 
 
-def backtest(ds, c, hol, n, exit_mode="pre", cost_bp=1.0, split_frac=0.6):
+def backtest(ds, c, hol, n, exit_mode="pre", cost_bp=1.0, split_frac=0.6, skip=()):
     """Long from the close n sessions before each US market holiday to the close of the last session before it
     (exit_mode "pre") or of the first session after it ("post1"). Returns per trade, net of cost_bp a side.
     Train = the first 60% of the trades, test = the rest. Baseline: every n-session window (the same holding time)."""
@@ -189,7 +189,17 @@ def backtest(ds, c, hol, n, exit_mode="pre", cost_bp=1.0, split_frac=0.6):
         r = c[b] / c[a] - 1 - 2 * cost_bp / 10000
         trades.append({"in": ds[a].isoformat(), "out": ds[b].isoformat(), "holiday": e["name"], "date": e["date"], "ret": round(r, 6), "days": b - a})
     trades.sort(key=lambda t: t["in"])
-    cut = int(len(trades) * split_frac)
+    # the train / test cut is fixed on ALL the trades, so leaving a holiday out does not move it
+    split_at = trades[int(len(trades) * split_frac)]["in"] if trades else None
+    # per holiday, train / test (every trade, before the filter): which ones to leave out
+    per = {}
+    for t in trades:
+        g = per.setdefault(t["holiday"], {"tr": [], "te": []})
+        g["te" if split_at and t["in"] >= split_at else "tr"].append(t["ret"])
+    by_holiday = [{"name": nm, "train": _st(per[nm]["tr"]), "test": _st(per[nm]["te"]), "all": _st(per[nm]["tr"] + per[nm]["te"]), "off": nm in skip}
+                  for nm in HOLIDAY_ORDER if nm in per]
+    trades = [t for t in trades if t["holiday"] not in skip]
+    cut = sum(1 for t in trades if split_at and t["in"] < split_at)
 
     def sts(ts):
         if not ts:
@@ -209,21 +219,21 @@ def backtest(ds, c, hol, n, exit_mode="pre", cost_bp=1.0, split_frac=0.6):
 
     hold = n + (1 if exit_mode == "post1" else 0)
     base = [c[t + hold] / c[t] - 1 - 2 * cost_bp / 10000 for t in range(len(c) - hold)]
-    split_date = trades[cut]["in"] if 0 < cut < len(trades) else None
     bh = lambda a, b: round(c[b] / c[a] - 1, 4)
     i_from = {d.isoformat(): k for k, d in enumerate(ds)}
     eq, curve = 1.0, []
     for t in trades:
         eq *= 1 + t["ret"]
         curve.append([t["out"], round(eq, 4)])
-    return {"exit": exit_mode, "n": n, "cost": cost_bp, "split": split_date, "all": sts(trades), "train": sts(trades[:cut]), "test": sts(trades[cut:]),
+    split_date = split_at
+    return {"exit": exit_mode, "n": n, "cost": cost_bp, "split": split_date, "byHoliday": by_holiday, "skip": sorted(skip), "all": sts(trades), "train": sts(trades[:cut]), "test": sts(trades[cut:]),
             "base": _st(base), "hold": hold, "curve": curve,
             "spy": {"total": bh(i_from[trades[0]["in"]], i_from[trades[-1]["out"]]) if trades else None,
                     "years": round((date.fromisoformat(trades[-1]["out"]) - date.fromisoformat(trades[0]["in"])).days / 365.25, 1) if trades else None},
             "trades": [{**t, "set": "train" if k < cut else "test"} for k, t in enumerate(trades)]}
 
 
-def study(sub, sym="SPY", n=5, start_year=1993, exit_mode="pre", cost_bp=1.0):
+def study(sub, sym="SPY", n=5, start_year=1993, exit_mode="pre", cost_bp=1.0, skip=()):
     sym = sym if sym in SYMS else "SPY"
     n = 10 if int(n) == 10 else 5
     rows, src = _daily(sub, sym)
@@ -311,4 +321,5 @@ def study(sub, sym="SPY", n=5, start_year=1993, exit_mode="pre", cost_bp=1.0):
             "base": {"all": base_all, "down": base_dn, "up": base_up, "day": base_day},
             "events": sorted(out, key=lambda e: e["date"], reverse=True),
             "bt": backtest(ds, c, [e for e in events if e["kind"] == "holiday" and e["name"] != "Special closure" and e["i"] is not None and e["i"] >= n], n,
-                           "post1" if exit_mode == "post1" else "pre", max(0.0, min(50.0, float(cost_bp))))}   # all of them (the page shows the latest 120; CSV export has all)
+                           "post1" if exit_mode == "post1" else "pre", max(0.0, min(50.0, float(cost_bp))),
+                           skip=tuple(x for x in skip if x in HOLIDAY_ORDER))}   # all of them (the page shows the latest 120; CSV export has all)
