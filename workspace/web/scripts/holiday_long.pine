@@ -66,52 +66,77 @@ easterTs(y) =>
     dd = (h + l - 7 * m + 114) % 31 + 1
     ymdTs(y, mo, dd)
 
-// which NYSE holiday falls on day ts: 0 = none, 1..10 in the order of the inputs
+// the NYSE holidays of a year, in the order of the inputs (1..10); New Year's Day on a Sunday moves to Monday Jan 2,
+// on a Saturday it is not moved (the market is open on Dec 31)
+var hDates = array.new_int()
+var hIds = array.new_int()
+var int hYear = na
+addYear(y) =>
+    ny = ymdTs(y, 1, 1)
+    nyW = dayofweek(ny, "UTC")
+    if nyW != dayofweek.saturday
+        array.push(hDates, nyW == dayofweek.sunday ? ny + DAY : ny)
+        array.push(hIds, 1)
+    if y >= 1998
+        array.push(hDates, nthDow(y, 1, dayofweek.monday, 3))
+        array.push(hIds, 2)
+    array.push(hDates, nthDow(y, 2, dayofweek.monday, 3))
+    array.push(hIds, 3)
+    array.push(hDates, easterTs(y) - 2 * DAY)
+    array.push(hIds, 4)
+    array.push(hDates, nthDow(y, 5, dayofweek.monday, -1))
+    array.push(hIds, 5)
+    if y >= 2022
+        array.push(hDates, observed(ymdTs(y, 6, 19)))
+        array.push(hIds, 6)
+    array.push(hDates, observed(ymdTs(y, 7, 4)))
+    array.push(hIds, 7)
+    array.push(hDates, nthDow(y, 9, dayofweek.monday, 1))
+    array.push(hIds, 8)
+    array.push(hDates, nthDow(y, 11, dayofweek.thursday, 4))
+    array.push(hIds, 9)
+    array.push(hDates, observed(ymdTs(y, 12, 25)))
+    array.push(hIds, 10)
+    0
+
 holidayAt(ts) =>
-    y = year(ts, "UTC")
-    int r = 0
-    if ts == observed(ymdTs(y, 1, 1)) or (month(ts, "UTC") == 1 and dayofmonth(ts, "UTC") == 2 and dayofweek(ts, "UTC") == dayofweek.monday)
-        r := 1
-    else if y >= 1998 and ts == nthDow(y, 1, dayofweek.monday, 3)
-        r := 2
-    else if ts == nthDow(y, 2, dayofweek.monday, 3)
-        r := 3
-    else if ts == easterTs(y) - 2 * DAY
-        r := 4
-    else if ts == nthDow(y, 5, dayofweek.monday, -1)
-        r := 5
-    else if y >= 2022 and ts == observed(ymdTs(y, 6, 19))
-        r := 6
-    else if ts == observed(ymdTs(y, 7, 4))
-        r := 7
-    else if ts == nthDow(y, 9, dayofweek.monday, 1)
-        r := 8
-    else if ts == nthDow(y, 11, dayofweek.thursday, 4)
-        r := 9
-    else if ts == observed(ymdTs(y, 12, 25))
-        r := 10
-    r
+    k = array.indexof(hDates, ts)
+    k >= 0 ? array.get(hIds, k) : 0
 
 enabled(h) => h == 1 ? onNY : h == 2 ? onMLK : h == 3 ? onPres : h == 4 ? onGF : h == 5 ? onMem : h == 6 ? onJune : h == 7 ? onInd : h == 8 ? onLab : h == 9 ? onThx : h == 10 ? onXmas : false
 hname(h) => h == 1 ? "New Year's Day" : h == 2 ? "MLK Day" : h == 3 ? "Presidents' Day" : h == 4 ? "Good Friday" : h == 5 ? "Memorial Day" : h == 6 ? "Juneteenth" : h == 7 ? "Independence Day" : h == 8 ? "Labor Day" : h == 9 ? "Thanksgiving" : "Christmas"
 
-// the next traded holiday within 25 days, and the sessions left before it (this one excluded)
+// the holidays of this year and the next (built once a year)
 today = dayTs(time)
-int target = 0
-int tName = 0
-int left = 0
-for k = 1 to 25
-    dk = today + k * DAY
-    w = dayofweek(dk, "UTC")
-    if w != dayofweek.saturday and w != dayofweek.sunday
-        h = holidayAt(dk)
-        if h > 0
-            if enabled(h)
-                target := dk
-                tName := h
-                break
-        else
-            left += 1
+if na(hYear) or year(today, "UTC") != hYear
+    hYear := year(today, "UTC")
+    array.clear(hDates)
+    array.clear(hIds)
+    addYear(hYear)
+    addYear(hYear + 1)
+
+// the next traded holiday within 25 days, and the sessions left before it (this one excluded): once a day
+var int target = 0
+var int tName = 0
+var int left = 0
+var int dayDone = na
+if na(dayDone) or today != dayDone
+    dayDone := today
+    target := 0
+    tName := 0
+    left := 0
+    for k = 1 to 25
+        dk = today + k * DAY
+        w = dayofweek(dk, "UTC")
+        if w != dayofweek.saturday and w != dayofweek.sunday
+            h = holidayAt(dk)
+            if h > 0
+                if enabled(h)
+                    target := dk
+                    tName := h
+                    break
+            else
+                left += 1
 
 // was yesterday's session followed by a traded holiday (for "the first session after")
 var int prevLeftZero = 0

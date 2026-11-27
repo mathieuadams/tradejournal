@@ -584,7 +584,8 @@ if barstate.islast and not na(sBar)
     clearLive()
     drawProfile(sBar, bar_index, true)                // the session in progress
 `, { aliases: 'volume profile vp poc value area session asian' }),
-S('holiday_long', 'Long into US holidays', 'Strategies', 'Buy the close N sessions before chosen NYSE holidays, sell the close before (or after) the holiday. Holidays from the NYSE rules, known in advance. Daily chart, SPY / QQQ / IWM / DIA.', `\n// Long into US market holidays (from the journal's Swing → Holidays study). Use on a DAILY chart (SPY, QQQ, IWM, DIA).
+S('holiday_long', 'Long into US holidays', 'Strategies', 'Buy the close N sessions before chosen NYSE holidays, sell the close before (or after) the holiday. Holidays from the NYSE rules, known in advance. Daily chart, SPY / QQQ / IWM / DIA.', `
+// Long into US market holidays (from the journal's Swing → Holidays study). Use on a DAILY chart (SPY, QQQ, IWM, DIA).
 //   Buy at the close N sessions before a chosen market holiday, sell at the close of the last session before it
 //   (or of the first session after it). The holidays come from the NYSE rules, so the strategy knows them in advance.
 //   Defaults = the study's selection: Presidents' Day, Good Friday, Memorial Day, Independence Day, Thanksgiving,
@@ -651,52 +652,77 @@ easterTs(y) =>
     dd = (h + l - 7 * m + 114) % 31 + 1
     ymdTs(y, mo, dd)
 
-// which NYSE holiday falls on day ts: 0 = none, 1..10 in the order of the inputs
+// the NYSE holidays of a year, in the order of the inputs (1..10); New Year's Day on a Sunday moves to Monday Jan 2,
+// on a Saturday it is not moved (the market is open on Dec 31)
+var hDates = array.new_int()
+var hIds = array.new_int()
+var int hYear = na
+addYear(y) =>
+    ny = ymdTs(y, 1, 1)
+    nyW = dayofweek(ny, "UTC")
+    if nyW != dayofweek.saturday
+        array.push(hDates, nyW == dayofweek.sunday ? ny + DAY : ny)
+        array.push(hIds, 1)
+    if y >= 1998
+        array.push(hDates, nthDow(y, 1, dayofweek.monday, 3))
+        array.push(hIds, 2)
+    array.push(hDates, nthDow(y, 2, dayofweek.monday, 3))
+    array.push(hIds, 3)
+    array.push(hDates, easterTs(y) - 2 * DAY)
+    array.push(hIds, 4)
+    array.push(hDates, nthDow(y, 5, dayofweek.monday, -1))
+    array.push(hIds, 5)
+    if y >= 2022
+        array.push(hDates, observed(ymdTs(y, 6, 19)))
+        array.push(hIds, 6)
+    array.push(hDates, observed(ymdTs(y, 7, 4)))
+    array.push(hIds, 7)
+    array.push(hDates, nthDow(y, 9, dayofweek.monday, 1))
+    array.push(hIds, 8)
+    array.push(hDates, nthDow(y, 11, dayofweek.thursday, 4))
+    array.push(hIds, 9)
+    array.push(hDates, observed(ymdTs(y, 12, 25)))
+    array.push(hIds, 10)
+    0
+
 holidayAt(ts) =>
-    y = year(ts, "UTC")
-    int r = 0
-    if ts == observed(ymdTs(y, 1, 1)) or (month(ts, "UTC") == 1 and dayofmonth(ts, "UTC") == 2 and dayofweek(ts, "UTC") == dayofweek.monday)
-        r := 1
-    else if y >= 1998 and ts == nthDow(y, 1, dayofweek.monday, 3)
-        r := 2
-    else if ts == nthDow(y, 2, dayofweek.monday, 3)
-        r := 3
-    else if ts == easterTs(y) - 2 * DAY
-        r := 4
-    else if ts == nthDow(y, 5, dayofweek.monday, -1)
-        r := 5
-    else if y >= 2022 and ts == observed(ymdTs(y, 6, 19))
-        r := 6
-    else if ts == observed(ymdTs(y, 7, 4))
-        r := 7
-    else if ts == nthDow(y, 9, dayofweek.monday, 1)
-        r := 8
-    else if ts == nthDow(y, 11, dayofweek.thursday, 4)
-        r := 9
-    else if ts == observed(ymdTs(y, 12, 25))
-        r := 10
-    r
+    k = array.indexof(hDates, ts)
+    k >= 0 ? array.get(hIds, k) : 0
 
 enabled(h) => h == 1 ? onNY : h == 2 ? onMLK : h == 3 ? onPres : h == 4 ? onGF : h == 5 ? onMem : h == 6 ? onJune : h == 7 ? onInd : h == 8 ? onLab : h == 9 ? onThx : h == 10 ? onXmas : false
 hname(h) => h == 1 ? "New Year's Day" : h == 2 ? "MLK Day" : h == 3 ? "Presidents' Day" : h == 4 ? "Good Friday" : h == 5 ? "Memorial Day" : h == 6 ? "Juneteenth" : h == 7 ? "Independence Day" : h == 8 ? "Labor Day" : h == 9 ? "Thanksgiving" : "Christmas"
 
-// the next traded holiday within 25 days, and the sessions left before it (this one excluded)
+// the holidays of this year and the next (built once a year)
 today = dayTs(time)
-int target = 0
-int tName = 0
-int left = 0
-for k = 1 to 25
-    dk = today + k * DAY
-    w = dayofweek(dk, "UTC")
-    if w != dayofweek.saturday and w != dayofweek.sunday
-        h = holidayAt(dk)
-        if h > 0
-            if enabled(h)
-                target := dk
-                tName := h
-                break
-        else
-            left += 1
+if na(hYear) or year(today, "UTC") != hYear
+    hYear := year(today, "UTC")
+    array.clear(hDates)
+    array.clear(hIds)
+    addYear(hYear)
+    addYear(hYear + 1)
+
+// the next traded holiday within 25 days, and the sessions left before it (this one excluded): once a day
+var int target = 0
+var int tName = 0
+var int left = 0
+var int dayDone = na
+if na(dayDone) or today != dayDone
+    dayDone := today
+    target := 0
+    tName := 0
+    left := 0
+    for k = 1 to 25
+        dk = today + k * DAY
+        w = dayofweek(dk, "UTC")
+        if w != dayofweek.saturday and w != dayofweek.sunday
+            h = holidayAt(dk)
+            if h > 0
+                if enabled(h)
+                    target := dk
+                    tName := h
+                    break
+            else
+                left += 1
 
 // was yesterday's session followed by a traded holiday (for "the first session after")
 var int prevLeftZero = 0
@@ -724,155 +750,7 @@ var label nxt = na
 if showNext and barstate.islast and target > 0
     label.delete(nxt)
     nxt := label.new(bar_index, high, "Next: " + hname(tName) + " " + str.format_time(target, "yyyy-MM-dd", "UTC") + (left >= nSess ? " · buy in " + str.tostring(left - nSess) + " session(s)" : " · in the trade window"),
-         style = label.style_label_down, color = color.new(#3b82f6, 30), textcolor = color.white, size = size.small)\n`, { aliases: 'holiday seasonal pre-holiday thanksgiving christmas good friday spy daily' }),
-S('btm', 'Beat the Market (intraday momentum)', 'Strategies', 'Zarattini, Aziz & Barbon (2024): noise area from the last 14 sessions, long above / short below it at 30-minute checks, VWAP or band stop, flat at 16:00, volatility-target size. SPY / QQQ / NQ / ES, 1-15 minute chart.', `
-// Beat the Market — intraday momentum (Zarattini, Aziz, Barbon 2024), as the journal's Swing tab.
-// Use on SPY (or QQQ / NQ / ES) with a 1, 5 or 15-minute chart, regular session 09:30-16:00 New York.
-//   Noise area for each 15-minute mark: sigma = the average |close at that time / 09:30 open - 1| over the previous 14 sessions.
-//   Upper bound = max(open, yesterday's close) x (1 + VM x sigma), lower = min(open, yesterday's close) x (1 - VM x sigma).
-//   Every 30 minutes (10:00, 10:30 ... 15:30): long above the upper bound, short below the lower one.
-//   Stop at the same checks: the current bound or the session VWAP (paper final), the current bound, or the opposite bound.
-//   Orders fill at the NEXT candle's open (on a 1-minute chart: the next minute's open, the paper's live execution);
-//   the end-of-day exit fills at the session's last close (16:00, or 13:00 on NYSE early-close days).
-//   Everything is closed at 16:00. Size: volatility target (account x min(4, 2% / sigma of the last 14 daily returns));
-//   on futures always the fixed quantity. The journal's VIX filter is not included.
-strategy("Beat the Market (intraday momentum)", "BTM", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 1,
-     process_orders_on_close = false, commission_type = strategy.commission.cash_per_contract, commission_value = 0.0045)
-
-vm       = input.float(1.25, "Noise area x (VM)", minval = 0.25, maxval = 4, step = 0.25)
-stopMode = input.string("Current band or VWAP (paper final)", "Stop", options = ["Current band or VWAP (paper final)", "Current band", "Opposite band (then reverse)"])
-stepS    = input.string("30", "Checks every (minutes)", options = ["15", "30", "60"])
-sizing   = input.string("Volatility target (paper)", "Size", options = ["Volatility target (paper)", "100% of the account", "Fixed quantity"])
-target   = input.float(2.0, "Daily vol target (%)", minval = 0.2, maxval = 10, step = 0.25)
-maxLev   = input.float(4, "Max leverage", minval = 0.5, maxval = 8, step = 0.5)
-fixedQty = input.int(1, "Fixed quantity (contracts / shares)", minval = 1)
-sides    = input.string("Long and short", "Sides", options = ["Long and short", "Long only", "Short only"])
-earlyOn  = input.bool(true, "NYSE early-close days end at 13:00 (day after Thanksgiving, Jul 3, Dec 24)")
-showBand = input.bool(true, "Show the noise area and VWAP")
-
-LOOK = 14
-MARKS = 26                                  // the 15-minute marks 09:45 ... 16:00
-every = str.tonumber(stepS) / 15
-
-// minutes from 09:30 at the start / end of this candle
-sm = hour * 60 + minute - 570
-em = hour(time_close) * 60 + minute(time_close) - 570
-newDay = sm == 0
-// NYSE 13:00 closes: the day after Thanksgiving, and Jul 3 / Dec 24 when they fall Monday-Thursday
-wd = dayofweek(time, "America/New_York")
-mo = month(time, "America/New_York")
-dm = dayofmonth(time, "America/New_York")
-early = earlyOn and ((mo == 11 and wd == dayofweek.friday and dm >= 23 and dm <= 29) or ((mo == 7 and dm == 3) or (mo == 12 and dm == 24)) and wd >= dayofweek.monday and wd <= dayofweek.thursday)
-endM = early ? 210 : 390                    // the session's last minute (from 09:30)
-inSes = sm >= 0 and em <= endM
-
-var hist = array.new_float(LOOK * MARKS, na)   // |close at mark / open - 1| of the last 14 sessions (ring of sessions)
-var int slot = 0
-var int nDays = 0
-var today = array.new_float(MARKS, na)
-var rets = array.new_float()
-var float dOpen = na
-var float prevClose = na
-var float pv = 0
-var float vv = 0
-var float sh = na
-
-// sigma of mark j over the previous sessions
-sigmaAt(j) =>
-    float s = 0
-    int n = 0
-    for k = 0 to LOOK - 1
-        v = array.get(hist, k * MARKS + j)
-        if not na(v)
-            s += v
-            n += 1
-    n > 0 ? s / n : na
-
-if newDay
-    dOpen := open
-    pv := 0
-    vv := 0
-    for j = 0 to MARKS - 1
-        array.set(today, j, na)
-    // the size for the day
-    lev = 1.0
-    if sizing == "Volatility target (paper)" and array.size(rets) >= 3
-        r = array.slice(rets, math.max(0, array.size(rets) - LOOK), array.size(rets))
-        m = array.avg(r)
-        float ss = 0
-        for x in r
-            ss += (x - m) * (x - m)
-        sd = math.sqrt(ss / (array.size(r) - 1))      // sample standard deviation, as the journal
-        lev := sd > 0 ? math.min(maxLev, target / 100 / sd) : 1.0
-    // futures: a share-based size makes no sense (one NQ contract is ~$500k), so the fixed quantity
-    sh := sizing == "Fixed quantity" or syminfo.type == "futures" ? fixedQty : math.floor(strategy.equity * lev / dOpen)
-
-if inSes and not na(dOpen)
-    pv += hlc3 * nz(volume)
-    vv += nz(volume)
-vwap = vv > 0 ? pv / vv : close
-
-// the bounds for the mark this candle belongs to
-jNow = inSes ? math.ceil(em / 15) - 1 : -1
-ready = nDays >= LOOK and not na(prevClose) and not na(dOpen) and jNow >= 0
-// sigma only changes with the mark: computed once per mark, not on every candle
-var float sNow = na
-var int jMemo = -9
-if not ready
-    sNow := na
-    jMemo := -9
-else if jNow != jMemo
-    sNow := sigmaAt(jNow)
-    jMemo := jNow
-ub = ready ? math.max(dOpen, prevClose) * (1 + vm * sNow) : na
-lb = ready ? math.min(dOpen, prevClose) * (1 - vm * sNow) : na
-
-atMark = inSes and em > 0 and em % 15 == 0
-if atMark and not na(dOpen)
-    array.set(today, em / 15 - 1, math.abs(close / dOpen - 1))
-
-// the checks (10:00, 10:30 ... 15:30 by default)
-if atMark and ready and em < endM and ((jNow + 1) % every == 0) and not na(sNow) and sh > 0
-    p = close
-    pos = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
-    int want = 0
-    if stopMode == "Current band or VWAP (paper final)"
-        want := p > math.max(ub, vwap) ? 1 : p < math.min(lb, vwap) ? -1 : 0
-    else if stopMode == "Current band"
-        want := p > ub ? 1 : p < lb ? -1 : 0
-    else
-        want := pos != 0 ? pos : (p > ub ? 1 : p < lb ? -1 : 0)
-        if pos == 1 and p < lb
-            want := -1
-        else if pos == -1 and p > ub
-            want := 1
-    if (want == 1 and sides == "Short only") or (want == -1 and sides == "Long only")
-        want := 0
-    if want != pos
-        if want == 0
-            strategy.close_all(comment = "Stop")
-        else
-            strategy.entry(want > 0 ? "Long" : "Short", want > 0 ? strategy.long : strategy.short, qty = sh)
-
-// the session's close (16:00, 13:00 on early-close days): out at that close, and the session goes into the history
-if inSes and em == endM
-    if strategy.position_size != 0
-        strategy.close_all(comment = early ? "13:00" : "16:00", immediately = true)
-    if not na(dOpen)
-        for j = 0 to MARKS - 1
-            array.set(hist, slot * MARKS + j, array.get(today, j))
-        slot := (slot + 1) % LOOK
-        nDays += 1
-        if not na(prevClose)
-            array.push(rets, close / prevClose - 1)
-            if array.size(rets) > 60
-                array.shift(rets)
-        prevClose := close
-    dOpen := na
-
-plot(showBand and inSes ? ub : na, "Upper bound", color.new(#089981, 0), 1, plot.style_linebr)
-plot(showBand and inSes ? lb : na, "Lower bound", color.new(#f23645, 0), 1, plot.style_linebr)
-plot(showBand and inSes and not na(dOpen) ? vwap : na, "VWAP (09:30)", color.new(#F5F5F5, 30), 1, plot.style_linebr)
+         style = label.style_label_down, color = color.new(#3b82f6, 30), textcolor = color.white, size = size.small)
 `, { aliases: 'asia asian rejection vwap range nq es futures strategy' }),
 S('asiafail', 'Asian range fake breakout (daily 21 EMA bias)', 'Strategies', 'Fake breakout of the Asian range: rip beyond its high / low, first close back inside, daily 21 EMA bias, targets the 50%, far side and a range projection. 15-minute chart.', `
 // Asian range failed breakout — NQ / ES 15-minute (5-minute works too), New York time.
