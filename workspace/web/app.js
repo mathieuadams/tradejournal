@@ -346,20 +346,37 @@ function histMenu(anchor) {
   };
   popover(anchor, m);
 }
+// N trading days of history, fetched in pieces of about 6 months going back (each request stays short; the server keeps
+// finished months, so a second load is quick). Used by the History button and the Research panel.
+W.fetchHistory = async (sym, tf, days, rth, prog) => {
+  const CH = 126, out = [], want = days;
+  let before = null, got = 0;
+  for (let k = 0; got < want && k < 40; k++) {
+    const n = Math.min(CH, want - got);
+    if (prog) prog(`Loading ${sym} ${tf}: ${got} / ${want} days${rth ? ' (regular hours)' : ''}…`);
+    const j = await api(`bars?symbol=${encodeURIComponent(sym)}&tf=${encodeURIComponent(tf)}&days=${n}&feed=sip${rth ? '&rth=1' : ''}${before ? '&before=' + before : ''}`);
+    const bars = j.bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] })).filter(b => before == null || b.t < before);
+    if (!bars.length) break;
+    out.unshift(bars);
+    before = bars[0].t;
+    got += Math.max(1, new Set(bars.map(b => Math.floor((b.t - 4 * 3600) / 86400))).size);
+  }
+  return [].concat(...out);
+};
 W.loadHistory = async (years, rth) => {
   const tab = W.tab(), S = W.getSeries(tab.symbol, tab.tf), days = Math.round(years * 252);
   toast(`Loading ${years} year${years > 1 ? 's' : ''} of ${tab.symbol} ${tab.tf}${rth ? ' (regular hours)' : ''}…`);
   $('#histBtn').classList.add('on');
   try {
-    const j = await api(`bars?symbol=${encodeURIComponent(tab.symbol)}&tf=${encodeURIComponent(tab.tf)}&days=${days}&feed=sip${rth ? '&rth=1' : ''}`);
-    if (!j.bars.length) throw new Error('no bars');
-    S.bars = j.bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] })); S.more = false; S.study = true; S.liveMin = null;
+    const bars = await W.fetchHistory(tab.symbol, tab.tf, days, rth, m => { const el = $('#histBtn span'); if (el) el.textContent = m.replace(/^Loading [^:]+: /, '').replace(/ days.*/, ' d'); });
+    if (!bars.length) throw new Error('no bars');
+    S.bars = bars; S.more = false; S.study = true; S.liveMin = null;
     if (W.tab() === tab) { W.chart.bars = S.bars; W.chart.fit(Math.min(S.bars.length, 300)); }
     const t0 = performance.now(); recompute();
     const d = x => new Date(x * 1000).toISOString().slice(0, 10);
     toast(`${S.bars.length.toLocaleString()} bars, ${d(S.bars[0].t)} → ${d(S.bars[S.bars.length - 1].t)}${rth ? ' (regular hours)' : ''} · scripts ${Math.round(performance.now() - t0)} ms`);
   } catch (e) { toast('History: ' + e.message, 'err'); }
-  finally { $('#histBtn').classList.remove('on'); }
+  finally { $('#histBtn').classList.remove('on'); const el = $('#histBtn span'); if (el) el.textContent = 'History'; }
 };
 function tradeMenu(anchor) {
   const st = W.account ? W.account.settings : {};

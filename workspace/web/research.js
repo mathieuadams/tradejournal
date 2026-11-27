@@ -8,7 +8,7 @@ import { freezeDialog } from './frozen.js';
 import { editorState } from './editor.js';
 import { focusChat } from './chat.js';
 
-const R = { name: '', src: '', indicatorId: null, symbol: '', tf: '', days: 500, com: 0.005, slip: 1, split: 60, objective: 'tday', minTrades: 60, maxMonth: 35, regime: { vol: 'all', trend: 'any' }, tryRegime: false, forever: true,
+const R = { name: '', src: '', indicatorId: null, symbol: '', tf: '', days: 500, com: '', slip: '', rth: true, split: 60, objective: 'tday', minTrades: 60, maxMonth: 35, regime: { vol: 'all', trend: 'any' }, tryRegime: false, forever: true,
   sel: {}, study: null, opt: null, running: false, cancel: false, progress: '', cache: new Map(), frozen: null, freezeAt: null, skip: [], budget: 3000, tryDays: false };
 let root = null, pool = [];
 
@@ -39,7 +39,7 @@ export function mountResearch(el) {
   const body = h(`<div class="pbody rs">
     <div class="row"><label class="field" style="flex:2"><span>Script</span><select id="rsSrc">${sources.map(s => `<option value="${s.k}">${esc(s.n)}</option>`).join('')}</select></label></div>
     <div class="row"><label class="field"><span>Symbol</span><input id="rsSym" value="${esc(R.symbol)}"></label><label class="field"><span>Timeframe</span><input id="rsTf" value="${esc(R.tf)}"></label><label class="field"><span>Days</span><input id="rsDays" type="number" value="${R.days}"></label></div>
-    <div class="row"><label class="field"><span>Commission $ / share / side</span><input id="rsCom" type="number" step="0.001" value="${R.com}"></label><label class="field"><span>Slippage (ticks)</span><input id="rsSlip" type="number" step="1" value="${R.slip}"></label><label class="field"><span>Train %</span><input id="rsSplit" type="number" value="${R.split}"></label></div>
+    <div class="row"><label class="field"><span>Commission $ / share / side</span><input id="rsCom" type="number" step="0.001" value="${R.com}" placeholder="the script's"></label><label class="field"><span>Slippage (ticks)</span><input id="rsSlip" type="number" step="1" value="${R.slip}" placeholder="the script's"></label><label class="field"><span>Train %</span><input id="rsSplit" type="number" value="${R.split}"></label></div>
     <div class="row"><label class="field" style="flex-direction:row;align-items:center;gap:8px" title="Stocks / ETFs: only the 09:30-16:00 candles. Allows long 1-minute histories (up to about 8 years) for regular-session strategies."><input id="rsRth" type="checkbox" ${R.rth ? 'checked' : ''} style="width:auto"><span>Regular hours only (stocks, 09:30–16:00) — long 1-minute history</span></label></div>
     ${isStrat ? '' : `<div class="note warn-box">“${esc(R.name)}” is an indicator: it draws, it doesn't trade. A backtest needs <code>strategy()</code> with <code>strategy.entry</code> / <code>strategy.exit</code>. <button class="btn sm" data-a="convert">Ask Quant to convert it</button></div>`}
     <div class="row" style="margin:6px 0 4px"><button class="btn primary" data-a="study" ${isStrat && !R.running ? '' : 'disabled'}>▶ Run study</button><button class="btn" data-a="stop" ${R.running ? '' : 'hidden'}>Stop</button><span class="dim" id="rsProg" style="flex:2">${esc(R.progress)}</span></div>
@@ -58,7 +58,7 @@ export function mountResearch(el) {
   const bind = (id, k, f = v => v) => { body.querySelector(id).onchange = e => { R[k] = f(e.target.value); }; };
   bind('#rsSym', 'symbol', v => v.trim().toUpperCase()); bind('#rsTf', 'tf', v => W.normTfStrict(v) || R.tf); bind('#rsDays', 'days', v => Math.max(5, Math.min(2000, +v || 500)));
   { const x = body.querySelector('#rsRth'); if (x) x.onchange = () => { R.rth = x.checked; }; }
-  bind('#rsCom', 'com', v => Math.max(0, +v || 0)); bind('#rsSlip', 'slip', v => Math.max(0, +v || 0)); bind('#rsSplit', 'split', v => Math.max(10, Math.min(95, +v || 60)));
+  bind('#rsCom', 'com', v => v === '' ? '' : Math.max(0, +v || 0)); bind('#rsSlip', 'slip', v => v === '' ? '' : Math.max(0, +v || 0));   // empty: the script's own strategy() costs bind('#rsSplit', 'split', v => Math.max(10, Math.min(95, +v || 60)));
   body.onclick = e => {
     const fz0 = e.target.closest('[data-freeze]'); if (fz0) { freezeForm(+fz0.dataset.freeze); return; }
     const ap = e.target.closest('[data-apply]'); if (ap) { applyInputs(R.opt.rows[+ap.dataset.apply].values); return; }
@@ -81,7 +81,14 @@ async function loadBars() {
   const k = `${R.symbol}|${R.tf}|${R.days}|${R.src.length}|${R.rth ? 1 : 0}`;
   if (!R.cache.has(k)) {
     setProg(`Loading ${R.days} days of ${R.symbol} ${R.tf}…`);
-    const get = async (sym, tf) => (await api(`bars?symbol=${encodeURIComponent(sym)}&tf=${encodeURIComponent(tf)}&days=${R.days}&feed=sip${R.rth ? '&rth=1' : ''}`)).bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
+    const get = async (sym, tf) => {
+      const S = W.getSeries(sym, tf);                     // the chart's loaded history (History button), when it is long enough
+      if (S.study && S.bars.length && (S.bars[S.bars.length - 1].t - S.bars[0].t) / 86400 >= R.days * 1.35) {
+        const from = S.bars[S.bars.length - 1].t - R.days * 1.45 * 86400;
+        return S.bars.filter(b => b.t >= from);
+      }
+      return W.fetchHistory(sym, tf, R.days, R.rth, m => setProg(m));
+    };
     const bars = await get(R.symbol, R.tf);
     if (bars.length < 50) throw new Error(`Only ${bars.length} bars of ${R.symbol} ${R.tf}`);
     let sec = [], securities = null;
@@ -105,7 +112,7 @@ async function prime(ws, data) {
 function job(w, msg) { return new Promise(res => { const f = e => { if (e.data.type === 'result' && e.data.id === msg.id) { w.removeEventListener('message', f); res(e.data); } }; w.addEventListener('message', f); w.postMessage({ type: 'run', ...msg }); }); }
 function baseMsg(data) {
   const bars = data.bars, cut = bars[Math.floor(bars.length * R.split / 100)].t;
-  return { src: R.src, symbol: R.symbol, tf: R.tf, tfSec: null, splitTime: cut, strategy: { comType: 'cash_per_contract', comVal: R.com, slip: R.slip, skip: R.skip.length ? R.skip : undefined, regime: regimeOn(R.regime) ? R.regime : undefined } };
+  return { src: R.src, symbol: R.symbol, tf: R.tf, tfSec: null, splitTime: cut, strategy: { ...(R.com === '' ? {} : { comType: 'cash_per_contract', comVal: R.com }), ...(R.slip === '' ? {} : { slip: R.slip }), skip: R.skip.length ? R.skip : undefined, regime: regimeOn(R.regime) ? R.regime : undefined } };
 }
 
 // ------------------------------------------------------------------------------------------------ study
@@ -561,7 +568,7 @@ function freezeForm(row) {
   const values = { ...v0 }, skip = values.__skip !== undefined ? values.__skip : R.skip, regime = values.__regime || R.regime; delete values.__skip; delete values.__regime;
   const res = row == null ? st : R.opt.rows[row];
   const d = R.cache.values().next().value || {};
-  freezeDialog({ src: R.src, name: R.name, inputs: values, symbol: R.symbol, tf: R.tf, com: R.com, slip: R.slip, sec: d.sec, skip, regime: regimeOn(regime) ? regime : null,
+  freezeDialog({ src: R.src, name: R.name, inputs: values, symbol: R.symbol, tf: R.tf, com: R.com === '' ? null : R.com, slip: R.slip === '' ? null : R.slip, sec: d.sec, skip, regime: regimeOn(regime) ? regime : null,
     labels: Object.fromEntries(ins.map(i => [i.title, values[i.idx]])),
     research: { days: R.days, from: st.from, to: st.to, split: R.split, train: slim(res.train), test: slim(res.test) } });
 }
