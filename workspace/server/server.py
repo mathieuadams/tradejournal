@@ -250,14 +250,22 @@ class Handler(BaseHTTPRequestHandler):
             if not sym:
                 raise BadRequest("symbol is required")
             tf = q.get("tf", "1h")
-            if q.get("days"):        # research: N trading days of history (extended hours included for stocks)
+            stock = not market.is_crypto(sym) and sym not in market.FUTURES
+            rth = q.get("rth") == "1" and stock and market.tf_seconds(tf) < 86400
+            if q.get("days"):        # research: N trading days of history (extended hours included for stocks, unless rth)
                 days, sec = max(1, min(2000, int(q["days"]))), market.tf_seconds(tf)
-                per_day = (86400 if market.is_crypto(sym) else 82800 if sym in market.FUTURES else 57600) if sec < 86400 else 86400
-                limit = max(10, min(150000, -(-days * per_day // sec)))
+                per_day = (86400 if market.is_crypto(sym) else 82800 if sym in market.FUTURES else 23400 if rth else 57600) if sec < 86400 else 86400
+                # regular hours only: up to 800,000 bars (about 8 years of 1-minute); the extended hours come in and are dropped
+                limit = max(10, min(800000 if rth else 150000, -(-days * per_day // sec)))
             else:
                 limit = max(10, min(5000, int(q.get("limit", 1500))))
             before = int(q["before"]) if q.get("before") else None
-            bars, more = MKT.bars(sym, tf, limit, before, feed=q.get("feed"))
+            if rth:
+                want = limit
+                bars, more = MKT.bars(sym, tf, min(2400000, int(limit * 2.6) + 2000), before, feed=q.get("feed"), rth=True)
+                bars = [b for b in bars if market.rth_bar(b[0], market.tf_seconds(tf))][-want:]
+            else:
+                bars, more = MKT.bars(sym, tf, limit, before, feed=q.get("feed"))
             return self._json({"symbol": sym, "tf": q.get("tf", "1h"), "bars": bars, "more": more and len(bars) > 0, "name": market.NAMES.get(sym) or market.FUTURES.get(sym, sym)})
         if p == "quotes":
             syms = [s for s in (q.get("symbols") or "").upper().split(",") if s][:60]

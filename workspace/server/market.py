@@ -40,6 +40,13 @@ def parse_tf(tf):
     return n, m.group(2)
 
 
+def rth_bar(t, sec):
+    """True when the bar starting at t (seconds) is inside the regular session, 09:30-16:00 New York."""
+    d = datetime.fromtimestamp(t, NY)
+    m = d.hour * 60 + d.minute
+    return d.weekday() < 5 and 570 <= m and m + max(1, sec // 60) <= 960
+
+
 def tf_seconds(tf):
     n, u = parse_tf(tf)
     return n * UNIT_SEC[u]
@@ -208,7 +215,7 @@ class FakeMarket(Market):
             self.cur[sym] = bars[-1]
             self.rng[sym] = random.Random(_seed(sym) + 2)
 
-    def bars(self, sym, tf, limit=1500, before=None, feed=None):
+    def bars(self, sym, tf, limit=1500, before=None, feed=None, rth=False):
         n, unit = parse_tf(tf)
         if unit == "s":
             raise ValueError("Second timeframes are not available")
@@ -356,7 +363,51 @@ class AlpacaMarket(Market):
             return (f"{n}Month", None) if n in (1, 2, 3, 4, 6, 12) else ("1Month", (n, "M"))
         return "1Min", (n, unit)
 
-    def bars(self, sym, tf, limit=1500, before=None, feed=None):
+    def _min_months(self, sym, start, end, feed, rth=False):
+        """1-minute bars from start to end, fetched month by month; a month that is over is saved on disk
+        (DATA_DIR/min/SYM/feed/YYYY-MM.json) and read from there next time."""
+        import os
+        root = os.path.join(os.environ.get("DATA_DIR", "data"), "min", re.sub(r"[^A-Z0-9.]", "_", sym.upper()), feed)
+        os.makedirs(root, exist_ok=True)
+        y, m = start.year, start.month
+        now = datetime.now(timezone.utc)
+        rows = []
+        while (y, m) <= (end.year, end.month):
+            ym = f"{y:04d}-{m:02d}"
+            ny_ = (y + (m == 12), m % 12 + 1)
+            m0, m1 = datetime(y, m, 1, tzinfo=timezone.utc), datetime(ny_[0], ny_[1], 1, tzinfo=timezone.utc)
+            path = os.path.join(root, ym + ".json")
+            chunk = None
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        chunk = json.load(f)
+                except (OSError, ValueError):
+                    chunk = None
+            if chunk is None:
+                chunk, token, pages = [], None, 0
+                stop = min(m1, now - timedelta(minutes=16))
+                while True:
+                    d = self._get(f"/v2/stocks/{urllib.parse.quote(sym)}/bars", {"timeframe": "1Min", "start": m0.isoformat().replace("+00:00", "Z"),
+                                  "end": stop.isoformat().replace("+00:00", "Z"), "limit": 10000, "sort": "asc", "adjustment": "split", "feed": feed, "page_token": token})
+                    chunk += d.get("bars") or []
+                    token, pages = d.get("next_page_token"), pages + 1
+                    if not token or pages > 60:
+                        break
+                chunk = [[int(datetime.fromisoformat(b["t"].replace("Z", "+00:00")).timestamp()), b["o"], b["h"], b["l"], b["c"], b.get("v", 0)] for b in chunk]
+                if m1 <= now - timedelta(days=1):
+                    try:
+                        with open(path, "w") as f:
+                            json.dump(chunk, f, separators=(",", ":"))
+                    except OSError:
+                        pass
+            t0, t1 = start.timestamp(), end.timestamp()
+            # compact rows [t, o, h, l, c, v]; regular hours only when asked (keeps the memory small for years of minutes)
+            rows += [b for b in chunk if t0 <= b[0] < t1 and (not rth or rth_bar(b[0], 60))]
+            y, m = ny_
+        return rows
+
+    def bars(self, sym, tf, limit=1500, before=None, feed=None, rth=False):
         """feed='sip' (research): every exchange, complete pre / post market; on the free plan SIP stops 15 minutes ago."""
         n, unit = parse_tf(tf)
         tfa, agg = self._plan(n, unit)
@@ -371,7 +422,11 @@ class AlpacaMarket(Market):
         params = {"timeframe": tfa, "start": start.isoformat().replace("+00:00", "Z"), "end": (end - timedelta(seconds=1)).isoformat().replace("+00:00", "Z") if before else None,
                   "limit": 10000, "sort": "asc"}
         rows, token, pages = [], None, 0
-        while True:
+        compact = None
+        if not crypto and tfa == "1Min" and limit > 50000:
+            # long 1-minute history (research): whole months, kept on disk once they are complete
+            compact = self._min_months(sym, start, end, feed, rth)
+        while compact is None:
             if crypto:
                 d = self._get("/v1beta3/crypto/us/bars", {**params, "symbols": sym, "page_token": token})
                 chunk = (d.get("bars") or {}).get(sym) or []
@@ -380,10 +435,10 @@ class AlpacaMarket(Market):
                 chunk = d.get("bars") or []
             rows += chunk
             token, pages = d.get("next_page_token"), pages + 1
-            if not token or pages > 80:
+            if not token or pages > max(80, min(400, limit // 10000 + 10)):
                 break
-        out = []
-        for b in rows:
+        out = compact if compact is not None else []
+        for b in (rows if compact is None else []):
             t = int(datetime.fromisoformat(b["t"].replace("Z", "+00:00")).timestamp())
             out.append([t, b["o"], b["h"], b["l"], b["c"], b.get("v", 0)])
         if unit in ("D", "W", "M"):
@@ -401,7 +456,7 @@ class AlpacaMarket(Market):
                 o = out[-1]; o[2] = max(o[2], cur[2]); o[3] = min(o[3], cur[3]); o[4] = cur[4]
             elif out[-1][0] < k:
                 out.append([k, cur[1], cur[2], cur[3], cur[4], cur[5]])
-        return out[-limit:], len(rows) > 0
+        return out[-limit:], len(out) > 0
 
     def quotes(self, symbols):
         out = {}
@@ -672,10 +727,10 @@ class WithFutures(Market):
         fut = [{"symbol": s, "name": n, "type": "futures"} for s, n in FUTURES.items() if not qq or qq in s or qq in n.upper()]
         return (fut + self.base.search(q))[:30]
 
-    def bars(self, sym, tf, limit=1500, before=None, feed=None):
+    def bars(self, sym, tf, limit=1500, before=None, feed=None, rth=False):
         if self.is_fut(sym):
             return self.fut.bars(sym, tf, limit, before)
-        return self.base.bars(sym, tf, limit, before, feed=feed)
+        return self.base.bars(sym, tf, limit, before, feed=feed, **({"rth": True} if rth else {}))
 
     def quotes(self, symbols):
         out = self.base.quotes([s for s in symbols if not self.is_fut(s)]) if any(not self.is_fut(s) for s in symbols) else {}

@@ -34,6 +34,7 @@ function imShell(r) {
       <label class="f">Daily vol target${sel('target', [[0.01, '1%'], [0.015, '1.5%'], [0.02, '2% (paper)'], [0.03, '3%']])}</label>
       <label class="f">Max leverage${sel('maxLev', [[1, '1×'], [2, '2×'], [4, '4× (paper)']])}</label>
       <label class="f">Sides${sel('sides', [['both', 'Long and short'], ['long', 'Long only'], ['short', 'Short only']])}</label>
+      <label class="f">Fill at${sel('fill', [['close', 'The check minute’s close (paper backtest)'], ['next', 'The next minute’s open (paper live)']])}</label>
       <label class="f">Trade only if VIX opens ≥${num('vixMin', 1)}</label><label class="f">… and ≤ (0 = no limit)${num('vixMax', 1)}</label>
       <label class="f">Account ($)${num('acct', 1000)}</label><label class="f">Commission $ / share${num('comm', 0.0005)}</label><label class="f">Slippage $ / share${num('slip', 0.0005)}</label>
       <button class="btn primary" data-im="run">Run backtest</button></div>
@@ -101,7 +102,7 @@ function imCalHtml(r) {
 document.addEventListener('change', ev => {
   const t = ev.target; if (!t.dataset || !t.dataset.imv || !S.im.cfg) return;
   const k = t.dataset.imv;
-  S.im.cfg[k] = ['stop', 'sizing', 'sides'].includes(k) ? t.value : +t.value;
+  S.im.cfg[k] = ['stop', 'sizing', 'sides', 'fill'].includes(k) ? t.value : +t.value;
 });
 
 document.addEventListener('click', async ev => {

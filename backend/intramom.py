@@ -25,7 +25,7 @@ LOOK = 14
 MARKS = 26                                  # 15-minute marks: 9:45 … 16:00
 TEST_YEARS = 5
 DEFAULT = {"vm": 1.0, "stop": "vwap", "sizing": "dyn", "target": 0.02, "maxLev": 4.0, "step": 30, "vixMin": 0.0, "vixMax": 0.0,
-           "acct": 100000.0, "comm": 0.0035, "slip": 0.001, "sides": "both", "skip": []}
+           "acct": 100000.0, "comm": 0.0035, "slip": 0.001, "sides": "both", "skip": [], "fill": "close"}
 WD = ("Mon", "Tue", "Wed", "Thu", "Fri")
 HOURS = (10, 11, 12, 13, 14, 15)
 GRID = {"vm": [1.0, 1.25, 1.5, 2.0], "stop": ["opp", "band", "vwap"], "sizing": ["full", "dyn"], "step": [15, 30, 60], "vixMin": [0.0, 15.0, 20.0]}
@@ -43,6 +43,7 @@ def clean(cfg):
     c["acct"] = max(1000.0, float(c["acct"]))
     c["comm"], c["slip"] = max(0.0, float(c["comm"])), max(0.0, float(c["slip"]))
     c["sides"] = c["sides"] if c["sides"] in ("both", "long", "short") else "both"
+    c["fill"] = "next" if c.get("fill") == "next" else "close"     # the check minute's close, or the next minute's open
     # day / hour filter: "Wed|*" (the whole day), "*|10" (the 10:00-10:59 checks), "Mon|14" (one cell)
     ok = {f"{d}|*" for d in WD} | {f"*|{h}" for h in HOURS} | {f"{d}|{h}" for d in WD for h in HOURS}
     c["skip"] = sorted({str(x) for x in (c.get("skip") or []) if str(x) in ok})[:60]
@@ -122,14 +123,23 @@ def download(sub, prog=None, deadline=None):
     return True
 
 
+def early_close(day):
+    """NYSE 13:00 closes: the day after Thanksgiving, and Jul 3 / Dec 24 when they fall Monday-Thursday."""
+    d = date.fromisoformat(day)
+    return (d.month == 11 and d.weekday() == 4 and 23 <= d.day <= 29) or ((d.month, d.day) in ((7, 3), (12, 24)) and d.weekday() <= 3)
+
+
 def prep(have=None):
-    """The day table: [date, open, last close, [close at each 15-minute mark], [VWAP at each mark], last minute]."""
+    """The day table: [date, open, last close, [close at each 15-minute mark], [VWAP at each mark], last minute,
+    [open of the minute after each mark]]. Early-close days end at 13:00 (the after-hours prints after it are left out)."""
     have = have or (store.get_json(f"im/{SYM}/months") or {}).get("m") or {}
     days = []
     for ym in sorted(have):
         d = store.get_json(f"im/{SYM}/1m/{ym}") or {}
         for day in sorted(d):
             bars = sorted(d[day])
+            if early_close(day):
+                bars = [b for b in bars if b[0] < 210]
             if len(bars) < 60 or bars[0][0] > 5:
                 continue                                # a broken day
             by = {b[0]: b for b in bars}
@@ -145,7 +155,8 @@ def prep(have=None):
                     j = (k + 1) // 15 - 1
                     cl[j] = last[4]
                     vw[j] = pv / vv if vv else last[4]
-            days.append([day, bars[0][1], bars[-1][4], cl, vw, bars[-1][0]])
+            op = [by[15 * (j + 1)][1] if 15 * (j + 1) in by else None for j in range(MARKS)]
+            days.append([day, bars[0][1], bars[-1][4], cl, vw, bars[-1][0], op])
     store.put_json(f"im/{SYM}/prep", {"days": days, "at": iso(now_ny())})
     return days
 
@@ -186,7 +197,8 @@ def simulate(days, ctx, c, keep_trades=False):
     aum = c["acct"]
     daily, trades = [], []
     for i in range(LOOK, len(days)):
-        day, o, last, cl, vw, lastk = days[i]
+        day, o, last, cl, vw, lastk = days[i][:6]
+        op = days[i][6] if len(days[i]) > 6 else None
         prev, s, vx = days[i - 1][2], ctx["sig"][i], ctx["vix"][i]
         dn = WD[date.fromisoformat(day).weekday()] if date.fromisoformat(day).weekday() < 5 else "Sat"
         skip = c["skip"]
@@ -222,14 +234,15 @@ def simulate(days, ctx, c, keep_trades=False):
             if want and want != pos and skip and _skipped(skip, dn, (9 * 60 + 30 + 15 * (j + 1)) // 60):
                 want = 0
             if want != pos:
+                px = op[j] if c["fill"] == "next" and op and op[j] is not None else p     # the fill price
                 if pos:
-                    g = pos * sh * (p - entry) - sh * cost
+                    g = pos * sh * (px - entry) - sh * cost
                     pnl += g
                     if keep_trades:
-                        trades.append([day, et, _hm(j), pos, round(entry, 2), round(p, 2), sh, round(g, 2)])
+                        trades.append([day, et, _hm(j), pos, round(entry, 2), round(px, 2), sh, round(g, 2)])
                 if want:
                     pnl -= sh * cost
-                    entry, et = p, _hm(j)
+                    entry, et = px, _hm(j)
                     n += 1
                 pos = want
         if pos:                                         # out at the close
@@ -285,6 +298,8 @@ def _split(days):
 
 def load():
     days = (store.get_json(f"im/{SYM}/prep") or {}).get("days") or []
+    if days and len(days[0]) < 7:                       # built before the next-open prices / early closes: build again
+        days = prep()
     if len(days) < LOOK + 30:
         raise BadRequest("No SPY 1-minute data yet: press “Download SPY 1-minute + VIX”.")
     vix = (store.get_json("im/VIX") or {}).get("rows") or []

@@ -40,6 +40,7 @@ export function mountResearch(el) {
     <div class="row"><label class="field" style="flex:2"><span>Script</span><select id="rsSrc">${sources.map(s => `<option value="${s.k}">${esc(s.n)}</option>`).join('')}</select></label></div>
     <div class="row"><label class="field"><span>Symbol</span><input id="rsSym" value="${esc(R.symbol)}"></label><label class="field"><span>Timeframe</span><input id="rsTf" value="${esc(R.tf)}"></label><label class="field"><span>Days</span><input id="rsDays" type="number" value="${R.days}"></label></div>
     <div class="row"><label class="field"><span>Commission $ / share / side</span><input id="rsCom" type="number" step="0.001" value="${R.com}"></label><label class="field"><span>Slippage (ticks)</span><input id="rsSlip" type="number" step="1" value="${R.slip}"></label><label class="field"><span>Train %</span><input id="rsSplit" type="number" value="${R.split}"></label></div>
+    <div class="row"><label class="field" style="flex-direction:row;align-items:center;gap:8px" title="Stocks / ETFs: only the 09:30-16:00 candles. Allows long 1-minute histories (up to about 8 years) for regular-session strategies."><input id="rsRth" type="checkbox" ${R.rth ? 'checked' : ''} style="width:auto"><span>Regular hours only (stocks, 09:30–16:00) — long 1-minute history</span></label></div>
     ${isStrat ? '' : `<div class="note warn-box">“${esc(R.name)}” is an indicator: it draws, it doesn't trade. A backtest needs <code>strategy()</code> with <code>strategy.entry</code> / <code>strategy.exit</code>. <button class="btn sm" data-a="convert">Ask Quant to convert it</button></div>`}
     <div class="row" style="margin:6px 0 4px"><button class="btn primary" data-a="study" ${isStrat && !R.running ? '' : 'disabled'}>▶ Run study</button><button class="btn" data-a="stop" ${R.running ? '' : 'hidden'}>Stop</button><span class="dim" id="rsProg" style="flex:2">${esc(R.progress)}</span></div>
     <div id="rsStudy"></div><div id="rsStg"></div><div id="rsOpt"></div>
@@ -56,6 +57,7 @@ export function mountResearch(el) {
   };
   const bind = (id, k, f = v => v) => { body.querySelector(id).onchange = e => { R[k] = f(e.target.value); }; };
   bind('#rsSym', 'symbol', v => v.trim().toUpperCase()); bind('#rsTf', 'tf', v => W.normTfStrict(v) || R.tf); bind('#rsDays', 'days', v => Math.max(5, Math.min(2000, +v || 500)));
+  { const x = body.querySelector('#rsRth'); if (x) x.onchange = () => { R.rth = x.checked; }; }
   bind('#rsCom', 'com', v => Math.max(0, +v || 0)); bind('#rsSlip', 'slip', v => Math.max(0, +v || 0)); bind('#rsSplit', 'split', v => Math.max(10, Math.min(95, +v || 60)));
   body.onclick = e => {
     const fz0 = e.target.closest('[data-freeze]'); if (fz0) { freezeForm(+fz0.dataset.freeze); return; }
@@ -76,10 +78,10 @@ const setProg = t => { R.progress = t; const p = root && root.querySelector('#rs
 
 // ------------------------------------------------------------------------------------------------ data & workers
 async function loadBars() {
-  const k = `${R.symbol}|${R.tf}|${R.days}|${R.src.length}`;
+  const k = `${R.symbol}|${R.tf}|${R.days}|${R.src.length}|${R.rth ? 1 : 0}`;
   if (!R.cache.has(k)) {
     setProg(`Loading ${R.days} days of ${R.symbol} ${R.tf}…`);
-    const get = async (sym, tf) => (await api(`bars?symbol=${encodeURIComponent(sym)}&tf=${encodeURIComponent(tf)}&days=${R.days}&feed=sip`)).bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
+    const get = async (sym, tf) => (await api(`bars?symbol=${encodeURIComponent(sym)}&tf=${encodeURIComponent(tf)}&days=${R.days}&feed=sip${R.rth ? '&rth=1' : ''}`)).bars.map(b => ({ t: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
     const bars = await get(R.symbol, R.tf);
     if (bars.length < 50) throw new Error(`Only ${bars.length} bars of ${R.symbol} ${R.tf}`);
     let sec = [], securities = null;

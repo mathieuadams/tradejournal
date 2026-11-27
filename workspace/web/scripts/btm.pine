@@ -5,10 +5,12 @@
 //   Upper bound = max(open, yesterday's close) x (1 + VM x sigma), lower = min(open, yesterday's close) x (1 - VM x sigma).
 //   Every 30 minutes (10:00, 10:30 ... 15:30): long above the upper bound, short below the lower one.
 //   Stop at the same checks: the current bound or the session VWAP (paper final), the current bound, or the opposite bound.
+//   Orders fill at the NEXT candle's open (on a 1-minute chart: the next minute's open, the paper's live execution);
+//   the end-of-day exit fills at the session's last close (16:00, or 13:00 on NYSE early-close days).
 //   Everything is closed at 16:00. Size: volatility target (account x min(4, 2% / sigma of the last 14 daily returns));
 //   on futures always the fixed quantity. The journal's VIX filter is not included.
 strategy("Beat the Market (intraday momentum)", "BTM", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 1,
-     process_orders_on_close = true, commission_type = strategy.commission.cash_per_contract, commission_value = 0.0045)
+     process_orders_on_close = false, commission_type = strategy.commission.cash_per_contract, commission_value = 0.0045)
 
 vm       = input.float(1.25, "Noise area x (VM)", minval = 0.25, maxval = 4, step = 0.25)
 stopMode = input.string("Current band or VWAP (paper final)", "Stop", options = ["Current band or VWAP (paper final)", "Current band", "Opposite band (then reverse)"])
@@ -18,6 +20,7 @@ target   = input.float(2.0, "Daily vol target (%)", minval = 0.2, maxval = 10, s
 maxLev   = input.float(4, "Max leverage", minval = 0.5, maxval = 8, step = 0.5)
 fixedQty = input.int(1, "Fixed quantity (contracts / shares)", minval = 1)
 sides    = input.string("Long and short", "Sides", options = ["Long and short", "Long only", "Short only"])
+earlyOn  = input.bool(true, "NYSE early-close days end at 13:00 (day after Thanksgiving, Jul 3, Dec 24)")
 showBand = input.bool(true, "Show the noise area and VWAP")
 
 LOOK = 14
@@ -28,7 +31,13 @@ every = str.tonumber(stepS) / 15
 sm = hour * 60 + minute - 570
 em = hour(time_close) * 60 + minute(time_close) - 570
 newDay = sm == 0
-inSes = sm >= 0 and em <= 390
+// NYSE 13:00 closes: the day after Thanksgiving, and Jul 3 / Dec 24 when they fall Monday-Thursday
+wd = dayofweek(time, "America/New_York")
+mo = month(time, "America/New_York")
+dm = dayofmonth(time, "America/New_York")
+early = earlyOn and ((mo == 11 and wd == dayofweek.friday and dm >= 23 and dm <= 29) or ((mo == 7 and dm == 3) or (mo == 12 and dm == 24)) and wd >= dayofweek.monday and wd <= dayofweek.thursday)
+endM = early ? 210 : 390                    // the session's last minute (from 09:30)
+inSes = sm >= 0 and em <= endM
 
 var hist = array.new_float(LOOK * MARKS, na)   // |close at mark / open - 1| of the last 14 sessions (ring of sessions)
 var int slot = 0
@@ -79,7 +88,15 @@ vwap = vv > 0 ? pv / vv : close
 // the bounds for the mark this candle belongs to
 jNow = inSes ? math.ceil(em / 15) - 1 : -1
 ready = nDays >= LOOK and not na(prevClose) and not na(dOpen) and jNow >= 0
-sNow = ready ? sigmaAt(jNow) : na
+// sigma only changes with the mark: computed once per mark, not on every candle
+var float sNow = na
+var int jMemo = -9
+if not ready
+    sNow := na
+    jMemo := -9
+else if jNow != jMemo
+    sNow := sigmaAt(jNow)
+    jMemo := jNow
 ub = ready ? math.max(dOpen, prevClose) * (1 + vm * sNow) : na
 lb = ready ? math.min(dOpen, prevClose) * (1 - vm * sNow) : na
 
@@ -88,7 +105,7 @@ if atMark and not na(dOpen)
     array.set(today, em / 15 - 1, math.abs(close / dOpen - 1))
 
 // the checks (10:00, 10:30 ... 15:30 by default)
-if atMark and ready and em < 390 and ((jNow + 1) % every == 0) and not na(sNow) and sh > 0
+if atMark and ready and em < endM and ((jNow + 1) % every == 0) and not na(sNow) and sh > 0
     p = close
     pos = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
     int want = 0
@@ -110,10 +127,10 @@ if atMark and ready and em < 390 and ((jNow + 1) % every == 0) and not na(sNow) 
         else
             strategy.entry(want > 0 ? "Long" : "Short", want > 0 ? strategy.long : strategy.short, qty = sh)
 
-// 16:00: out, and the session goes into the history
-if inSes and em == 390
+// the session's close (16:00, 13:00 on early-close days): out at that close, and the session goes into the history
+if inSes and em == endM
     if strategy.position_size != 0
-        strategy.close_all(comment = "16:00")
+        strategy.close_all(comment = early ? "13:00" : "16:00", immediately = true)
     if not na(dOpen)
         for j = 0 to MARKS - 1
             array.set(hist, slot * MARKS + j, array.get(today, j))
