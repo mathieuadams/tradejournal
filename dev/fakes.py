@@ -365,12 +365,13 @@ def fake_uw_get(token, path, params=None, timeout=60):
         return {"data": [{"expires": d.isoformat() + "T00:00:00.000Z", "open_interest": 100000 - i * 9000, "volume": 50000, "chains": 400} for i, d in enumerate(days)]}
     if path.endswith("/iv-rank"):
         ser = sorted(_ivc_series(sym.replace(".", "")).items())
-        start = str(params.get("timespan") or "")
-        lo = start if len(start) == 10 else ser[-252][0]
+        end = str(params.get("date") or ser[-1][0])[:10]
+        ts = str(params.get("timespan") or "1m")
+        lo = ts if len(ts) == 10 else (datetime.strptime(end, "%Y-%m-%d") - timedelta(days={"1y": 365, "6m": 182, "3m": 91, "1m": 30, "1w": 7}.get(ts, 30))).strftime("%Y-%m-%d")
         out = []
         for i, (d, (c, v)) in enumerate(ser):
             w = [x[1][1] for x in ser[max(0, i - 251):i + 1]]
-            if d >= max(lo, "2022-01-01"):
+            if max(lo, "2022-01-01") <= d <= end:
                 out.append({"date": d, "close": str(c), "iv_rank_1y": f"{(v - min(w)) / ((max(w) - min(w)) or 1):.4f}", "volatility": str(v)})
         return {"data": out}
     if UW_BS and path.startswith("option-contract/") and path.endswith("/historic"):

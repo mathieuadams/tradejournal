@@ -4,7 +4,8 @@ credit. Data: Unusual Whales (the user's token; history from 2022).
 Universe: the current S&P 500 (FMP sp500-constituent), saved when the IV history is downloaded.
 
 Data:
-  - IV rank: GET /api/stock/{T}/iv-rank?timespan=<start date> (date, close, iv_rank_1y [, volatility]) per stock, kept
+  - IV rank: GET /api/stock/{T}/iv-rank?date=<end>&timespan=1y (date, close, iv_rank_1y, volatility), a year per call
+    walking back to 2022, per stock, kept
     in store ivc/uw/<T> (job "ivcdata", ~500 calls).
   - The puts, fetched by the backtest when it needs them (cached, so a second run is fast): the contracts listed on the
     entry day (GET /api/stock/{T}/option-contracts?date=…&option_type=put, via optreal.chain_on), then each candidate
@@ -18,6 +19,11 @@ Rules (per stock, one put at a time on a stock):
   - Exit, checked on each daily row of the contract: the NBBO ask (no NBBO: last + slip) <= (1 - take) x the credit →
     bought back there; loss >= stop x the credit (0 = off); `manage` days to expiry (0 = hold); else it expires (strike
     - the stock's close, or 0). A day the contract has no row is skipped.
+  - Roll (option): from `rollDte` days to expiry, when the put is tested (its delta >= rollDelta), buy it back and sell
+    a put of a later expiry (nearest `dte`, within dteMin-dteMax), only for a net credit >= rollMin a share: rollMode
+    "out" = in time at the same strike, "down" = also down to a lower strike, "both" = the same strike or lower (the
+    lowest that gives the credit); at most rollMax rolls. No
+    credit roll: closed. Take profit / stop then measured on the net credit received over all the legs.
   - Commission `comm` a contract each side (none when it expires worthless).
 Portfolio: at most `maxPos` puts open; the day's candidates taken in IV-rank order while there's room. Each position:
 `n` contracts = (equity x alloc / maxPos) / collateral (cash-secured: strike x 100; margin: Reg T ≈ max(20% of the price
@@ -33,7 +39,7 @@ from util import BadRequest, iso, now_ny
 START = "2022-01-01"
 DEFAULT = {"rank": 30.0, "dte": 45, "dteMin": 30, "dteMax": 60, "delta": 0.20, "take": 0.50, "manage": 21, "stop": 0.0,
            "maxPos": 20, "minPx": 0.20, "slip": 0.03, "comm": 0.65, "acct": 500000.0, "alloc": 1.0, "coll": "cash", "split": 0.6,
-           "from": "2022-03-01", "fill": "nbbo"}
+           "from": "2022-03-01", "fill": "nbbo", "roll": 0, "rollDte": 21, "rollDelta": 0.40, "rollMin": 0.10, "rollMax": 3, "rollMode": "both"}
 RATES = {2021: .0005, 2022: .0202, 2023: .0507, 2024: .0497, 2025: .0420, 2026: .0370, 2027: .0350}
 
 
@@ -41,15 +47,17 @@ def clean(cfg):
     c = {**DEFAULT, **{k: v for k, v in (cfg or {}).items() if k in DEFAULT}}
     for k, lo, hi in (("rank", 0, 100), ("dte", 7, 120), ("dteMin", 1, 120), ("dteMax", 7, 180), ("delta", 0.03, 0.5),
                       ("take", 0.1, 0.95), ("manage", 0, 60), ("stop", 0, 10), ("maxPos", 1, 200), ("minPx", 0.01, 5), ("slip", 0, 1),
-                      ("comm", 0, 5), ("acct", 1000, 1e9), ("alloc", 0.05, 5), ("split", 0.3, 0.9)):
+                      ("comm", 0, 5), ("acct", 1000, 1e9), ("alloc", 0.05, 5), ("split", 0.3, 0.9),
+                      ("roll", 0, 1), ("rollDte", 1, 60), ("rollDelta", 0.1, 0.9), ("rollMin", 0, 5), ("rollMax", 1, 10)):
         try:
             c[k] = max(lo, min(hi, float(c[k])))
         except (TypeError, ValueError):
             c[k] = DEFAULT[k]
-    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos"):
+    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos", "roll", "rollDte", "rollMax"):
         c[k] = int(c[k])
     c["coll"] = "margin" if c["coll"] == "margin" else "cash"
     c["fill"] = "mid" if c["fill"] == "mid" else "nbbo"
+    c["rollMode"] = c["rollMode"] if c["rollMode"] in ("out", "down", "both") else "both"
     f = str(c["from"])[:10]
     c["from"] = f if len(f) == 10 and f >= START else DEFAULT["from"]
     return c
@@ -139,18 +147,21 @@ def iv_series(tok, sym):
             rk, c = _n(x.get("iv_rank_1y")), _n(x.get("close"))
             if d and rk is not None and c:
                 rows[d] = [d, c, rk, _n(x.get("volatility") or x.get("iv") or x.get("implied_volatility"))]
-    take(uwhales._get_retry(tok, f"stock/{uw_sym(sym)}/iv-rank", {"timespan": START}))
-    if not rows or min(rows) > "2022-03-01":            # the date may mean "a year up to": walk back a year at a time
-        d = date.fromisoformat(min(rows)) if rows else now_ny().date()
-        for _ in range(6):
+    d = now_ny().date()                                 # a year up to `date` per call, walking back to 2022
+    miss = 0
+    for _ in range(80):
+        n0 = len(rows)
+        try:
+            take(uwhales._get_retry(tok, f"stock/{uw_sym(sym)}/iv-rank", {"date": d.isoformat(), "timespan": "1y"}))
+        except BadRequest:                              # not a trading day / nothing that day: a day earlier
+            miss += 1
+            if miss > 4:
+                break
             d -= timedelta(days=1)
-            if d.isoformat() < START:
-                break
-            n0 = len(rows)
-            take(uwhales._get_retry(tok, f"stock/{uw_sym(sym)}/iv-rank", {"timespan": d.isoformat()}))
-            if len(rows) == n0 or min(rows) >= d.isoformat():
-                break
-            d = date.fromisoformat(min(rows))
+            continue
+        if len(rows) == n0 or min(rows) <= START:
+            break
+        d = date.fromisoformat(min(rows)) - timedelta(days=1)
     out = sorted(rows.values())
     if out and max(r[2] for r in out) <= 1.5:          # a 0-1 scale
         for r in out:
@@ -264,9 +275,48 @@ def _coll(c, S, K, credit):
     return (max(0.2 * S - max(0.0, S - K), 0.1 * K) + credit) * 100
 
 
+def _tested(S, K, T, row, day, c):
+    """The put is "tested": its delta (its own IV that day) >= rollDelta; without an IV, the price within 2% of the strike."""
+    v = row.get("implied_volatility") if row else None
+    if v:
+        return abs(put_delta(S, K, T, v, rate(day))) >= c["rollDelta"]
+    return S <= K * 1.02
+
+
+def _roll(tok, sym, day, S, pos, cost, c):
+    """Roll to a later expiry (nearest `dte` within dteMin-dteMax) for a net credit of at least rollMin a share. rollMode
+    "out": the same strike; "down": a lower strike (the lowest of the 4 listed below that gives the credit); "both":
+    the same strike or one of the 3 below (the lowest that gives the credit).
+    (occ, expiry, strike, credit, IV, history) or None."""
+    d0 = date.fromisoformat(day)
+    ch = [x for x in _chain(tok, sym, day, c["dte"]) if x[1] > pos["exp"] and x[2] <= pos["K"]]
+    exps = sorted({x[1] for x in ch if c["dteMin"] <= (date.fromisoformat(x[1]) - d0).days <= c["dteMax"]},
+                  key=lambda e: abs((date.fromisoformat(e) - d0).days - c["dte"]))
+    if not exps:
+        return None
+    ex = exps[0]
+    ks = sorted((x for x in ch if x[1] == ex), key=lambda x: -x[2])
+    if c["rollMode"] == "out":                          # in time only: the same strike
+        ks = [x for x in ks if x[2] == pos["K"]]
+    elif c["rollMode"] == "down":                       # down in price: a lower strike (the 4 listed below)
+        ks = [x for x in ks if x[2] < pos["K"]][:4]
+    else:                                               # either: the same strike or one of the 3 below
+        ks = ks[:4]
+    for occ, _, k, _ in sorted(ks, key=lambda x: x[2]):
+        h = _hist(tok, occ)
+        row = h.get(day)
+        if not row:
+            continue
+        bid = _px(row, "bid", c)
+        if bid is not None and bid - cost >= c["rollMin"]:
+            return occ, ex, k, round(bid, 3), row.get("implied_volatility"), h
+    return None
+
+
 def sim_symbol(tok, sym, rows, c, cal):
-    """Candidate trades of one stock: entry / exit, the P&L of one contract and its daily marks (one contract's value
-    to buy back, mid) from the day after entry, indexed on the calendar `cal` ({day: i})."""
+    """Candidate trades of one stock: entry / exit (rolls included), the P&L of one contract and its daily marks
+    (indexed on the calendar `cal` ({day: i}), from the day after entry) in the form the portfolio uses: first credit -
+    mark = the position's value so far (net credit received - the open put's mid)."""
     out, pos = [], None
     close = {r[0]: r[1] for r in rows}
     for day, S, rk, iv in rows:
@@ -281,35 +331,46 @@ def sim_symbol(tok, sym, rows, c, cal):
                 why, px = "expired", max(0.0, pos["K"] - (close.get(pos["exp"]) or S))
             elif row:
                 ask = _px(row, "ask", c)
-                if ask is not None and ask <= pos["credit"] * (1 - c["take"]):
-                    why, px = "take", ask
-                elif ask is not None and c["stop"] > 0 and ask >= pos["credit"] * (1 + c["stop"]):
-                    why, px = "stop", ask
-                elif ask is not None and c["manage"] > 0 and dte <= c["manage"]:
-                    why, px = "manage", ask
                 m = _mid(row)
                 if m is not None:
                     pos["last"] = m
+                if ask is not None and ask <= pos["net"] * (1 - c["take"]):
+                    why, px = "take", ask
+                elif ask is not None and c["stop"] > 0 and ask >= pos["net"] * (1 + c["stop"]):
+                    why, px = "stop", ask
+                elif ask is not None and c["roll"] and dte <= c["rollDte"] and _tested(S, pos["K"], dte / 365, row, day, c):
+                    r = _roll(tok, sym, day, S, pos, ask, c) if len(pos["legs"]) <= c["rollMax"] else None
+                    if r:
+                        occ, ex, k, bid, v, h = r
+                        pos["legs"].append({"day": day, "occ": occ, "exp": ex, "K": k, "credit": bid, "debit": round(ask, 3)})
+                        pos.update(occ=occ, exp=ex, K=k, h=h, net=round(pos["net"] - ask + bid, 3), fees=pos["fees"] + 2 * c["comm"],
+                                   last=(_mid(h.get(day) or {}) or bid))
+                    else:
+                        why, px = ("tested: no credit roll" if len(pos["legs"]) <= c["rollMax"] else "tested: max rolls"), ask
+                elif ask is not None and c["manage"] > 0 and dte <= c["manage"]:
+                    why, px = "manage", ask
             while len(pos["marks"]) < ci - pos["i"] - 1:
                 pos["marks"].append(pos["marks"][-1] if pos["marks"] else pos["credit"])
+            adj = pos["credit"] - pos["net"]
             if why:
-                fee = c["comm"] * (2 if (why != "expired" or px > 0) else 1)
-                pnl = (pos["credit"] - px) * 100 - fee
-                pos["marks"].append(px)
-                out.append({"sym": sym, "in": pos["in"], "out": day, "exp": pos["exp"], "K": pos["K"], "S": pos["S"], "occ": pos["occ"],
-                            "credit": pos["credit"], "exitPx": round(px, 2), "why": why, "pnl": round(pnl, 2), "rank": pos["rank"],
-                            "iv0": pos["iv0"], "delta": pos["delta"], "coll": pos["coll"], "i": pos["i"], "j": ci,
-                            "marks": [round(x, 3) for x in pos["marks"]]})
+                fee = pos["fees"] + (c["comm"] if (why != "expired" or px > 0) else 0.0)
+                pnl = (pos["net"] - px) * 100 - fee
+                pos["marks"].append(px + adj)
+                out.append({"sym": sym, "in": pos["in"], "out": day, "exp": pos["legs"][0]["exp"], "K": pos["legs"][0]["K"], "S": pos["S"],
+                            "occ": pos["legs"][0]["occ"], "credit": pos["credit"], "net": pos["net"], "exitPx": round(px, 2), "why": why,
+                            "pnl": round(pnl, 2), "rank": pos["rank"], "iv0": pos["iv0"], "delta": pos["delta"], "coll": pos["coll"],
+                            "rolls": len(pos["legs"]) - 1, "legs": pos["legs"], "i": pos["i"], "j": ci, "marks": [round(x, 3) for x in pos["marks"]]})
                 pos = None
             else:
-                pos["marks"].append(pos["last"])
+                pos["marks"].append(pos["last"] + adj)
                 continue
         if pos is None and rk >= c["rank"]:
             e = _entry(tok, sym, day, S, iv, c)
             if e:
                 occ, ex, k, credit, dl, v, h = e
-                pos = {"occ": occ, "in": day, "exp": ex, "K": k, "S": S, "credit": credit, "iv0": round(v, 4), "rank": round(rk, 1),
-                       "delta": dl, "coll": round(_coll(c, S, k, credit), 2), "i": ci, "marks": [], "last": credit, "h": h}
+                pos = {"occ": occ, "in": day, "exp": ex, "K": k, "S": S, "credit": credit, "net": credit, "fees": c["comm"], "iv0": round(v, 4),
+                       "rank": round(rk, 1), "delta": dl, "coll": round(_coll(c, S, k, credit), 2), "i": ci, "marks": [], "last": credit, "h": h,
+                       "legs": [{"day": day, "occ": occ, "exp": ex, "K": k, "credit": credit, "debit": None}]}
     return out
 
 
@@ -476,7 +537,7 @@ def grid(base, wide=False):
     if wide:
         g = {"rank": [30, 50, 70], "take": [0.5, 0.75], "manage": [0, 21], "stop": [0, 2], "delta": [0.15, 0.2, 0.25, 0.3], "dte": [30, 45]}
     else:
-        g = {"rank": sorted({30, 40, 50, 60, 70, base["rank"]}), "take": [0.25, 0.5, 0.75], "manage": [0, 14, 21], "stop": [0, 1, 2]}
+        g = {"rank": sorted({30, 40, 50, 60, 70, base["rank"]}), "take": [0.25, 0.5, 0.75], "manage": [0, 14, 21], "stop": [0, 1, 2], "roll": [0, 1]}
     out = []
     for v in itertools.product(*g.values()):
         p = dict(zip(g, v))

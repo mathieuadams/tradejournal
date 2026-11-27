@@ -928,6 +928,31 @@ def test_ivcrush():
             held.discard(sym); n -= 1
     assert res["curve"][0][1] == 500000.0
     F.UW_BS = True
+    try:                                                 # rolling tested puts for a credit
+        st, r = call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21}})
+        assert st == 200, r
+        st, vr = call("GET", "/ivcrush")
+    finally:
+        F.UW_BS = False
+    rr = vr["res"]["trades"]
+    rolled = [t for t in rr if t["rolls"]]
+    assert rolled and all(t["rolls"] <= 3 for t in rr), [t["why"] for t in rr]
+    for t in rolled:
+        legs = t["legs"]
+        assert len(legs) == t["rolls"] + 1
+        for a, b in zip(legs, legs[1:]):
+            assert b["exp"] > a["exp"] and b["K"] <= a["K"] and b["credit"] - b["debit"] >= 0.10 - 1e-9 and b["day"] < a["exp"]
+        assert abs(t["net"] - (legs[0]["credit"] + sum(l["credit"] - l["debit"] for l in legs[1:]))) < 0.01
+    F.UW_BS = True
+    try:
+        for mode, ok in (("out", lambda a, b: b["K"] == a["K"]), ("down", lambda a, b: b["K"] < a["K"])):
+            call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21, "rollMode": mode}})
+            st, vm = call("GET", "/ivcrush")
+            legs = [(a, b) for t in vm["res"]["trades"] for a, b in zip(t["legs"], t["legs"][1:])]
+            assert legs and all(ok(a, b) for a, b in legs), mode
+    finally:
+        F.UW_BS = False
+    F.UW_BS = True
     try:
         st, r = call("POST", "/ivcrush/opt", {"cfg": {"from": "2022-06-01", "maxPos": 3}})
         assert st == 200, r
@@ -935,11 +960,11 @@ def test_ivcrush():
     finally:
         F.UW_BS = False
     o = v["opt"]
-    assert v["job"]["status"] == "done" and not o["running"] and o["total"] == 135 and len(o["top"]) == 25, v["job"]
+    assert v["job"]["status"] == "done" and not o["running"] and o["total"] == 270 and len(o["top"]) == 25, v["job"]
     sh = [x["train"].get("sharpe") or -99 for x in o["top"]]
     assert sh == sorted(sh, reverse=True) and o["top"][0]["test"]["n"] > 0
     full = store.get_json(f"ivc/opt/{SUB}")["res"]
-    same = next(x for x in full if x["p"] == {"rank": 30, "take": 0.5, "manage": 21, "stop": 0})
+    same = next(x for x in full if x["p"] == {"rank": 30, "take": 0.5, "manage": 21, "stop": 0, "roll": 0})
     assert same["all"]["n"] == res["all"]["n"], (same["all"], res["all"]["n"])    # the run's own setting: the same trades
 
 
