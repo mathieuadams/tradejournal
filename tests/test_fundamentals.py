@@ -916,7 +916,7 @@ def test_ivcrush():
     assert len(rows) > 500 and 0 <= rows[100][2] <= 100 and max(r[2] for r in rows) > 90
     F.UW_BS = True
     try:
-        st, r = call("POST", "/ivcrush", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30}})
+        st, r = call("POST", "/ivcrush", {"cfg": {"minAge": 0, "minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30}})
         assert st == 200, r
         st, v = call("GET", "/ivcrush")
     finally:
@@ -942,7 +942,7 @@ def test_ivcrush():
     assert res["curve"][0][1] == 500000.0
     F.UW_BS = True
     try:                                                 # rolling tested puts for a credit
-        st, r = call("POST", "/ivcrush", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21}})
+        st, r = call("POST", "/ivcrush", {"cfg": {"minAge": 0, "minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21}})
         assert st == 200, r
         st, vr = call("GET", "/ivcrush")
     finally:
@@ -959,7 +959,7 @@ def test_ivcrush():
         assert t["K2"] == legs[-1]["K"] and t["exp2"] == legs[-1]["exp"] and abs(t["be"] - (t["K2"] - t["net"])) < 0.011
     F.UW_BS = True
     try:                                                 # positions still open on the last day (IV rank >= 0: always in)
-        call("POST", "/ivcrush", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 0, "roll": 1, "rollDelta": 0.3}})
+        call("POST", "/ivcrush", {"cfg": {"minAge": 0, "minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 0, "roll": 1, "rollDelta": 0.3}})
         st, vo = call("GET", "/ivcrush")
     finally:
         F.UW_BS = False
@@ -970,7 +970,7 @@ def test_ivcrush():
     F.UW_BS = True
     try:
         for mode, ok in (("out", lambda a, b: b["K"] == a["K"]), ("down", lambda a, b: b["K"] < a["K"])):
-            call("POST", "/ivcrush", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21, "rollMode": mode}})
+            call("POST", "/ivcrush", {"cfg": {"minAge": 0, "minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21, "rollMode": mode}})
             st, vm = call("GET", "/ivcrush")
             legs = [(a, b) for t in vm["res"]["trades"] for a, b in zip(t["legs"], t["legs"][1:])]
             assert legs and all(ok(a, b) for a, b in legs), mode
@@ -979,7 +979,7 @@ def test_ivcrush():
     F.UW_BS = True                                       # the optimizer: rounds until stopped (here: 2 rounds)
     IV.ROUND = 12
     try:
-        st, r = call("POST", "/ivcrush/opt", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3}, "restart": True, "rounds": 2})
+        st, r = call("POST", "/ivcrush/opt", {"cfg": {"minAge": 0, "minVol": 0, "from": "2022-06-01", "maxPos": 3}, "restart": True, "rounds": 2})
         assert st == 200, r
         st, v = call("GET", "/ivcrush")
         o = v["opt"]
@@ -992,7 +992,7 @@ def test_ivcrush():
         call("POST", "/ivcrush", {"cfg": {**top["p"], "from": "2022-06-01", "maxPos": top["p"]["maxPos"], "minVol": top["p"]["minVol"]}})
         st, vb = call("GET", "/ivcrush")                 # the board's setting = the same closed trades as the backtest
         assert vb["res"]["all"]["n"] == top["all"]["n"], (vb["res"]["all"]["n"], top["all"])
-        st, r = call("POST", "/ivcrush/opt", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3}, "rounds": 1})     # continues
+        st, r = call("POST", "/ivcrush/opt", {"cfg": {"minAge": 0, "minVol": 0, "from": "2022-06-01", "maxPos": 3}, "rounds": 1})     # continues
         st, v = call("GET", "/ivcrush")
         assert v["opt"]["tried"] == 36 and v["opt"]["round"] == 3
         call("POST", "/ivcrush/opt/stop")
@@ -1007,7 +1007,7 @@ def test_ivcrush():
     try:
         ns = {}
         for mv in (0.03, 0.06):
-            call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "minVol": mv, "volLen": 20}})
+            call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "minVol": mv, "volLen": 20, "minAge": 0}})
             st, vv = call("GET", "/ivcrush")
             ns[mv] = vv["res"]["trades"]
             for t in ns[mv]:
@@ -1016,7 +1016,7 @@ def test_ivcrush():
                 assert len(prev) == 20 and sum(prev) / 20 >= mv * 1e6, (t["sym"], t["in"])
         assert len(ns[0.06]) < len(ns[0.03]) <= res["all"]["n"], (len(ns[0.06]), len(ns[0.03]), res["all"]["n"])
         for kind in ("sma", "ema"):                      # the daily moving-average filter
-            call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "minVol": 0, "maLen": 21, "maType": kind}})
+            call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "minVol": 0, "maLen": 21, "maType": kind, "minAge": 0}})
             st, vm = call("GET", "/ivcrush")
             tm = vm["res"]["trades"]
             assert tm and len(tm) < res["all"]["n"], (kind, len(tm), res["all"]["n"])
@@ -1025,6 +1025,21 @@ def test_ivcrush():
                 ma = IV.moving_avg(cl, 21, kind)
                 assert cl[t["in"]] > ma[t["in"]], (kind, t["sym"], t["in"])
         assert abs(IV.moving_avg({"2024-01-0%d" % i: float(i) for i in range(1, 6)}, 3)["2024-01-05"] - 4.0) < 1e-9
+        call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "minVol": 0, "maLen": 21, "maRise": 1, "maRiseDays": 5, "minAge": 0}})
+        st, vr2 = call("GET", "/ivcrush")                # the average also rising
+        tr2 = vr2["res"]["trades"]
+        assert len(tr2) < len(tm) or tm == [], (len(tr2), len(tm))
+        for t in tr2:
+            cl = store.get_json(f"ivc/px/{t['sym']}")["c"]
+            ma = IV.moving_avg(cl, 21, "sma")
+            ds = sorted(ma)
+            i = ds.index(t["in"])
+            assert cl[t["in"]] > ma[t["in"]] and ma[t["in"]] > ma[ds[i - 5]], (t["sym"], t["in"])
+        new = sorted(store.get_json("ivc/uni")["syms"])[-1]           # a stock listed 2023-06-15: out until 2025-06-15 with 2 years
+        call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "minVol": 0, "minAge": 2}})
+        st, va = call("GET", "/ivcrush")
+        assert all(t["in"] >= "2025-06-15" for t in va["res"]["trades"] if t["sym"] == new)
+        assert any(t["sym"] == new and t["in"] < "2025-06-15" for t in res["trades"])
     finally:
         F.UW_BS = False
 

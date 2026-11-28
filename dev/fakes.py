@@ -632,7 +632,11 @@ def fake_fmp_get(key, path, params, timeout=40):
                     out.append({kk: v for kk, v in r.items() if kk != "time"})
         return out
     if path == "profile":
-        return [{"symbol": params.get("symbol"), "cik": "0000001002", "companyName": "Delta Removed Co."}] if params.get("symbol") == "DDD" else []
+        if params.get("symbol") == "DDD":
+            return [{"symbol": params.get("symbol"), "cik": "0000001002", "companyName": "Delta Removed Co."}]
+        if params.get("symbol") in SEC_COS:              # listing dates (IV crush's newer-stock filter): the last one is recent
+            return [{"symbol": params.get("symbol"), "ipoDate": "2023-06-15" if params.get("symbol") == sorted(SEC_COS)[-1] else "1995-03-01"}]
+        return []
     if path == "grades":
         if sym not in SEC_COS:
             return []

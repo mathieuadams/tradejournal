@@ -14,7 +14,9 @@ Data:
 Rules (per stock, one put at a time on a stock):
   - Volume: the stock's average daily volume over the `volLen` sessions before the day >= minVol million shares
     (Alpaca daily bars; 0 = off).
-  - Trend (option): the day's close above its `maLen`-day daily moving average (SMA or EMA, FMP closes; 0 = off).
+  - Trend (option): the day's close above its `maLen`-day daily moving average (SMA or EMA, FMP closes; 0 = off),
+    and with maRise the average rising (higher than maRiseDays sessions before).
+  - Newer stocks out: listed (FMP ipoDate) at least minAge years before the day (0 = off).
   - Entry: IV rank (Unusual Whales, 1 year) >= `rank` → the expiry nearest `dte` days (within dteMin-dteMax); the strike
     for the target `delta` from the stock's IV (Black-Scholes), then of the 3 listed strikes nearest it, the one whose
     delta that day (its own IV) is nearest the target (within 0.10), premium >= minPx. Sold at the day's NBBO bid
@@ -42,7 +44,7 @@ from util import BadRequest, iso, now_ny
 START = "2022-01-01"
 DEFAULT = {"rank": 30.0, "dte": 45, "dteMin": 30, "dteMax": 60, "delta": 0.20, "take": 0.50, "manage": 21, "stop": 0.0,
            "maxPos": 20, "minPx": 0.20, "slip": 0.03, "comm": 0.65, "acct": 500000.0, "alloc": 1.0, "coll": "cash", "split": 0.6,
-           "from": "2022-03-01", "fill": "nbbo", "roll": 0, "rollDte": 21, "rollDelta": 0.40, "rollMin": 0.10, "rollMax": 3, "rollMode": "both", "minVol": 2.0, "volLen": 20, "maLen": 0, "maType": "sma"}
+           "from": "2022-03-01", "fill": "nbbo", "roll": 0, "rollDte": 21, "rollDelta": 0.40, "rollMin": 0.10, "rollMax": 3, "rollMode": "both", "minVol": 2.0, "volLen": 20, "maLen": 0, "maType": "sma", "maRise": 0, "maRiseDays": 5, "minAge": 2.0}
 RATES = {2021: .0005, 2022: .0202, 2023: .0507, 2024: .0497, 2025: .0420, 2026: .0370, 2027: .0350}
 
 
@@ -51,12 +53,12 @@ def clean(cfg):
     for k, lo, hi in (("rank", 0, 100), ("dte", 7, 88), ("dteMin", 1, 85), ("dteMax", 7, 88), ("delta", 0.03, 0.5),
                       ("take", 0.1, 0.95), ("manage", 0, 60), ("stop", 0, 10), ("maxPos", 1, 200), ("minPx", 0.01, 5), ("slip", 0, 1),
                       ("comm", 0, 5), ("acct", 1000, 1e9), ("alloc", 0.05, 5), ("split", 0.3, 0.9),
-                      ("roll", 0, 1), ("minVol", 0, 1000), ("volLen", 5, 252), ("maLen", 0, 400), ("rollDte", 1, 60), ("rollDelta", 0.1, 0.9), ("rollMin", 0, 5), ("rollMax", 1, 10)):
+                      ("roll", 0, 1), ("minVol", 0, 1000), ("volLen", 5, 252), ("maLen", 0, 400), ("maRise", 0, 1), ("maRiseDays", 1, 60), ("minAge", 0, 30), ("rollDte", 1, 60), ("rollDelta", 0.1, 0.9), ("rollMin", 0, 5), ("rollMax", 1, 10)):
         try:
             c[k] = max(lo, min(hi, float(c[k])))
         except (TypeError, ValueError):
             c[k] = DEFAULT[k]
-    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos", "roll", "rollDte", "rollMax", "volLen", "maLen"):
+    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos", "roll", "rollDte", "rollMax", "volLen", "maLen", "maRise", "maRiseDays"):
         c[k] = int(c[k])
     c["coll"] = "margin" if c["coll"] == "margin" else "cash"
     c["fill"] = "mid" if c["fill"] == "mid" else "nbbo"
@@ -371,6 +373,26 @@ def stock_volume(sub, sym, lastday):
     return stock_daily(sub, sym, lastday)[0]
 
 
+def listed_since(sub, sym):
+    """The stock's first trading day (FMP profile ipoDate; spin-offs: their own listing), kept in ivc/ipo/<SYM>.
+    None: unknown (then not filtered)."""
+    key = f"ivc/ipo/{root_of(sym)}"
+    have = store.get_json(key)
+    if have is not None:
+        return have.get("d")
+    d = None
+    try:
+        import fmp
+        raw = fmp._get(fmp._key(sub), "profile", {"symbol": sym}) or []
+        p = raw[0] if isinstance(raw, list) and raw else (raw if isinstance(raw, dict) else {})
+        d = str(p.get("ipoDate") or "")[:10] or None
+    except Exception as e:
+        print("ivcrush ipo", sym, e)
+        return None                                     # not kept: asked again next time
+    store.put_json(key, {"d": d})
+    return d
+
+
 def moving_avg(close, n, kind="sma"):
     """{date: the n-day simple / exponential average of the close, that day included}."""
     out, ds = {}, sorted(close)
@@ -548,14 +570,26 @@ def sim_symbol(tok, sym, rows, c, cal):
     ma = moving_avg(cl, c["maLen"], c["maType"]) if c["maLen"] > 0 else {}
     malast = max(ma, default="")
 
+    mad = sorted(ma)
+    mai = {d: i for i, d in enumerate(mad)}
+    ipo = _MEMO.get("ipo")
+    age_ok = lambda day: not c["minAge"] or not ipo or (date.fromisoformat(day) - date.fromisoformat(ipo)).days >= c["minAge"] * 365.25
+
     def above_ma(day, S):
         """The day's close above its daily moving average (FMP closes; after FMP's last day: today's price vs the last
-        average)."""
+        average), and with maRise: the average higher than maRiseDays sessions before (rising)."""
         if c["maLen"] <= 0:
             return True
         if day in ma and day in cl:
-            return cl[day] > ma[day]
-        return day > malast and malast != "" and S > ma[malast]
+            d, ok = day, cl[day] > ma[day]
+        elif day > malast and malast != "":
+            d, ok = malast, S > ma[malast]
+        else:
+            return False
+        if ok and c["maRise"]:
+            i = mai[d] - c["maRiseDays"]
+            ok = i >= 0 and ma[d] > ma[mad[i]]
+        return ok
     for day, S, rk, iv in rows:
         if day not in cal or day < c["from"]:
             continue
@@ -603,7 +637,7 @@ def sim_symbol(tok, sym, rows, c, cal):
             else:
                 pos["marks"].append(pos["last"] + adj)
                 continue
-        if pos is None and rk >= c["rank"] and (vmin <= 0 or ((av.get(day) if day <= vlast else av.get("~next")) or 0) >= vmin) and above_ma(day, S):
+        if pos is None and rk >= c["rank"] and (vmin <= 0 or ((av.get(day) if day <= vlast else av.get("~next")) or 0) >= vmin) and above_ma(day, S) and age_ok(day):
             e = _entry(tok, sym, day, S, iv, c)
             if e:
                 occ, ex, k, credit, dl, v, h = e
@@ -726,6 +760,8 @@ def run_job(sub, prog, deadline):
         db_open(s, rows)
         if (c["minVol"] > 0 or c["maLen"] > 0) and rows:
             _MEMO["vol"], _MEMO["close"] = stock_daily(sub, s, rows[-1][0])
+        if c["minAge"] > 0:
+            _MEMO["ipo"] = listed_since(sub, s)
         try:
             f = sim_symbol(tok, s, rows, c, ci)
         except BadRequest as e:                         # a ticker without option data: go on
@@ -733,11 +769,15 @@ def run_job(sub, prog, deadline):
             f = []
         db_close(s)
         av = avg_volume(_MEMO.get("vol") or {}, c["volLen"]).get("~next") if c["minVol"] > 0 else None
-        _MEMO.clear()
         ok = rows and (c["minVol"] <= 0 or (av or 0) >= c["minVol"] * 1e6)
         if ok and c["maLen"] > 0:
             ma = moving_avg(_MEMO.get("close") or {}, c["maLen"], c["maType"])
-            ok = bool(ma) and rows[-1][1] > ma[max(ma)]
+            mk = sorted(ma)
+            ok = bool(ma) and rows[-1][1] > ma[mk[-1]] and (not c["maRise"] or (len(mk) > c["maRiseDays"] and ma[mk[-1]] > ma[mk[-1 - c["maRiseDays"]]]))
+        ipo = _MEMO.get("ipo")
+        if ok and c["minAge"] and ipo:
+            ok = (date.fromisoformat(rows[-1][0]) - date.fromisoformat(ipo)).days >= c["minAge"] * 365.25
+        _MEMO.clear()
         return s, f, ({"sym": s, "day": rows[-1][0], "S": rows[-1][1], "rank": rows[-1][2], "iv": rows[-1][3], "vol": av} if ok else None)
     todo = [s for s in syms if s not in done]
     from concurrent.futures import ThreadPoolExecutor
@@ -817,7 +857,8 @@ DTE_WIN = {30: (21, 40), 45: (35, 60), 60: (45, 75)}
 SPACE = {"rank": [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80], "delta": [0.1, 0.15, 0.2, 0.25, 0.3, 0.35], "dte": [30, 45, 60],
          "take": [0.25, 0.4, 0.5, 0.6, 0.75], "manage": [0, 7, 14, 21], "stop": [0, 1, 1.5, 2, 3], "roll": [0, 1],
          "rollMode": ["both", "out", "down"], "rollDelta": [0.3, 0.4, 0.5], "rollDte": [7, 14, 21], "maxPos": [10, 20, 30],
-         "minVol": [0, 1, 2, 5], "maLen": [0, 21, 55, 89, 200], "maType": ["sma", "ema"]}
+         "minVol": [0, 1, 2, 5], "maLen": [0, 21, 55, 89, 200], "maType": ["sma", "ema"], "maRise": [0, 1],
+         "minAge": [0, 1, 2, 3]}
 ROUND = 40                                             # settings per round (one pass over the stocks)
 
 
@@ -961,6 +1002,8 @@ def opt_job(sub, prog, deadline):
         db_open(s, rows)
         if rows and any(p.get("minVol", base["minVol"]) > 0 or p.get("maLen", base["maLen"]) > 0 for p in g):
             _MEMO["vol"], _MEMO["close"] = stock_daily(sub, s, rows[-1][0])
+        if any(p.get("minAge", base["minAge"]) > 0 for p in g):
+            _MEMO["ipo"] = listed_since(sub, s)
         res = []
         for p in g:
             try:
