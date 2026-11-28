@@ -461,13 +461,14 @@ def _roll(tok, sym, day, S, pos, cost, c):
     """Roll to a later expiry (nearest `dte` within dteMin-dteMax) for a net credit of at least rollMin a share. rollMode
     "out": the same strike; "down": a lower strike (the lowest of the 4 listed below that gives the credit); "both":
     the same strike or one of the 3 below (the lowest that gives the credit).
-    (occ, expiry, strike, credit, IV, history) or None."""
+    (occ, expiry, strike, credit, IV, history); None: priced, but no roll gives the credit; "nodata": no price for any
+    candidate that day (then the put is held and the roll tried again the next day)."""
     d0 = date.fromisoformat(day)
     ch = [x for x in _chain(tok, sym, day, c["dte"]) if x[1] > pos["exp"] and x[2] <= pos["K"]]
     exps = sorted({x[1] for x in ch if c["dteMin"] <= (date.fromisoformat(x[1]) - d0).days <= c["dteMax"]},
                   key=lambda e: abs((date.fromisoformat(e) - d0).days - c["dte"]))
     if not exps:
-        return None
+        return "nodata"
     ex = exps[0]
     ks = sorted((x for x in ch if x[1] == ex), key=lambda x: -x[2])
     if c["rollMode"] == "out":                          # in time only: the same strike
@@ -476,15 +477,19 @@ def _roll(tok, sym, day, S, pos, cost, c):
         ks = [x for x in ks if x[2] < pos["K"]][:4]
     else:                                               # either: the same strike or one of the 3 below
         ks = ks[:4]
+    priced = False
     for occ, _, k, _ in sorted(ks, key=lambda x: x[2]):
         h = _hist(tok, occ)
         row = h.get(day)
         if not row:
             continue
         bid = _px(row, "bid", c)
-        if bid is not None and bid - cost >= c["rollMin"]:
+        if bid is None:
+            continue
+        priced = True
+        if bid - cost >= c["rollMin"]:
             return occ, ex, k, round(bid, 3), row.get("implied_volatility"), h
-    return None
+    return None if priced else "nodata"
 
 
 def sim_symbol(tok, sym, rows, c, cal):
@@ -519,7 +524,9 @@ def sim_symbol(tok, sym, rows, c, cal):
                     why, px = "stop", ask
                 elif ask is not None and c["roll"] and dte <= c["rollDte"] and _tested(S, pos["K"], dte / 365, row, day, c):
                     r = _roll(tok, sym, day, S, pos, ask, c) if len(pos["legs"]) <= c["rollMax"] else None
-                    if r:
+                    if r == "nodata":                   # no price for the new put that day: hold, try again tomorrow
+                        pass
+                    elif r:
                         occ, ex, k, bid, v, h = r
                         pos["legs"].append({"day": day, "occ": occ, "exp": ex, "K": k, "credit": bid, "debit": round(ask, 3)})
                         pos.update(occ=occ, exp=ex, K=k, h=h, net=round(pos["net"] - ask + bid, 3), fees=pos["fees"] + 2 * c["comm"],
@@ -538,7 +545,7 @@ def sim_symbol(tok, sym, rows, c, cal):
                 out.append({"sym": sym, "in": pos["in"], "out": day, "exp": pos["legs"][0]["exp"], "K": pos["legs"][0]["K"], "S": pos["S"],
                             "occ": pos["legs"][0]["occ"], "credit": pos["credit"], "net": pos["net"], "exitPx": round(px, 2), "why": why,
                             "pnl": round(pnl, 2), "rank": pos["rank"], "iv0": pos["iv0"], "delta": pos["delta"], "coll": pos["coll"],
-                            "rolls": len(pos["legs"]) - 1, "legs": pos["legs"], "i": pos["i"], "j": ci, "marks": [round(x, 3) for x in pos["marks"]]})
+                            "rolls": len(pos["legs"]) - 1, "legs": pos["legs"], "K2": pos["K"], "exp2": pos["exp"], "i": pos["i"], "j": ci, "marks": [round(x, 3) for x in pos["marks"]]})
                 pos = None
             else:
                 pos["marks"].append(pos["last"] + adj)

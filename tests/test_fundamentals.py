@@ -887,6 +887,18 @@ def test_ivcrush():
     import fakes as F
     import store
     assert abs(abs(IV.put_delta(100, IV.strike_for(100, 0.12, 0.3, 0.03, 0.2), 0.12, 0.3, 0.03)) - 0.2) < 1e-6
+    c0, h0 = IV._chain, IV._hist                         # a roll: no price that day -> "nodata" (held); priced, no credit -> None
+    try:
+        IV._chain = lambda tok, sym, day, dte: [("X260320P00100000", "2026-03-20", 100.0, 5)]
+        pos, cfg = {"exp": "2026-02-20", "K": 100.0}, IV.clean({"roll": 1})
+        IV._hist = lambda tok, occ: {}
+        assert IV._roll("t", "X", "2026-02-02", 99.0, pos, 3.0, cfg) == "nodata"
+        IV._hist = lambda tok, occ: {"2026-02-02": {"nbbo_bid": 3.05, "nbbo_ask": 3.2}}
+        assert IV._roll("t", "X", "2026-02-02", 99.0, pos, 3.0, cfg) is None
+        IV._hist = lambda tok, occ: {"2026-02-02": {"nbbo_bid": 3.5, "nbbo_ask": 3.7}}
+        assert IV._roll("t", "X", "2026-02-02", 99.0, pos, 3.0, cfg)[3] == 3.5
+    finally:
+        IV._chain, IV._hist = c0, h0
     call("PUT", "/fmp", {"key": "k" * 32})
     call("PUT", "/alpaca", {"keyId": "PK" + "A" * 18, "secret": "s" * 30})
     call("DELETE", "/uw")
@@ -944,6 +956,7 @@ def test_ivcrush():
         for a, b in zip(legs, legs[1:]):
             assert b["exp"] > a["exp"] and b["K"] <= a["K"] and b["credit"] - b["debit"] >= 0.10 - 1e-9 and b["day"] < a["exp"]
         assert abs(t["net"] - (legs[0]["credit"] + sum(l["credit"] - l["debit"] for l in legs[1:]))) < 0.01
+        assert t["K2"] == legs[-1]["K"] and t["exp2"] == legs[-1]["exp"]
     F.UW_BS = True
     try:
         for mode, ok in (("out", lambda a, b: b["K"] == a["K"]), ("down", lambda a, b: b["K"] < a["K"])):
