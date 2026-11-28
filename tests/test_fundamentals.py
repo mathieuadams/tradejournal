@@ -888,6 +888,7 @@ def test_ivcrush():
     import store
     assert abs(abs(IV.put_delta(100, IV.strike_for(100, 0.12, 0.3, 0.03, 0.2), 0.12, 0.3, 0.03)) - 0.2) < 1e-6
     call("PUT", "/fmp", {"key": "k" * 32})
+    call("PUT", "/alpaca", {"keyId": "PK" + "A" * 18, "secret": "s" * 30})
     call("DELETE", "/uw")
     st, r = call("POST", "/ivcrush/data")
     assert st == 400 and "Unusual Whales" in r["error"], r
@@ -903,7 +904,7 @@ def test_ivcrush():
     assert len(rows) > 500 and 0 <= rows[100][2] <= 100 and max(r[2] for r in rows) > 90
     F.UW_BS = True
     try:
-        st, r = call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30}})
+        st, r = call("POST", "/ivcrush", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30}})
         assert st == 200, r
         st, v = call("GET", "/ivcrush")
     finally:
@@ -929,7 +930,7 @@ def test_ivcrush():
     assert res["curve"][0][1] == 500000.0
     F.UW_BS = True
     try:                                                 # rolling tested puts for a credit
-        st, r = call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21}})
+        st, r = call("POST", "/ivcrush", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21}})
         assert st == 200, r
         st, vr = call("GET", "/ivcrush")
     finally:
@@ -946,7 +947,7 @@ def test_ivcrush():
     F.UW_BS = True
     try:
         for mode, ok in (("out", lambda a, b: b["K"] == a["K"]), ("down", lambda a, b: b["K"] < a["K"])):
-            call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21, "rollMode": mode}})
+            call("POST", "/ivcrush", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 30, "roll": 1, "rollDelta": 0.3, "manage": 21, "rollMode": mode}})
             st, vm = call("GET", "/ivcrush")
             legs = [(a, b) for t in vm["res"]["trades"] for a, b in zip(t["legs"], t["legs"][1:])]
             assert legs and all(ok(a, b) for a, b in legs), mode
@@ -954,7 +955,7 @@ def test_ivcrush():
         F.UW_BS = False
     F.UW_BS = True
     try:
-        st, r = call("POST", "/ivcrush/opt", {"cfg": {"from": "2022-06-01", "maxPos": 3}})
+        st, r = call("POST", "/ivcrush/opt", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3}})
         assert st == 200, r
         st, v = call("GET", "/ivcrush")
     finally:
@@ -966,6 +967,20 @@ def test_ivcrush():
     full = store.get_json(f"ivc/opt/{SUB}")["res"]
     same = next(x for x in full if x["p"] == {"rank": 30, "take": 0.5, "manage": 21, "stop": 0, "roll": 0})
     assert same["all"]["n"] == res["all"]["n"], (same["all"], res["all"]["n"])    # the run's own setting: the same trades
+    F.UW_BS = True                                       # the average-volume filter (fake volumes average ~45k shares)
+    try:
+        ns = {}
+        for mv in (0.03, 0.06):
+            call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "minVol": mv, "volLen": 20}})
+            st, vv = call("GET", "/ivcrush")
+            ns[mv] = vv["res"]["trades"]
+            for t in ns[mv]:
+                vol = store.get_json(f"ivc/vol/{t['sym']}")["d"]
+                prev = [vol[d] for d in sorted(vol) if d < t["in"]][-20:]
+                assert len(prev) == 20 and sum(prev) / 20 >= mv * 1e6, (t["sym"], t["in"])
+        assert len(ns[0.06]) < len(ns[0.03]) <= res["all"]["n"], (len(ns[0.06]), len(ns[0.03]), res["all"]["n"])
+    finally:
+        F.UW_BS = False
 
 
 def SW_clean_default():

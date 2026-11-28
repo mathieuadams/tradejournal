@@ -12,6 +12,8 @@ Data:
     contract's daily history (GET /api/option-contract/{OCC}/historic: NBBO bid / ask, last, implied volatility).
 
 Rules (per stock, one put at a time on a stock):
+  - Volume: the stock's average daily volume over the `volLen` sessions before the day >= minVol million shares
+    (Alpaca daily bars; 0 = off).
   - Entry: IV rank (Unusual Whales, 1 year) >= `rank` → the expiry nearest `dte` days (within dteMin-dteMax); the strike
     for the target `delta` from the stock's IV (Black-Scholes), then of the 3 listed strikes nearest it, the one whose
     delta that day (its own IV) is nearest the target (within 0.10), premium >= minPx. Sold at the day's NBBO bid
@@ -39,7 +41,7 @@ from util import BadRequest, iso, now_ny
 START = "2022-01-01"
 DEFAULT = {"rank": 30.0, "dte": 45, "dteMin": 30, "dteMax": 60, "delta": 0.20, "take": 0.50, "manage": 21, "stop": 0.0,
            "maxPos": 20, "minPx": 0.20, "slip": 0.03, "comm": 0.65, "acct": 500000.0, "alloc": 1.0, "coll": "cash", "split": 0.6,
-           "from": "2022-03-01", "fill": "nbbo", "roll": 0, "rollDte": 21, "rollDelta": 0.40, "rollMin": 0.10, "rollMax": 3, "rollMode": "both"}
+           "from": "2022-03-01", "fill": "nbbo", "roll": 0, "rollDte": 21, "rollDelta": 0.40, "rollMin": 0.10, "rollMax": 3, "rollMode": "both", "minVol": 2.0, "volLen": 20}
 RATES = {2021: .0005, 2022: .0202, 2023: .0507, 2024: .0497, 2025: .0420, 2026: .0370, 2027: .0350}
 
 
@@ -48,12 +50,12 @@ def clean(cfg):
     for k, lo, hi in (("rank", 0, 100), ("dte", 7, 88), ("dteMin", 1, 85), ("dteMax", 7, 88), ("delta", 0.03, 0.5),
                       ("take", 0.1, 0.95), ("manage", 0, 60), ("stop", 0, 10), ("maxPos", 1, 200), ("minPx", 0.01, 5), ("slip", 0, 1),
                       ("comm", 0, 5), ("acct", 1000, 1e9), ("alloc", 0.05, 5), ("split", 0.3, 0.9),
-                      ("roll", 0, 1), ("rollDte", 1, 60), ("rollDelta", 0.1, 0.9), ("rollMin", 0, 5), ("rollMax", 1, 10)):
+                      ("roll", 0, 1), ("minVol", 0, 1000), ("volLen", 5, 252), ("rollDte", 1, 60), ("rollDelta", 0.1, 0.9), ("rollMin", 0, 5), ("rollMax", 1, 10)):
         try:
             c[k] = max(lo, min(hi, float(c[k])))
         except (TypeError, ValueError):
             c[k] = DEFAULT[k]
-    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos", "roll", "rollDte", "rollMax"):
+    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos", "roll", "rollDte", "rollMax", "volLen"):
         c[k] = int(c[k])
     c["coll"] = "margin" if c["coll"] == "margin" else "cash"
     c["fill"] = "mid" if c["fill"] == "mid" else "nbbo"
@@ -283,6 +285,33 @@ class _Memo:
 _MEMO = _Memo()
 
 
+# ---------------------------------------------------------------- the option database: one file per stock
+# ivc/db/<SYM>: {"c": {day: [[occ, expiry, strike, oi], ...]}, "h": {occ: {date: [bid, ask, last, iv]}}, "f": {occ: the
+# stock's last day when fetched}} — every chain
+# and contract history this strategy has used for the stock. Loaded once per stock, written back only when something
+# was added. Unusual Whales is asked only for what it doesn't hold: a chain never seen, a contract never seen, or a live
+# contract whose last day is before the stock's last day (new days to add). Older per-contract caches (optreal) are
+# read first, so nothing already downloaded is downloaded again.
+F_ = ("nbbo_bid", "nbbo_ask", "last_price", "implied_volatility")
+
+
+def db_open(sym, rows):
+    d = store.get_json(f"ivc/db/{root_of(sym)}") or {}
+    _MEMO["db"] = {"c": d.get("c") or {}, "h": d.get("h") or {}, "f": d.get("f") or {}}
+    _MEMO["dirty"] = False
+    _MEMO["lastday"] = rows[-1][0] if rows else ""
+
+
+def db_close(sym):
+    if _MEMO.get("dirty"):
+        store.put_json(f"ivc/db/{root_of(sym)}", _MEMO["db"])
+    _MEMO["dirty"] = False
+
+
+def root_of(sym):
+    return "".join(ch for ch in sym.upper() if ch.isalnum())
+
+
 def _chain(tok, sym, day, dte):
     """The puts listed, from the chain of the first trading day of `day`'s week (one download a week per stock, whatever
     the settings: the listed expiries / strikes barely change within a week; never a later day, so no look-ahead)."""
@@ -293,8 +322,47 @@ def _chain(tok, sym, day, dte):
         a = day
     k = ("c", sym, a)
     if k not in _MEMO:
-        _MEMO[k] = optreal.chain_on(tok, sym, a, False, 42)
+        db = _MEMO.get("db")
+        if db is not None and a in db["c"]:
+            _MEMO[k] = [tuple(x) for x in db["c"][a]]
+        else:
+            _MEMO[k] = optreal.chain_on(tok, sym, a, False, 42)
+            if db is not None:
+                db["c"][a] = [list(x) for x in _MEMO[k]]
+                _MEMO["dirty"] = True
     return _MEMO[k]
+
+
+def stock_volume(sub, sym, lastday):
+    """{date: shares traded} of the stock (Alpaca daily bars, split-adjusted), kept in ivc/vol/<SYM>; fetched again only
+    when the stock has a newer day than what's kept."""
+    import alpaca
+    key = f"ivc/vol/{root_of(sym)}"
+    have = store.get_json(key) or {}
+    d = have.get("d") or {}
+    if d and (max(d) >= lastday or have.get("asked", "") >= lastday):
+        return d
+    try:
+        rows = alpaca.daily_range(sub, sym, "2022-10-01")
+        d = {r[0]: float(r[5]) for r in rows}
+    except Exception as e:                              # unknown at Alpaca / not connected: no volume
+        print("ivcrush volume", sym, e)
+    store.put_json(key, {"d": d, "asked": lastday})
+    return d
+
+
+def avg_volume(vol, n):
+    """{date: average shares a day over the `n` sessions before it} (that day excluded: known at the entry)."""
+    out, ds = {}, sorted(vol)
+    run = 0.0
+    for i, d in enumerate(ds):
+        if i >= n:
+            out[d] = run / n
+            run -= vol[ds[i - n]]
+        run += vol[d]
+    if len(ds) >= n:                                    # the day after the last one known
+        out["~next"] = run / n
+    return out
 
 
 def _weeks(sym, rows):
@@ -306,10 +374,24 @@ def _weeks(sym, rows):
 
 def _hist(tok, occ):
     import optreal
+    import uwhales
     k = ("h", occ)
-    if k not in _MEMO:
-        _MEMO[k] = optreal.history(tok, occ)
-    return _MEMO[k]
+    if k in _MEMO:
+        return _MEMO[k]
+    db = _MEMO.get("db")
+    got = db["h"].get(occ) if db is not None else None
+    if got is not None:
+        seen = db["f"].get(occ, "")                     # the stock's last day when it was fetched
+        if uwhales._occ(occ)[0] < seen or seen >= (_MEMO.get("lastday") or ""):    # expired then, or no newer day since
+            _MEMO[k] = {d: dict(zip(F_, v)) for d, v in got.items()}
+            return _MEMO[k]
+    h = optreal.history(tok, occ)                       # its own cache first, Unusual Whales only when needed
+    if db is not None:
+        db["h"][occ] = {d: [r.get(f) for f in F_] for d, r in h.items()}
+        db["f"][occ] = _MEMO.get("lastday") or ""
+        _MEMO["dirty"] = True
+    _MEMO[k] = h
+    return h
 
 
 CALLS = [0]
@@ -413,6 +495,9 @@ def sim_symbol(tok, sym, rows, c, cal):
     close = {r[0]: r[1] for r in rows}
     if ("w", sym) not in _MEMO:
         _weeks(sym, rows)
+    av = avg_volume(_MEMO.get("vol") or {}, c["volLen"]) if c["minVol"] > 0 else {}
+    vlast = max((k for k in av if k != "~next"), default="")
+    vmin = c["minVol"] * 1e6
     for day, S, rk, iv in rows:
         if day not in cal or day < c["from"]:
             continue
@@ -458,7 +543,7 @@ def sim_symbol(tok, sym, rows, c, cal):
             else:
                 pos["marks"].append(pos["last"] + adj)
                 continue
-        if pos is None and rk >= c["rank"]:
+        if pos is None and rk >= c["rank"] and (vmin <= 0 or ((av.get(day) if day <= vlast else av.get("~next")) or 0) >= vmin):
             e = _entry(tok, sym, day, S, iv, c)
             if e:
                 occ, ex, k, credit, dl, v, h = e
@@ -565,13 +650,19 @@ def run_job(sub, prog, deadline):
     def one(s):
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
+        db_open(s, rows)
+        if c["minVol"] > 0 and rows:
+            _MEMO["vol"] = stock_volume(sub, s, rows[-1][0])
         try:
             f = sim_symbol(tok, s, rows, c, ci)
         except BadRequest as e:                         # a ticker without option data: go on
             print("ivcrush sim", s, e)
             f = []
+        db_close(s)
+        av = avg_volume(_MEMO.get("vol") or {}, c["volLen"]).get("~next") if c["minVol"] > 0 else None
         _MEMO.clear()
-        return s, f, ({"sym": s, "day": rows[-1][0], "S": rows[-1][1], "rank": rows[-1][2], "iv": rows[-1][3]} if rows else None)
+        ok = rows and (c["minVol"] <= 0 or (av or 0) >= c["minVol"] * 1e6)
+        return s, f, ({"sym": s, "day": rows[-1][0], "S": rows[-1][1], "rank": rows[-1][2], "iv": rows[-1][3], "vol": av} if ok else None)
     todo = [s for s in syms if s not in done]
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(WORKERS) as ex:
@@ -731,6 +822,9 @@ def opt_job(sub, prog, deadline):
     def one(s):
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
+        db_open(s, rows)
+        if base["minVol"] > 0 and rows:
+            _MEMO["vol"] = stock_volume(sub, s, rows[-1][0])
         res = []
         for p in g:
             try:
@@ -739,6 +833,7 @@ def opt_job(sub, prog, deadline):
                 print("ivcrush opt", s, e)
                 break
             res.append([[t["i"], t["j"], t["pnl"], t["coll"], t["rank"], s] for t in ts])
+        db_close(s)
         _MEMO.clear()
         return s, res
     todo = [s for s in syms if s not in done]
