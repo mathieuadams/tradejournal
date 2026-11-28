@@ -334,20 +334,32 @@ def _chain(tok, sym, day, dte):
 
 
 def stock_volume(sub, sym, lastday):
-    """{date: shares traded} of the stock (Alpaca daily bars, split-adjusted), kept in ivc/vol/<SYM>; fetched again only
-    when the stock has a newer day than what's kept."""
-    import alpaca
-    key = f"ivc/vol/{root_of(sym)}"
+    """{date: shares traded, all US exchanges} of the stock: FMP daily bars (historical-price-eod/full); Alpaca only when
+    FMP fails and the Alpaca feed is SIP (the IEX feed counts only IEX's own trades, a few % of the volume). Kept in
+    ivc/vol2/<SYM>; fetched again only when the stock has a newer day than what's kept."""
+    key = f"ivc/vol2/{root_of(sym)}"
     have = store.get_json(key) or {}
     d = have.get("d") or {}
     if d and (max(d) >= lastday or have.get("asked", "") >= lastday):
         return d
+    src = None
     try:
-        rows = alpaca.daily_range(sub, sym, "2022-10-01")
-        d = {r[0]: float(r[5]) for r in rows}
-    except Exception as e:                              # unknown at Alpaca / not connected: no volume
-        print("ivcrush volume", sym, e)
-    store.put_json(key, {"d": d, "asked": lastday})
+        import fmp
+        raw = fmp._get(fmp._key(sub), "historical-price-eod/full", {"symbol": sym, "from": "2022-10-01"}) or []
+        raw = raw if isinstance(raw, list) else (raw.get("historical") or [])
+        d = {str(r["date"])[:10]: float(r["volume"]) for r in raw if r.get("date") and r.get("volume") is not None}
+        src = "FMP"
+    except Exception as e:
+        print("ivcrush volume fmp", sym, e)
+    if not d:
+        try:
+            import alpaca
+            if alpaca.status(sub).get("feed") == "sip":
+                d = {r[0]: float(r[5]) for r in alpaca.daily_range(sub, sym, "2022-10-01")}
+                src = "Alpaca SIP"
+        except Exception as e:
+            print("ivcrush volume alpaca", sym, e)
+    store.put_json(key, {"d": d, "asked": lastday, "src": src})
     return d
 
 
@@ -460,7 +472,8 @@ def _tested(S, K, T, row, day, c):
 def _roll(tok, sym, day, S, pos, cost, c):
     """Roll to a later expiry (nearest `dte` within dteMin-dteMax) for a net credit of at least rollMin a share. rollMode
     "out": the same strike; "down": a lower strike (the lowest of the 4 listed below that gives the credit); "both":
-    the same strike or one of the 3 below (the lowest that gives the credit).
+    the same strike or one of the 3 below (the lowest that gives the credit). The expiry nearest `dte` is tried first,
+    then the next 2 in the window.
     (occ, expiry, strike, credit, IV, history); None: priced, but no roll gives the credit; "nodata": no price for any
     candidate that day (then the put is held and the roll tried again the next day)."""
     d0 = date.fromisoformat(day)
@@ -469,26 +482,26 @@ def _roll(tok, sym, day, S, pos, cost, c):
                   key=lambda e: abs((date.fromisoformat(e) - d0).days - c["dte"]))
     if not exps:
         return "nodata"
-    ex = exps[0]
-    ks = sorted((x for x in ch if x[1] == ex), key=lambda x: -x[2])
-    if c["rollMode"] == "out":                          # in time only: the same strike
-        ks = [x for x in ks if x[2] == pos["K"]]
-    elif c["rollMode"] == "down":                       # down in price: a lower strike (the 4 listed below)
-        ks = [x for x in ks if x[2] < pos["K"]][:4]
-    else:                                               # either: the same strike or one of the 3 below
-        ks = ks[:4]
     priced = False
-    for occ, _, k, _ in sorted(ks, key=lambda x: x[2]):
-        h = _hist(tok, occ)
-        row = h.get(day)
-        if not row:
-            continue
-        bid = _px(row, "bid", c)
-        if bid is None:
-            continue
-        priced = True
-        if bid - cost >= c["rollMin"]:
-            return occ, ex, k, round(bid, 3), row.get("implied_volatility"), h
+    for ex in exps[:3]:                                 # the expiry nearest the target first, then the next ones
+        ks = sorted((x for x in ch if x[1] == ex), key=lambda x: -x[2])
+        if c["rollMode"] == "out":                      # in time only: the same strike
+            ks = [x for x in ks if x[2] == pos["K"]]
+        elif c["rollMode"] == "down":                   # down in price: a lower strike (the 4 listed below)
+            ks = [x for x in ks if x[2] < pos["K"]][:4]
+        else:                                           # either: the same strike or one of the 3 below
+            ks = ks[:4]
+        for occ, _, k, _ in sorted(ks, key=lambda x: x[2]):
+            h = _hist(tok, occ)
+            row = h.get(day)
+            if not row:
+                continue
+            bid = _px(row, "bid", c)
+            if bid is None:
+                continue
+            priced = True
+            if bid - cost >= c["rollMin"]:
+                return occ, ex, k, round(bid, 3), row.get("implied_volatility"), h
     return None if priced else "nodata"
 
 
@@ -545,7 +558,7 @@ def sim_symbol(tok, sym, rows, c, cal):
                 out.append({"sym": sym, "in": pos["in"], "out": day, "exp": pos["legs"][0]["exp"], "K": pos["legs"][0]["K"], "S": pos["S"],
                             "occ": pos["legs"][0]["occ"], "credit": pos["credit"], "net": pos["net"], "exitPx": round(px, 2), "why": why,
                             "pnl": round(pnl, 2), "rank": pos["rank"], "iv0": pos["iv0"], "delta": pos["delta"], "coll": pos["coll"],
-                            "rolls": len(pos["legs"]) - 1, "legs": pos["legs"], "K2": pos["K"], "exp2": pos["exp"], "i": pos["i"], "j": ci, "marks": [round(x, 3) for x in pos["marks"]]})
+                            "rolls": len(pos["legs"]) - 1, "legs": pos["legs"], "K2": pos["K"], "exp2": pos["exp"], "be": round(pos["K"] - pos["net"], 2), "i": pos["i"], "j": ci, "marks": [round(x, 3) for x in pos["marks"]]})
                 pos = None
             else:
                 pos["marks"].append(pos["last"] + adj)
@@ -557,6 +570,17 @@ def sim_symbol(tok, sym, rows, c, cal):
                 pos = {"occ": occ, "in": day, "exp": ex, "K": k, "S": S, "credit": credit, "net": credit, "fees": c["comm"], "iv0": round(v, 4),
                        "rank": round(rk, 1), "delta": dl, "coll": round(_coll(c, S, k, credit), 2), "i": ci, "marks": [], "last": credit, "h": h,
                        "legs": [{"day": day, "occ": occ, "exp": ex, "K": k, "credit": credit, "debit": None}]}
+    if pos and pos["i"] < len(cal) - 1:                 # still open on the last day: kept as an open position
+        last = rows[-1][0]
+        while len(pos["marks"]) < len(cal) - pos["i"] - 1:
+            pos["marks"].append(pos["marks"][-1] if pos["marks"] else pos["credit"])
+        dte = (date.fromisoformat(pos["exp"]) - date.fromisoformat(last)).days
+        out.append({"sym": sym, "in": pos["in"], "out": None, "open": True, "asOf": last, "exp": pos["legs"][0]["exp"], "K": pos["legs"][0]["K"],
+                    "S": pos["S"], "S1": rows[-1][1], "occ": pos["occ"], "credit": pos["credit"], "net": pos["net"], "mark": round(pos["last"], 3),
+                    "dte": dte, "why": "open", "pnl": round((pos["net"] - pos["last"]) * 100 - pos["fees"] - c["comm"], 2), "rank": pos["rank"],
+                    "iv0": pos["iv0"], "delta": pos["delta"], "coll": pos["coll"], "rolls": len(pos["legs"]) - 1, "legs": pos["legs"],
+                    "K2": pos["K"], "exp2": pos["exp"], "be": round(pos["K"] - pos["net"], 2), "i": pos["i"], "j": 10 ** 9,
+                    "marks": [round(x, 3) for x in pos["marks"]]})
     return out
 
 
@@ -595,6 +619,8 @@ def portfolio(cands, days, c):
             m = t["marks"][k] if 0 <= k < len(t["marks"]) else t["credit"]
             mtm += (t["credit"] - m) * 100 * n
         curve.append([day, round(eq + mtm, 2), len(open_)])
+    portfolio.open = [{**{k: v for k, v in t.items() if k not in ("marks", "i", "j")}, "n": n, "pnl": round(t["pnl"] * n, 2)}
+                      for t, n in open_ if t.get("open")]
     return done, curve
 
 
@@ -705,6 +731,8 @@ def run_job(sub, prog, deadline):
 
 def _result(c, cal, f, today, nsym):
     trades, curve = portfolio(f, cal, c)
+    opens = sorted(portfolio.open, key=lambda t: t["pnl"])
+    f = [t for t in f if not t.get("open")]
     split = cal[int(len(cal) * c["split"])] if cal else None
     buckets = []
     edges = sorted({c["rank"], 50.0, 70.0, 90.0, 100.01})
@@ -728,7 +756,7 @@ def _result(c, cal, f, today, nsym):
             "all": _stats(trades, curve), "train": _stats(trades, curve, None, split), "test": _stats(trades, curve, split),
             "byRank": buckets, "worstSyms": syms[:15], "bestSyms": syms[-15:][::-1],
             "curve": [x[:2] for x in curve[::step]], "trades": trades[-20000:], "nTrades": len(trades),
-            "today": hot[:80], "todayN": len(hot)}
+            "today": hot[:80], "todayN": len(hot), "open": opens}
 
 
 # ---------------------------------------------------------------- the optimizer
@@ -839,7 +867,7 @@ def opt_job(sub, prog, deadline):
             except BadRequest as e:
                 print("ivcrush opt", s, e)
                 break
-            res.append([[t["i"], t["j"], t["pnl"], t["coll"], t["rank"], s] for t in ts])
+            res.append([[t["i"], t["j"], t["pnl"], t["coll"], t["rank"], s] for t in ts])          # open ones: j never reached
         db_close(s)
         _MEMO.clear()
         return s, res

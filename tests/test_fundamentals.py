@@ -956,7 +956,17 @@ def test_ivcrush():
         for a, b in zip(legs, legs[1:]):
             assert b["exp"] > a["exp"] and b["K"] <= a["K"] and b["credit"] - b["debit"] >= 0.10 - 1e-9 and b["day"] < a["exp"]
         assert abs(t["net"] - (legs[0]["credit"] + sum(l["credit"] - l["debit"] for l in legs[1:]))) < 0.01
-        assert t["K2"] == legs[-1]["K"] and t["exp2"] == legs[-1]["exp"]
+        assert t["K2"] == legs[-1]["K"] and t["exp2"] == legs[-1]["exp"] and abs(t["be"] - (t["K2"] - t["net"])) < 0.011
+    F.UW_BS = True
+    try:                                                 # positions still open on the last day (IV rank >= 0: always in)
+        call("POST", "/ivcrush", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3, "rank": 0, "roll": 1, "rollDelta": 0.3}})
+        st, vo = call("GET", "/ivcrush")
+    finally:
+        F.UW_BS = False
+    assert vo["res"]["open"] and len(vo["res"]["open"]) <= 3
+    for t in vo["res"]["open"]:
+        assert t["open"] and t["out"] is None and t["n"] >= 1 and abs(t["be"] - (t["K2"] - t["net"])) < 0.011 and t["dte"] >= 0
+    assert all(not t.get("open") for t in vo["res"]["trades"])
     F.UW_BS = True
     try:
         for mode, ok in (("out", lambda a, b: b["K"] == a["K"]), ("down", lambda a, b: b["K"] < a["K"])):
@@ -988,7 +998,7 @@ def test_ivcrush():
             st, vv = call("GET", "/ivcrush")
             ns[mv] = vv["res"]["trades"]
             for t in ns[mv]:
-                vol = store.get_json(f"ivc/vol/{t['sym']}")["d"]
+                vol = store.get_json(f"ivc/vol2/{t['sym']}")["d"]
                 prev = [vol[d] for d in sorted(vol) if d < t["in"]][-20:]
                 assert len(prev) == 20 and sum(prev) / 20 >= mv * 1e6, (t["sym"], t["in"])
         assert len(ns[0.06]) < len(ns[0.03]) <= res["all"]["n"], (len(ns[0.06]), len(ns[0.03]), res["all"]["n"])
