@@ -252,7 +252,35 @@ def _mid(row):
     return (a + b) / 2 if b and a and a >= b else last
 
 
-_MEMO = {}                                            # one stock's chains / contract histories (cleared per stock)
+import threading
+_TL = threading.local()
+WORKERS = 8                                            # stocks downloaded / simulated at once
+
+
+class _Memo:
+    """One stock's chains / contract histories, per thread (each worker thread handles one stock at a time)."""
+    def _d(self):
+        if not hasattr(_TL, "m"):
+            _TL.m = {}
+        return _TL.m
+
+    def get(self, k, default=None):
+        return self._d().get(k, default)
+
+    def __contains__(self, k):
+        return k in self._d()
+
+    def __getitem__(self, k):
+        return self._d()[k]
+
+    def __setitem__(self, k, v):
+        self._d()[k] = v
+
+    def clear(self):
+        self._d().clear()
+
+
+_MEMO = _Memo()
 
 
 def _chain(tok, sym, day, dte):
@@ -295,7 +323,7 @@ def _count_calls():
     f = uwhales._get_retry
 
     def g(*a, **k):
-        CALLS[0] += 1
+        CALLS[0] += 1                                   # approximate across threads: a progress figure only
         return f(*a, **k)
     g.counted = True
     uwhales._get_retry = g
@@ -533,21 +561,33 @@ def run_job(sub, prog, deadline):
     ci = {d: i for i, d in enumerate(cal)}
     done = set(st["done"])
     part = {"f": [], "today": []}
-    for s in syms:
-        if s in done:
-            continue
-        if time.time() > deadline:
-            break
-        prog(f"Backtest {len(done) + 1} / {len(syms)}: {s} · {CALLS[0]:,} option downloads in this pass (the rest from the cache)")
+
+    def one(s):
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
         try:
-            part["f"] += sim_symbol(tok, s, rows, c, ci)
+            f = sim_symbol(tok, s, rows, c, ci)
         except BadRequest as e:                         # a ticker without option data: go on
             print("ivcrush sim", s, e)
-        if rows:
-            part["today"].append({"sym": s, "day": rows[-1][0], "S": rows[-1][1], "rank": rows[-1][2], "iv": rows[-1][3]})
-        done.add(s)
+            f = []
+        _MEMO.clear()
+        return s, f, ({"sym": s, "day": rows[-1][0], "S": rows[-1][1], "rank": rows[-1][2], "iv": rows[-1][3]} if rows else None)
+    todo = [s for s in syms if s not in done]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(WORKERS) as ex:
+        longest = 0.0
+        for i in range(0, len(todo), WORKERS):
+            if time.time() + longest * 1.3 > deadline:  # the next batch might not finish in this invocation
+                break
+            t0 = time.time()
+            batch = todo[i:i + WORKERS]
+            prog(f"Backtest {len(done) + 1}–{len(done) + len(batch)} / {len(syms)}: {', '.join(batch)} · {CALLS[0]:,} option downloads in this pass (the rest from the cache)")
+            for s, f, today in ex.map(one, batch):
+                part["f"] += f
+                if today:
+                    part["today"].append(today)
+                done.add(s)
+            longest = max(longest, time.time() - t0)
     store.put_json(f"ivc/run/{sub}/p{st['parts']}", part)
     st.update(done=sorted(done), parts=st["parts"] + 1)
     store.put_json(f"ivc/run/{sub}", st)
@@ -687,23 +727,35 @@ def opt_job(sub, prog, deadline):
     ci = {d: i for i, d in enumerate(cal)}
     done = set(st["done"])
     part = [[] for _ in g]
-    for s in syms:
-        if s in done:
-            continue
-        if time.time() > deadline:
-            break
-        prog(f"Optimizer {len(done) + 1} / {len(syms)}: {s} · {len(g)} settings · {CALLS[0]:,} option downloads in this pass (the rest from the cache)")
+
+    def one(s):
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
-        for k, p in enumerate(g):
+        res = []
+        for p in g:
             try:
                 ts = sim_symbol(tok, s, rows, {**base, **p}, ci)
             except BadRequest as e:
                 print("ivcrush opt", s, e)
                 break
-            part[k] += [[t["i"], t["j"], t["pnl"], t["coll"], t["rank"], s] for t in ts]
-        done.add(s)
-    _MEMO.clear()
+            res.append([[t["i"], t["j"], t["pnl"], t["coll"], t["rank"], s] for t in ts])
+        _MEMO.clear()
+        return s, res
+    todo = [s for s in syms if s not in done]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(WORKERS) as ex:
+        longest = 0.0
+        for i in range(0, len(todo), WORKERS):
+            if time.time() + longest * 1.3 > deadline:  # the next batch might not finish in this invocation
+                break
+            t0 = time.time()
+            batch = todo[i:i + WORKERS]
+            prog(f"Optimizer {len(done) + 1}–{len(done) + len(batch)} / {len(syms)}: {', '.join(batch)} · {len(g)} settings · {CALLS[0]:,} option downloads in this pass (the rest from the cache)")
+            for s, res in ex.map(one, batch):
+                for k, ts in enumerate(res):
+                    part[k] += ts
+                done.add(s)
+            longest = max(longest, time.time() - t0)
     store.put_json(f"ivc/opt/{sub}/p{st['parts']}", part)
     st.update(done=sorted(done), parts=st["parts"] + 1)
     store.put_json(f"ivc/opt/{sub}", st)
