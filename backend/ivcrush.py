@@ -45,7 +45,7 @@ RATES = {2021: .0005, 2022: .0202, 2023: .0507, 2024: .0497, 2025: .0420, 2026: 
 
 def clean(cfg):
     c = {**DEFAULT, **{k: v for k, v in (cfg or {}).items() if k in DEFAULT}}
-    for k, lo, hi in (("rank", 0, 100), ("dte", 7, 120), ("dteMin", 1, 120), ("dteMax", 7, 180), ("delta", 0.03, 0.5),
+    for k, lo, hi in (("rank", 0, 100), ("dte", 7, 88), ("dteMin", 1, 85), ("dteMax", 7, 88), ("delta", 0.03, 0.5),
                       ("take", 0.1, 0.95), ("manage", 0, 60), ("stop", 0, 10), ("maxPos", 1, 200), ("minPx", 0.01, 5), ("slip", 0, 1),
                       ("comm", 0, 5), ("acct", 1000, 1e9), ("alloc", 0.05, 5), ("split", 0.3, 0.9),
                       ("roll", 0, 1), ("rollDte", 1, 60), ("rollDelta", 0.1, 0.9), ("rollMin", 0, 5), ("rollMax", 1, 10)):
@@ -256,11 +256,24 @@ _MEMO = {}                                            # one stock's chains / con
 
 
 def _chain(tok, sym, day, dte):
+    """The puts listed, from the chain of the first trading day of `day`'s week (one download a week per stock, whatever
+    the settings: the listed expiries / strikes barely change within a week; never a later day, so no look-ahead)."""
     import optreal
-    k = ("c", sym, day)
+    wk = date.fromisoformat(day).isocalendar()[:2]
+    a = (_MEMO.get(("w", sym)) or {}).get(wk, day)
+    if a > day:
+        a = day
+    k = ("c", sym, a)
     if k not in _MEMO:
-        _MEMO[k] = optreal.chain_on(tok, sym, day, False, max(dte, 42))
+        _MEMO[k] = optreal.chain_on(tok, sym, a, False, 42)
     return _MEMO[k]
+
+
+def _weeks(sym, rows):
+    w = {}
+    for r in rows:
+        w.setdefault(date.fromisoformat(r[0]).isocalendar()[:2], r[0])
+    _MEMO[("w", sym)] = w
 
 
 def _hist(tok, occ):
@@ -313,6 +326,8 @@ def _entry(tok, sym, day, S, iv, c):
         dl = abs(put_delta(S, k, T, v, rate(day)))
         if best is None or abs(dl - c["delta"]) < abs(best[4] - c["delta"]):
             best = (occ, ex, k, round(credit, 3), round(dl, 3), v, h)
+        if abs(best[4] - c["delta"]) <= 0.03:           # close enough: no need to download the next strikes
+            break
     if best and abs(best[4] - c["delta"]) <= 0.10:
         return best
     return None
@@ -368,6 +383,8 @@ def sim_symbol(tok, sym, rows, c, cal):
     mark = the position's value so far (net credit received - the open put's mid)."""
     out, pos = [], None
     close = {r[0]: r[1] for r in rows}
+    if ("w", sym) not in _MEMO:
+        _weeks(sym, rows)
     for day, S, rk, iv in rows:
         if day not in cal or day < c["from"]:
             continue
