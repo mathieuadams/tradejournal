@@ -14,6 +14,7 @@ Data:
 Rules (per stock, one put at a time on a stock):
   - Volume: the stock's average daily volume over the `volLen` sessions before the day >= minVol million shares
     (Alpaca daily bars; 0 = off).
+  - Trend (option): the day's close above its `maLen`-day daily moving average (SMA or EMA, FMP closes; 0 = off).
   - Entry: IV rank (Unusual Whales, 1 year) >= `rank` → the expiry nearest `dte` days (within dteMin-dteMax); the strike
     for the target `delta` from the stock's IV (Black-Scholes), then of the 3 listed strikes nearest it, the one whose
     delta that day (its own IV) is nearest the target (within 0.10), premium >= minPx. Sold at the day's NBBO bid
@@ -41,7 +42,7 @@ from util import BadRequest, iso, now_ny
 START = "2022-01-01"
 DEFAULT = {"rank": 30.0, "dte": 45, "dteMin": 30, "dteMax": 60, "delta": 0.20, "take": 0.50, "manage": 21, "stop": 0.0,
            "maxPos": 20, "minPx": 0.20, "slip": 0.03, "comm": 0.65, "acct": 500000.0, "alloc": 1.0, "coll": "cash", "split": 0.6,
-           "from": "2022-03-01", "fill": "nbbo", "roll": 0, "rollDte": 21, "rollDelta": 0.40, "rollMin": 0.10, "rollMax": 3, "rollMode": "both", "minVol": 2.0, "volLen": 20}
+           "from": "2022-03-01", "fill": "nbbo", "roll": 0, "rollDte": 21, "rollDelta": 0.40, "rollMin": 0.10, "rollMax": 3, "rollMode": "both", "minVol": 2.0, "volLen": 20, "maLen": 0, "maType": "sma"}
 RATES = {2021: .0005, 2022: .0202, 2023: .0507, 2024: .0497, 2025: .0420, 2026: .0370, 2027: .0350}
 
 
@@ -50,16 +51,17 @@ def clean(cfg):
     for k, lo, hi in (("rank", 0, 100), ("dte", 7, 88), ("dteMin", 1, 85), ("dteMax", 7, 88), ("delta", 0.03, 0.5),
                       ("take", 0.1, 0.95), ("manage", 0, 60), ("stop", 0, 10), ("maxPos", 1, 200), ("minPx", 0.01, 5), ("slip", 0, 1),
                       ("comm", 0, 5), ("acct", 1000, 1e9), ("alloc", 0.05, 5), ("split", 0.3, 0.9),
-                      ("roll", 0, 1), ("minVol", 0, 1000), ("volLen", 5, 252), ("rollDte", 1, 60), ("rollDelta", 0.1, 0.9), ("rollMin", 0, 5), ("rollMax", 1, 10)):
+                      ("roll", 0, 1), ("minVol", 0, 1000), ("volLen", 5, 252), ("maLen", 0, 400), ("rollDte", 1, 60), ("rollDelta", 0.1, 0.9), ("rollMin", 0, 5), ("rollMax", 1, 10)):
         try:
             c[k] = max(lo, min(hi, float(c[k])))
         except (TypeError, ValueError):
             c[k] = DEFAULT[k]
-    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos", "roll", "rollDte", "rollMax", "volLen"):
+    for k in ("dte", "dteMin", "dteMax", "manage", "maxPos", "roll", "rollDte", "rollMax", "volLen", "maLen"):
         c[k] = int(c[k])
     c["coll"] = "margin" if c["coll"] == "margin" else "cash"
     c["fill"] = "mid" if c["fill"] == "mid" else "nbbo"
     c["rollMode"] = c["rollMode"] if c["rollMode"] in ("out", "down", "both") else "both"
+    c["maType"] = "ema" if c["maType"] == "ema" else "sma"
     f = str(c["from"])[:10]
     c["from"] = f if len(f) == 10 and f >= START else DEFAULT["from"]
     return c
@@ -333,34 +335,60 @@ def _chain(tok, sym, day, dte):
     return _MEMO[k]
 
 
-def stock_volume(sub, sym, lastday):
-    """{date: shares traded, all US exchanges} of the stock: FMP daily bars (historical-price-eod/full); Alpaca only when
-    FMP fails and the Alpaca feed is SIP (the IEX feed counts only IEX's own trades, a few % of the volume). Kept in
-    ivc/vol2/<SYM>; fetched again only when the stock has a newer day than what's kept."""
-    key = f"ivc/vol2/{root_of(sym)}"
+def stock_daily(sub, sym, lastday):
+    """({date: shares traded, all US exchanges}, {date: close}) of the stock: FMP daily bars (historical-price-eod/full,
+    from 2022 so a 200-day average is ready when the IV history starts); Alpaca only when FMP fails and the Alpaca feed
+    is SIP (IEX counts only its own trades). Kept in ivc/px/<SYM>; fetched again only when the stock has a newer day."""
+    key = f"ivc/px/{root_of(sym)}"
     have = store.get_json(key) or {}
-    d = have.get("d") or {}
-    if d and (max(d) >= lastday or have.get("asked", "") >= lastday):
-        return d
+    v, cl = have.get("v") or {}, have.get("c") or {}
+    if v and (max(v) >= lastday or have.get("asked", "") >= lastday):
+        return v, cl
     src = None
     try:
         import fmp
-        raw = fmp._get(fmp._key(sub), "historical-price-eod/full", {"symbol": sym, "from": "2022-10-01"}) or []
+        raw = fmp._get(fmp._key(sub), "historical-price-eod/full", {"symbol": sym, "from": "2022-01-01"}) or []
         raw = raw if isinstance(raw, list) else (raw.get("historical") or [])
-        d = {str(r["date"])[:10]: float(r["volume"]) for r in raw if r.get("date") and r.get("volume") is not None}
+        v = {str(r["date"])[:10]: float(r["volume"]) for r in raw if r.get("date") and r.get("volume") is not None}
+        cl = {str(r["date"])[:10]: float(r["close"]) for r in raw if r.get("date") and r.get("close")}
         src = "FMP"
     except Exception as e:
-        print("ivcrush volume fmp", sym, e)
-    if not d:
+        print("ivcrush daily fmp", sym, e)
+    if not v:
         try:
             import alpaca
             if alpaca.status(sub).get("feed") == "sip":
-                d = {r[0]: float(r[5]) for r in alpaca.daily_range(sub, sym, "2022-10-01")}
+                rows = alpaca.daily_range(sub, sym, "2022-01-01")
+                v, cl = {r[0]: float(r[5]) for r in rows}, {r[0]: float(r[4]) for r in rows}
                 src = "Alpaca SIP"
         except Exception as e:
-            print("ivcrush volume alpaca", sym, e)
-    store.put_json(key, {"d": d, "asked": lastday, "src": src})
-    return d
+            print("ivcrush daily alpaca", sym, e)
+    store.put_json(key, {"v": v, "c": cl, "asked": lastday, "src": src})
+    return v, cl
+
+
+def stock_volume(sub, sym, lastday):
+    return stock_daily(sub, sym, lastday)[0]
+
+
+def moving_avg(close, n, kind="sma"):
+    """{date: the n-day simple / exponential average of the close, that day included}."""
+    out, ds = {}, sorted(close)
+    if kind == "ema":
+        k, e = 2 / (n + 1), None
+        for i, d in enumerate(ds):
+            e = close[d] if e is None else e + k * (close[d] - e)
+            if i >= n - 1:
+                out[d] = e
+        return out
+    run = 0.0
+    for i, d in enumerate(ds):
+        run += close[d]
+        if i >= n:
+            run -= close[ds[i - n]]
+        if i >= n - 1:
+            out[d] = run / n
+    return out
 
 
 def avg_volume(vol, n):
@@ -516,6 +544,18 @@ def sim_symbol(tok, sym, rows, c, cal):
     av = avg_volume(_MEMO.get("vol") or {}, c["volLen"]) if c["minVol"] > 0 else {}
     vlast = max((k for k in av if k != "~next"), default="")
     vmin = c["minVol"] * 1e6
+    cl = _MEMO.get("close") or {}
+    ma = moving_avg(cl, c["maLen"], c["maType"]) if c["maLen"] > 0 else {}
+    malast = max(ma, default="")
+
+    def above_ma(day, S):
+        """The day's close above its daily moving average (FMP closes; after FMP's last day: today's price vs the last
+        average)."""
+        if c["maLen"] <= 0:
+            return True
+        if day in ma and day in cl:
+            return cl[day] > ma[day]
+        return day > malast and malast != "" and S > ma[malast]
     for day, S, rk, iv in rows:
         if day not in cal or day < c["from"]:
             continue
@@ -563,7 +603,7 @@ def sim_symbol(tok, sym, rows, c, cal):
             else:
                 pos["marks"].append(pos["last"] + adj)
                 continue
-        if pos is None and rk >= c["rank"] and (vmin <= 0 or ((av.get(day) if day <= vlast else av.get("~next")) or 0) >= vmin):
+        if pos is None and rk >= c["rank"] and (vmin <= 0 or ((av.get(day) if day <= vlast else av.get("~next")) or 0) >= vmin) and above_ma(day, S):
             e = _entry(tok, sym, day, S, iv, c)
             if e:
                 occ, ex, k, credit, dl, v, h = e
@@ -684,8 +724,8 @@ def run_job(sub, prog, deadline):
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
         db_open(s, rows)
-        if c["minVol"] > 0 and rows:
-            _MEMO["vol"] = stock_volume(sub, s, rows[-1][0])
+        if (c["minVol"] > 0 or c["maLen"] > 0) and rows:
+            _MEMO["vol"], _MEMO["close"] = stock_daily(sub, s, rows[-1][0])
         try:
             f = sim_symbol(tok, s, rows, c, ci)
         except BadRequest as e:                         # a ticker without option data: go on
@@ -695,6 +735,9 @@ def run_job(sub, prog, deadline):
         av = avg_volume(_MEMO.get("vol") or {}, c["volLen"]).get("~next") if c["minVol"] > 0 else None
         _MEMO.clear()
         ok = rows and (c["minVol"] <= 0 or (av or 0) >= c["minVol"] * 1e6)
+        if ok and c["maLen"] > 0:
+            ma = moving_avg(_MEMO.get("close") or {}, c["maLen"], c["maType"])
+            ok = bool(ma) and rows[-1][1] > ma[max(ma)]
         return s, f, ({"sym": s, "day": rows[-1][0], "S": rows[-1][1], "rank": rows[-1][2], "iv": rows[-1][3], "vol": av} if ok else None)
     todo = [s for s in syms if s not in done]
     from concurrent.futures import ThreadPoolExecutor
@@ -774,7 +817,7 @@ DTE_WIN = {30: (21, 40), 45: (35, 60), 60: (45, 75)}
 SPACE = {"rank": [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80], "delta": [0.1, 0.15, 0.2, 0.25, 0.3, 0.35], "dte": [30, 45, 60],
          "take": [0.25, 0.4, 0.5, 0.6, 0.75], "manage": [0, 7, 14, 21], "stop": [0, 1, 1.5, 2, 3], "roll": [0, 1],
          "rollMode": ["both", "out", "down"], "rollDelta": [0.3, 0.4, 0.5], "rollDte": [7, 14, 21], "maxPos": [10, 20, 30],
-         "minVol": [0, 1, 2, 5]}
+         "minVol": [0, 1, 2, 5], "maLen": [0, 21, 55, 89, 200], "maType": ["sma", "ema"]}
 ROUND = 40                                             # settings per round (one pass over the stocks)
 
 
@@ -916,8 +959,8 @@ def opt_job(sub, prog, deadline):
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
         db_open(s, rows)
-        if rows and any(p["minVol"] > 0 for p in g):
-            _MEMO["vol"] = stock_volume(sub, s, rows[-1][0])
+        if rows and any(p.get("minVol", base["minVol"]) > 0 or p.get("maLen", base["maLen"]) > 0 for p in g):
+            _MEMO["vol"], _MEMO["close"] = stock_daily(sub, s, rows[-1][0])
         res = []
         for p in g:
             try:

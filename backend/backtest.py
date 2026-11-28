@@ -366,6 +366,10 @@ def needs_paths(c):
                                        c["legs"][k]["inst"] == "option" or c["legs"][k]["hold"] == 60 or c["legs"][k]["entry"] == "open") for k in "CD")
 
 
+def _r4(x):
+    return round(x, 4) if isinstance(x, (int, float)) else None
+
+
 def context(rows):
     """What every setting shares: the trailing percentiles of the score and of the model's prediction."""
     last = max((r["day0"] for r in rows if r.get("day0")), default=None)
@@ -396,7 +400,8 @@ def trades_for(rows, ctx, c, only=None, paths=None, keep_open=False):
             borrow = borrow_y * days / 365 if side == "short" else 0.0
             sg = 1 if side == "long" else -1
             t = {"leg": leg, "sym": r["sym"], "release": r["date"], "entry": d0, "exit": exit_d, "side": side, "ret": round(ret, 6),
-                 "res": round(sg * ret, 6), "pnl": round(stake * (sg * ret - cost - borrow), 2), "why": why}
+                 "res": round(sg * ret, 6), "pnl": round(stake * (sg * ret - cost - borrow), 2), "why": why,
+                 "scoreP": _r4(sp), "predP": _r4(pp), "gap": _r4(gap), "days": days}
             if xret is not None:                       # the same trade's result beyond the market (vs SPY, as if hedged)
                 xcost = base_cost * (2 if leg in "CD" else 1)
                 t["alpha"] = round(stake * (sg * xret - xcost - borrow), 2)
@@ -531,7 +536,8 @@ def hold_trade(k, L, r, d0, why, add, paths, c, out, open_after=None):
     spread = c["optSpreadPct"] / 100
     lab = opt_label({**L, "_leg": k})                 # strike and premium relative to the entry price (fill is too)
     t = {"leg": k, "sym": r["sym"], "release": r["date"], "entry": d0, "exit": exit_d, "side": lab, "ret": round(raw, 6), "res": round(ret, 6),
-         "pnl": round(c["stake"] * (ret - spread), 2), "why": f"{why} · {lab} at {vol * 100:.0f}% vol" + tag}
+         "pnl": round(c["stake"] * (ret - spread), 2), "why": f"{why} · {lab} at {vol * 100:.0f}% vol" + tag,
+         "vol": round(vol, 4), "strike": round(K, 4), "premium": round(p0, 5), "delta": round(delta, 3), "days": dd}
     if spy is not None:                                # beyond the market: minus what the option's delta made on SPY's move
         t["alpha"] = round(c["stake"] * (ret - delta / p0 * spy - spread), 2)
     if still_open:

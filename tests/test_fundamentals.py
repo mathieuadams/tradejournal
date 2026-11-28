@@ -1011,10 +1011,20 @@ def test_ivcrush():
             st, vv = call("GET", "/ivcrush")
             ns[mv] = vv["res"]["trades"]
             for t in ns[mv]:
-                vol = store.get_json(f"ivc/vol2/{t['sym']}")["d"]
+                vol = store.get_json(f"ivc/px/{t['sym']}")["v"]
                 prev = [vol[d] for d in sorted(vol) if d < t["in"]][-20:]
                 assert len(prev) == 20 and sum(prev) / 20 >= mv * 1e6, (t["sym"], t["in"])
         assert len(ns[0.06]) < len(ns[0.03]) <= res["all"]["n"], (len(ns[0.06]), len(ns[0.03]), res["all"]["n"])
+        for kind in ("sma", "ema"):                      # the daily moving-average filter
+            call("POST", "/ivcrush", {"cfg": {"from": "2022-06-01", "maxPos": 3, "rank": 30, "minVol": 0, "maLen": 21, "maType": kind}})
+            st, vm = call("GET", "/ivcrush")
+            tm = vm["res"]["trades"]
+            assert tm and len(tm) < res["all"]["n"], (kind, len(tm), res["all"]["n"])
+            for t in tm:
+                cl = store.get_json(f"ivc/px/{t['sym']}")["c"]
+                ma = IV.moving_avg(cl, 21, kind)
+                assert cl[t["in"]] > ma[t["in"]], (kind, t["sym"], t["in"])
+        assert abs(IV.moving_avg({"2024-01-0%d" % i: float(i) for i in range(1, 6)}, 3)["2024-01-05"] - 4.0) < 1e-9
     finally:
         F.UW_BS = False
 

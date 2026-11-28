@@ -584,9 +584,11 @@ def fake_fmp_get(key, path, params, timeout=40):
         return out[::-1]
     if path == "historical-price-eod/full":                     # a stock's daily bars with consolidated volume
         rnd, out, d = random.Random("vol" + str(params.get("symbol"))), [], _dt.fromisoformat(params.get("from") or "2022-01-01")
+        px = 100.0
         while d <= _dt.today() - timedelta(days=1):
             if d.weekday() < 5:
-                out.append({"symbol": params.get("symbol"), "date": d.isoformat(), "close": 100.0, "volume": rnd.randint(1000, 90000)})
+                px *= 1 + rnd.gauss(0.0003, 0.015)
+                out.append({"symbol": params.get("symbol"), "date": d.isoformat(), "close": round(px, 2), "volume": rnd.randint(1000, 90000)})
             d += timedelta(days=1)
         return out[::-1]
     if path == "historical-price-eod/dividend-adjusted":       # daily ETF bars (holiday study): NYSE holidays left out

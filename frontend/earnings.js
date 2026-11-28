@@ -421,7 +421,7 @@ function enBtHtml(r) {
       <section class="panel"><div class="hd"><h2>By leg</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.legs.map(x => row(BT_LEG[x.leg] || x.leg, x)).join('')}</tbody></table></div></section>
       <section class="panel"><div class="hd"><h2>By year (exit)</h2></div><div class="tbl-wrap"><table class="tbl">${head}<tbody>${r.years.map(x => row(x.year, x)).join('')}</tbody></table></div></section></div>
     ${enDrivers(r.drivers, money2, 'trades')}
-    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Trades</h2><span class="dim" style="font-size:13px">the latest ${Math.min(300, r.trades.length)} of ${r.nTrades.toLocaleString('en-US')}</span><div class="grow"></div><button class="btn sm" data-en="bt-csv">Export trades (CSV)</button></div>
+    <section class="panel" style="margin-top:12px"><div class="hd"><h2>Trades</h2><span class="dim" style="font-size:13px">the latest ${Math.min(300, r.trades.length)} of ${r.nTrades.toLocaleString('en-US')}</span><div class="grow"></div><button class="btn sm" data-en="bt-csv">Export trades (CSV)</button><button class="btn sm" data-en="bt-full" style="margin-left:6px">Export parameters + trades (for analysis)</button></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Leg</th><th>Ticker</th><th>Release</th><th>Entry</th><th>Exit</th><th>Side</th><th class="r" title="the trade's result: a short's sign flipped, an option's own return">Result</th><th class="r">P/L</th><th>Why</th></tr></thead><tbody>
       ${r.trades.slice(-300).reverse().map(t => `<tr><td>${t.leg}</td><td><a class="name" href="#earnings" data-enco="${esc(t.sym)}">${esc(t.sym)}</a></td><td class="mono">${esc(t.release)}</td><td class="mono">${esc(t.entry)}</td><td class="mono">${esc(t.exit)}</td><td>${t.side}</td><td class="r ${cls(t.res ?? (t.side === 'short' ? -t.ret : t.ret))}" title="stock ${pct(t.ret, 2)}">${pct(t.res ?? (t.side === 'short' ? -t.ret : t.ret), 2)}</td><td class="r ${cls(t.pnl)}"><b>${money2(t.pnl)}</b></td><td class="dim">${esc(t.why)}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
@@ -431,6 +431,33 @@ function enBtCsv() {
   const q = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[keys.join(',')].concat(r.trades.map(t => keys.map(k => q(t[k])).join(','))).join('\n')], { type: 'text/csv' }));
   a.download = 'earnings_strategy_trades.csv'; a.click(); URL.revokeObjectURL(a.href);
+}
+
+function enBtFull() {
+  // one CSV: the parameters (every leg, flattened), the summary (all / train / test / legs / years), every trade with its
+  // signals, the positions still open. Sections start with a "# " line.
+  const r = S.enBt; if (!r) return;
+  const q = v => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  const out = ['# PARAMETERS', 'parameter,value'];
+  const flat = (o, pre) => Object.entries(o || {}).forEach(([k, v]) => v && typeof v === 'object' && !Array.isArray(v) ? flat(v, pre + k + '.') : out.push(q(pre + k) + ',' + q(Array.isArray(v) ? v.join('|') : v)));
+  flat(r.cfg, '');
+  out.push('', '# SUMMARY', 'scope,trades,total_pnl,avg_pnl,win,profit_factor,avg_win,avg_loss,t,beyond_market_total,beyond_market_t');
+  const sum = (lab, m, x) => out.push([lab, m.n, m.total, m.avg, m.win, m.profitFactor, m.avgWin, m.avgLoss, m.t, x && x.total, x && x.t].map(q).join(','));
+  sum('all', r, r.alpha);
+  if (r.split) { sum('train (before ' + r.split.date + ')', r.split.train, r.split.trainX); sum('test (from ' + r.split.date + ')', r.split.test, r.split.testX); }
+  (r.legs || []).forEach(x => sum('leg ' + x.leg, x));
+  (r.years || []).forEach(x => sum('year ' + x.year, x));
+  out.push('', `# KEY FIGURES`, 'figure,value');
+  [['from', r.from], ['to', r.to], ['per_year', r.perYear], ['max_drawdown', r.maxDrawdown], ['max_drawdown_at', r.maxDrawdownAt], ['max_open', r.maxOpen], ['capital_needed', r.capitalNeeded],
+   ['avg_capital', r.avgCapital], ['return_on_avg_capital_per_year', r.returnOnAvgCapitalPerYear], ['trades_total', r.nTrades], ['trades_in_this_file', r.trades.length]].forEach(([k, v]) => out.push(q(k) + ',' + q(v)));
+  const keys = ['leg', 'sym', 'release', 'entry', 'exit', 'days', 'side', 'ret', 'res', 'pnl', 'alpha', 'scoreP', 'predP', 'gap', 'vol', 'strike', 'premium', 'delta', 'why'];
+  out.push('', '# TRADES' + (r.trades.length < r.nTrades ? ` (the latest ${r.trades.length} of ${r.nTrades})` : ''), keys.join(','));
+  r.trades.forEach(t => out.push(keys.map(k => q(t[k])).join(',')));
+  const op = (r.open && r.open.trades) || [];
+  out.push('', '# OPEN POSITIONS (not counted; marked at the latest close)', keys.join(','));
+  op.forEach(t => out.push(keys.map(k => q(t[k])).join(',')));
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([out.join('\n')], { type: 'text/csv' }));
+  a.download = `earnings_strategy_${new Date().toISOString().slice(0, 10)}.csv`; a.click(); URL.revokeObjectURL(a.href);
 }
 
 /* ---------- Call transcript viewer ---------- */
@@ -634,6 +661,7 @@ document.addEventListener('click', async e => {
         catch (err) { $('#en-bt-res').innerHTML = `<div class="panel"><div class="empty loss">${esc(err.message)}</div></div>`; }
         el.disabled = false; el.textContent = 'Run backtest'; return; }
       case 'bt-csv': return enBtCsv();
+      case 'bt-full': return enBtFull();
       case 'real-run': el.disabled = true; await api('/fund/backtest/real', { method: 'POST', body: { cfg: S.en.bt } }); toast('Pricing the C / D trades with real options…'); setTimeout(enRealLoad, 1500); el.disabled = false; return;
       case 'real-csv': { const v = (S.enReal || {}).view; if (!v) return;
         const keys = ['leg', 'sym', 'release', 'entry', 'exit', 'plannedExit', 'contract', 'occ', 'expiry', 'strike', 'buy', 'sell', 'iv', 'stock', 'model', 'real', 'realMid', 'how', 'why'];
