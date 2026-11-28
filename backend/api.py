@@ -680,7 +680,19 @@ def ivc_data(sub, claims, body, q):
 @route("POST", "/ivcrush/opt")
 def ivc_opt(sub, claims, body, q):
     import ivcrush
-    return ivcrush.opt_start(sub, body.get("cfg") or {}, bool(body.get("wide")))
+    return ivcrush.opt_start(sub, body.get("cfg") or {}, bool(body.get("restart")), body.get("rounds"))
+
+
+@route("POST", "/ivcrush/stop")
+def ivc_stop(sub, claims, body, q):
+    import ivcrush
+    return ivcrush.run_stop(sub)
+
+
+@route("POST", "/ivcrush/opt/stop")
+def ivc_opt_stop(sub, claims, body, q):
+    import ivcrush
+    return ivcrush.opt_stop(sub)
 
 
 @route("POST", "/ivcrush")

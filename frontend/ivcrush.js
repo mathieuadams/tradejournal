@@ -9,7 +9,7 @@ async function ivLoad() {
   if (!S.iv.cfg) S.iv.cfg = { ...r.cfg };
   if (S.sw.kind !== 'ivc' || !$('#sw-body')) return;
   $('#sw-body').innerHTML = ivShell(r);
-  const live = r.job && r.job.status === 'running' && !r.job.stale;
+  const oj = r.opt && r.opt.job, live = (r.job && r.job.status === 'running' && !r.job.stale) || (oj && oj.status === 'running' && !oj.stale);
   clearTimeout(ivLoad.h);
   if (live) ivLoad.h = setTimeout(() => S.sw.kind === 'ivc' && ivLoad(), 5000);
 }
@@ -41,23 +41,32 @@ function ivShell(r) {
       <label class="f">Roll to${sel('rollMode', [['both', 'Later expiry, same strike or lower'], ['out', 'Later expiry, same strike (in time)'], ['down', 'Later expiry, lower strike (down in price)']])}</label><label class="f">from DTE${num('rollDte', 1)}</label><label class="f">tested = delta ≥${num('rollDelta', 0.05)}</label><label class="f">min net credit ($)${num('rollMin', 0.05)}</label><label class="f">max rolls${num('rollMax', 1)}</label>
       <label class="f">Fill${sel('fill', [['nbbo', 'NBBO (sell at bid, buy at ask)'], ['mid', 'Mid ± slippage']])}</label>
       <label class="f">Backtest from<input type="date" data-ivv="from" value="${c.from}"></label>
-      <button class="btn primary" data-iv="run" ${run ? 'disabled' : ''}>Run backtest</button></div>
+      <button class="btn primary" data-iv="run" ${run ? 'disabled' : ''}>Run backtest</button>${run && j.job === 'ivcrun' ? '<button class="btn" data-iv="stop">■ Stop</button>' : ''}</div>
     <p class="note" style="padding:0 16px 14px">IV rank: Unusual Whales' 1-year IV rank of each stock (0–100: where today's implied volatility sits between its low and high of the last year). Entry when IV rank ≥ the threshold and the stock's average daily volume over the previous N sessions ≥ the minimum (FMP daily bars, all exchanges): the expiry nearest the target days (within min–max); the strike for the target delta from the stock's IV, then the listed strikes nearest it in turn (up to 3), the first whose delta that day (its own IV) is within 0.03 of the target, else the nearest; sold at the day's NBBO bid. One put per stock at a time; at most "max open puts" at once, the highest IV ranks first. Exit on the contract's daily prices: its NBBO ask ≤ (1 − take profit) × the net credit → bought back there; or at the DTE exit; or the stop; else expiry (strike − price). Roll (on): from the roll DTE, a tested put (delta ≥ the limit, from its own IV that day) is bought back and a later expiry (nearest the target days) is sold — in time at the same strike, down in price at a lower strike, or either (the lowest strike that still gives the minimum net credit); no credit roll → closed; after a roll, take profit and stop use the net credit of all the legs. Size: equity × allocation ÷ max open puts ÷ the collateral of one contract. Option chains (one per stock per week) and the contracts' daily prices are kept in one file per stock: Unusual Whales is only asked for what isn't there yet (a new chain or contract, or new days of a live contract). Universe: today's S&P 500 (companies removed in the period are not in it). The first 60% of the days are the train period.</p></section>
-    ${ivOptHtml(r.opt, run)}
+    ${ivOptHtml(r.opt)}
     <div style="margin-top:12px">${r.res ? ivResHtml(r.res) : ''}</div>`;
 }
 
-function ivOptHtml(o, run) {
-  const pc = (x, k = 0) => x == null ? '—' : (x * 100).toFixed(k) + '%';
-  const st = x => !x || !x.n ? '<span class="dim">no trades</span>' : x.total == null ? `${x.n} trades` : `${pc(x.total)} · Sharpe ${x.sharpe ?? '—'} · DD ${pc(x.mdd)} · ${x.n} trades · win ${pc(x.win)}`;
-  const lab = p => `IV rank ≥ ${p.rank} · take ${Math.round(p.take * 100)}% · ${p.manage ? 'close at ' + p.manage + ' DTE' : 'hold to expiry'} · ${p.stop ? 'stop ' + p.stop + '× credit' : 'no stop'}${p.roll != null ? (p.roll ? ' · roll' : ' · no roll') : ''}${p.delta != null ? ` · delta ${p.delta} · ${p.dte} DTE` : ''}`;
-  const body = !o ? '<div class="bd dim">Not run yet.</div>' : o.running ? '<div class="bd dim">Running…</div>' : !o.top || !o.top.length ? '<div class="bd dim">No results.</div>' :
-    `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Setting</th><th class="r">Train (before ${esc(o.split || '')})</th><th class="r">Test</th><th></th></tr></thead><tbody>
-    ${o.top.map((x, i) => `<tr><td>${lab(x.p)}</td><td class="r">${st(x.train)}</td><td class="r ${cls(x.test.total)}">${st(x.test)}</td><td><button class="btn sm" data-iv-use="${i}">Use</button></td></tr>`).join('')}</tbody></table></div>
-    <div class="note" style="padding:6px 16px 12px">${o.total} settings on ${o.syms} stocks, ranked on the train Sharpe only (the test column is out of sample). Equity on closed trades. ${o.wide ? 'Delta and DTE varied.' : `At delta ${o.cfg.delta} and ${o.cfg.dte} DTE (${o.cfg.dteMin}–${o.cfg.dteMax}).`} ${esc((o.at || '').slice(0, 16).replace('T', ' '))}</div>`;
-  return `<section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2><span class="dim" style="font-size:13px">IV rank × take profit × DTE exit × stop × roll</span><div class="grow"></div>
-    <label class="dim" style="font-size:13px;margin-right:10px"><input type="checkbox" id="ivWide"${S.iv.wide ? ' checked' : ''}> also vary delta and DTE (more option data to download)</label>
-    <button class="btn" data-iv="opt" ${run ? 'disabled' : ''}>Run optimizer</button></div>${body}</section>`;
+function ivOptHtml(o) {
+  const pc = (x, k = 1) => x == null ? '—' : (x * 100).toFixed(k) + '%';
+  const oj = (o && o.job) || {}, on = oj.status === 'running' && !oj.stale;
+  const NAMES = { rank: 'IV rank ≥', delta: 'Put delta', dte: 'Days to expiry', dteMin: 'min DTE', dteMax: 'max DTE', take: 'Take profit', manage: 'Close at DTE', stop: 'Stop (× credit)',
+    roll: 'Roll', rollMode: 'Roll to', rollDelta: 'Tested = delta ≥', rollDte: 'Roll from DTE', maxPos: 'Max open puts', minVol: 'Avg volume ≥ (M)' };
+  const val = (k, v) => k === 'take' ? Math.round(v * 100) + '%' : k === 'roll' ? (v ? 'on' : 'off') : k === 'manage' && !v ? 'hold' : k === 'stop' && !v ? 'off' : k === 'minVol' && !v ? 'off' : v;
+  const b = (o && o.board) || [];
+  const runs = (o && o.runs) || [];
+  const rows = b.map((x, i) => { const tr = x.train || {}, te = x.test || {}; return `<tr${i < 5 ? ' style="background:rgba(34,197,94,.06)"' : ''}><td>${i + 1}</td><td class="r"><b>${x.score ?? '—'}</b></td>
+    <td class="r">${tr.n ?? 0}</td><td class="r">${tr.n ? pc(tr.win, 0) : '—'}</td><td class="r ${cls(tr.total)}">${pc(tr.total)}</td><td class="r">${tr.sharpe ?? '—'}</td><td class="r loss">${pc(tr.mdd)}</td>
+    <td class="r">${te.n ?? 0}</td><td class="r">${te.n ? pc(te.win, 0) : '—'}</td><td class="r ${cls(te.total)}">${pc(te.total)}</td><td class="r">${te.sharpe ?? '—'}</td><td class="r loss">${pc(te.mdd)}</td>
+    <td><details><summary class="dim" style="cursor:pointer">show</summary><div style="font-size:12px;line-height:1.5">${Object.keys(NAMES).filter(k => k in x.p).map(k => `${NAMES[k]}: <b>${esc(String(val(k, x.p[k])))}</b>`).join('<br>')}</div></details></td>
+    <td><button class="btn sm" data-iv-use="${i}">Use</button></td></tr>`; }).join('');
+  return `<section class="panel" style="margin-top:12px"><div class="hd"><h2>Optimizer</h2>
+    ${on ? '<button class="btn" data-iv="optstop">■ Stop</button>' : '<button class="btn primary" data-iv="opt">▶ Start</button>'}
+    <button class="btn" data-iv="optre" ${on ? 'disabled' : ''}>Restart</button>
+    <span class="dim" style="font-size:13px;margin-left:8px">${o ? `${(o.tried || 0).toLocaleString('en-US')} settings tried · round ${o.round || 0}` : 'not run yet'}${on ? ' · ' + esc(oj.msg || 'running…') : o && o.stop ? ' · stopping at the next batch…' : ''}</span></div>
+    ${runs.length ? `<div class="bd dim" style="font-size:12px">Rounds: ${runs.slice(-6).reverse().map(x => `${esc((x.at || '').slice(11, 16))} ${x.n} tried · best ${x.best ?? '—'} · ${x.min} min`).join(' · ')}</div>` : ''}
+    <div class="note" style="padding:4px 16px 8px">Round after round until you stop it: each round tries ${'40'} settings on every stock — the current rules first, then changes of 1–2 settings of the best ones so far (2/3) and random ones; never the same twice. Ranked by the <b>train</b> Sharpe only (days before ${esc((o && o.split) || '—')}, 30+ train trades); the <b>test</b> days are never used to choose: a setting good on both is the one to try. Equity on closed trades. Fixed: account, allocation, costs, fill, collateral, backtest start, volume days. Start continues the board; Restart clears it.</div>
+    ${b.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th class="r">Score</th><th class="r">Train trades</th><th class="r">Win</th><th class="r">Total</th><th class="r">Sharpe</th><th class="r">DD</th><th class="r">Test trades</th><th class="r">Win</th><th class="r">Total</th><th class="r">Sharpe</th><th class="r">DD</th><th>Settings</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</section>`;
 }
 
 function ivResHtml(r) {
@@ -99,15 +108,16 @@ function ivResHtml(r) {
 
 document.addEventListener('change', ev => {
   const t = ev.target; if (!t.dataset) return;
-  if (t.id === 'ivWide') S.iv.wide = t.checked;
   if (t.dataset.ivv) S.iv.cfg[t.dataset.ivv] = ['coll', 'fill', 'from', 'rollMode'].includes(t.dataset.ivv) ? t.value : +t.value;
 });
 document.addEventListener('click', async ev => {
   const el = ev.target.closest('[data-iv],[data-iv-use]'); if (!el || !$('#sw-body')) return;
   const a = el.dataset.iv, I = S.iv;
   try {
-    if (el.dataset.ivUse != null) { Object.assign(I.cfg, I.v.opt.top[+el.dataset.ivUse].p); $('#sw-body').innerHTML = ivShell(I.v); toast('Setting applied: run the backtest.'); return; }
-    if (a === 'opt') { el.disabled = true; await api('/ivcrush/opt', { method: 'POST', body: { cfg: I.cfg, wide: !!I.wide } }); toast('Optimizer started: it downloads the option prices it needs the first time.'); setTimeout(ivLoad, 1500); return; }
+    if (el.dataset.ivUse != null) { Object.assign(I.cfg, I.v.opt.board[+el.dataset.ivUse].p); $('#sw-body').innerHTML = ivShell(I.v); toast('Setting applied: run the backtest.'); return; }
+    if (a === 'opt' || a === 'optre') { el.disabled = true; await api('/ivcrush/opt', { method: 'POST', body: { cfg: I.cfg, restart: a === 'optre' } }); toast('Optimizer started: it keeps going until you stop it.'); setTimeout(ivLoad, 1500); return; }
+    if (a === 'optstop') { el.disabled = true; await api('/ivcrush/opt/stop', { method: 'POST', body: {} }); toast('Stopping at the next batch of stocks (the round in progress is dropped).'); setTimeout(ivLoad, 1500); return; }
+    if (a === 'stop') { el.disabled = true; await api('/ivcrush/stop', { method: 'POST', body: {} }); toast('Stopping the backtest at the next batch of stocks.'); setTimeout(ivLoad, 1500); return; }
     if (a === 'data') { el.disabled = true; await api('/ivcrush/data', { method: 'POST', body: {} }); toast('Download started: it runs in the background.'); setTimeout(ivLoad, 1500); return; }
     if (a === 'run') { el.disabled = true; await api('/ivcrush', { method: 'POST', body: { cfg: I.cfg } }); toast('Backtest started: the first run fetches the option prices (can take hours).'); setTimeout(ivLoad, 1500); return; }
     if (a === 'csv') {

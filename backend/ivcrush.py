@@ -698,10 +698,14 @@ def run_job(sub, prog, deadline):
         return s, f, ({"sym": s, "day": rows[-1][0], "S": rows[-1][1], "rank": rows[-1][2], "iv": rows[-1][3], "vol": av} if ok else None)
     todo = [s for s in syms if s not in done]
     from concurrent.futures import ThreadPoolExecutor
+    stopped = False
     with ThreadPoolExecutor(WORKERS) as ex:
         longest = 0.0
         for i in range(0, len(todo), WORKERS):
             if time.time() + longest * 1.3 > deadline:  # the next batch might not finish in this invocation
+                break
+            if (store.get_json(f"ivc/run/{sub}") or {}).get("stop"):
+                stopped = True
                 break
             t0 = time.time()
             batch = todo[i:i + WORKERS]
@@ -712,6 +716,11 @@ def run_job(sub, prog, deadline):
                     part["today"].append(today)
                 done.add(s)
             longest = max(longest, time.time() - t0)
+    if stopped or (store.get_json(f"ivc/run/{sub}") or {}).get("stop"):     # stopped: the partial results are dropped
+        for k in range(st.get("parts") or 0):
+            store.delete(f"ivc/run/{sub}/p{k}")
+        store.put_json(f"ivc/run/{sub}", {"cfg": c})
+        return "stopped"
     store.put_json(f"ivc/run/{sub}/p{st['parts']}", part)
     st.update(done=sorted(done), parts=st["parts"] + 1)
     store.put_json(f"ivc/run/{sub}", st)
@@ -761,23 +770,56 @@ def _result(c, cal, f, today, nsym):
 
 # ---------------------------------------------------------------- the optimizer
 
-DTE_WIN = {30: (21, 40), 45: (35, 60)}
+DTE_WIN = {30: (21, 40), 45: (35, 60), 60: (45, 75)}
+SPACE = {"rank": [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80], "delta": [0.1, 0.15, 0.2, 0.25, 0.3, 0.35], "dte": [30, 45, 60],
+         "take": [0.25, 0.4, 0.5, 0.6, 0.75], "manage": [0, 7, 14, 21], "stop": [0, 1, 1.5, 2, 3], "roll": [0, 1],
+         "rollMode": ["both", "out", "down"], "rollDelta": [0.3, 0.4, 0.5], "rollDte": [7, 14, 21], "maxPos": [10, 20, 30],
+         "minVol": [0, 1, 2, 5]}
+ROUND = 40                                             # settings per round (one pass over the stocks)
 
 
-def grid(base, wide=False):
-    """The settings tried: IV rank x take profit x DTE exit x stop at the current delta / DTE; `wide`: fewer of those, but
-    delta x DTE too (more option data to download)."""
-    import itertools
-    if wide:
-        g = {"rank": [30, 50, 70], "take": [0.5, 0.75], "manage": [0, 21], "stop": [0, 2], "delta": [0.15, 0.2, 0.25, 0.3], "dte": [30, 45]}
-    else:
-        g = {"rank": sorted({30, 40, 50, 60, 70, base["rank"]}), "take": [0.25, 0.5, 0.75], "manage": [0, 14, 21], "stop": [0, 1, 2], "roll": [0, 1]}
-    out = []
-    for v in itertools.product(*g.values()):
-        p = dict(zip(g, v))
-        if "dte" in p:
-            p["dteMin"], p["dteMax"] = DTE_WIN[p["dte"]]
-        out.append(p)
+def _key(p):
+    return "|".join(f"{k}={p[k]}" for k in sorted(p))
+
+
+def _settings(c):
+    p = {k: c[k] for k in SPACE}
+    p["dteMin"], p["dteMax"] = DTE_WIN.get(p["dte"], (c["dteMin"], c["dteMax"]))
+    return p
+
+
+def propose(base, board, tried, n, rnd):
+    """The next round: the current rules first, then changes of 1-2 settings of the best ones so far (2/3), the rest
+    random; never one already tried."""
+    out, keys = [], set(tried)
+
+    def add(p):
+        p = dict(p)
+        p["dteMin"], p["dteMax"] = DTE_WIN[p["dte"]]
+        k = _key(p)
+        if k not in keys:
+            keys.add(k)
+            out.append(p)
+    if not board:
+        b = _settings(base)
+        b["dte"] = min(SPACE["dte"], key=lambda x: abs(x - b["dte"]))
+        for k in SPACE:
+            if b[k] not in SPACE[k]:
+                b[k] = min(SPACE[k], key=lambda x: abs(x - b[k])) if not isinstance(b[k], str) else SPACE[k][0]
+        add(b)
+    top = [x["p"] for x in board[:10]]
+    for _ in range(n * 20):
+        if len(out) >= n:
+            break
+        if top and len(out) < n * 2 // 3:
+            p = dict(rnd.choice(top))
+            for k in rnd.sample(list(SPACE), rnd.choice((1, 1, 2))):
+                vals = SPACE[k]
+                i = vals.index(p[k]) if p[k] in vals else rnd.randrange(len(vals))
+                p[k] = vals[max(0, min(len(vals) - 1, i + rnd.choice((-1, 1))))] if not isinstance(vals[0], str) else rnd.choice(vals)
+        else:
+            p = {k: rnd.choice(v) for k, v in SPACE.items()}
+        add(p)
     return out
 
 
@@ -829,16 +871,26 @@ def _ostats(done, curve, a, b, ndays):
             "sharpe": round(mu / sd * math.sqrt(252), 2) if sd else None, "avgRet": round(sum(x[2] for x in ts) / len(ts), 5)}
 
 
+def _score(train):
+    return train.get("sharpe") if train.get("n", 0) >= 30 and train.get("sharpe") is not None else None
+
+
 def opt_job(sub, prog, deadline):
-    """Every setting of the grid on every stock (each stock's option data downloaded once, then reused for all the
-    settings), then the portfolio of each; ranked on the train period only. True when done."""
+    """The optimizer, like Research's: round after round until stopped. A round = ROUND settings (see propose) on every
+    stock (each stock's data loaded once for all of them), then each setting's portfolio; the board keeps the best by
+    the train Sharpe (30+ train trades). Returns True when stopped."""
+    import random
     import uwhales
     tok = uwhales.token(sub)
     _count_calls()
     CALLS[0] = 0
-    st = store.get_json(f"ivc/opt/{sub}") or {}
+    key = f"ivc/opt/{sub}"
+    st = store.get_json(key) or {}
+    if st.get("stop"):
+        st.update(running=False, stop=False, g=None)
+        store.put_json(key, st)
+        return True
     base = clean(st.get("cfg"))
-    g = grid(base, st.get("wide"))
     ix = _ixd()
     syms = [s for s in universe()["syms"] if (ix["s"].get(s) or {}).get("n")]
     if not syms:
@@ -847,18 +899,24 @@ def opt_job(sub, prog, deadline):
         cal = set()
         for s in syms[:40]:
             cal |= {r[0] for r in store.get_json(f"ivc/uw/{s}") or []}
-        st.update(cal=sorted(d for d in cal if d >= base["from"]), done=[], parts=0, res=None)
-        store.put_json(f"ivc/opt/{sub}", st)
+        st["cal"] = sorted(d for d in cal if d >= base["from"])
     cal = st["cal"]
     ci = {d: i for i, d in enumerate(cal)}
+    if not st.get("g"):                                 # a new round
+        rnd = random.Random()
+        g = propose(base, st.get("board") or [], st.get("tried") or [], ROUND, rnd)
+        st.update(g=g, done=[], parts=0, round=st.get("round", 0) + 1, t0=time.time())
+        store.put_json(key, st)
+    g = st["g"]
     done = set(st["done"])
     part = [[] for _ in g]
+    best = (st.get("board") or [{}])[0].get("score")
 
     def one(s):
         rows = store.get_json(f"ivc/uw/{s}") or []
         _MEMO.clear()
         db_open(s, rows)
-        if base["minVol"] > 0 and rows:
+        if rows and any(p["minVol"] > 0 for p in g):
             _MEMO["vol"] = stock_volume(sub, s, rows[-1][0])
         res = []
         for p in g:
@@ -866,57 +924,97 @@ def opt_job(sub, prog, deadline):
                 ts = sim_symbol(tok, s, rows, {**base, **p}, ci)
             except BadRequest as e:
                 print("ivcrush opt", s, e)
-                break
+                ts = []
             res.append([[t["i"], t["j"], t["pnl"], t["coll"], t["rank"], s] for t in ts])          # open ones: j never reached
         db_close(s)
         _MEMO.clear()
         return s, res
     todo = [s for s in syms if s not in done]
     from concurrent.futures import ThreadPoolExecutor
+    stopped = False
     with ThreadPoolExecutor(WORKERS) as ex:
         longest = 0.0
         for i in range(0, len(todo), WORKERS):
             if time.time() + longest * 1.3 > deadline:  # the next batch might not finish in this invocation
                 break
+            if (store.get_json(key) or {}).get("stop"):
+                stopped = True
+                break
             t0 = time.time()
             batch = todo[i:i + WORKERS]
-            prog(f"Optimizer {len(done) + 1}–{len(done) + len(batch)} / {len(syms)}: {', '.join(batch)} · {len(g)} settings · {CALLS[0]:,} option downloads in this pass (the rest from the cache)")
+            prog(f"Optimizer round {st['round']} · stocks {len(done) + 1}–{len(done) + len(batch)} / {len(syms)} · {len(g)} settings · "
+                 f"{len(st.get('tried') or []):,} tried · best {best if best is not None else '—'} · {CALLS[0]:,} option downloads in this pass")
             for s, res in ex.map(one, batch):
                 for k, ts in enumerate(res):
                     part[k] += ts
                 done.add(s)
             longest = max(longest, time.time() - t0)
-    store.put_json(f"ivc/opt/{sub}/p{st['parts']}", part)
+    store.put_json(f"{key}/p{st['parts']}", part)
     st.update(done=sorted(done), parts=st["parts"] + 1)
-    store.put_json(f"ivc/opt/{sub}", st)
+    cur = store.get_json(key) or {}
+    if stopped or cur.get("stop"):                      # stopped mid-round: that round's settings are dropped
+        for k in range(st["parts"]):
+            store.delete(f"{key}/p{k}")
+        st.update(running=False, stop=False, g=None, done=[], parts=0)
+        store.put_json(key, st)
+        return True
+    store.put_json(key, st)
     if len(done) < len(syms):
         return False
-    prog("Optimizer: portfolios…")
+    prog(f"Optimizer round {st['round']}: portfolios…")
     allc = [[] for _ in g]
     for k in range(st["parts"]):
-        for i, x in enumerate(store.get_json(f"ivc/opt/{sub}/p{k}") or []):
+        for i, x in enumerate(store.get_json(f"{key}/p{k}") or []):
             allc[i] += x
-        store.delete(f"ivc/opt/{sub}/p{k}")
+        store.delete(f"{key}/p{k}")
     n = len(cal)
     sp = int(n * base["split"])
-    res = []
+    board = st.get("board") or []
     for p, cands in zip(g, allc):
         dn, cv = _light(cands, n, {**base, **p})
-        res.append({"p": p, "train": _ostats(dn, cv, 0, sp, n), "test": _ostats(dn, cv, sp, n, n), "all": _ostats(dn, cv, 0, n, n)})
-    res.sort(key=lambda x: x["train"].get("sharpe") or -99, reverse=True)
-    store.put_json(f"ivc/opt/{sub}", {"cfg": base, "wide": st.get("wide"), "res": res, "split": cal[sp] if cal else None, "syms": len(syms),
-                                      "at": iso(now_ny()), "total": len(g)})
-    return True
+        tr = _ostats(dn, cv, 0, sp, n)
+        board.append({"p": p, "score": _score(tr), "train": tr, "test": _ostats(dn, cv, sp, n, n), "all": _ostats(dn, cv, 0, n, n),
+                      "round": st["round"]})
+    board.sort(key=lambda x: x["score"] if x["score"] is not None else -99, reverse=True)
+    runs = (st.get("runs") or [])[-20:] + [{"at": iso(now_ny()), "n": len(g), "best": board[0]["score"] if board else None,
+                                            "min": round((time.time() - st.get("t0", time.time())) / 60, 1)}]
+    st.update(board=board[:100], tried=(st.get("tried") or []) + [_key(p) for p in g], g=None, done=[], parts=0, runs=runs,
+              split=cal[sp] if cal else None, syms=len(syms), at=iso(now_ny()))
+    if st.get("maxRound") and st["round"] >= st["maxRound"]:     # a set number of rounds (tests)
+        st.update(running=False)
+        store.put_json(key, st)
+        return True
+    store.put_json(key, st)
+    return False                                        # next round
 
 
-def opt_start(sub, cfg, wide=False):
+def opt_start(sub, cfg, restart=False, rounds=None):
     import jobs
     import uwhales
     uwhales.token(sub)
     if not status()["have"]:
         raise BadRequest("No IV history yet: download it first.")
-    store.put_json(f"ivc/opt/{sub}", {"cfg": clean(cfg), "wide": bool(wide)})
-    return jobs.start(sub, "ivcrush", "ivcopt", {})
+    key = f"ivc/opt/{sub}"
+    st = {} if restart else (store.get_json(key) or {})
+    if restart:
+        old = store.get_json(key) or {}
+        for k in range(old.get("parts") or 0):
+            store.delete(f"{key}/p{k}")
+    c = clean(cfg)
+    if st.get("cfg") and any(st["cfg"].get(k) != c[k] for k in ("from", "split", "acct", "alloc", "comm", "slip", "fill", "coll", "volLen")):
+        st = {}                                         # the fixed settings changed: the board isn't comparable any more
+    st.update(cfg=c, stop=False, running=True, g=None, done=[], parts=0, maxRound=(st.get("round", 0) + int(rounds)) if rounds else None)
+    store.put_json(key, st)
+    return jobs.start(sub, "ivcopt", "ivcopt", {})
+
+
+def opt_stop(sub):
+    key = f"ivc/opt/{sub}"
+    st = store.get_json(key) or {}
+    st["stop"] = True
+    store.put_json(key, st)
+    opt_stop_now(sub)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- API
@@ -928,11 +1026,14 @@ def view(sub):
     if j.get("status") == "running" and j.get("at", "") < iso(now_ny() - timedelta(minutes=20)):
         j["stale"] = True
     o = store.get_json(f"ivc/opt/{sub}") or {}
-    opt = {k: o.get(k) for k in ("wide", "split", "syms", "at", "total")} if o else None
+    oj = jobs.status(sub, "ivcopt")
+    if oj.get("status") == "running" and oj.get("at", "") < iso(now_ny() - timedelta(minutes=20)):
+        oj["stale"] = True
+    opt = {k: o.get(k) for k in ("split", "syms", "at", "runs", "round", "cfg", "stop")} if o else None
     if opt is not None:
-        opt["top"] = (o.get("res") or [])[:25]
-        opt["running"] = o.get("res") is None
-        opt["cfg"] = o.get("cfg")
+        opt["board"] = (o.get("board") or [])[:50]
+        opt["tried"] = len(o.get("tried") or [])
+        opt["job"] = oj
     return {"cfg": clean(st.get("cfg")), "res": store.get_json(f"ivc/res/{sub}"), "data": status(), "job": j, "opt": opt}
 
 
@@ -941,6 +1042,28 @@ def data_start(sub):
     import uwhales
     uwhales.token(sub)                                  # connected?
     return jobs.start(sub, "ivcrush", "ivcdata", {})
+
+
+def run_stop(sub):
+    """Stop the backtest at its next batch of stocks (or now, when its job no longer answers)."""
+    import jobs
+    st = store.get_json(f"ivc/run/{sub}") or {}
+    st["stop"] = True
+    store.put_json(f"ivc/run/{sub}", st)
+    j = jobs.status(sub, "ivcrush")
+    if j.get("status") != "running" or j.get("at", "") < iso(now_ny() - timedelta(minutes=20)):
+        jobs.set_status(sub, "ivcrush", status="done", msg="IV crush backtest stopped.")
+    return {"ok": True}
+
+
+def opt_stop_now(sub):
+    import jobs
+    j = jobs.status(sub, "ivcopt")
+    if j.get("status") != "running" or j.get("at", "") < iso(now_ny() - timedelta(minutes=20)):
+        jobs.set_status(sub, "ivcopt", status="done", msg="IV crush optimizer stopped.")
+        st = store.get_json(f"ivc/opt/{sub}") or {}
+        st.update(stop=False, running=False, g=None, done=[], parts=0)
+        store.put_json(f"ivc/opt/{sub}", st)
 
 
 def run_start(sub, cfg):

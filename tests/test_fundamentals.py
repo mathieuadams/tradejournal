@@ -976,20 +976,33 @@ def test_ivcrush():
             assert legs and all(ok(a, b) for a, b in legs), mode
     finally:
         F.UW_BS = False
-    F.UW_BS = True
+    F.UW_BS = True                                       # the optimizer: rounds until stopped (here: 2 rounds)
+    IV.ROUND = 12
     try:
-        st, r = call("POST", "/ivcrush/opt", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3}})
+        st, r = call("POST", "/ivcrush/opt", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3}, "restart": True, "rounds": 2})
         assert st == 200, r
         st, v = call("GET", "/ivcrush")
+        o = v["opt"]
+        assert o["job"]["status"] == "done" and o["round"] == 2 and o["tried"] == 24 and len(o["board"]) == 24 and len(o["runs"]) == 2, o["job"]
+        keys = [IV._key(x["p"]) for x in o["board"]]
+        assert len(set(keys)) == 24
+        sc = [x["score"] if x["score"] is not None else -99 for x in o["board"]]
+        assert sc == sorted(sc, reverse=True)
+        top = o["board"][0]
+        call("POST", "/ivcrush", {"cfg": {**top["p"], "from": "2022-06-01", "maxPos": top["p"]["maxPos"], "minVol": top["p"]["minVol"]}})
+        st, vb = call("GET", "/ivcrush")                 # the board's setting = the same closed trades as the backtest
+        assert vb["res"]["all"]["n"] == top["all"]["n"], (vb["res"]["all"]["n"], top["all"])
+        st, r = call("POST", "/ivcrush/opt", {"cfg": {"minVol": 0, "from": "2022-06-01", "maxPos": 3}, "rounds": 1})     # continues
+        st, v = call("GET", "/ivcrush")
+        assert v["opt"]["tried"] == 36 and v["opt"]["round"] == 3
+        call("POST", "/ivcrush/opt/stop")
+        assert IV.opt_job(SUB, lambda m: None, __import__("time").time() + 600) is True
+        store.put_json(f"ivc/run/{SUB}", {"cfg": {"minVol": 0}, "stop": True})          # the backtest's stop
+        assert IV.run_job(SUB, lambda m: None, __import__("time").time() + 600) == "stopped"
+        assert not store.get_json(f"ivc/run/{SUB}").get("stop")
     finally:
         F.UW_BS = False
-    o = v["opt"]
-    assert v["job"]["status"] == "done" and not o["running"] and o["total"] == 270 and len(o["top"]) == 25, v["job"]
-    sh = [x["train"].get("sharpe") or -99 for x in o["top"]]
-    assert sh == sorted(sh, reverse=True) and o["top"][0]["test"]["n"] > 0
-    full = store.get_json(f"ivc/opt/{SUB}")["res"]
-    same = next(x for x in full if x["p"] == {"rank": 30, "take": 0.5, "manage": 21, "stop": 0, "roll": 0})
-    assert same["all"]["n"] == res["all"]["n"], (same["all"], res["all"]["n"])    # the run's own setting: the same trades
+        IV.ROUND = 40
     F.UW_BS = True                                       # the average-volume filter (fake volumes average ~45k shares)
     try:
         ns = {}
